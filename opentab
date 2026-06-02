@@ -1,0 +1,1738 @@
+#!/usr/bin/env python3
+"""opentab — a lazygit-style OpenCode spend browser.
+
+No tmux. No fzf. No external Python packages. Just curses + sqlite.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sqlite3
+import sys
+import zlib
+from urllib.parse import quote
+
+try:
+    import curses
+except ImportError:  # native Windows has no stdlib curses
+    curses = None
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+
+MODEL_EXPR = """
+case
+  when s.model is null or s.model = '' then 'unknown (not recorded)'
+  else coalesce(json_extract(s.model, '$.providerID'), 'unknown') || '/' || coalesce(json_extract(s.model, '$.id'), 'unknown') ||
+    case
+      when coalesce(json_extract(s.model, '$.variant'), 'default') not in ('', 'default')
+      then ' (' || json_extract(s.model, '$.variant') || ')'
+      else ''
+    end
+end
+"""
+
+# Per-message model attribution from message.data JSON. The session.model column
+# is only populated for newer sessions and holds a single model, so it can't
+# represent multi-model sessions; the message table is the accurate source.
+MSG_MODEL_EXPR = (
+    "coalesce(json_extract(m.data, '$.providerID'), 'unknown') || '/' || "
+    "coalesce(json_extract(m.data, '$.modelID'), 'unknown')"
+)
+MSG_TOKEN_TOTAL_EXPR = " + ".join(
+    [
+        "coalesce(json_extract(m.data, '$.tokens.input'), 0)",
+        "coalesce(json_extract(m.data, '$.tokens.output'), 0)",
+        "coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)",
+        "coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)",
+        "coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)",
+    ]
+)
+TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?[kMB](?![A-Za-z0-9_])")
+MONEY_PATTERN = re.compile(r"\$\d+(?:,\d{3})*(?:\.\d+)?")
+
+# --- Demo mode: anonymize titles/paths and backfill synthetic prices so a live
+# demo (or a README screenshot) never leaks real session titles or work repo
+# paths, and shows no "$0.00 / unpriced" gaps. The *shape* of the data stays
+# real (token counts, model mix, real prices); only labels and the $0 holes are
+# synthetic. Everything is keyed by a stable seed so it never flickers on redraw.
+DEMO_VERBS = (
+    "refactor",
+    "fix",
+    "implement",
+    "debug",
+    "optimize",
+    "wire up",
+    "rename",
+    "document",
+    "add tests for",
+    "migrate",
+    "polish",
+    "investigate",
+    "scaffold",
+    "harden",
+    "simplify",
+    "profile",
+    "rework",
+    "ship",
+)
+DEMO_NOUNS = (
+    "the auth middleware",
+    "the snapshot harness",
+    "the token parser",
+    "the retry logic",
+    "the config loader",
+    "the CLI flags",
+    "the cache layer",
+    "the export pipeline",
+    "the webhook handler",
+    "the search index",
+    "the rate limiter",
+    "the migration script",
+    "the date formatter",
+    "the error boundary",
+    "the settings panel",
+    "the upload flow",
+    "the pagination bug",
+    "the flaky test",
+    "the release script",
+    "the metrics collector",
+)
+DEMO_REPOS = (
+    "~/code/acme-api",
+    "~/code/web-dashboard",
+    "~/code/billing-svc",
+    "~/code/mobile-app",
+    "~/code/data-pipeline",
+    "~/code/infra",
+    "~/code/notes-app",
+    "~/code/cli-tools",
+    "~/work/internal-portal",
+    "~/work/reporting",
+)
+# Blended $/token used to price sessions OpenCode recorded with no cost
+# (e.g. credit-based providers). Tuned so a few-million-token session lands in a
+# believable single-digit-dollar range.
+DEMO_RATE = 1.6e-6
+# Local models (ollama, lmstudio, ...) get remapped to recognizable cloud models
+# in demo mode, so screenshots show a clean, relatable provider/model mix instead
+# of whatever local tags you happen to run. Deterministic per source name.
+DEMO_LOCAL_PROVIDERS = ("ollama", "lmstudio", "llamacpp", "local")
+DEMO_MODEL_POOL = (
+    "anthropic/claude-opus-4.6",
+    "anthropic/claude-sonnet-4.5",
+    "openai/gpt-5.5",
+    "openai/gpt-5-mini",
+    "google/gemini-2.5-pro",
+    "anthropic/claude-haiku-4.5",
+)
+
+
+def _seed(value: str) -> int:
+    return zlib.crc32(str(value).encode())
+
+
+def demo_title(seed: str) -> str:
+    h = _seed(seed)
+    return f"{DEMO_VERBS[h % len(DEMO_VERBS)]} {DEMO_NOUNS[(h // 7) % len(DEMO_NOUNS)]}"
+
+
+def demo_dir(seed: str) -> str:
+    return DEMO_REPOS[_seed(seed) % len(DEMO_REPOS)]
+
+
+def demo_cost(tokens: float, seed: str) -> float:
+    jitter = 0.85 + (_seed(seed) % 31) / 100.0  # 0.85 .. 1.15, stable per seed
+    return round(max(0.0, float(tokens)) * DEMO_RATE * jitter, 4)
+
+
+def demo_model(name: str) -> str:
+    # Remap local-model names to a stable cloud model; leave cloud models as-is.
+    provider = str(name).split("/", 1)[0].lower()
+    if provider in DEMO_LOCAL_PROVIDERS:
+        return DEMO_MODEL_POOL[_seed(name) % len(DEMO_MODEL_POOL)]
+    return name
+
+
+@dataclass
+class Workflow:
+    id: str
+    title: str
+    directory: str
+    created_at: str
+    root_cost: float
+    total_cost: float
+    subagents: int
+    model_count: int
+    total_tokens: int
+    unpriced_tokens: int
+
+
+@dataclass
+class DaySummary:
+    day: str
+    workflows: int
+    cost: float
+    tokens: int
+    subagents: int
+    unpriced_tokens: int
+
+
+@dataclass
+class MonthSummary:
+    month: str
+    workflows: int
+    cost: float
+    tokens: int
+    subagents: int
+    unpriced_tokens: int
+
+
+def money(value: float) -> str:
+    return f"${value:,.2f}"
+
+
+def tokens(value: int) -> str:
+    return f"{value:,}"
+
+
+def human_tokens(value: int) -> str:
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.1f}B"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return str(value)
+
+
+def shorten(value: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    value = value.replace("\n", " ").replace("\t", " ")
+    if len(value) <= width:
+        return value
+    if width <= 3:
+        return value[:width]
+    return value[: width - 3] + "..."
+
+
+def short_path(path: str, width: int) -> str:
+    home = os.path.expanduser("~")
+    if path.startswith(home):
+        path = "~" + path[len(home) :]
+    if len(path) <= width:
+        return path
+    if width <= 4:
+        return path[-width:]
+    return "..." + path[-(width - 3) :]
+
+
+class Store:
+    def __init__(self, db: str, args: argparse.Namespace):
+        self.db = db
+        self.args = args
+        self.demo = getattr(args, "demo", False)
+        # Open read-only (URI mode) so opentab physically cannot modify the
+        # OpenCode database it reads -- the "never writes" promise, enforced.
+        uri = "file:" + quote(os.path.abspath(db)) + "?mode=ro"
+        self.conn = sqlite3.connect(uri, uri=True)
+        self.conn.row_factory = sqlite3.Row
+        self.session_columns = self._table_columns("session")
+
+    def _table_columns(self, table: str) -> set[str]:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+            raise ValueError(f"invalid table name: {table}")
+        return {row["name"] for row in self.conn.execute(f"pragma table_info({table})")}
+
+    def _has_session_token_columns(self) -> bool:
+        return {
+            "tokens_input",
+            "tokens_output",
+            "tokens_reasoning",
+            "tokens_cache_read",
+            "tokens_cache_write",
+        }.issubset(self.session_columns)
+
+    def _has_session_cost_column(self) -> bool:
+        return "cost" in self.session_columns
+
+    def _needs_message_usage(self) -> bool:
+        return not self._has_session_token_columns() or not self._has_session_cost_column()
+
+    def _message_usage_cte(self) -> str:
+        if not self._needs_message_usage():
+            return ""
+        return """
+        , msg_usage as (
+          select
+            session_id,
+            sum(coalesce(json_extract(data, '$.tokens.input'), 0)) as tokens_input,
+            sum(coalesce(json_extract(data, '$.tokens.output'), 0)) as tokens_output,
+            sum(coalesce(json_extract(data, '$.tokens.reasoning'), 0)) as tokens_reasoning,
+            sum(coalesce(json_extract(data, '$.tokens.cache.read'), 0)) as tokens_cache_read,
+            sum(coalesce(json_extract(data, '$.tokens.cache.write'), 0)) as tokens_cache_write,
+            sum(
+              coalesce(json_extract(data, '$.tokens.input'), 0) +
+              coalesce(json_extract(data, '$.tokens.output'), 0) +
+              coalesce(json_extract(data, '$.tokens.reasoning'), 0) +
+              coalesce(json_extract(data, '$.tokens.cache.read'), 0) +
+              coalesce(json_extract(data, '$.tokens.cache.write'), 0)
+            ) as tokens_total,
+            sum(coalesce(json_extract(data, '$.cost'), 0)) as cost
+          from message
+          where json_extract(data, '$.role') = 'assistant'
+          group by session_id
+        )
+        """
+
+    def _message_usage_join(self) -> str:
+        if not self._needs_message_usage():
+            return ""
+        return "left join msg_usage mu on mu.session_id = s.id"
+
+    def _cost_expr(self, session_alias: str = "s", aggregate_alias: str = "mu") -> str:
+        if self._has_session_cost_column():
+            return f"coalesce({session_alias}.cost, 0)"
+        return f"coalesce({aggregate_alias}.cost, 0)"
+
+    def _token_exprs(self, session_alias: str = "s", aggregate_alias: str = "mu") -> dict[str, str]:
+        names = (
+            "tokens_input",
+            "tokens_output",
+            "tokens_reasoning",
+            "tokens_cache_read",
+            "tokens_cache_write",
+        )
+        if self._has_session_token_columns():
+            exprs = {name: f"coalesce({session_alias}.{name}, 0)" for name in names}
+            exprs["tokens_total"] = " + ".join(exprs[name] for name in names)
+            return exprs
+        exprs = {name: f"coalesce({aggregate_alias}.{name}, 0)" for name in names}
+        exprs["tokens_total"] = f"coalesce({aggregate_alias}.tokens_total, 0)"
+        return exprs
+
+    def _session_text_expr(self, alias: str, columns: list[str], fallback: str) -> str:
+        parts = [
+            f"nullif({alias}.{column}, '')" for column in columns if column in self.session_columns
+        ]
+        if not parts:
+            return fallback
+        return f"coalesce({', '.join(parts)}, {fallback})"
+
+    def workflows(self) -> list[Workflow]:
+        # Load every root session; the App filters by the active range in memory
+        # so the range can be changed live without re-querying.
+        token_exprs = self._token_exprs()
+        cost_expr = self._cost_expr()
+        title_expr = self._session_text_expr("root", ["title"], "'(untitled)'")
+        directory_expr = self._session_text_expr("root", ["directory", "path"], "'(unknown)'")
+        sql = f"""
+        with recursive roots(id) as (
+          select root.id
+          from session root
+          where root.parent_id is null
+        ), tree(root_id, id, depth) as (
+          select id, id, 0 from roots
+          union all
+          select tree.root_id, child.id, tree.depth + 1
+          from session child
+          join tree on child.parent_id = tree.id
+        )
+        {self._message_usage_cte()}
+        , nodes as (
+          select
+            tree.root_id,
+            tree.depth,
+            s.*,
+            {token_exprs['tokens_total']} as tokens_total,
+            {cost_expr} as node_cost
+          from session s
+          join tree on tree.id = s.id
+          {self._message_usage_join()}
+        ), rollup as (
+          select
+            root_id,
+            sum(node_cost) as total_cost,
+            sum(case when depth = 0 then node_cost else 0 end) as root_cost,
+            sum(tokens_total) as total_tokens,
+            sum(case when depth > 0 then 1 else 0 end) as subagents,
+            sum(case when node_cost = 0 then tokens_total else 0 end) as unpriced_tokens
+          from nodes
+          group by root_id
+        ), msg_models as (
+          select tree.root_id,
+            count(distinct {MSG_MODEL_EXPR}) as model_count
+          from message m
+          join tree on tree.id = m.session_id
+          where json_extract(m.data, '$.role') = 'assistant'
+          group by tree.root_id
+        )
+        select
+          root.id,
+          {title_expr} as title,
+          {directory_expr} as directory,
+          datetime(root.time_created / 1000, 'unixepoch', 'localtime') as created_at,
+          rollup.root_cost,
+          rollup.total_cost,
+          rollup.subagents,
+          coalesce(msg_models.model_count, 0) as model_count,
+          rollup.total_tokens,
+          rollup.unpriced_tokens
+        from rollup
+        join session root on root.id = rollup.root_id
+        left join msg_models on msg_models.root_id = rollup.root_id
+        order by rollup.total_cost desc, rollup.total_tokens desc
+        """
+        rows = [Workflow(**dict(row)) for row in self.conn.execute(sql)]
+        if self.demo:
+            rows = [self._demo_workflow(w) for w in rows]
+        return rows
+
+    def _demo_workflow(self, w: Workflow) -> Workflow:
+        w.title = demo_title(w.id)
+        w.directory = demo_dir(w.id)
+        if w.unpriced_tokens > 0:
+            add = demo_cost(w.unpriced_tokens, w.id)
+            w.total_cost += add
+            if w.root_cost == 0:
+                w.root_cost += add
+            w.unpriced_tokens = 0
+        return w
+
+    def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
+        return {
+            "workflows": len(workflows),
+            "cost": sum(w.total_cost for w in workflows),
+            "tokens": sum(w.total_tokens for w in workflows),
+            "subagents": sum(w.subagents for w in workflows),
+            "unpriced_tokens": sum(w.unpriced_tokens for w in workflows),
+            "paid_workflows": sum(1 for w in workflows if w.total_cost > 0),
+        }
+
+    def workflow_nodes(self, workflow_id: str) -> list[sqlite3.Row]:
+        token_exprs = self._token_exprs()
+        cost_expr = self._cost_expr()
+        agent_expr = self._session_text_expr("s", ["agent"], "'-'")
+        title_expr = self._session_text_expr("s", ["title"], "'(untitled)'")
+        sql = f"""
+        with recursive tree(id, depth) as (
+          select id, 0 from session where id = ?
+          union all
+          select child.id, tree.depth + 1
+          from session child
+          join tree on child.parent_id = tree.id
+        )
+        {self._message_usage_cte()}
+        select
+          s.id,
+          tree.depth,
+          {agent_expr} as agent,
+          {title_expr} as title,
+          datetime(s.time_created / 1000, 'unixepoch', 'localtime') as created_at,
+          {cost_expr} as cost,
+          {token_exprs['tokens_input']} as tokens_input,
+          {token_exprs['tokens_output']} as tokens_output,
+          {token_exprs['tokens_reasoning']} as tokens_reasoning,
+          {token_exprs['tokens_cache_read']} as tokens_cache_read,
+          {token_exprs['tokens_cache_write']} as tokens_cache_write,
+          {token_exprs['tokens_total']} as tokens_total,
+          coalesce((
+            select {MSG_MODEL_EXPR}
+            from message m
+            where m.session_id = s.id and json_extract(m.data, '$.role') = 'assistant'
+            group by {MSG_MODEL_EXPR}
+            order by count(*) desc
+            limit 1
+          ), 'unknown (not recorded)') as model_name
+        from session s
+        join tree on tree.id = s.id
+        {self._message_usage_join()}
+        order by tree.depth, s.time_created
+        """
+        rows = list(self.conn.execute(sql, [workflow_id]))
+        if not self.demo:
+            return rows
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["title"] = demo_title(d["id"])
+            d["model_name"] = demo_model(d["model_name"])
+            if d["cost"] == 0:
+                d["cost"] = demo_cost(d["tokens_total"], d["id"])
+            out.append(d)
+        return out
+
+    def model_breakdown(self) -> list[sqlite3.Row]:
+        # Per-(root session, model) cost/token attribution for EVERY root, in one
+        # pass. Computed from per-message data (accurate for multi-model and older
+        # sessions). The App caches this and slices it per session/day/month, so we
+        # never run a query per workflow.
+        sql = f"""
+        with recursive tree(root_id, id) as (
+          select id, id from session where parent_id is null
+          union all
+          select tree.root_id, child.id from session child join tree on child.parent_id = tree.id
+        )
+        select
+          tree.root_id as root_id,
+          {MSG_MODEL_EXPR} as model_name,
+          count(*) as runs,
+          sum(coalesce(json_extract(m.data, '$.cost'), 0)) as cost,
+          sum({MSG_TOKEN_TOTAL_EXPR}) as tokens_total,
+          sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)) as cache_read,
+          sum(coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)) as cache_write,
+          sum(coalesce(json_extract(m.data, '$.tokens.output'), 0)) as output
+        from message m
+        join tree on tree.id = m.session_id
+        where json_extract(m.data, '$.role') = 'assistant'
+        group by tree.root_id, model_name
+        """
+        # In demo mode the per-model rows are reconciled to each session's total
+        # in App._load_model_cache (Copilot rows have real runs but 0 cost/tokens
+        # in the message JSON, so they can't be priced in isolation here).
+        return list(self.conn.execute(sql))
+
+
+class App:
+    workflow_tabs = ("Overview", "Models", "Subagents")
+    day_tabs = ("Overview", "Sessions")  # a day touches few models; folded into Overview
+    month_tabs = ("Overview", "Models", "Sessions")
+    sort_options = ("cost", "tokens", "date", "subagents", "title")
+
+    # Range windows for live cycling, widest -> narrowest. None means all time.
+    range_presets = (None, 365, 180, 90, 60, 30, 14, 7)
+
+    def __init__(self, store: Store, args: argparse.Namespace):
+        self.store = store
+        self.args = args
+        self.loaded = store.workflows()  # every root session, all time
+        self._load_model_cache()
+        # Active range: custom bounds from CLI take precedence, else a day window
+        # (None = all). Default is all time so the Months panel is actually useful.
+        self.custom_since = args.since
+        self.custom_until = args.until
+        self.range_days = None if (args.since or args.until or args.days is None) else args.days
+        self.query = ""
+        self.day_index = 0
+        self.month_index = 0
+        self.workflow_index = 0  # selected session in a zoomed Sessions tab
+        # Tab flips focus between the two left panels. Enter drills:
+        # browse -> zoom (month/day detail) -> session (one session's detail).
+        self.focus = "months"  # "months" | "days"
+        self.view = "browse"  # "browse" | "zoom" | "session"
+        self.tab = 0
+        self.scroll = 0
+        self.help = False
+        self.sort_by = "cost"
+
+    @property
+    def all_workflows(self) -> list[Workflow]:
+        rows = self.loaded
+        if self.custom_since or self.custom_until:
+            if self.custom_since:
+                rows = [w for w in rows if w.created_at[:10] >= self.custom_since]
+            if self.custom_until:
+                rows = [w for w in rows if w.created_at[:10] <= self.custom_until]
+            return rows
+        if self.range_days is None:
+            return rows
+        cutoff = (datetime.now() - timedelta(days=self.range_days)).strftime("%Y-%m-%d")
+        return [w for w in rows if w.created_at[:10] >= cutoff]
+
+    def cycle_range(self, wider: bool) -> None:
+        self.custom_since = None
+        self.custom_until = None
+        presets = self.range_presets
+        try:
+            i = presets.index(self.range_days)
+        except ValueError:
+            i = 0
+        i += -1 if wider else 1  # presets go widest -> narrowest
+        self.range_days = presets[max(0, min(i, len(presets) - 1))]
+        self._reset_indices()
+
+    def set_all_time(self) -> None:
+        self.custom_since = None
+        self.custom_until = None
+        self.range_days = None
+        self._reset_indices()
+
+    def _reset_indices(self) -> None:
+        self.month_index = 0
+        self.day_index = 0
+        self.workflow_index = 0
+        self.scroll = 0
+
+    @property
+    def active_day(self) -> str | None:
+        rows = self.panel_days
+        if not rows:
+            return None
+        self.day_index = max(0, min(self.day_index, len(rows) - 1))
+        return rows[self.day_index].day
+
+    @property
+    def workflows(self) -> list[Workflow]:
+        # Sessions of the selected day — the lazygit "commits of this branch".
+        day = self.active_day
+        rows = self.workflows_for_day(day) if day else []
+        if self.query:
+            q = self.query.lower()
+            rows = [
+                w
+                for w in rows
+                if q in w.title.lower() or q in w.directory.lower() or q in w.id.lower()
+            ]
+        return self.sorted_workflows(rows)
+
+    def _day_summaries(self, workflows: list[Workflow]) -> list[DaySummary]:
+        grouped: dict[str, list[Workflow]] = defaultdict(list)
+        for workflow in workflows:
+            grouped[workflow.created_at[:10]].append(workflow)
+        return [
+            DaySummary(
+                day=day,
+                workflows=len(ws),
+                cost=sum(w.total_cost for w in ws),
+                tokens=sum(w.total_tokens for w in ws),
+                subagents=sum(w.subagents for w in ws),
+                unpriced_tokens=sum(w.unpriced_tokens for w in ws),
+            )
+            for day, ws in grouped.items()
+        ]
+
+    @property
+    def days(self) -> list[DaySummary]:
+        # All days in range, always newest-first — left-hand nav is date-sorted.
+        return sorted(self._day_summaries(self.all_workflows), key=lambda d: d.day, reverse=True)
+
+    @property
+    def panel_days(self) -> list[DaySummary]:
+        # Days belonging to the focused month, newest-first — the lower-left panel.
+        month = self.focused_month
+        source = self.workflows_for_month(month) if month else self.all_workflows
+        return sorted(self._day_summaries(source), key=lambda d: d.day, reverse=True)
+
+    @property
+    def months(self) -> list[MonthSummary]:
+        grouped: dict[str, list[Workflow]] = defaultdict(list)
+        for workflow in self.all_workflows:
+            grouped[workflow.created_at[:7]].append(workflow)
+        months = [
+            MonthSummary(
+                month=month,
+                workflows=len(workflows),
+                cost=sum(w.total_cost for w in workflows),
+                tokens=sum(w.total_tokens for w in workflows),
+                subagents=sum(w.subagents for w in workflows),
+                unpriced_tokens=sum(w.unpriced_tokens for w in workflows),
+            )
+            for month, workflows in grouped.items()
+        ]
+        # Always newest-first — left-hand nav is date-sorted.
+        return sorted(months, key=lambda m: m.month, reverse=True)
+
+    @property
+    def focused_month(self) -> str | None:
+        rows = self.months
+        if not rows:
+            return None
+        self.month_index = max(0, min(self.month_index, len(rows) - 1))
+        return rows[self.month_index].month
+
+    @property
+    def selected(self) -> Workflow | None:
+        rows = self.workflows
+        if not rows:
+            return None
+        self.workflow_index = max(0, min(self.workflow_index, len(rows) - 1))
+        return rows[self.workflow_index]
+
+    @property
+    def selected_day_summary(self) -> DaySummary | None:
+        rows = self.panel_days
+        if not rows:
+            return None
+        self.day_index = max(0, min(self.day_index, len(rows) - 1))
+        return rows[self.day_index]
+
+    @property
+    def selected_month_summary(self) -> MonthSummary | None:
+        rows = self.months
+        if not rows:
+            return None
+        self.month_index = max(0, min(self.month_index, len(rows) - 1))
+        return rows[self.month_index]
+
+    def _load_model_cache(self) -> None:
+        # root_id -> [ {model_name, runs, cost, tokens_total, cache_read, cache_write, output}, ... ]
+        self._model_by_root: dict[str, list[dict]] = defaultdict(list)
+        for row in self.store.model_breakdown():
+            self._model_by_root[row["root_id"]].append(dict(row))
+        if self.store.demo:
+            for root_id, models in self._model_by_root.items():
+                self._model_by_root[root_id] = self._demo_rename_models(models)
+            self._reconcile_demo_models()
+
+    @staticmethod
+    def _demo_rename_models(models: list[dict]) -> list[dict]:
+        # Rename local models to cloud ones, merging rows that collide on the new
+        # name so the Models table never shows two rows with the same label.
+        merged: dict[str, dict] = {}
+        for m in models:
+            m = dict(m)
+            m["model_name"] = demo_model(m["model_name"])
+            key = m["model_name"]
+            if key in merged:
+                acc = merged[key]
+                for f in ("runs", "cost", "tokens_total", "cache_read", "cache_write", "output"):
+                    acc[f] = acc.get(f, 0) + m.get(f, 0)
+            else:
+                merged[key] = m
+        return list(merged.values())
+
+    def _reconcile_demo_models(self) -> None:
+        # Make each session's per-model rows sum exactly to that session's demo
+        # total cost/tokens. Copilot rows carry real `runs` but 0 cost/tokens in
+        # the message JSON, so we distribute the session's synthetic shortfall
+        # across the zero-cost rows by message count. Keeps the Models tab
+        # internally consistent with the Money panel at every zoom level.
+        by_id = {w.id: w for w in self.loaded}
+        for root_id, models in self._model_by_root.items():
+            wf = by_id.get(root_id)
+            if not wf:
+                continue
+            zero_rows = [m for m in models if m["cost"] == 0]
+            if not zero_rows:
+                continue
+            synth_cost = max(0.0, wf.total_cost - sum(m["cost"] for m in models))
+            synth_tokens = max(0, wf.total_tokens - sum(m["tokens_total"] for m in models))
+            weights = [max(1, m["runs"]) for m in zero_rows]
+            total_w = sum(weights)
+            for m, w in zip(zero_rows, weights):
+                share = w / total_w
+                m["cost"] = round(m["cost"] + synth_cost * share, 4)
+                m["tokens_total"] = int(m["tokens_total"] + synth_tokens * share)
+
+    def model_mix(self, workflow_id: str) -> list[dict]:
+        rows = self._model_by_root.get(workflow_id, [])
+        return sorted(rows, key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
+
+    def reload(self) -> None:
+        self.loaded = self.store.workflows()
+        self._load_model_cache()
+        self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
+        self.day_index = min(self.day_index, max(0, len(self.days) - 1))
+        self.month_index = min(self.month_index, max(0, len(self.months) - 1))
+
+    def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
+        if self.sort_by == "cost":
+            return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
+        if self.sort_by == "tokens":
+            return sorted(rows, key=lambda item: (item.total_tokens, item.total_cost), reverse=True)
+        if self.sort_by == "subagents":
+            return sorted(rows, key=lambda item: (item.subagents, item.total_tokens), reverse=True)
+        if self.sort_by == "title":
+            return sorted(rows, key=lambda item: item.title.lower())
+        return sorted(rows, key=lambda item: item.created_at, reverse=True)
+
+    def month_row_text(self, month: MonthSummary, marker: str) -> str:
+        return (
+            f"{marker} {month.month} {money(month.cost):>9} "
+            f"{human_tokens(month.tokens):>7} {month.workflows:>3} ses {month.subagents:>3} subs"
+        )
+
+    def day_row_text(self, day: DaySummary, marker: str) -> str:
+        return (
+            f"{marker} {day.day} {money(day.cost):>9} "
+            f"{human_tokens(day.tokens):>7} {day.workflows:>3} ses {day.subagents:>3} subs"
+        )
+
+    def list_width(self, rows_text: list[str], width: int) -> int:
+        # Size a left list to its content; keep at least 44 cols for the detail pane.
+        content = max((len(r) for r in rows_text), default=20)
+        return max(24, min(content + 3, max(24, width - 44)))
+
+    def browse_left_width(self, width: int) -> int:
+        rows = [self.month_row_text(m, ">") for m in self.months]
+        rows += [self.day_row_text(d, ">") for d in self.panel_days]
+        return self.list_width(rows, width)
+
+    def current_sessions(self) -> list[Workflow]:
+        if self.focus == "months":
+            item = self.selected_month_summary
+            rows = self.workflows_for_month(item.month) if item else []
+        else:
+            item = self.selected_day_summary
+            rows = self.workflows_for_day(item.day) if item else []
+        if self.query:
+            q = self.query.lower()
+            rows = [
+                w
+                for w in rows
+                if q in w.title.lower() or q in w.directory.lower() or q in w.id.lower()
+            ]
+        return self.sorted_workflows(rows)
+
+    def current_session(self) -> Workflow | None:
+        rows = self.current_sessions()
+        if not rows:
+            return None
+        self.workflow_index = max(0, min(self.workflow_index, len(rows) - 1))
+        return rows[self.workflow_index]
+
+    @property
+    def on_sessions_tab(self) -> bool:
+        tabs = self.current_tabs()
+        return tabs[self.tab % len(tabs)] == "Sessions"
+
+    def toggle_focus(self) -> None:
+        if self.view == "session":
+            return
+        self.focus = "days" if self.focus == "months" else "months"
+        self.tab = 0
+        self.scroll = 0
+
+    def drill_in(self) -> None:
+        if self.view == "browse":
+            item = (
+                self.selected_month_summary if self.focus == "months" else self.selected_day_summary
+            )
+            if item is not None:
+                self.view = "zoom"
+                self.tab = 0
+                self.scroll = 0
+                self.workflow_index = 0
+        elif self.view == "zoom" and self.on_sessions_tab and self.current_session():
+            self.view = "session"
+            self.tab = 0
+            self.scroll = 0
+
+    def drill_out(self) -> None:
+        if self.view == "session":
+            self.view = "zoom"
+            tabs = self.current_tabs()  # land back on the Sessions tab we came from
+            self.tab = tabs.index("Sessions") if "Sessions" in tabs else 0
+        elif self.view == "zoom":
+            self.view = "browse"
+        self.scroll = 0
+
+    def move(self, delta: int) -> None:
+        if self.view == "session":
+            self.scroll = max(0, self.scroll + delta)
+        elif self.view == "zoom":
+            if self.on_sessions_tab:
+                n = len(self.current_sessions())
+                if n:
+                    self.workflow_index = max(0, min(self.workflow_index + delta, n - 1))
+            else:
+                self.scroll = max(0, self.scroll + delta)
+        elif self.focus == "months":
+            n = len(self.months)
+            if n:
+                self.month_index = max(0, min(self.month_index + delta, n - 1))
+            self.day_index = 0  # re-anchor the day panel when the month changes
+        else:  # days
+            n = len(self.panel_days)
+            if n:
+                self.day_index = max(0, min(self.day_index + delta, n - 1))
+
+    def jump(self, to_end: bool) -> None:
+        self.move(10_000 if to_end else -10_000)
+
+    def run(self, stdscr: curses.window) -> None:
+        if hasattr(curses, "set_escdelay"):
+            curses.set_escdelay(25)
+        curses.curs_set(0)
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_CYAN, -1)
+        curses.init_pair(2, curses.COLOR_MAGENTA, -1)
+        curses.init_pair(3, curses.COLOR_GREEN, -1)
+        curses.init_pair(4, curses.COLOR_YELLOW, -1)
+        curses.init_pair(5, curses.COLOR_RED, -1)
+        stdscr.keypad(True)
+
+        while True:
+            self.draw(stdscr)
+            key = stdscr.getch()
+            if not self.handle_key(stdscr, key):
+                break
+
+    def handle_key(self, stdscr: curses.window, key: int) -> bool:
+        if self.help:
+            self.help = False
+            return True
+
+        if key in (ord("q"), 3):
+            return False
+        if key == ord("?"):
+            self.help = True
+            return True
+        if key == ord("r"):
+            self.reload()
+            return True
+        if key == ord("+"):
+            self.drill_in()
+            return True
+        if key == ord("]"):
+            self.cycle_range(wider=True)
+            return True
+        if key == ord("["):
+            self.cycle_range(wider=False)
+            return True
+        if key == ord("a"):
+            self.set_all_time()
+            return True
+        if key == ord("s"):
+            options = self.current_sort_options()
+            if self.sort_by not in options:
+                self.sort_by = options[0]
+            current = options.index(self.sort_by)
+            self.sort_by = options[(current + 1) % len(options)]
+            self.workflow_index = 0
+            return True
+        if key == ord("/"):
+            self.prompt_filter(stdscr)
+            return True
+        if key == ord("x"):
+            self.query = ""
+            self.workflow_index = 0
+            return True
+        if key == ord("\t"):
+            self.toggle_focus()
+            return True
+        if key in (10, 13, curses.KEY_ENTER):
+            self.drill_in()
+            return True
+        if key in (27, curses.KEY_BACKSPACE, 127):
+            self.drill_out()  # session -> zoom -> browse; no-op when browsing
+            return True
+        if key == curses.KEY_BTAB:
+            if self.view == "browse":
+                self.toggle_focus()
+            else:
+                self.drill_out()
+            return True
+        if key in (ord("h"), curses.KEY_LEFT):
+            self.tab = (self.tab - 1) % len(self.current_tabs())
+            self.scroll = 0
+            return True
+        if key in (ord("l"), curses.KEY_RIGHT):
+            self.tab = (self.tab + 1) % len(self.current_tabs())
+            self.scroll = 0
+            return True
+        if key == ord("g"):
+            self.jump(to_end=False)
+            return True
+        if key == ord("G"):
+            self.jump(to_end=True)
+            return True
+        if key in (ord("j"), curses.KEY_DOWN):
+            self.move(1)
+            return True
+        if key in (ord("k"), curses.KEY_UP):
+            self.move(-1)
+            return True
+        return True
+
+    def prompt_filter(self, stdscr: curses.window) -> None:
+        height, width = stdscr.getmaxyx()
+        prompt = "Filter sessions: "
+        curses.curs_set(1)
+        stdscr.addstr(height - 1, 0, " " * (width - 1))
+        stdscr.addstr(height - 1, 0, prompt, curses.color_pair(1) | curses.A_BOLD)
+        stdscr.refresh()
+        curses.echo()
+        try:
+            raw = stdscr.getstr(height - 1, len(prompt), max(1, width - len(prompt) - 1))
+            self.query = raw.decode("utf-8", errors="ignore").strip()
+            self.workflow_index = 0
+        finally:
+            curses.noecho()
+            curses.curs_set(0)
+
+    def draw(self, stdscr: curses.window) -> None:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        if height < 20 or width < 80:
+            self.write(
+                stdscr, 0, 0, "Terminal too small. Need at least 80x20.", curses.color_pair(5)
+            )
+            stdscr.refresh()
+            return
+
+        self.draw_header(stdscr, width)
+        self.draw_footer(stdscr, height, width)
+
+        top = 3
+        bottom = height - 2
+        avail = bottom - top
+        if self.help:
+            self.draw_help(stdscr, top, bottom, width)
+        elif self.view == "session":
+            self.draw_detail(stdscr, top, 0, avail, width)
+        elif self.view == "zoom":
+            if self.focus == "months":
+                self.draw_month_detail(stdscr, top, 0, avail, width)
+            else:
+                self.draw_day_detail(stdscr, top, 0, avail, width)
+        else:
+            left = self.browse_left_width(width)
+            months_h = max(4, min(len(self.months) + 3, avail // 2))
+            days_h = avail - months_h
+            self.draw_month_list(stdscr, top, 0, months_h, left, active=self.focus == "months")
+            self.draw_day_list(stdscr, top + months_h, 0, days_h, left, active=self.focus == "days")
+            rx, rw = left, width - left
+            if self.focus == "months":
+                self.draw_month_detail(stdscr, top, rx, avail, rw)
+            else:
+                self.draw_day_detail(stdscr, top, rx, avail, rw)
+
+        stdscr.refresh()
+
+    def draw_header(self, stdscr: curses.window, width: int) -> None:
+        summary = self.store.summary(self.all_workflows)
+        title = " opentab "
+        info = (
+            f" {summary['workflows']} sessions "
+            f"cost {money(float(summary['cost']))} "
+            f"tokens {human_tokens(int(summary['tokens']))} "
+            f"subs {summary['subagents']} "
+        )
+        self.write(stdscr, 0, 0, title, curses.color_pair(2) | curses.A_BOLD)
+        tag = " DEMO — synthetic " if self.store.demo else ""
+        self.write(
+            stdscr,
+            0,
+            len(title),
+            shorten(info, width - len(title) - len(tag) - 1),
+            curses.color_pair(3),
+        )
+        if tag:
+            self.write(
+                stdscr,
+                0,
+                max(0, width - len(tag) - 1),
+                tag,
+                curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD,
+            )
+        drilled = self.view in ("zoom", "session")
+        trail = f"  ·  sort: {self.sort_by}"
+        if self.query:
+            trail += f"  ·  filter: {self.query}"
+        x = 0
+        if drilled:
+            chip = " ZOOM "
+            self.write(stdscr, 1, 0, chip, curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            x = len(chip) + 1
+        attr = curses.color_pair(1) | (curses.A_BOLD if drilled else 0)
+        self.write(stdscr, 1, x, shorten(self.breadcrumb() + trail, width - x - 1), attr)
+        self.hline(stdscr, 2, 0, width)
+
+    def breadcrumb(self) -> str:
+        # Always-visible "you are here" path: scope › month › day › session › tab.
+        # It is the only locator once a zoom hides the sidebar.
+        sep = " › "
+        tabs = self.current_tabs()
+        tab_name = tabs[self.tab % len(tabs)]
+        segs = [self.range_label()]
+        if self.view == "session":
+            if self.focused_month:
+                segs.append(self.focused_month)
+            if self.focus == "days" and self.active_day:
+                segs.append(self.active_day)
+            sess = self.current_session()
+            segs.append(shorten(sess.title, 28) if sess else "session")
+            segs.append(tab_name)
+        elif self.focus == "months":
+            if self.focused_month:
+                segs.append(self.focused_month)
+            segs.append(tab_name)
+        else:
+            if self.focused_month:
+                segs.append(self.focused_month)
+            if self.active_day:
+                segs.append(self.active_day)
+            segs.append(tab_name)
+        return sep.join(s for s in segs if s)
+
+    def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
+        keys = " j/k move  Tab months/days  Enter in  Esc out  h/l tabs  [ / ] range  a all  s sort  / filter  ? help  q quit "
+        self.hline(stdscr, height - 2, 0, width)
+        self.write(stdscr, height - 1, 0, shorten(keys, width - 1), curses.color_pair(4))
+
+    def current_tabs(self) -> tuple[str, ...]:
+        if self.view == "session":
+            return self.workflow_tabs
+        return self.month_tabs if self.focus == "months" else self.day_tabs
+
+    def current_sort_options(self) -> tuple[str, ...]:
+        # Left-hand months/days are always date-sorted; sort only reorders the
+        # session lists shown on the right and in the workflows view.
+        return self.sort_options
+
+    def token_attr(self, token_text: str) -> int:
+        if token_text.endswith("B"):
+            return curses.color_pair(5) | curses.A_BOLD
+        if token_text.endswith("M"):
+            return curses.color_pair(2) | curses.A_BOLD
+        if token_text.endswith("k"):
+            return curses.color_pair(1) | curses.A_BOLD
+        return curses.color_pair(3)
+
+    def write_colored_summary_row(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        text: str,
+        cost: str,
+        token_text: str,
+        width: int,
+    ) -> None:
+        rendered = shorten(text, width).ljust(width)
+        self.write(stdscr, y, x, rendered, curses.A_NORMAL)
+        cost_pos = rendered.find(cost)
+        if cost_pos >= 0:
+            self.write(stdscr, y, x + cost_pos, cost, curses.color_pair(3) | curses.A_BOLD)
+        token_pos = rendered.find(token_text)
+        if token_pos >= 0:
+            self.write(stdscr, y, x + token_pos, token_text, self.token_attr(token_text))
+
+    def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        # Navigable session list on the Sessions tab of a zoomed month/day.
+        sessions = self.current_sessions()
+        cy = y + 3
+        self.write(
+            stdscr,
+            cy,
+            x + 2,
+            shorten("    Cost     Tokens  Subs  Title", w - 4),
+            curses.color_pair(4) | curses.A_BOLD,
+        )
+        if not sessions:
+            self.write(stdscr, cy + 1, x + 2, "No sessions.", curses.color_pair(5))
+            return
+        visible = max(1, h - 5)
+        idx = max(0, min(self.workflow_index, len(sessions) - 1))
+        start = max(0, min(idx - visible // 2, max(0, len(sessions) - visible)))
+        for off, wf in enumerate(sessions[start : start + visible]):
+            ry = cy + 1 + off
+            marker = ">" if start + off == idx else " "
+            cost = money(wf.total_cost)
+            tok = human_tokens(wf.total_tokens)
+            text = f"{marker} {cost:>9} {tok:>8} {wf.subagents:>3}  {wf.title}"
+            if start + off == idx:
+                self.write(
+                    stdscr,
+                    ry,
+                    x + 2,
+                    shorten(text, w - 4).ljust(w - 4),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
+        self.write(stdscr, cy, x + w - 22, "Enter: open session", curses.color_pair(1))
+
+    def draw_month_list(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
+        self.box(stdscr, y, x, h, w, "Months" + (" ▸" if active else ""))
+        rows = self.months
+        if not rows:
+            self.write(stdscr, y + 2, x + 2, "No months in range.", curses.color_pair(5))
+            return
+
+        visible = h - 3
+        start = max(0, min(self.month_index - visible // 2, max(0, len(rows) - visible)))
+        for row_y, month in enumerate(rows[start : start + visible], y + 2):
+            selected = start + row_y - (y + 2) == self.month_index
+            marker = ">" if selected else " "
+            cost = money(month.cost)
+            tok = human_tokens(month.tokens)
+            text = self.month_row_text(month, marker)
+            if selected and active:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, w - 2).ljust(w - 2),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            elif selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, w - 2).ljust(w - 2),
+                    curses.color_pair(1) | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
+
+    def draw_month_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        month = self.selected_month_summary
+        title = "Month" if month is None else f"Month {month.month}"
+        self.box(stdscr, y, x, h, w, title)
+        if month is None:
+            self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(5))
+            return
+
+        tab_line = "  ".join(
+            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
+        )
+        self.write(
+            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
+        )
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Overview":
+            lines = self.month_overview(month, w - 4)
+        elif current == "Models":
+            lines = self.month_models(month, w - 4)
+        else:
+            lines = self.month_workflows(month, w - 4)
+
+        visible = h - 4
+        self.scroll = max(0, min(self.scroll, max(0, len(lines) - visible)))
+        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            )
+            if line.startswith("! "):
+                attr = curses.color_pair(5) | curses.A_BOLD
+            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+
+    def draw_day_list(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
+        month = self.focused_month
+        self.box(
+            stdscr, y, x, h, w, (f"Days · {month}" if month else "Days") + (" ▸" if active else "")
+        )
+        rows = self.panel_days
+        if not rows:
+            self.write(stdscr, y + 2, x + 2, "No days in month.", curses.color_pair(5))
+            return
+
+        visible = h - 3
+        start = max(0, min(self.day_index - visible // 2, max(0, len(rows) - visible)))
+        for row_y, day in enumerate(rows[start : start + visible], y + 2):
+            selected = start + row_y - (y + 2) == self.day_index
+            marker = ">" if selected else " "
+            cost = money(day.cost)
+            tok = human_tokens(day.tokens)
+            text = self.day_row_text(day, marker)
+            if selected and active:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, w - 2).ljust(w - 2),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            elif selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, w - 2).ljust(w - 2),
+                    curses.color_pair(1) | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
+
+    def draw_day_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        day = self.selected_day_summary
+        title = "Day" if day is None else f"Day {day.day}"
+        self.box(stdscr, y, x, h, w, title)
+        if day is None:
+            self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(5))
+            return
+
+        tab_line = "  ".join(
+            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
+        )
+        self.write(
+            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
+        )
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Overview":
+            lines = self.day_overview(day, w - 4)
+        else:
+            lines = self.day_workflows(day, w - 4)
+
+        visible = h - 4
+        self.scroll = max(0, min(self.scroll, max(0, len(lines) - visible)))
+        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            )
+            if line.startswith("! "):
+                attr = curses.color_pair(5) | curses.A_BOLD
+            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+
+    def draw_workflow_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        day = self.active_day
+        title = f"Sessions · {day}" if day else "Sessions"
+        self.box(stdscr, y, x, h, w, title)
+        rows = self.workflows
+        if not rows:
+            self.write(stdscr, y + 2, x + 2, "No sessions match the filter.", curses.color_pair(5))
+            return
+
+        visible = h - 3
+        start = max(0, min(self.workflow_index - visible // 2, max(0, len(rows) - visible)))
+        for row_y, workflow in enumerate(rows[start : start + visible], y + 2):
+            selected = start + row_y - (y + 2) == self.workflow_index
+            marker = ">" if selected else " "
+            cost = money(workflow.total_cost)
+            tok = human_tokens(workflow.total_tokens)
+            text = (
+                f"{marker} {cost:>9} "
+                f"{tok:>7} "
+                f"{workflow.subagents:>3} subs "
+                f"{shorten(workflow.title, max(12, w - 25))}"
+            )
+            if selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, w - 2).ljust(w - 2),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
+
+    def draw_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        workflow = self.current_session()
+        title = "Detail" if workflow is None else shorten(workflow.title, max(10, w - 12))
+        self.box(stdscr, y, x, h, w, title)
+        if workflow is None:
+            self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(5))
+            return
+
+        tab_line = "  ".join(
+            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
+        )
+        self.write(
+            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
+        )
+
+        if self.tab == 0:
+            lines = self.detail_overview(workflow, w - 4)
+        elif self.tab == 1:
+            lines = self.detail_models(workflow, w - 4)
+        else:
+            lines = self.detail_subagents(workflow, w - 4)
+
+        visible = h - 4
+        self.scroll = max(0, min(self.scroll, max(0, len(lines) - visible)))
+        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            )
+            if line.startswith("! "):
+                attr = curses.color_pair(5) | curses.A_BOLD
+            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+
+    def workflows_for_day(self, day: str) -> list[Workflow]:
+        return [workflow for workflow in self.all_workflows if workflow.created_at.startswith(day)]
+
+    def workflows_for_month(self, month: str) -> list[Workflow]:
+        return [
+            workflow for workflow in self.all_workflows if workflow.created_at.startswith(month)
+        ]
+
+    def aggregate_models(
+        self, workflows: list[Workflow]
+    ) -> list[tuple[str, dict[str, float | int]]]:
+        aggregate: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {
+                "runs": 0,
+                "cost": 0.0,
+                "tokens": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "output": 0,
+            }
+        )
+        for workflow in workflows:
+            for row in self.model_mix(workflow.id):
+                item = aggregate[row["model_name"]]
+                item["runs"] = int(item["runs"]) + int(row["runs"])
+                item["cost"] = float(item["cost"]) + float(row["cost"] or 0)
+                item["tokens"] = int(item["tokens"]) + int(row["tokens_total"] or 0)
+                item["cache_read"] = int(item["cache_read"]) + int(row["cache_read"] or 0)
+                item["cache_write"] = int(item["cache_write"]) + int(row["cache_write"] or 0)
+                item["output"] = int(item["output"]) + int(row["output"] or 0)
+        return sorted(
+            aggregate.items(),
+            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+            reverse=True,
+        )
+
+    def _model_table(self, rows: list[tuple], title: str, width: int) -> list[str]:
+        # rows: (name, runs, cost, tokens, cache_read, cache_write, output). The
+        # model column fits the longest name (so the numbers sit right after it),
+        # capped by the available width so long names aren't cut when there's room.
+        longest = max([len(str(r[0])) for r in rows] + [len("Model")])
+        mw = min(longest, max(20, width - 55))
+        lines = [
+            title,
+            f"{'Model':{mw}} {'Runs':>4} {'Cost':>10} {'Tokens':>9} {'CacheR':>9} {'CacheW':>9} {'Output':>8}",
+        ]
+        for name, runs, cost, tok, cr, cw, out in rows:
+            lines.append(
+                f"{shorten(name, mw):{mw}} {int(runs):>4} {money(float(cost)):>10} "
+                f"{human_tokens(int(tok)):>9} {human_tokens(int(cr)):>9} {human_tokens(int(cw)):>9} {human_tokens(int(out)):>8}"
+            )
+        if any(str(name).startswith("unknown") for name, *_ in rows):
+            lines.extend(
+                [
+                    "",
+                    "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
+                ]
+            )
+        return lines
+
+    def _top_models(self, rows: list[tuple], width: int) -> list[str]:
+        # rows: (name, cost, tokens, runs). Compact list under "# Top Models".
+        if not rows:
+            return []
+        mw = min(max(len(str(r[0])) for r in rows), max(20, width - 31))
+        return [
+            f"{shorten(name, mw):{mw}} {money(float(cost)):>10} {human_tokens(int(tok)):>8} runs {int(runs)}"
+            for name, cost, tok, runs in rows
+        ]
+
+    @staticmethod
+    def _agg_rows(aggregate: list[tuple[str, dict]]) -> list[tuple]:
+        return [
+            (
+                m,
+                it["runs"],
+                it["cost"],
+                it["tokens"],
+                it["cache_read"],
+                it["cache_write"],
+                it["output"],
+            )
+            for m, it in aggregate
+        ]
+
+    @staticmethod
+    def _mix_rows(model_rows: list[dict]) -> list[tuple]:
+        return [
+            (
+                r["model_name"],
+                r["runs"],
+                r["cost"],
+                r["tokens_total"],
+                r["cache_read"],
+                r["cache_write"],
+                r["output"],
+            )
+            for r in model_rows
+        ]
+
+    def month_overview(self, month: MonthSummary, width: int) -> list[str]:
+        lines = [
+            "# Monthly Insight",
+            f"Month:           {month.month}",
+            f"Cost:            {money(month.cost)}",
+            f"Tokens:          {tokens(month.tokens)}",
+            f"Sessions:        {month.workflows}",
+            f"Subagents:       {month.subagents}",
+            f"Unpriced tokens: {tokens(month.unpriced_tokens)}",
+        ]
+        if month.unpriced_tokens:
+            lines.extend(
+                [
+                    "",
+                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
+                ]
+            )
+        lines.extend(["", "# Top Models"])
+        agg = self.aggregate_models(self.workflows_for_month(month.month))
+        lines.extend(
+            self._top_models([(m, it["cost"], it["tokens"], it["runs"]) for m, it in agg], width)
+        )
+        lines.extend(["", "# Top Sessions"])
+        for workflow in self.sorted_workflows(self.workflows_for_month(month.month)):
+            lines.append(
+                f"{money(workflow.total_cost):>10} {human_tokens(workflow.total_tokens):>8} "
+                f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 31))}"
+            )
+        return lines
+
+    def month_models(self, month: MonthSummary, width: int) -> list[str]:
+        agg = self.aggregate_models(self.workflows_for_month(month.month))
+        return self._model_table(self._agg_rows(agg), "# Monthly Model Spend", width)
+
+    def month_workflows(self, month: MonthSummary, width: int) -> list[str]:
+        lines = ["# Monthly Sessions", "Cost       Tokens   Agts Models  Title"]
+        for workflow in self.sorted_workflows(self.workflows_for_month(month.month)):
+            lines.append(
+                f"{money(workflow.total_cost):>9} "
+                f"{human_tokens(workflow.total_tokens):>8} "
+                f"{workflow.subagents:>4} "
+                f"{workflow.model_count:>6}  "
+                f"{workflow.title}"
+            )
+        return lines
+
+    def day_overview(self, day: DaySummary, width: int) -> list[str]:
+        lines = [
+            "# Day Burn",
+            f"Day:             {day.day}",
+            f"Cost:            {money(day.cost)}",
+            f"Tokens:          {tokens(day.tokens)}",
+            f"Sessions:        {day.workflows}",
+            f"Subagents:       {day.subagents}",
+            f"Unpriced tokens: {tokens(day.unpriced_tokens)}",
+        ]
+        if day.unpriced_tokens:
+            lines.extend(
+                [
+                    "",
+                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
+                ]
+            )
+        # A day touches few models, so the full model table lives here in the
+        # Overview rather than in its own (near-empty) tab.
+        agg = self.aggregate_models(self.workflows_for_day(day.day))
+        lines.append("")
+        lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
+        lines.extend(["", "# Top Sessions"])
+        for workflow in self.sorted_workflows(self.workflows_for_day(day.day)):
+            lines.append(
+                f"{money(workflow.total_cost):>10} {human_tokens(workflow.total_tokens):>8} "
+                f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 31))}"
+            )
+        return lines
+
+    def day_workflows(self, day: DaySummary, width: int) -> list[str]:
+        lines = ["# Day Sessions", "Cost       Tokens   Agts Models  Title"]
+        for workflow in self.sorted_workflows(self.workflows_for_day(day.day)):
+            lines.append(
+                f"{money(workflow.total_cost):>9} "
+                f"{human_tokens(workflow.total_tokens):>8} "
+                f"{workflow.subagents:>4} "
+                f"{workflow.model_count:>6}  "
+                f"{workflow.title}"
+            )
+        return lines
+
+    def detail_overview(self, workflow: Workflow, width: int) -> list[str]:
+        lines = [
+            "# Session",
+            f"ID:       {workflow.id}",
+            f"Started:  {workflow.created_at}",
+            f"Project:  {short_path(workflow.directory, max(20, width - 10))}",
+            f"Title:    {workflow.title}",
+            "",
+            "# Money",
+            f"Total:    {money(workflow.total_cost)}",
+            f"Root:     {money(workflow.root_cost)}",
+            f"Subagent: {money(workflow.total_cost - workflow.root_cost)}",
+            "",
+            "# Shape",
+            f"Subagents:       {workflow.subagents}",
+            f"Distinct models: {workflow.model_count}",
+            f"Tokens:          {tokens(workflow.total_tokens)}",
+            f"Unpriced tokens: {tokens(workflow.unpriced_tokens)}",
+        ]
+        if workflow.unpriced_tokens:
+            lines.extend(
+                ["", "! Some tokens have local cost = $0.00. Reconcile Copilot billing separately."]
+            )
+        lines.extend(["", "# Top Models"])
+        model_rows = self.model_mix(workflow.id)
+        lines.extend(
+            self._top_models(
+                [(r["model_name"], r["cost"], r["tokens_total"], r["runs"]) for r in model_rows],
+                width,
+            )
+        )
+        if any(row["model_name"].startswith("unknown") for row in model_rows):
+            lines.extend(
+                [
+                    "",
+                    "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
+                ]
+            )
+        return lines
+
+    def detail_models(self, workflow: Workflow, width: int) -> list[str]:
+        model_rows = self.model_mix(workflow.id)
+        lines = self._model_table(self._mix_rows(model_rows), "# Model Mix", width)
+        if any(row["model_name"].startswith("unknown") for row in model_rows):
+            lines.append(
+                "! $0.00 rows with tokens often mean local attribution lacks provider pricing, especially Copilot."
+            )
+        return lines
+
+    def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
+        rows = [row for row in self.store.workflow_nodes(workflow.id) if row["depth"] > 0]
+        if not rows:
+            return ["# Subagents", "No subagents used in this workflow."]
+        lines = [
+            "# Subagent Runs",
+            "D Agent          Model                              Cost     Tokens  Title",
+        ]
+        for row in rows:
+            lines.append(
+                f"{row['depth']:<1} "
+                f"{shorten(row['agent'], 14):14} "
+                f"{shorten(row['model_name'], 31):31} "
+                f"{money(row['cost']):>8} "
+                f"{human_tokens(row['tokens_total']):>9}  "
+                f"{row['title']}"
+            )
+        return lines
+
+    def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
+        self.box(stdscr, y, 0, bottom - y, width, "Help")
+        lines = [
+            "opentab is a session browser, not a fuzzy-search toy.",
+            "",
+            "Navigation:",
+            "  Tab              flip focus between the Months and Days panels",
+            "  Enter / +        zoom the month/day detail; on the Sessions tab,",
+            "                   open the selected session (cost, models, subagents)",
+            "  Esc / Shift-Tab  step back out (session -> zoom -> browse)",
+            "  h/l              switch detail tabs (months: Overview/Models/Sessions;",
+            "                   days fold Models into Overview)",
+            "  j/k or Up/Down   move in the current list (or scroll detail)",
+            "  g/G              top / bottom",
+            "  [ / ]            narrow / widen the time range (7d ... all time)",
+            "  a                show all time",
+            "  s                cycle sort for the session lists",
+            "  /                filter sessions by title/project/id",
+            "  x                clear filter",
+            "  r                reload database",
+            "  q                quit",
+            "",
+            "Cost caveat:",
+            "  Cost is OpenCode's local attribution. Token-based billing (e.g. Copilot)",
+            "  still needs account-level reconciliation; unpriced tokens are flagged.",
+            "",
+            "Press any key to close help.",
+        ]
+        for i, line in enumerate(lines[: bottom - y - 3], y + 2):
+            self.write(
+                stdscr,
+                i,
+                2,
+                shorten(line, width - 4),
+                curses.color_pair(4) if line.endswith(":") else curses.A_NORMAL,
+            )
+
+    def range_label(self) -> str:
+        if self.custom_since or self.custom_until:
+            label = f"since {self.custom_since}" if self.custom_since else "from start"
+            if self.custom_until:
+                label += f" until {self.custom_until}"
+            return label
+        if self.range_days is None:
+            return "all time"
+        return f"last {self.range_days} days"
+
+    def box(self, stdscr: curses.window, y: int, x: int, h: int, w: int, title: str) -> None:
+        if h <= 1 or w <= 1:
+            return
+        stdscr.addch(y, x, curses.ACS_ULCORNER)
+        stdscr.addch(y, x + w - 1, curses.ACS_URCORNER)
+        stdscr.addch(y + h - 1, x, curses.ACS_LLCORNER)
+        stdscr.addch(y + h - 1, x + w - 1, curses.ACS_LRCORNER)
+        stdscr.hline(y, x + 1, curses.ACS_HLINE, w - 2)
+        stdscr.hline(y + h - 1, x + 1, curses.ACS_HLINE, w - 2)
+        stdscr.vline(y + 1, x, curses.ACS_VLINE, h - 2)
+        stdscr.vline(y + 1, x + w - 1, curses.ACS_VLINE, h - 2)
+        self.write(
+            stdscr, y, x + 2, f" {shorten(title, w - 6)} ", curses.color_pair(1) | curses.A_BOLD
+        )
+
+    def hline(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
+        stdscr.hline(y, x, curses.ACS_HLINE, max(0, w - 1))
+
+    def write(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
+        height, width = stdscr.getmaxyx()
+        if y < 0 or y >= height or x < 0 or x >= width:
+            return
+        try:
+            stdscr.addstr(y, x, text[: max(0, width - x - 1)], attr)
+        except curses.error:
+            pass
+
+    def write_rich(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
+        self.write(stdscr, y, x, text, attr)
+        if attr & curses.A_BOLD and text.startswith("# "):
+            return
+        for match in MONEY_PATTERN.finditer(text):
+            self.write(
+                stdscr, y, x + match.start(), match.group(0), curses.color_pair(3) | curses.A_BOLD
+            )
+        for match in TOKEN_PATTERN.finditer(text):
+            token_text = match.group(0)
+            self.write(stdscr, y, x + match.start(), token_text, self.token_attr(token_text))
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="opentab", description="opentab — OpenCode spend TUI")
+    parser.add_argument("--db", default=os.path.expanduser("~/.local/share/opencode/opencode.db"))
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="initial range in days (default: all time; change live with [ ])",
+    )
+    parser.add_argument("--since")
+    parser.add_argument("--until")
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="anonymize titles/paths and backfill synthetic prices "
+        "(for live demos and screenshots; never writes to the DB)",
+    )
+    return parser.parse_args()
+
+
+MIN_PYTHON = (3, 9)
+
+
+def main() -> int:
+    if sys.version_info < MIN_PYTHON:
+        raise SystemExit(
+            f"opentab requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ "
+            f"(found {sys.version_info[0]}.{sys.version_info[1]})."
+        )
+    args = parse_args()  # handles --help first, so it works even without curses
+    if curses is None:
+        raise SystemExit(
+            "opentab needs Python's curses module, which is not available on native Windows.\n"
+            "  - Recommended: run opentab under WSL (where OpenCode's database usually lives anyway).\n"
+            "  - Or on native Windows: pip install windows-curses (untested)."
+        )
+    if not os.path.exists(args.db):
+        raise SystemExit(f"OpenCode database not found: {args.db}")
+    store = Store(args.db, args)
+    app = App(store, args)
+    curses.wrapper(app.run)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

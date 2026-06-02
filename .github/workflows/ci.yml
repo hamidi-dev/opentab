@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Byte-compile
+        run: python -m py_compile opentab
+      - name: Smoke test --help
+        run: python opentab --help
+      - name: Unit tests
+        run: python test_opentab.py
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ruff
+        run: pip install ruff==0.1.15
+      - name: Lint
+        run: ruff check opentab test_opentab.py
+      - name: Format check
+        run: ruff format --check opentab test_opentab.py
+      - name: Shellcheck
+        run: shellcheck install.sh

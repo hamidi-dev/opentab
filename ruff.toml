@@ -1,0 +1,8 @@
+# opentab is a stdlib-only tool; ruff is dev-only tooling (not a runtime dep).
+target-version = "py39"
+line-length = 100
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# Long f-strings build fixed-width TUI columns; wrapping them would hurt, not help.
+ignore = ["E501"]
