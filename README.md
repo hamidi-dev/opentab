@@ -6,7 +6,7 @@ https://github.com/user-attachments/assets/6b63e1fc-effc-4b0f-bda1-7eb84f0b603f
 
 A local, dependency-free terminal UI for your [OpenCode](https://opencode.ai)
 spend. `opentab` reads OpenCode's own SQLite database and shows you exactly where
-your tokens and money went — by month, day, session, model, and subagent —
+your tokens and money went — by month, day, project, session, model, and subagent —
 including the recursive cost of every subagent a session spawned.
 
 No backend. No telemetry. No accounts. Just `curses` + `sqlite3` from the
@@ -17,7 +17,7 @@ Python standard library. No `pip install`, ever.
 - Session cost breakdown
 - Model attribution
 - Recursive subagent costs
-- Monthly and daily views
+- Monthly, daily, and project views
 - Local-only
 - Zero dependencies
 - Demo mode for screenshots
@@ -89,7 +89,7 @@ numbers are never mistaken for real ones.
 
 `opentab` opens on a stacked **Months / Days** sidebar (lazygit-style). `Tab` flips
 focus between the two panels. `Enter` **zooms** the focused month's or day's
-detail full-screen (Overview / Models / Sessions, switch with `h`/`l`). On the
+detail full-screen (Overview / Models / Projects / Sessions, switch with `h`/`l`). On the
 **Sessions** tab, `j`/`k` pick a session and `Enter` opens *that session's* own
 detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 
@@ -106,7 +106,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `[` / `]` | Narrow / widen the preset range (7d … all time) |
 | `R` | Set range (`all`, `30d`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`) |
 | `a` | Show all time |
-| `s` | Cycle sort for the session lists (cost / tokens / date / subagents / title) |
+| `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
 | `/` | Filter sessions by title/project/id; `Esc` cancels; `x` clears |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |

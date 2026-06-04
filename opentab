@@ -571,8 +571,8 @@ class Store:
 
 class App:
     workflow_tabs = ("Overview", "Models", "Subagents")
-    day_tabs = ("Overview", "Sessions")  # a day touches few models; folded into Overview
-    month_tabs = ("Overview", "Models", "Sessions")
+    day_tabs = ("Overview", "Projects", "Sessions")  # day models stay folded into Overview
+    month_tabs = ("Overview", "Models", "Projects", "Sessions")
     project_tabs = ("Overview", "Models", "Sessions")
     sort_options = ("cost", "tokens", "date", "subagents", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project")
@@ -738,8 +738,11 @@ class App:
 
     @property
     def projects(self) -> list[ProjectSummary]:
+        return self.projects_for_workflows(self.all_workflows)
+
+    def projects_for_workflows(self, workflows: list[Workflow]) -> list[ProjectSummary]:
         grouped: dict[str, list[Workflow]] = defaultdict(list)
-        for workflow in self.all_workflows:
+        for workflow in workflows:
             grouped[workflow.directory].append(workflow)
         projects = [
             ProjectSummary(
@@ -1016,15 +1019,25 @@ class App:
         tabs = self.current_tabs()
         return tabs[self.tab % len(tabs)] == "Subagents"
 
+    @property
+    def on_projects_tab(self) -> bool:
+        tabs = self.current_tabs()
+        return tabs[self.tab % len(tabs)] == "Projects"
+
+    def in_project_sort_context(self) -> bool:
+        return (self.view == "browse" and self.browse_mode == "projects") or (
+            self.view != "session" and self.on_projects_tab
+        )
+
     def can_sort_current_view(self) -> bool:
         return (
-            (self.view == "browse" and self.browse_mode == "projects")
+            self.in_project_sort_context()
             or (self.view != "session" and self.on_sessions_tab)
             or (self.view == "session" and self.on_subagents_tab)
         )
 
     def effective_sort_by(self) -> str | None:
-        if self.view == "browse" and self.browse_mode == "projects":
+        if self.in_project_sort_context():
             return (
                 self.project_sort_by
                 if self.project_sort_by in self.project_sort_options
@@ -1036,7 +1049,7 @@ class App:
         return self.sort_by if self.sort_by in options else options[0]
 
     def cycle_sort(self, step: int) -> None:
-        if self.view == "browse" and self.browse_mode == "projects":
+        if self.in_project_sort_context():
             options = self.project_sort_options
             current = options.index(self.project_sort_by) if self.project_sort_by in options else 0
             self.project_sort_by = options[(current + step) % len(options)]
@@ -1194,6 +1207,8 @@ class App:
                     return self.month_overview(month, content_width)
                 if current == "Models":
                     return self.month_models(month, content_width)
+                if current == "Projects":
+                    return self.month_projects(month, content_width)
                 return self.month_workflows(month, content_width)
 
             day = self.selected_day_summary
@@ -1202,6 +1217,8 @@ class App:
             current = self.current_tabs()[self.tab % len(self.current_tabs())]
             if current == "Overview":
                 return self.day_overview(day, content_width)
+            if current == "Projects":
+                return self.day_projects(day, content_width)
             return self.day_workflows(day, content_width)
 
         return []
@@ -1739,6 +1756,8 @@ class App:
             lines = self.month_overview(month, w - 4)
         elif current == "Models":
             lines = self.month_models(month, w - 4)
+        elif current == "Projects":
+            lines = self.month_projects(month, w - 4)
         else:
             lines = self.month_workflows(month, w - 4)
 
@@ -1812,6 +1831,8 @@ class App:
             return
         if current == "Overview":
             lines = self.day_overview(day, w - 4)
+        elif current == "Projects":
+            lines = self.day_projects(day, w - 4)
         else:
             lines = self.day_workflows(day, w - 4)
 
@@ -2133,6 +2154,22 @@ class App:
         agg = self.aggregate_models(self.workflows_for_project(project.directory))
         return self._model_table(self._agg_rows(agg), "# Project Model Spend", width)
 
+    def project_table(self, rows: list[ProjectSummary], title: str, width: int) -> list[str]:
+        lines = [title, self.project_header_text(width)]
+        if not rows:
+            lines.append("No projects.")
+            return lines
+        lines.extend(self.project_row_text(project, " ", width) for project in rows)
+        return lines
+
+    def month_projects(self, month: MonthSummary, width: int) -> list[str]:
+        projects = self.projects_for_workflows(self.workflows_for_month(month.month))
+        return self.project_table(projects, "# Monthly Projects", width)
+
+    def day_projects(self, day: DaySummary, width: int) -> list[str]:
+        projects = self.projects_for_workflows(self.workflows_for_day(day.day))
+        return self.project_table(projects, "# Day Projects", width)
+
     def project_workflows(self, project: ProjectSummary, width: int) -> list[str]:
         lines = [
             "# Project Sessions",
@@ -2256,8 +2293,8 @@ class App:
             "  Enter / +        zoom the month/day/project detail; on the Sessions tab,",
             "                   open the selected session (cost, models, subagents)",
             "  Esc / Shift-Tab  step back out (session -> zoom -> browse)",
-            "  h/l              switch detail tabs (months: Overview/Models/Sessions;",
-            "                   days fold Models into Overview)",
+            "  h/l              switch detail tabs (months: Overview/Models/Projects/Sessions;",
+            "                   days: Overview/Projects/Sessions)",
             "  j/k or Up/Down   move in the current list (or scroll detail)",
             "  g/G              top / bottom",
             "  [ / ]            narrow / widen preset range (7d ... all time)",

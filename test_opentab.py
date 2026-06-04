@@ -306,6 +306,54 @@ def test_project_sessions_s_keeps_session_sort():
     assert app.project_sort_by == "cost"
 
 
+def test_month_and_day_views_have_projects_tab():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+
+    app.focus = "months"
+    assert "Projects" in app.current_tabs()
+
+    app.focus = "days"
+    assert "Projects" in app.current_tabs()
+
+
+def test_month_projects_are_scoped_and_sortable():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, tokens=100, directory="/tmp/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=2, tokens=10, directory="/tmp/b"),
+            workflow("old", "2026-05-01 12:00:00", cost=99, tokens=999, directory="/tmp/old"),
+        ]
+    )
+    app.focus = "months"
+    app.tab = app.month_tabs.index("Projects")
+    app.project_sort_by = "tokens"
+
+    lines = app.month_projects(app.selected_month_summary, 100)
+
+    assert "/tmp/a" in lines[2]
+    assert "/tmp/b" in lines[3]
+    assert all("/tmp/old" not in line for line in lines)
+    assert app.handle_key(None, ord("s"))
+    assert app.project_sort_by == "sessions"
+    assert app.sort_by == "cost"
+
+
+def test_day_projects_are_scoped():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", directory="/tmp/a"),
+            workflow("b", "2026-06-02 12:00:00", directory="/tmp/b"),
+        ]
+    )
+    app.focus = "days"
+    app.tab = app.day_tabs.index("Projects")
+
+    lines = app.day_projects(app.selected_day_summary, 100)
+
+    assert any("/tmp/b" in line for line in lines)
+    assert all("/tmp/a" not in line for line in lines)
+
+
 def test_project_sessions_drill_into_session():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/a")])
     app.set_browse_mode("projects")
