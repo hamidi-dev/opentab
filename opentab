@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""opentab — a lazygit-style OpenCode spend browser.
+"""OpenTab — a lazygit-style OpenCode spend browser.
 
 No tmux. No fzf. No external Python packages. Just curses + sqlite.
 """
@@ -682,6 +682,10 @@ class App:
         self.sort_by = "cost"
         self.project_sort_by = "cost"
         self.notice = ""
+        # When set (in a month/day zoom), the Sessions list is narrowed to this
+        # project's sessions within the zoomed scope. Drilled into from the
+        # Projects tab; cleared on step-out or any scope change.
+        self.zoom_project: str | None = None
 
     @property
     def all_workflows(self) -> list[Workflow]:
@@ -708,6 +712,7 @@ class App:
         return sum(w.total_cost for w in self.all_workflows)
 
     def cycle_range(self, wider: bool) -> None:
+        self.zoom_project = None
         anchor = self.selection_anchor()
         self.custom_since = None
         self.custom_until = None
@@ -722,6 +727,7 @@ class App:
         self.notice = f"range: {self.range_label()}"
 
     def set_all_time(self) -> None:
+        self.zoom_project = None
         anchor = self.selection_anchor()
         self.custom_since = None
         self.custom_until = None
@@ -737,6 +743,7 @@ class App:
         return f"{self.range_days}d"
 
     def set_range_from_text(self, raw: str) -> None:
+        self.zoom_project = None
         anchor = self.selection_anchor()
         days, since, until = parse_range_text(raw)
         self.range_days = days
@@ -1004,6 +1011,7 @@ class App:
     def reload(self) -> None:
         self.loaded = self.store.workflows()
         self._load_model_cache()
+        self.zoom_project = None
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
         self.day_index = min(self.day_index, max(0, len(self.days) - 1))
         self.month_index = min(self.month_index, max(0, len(self.months) - 1))
@@ -1215,6 +1223,25 @@ class App:
             return 0, w - 2
         return BAR_CELLS, (w - 2) - (BAR_CELLS + 2)
 
+    def zoom_scope_workflows(self) -> list[Workflow]:
+        # The sessions in the currently zoomed month or day (time mode).
+        if self.focus == "months":
+            item = self.selected_month_summary
+            return self.workflows_for_month(item.month) if item else []
+        item = self.selected_day_summary
+        return self.workflows_for_day(item.day) if item else []
+
+    def zoom_projects(self) -> list[ProjectSummary]:
+        # Projects active within the zoomed month/day — the navigable Projects tab.
+        return self.projects_for_workflows(self.zoom_scope_workflows())
+
+    def zoom_selected_project(self) -> ProjectSummary | None:
+        rows = self.zoom_projects()
+        if not rows:
+            return None
+        self.project_index = max(0, min(self.project_index, len(rows) - 1))
+        return rows[self.project_index]
+
     def current_sessions(self) -> list[Workflow]:
         if self.browse_mode == "projects":
             item = self.selected_project_summary
@@ -1225,6 +1252,8 @@ class App:
         else:
             item = self.selected_day_summary
             rows = self.workflows_for_day(item.day) if item else []
+        if self.zoom_project and self.browse_mode != "projects":
+            rows = [w for w in rows if w.directory == self.zoom_project]
         if self.query:
             q = self.query.lower()
             rows = [
@@ -1309,6 +1338,7 @@ class App:
         self.focus = "days" if self.focus == "months" else "months"
         self.tab = 0
         self.scroll = 0
+        self.zoom_project = None
 
     def set_browse_mode(self, mode: str) -> None:
         if self.view == "session":
@@ -1320,6 +1350,7 @@ class App:
         self.tab = 0
         self.scroll = 0
         self.workflow_index = 0
+        self.zoom_project = None
 
     def drill_in(self) -> None:
         if self.view == "browse":
@@ -1334,6 +1365,18 @@ class App:
                 self.view = "zoom"
                 self.scroll = 0
                 self.workflow_index = 0
+                self.project_index = 0
+                self.zoom_project = None
+        elif self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
+            # Pick a project in a month/day zoom -> view its sessions in this scope.
+            project = self.zoom_selected_project()
+            if project is not None:
+                self.zoom_project = project.directory
+                tabs = self.current_tabs()
+                if "Sessions" in tabs:
+                    self.tab = tabs.index("Sessions")
+                self.workflow_index = 0
+                self.scroll = 0
         elif self.view == "zoom" and self.on_sessions_tab and self.current_session():
             self.view = "session"
             self.tab = 0
@@ -1345,7 +1388,14 @@ class App:
             tabs = self.current_tabs()  # land back on the Sessions tab we came from
             self.tab = tabs.index("Sessions") if "Sessions" in tabs else 0
         elif self.view == "zoom":
-            self.view = "browse"
+            if self.zoom_project and self.browse_mode != "projects":
+                # Leave a project's sessions, back to the Projects list of this zoom.
+                self.zoom_project = None
+                tabs = self.current_tabs()
+                self.tab = tabs.index("Projects") if "Projects" in tabs else 0
+            else:
+                self.view = "browse"
+                self.zoom_project = None
         self.scroll = 0
 
     def move(self, delta: int) -> None:
@@ -1356,6 +1406,10 @@ class App:
                 n = len(self.current_sessions())
                 if n:
                     self.workflow_index = max(0, min(self.workflow_index + delta, n - 1))
+            elif self.on_projects_tab and self.browse_mode != "projects":
+                n = len(self.zoom_projects())
+                if n:
+                    self.project_index = max(0, min(self.project_index + delta, n - 1))
             else:
                 self.scroll = max(0, self.scroll + delta)
         elif self.browse_mode == "projects":
@@ -1393,6 +1447,12 @@ class App:
             rows = self.current_sessions()
             if rows:
                 self.workflow_index = len(rows) - 1 if to_end else 0
+            return
+
+        if self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
+            rows = self.zoom_projects()
+            if rows:
+                self.project_index = len(rows) - 1 if to_end else 0
             return
 
         if not to_end:
@@ -1684,7 +1744,7 @@ class App:
 
     def draw_header(self, stdscr: curses.window, width: int) -> None:
         summary = self.store.summary(self.all_workflows)
-        title = " opentab "
+        title = " OpenTab "
         info = (
             f" {summary['workflows']} sessions "
             f"cost {money(float(summary['cost']))} "
@@ -1747,18 +1807,24 @@ class App:
                 segs.append(self.focused_month)
             if self.browse_mode != "projects" and self.focus == "days" and self.active_day:
                 segs.append(self.active_day)
+            if self.browse_mode != "projects" and self.zoom_project:
+                segs.append(short_path(self.zoom_project, 24))
             sess = self.current_session()
             segs.append(shorten(sess.title, 28) if sess else "session")
             segs.append(tab_name)
         elif self.focus == "months":
             if self.focused_month:
                 segs.append(self.focused_month)
+            if self.zoom_project and self.on_sessions_tab:
+                segs.append(short_path(self.zoom_project, 24))
             segs.append(tab_name)
         else:
             if self.focused_month:
                 segs.append(self.focused_month)
             if self.active_day:
                 segs.append(self.active_day)
+            if self.zoom_project and self.on_sessions_tab:
+                segs.append(short_path(self.zoom_project, 24))
             segs.append(tab_name)
         return sep.join(s for s in segs if s)
 
@@ -1902,6 +1968,36 @@ class App:
                 self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
         self.write(stdscr, cy, x + w - 22, "Enter: open session", curses.color_pair(1))
 
+    def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        # Navigable project list on the Projects tab of a zoomed month/day.
+        projects = self.zoom_projects()
+        cy = y + 3
+        header = self.project_header_text(w - 4)
+        self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
+        if not projects:
+            self.write(stdscr, cy + 1, x + 2, "No projects.", curses.color_pair(5))
+            return
+        visible = max(1, h - 5)
+        idx = max(0, min(self.project_index, len(projects) - 1))
+        start = max(0, min(idx - visible // 2, max(0, len(projects) - visible)))
+        for off, project in enumerate(projects[start : start + visible]):
+            ry = cy + 1 + off
+            marker = ">" if start + off == idx else " "
+            cost = money(project.cost)
+            tok = human_tokens(project.tokens)
+            text = self.project_row_text(project, marker, w - 4)
+            if start + off == idx:
+                self.write(
+                    stdscr,
+                    ry,
+                    x + 2,
+                    shorten(text, w - 4).ljust(w - 4),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
+        self.write(stdscr, cy, x + w - 24, "Enter: open sessions", curses.color_pair(1))
+
     def draw_month_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
     ) -> None:
@@ -2038,6 +2134,9 @@ class App:
         if current == "Sessions" and self.view == "zoom":
             self.draw_sessions_picker(stdscr, y, x, h, w)
             return
+        if current == "Projects" and self.view == "zoom":
+            self.draw_projects_picker(stdscr, y, x, h, w)
+            return
         if current == "Overview":
             lines = self.month_overview(month, w - 4)
         elif current == "Models":
@@ -2124,6 +2223,9 @@ class App:
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
             self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Projects" and self.view == "zoom":
+            self.draw_projects_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.day_overview(day, w - 4)
@@ -2592,13 +2694,14 @@ class App:
     def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         self.box(stdscr, y, 0, bottom - y, width, "Help")
         lines = [
-            "opentab is a session browser, not a fuzzy-search toy.",
+            "OpenTab is a session browser, not a fuzzy-search toy.",
             "",
             "Navigation:",
             "  p / t            switch to Projects / Time browse mode",
             "  Tab              flip focus between Months and Days in Time mode",
-            "  Enter / +        zoom the month/day/project detail; on the Sessions tab,",
-            "                   open the selected session (cost, models, subagents)",
+            "  Enter / +        zoom month/day/project detail; on the Sessions tab open the",
+            "                   selected session; on a zoom's Projects tab open that",
+            "                   project's sessions within the month/day",
             "  Esc              step back out (session -> zoom -> browse)",
             "  Shift-Tab        flip Months/Days while browsing; else step back out",
             "  h/l              switch detail tabs (months: Overview/Models/Projects/Sessions;",
@@ -2687,7 +2790,7 @@ class App:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="opentab", description="opentab — OpenCode spend TUI")
+    parser = argparse.ArgumentParser(prog="opentab", description="OpenTab — OpenCode spend TUI")
     parser.add_argument("--db", default=os.path.expanduser("~/.local/share/opencode/opencode.db"))
     parser.add_argument(
         "--days",
@@ -2766,13 +2869,13 @@ MIN_PYTHON = (3, 9)
 def main() -> int:
     if sys.version_info < MIN_PYTHON:
         raise SystemExit(
-            f"opentab requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ "
+            f"OpenTab requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ "
             f"(found {sys.version_info[0]}.{sys.version_info[1]})."
         )
     args = parse_args()  # handles --help first, so it works even without curses
     if curses is None:
         raise SystemExit(
-            "opentab needs Python's curses module, which is not available on native Windows.\n"
+            "OpenTab needs Python's curses module, which is not available on native Windows.\n"
             "  - Recommended: run opentab under WSL (where OpenCode's database usually lives anyway).\n"
             "  - Or on native Windows: pip install windows-curses (untested)."
         )
@@ -2781,7 +2884,7 @@ def main() -> int:
     store = Store(args.db, args)
     # The first load runs the recursive roll-up over the whole DB, which can take
     # a beat on a large database. Show a hint, then clear it before curses starts.
-    sys.stderr.write("opentab: loading OpenCode database…\r")
+    sys.stderr.write("OpenTab: loading OpenCode database…\r")
     sys.stderr.flush()
     app = App(store, args)
     sys.stderr.write(" " * 40 + "\r")

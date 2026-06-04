@@ -1,6 +1,6 @@
-# opentab
+# OpenTab
 
-> opencode keeps a tab. opentab opens it.
+> OpenCode keeps a tab. OpenTab opens it.
 
 https://github.com/user-attachments/assets/6b63e1fc-effc-4b0f-bda1-7eb84f0b603f
 
@@ -50,7 +50,7 @@ One line (installs `opentab` into `~/.local/bin`; re-run to update):
 curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/install.sh | bash
 ```
 
-Prefer not to pipe a script into your shell? opentab is a single
+Prefer not to pipe a script into your shell? OpenTab is a single
 self-contained file, so any of these work and are easy to audit first:
 
 ```sh

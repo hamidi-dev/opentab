@@ -391,6 +391,58 @@ def test_day_projects_are_scoped():
     assert all("/tmp/a" not in line for line in lines)
 
 
+def test_zoom_projects_tab_drills_into_scoped_sessions():
+    app = app_with(
+        [
+            workflow("a1", "2026-06-01 12:00:00", cost=1, directory="/tmp/a"),
+            workflow("a2", "2026-06-02 12:00:00", cost=2, directory="/tmp/a"),
+            workflow("b1", "2026-06-03 12:00:00", cost=5, directory="/tmp/b"),
+            workflow("old", "2026-05-01 12:00:00", cost=9, directory="/tmp/a"),
+        ]
+    )
+    app.focus = "months"
+    app.view = "browse"
+
+    app.drill_in()  # browse -> month zoom
+    assert app.view == "zoom"
+    app.tab = app.month_tabs.index("Projects")
+
+    # projects in scope are this month's only (no /tmp from May's "old")
+    assert {p.directory for p in app.zoom_projects()} == {"/tmp/a", "/tmp/b"}
+
+    # select /tmp/a (cost-sorted: b=5 first, a=3 second) and drill into its sessions
+    app.project_index = [p.directory for p in app.zoom_projects()].index("/tmp/a")
+    app.drill_in()
+
+    assert app.zoom_project == "/tmp/a"
+    assert app.on_sessions_tab
+    assert {w.id for w in app.current_sessions()} == {"a1", "a2"}  # June /tmp/a only
+
+    # Enter opens one of those sessions
+    app.drill_in()
+    assert app.view == "session"
+    assert app.current_session().directory == "/tmp/a"
+
+    # stepping back unwinds session -> project's sessions -> projects list -> browse
+    app.drill_out()
+    assert app.view == "zoom" and app.zoom_project == "/tmp/a" and app.on_sessions_tab
+    app.drill_out()
+    assert app.view == "zoom" and app.zoom_project is None and app.on_projects_tab
+    app.drill_out()
+    assert app.view == "browse"
+
+
+def test_zoom_project_scope_clears_on_scope_change():
+    app = app_with([workflow("a1", "2026-06-01 12:00:00", directory="/tmp/a")])
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.month_tabs.index("Projects")
+    app.drill_in()
+    assert app.zoom_project == "/tmp/a"
+    app.toggle_focus()  # flipping the months/days focus drops the project scope
+    assert app.zoom_project is None
+
+
 def test_project_sessions_drill_into_session():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/a")])
     app.set_browse_mode("projects")
