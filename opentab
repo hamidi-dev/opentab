@@ -190,6 +190,16 @@ class MonthSummary:
     unpriced_tokens: int
 
 
+@dataclass
+class ProjectSummary:
+    directory: str
+    workflows: int
+    cost: float
+    tokens: int
+    subagents: int
+    unpriced_tokens: int
+
+
 def money(value: float) -> str:
     return f"${value:,.2f}"
 
@@ -500,6 +510,7 @@ class App:
     workflow_tabs = ("Overview", "Models", "Subagents")
     day_tabs = ("Overview", "Sessions")  # a day touches few models; folded into Overview
     month_tabs = ("Overview", "Models", "Sessions")
+    project_tabs = ("Overview", "Models", "Sessions")
     sort_options = ("cost", "tokens", "date", "subagents", "title")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
 
@@ -519,10 +530,12 @@ class App:
         self.query = ""
         self.day_index = 0
         self.month_index = 0
+        self.project_index = 0
         self.workflow_index = 0  # selected session in a zoomed Sessions tab
         # Tab flips focus between the two left panels. Enter drills:
         # browse -> zoom (month/day detail) -> session (one session's detail).
         self.focus = "months"  # "months" | "days"
+        self.browse_mode = "time"  # "time" | "projects"
         self.view = "browse"  # "browse" | "zoom" | "session"
         self.tab = 0
         self.scroll = 0
@@ -566,6 +579,7 @@ class App:
     def _reset_indices(self) -> None:
         self.month_index = 0
         self.day_index = 0
+        self.project_index = 0
         self.workflow_index = 0
         self.scroll = 0
 
@@ -639,6 +653,24 @@ class App:
         return sorted(months, key=lambda m: m.month, reverse=True)
 
     @property
+    def projects(self) -> list[ProjectSummary]:
+        grouped: dict[str, list[Workflow]] = defaultdict(list)
+        for workflow in self.all_workflows:
+            grouped[workflow.directory].append(workflow)
+        projects = [
+            ProjectSummary(
+                directory=directory,
+                workflows=len(workflows),
+                cost=sum(w.total_cost for w in workflows),
+                tokens=sum(w.total_tokens for w in workflows),
+                subagents=sum(w.subagents for w in workflows),
+                unpriced_tokens=sum(w.unpriced_tokens for w in workflows),
+            )
+            for directory, workflows in grouped.items()
+        ]
+        return sorted(projects, key=lambda p: (p.cost, p.tokens), reverse=True)
+
+    @property
     def focused_month(self) -> str | None:
         rows = self.months
         if not rows:
@@ -670,14 +702,23 @@ class App:
         self.month_index = max(0, min(self.month_index, len(rows) - 1))
         return rows[self.month_index]
 
-    def selection_anchor(self) -> tuple[str | None, str | None, str | None]:
+    @property
+    def selected_project_summary(self) -> ProjectSummary | None:
+        rows = self.projects
+        if not rows:
+            return None
+        self.project_index = max(0, min(self.project_index, len(rows) - 1))
+        return rows[self.project_index]
+
+    def selection_anchor(self) -> tuple[str | None, str | None, str | None, str | None]:
         month = self.focused_month
         day = self.active_day if month else None
+        project = self.selected_project_summary
         session = self.current_session()
-        return month, day, session.id if session else None
+        return month, day, project.directory if project else None, session.id if session else None
 
-    def restore_selection(self, anchor: tuple[str | None, str | None, str | None]) -> None:
-        month, day, session_id = anchor
+    def restore_selection(self, anchor: tuple[str | None, str | None, str | None, str | None]) -> None:
+        month, day, project_dir, session_id = anchor
 
         month_rows = self.months
         if month and month_rows:
@@ -696,6 +737,15 @@ class App:
             )
         else:
             self.day_index = min(self.day_index, max(0, len(day_rows) - 1))
+
+        project_rows = self.projects
+        if project_dir and project_rows:
+            self.project_index = next(
+                (i for i, row in enumerate(project_rows) if row.directory == project_dir),
+                min(self.project_index, len(project_rows) - 1),
+            )
+        else:
+            self.project_index = min(self.project_index, max(0, len(project_rows) - 1))
 
         session_rows = self.current_sessions()
         if session_id and session_rows:
@@ -767,6 +817,7 @@ class App:
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
         self.day_index = min(self.day_index, max(0, len(self.days) - 1))
         self.month_index = min(self.month_index, max(0, len(self.months) - 1))
+        self.project_index = min(self.project_index, max(0, len(self.projects) - 1))
 
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
         sort_by = self.sort_by if self.sort_by in self.sort_options else self.sort_options[0]
@@ -792,18 +843,32 @@ class App:
             f"{human_tokens(day.tokens):>7} {day.workflows:>3} ses {day.subagents:>3} subs"
         )
 
+    def project_row_text(self, project: ProjectSummary, marker: str, width: int) -> str:
+        stats = (
+            f"{money(project.cost):>9} {human_tokens(project.tokens):>7} "
+            f"{project.workflows:>3} ses {project.subagents:>3} subs"
+        )
+        name_width = max(8, width - len(stats) - 4)
+        return f"{marker} {short_path(project.directory, name_width):{name_width}} {stats}"
+
     def list_width(self, rows_text: list[str], width: int) -> int:
         # Size a left list to its content; keep at least 44 cols for the detail pane.
         content = max((len(r) for r in rows_text), default=20)
         return max(24, min(content + 3, max(24, width - 44)))
 
     def browse_left_width(self, width: int) -> int:
+        if self.browse_mode == "projects":
+            rows = [self.project_row_text(p, ">", width) for p in self.projects]
+            return self.list_width(rows, width)
         rows = [self.month_row_text(m, ">") for m in self.months]
         rows += [self.day_row_text(d, ">") for d in self.panel_days]
         return self.list_width(rows, width)
 
     def current_sessions(self) -> list[Workflow]:
-        if self.focus == "months":
+        if self.browse_mode == "projects":
+            item = self.selected_project_summary
+            rows = self.workflows_for_project(item.directory) if item else []
+        elif self.focus == "months":
             item = self.selected_month_summary
             rows = self.workflows_for_month(item.month) if item else []
         else:
@@ -859,16 +924,31 @@ class App:
         self.scroll = 0
 
     def toggle_focus(self) -> None:
-        if self.view == "session":
+        if self.view == "session" or self.browse_mode == "projects":
             return
         self.focus = "days" if self.focus == "months" else "months"
         self.tab = 0
         self.scroll = 0
 
+    def set_browse_mode(self, mode: str) -> None:
+        if self.view == "session":
+            return
+        if mode == self.browse_mode:
+            return
+        self.browse_mode = mode
+        self.view = "browse"
+        self.tab = 0
+        self.scroll = 0
+        self.workflow_index = 0
+
     def drill_in(self) -> None:
         if self.view == "browse":
             item = (
-                self.selected_month_summary if self.focus == "months" else self.selected_day_summary
+                self.selected_project_summary
+                if self.browse_mode == "projects"
+                else self.selected_month_summary
+                if self.focus == "months"
+                else self.selected_day_summary
             )
             if item is not None:
                 self.view = "zoom"
@@ -898,6 +978,10 @@ class App:
                     self.workflow_index = max(0, min(self.workflow_index + delta, n - 1))
             else:
                 self.scroll = max(0, self.scroll + delta)
+        elif self.browse_mode == "projects":
+            n = len(self.projects)
+            if n:
+                self.project_index = max(0, min(self.project_index + delta, n - 1))
         elif self.focus == "months":
             n = len(self.months)
             if n:
@@ -910,7 +994,11 @@ class App:
 
     def jump(self, to_end: bool, stdscr: curses.window | None = None) -> None:
         if self.view == "browse":
-            if self.focus == "months":
+            if self.browse_mode == "projects":
+                rows = self.projects
+                if rows:
+                    self.project_index = len(rows) - 1 if to_end else 0
+            elif self.focus == "months":
                 rows = self.months
                 if rows:
                     self.month_index = len(rows) - 1 if to_end else 0
@@ -954,6 +1042,17 @@ class App:
             return self.detail_subagents(workflow, content_width)
 
         if self.view == "zoom":
+            if self.browse_mode == "projects":
+                project = self.selected_project_summary
+                if project is None:
+                    return []
+                current = self.current_tabs()[self.tab % len(self.current_tabs())]
+                if current == "Overview":
+                    return self.project_overview(project, content_width)
+                if current == "Models":
+                    return self.project_models(project, content_width)
+                return self.project_workflows(project, content_width)
+
             if self.focus == "months":
                 month = self.selected_month_summary
                 if month is None:
@@ -1017,6 +1116,12 @@ class App:
             return True
         if key == ord("a"):
             self.set_all_time()
+            return True
+        if key == ord("p"):
+            self.set_browse_mode("projects")
+            return True
+        if key == ord("t"):
+            self.set_browse_mode("time")
             return True
         if key == ord("s"):
             self.cycle_sort(1)
@@ -1105,12 +1210,19 @@ class App:
         elif self.view == "session":
             self.draw_detail(stdscr, top, 0, avail, width)
         elif self.view == "zoom":
-            if self.focus == "months":
+            if self.browse_mode == "projects":
+                self.draw_project_detail(stdscr, top, 0, avail, width)
+            elif self.focus == "months":
                 self.draw_month_detail(stdscr, top, 0, avail, width)
             else:
                 self.draw_day_detail(stdscr, top, 0, avail, width)
         else:
             left = self.browse_left_width(width)
+            if self.browse_mode == "projects":
+                self.draw_project_list(stdscr, top, 0, avail, left)
+                self.draw_project_detail(stdscr, top, left, avail, width - left)
+                stdscr.refresh()
+                return
             months_h = max(4, min(len(self.months) + 3, avail // 2))
             days_h = avail - months_h
             self.draw_month_list(stdscr, top, 0, months_h, left, active=self.focus == "months")
@@ -1170,10 +1282,21 @@ class App:
         tabs = self.current_tabs()
         tab_name = tabs[self.tab % len(tabs)]
         segs = [self.range_label()]
+        if self.browse_mode == "projects" and self.view != "session":
+            project = self.selected_project_summary
+            segs.append("projects")
+            if project:
+                segs.append(short_path(project.directory, 34))
+            segs.append(tab_name)
+            return sep.join(s for s in segs if s)
         if self.view == "session":
-            if self.focused_month:
+            if self.browse_mode == "projects":
+                project = self.selected_project_summary
+                if project:
+                    segs.append(short_path(project.directory, 34))
+            elif self.focused_month:
                 segs.append(self.focused_month)
-            if self.focus == "days" and self.active_day:
+            if self.browse_mode != "projects" and self.focus == "days" and self.active_day:
                 segs.append(self.active_day)
             sess = self.current_session()
             segs.append(shorten(sess.title, 28) if sess else "session")
@@ -1192,13 +1315,17 @@ class App:
 
     def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
         sort_key = "  s/S sort" if self.can_sort_current_view() else ""
-        keys = f" j/k move  Tab months/days  Enter in  Esc out  h/l tabs  [ / ] range  a all-time{sort_key}  / filter  ? help  q quit "
+        nav = "Tab months/days" if self.browse_mode == "time" else "Projects mode"
+        mode_key = "" if self.view == "session" else "p projects  t time"
+        keys = f" j/k move  {nav}  {mode_key}  Enter in  Esc out  h/l tabs  [ / ] range  a all-time{sort_key}  / filter  ? help  q quit "
         self.hline(stdscr, height - 2, 0, width)
         self.write(stdscr, height - 1, 0, shorten(keys, width - 1), curses.color_pair(4))
 
     def current_tabs(self) -> tuple[str, ...]:
         if self.view == "session":
             return self.workflow_tabs
+        if self.browse_mode == "projects":
+            return self.project_tabs
         return self.month_tabs if self.focus == "months" else self.day_tabs
 
     def current_sort_options(self) -> tuple[str, ...]:
@@ -1216,7 +1343,10 @@ class App:
         return f"{label} {'^' if key == 'title' else 'v'}"
 
     def session_started(self, workflow: Workflow) -> str:
-        return workflow.created_at[:10] if self.focus == "months" else workflow.created_at[11:16]
+        return workflow.created_at[:10] if self.browse_mode == "projects" or self.focus == "months" else workflow.created_at[11:16]
+
+    def session_date_label(self) -> str:
+        return "Started" if self.browse_mode == "projects" or self.focus == "months" else "Time"
 
     def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
         return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
@@ -1250,10 +1380,10 @@ class App:
             self.write(stdscr, y, x + token_pos, token_text, self.token_attr(token_text))
 
     def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        # Navigable session list on the Sessions tab of a zoomed month/day.
+        # Navigable session list on the Sessions tab of a zoomed month/day/project.
         sessions = self.current_sessions()
         cy = y + 3
-        date_label = "Started" if self.focus == "months" else "Time"
+        date_label = self.session_date_label()
         header = (
             f"  {self.sort_heading('date', date_label):<10} "
             f"{self.sort_heading('cost', 'Cost'):>9} "
@@ -1328,6 +1458,68 @@ class App:
                 )
             else:
                 self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
+
+    def draw_project_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        self.box(stdscr, y, x, h, w, "Projects ▸")
+        rows = self.projects
+        if not rows:
+            self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(5))
+            return
+
+        visible = h - 3
+        start = max(0, min(self.project_index - visible // 2, max(0, len(rows) - visible)))
+        for row_y, project in enumerate(rows[start : start + visible], y + 2):
+            selected = start + row_y - (y + 2) == self.project_index
+            marker = ">" if selected else " "
+            cost = money(project.cost)
+            tok = human_tokens(project.tokens)
+            text = self.project_row_text(project, marker, w - 2)
+            if selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, w - 2).ljust(w - 2),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
+
+    def draw_project_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        project = self.selected_project_summary
+        title = "Project" if project is None else f"Project {short_path(project.directory, max(10, w - 14))}"
+        self.box(stdscr, y, x, h, w, title)
+        if project is None:
+            self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(5))
+            return
+
+        tab_line = "  ".join(
+            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
+        )
+        self.write(
+            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
+        )
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Overview":
+            lines = self.project_overview(project, w - 4)
+        elif current == "Models":
+            lines = self.project_models(project, w - 4)
+        else:
+            lines = self.project_workflows(project, w - 4)
+
+        visible = h - 4
+        self.scroll = max(0, min(self.scroll, max(0, len(lines) - visible)))
+        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            )
+            if line.startswith("! "):
+                attr = curses.color_pair(5) | curses.A_BOLD
+            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
 
     def draw_month_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         month = self.selected_month_summary
@@ -1510,6 +1702,9 @@ class App:
         return [
             workflow for workflow in self.all_workflows if workflow.created_at.startswith(month)
         ]
+
+    def workflows_for_project(self, directory: str) -> list[Workflow]:
+        return [workflow for workflow in self.all_workflows if workflow.directory == directory]
 
     def aggregate_models(
         self, workflows: list[Workflow]
@@ -1707,6 +1902,62 @@ class App:
             )
         return lines
 
+    def project_overview(self, project: ProjectSummary, width: int) -> list[str]:
+        workflows = self.workflows_for_project(project.directory)
+        lines = [
+            "# Project Spend",
+            f"Project:         {short_path(project.directory, max(20, width - 17))}",
+            f"Cost:            {money(project.cost)}",
+            f"Tokens:          {tokens(project.tokens)}",
+            f"Sessions:        {project.workflows}",
+            f"Subagents:       {project.subagents}",
+            f"Unpriced tokens: {tokens(project.unpriced_tokens)}",
+        ]
+        if project.unpriced_tokens:
+            lines.extend(
+                [
+                    "",
+                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
+                ]
+            )
+        lines.extend(["", "# Top Models"])
+        agg = self.aggregate_models(workflows)
+        lines.extend(
+            self._top_models([(m, it["cost"], it["tokens"], it["runs"]) for m, it in agg], width)
+        )
+        lines.extend(["", "# Top Sessions"])
+        for workflow in self.top_sessions(workflows):
+            lines.append(
+                f"{workflow.created_at[:10]:<10} {money(workflow.total_cost):>10} "
+                f"{human_tokens(workflow.total_tokens):>8} agents {workflow.subagents:<3} "
+                f"{shorten(workflow.title, max(20, width - 44))}"
+            )
+        return lines
+
+    def project_models(self, project: ProjectSummary, width: int) -> list[str]:
+        agg = self.aggregate_models(self.workflows_for_project(project.directory))
+        return self._model_table(self._agg_rows(agg), "# Project Model Spend", width)
+
+    def project_workflows(self, project: ProjectSummary, width: int) -> list[str]:
+        lines = [
+            "# Project Sessions",
+            f"{self.sort_heading('date', 'Started'):<10} "
+            f"{self.sort_heading('cost', 'Cost'):>9} "
+            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('title', 'Title')}",
+        ]
+        for workflow in self.sorted_workflows(self.workflows_for_project(project.directory)):
+            lines.append(
+                f"{workflow.created_at[:10]:<10} "
+                f"{money(workflow.total_cost):>9} "
+                f"{human_tokens(workflow.total_tokens):>8} "
+                f"{workflow.subagents:>4} "
+                f"{workflow.model_count:>6}  "
+                f"{workflow.title}"
+            )
+        return lines
+
     def detail_overview(self, workflow: Workflow, width: int) -> list[str]:
         lines = [
             "# Session",
@@ -1805,8 +2056,9 @@ class App:
             "opentab is a session browser, not a fuzzy-search toy.",
             "",
             "Navigation:",
-            "  Tab              flip focus between the Months and Days panels",
-            "  Enter / +        zoom the month/day detail; on the Sessions tab,",
+            "  p / t            switch to Projects / Time browse mode",
+            "  Tab              flip focus between Months and Days in Time mode",
+            "  Enter / +        zoom the month/day/project detail; on the Sessions tab,",
             "                   open the selected session (cost, models, subagents)",
             "  Esc / Shift-Tab  step back out (session -> zoom -> browse)",
             "  h/l              switch detail tabs (months: Overview/Models/Sessions;",

@@ -14,11 +14,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ot = SourceFileLoader("opentab", os.path.join(HERE, "opentab")).load_module()
 
 
-def workflow(id, created_at, title=None, cost=1.0, tokens=100):
+def workflow(id, created_at, title=None, cost=1.0, tokens=100, directory="/tmp/project"):
     return ot.Workflow(
         id=id,
         title=title or id,
-        directory="/tmp/project",
+        directory=directory,
         created_at=created_at,
         root_cost=cost,
         total_cost=cost,
@@ -216,6 +216,58 @@ def test_subagents_tab_is_sortable_by_tokens():
 
     assert app.current_sort_options() == app.subagent_sort_options
     assert app.sorted_subagent_rows(rows)[0]["title"] == "a"
+
+
+def test_projects_are_grouped_and_sorted_by_cost():
+    app = app_with(
+        [
+            workflow("cheap", "2026-06-01 12:00:00", cost=1, directory="/tmp/a"),
+            workflow("expensive", "2026-06-02 12:00:00", cost=5, directory="/tmp/b"),
+            workflow("more", "2026-06-03 12:00:00", cost=2, directory="/tmp/a"),
+        ]
+    )
+
+    assert [p.directory for p in app.projects] == ["/tmp/b", "/tmp/a"]
+    assert app.projects[1].workflows == 2
+    assert app.projects[1].cost == 3
+
+
+def test_project_mode_sessions_use_selected_project():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, directory="/tmp/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=5, directory="/tmp/b"),
+        ]
+    )
+    app.set_browse_mode("projects")
+    app.tab = app.project_tabs.index("Sessions")
+
+    assert app.browse_mode == "projects"
+    assert app.current_tabs() == app.project_tabs
+    assert [w.id for w in app.current_sessions()] == ["b"]
+
+
+def test_project_sessions_drill_into_session():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/a")])
+    app.set_browse_mode("projects")
+    app.tab = app.project_tabs.index("Sessions")
+
+    app.drill_in()
+    app.drill_in()
+
+    assert app.view == "session"
+    assert app.current_session().id == "a"
+
+
+def test_p_and_t_switch_browse_modes_directly():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+
+    assert app.handle_key(None, ord("p"))
+    assert app.browse_mode == "projects"
+    assert app.handle_key(None, ord("p"))
+    assert app.browse_mode == "projects"
+    assert app.handle_key(None, ord("t"))
+    assert app.browse_mode == "time"
 
 
 def test_set_all_time_preserves_current_month_selection():
