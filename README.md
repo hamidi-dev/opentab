@@ -69,7 +69,7 @@ curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/opentab \
 
 ```sh
 opentab                          # open the browser, all time
-opentab --days 30                # start within a window (change live with [ ])
+opentab --days 30                # start within a window (change live with R)
 opentab --since 2026-05-01 --until 2026-05-31
 opentab --db /path/to/opencode.db  # default: ~/.local/share/opencode/opencode.db
 opentab --demo                   # safe for live demos / screenshots (see below)
@@ -107,7 +107,6 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `j`/`k` or arrows | Move in the current list / scroll detail |
 | `h`/`l` | Switch detail tabs |
 | `g` / `G` | Top / bottom |
-| `[` / `]` | Narrow / widen the preset range (7d … all time) |
 | `R` | Set range (`all`, `30d` or `30`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`) |
 | `a` | Show all time |
 | `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |

@@ -653,9 +653,6 @@ class App:
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
 
-    # Range windows for live cycling, widest -> narrowest. None means all time.
-    range_presets = (None, 365, 180, 90, 60, 30, 14, 7)
-
     def __init__(self, store: Store, args: argparse.Namespace):
         self.store = store
         self.args = args
@@ -710,21 +707,6 @@ class App:
 
     def range_cost_total(self) -> float:
         return sum(w.total_cost for w in self.all_workflows)
-
-    def cycle_range(self, wider: bool) -> None:
-        self.zoom_project = None
-        anchor = self.selection_anchor()
-        self.custom_since = None
-        self.custom_until = None
-        presets = self.range_presets
-        try:
-            i = presets.index(self.range_days)
-        except ValueError:
-            i = 0
-        i += -1 if wider else 1  # presets go widest -> narrowest
-        self.range_days = presets[max(0, min(i, len(presets) - 1))]
-        self.restore_selection(anchor)
-        self.notice = f"range: {self.range_label()}"
 
     def set_all_time(self) -> None:
         self.zoom_project = None
@@ -1558,12 +1540,6 @@ class App:
         if key == ord("+"):
             self.drill_in()
             return True
-        if key == ord("]"):
-            self.cycle_range(wider=True)
-            return True
-        if key == ord("["):
-            self.cycle_range(wider=False)
-            return True
         if key == ord("a"):
             self.set_all_time()
             return True
@@ -1842,7 +1818,7 @@ class App:
             parts.append("p/t mode")
         if self.can_sort_current_view():
             parts.append("s/S sort")
-        parts += ["[ ] range", "R range", "/ filter", "e export", "y copy", "o open"]
+        parts += ["R range", "a all-time", "/ filter", "e export", "y copy", "o open"]
         parts += ["? help", "q quit"]
         keys = "  ".join(parts)
         self.hline(stdscr, height - 2, 0, width)
@@ -2708,7 +2684,6 @@ class App:
             "                   days: Overview/Projects/Sessions)",
             "  j/k or Up/Down   move in the current list (or scroll detail)",
             "  g/G              top / bottom",
-            "  [ / ]            narrow / widen preset range (7d ... all time)",
             "  R                set range: all, 30d (or 30), 2m (~60d), 2026, 2026-05, start..end",
             "  a                show all time, keeping the current selection when possible",
             "  s / S            cycle sort forward / backward on visible lists",
@@ -2796,7 +2771,7 @@ def parse_args() -> argparse.Namespace:
         "--days",
         type=int,
         default=None,
-        help="initial range in days (default: all time; change live with [ ])",
+        help="initial range in days (default: all time; change live with R)",
     )
     parser.add_argument("--since")
     parser.add_argument("--until")
