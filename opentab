@@ -1841,7 +1841,7 @@ class Renderer:
         # dense (e.g. daily), bars pack in and x-ticks are spaced so they fit.
         if not pairs or height < 5:
             return ["Not enough room to chart."]
-        gutter = 10
+        gutter = 11  # fits a y-axis label like "$12,345.67 "
         plot_w = max(4, width - gutter)
         label_w = max((len(label) for label, _ in pairs), default=2)
         if len(pairs) * (label_w + 2) <= plot_w:
@@ -1854,15 +1854,12 @@ class Renderer:
         lead = (col_w - bar_w) // 2  # center the bar within its column
         peak = max((v for _, v in shown), default=0.0) or 1.0
         rows_n = max(2, height - 3)  # bars + baseline + x-ticks + summary
+        # y-axis gridline labels at peak, 3/4, 1/2, 1/4, 0 (deduped on short charts)
+        y_ticks = {round((1 - f) * (rows_n - 1)): peak * f for f in (1.0, 0.75, 0.5, 0.25, 0.0)}
         out = []
         for r in range(rows_n):
             rb = rows_n - 1 - r  # this row's index counting from the bottom
-            if r == 0:
-                gut = f"{money(peak):>{gutter - 1}} "
-            elif r == rows_n // 2:
-                gut = f"{money(peak / 2):>{gutter - 1}} "
-            else:
-                gut = " " * gutter
+            gut = f"{money(y_ticks[r]):>{gutter - 1}} " if r in y_ticks else " " * gutter
             cells = gut
             for _, v in shown:
                 full, rem = divmod(round((v / peak) * rows_n * 8), 8)
