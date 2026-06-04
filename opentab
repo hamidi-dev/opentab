@@ -543,6 +543,7 @@ class App:
         return [w for w in rows if w.created_at[:10] >= cutoff]
 
     def cycle_range(self, wider: bool) -> None:
+        anchor = self.selection_anchor()
         self.custom_since = None
         self.custom_until = None
         presets = self.range_presets
@@ -552,13 +553,14 @@ class App:
             i = 0
         i += -1 if wider else 1  # presets go widest -> narrowest
         self.range_days = presets[max(0, min(i, len(presets) - 1))]
-        self._reset_indices()
+        self.restore_selection(anchor)
 
     def set_all_time(self) -> None:
+        anchor = self.selection_anchor()
         self.custom_since = None
         self.custom_until = None
         self.range_days = None
-        self._reset_indices()
+        self.restore_selection(anchor)
 
     def _reset_indices(self) -> None:
         self.month_index = 0
@@ -666,6 +668,43 @@ class App:
             return None
         self.month_index = max(0, min(self.month_index, len(rows) - 1))
         return rows[self.month_index]
+
+    def selection_anchor(self) -> tuple[str | None, str | None, str | None]:
+        month = self.focused_month
+        day = self.active_day if month else None
+        session = self.current_session()
+        return month, day, session.id if session else None
+
+    def restore_selection(self, anchor: tuple[str | None, str | None, str | None]) -> None:
+        month, day, session_id = anchor
+
+        month_rows = self.months
+        if month and month_rows:
+            self.month_index = next(
+                (i for i, row in enumerate(month_rows) if row.month == month),
+                min(self.month_index, len(month_rows) - 1),
+            )
+        else:
+            self.month_index = min(self.month_index, max(0, len(month_rows) - 1))
+
+        day_rows = self.panel_days
+        if day and day_rows:
+            self.day_index = next(
+                (i for i, row in enumerate(day_rows) if row.day == day),
+                min(self.day_index, len(day_rows) - 1),
+            )
+        else:
+            self.day_index = min(self.day_index, max(0, len(day_rows) - 1))
+
+        session_rows = self.current_sessions()
+        if session_id and session_rows:
+            self.workflow_index = next(
+                (i for i, row in enumerate(session_rows) if row.id == session_id),
+                min(self.workflow_index, len(session_rows) - 1),
+            )
+        else:
+            self.workflow_index = min(self.workflow_index, max(0, len(session_rows) - 1))
+        self.scroll = 0
 
     def _load_model_cache(self) -> None:
         # root_id -> [ {model_name, runs, cost, tokens_total, cache_read, cache_write, output}, ... ]
@@ -789,6 +828,9 @@ class App:
         tabs = self.current_tabs()
         return tabs[self.tab % len(tabs)] == "Sessions"
 
+    def can_sort_current_view(self) -> bool:
+        return self.view != "session" and self.on_sessions_tab
+
     def toggle_focus(self) -> None:
         if self.view == "session":
             return
@@ -803,7 +845,6 @@ class App:
             )
             if item is not None:
                 self.view = "zoom"
-                self.tab = 0
                 self.scroll = 0
                 self.workflow_index = 0
         elif self.view == "zoom" and self.on_sessions_tab and self.current_session():
@@ -888,6 +929,8 @@ class App:
             return True
         if key == ord("s"):
             options = self.current_sort_options()
+            if not options:
+                return True
             if self.sort_by not in options:
                 self.sort_by = options[0]
             current = options.index(self.sort_by)
@@ -1020,7 +1063,7 @@ class App:
                 curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD,
             )
         drilled = self.view in ("zoom", "session")
-        trail = f"  ·  sort: {self.sort_by}"
+        trail = f"  ·  sort: {self.sort_by}" if self.can_sort_current_view() else ""
         if self.query:
             trail += f"  ·  filter: {self.query}"
         x = 0
@@ -1060,7 +1103,8 @@ class App:
         return sep.join(s for s in segs if s)
 
     def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
-        keys = " j/k move  Tab months/days  Enter in  Esc out  h/l tabs  [ / ] range  a all  s sort  / filter  ? help  q quit "
+        sort_key = "  s sort" if self.can_sort_current_view() else ""
+        keys = f" j/k move  Tab months/days  Enter in  Esc out  h/l tabs  [ / ] range  a all-time{sort_key}  / filter  ? help  q quit "
         self.hline(stdscr, height - 2, 0, width)
         self.write(stdscr, height - 1, 0, shorten(keys, width - 1), curses.color_pair(4))
 
@@ -1070,9 +1114,20 @@ class App:
         return self.month_tabs if self.focus == "months" else self.day_tabs
 
     def current_sort_options(self) -> tuple[str, ...]:
-        # Left-hand months/days are always date-sorted; sort only reorders the
-        # session lists shown on the right and in the workflows view.
-        return self.sort_options
+        # Left-hand months/days and non-session detail panes are fixed-order;
+        # sort only reorders visible session lists.
+        return self.sort_options if self.can_sort_current_view() else ()
+
+    def sort_heading(self, key: str, label: str) -> str:
+        if self.sort_by != key:
+            return label
+        return f"{label} {'^' if key == 'title' else 'v'}"
+
+    def session_started(self, workflow: Workflow) -> str:
+        return workflow.created_at[:10] if self.focus == "months" else workflow.created_at[11:16]
+
+    def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
+        return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
 
     def token_attr(self, token_text: str) -> int:
         if token_text.endswith("B"):
@@ -1106,11 +1161,19 @@ class App:
         # Navigable session list on the Sessions tab of a zoomed month/day.
         sessions = self.current_sessions()
         cy = y + 3
+        date_label = "Started" if self.focus == "months" else "Time"
+        header = (
+            f"  {self.sort_heading('date', date_label):<10} "
+            f"{self.sort_heading('cost', 'Cost'):>9} "
+            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{self.sort_heading('subagents', 'Subs'):>6}  "
+            f"{self.sort_heading('title', 'Title')}"
+        )
         self.write(
             stdscr,
             cy,
             x + 2,
-            shorten("    Cost     Tokens  Subs  Title", w - 4),
+            shorten(header, w - 4),
             curses.color_pair(4) | curses.A_BOLD,
         )
         if not sessions:
@@ -1122,9 +1185,10 @@ class App:
         for off, wf in enumerate(sessions[start : start + visible]):
             ry = cy + 1 + off
             marker = ">" if start + off == idx else " "
+            started = self.session_started(wf)
             cost = money(wf.total_cost)
             tok = human_tokens(wf.total_tokens)
-            text = f"{marker} {cost:>9} {tok:>8} {wf.subagents:>3}  {wf.title}"
+            text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  {wf.title}"
             if start + off == idx:
                 self.write(
                     stdscr,
@@ -1470,7 +1534,7 @@ class App:
             self._top_models([(m, it["cost"], it["tokens"], it["runs"]) for m, it in agg], width)
         )
         lines.extend(["", "# Top Sessions"])
-        for workflow in self.sorted_workflows(self.workflows_for_month(month.month)):
+        for workflow in self.top_sessions(self.workflows_for_month(month.month)):
             lines.append(
                 f"{money(workflow.total_cost):>10} {human_tokens(workflow.total_tokens):>8} "
                 f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 31))}"
@@ -1482,9 +1546,17 @@ class App:
         return self._model_table(self._agg_rows(agg), "# Monthly Model Spend", width)
 
     def month_workflows(self, month: MonthSummary, width: int) -> list[str]:
-        lines = ["# Monthly Sessions", "Cost       Tokens   Agts Models  Title"]
+        lines = [
+            "# Monthly Sessions",
+            f"{self.sort_heading('date', 'Started'):<10} "
+            f"{self.sort_heading('cost', 'Cost'):>9} "
+            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('title', 'Title')}",
+        ]
         for workflow in self.sorted_workflows(self.workflows_for_month(month.month)):
             lines.append(
+                f"{workflow.created_at[:10]:<10} "
                 f"{money(workflow.total_cost):>9} "
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>4} "
@@ -1516,7 +1588,7 @@ class App:
         lines.append("")
         lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
         lines.extend(["", "# Top Sessions"])
-        for workflow in self.sorted_workflows(self.workflows_for_day(day.day)):
+        for workflow in self.top_sessions(self.workflows_for_day(day.day)):
             lines.append(
                 f"{money(workflow.total_cost):>10} {human_tokens(workflow.total_tokens):>8} "
                 f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 31))}"
@@ -1524,9 +1596,17 @@ class App:
         return lines
 
     def day_workflows(self, day: DaySummary, width: int) -> list[str]:
-        lines = ["# Day Sessions", "Cost       Tokens   Agts Models  Title"]
+        lines = [
+            "# Day Sessions",
+            f"{self.sort_heading('date', 'Time'):<10} "
+            f"{self.sort_heading('cost', 'Cost'):>9} "
+            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('title', 'Title')}",
+        ]
         for workflow in self.sorted_workflows(self.workflows_for_day(day.day)):
             lines.append(
+                f"{workflow.created_at[11:16]:<10} "
                 f"{money(workflow.total_cost):>9} "
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>4} "
@@ -1618,8 +1698,8 @@ class App:
             "  j/k or Up/Down   move in the current list (or scroll detail)",
             "  g/G              top / bottom",
             "  [ / ]            narrow / widen the time range (7d ... all time)",
-            "  a                show all time",
-            "  s                cycle sort for the session lists",
+            "  a                show all time, keeping the current selection when possible",
+            "  s                cycle sort on visible Sessions tabs",
             "  /                filter sessions by title/project/id",
             "  x                clear filter",
             "  r                reload database",

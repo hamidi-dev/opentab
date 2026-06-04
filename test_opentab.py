@@ -14,6 +14,39 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ot = SourceFileLoader("opentab", os.path.join(HERE, "opentab")).load_module()
 
 
+def workflow(id, created_at, title=None, cost=1.0, tokens=100):
+    return ot.Workflow(
+        id=id,
+        title=title or id,
+        directory="/tmp/project",
+        created_at=created_at,
+        root_cost=cost,
+        total_cost=cost,
+        subagents=0,
+        model_count=1,
+        total_tokens=tokens,
+        unpriced_tokens=0,
+    )
+
+
+class FakeStore:
+    demo = False
+
+    def __init__(self, workflows):
+        self._workflows = workflows
+
+    def workflows(self):
+        return list(self._workflows)
+
+    def model_breakdown(self):
+        return []
+
+
+def app_with(workflows, since=None, until=None, days=None):
+    args = type("Args", (), {"since": since, "until": until, "days": days})()
+    return ot.App(FakeStore(workflows), args)
+
+
 def test_human_tokens():
     assert ot.human_tokens(999) == "999"
     assert ot.human_tokens(1_500) == "1.5k"
@@ -117,6 +150,49 @@ def test_reconcile_makes_models_sum_to_session_total():
     rows = app._model_by_root["r"]
     assert round(sum(r["cost"] for r in rows), 2) == 100.0
     assert sum(r["tokens_total"] for r in rows) == 1000
+
+
+def test_drill_in_preserves_visible_sessions_tab():
+    app = app_with([workflow("june", "2026-06-01 12:00:00")])
+    app.focus = "months"
+    app.view = "browse"
+    app.tab = app.month_tabs.index("Sessions")
+
+    app.drill_in()
+
+    assert app.view == "zoom"
+    assert app.on_sessions_tab
+
+
+def test_sort_only_changes_on_sessions_tab():
+    app = app_with([workflow("june", "2026-06-01 12:00:00")])
+    app.focus = "months"
+    app.view = "browse"
+    app.tab = app.month_tabs.index("Models")
+    app.sort_by = "cost"
+
+    assert app.handle_key(None, ord("s"))
+    assert app.sort_by == "cost"
+
+    app.tab = app.month_tabs.index("Sessions")
+    assert app.handle_key(None, ord("s"))
+    assert app.sort_by == "tokens"
+
+
+def test_set_all_time_preserves_current_month_selection():
+    app = app_with(
+        [
+            workflow("june", "2026-06-01 12:00:00"),
+            workflow("may", "2026-05-01 12:00:00"),
+        ],
+        since="2026-05-01",
+    )
+    app.focus = "months"
+    app.month_index = 1
+
+    app.set_all_time()
+
+    assert app.selected_month_summary.month == "2026-05"
 
 
 def test_store_reads_db_without_session_token_columns():
