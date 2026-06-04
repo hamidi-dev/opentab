@@ -7,6 +7,7 @@ No tmux. No fzf. No external Python packages. Just curses + sqlite.
 from __future__ import annotations
 
 import argparse
+import calendar
 import csv
 import json
 import os
@@ -242,6 +243,34 @@ def cost_bar(value: float, peak: float, cells: int = 8) -> str:
     return ("█" * full + BAR_EIGHTHS[rem]).ljust(cells)
 
 
+SPARK = "▁▂▃▄▅▆▇█"  # eight heights for a one-line trend
+
+
+def sparkline(values: list[float]) -> str:
+    # One char per point, scaled to the series peak. Zero points render as a gap
+    # (blank) so quiet days/months read as absence, not a tiny bar.
+    if not values:
+        return ""
+    peak = max(values)
+    if peak <= 0:
+        return " " * len(values)
+    return "".join(" " if v <= 0 else SPARK[round((v / peak) * (len(SPARK) - 1))] for v in values)
+
+
+def month_span(first: str, last: str) -> list[str]:
+    # Inclusive list of "YYYY-MM" from first to last, so a trend shows quiet
+    # months as gaps instead of skipping them.
+    y, m = int(first[:4]), int(first[5:7])
+    ly, lm = int(last[:4]), int(last[5:7])
+    out = []
+    while (y, m) <= (ly, lm):
+        out.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return out
+
+
 def copy_to_clipboard(text: str) -> bool:
     for cmd in (
         ["pbcopy"],
@@ -274,6 +303,33 @@ def open_path(path: str) -> bool:
         return True
     except OSError:
         return False
+
+
+def resolve_project_root(directory: str) -> str:
+    # Fold a git worktree into its main repo so feature worktrees don't show as
+    # separate projects. A linked worktree's `.git` is a FILE that reads
+    # "gitdir: <main>/.git/worktrees/<name>"; the main working dir is what comes
+    # before "/.git/worktrees/". Pure local read, no `git` needed; any miss
+    # (no dir, plain repo, bare/unusual layout) falls back to the directory.
+    try:
+        dotgit = os.path.join(os.path.expanduser(directory), ".git")
+        if not os.path.isfile(dotgit):
+            return directory
+        with open(dotgit) as fh:
+            line = fh.read(4096).strip()
+    except OSError:
+        return directory
+    if not line.startswith("gitdir:"):
+        return directory
+    gitdir = line[len("gitdir:") :].strip()
+    if not os.path.isabs(gitdir):
+        gitdir = os.path.normpath(os.path.join(os.path.expanduser(directory), gitdir))
+    marker = os.sep + ".git" + os.sep + "worktrees" + os.sep
+    if marker in gitdir:
+        main = gitdir[: gitdir.index(marker)]
+        if main:
+            return main
+    return directory
 
 
 def tokens(value: int) -> str:
@@ -1457,13 +1513,23 @@ class Renderer:
                     "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
                 ]
             )
+        month_ws = self.workflows_for_month(month.month)
+        by_day: dict[str, float] = defaultdict(float)
+        for w in month_ws:
+            by_day[w.created_at[:10]] += w.total_cost
+        ndays = calendar.monthrange(int(month.month[:4]), int(month.month[5:7]))[1]
+        series = [by_day.get(f"{month.month}-{d:02d}", 0.0) for d in range(1, ndays + 1)]
+        lines.extend(["", "# Daily Trend", sparkline(series)])
+        if by_day:
+            peak_day = max(by_day, key=by_day.get)
+            lines.append(f"days 1–{ndays}   peak {money(by_day[peak_day])} on {peak_day}")
         lines.extend(["", "# Top Models"])
-        agg = self.aggregate_models(self.workflows_for_month(month.month))
+        agg = self.aggregate_models(month_ws)
         lines.extend(
             self._top_models([(m, it["cost"], it["tokens"], it["runs"]) for m, it in agg], width)
         )
         lines.extend(["", "# Top Sessions"])
-        for workflow in self.top_sessions(self.workflows_for_month(month.month)):
+        for workflow in self.top_sessions(month_ws):
             lines.append(
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, month.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
@@ -1566,6 +1632,13 @@ class Renderer:
                     "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
                 ]
             )
+        by_month: dict[str, float] = defaultdict(float)
+        for w in workflows:
+            by_month[w.created_at[:7]] += w.total_cost
+        if by_month:
+            keys = sorted(by_month)
+            series = [by_month.get(m, 0.0) for m in month_span(keys[0], keys[-1])]
+            lines.extend(["", "# Monthly Trend", sparkline(series), f"{keys[0]} – {keys[-1]}"])
         lines.extend(["", "# Top Models"])
         agg = self.aggregate_models(workflows)
         lines.extend(
@@ -1729,6 +1802,8 @@ class Renderer:
             "  still needs account-level reconciliation; unpriced tokens are flagged.",
             "  Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price).",
             "  Range and sort are remembered between runs (~/.config/opentab; --no-state off).",
+            "  Git worktrees fold into their main repo (--no-worktrees to keep them split).",
+            "  Month/Project overviews show a spend sparkline (▁▂▃▅█) over time.",
             "",
             "Press any key to close help.",
         ]
@@ -1796,6 +1871,7 @@ class App:
         self.store = store
         self.args = args
         self.loaded = store.workflows()  # every root session, all time
+        self._resolve_project_roots()
         self._load_model_cache()
         # Active range: custom bounds from CLI take precedence, else a day window
         # (None = all). Default is all time so the Months panel is actually useful.
@@ -1952,6 +2028,21 @@ class App:
         # Always newest-first — left-hand nav is date-sorted.
         return sorted(months, key=lambda m: m.month, reverse=True)
 
+    def _resolve_project_roots(self) -> None:
+        # directory -> main-repo path, so git worktrees fold into their parent
+        # project. Resolved once per distinct directory at load (cheap; only the
+        # worktree dirs trigger a file read). Skipped for demo / --no-worktrees.
+        self._root_by_dir: dict[str, str] = {}
+        if self.store.demo or getattr(self.args, "no_worktrees", False):
+            return
+        for directory in {w.directory for w in self.loaded}:
+            root = resolve_project_root(directory)
+            if root != directory:
+                self._root_by_dir[directory] = root
+
+    def project_root(self, directory: str) -> str:
+        return self._root_by_dir.get(directory, directory)
+
     @property
     def projects(self) -> list[ProjectSummary]:
         return self.projects_for_workflows(self.all_workflows)
@@ -1959,7 +2050,7 @@ class App:
     def projects_for_workflows(self, workflows: list[Workflow]) -> list[ProjectSummary]:
         grouped: dict[str, list[Workflow]] = defaultdict(list)
         for workflow in workflows:
-            grouped[workflow.directory].append(workflow)
+            grouped[self.project_root(workflow.directory)].append(workflow)
         projects = [
             ProjectSummary(
                 directory=directory,
@@ -2140,6 +2231,7 @@ class App:
 
     def reload(self) -> None:
         self.loaded = self.store.workflows()
+        self._resolve_project_roots()
         self._load_model_cache()
         self.zoom_project = None
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
@@ -2324,7 +2416,7 @@ class App:
             item = self.selected_day_summary
             rows = self.workflows_for_day(item.day) if item else []
         if self.zoom_project and self.browse_mode != "projects":
-            rows = [w for w in rows if w.directory == self.zoom_project]
+            rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
         if self.query:
             q = self.query.lower()
             rows = [
@@ -2731,7 +2823,7 @@ class App:
         ]
 
     def workflows_for_project(self, directory: str) -> list[Workflow]:
-        return [workflow for workflow in self.all_workflows if workflow.directory == directory]
+        return [w for w in self.all_workflows if self.project_root(w.directory) == directory]
 
     def aggregate_models(
         self, workflows: list[Workflow]
@@ -2811,6 +2903,11 @@ def parse_args() -> argparse.Namespace:
         "--no-state",
         action="store_true",
         help="do not read or write the saved range/sort state (~/.config/opentab)",
+    )
+    parser.add_argument(
+        "--no-worktrees",
+        action="store_true",
+        help="do not fold git worktrees into their main repo (keep each path separate)",
     )
     return parser.parse_args()
 

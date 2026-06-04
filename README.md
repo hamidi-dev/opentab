@@ -19,6 +19,8 @@ Python standard library. No `pip install`, ever.
 - Recursive subagent costs
 - Monthly, daily, and project views
 - Cost-share percentages and inline spend bars
+- Spend-trend sparklines (daily per month, monthly per project)
+- Git worktrees folded into their main repo
 - CSV export of any view
 - Remembers your range and sort between runs
 - Local-only

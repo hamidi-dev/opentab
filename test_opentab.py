@@ -97,6 +97,53 @@ def test_bar_lane_keeps_the_bar_out_of_the_text_region():
     assert text_w == 38
 
 
+def test_sparkline():
+    assert ot.sparkline([]) == ""
+    assert ot.sparkline([0, 0]) == "  "  # no spend -> blanks, not bars
+    s = ot.sparkline([1, 2, 4, 8])
+    assert len(s) == 4 and s[-1] == "█"  # peak -> full block
+    assert all(ch in ot.SPARK for ch in s)
+    gapped = ot.sparkline([0, 5, 0])
+    assert gapped[0] == " " and gapped[2] == " " and gapped[1] == "█"
+
+
+def test_month_span():
+    assert ot.month_span("2026-05", "2026-05") == ["2026-05"]
+    assert ot.month_span("2025-11", "2026-02") == [
+        "2025-11",
+        "2025-12",
+        "2026-01",
+        "2026-02",
+    ]
+
+
+def test_resolve_project_root_folds_worktree():
+    with tempfile.TemporaryDirectory() as tmp:
+        main = os.path.join(tmp, "app")
+        os.makedirs(os.path.join(main, ".git", "worktrees", "feat"))
+        wt = os.path.join(tmp, "app-feat")
+        os.makedirs(wt)
+        with open(os.path.join(wt, ".git"), "w") as fh:
+            fh.write(f"gitdir: {main}/.git/worktrees/feat\n")
+        assert ot.resolve_project_root(wt) == main
+        # a real repo (.git is a directory) and unknown paths resolve to themselves
+        assert ot.resolve_project_root(main) == main
+        assert ot.resolve_project_root(os.path.join(tmp, "nope")) == os.path.join(tmp, "nope")
+
+
+def test_projects_group_worktrees_under_root():
+    app = app_with(
+        [
+            workflow("m", "2026-06-01 12:00:00", cost=1, directory="/repo/app"),
+            workflow("w", "2026-06-02 12:00:00", cost=2, directory="/repo/app-feat"),
+        ]
+    )
+    app._root_by_dir = {"/repo/app-feat": "/repo/app"}  # feat is a worktree of app
+    assert [p.directory for p in app.projects] == ["/repo/app"]
+    assert app.projects[0].workflows == 2 and app.projects[0].cost == 3
+    assert {w.id for w in app.workflows_for_project("/repo/app")} == {"m", "w"}
+
+
 def test_demo_cost_zero_and_deterministic():
     assert ot.demo_cost(0, "seed") == 0.0
     a = ot.demo_cost(1_000_000, "seed")
