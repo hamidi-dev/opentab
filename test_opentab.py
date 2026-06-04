@@ -558,12 +558,19 @@ def test_projects_drill_keeps_the_selected_project():
     assert app.selected_project_summary.directory == "/tmp/cheap"
 
 
-def test_list_width_is_capped():
-    app = app_with([workflow("a", "2026-06-01 12:00:00")])
-    # A very long row on a very wide terminal is capped, not left to eat the screen.
-    assert app.renderer.list_width(["x" * 200], 300) == ot.MAX_LIST_WIDTH
-    # Short content still sizes down to its own width (floored at 24).
-    assert app.renderer.list_width(["short"], 120) == 24
+def test_projects_panel_width_is_content_aware_and_bounded():
+    longpath = "/Users/x/deeply/nested/repo/with/a/very/long/path/indeed/and/more/sub"
+    wide = app_with([workflow("a", "2026-06-01 12:00:00", directory=longpath)])
+    wide.set_browse_mode("projects")
+    narrow = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x/y")])
+    narrow.set_browse_mode("projects")
+
+    # A long path widens the panel, but never past half the screen.
+    w = wide.renderer.projects_left_width(160)
+    assert w <= 160 // 2
+    assert w < 160 - 44  # not maxed to the screen
+    # A short-path list sizes down to its own (smaller) needs.
+    assert narrow.renderer.projects_left_width(160) < w
 
 
 def test_p_and_t_switch_browse_modes_directly():

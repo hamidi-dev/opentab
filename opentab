@@ -227,7 +227,6 @@ def pct(part: float, whole: float) -> str:
 
 
 BAR_CELLS = 8  # width of the inline spend bar lane in the Months/Days lists
-MAX_LIST_WIDTH = 56  # cap on the left list panel; long paths truncate, not widen
 BAR_EIGHTHS = " ▏▎▍▌▋▊▉"  # 0..7 eighths of a cell; a full cell is "█"
 
 
@@ -752,16 +751,21 @@ class Renderer:
         )
 
     def list_width(self, rows_text: list[str], width: int) -> int:
-        # Size a left list to its content, but never wider than it needs: keep at
-        # least 44 cols for the detail pane AND cap absolutely, so a few very long
-        # project paths (or a very wide terminal) don't let the list eat the screen.
+        # Size a left list to its content; keep at least 44 cols for the detail pane.
         content = max((len(r) for r in rows_text), default=20)
-        return max(24, min(content + 3, max(24, width - 44), MAX_LIST_WIDTH))
+        return max(24, min(content + 3, max(24, width - 44)))
+
+    def projects_left_width(self, width: int) -> int:
+        # Size to the longest (home-shortened) project path plus the stat columns,
+        # but never wider than half the screen — so it fits the content yet leaves
+        # the detail pane room. Long paths truncate inside the panel instead.
+        longest = max((len(short_path(p.directory, 999)) for p in self.projects), default=8)
+        natural = max(longest, len("Project")) + 39  # marker + Cost/Tokens/Ses/Subs
+        return max(24, min(natural, width // 2, max(24, width - 44)))
 
     def browse_left_width(self, width: int) -> int:
         if self.browse_mode == "projects":
-            rows = [self.project_row_text(p, ">", width) for p in self.projects]
-            return self.list_width(rows, width)
+            return self.projects_left_width(width)
         rows = [self.month_row_text(m, ">") for m in self.months]
         rows += [self.day_row_text(d, ">") for d in self.panel_days]
         # Size to the text, then reserve a lane for the inline spend bar (without

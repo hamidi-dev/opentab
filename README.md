@@ -39,6 +39,22 @@ parent/child subagent tree — into a plain SQLite file:
 That's the whole pitch: because it's a real database, you can *query your own
 AI usage*. `opentab` is what that looks like when you do.
 
+## What it touches
+
+Local-only, no network, no telemetry, no accounts — and it opens the OpenCode
+database **read-only**, so it physically cannot modify it. For full transparency,
+everything it touches, all on your own machine:
+
+- **Reads** the OpenCode SQLite DB (read-only). To fold git worktrees into their
+  main repo it also reads the `.git` file of project directories (no `git`
+  process is spawned; disable with `--no-worktrees`).
+- **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
+  range and sort; disable with `--no-state`), and — only when you press `e` — an
+  `opentab-*.csv` export in the current directory.
+- **Runs** external programs only on the key you press: your clipboard tool
+  (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for `y`, and your file opener
+  (`open`/`xdg-open`) for `o`. Both are disabled in `--demo`.
+
 ## Requirements
 
 Python **3.9+** (standard library only — no `pip install`, ever) and a Unix-like
