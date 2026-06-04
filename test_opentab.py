@@ -258,6 +258,23 @@ def test_project_list_s_cycles_project_sort():
     assert app.project_sort_by == "cost"
 
 
+def test_project_header_aligns_with_project_rows():
+    app = app_with(
+        [workflow("a", "2026-06-01 12:00:00", cost=12.34, tokens=1500, directory="/tmp/project")]
+    )
+    app.set_browse_mode("projects")
+    project = app.projects[0]
+    header = app.project_header_text(80)
+    row = app.project_row_text(project, ">", 80)
+
+    assert header.index("Cost") + len("Cost v") == row.index("$12.34") + len("$12.34")
+    assert header.index("Tokens") + len("Tokens") == row.index("1.5k") + len("1.5k")
+    assert header.index("Ses") + len("Ses") == row.index("  1 ses") + len("  1 ses")
+    assert header.index("Subs") + len("Subs") == row.index("  0 subs") + len("  0 subs")
+    assert len(header) <= 80
+    assert len(row) <= 80
+
+
 def test_project_mode_sessions_use_selected_project():
     app = app_with(
         [

@@ -861,13 +861,27 @@ class App:
             f"{human_tokens(day.tokens):>7} {day.workflows:>3} ses {day.subagents:>3} subs"
         )
 
+    @staticmethod
+    def project_name_width(width: int) -> int:
+        return max(8, width - 38)
+
     def project_row_text(self, project: ProjectSummary, marker: str, width: int) -> str:
-        stats = (
+        name_width = self.project_name_width(width)
+        return (
+            f"{marker} {short_path(project.directory, name_width):{name_width}} "
             f"{money(project.cost):>9} {human_tokens(project.tokens):>7} "
             f"{project.workflows:>3} ses {project.subagents:>3} subs"
         )
-        name_width = max(8, width - len(stats) - 4)
-        return f"{marker} {short_path(project.directory, name_width):{name_width}} {stats}"
+
+    def project_header_text(self, width: int) -> str:
+        name_width = self.project_name_width(width)
+        return (
+            f"  {self.project_sort_heading('project', 'Project'):{name_width}} "
+            f"{self.project_sort_heading('cost', 'Cost'):>9} "
+            f"{self.project_sort_heading('tokens', 'Tokens'):>7} "
+            f"{self.project_sort_heading('sessions', 'Ses'):>7} "
+            f"{self.project_sort_heading('subagents', 'Subs'):>8}"
+        )
 
     def list_width(self, rows_text: list[str], width: int) -> int:
         # Size a left list to its content; keep at least 44 cols for the detail pane.
@@ -1501,13 +1515,7 @@ class App:
             self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(5))
             return
 
-        header = (
-            f"  {self.project_sort_heading('project', 'Project'):<12} "
-            f"{self.project_sort_heading('cost', 'Cost'):>9} "
-            f"{self.project_sort_heading('tokens', 'Tokens'):>7} "
-            f"{self.project_sort_heading('sessions', 'Ses'):>5} "
-            f"{self.project_sort_heading('subagents', 'Subs'):>5}"
-        )
+        header = self.project_header_text(w - 2)
         self.write(stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD)
 
         visible = h - 4
