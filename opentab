@@ -735,7 +735,9 @@ class App:
         session = self.current_session()
         return month, day, project.directory if project else None, session.id if session else None
 
-    def restore_selection(self, anchor: tuple[str | None, str | None, str | None, str | None]) -> None:
+    def restore_selection(
+        self, anchor: tuple[str | None, str | None, str | None, str | None]
+    ) -> None:
         month, day, project_dir, session_id = anchor
 
         month_rows = self.months
@@ -933,15 +935,19 @@ class App:
         return tabs[self.tab % len(tabs)] == "Subagents"
 
     def can_sort_current_view(self) -> bool:
-        return (self.view == "browse" and self.browse_mode == "projects") or (
-            self.view != "session" and self.on_sessions_tab
-        ) or (
-            self.view == "session" and self.on_subagents_tab
+        return (
+            (self.view == "browse" and self.browse_mode == "projects")
+            or (self.view != "session" and self.on_sessions_tab)
+            or (self.view == "session" and self.on_subagents_tab)
         )
 
     def effective_sort_by(self) -> str | None:
         if self.view == "browse" and self.browse_mode == "projects":
-            return self.project_sort_by if self.project_sort_by in self.project_sort_options else self.project_sort_options[0]
+            return (
+                self.project_sort_by
+                if self.project_sort_by in self.project_sort_options
+                else self.project_sort_options[0]
+            )
         options = self.current_sort_options()
         if not options:
             return None
@@ -1392,7 +1398,11 @@ class App:
         return f"{label} {'^' if key == 'project' else 'v'}"
 
     def session_started(self, workflow: Workflow) -> str:
-        return workflow.created_at[:10] if self.browse_mode == "projects" or self.focus == "months" else workflow.created_at[11:16]
+        return (
+            workflow.created_at[:10]
+            if self.browse_mode == "projects" or self.focus == "months"
+            else workflow.created_at[11:16]
+        )
 
     def session_date_label(self) -> str:
         return "Started" if self.browse_mode == "projects" or self.focus == "months" else "Time"
@@ -1516,7 +1526,9 @@ class App:
             return
 
         header = self.project_header_text(w - 2)
-        self.write(stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD)
+        self.write(
+            stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD
+        )
 
         visible = h - 4
         start = max(0, min(self.project_index - visible // 2, max(0, len(rows) - visible)))
@@ -1539,7 +1551,11 @@ class App:
 
     def draw_project_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         project = self.selected_project_summary
-        title = "Project" if project is None else f"Project {short_path(project.directory, max(10, w - 14))}"
+        title = (
+            "Project"
+            if project is None
+            else f"Project {short_path(project.directory, max(10, w - 14))}"
+        )
         self.box(stdscr, y, x, h, w, title)
         if project is None:
             self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(5))

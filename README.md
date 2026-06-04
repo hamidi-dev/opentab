@@ -127,6 +127,31 @@ Native Windows (cmd/PowerShell) is not supported; it would need
 `pip install windows-curses`, which is untested here. `opentab` prints a short
 hint instead of crashing if `curses` is missing.
 
+## Development
+
+CI runs Ruff, unit tests, and ShellCheck. To use the same pre-push checks locally:
+
+```sh
+pip install ruff==0.1.15
+git config core.hooksPath hooks
+```
+
+Before pushing, the hook runs:
+
+```sh
+ruff check opentab test_opentab.py
+ruff format --check opentab test_opentab.py
+python3 -m py_compile opentab
+python3 test_opentab.py
+shellcheck install.sh hooks/pre-push  # when shellcheck is installed
+```
+
+To fix formatting manually:
+
+```sh
+ruff format opentab test_opentab.py
+```
+
 ## A note on cost accuracy
 
 The numbers come straight from OpenCode's own data (cost/tokens per message,
