@@ -5,7 +5,7 @@
 https://github.com/user-attachments/assets/6b63e1fc-effc-4b0f-bda1-7eb84f0b603f
 
 A local, dependency-free terminal UI for your [OpenCode](https://opencode.ai)
-spend. `opentab` reads OpenCode's own SQLite database and shows you exactly where
+spend. OpenTab reads OpenCode's own SQLite database and shows you exactly where
 your tokens and money went — by month, day, project, session, model, and subagent —
 including the recursive cost of every subagent a session spawned.
 
@@ -37,7 +37,7 @@ parent/child subagent tree — into a plain SQLite file:
 ```
 
 That's the whole pitch: because it's a real database, you can *query your own
-AI usage*. `opentab` is what that looks like when you do.
+AI usage*. OpenTab is what that looks like when you do.
 
 ## What it touches
 
@@ -108,7 +108,7 @@ The *shape* of your data stays real — token counts, model mix, and already-pri
 costs are untouched. A `DEMO — synthetic` tag shows in the header so synthetic
 numbers are never mistaken for real ones.
 
-`opentab` opens on a stacked **Months / Days** sidebar (lazygit-style). `Tab` flips
+OpenTab opens on a stacked **Months / Days** sidebar (lazygit-style). `Tab` flips
 focus between the two panels. `Enter` **zooms** the focused month's or day's
 detail full-screen (Overview / Models / Projects / Sessions, switch with `h`/`l`). On the
 **Sessions** tab, `j`/`k` pick a session and `Enter` opens *that session's* own
@@ -129,7 +129,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `a` | Show all time |
 | `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
 | `/` | Filter sessions (title/project/id) and the project list; `Esc` cancels; `x` clears |
-| `T` | Trends overlay — Daily / Monthly cost bar charts + Model spend ranking (`h`/`l` tabs) |
+| `T` | Trends overlay — Daily / Monthly cost charts + Model spend ranking (`h`/`l` tabs, `j`/`k` month) |
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
@@ -144,19 +144,19 @@ lists show a small bar scaled to the largest spend in view.
 
 ## Windows
 
-`opentab` uses Python's `curses`, which is **Unix-only** (not bundled with Windows
+OpenTab uses Python's `curses`, which is **Unix-only** (not bundled with Windows
 Python). The supported way to run it on Windows is **WSL** — and that's the
 natural fit, since OpenCode on Windows usually runs inside WSL, so its database
-already lives in the WSL filesystem where `opentab` can read it.
+already lives in the WSL filesystem where OpenTab can read it.
 
-If OpenCode's DB is somewhere non-standard, point `opentab` at it:
+If OpenCode's DB is somewhere non-standard, point OpenTab at it:
 
 ```sh
 opentab --db /path/to/opencode.db
 ```
 
 Native Windows (cmd/PowerShell) is not supported; it would need
-`pip install windows-curses`, which is untested here. `opentab` prints a short
+`pip install windows-curses`, which is untested here. OpenTab prints a short
 hint instead of crashing if `curses` is missing.
 
 ## Development
@@ -190,7 +190,7 @@ The numbers come straight from OpenCode's own data (cost/tokens per message,
 rolled up per session). They are *local attribution* of what OpenCode recorded.
 For providers with token-based or credit-based billing (e.g. GitHub Copilot),
 some sessions show tokens with a `$0.00` local cost — those need account-level
-reconciliation against your provider, not this tool. `opentab` surfaces these as
+reconciliation against your provider, not this tool. OpenTab surfaces these as
 "unpriced tokens" so you know where attribution is incomplete.
 
 ## Not affiliated

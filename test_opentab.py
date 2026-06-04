@@ -97,9 +97,9 @@ def test_bar_lane_keeps_the_bar_out_of_the_text_region():
     assert text_w == 38
 
 
-def test_day_and_month_range():
-    assert ot.day_range("2026-04-29", "2026-05-01") == ["2026-04-29", "2026-04-30", "2026-05-01"]
+def test_month_range():
     assert ot.month_range("2025-12", "2026-02") == ["2025-12", "2026-01", "2026-02"]
+    assert ot.month_range("2026-05", "2026-05") == ["2026-05"]
 
 
 def test_bar_chart_scales_labels_and_summarizes():
@@ -110,16 +110,43 @@ def test_bar_chart_scales_labels_and_summarizes():
     assert any("peak" in ln and "total" in ln and "avg" in ln for ln in lines)
 
 
-def test_trend_daily_charts_spend():
+def test_trend_daily_shows_one_navigable_month():
     app = app_with(
         [
-            workflow("a", "2026-06-01 12:00:00", cost=1),
-            workflow("b", "2026-06-03 12:00:00", cost=5),
+            workflow("jun", "2026-06-03 12:00:00", cost=5),
+            workflow("may", "2026-05-10 12:00:00", cost=2),
         ]
     )
+    # Default: most recent month (June)
+    app.trend_month_index = 0
     lines = app.renderer.trend_daily(80, 16)
-    assert lines[0].startswith("# Daily spend")
+    assert lines[0].startswith("# Daily spend · 2026-06")
     assert any("█" in ln for ln in lines) and any("peak" in ln for ln in lines)
+    # Navigating older shows the previous month (May)
+    app.trend_month_index = 1
+    assert app.renderer.trend_daily(80, 16)[0].startswith("# Daily spend · 2026-05")
+
+
+def test_trends_daily_month_navigation_keys():
+    app = app_with(
+        [
+            workflow("jun", "2026-06-01 12:00:00"),
+            workflow("may", "2026-05-01 12:00:00"),
+            workflow("apr", "2026-04-01 12:00:00"),
+        ]
+    )
+    app.handle_key(None, ord("T"))  # opens at newest month
+    assert app.trends and app.trend_tab == 0 and app.trend_month_index == 0
+    app.handle_key(None, ord("j"))  # older
+    assert app.trend_month_index == 1
+    app.handle_key(None, ord("j"))
+    assert app.trend_month_index == 2
+    app.handle_key(None, ord("j"))  # clamped at the oldest of 3 months
+    assert app.trend_month_index == 2
+    app.handle_key(None, ord("k"))  # newer
+    assert app.trend_month_index == 1
+    app.handle_key(None, ord("l"))  # switch to Monthly tab; still open
+    assert app.trends and app.trend_tab == 1
 
 
 def test_trend_models_ranks_priced_models():
@@ -151,7 +178,7 @@ def test_trends_overlay_toggles_and_switches_tabs():
     assert app.trend_tab == 1
     app.handle_key(None, ord("h"))
     assert app.trend_tab == 0
-    app.handle_key(None, ord("j"))  # any non-tab key closes the overlay
+    app.handle_key(None, 27)  # Esc (a non-nav key) closes the overlay
     assert not app.trends
 
 

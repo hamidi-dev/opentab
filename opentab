@@ -245,17 +245,6 @@ def cost_bar(value: float, peak: float, cells: int = 8) -> str:
 BLOCKS_UP = " ▁▂▃▄▅▆▇"  # 0..7 eighths, bottom-aligned — the top cell of a rising bar
 
 
-def day_range(first: str, last: str) -> list[str]:
-    # Inclusive list of "YYYY-MM-DD" so a chart's x-axis is continuous time.
-    d0 = datetime.strptime(first, "%Y-%m-%d")
-    d1 = datetime.strptime(last, "%Y-%m-%d")
-    out = []
-    while d0 <= d1:
-        out.append(d0.strftime("%Y-%m-%d"))
-        d0 += timedelta(days=1)
-    return out
-
-
 def month_range(first: str, last: str) -> list[str]:
     # Inclusive list of "YYYY-MM" so quiet months show as gaps, not skips.
     y, m = int(first[:4]), int(first[5:7])
@@ -1791,7 +1780,7 @@ class Renderer:
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
-            "  T                Trends overlay: Daily / Monthly / Models charts (h/l tabs)",
+            "  T                Trends overlay: Daily / Monthly / Models (h/l tabs; j/k month)",
             "  r                reload database",
             "  q                quit",
             "",
@@ -1820,10 +1809,17 @@ class Renderer:
         tabs = self.trend_tabs
         current = tabs[self.trend_tab % len(tabs)]
         tab_line = "  ".join(f"[{t}]" if t == current else f" {t} " for t in tabs)
-        self.write(
-            stdscr, y + 1, 2, shorten(tab_line, width - 30), curses.color_pair(1) | curses.A_BOLD
+        hint = (
+            "h/l tabs · j/k month · esc closes" if current == "Daily" else "h/l tabs · esc closes"
         )
-        self.write(stdscr, y + 1, width - 27, "h/l tabs · any key closes", curses.color_pair(4))
+        self.write(
+            stdscr,
+            y + 1,
+            2,
+            shorten(tab_line, width - len(hint) - 4),
+            curses.color_pair(1) | curses.A_BOLD,
+        )
+        self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
         content_h = h - 4
         if current == "Daily":
@@ -1911,20 +1907,23 @@ class Renderer:
         return out
 
     def trend_daily(self, width: int, height: int) -> list[str]:
-        by_day: dict[str, float] = defaultdict(float)
-        for w in self.all_workflows:
-            by_day[w.created_at[:10]] += w.total_cost
-        if not by_day:
+        # One calendar month at a time (navigate with j/k); the x-axis is the day
+        # of the month, so it stays readable instead of cramming the whole range.
+        months = sorted({w.created_at[:7] for w in self.all_workflows}, reverse=True)
+        if not months:
             return ["# Daily spend", "", "No spend in the active range."]
-        days = sorted(by_day)
-        # Cap the filled span so an all-time range doesn't build thousands of days;
-        # the Monthly tab is the long-horizon view.
-        last = days[-1]
-        start = max(
-            days[0], (datetime.strptime(last, "%Y-%m-%d") - timedelta(days=89)).strftime("%Y-%m-%d")
-        )
-        pairs = [(d[5:], by_day.get(d, 0.0)) for d in day_range(start, last)]
-        return ["# Daily spend (cost per day)", ""] + self._bar_chart(pairs, width, height - 2)
+        idx = max(0, min(self.trend_month_index, len(months) - 1))
+        month = months[idx]
+        ndays = int(month_bounds(month)[1][8:10])
+        by_day: dict[int, float] = defaultdict(float)
+        for w in self.all_workflows:
+            if w.created_at[:7] == month:
+                by_day[int(w.created_at[8:10])] += w.total_cost
+        pairs = [(str(d), by_day.get(d, 0.0)) for d in range(1, ndays + 1)]
+        title = f"# Daily spend · {month}"
+        if len(months) > 1:
+            title += f"   ({idx + 1}/{len(months)} — j/k older/newer month)"
+        return [title, ""] + self._bar_chart(pairs, width, height - 2)
 
     def trend_monthly(self, width: int, height: int) -> list[str]:
         by_month: dict[str, float] = defaultdict(float)
@@ -2032,6 +2031,7 @@ class App:
         self.help = False
         self.trends = False  # the Trends overlay (T); trend_tab selects its tab
         self.trend_tab = 0
+        self.trend_month_index = 0  # which month the Daily tab shows (0 = newest)
         self.sort_by = "cost"
         self.project_sort_by = "cost"
         self.notice = ""
@@ -2800,10 +2800,19 @@ class App:
             self.help = False
             return True
         if self.trends:
+            on_daily = self.trend_tabs[self.trend_tab % len(self.trend_tabs)] == "Daily"
             if key in (ord("h"), curses.KEY_LEFT):
                 self.trend_tab = (self.trend_tab - 1) % len(self.trend_tabs)
             elif key in (ord("l"), curses.KEY_RIGHT):
                 self.trend_tab = (self.trend_tab + 1) % len(self.trend_tabs)
+            elif key in (ord("j"), curses.KEY_DOWN, ord("["), ord("k"), curses.KEY_UP, ord("]")):
+                # Navigate the Daily tab's month; a no-op on the other tabs.
+                if on_daily:
+                    months = len({w.created_at[:7] for w in self.all_workflows})
+                    if key in (ord("j"), curses.KEY_DOWN, ord("[")):  # older
+                        self.trend_month_index = min(self.trend_month_index + 1, max(0, months - 1))
+                    else:  # newer (toward the present)
+                        self.trend_month_index = max(self.trend_month_index - 1, 0)
             else:
                 self.trends = False  # any other key closes the overlay
             return True
@@ -2815,6 +2824,7 @@ class App:
             return True
         if key == ord("T"):
             self.trends = True
+            self.trend_month_index = 0  # start at the most recent month
             return True
         if key == ord("r"):
             self.reload()
