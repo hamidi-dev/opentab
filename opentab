@@ -1086,7 +1086,8 @@ class Renderer:
                 )
             else:
                 self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
-        self.write(stdscr, cy, x + w - 22, "Enter: open session", curses.color_pair(1))
+        hint = "Enter: open session"
+        self.write(stdscr, y + 1, x + w - len(hint) - 2, hint, curses.color_pair(1))
 
     def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # Navigable project list on the Projects tab of a zoomed month/day.
@@ -1116,7 +1117,8 @@ class Renderer:
                 )
             else:
                 self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
-        self.write(stdscr, cy, x + w - 24, "Enter: open sessions", curses.color_pair(1))
+        hint = "Enter: open sessions"
+        self.write(stdscr, y + 1, x + w - len(hint) - 2, hint, curses.color_pair(1))
 
     def draw_month_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
