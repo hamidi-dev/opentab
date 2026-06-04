@@ -97,26 +97,6 @@ def test_bar_lane_keeps_the_bar_out_of_the_text_region():
     assert text_w == 38
 
 
-def test_sparkline():
-    assert ot.sparkline([]) == ""
-    assert ot.sparkline([0, 0]) == "  "  # no spend -> blanks, not bars
-    s = ot.sparkline([1, 2, 4, 8])
-    assert len(s) == 4 and s[-1] == "█"  # peak -> full block
-    assert all(ch in ot.SPARK for ch in s)
-    gapped = ot.sparkline([0, 5, 0])
-    assert gapped[0] == " " and gapped[2] == " " and gapped[1] == "█"
-
-
-def test_month_span():
-    assert ot.month_span("2026-05", "2026-05") == ["2026-05"]
-    assert ot.month_span("2025-11", "2026-02") == [
-        "2025-11",
-        "2025-12",
-        "2026-01",
-        "2026-02",
-    ]
-
-
 def test_resolve_project_root_folds_worktree():
     with tempfile.TemporaryDirectory() as tmp:
         main = os.path.join(tmp, "app")
@@ -129,6 +109,17 @@ def test_resolve_project_root_folds_worktree():
         # a real repo (.git is a directory) and unknown paths resolve to themselves
         assert ot.resolve_project_root(main) == main
         assert ot.resolve_project_root(os.path.join(tmp, "nope")) == os.path.join(tmp, "nope")
+
+
+def test_resolve_project_root_path_fallback_for_removed_worktree():
+    # The worktree directory no longer exists (only its sessions remain in the DB),
+    # so we cannot read its .git file — fold by the path convention instead.
+    assert (
+        ot.resolve_project_root("/Users/x/SoftwareProjects/mpvv/.worktrees/refactor")
+        == "/Users/x/SoftwareProjects/mpvv"
+    )
+    assert ot.resolve_project_root("/repo/.git/worktrees/feat") == "/repo"
+    assert ot.resolve_project_root("/Users/x/code/plain-repo") == "/Users/x/code/plain-repo"
 
 
 def test_projects_group_worktrees_under_root():

@@ -7,7 +7,6 @@ No tmux. No fzf. No external Python packages. Just curses + sqlite.
 from __future__ import annotations
 
 import argparse
-import calendar
 import csv
 import json
 import os
@@ -243,34 +242,6 @@ def cost_bar(value: float, peak: float, cells: int = 8) -> str:
     return ("█" * full + BAR_EIGHTHS[rem]).ljust(cells)
 
 
-SPARK = "▁▂▃▄▅▆▇█"  # eight heights for a one-line trend
-
-
-def sparkline(values: list[float]) -> str:
-    # One char per point, scaled to the series peak. Zero points render as a gap
-    # (blank) so quiet days/months read as absence, not a tiny bar.
-    if not values:
-        return ""
-    peak = max(values)
-    if peak <= 0:
-        return " " * len(values)
-    return "".join(" " if v <= 0 else SPARK[round((v / peak) * (len(SPARK) - 1))] for v in values)
-
-
-def month_span(first: str, last: str) -> list[str]:
-    # Inclusive list of "YYYY-MM" from first to last, so a trend shows quiet
-    # months as gaps instead of skipping them.
-    y, m = int(first[:4]), int(first[5:7])
-    ly, lm = int(last[:4]), int(last[5:7])
-    out = []
-    while (y, m) <= (ly, lm):
-        out.append(f"{y:04d}-{m:02d}")
-        m += 1
-        if m > 12:
-            m, y = 1, y + 1
-    return out
-
-
 def copy_to_clipboard(text: str) -> bool:
     for cmd in (
         ["pbcopy"],
@@ -307,28 +278,34 @@ def open_path(path: str) -> bool:
 
 def resolve_project_root(directory: str) -> str:
     # Fold a git worktree into its main repo so feature worktrees don't show as
-    # separate projects. A linked worktree's `.git` is a FILE that reads
-    # "gitdir: <main>/.git/worktrees/<name>"; the main working dir is what comes
-    # before "/.git/worktrees/". Pure local read, no `git` needed; any miss
-    # (no dir, plain repo, bare/unusual layout) falls back to the directory.
+    # separate projects. Two strategies, both pure local reads (no `git`):
+    #
+    #   1. Accurate: a linked worktree's `.git` is a FILE that reads
+    #      "gitdir: <main>/.git/worktrees/<name>" — the main working dir is what
+    #      comes before "/.git/worktrees/". Needs the worktree dir to still exist.
+    #   2. Path convention: fold ".../<repo>/.worktrees/<name>" (and the standard
+    #      ".git/worktrees/<name>") to <repo>. Works even when the worktree dir is
+    #      gone (a removed throwaway worktree still has sessions in the DB).
     try:
         dotgit = os.path.join(os.path.expanduser(directory), ".git")
-        if not os.path.isfile(dotgit):
-            return directory
-        with open(dotgit) as fh:
-            line = fh.read(4096).strip()
+        if os.path.isfile(dotgit):
+            with open(dotgit) as fh:
+                line = fh.read(4096).strip()
+            if line.startswith("gitdir:"):
+                gitdir = line[len("gitdir:") :].strip()
+                if not os.path.isabs(gitdir):
+                    gitdir = os.path.normpath(os.path.join(os.path.expanduser(directory), gitdir))
+                marker = os.sep + ".git" + os.sep + "worktrees" + os.sep
+                if marker in gitdir:
+                    main = gitdir[: gitdir.index(marker)]
+                    if main:
+                        return main
     except OSError:
-        return directory
-    if not line.startswith("gitdir:"):
-        return directory
-    gitdir = line[len("gitdir:") :].strip()
-    if not os.path.isabs(gitdir):
-        gitdir = os.path.normpath(os.path.join(os.path.expanduser(directory), gitdir))
-    marker = os.sep + ".git" + os.sep + "worktrees" + os.sep
-    if marker in gitdir:
-        main = gitdir[: gitdir.index(marker)]
-        if main:
-            return main
+        pass
+    for marker in (os.sep + ".worktrees" + os.sep, os.sep + ".git" + os.sep + "worktrees" + os.sep):
+        idx = directory.find(marker)
+        if idx > 0:
+            return directory[:idx]
     return directory
 
 
@@ -1521,15 +1498,6 @@ class Renderer:
                 ]
             )
         month_ws = self.workflows_for_month(month.month)
-        by_day: dict[str, float] = defaultdict(float)
-        for w in month_ws:
-            by_day[w.created_at[:10]] += w.total_cost
-        ndays = calendar.monthrange(int(month.month[:4]), int(month.month[5:7]))[1]
-        series = [by_day.get(f"{month.month}-{d:02d}", 0.0) for d in range(1, ndays + 1)]
-        lines.extend(["", "# Daily Trend", sparkline(series)])
-        if by_day:
-            peak_day = max(by_day, key=by_day.get)
-            lines.append(f"days 1–{ndays}   peak {money(by_day[peak_day])} on {peak_day}")
         lines.extend(["", "# Top Models"])
         agg = self.aggregate_models(month_ws)
         lines.extend(
@@ -1639,13 +1607,6 @@ class Renderer:
                     "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
                 ]
             )
-        by_month: dict[str, float] = defaultdict(float)
-        for w in workflows:
-            by_month[w.created_at[:7]] += w.total_cost
-        if by_month:
-            keys = sorted(by_month)
-            series = [by_month.get(m, 0.0) for m in month_span(keys[0], keys[-1])]
-            lines.extend(["", "# Monthly Trend", sparkline(series), f"{keys[0]} – {keys[-1]}"])
         lines.extend(["", "# Top Models"])
         agg = self.aggregate_models(workflows)
         lines.extend(
@@ -1810,7 +1771,6 @@ class Renderer:
             "  Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price).",
             "  Range and sort are remembered between runs (~/.config/opentab; --no-state off).",
             "  Git worktrees fold into their main repo (--no-worktrees to keep them split).",
-            "  Month/Project overviews show a spend sparkline (▁▂▃▅█) over time.",
             "",
             "Press any key to close help.",
         ]
