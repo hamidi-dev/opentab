@@ -52,6 +52,9 @@ MSG_TOKEN_TOTAL_EXPR = " + ".join(
 )
 TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?[kMB](?![A-Za-z0-9_])")
 MONEY_PATTERN = re.compile(r"\$\d+(?:,\d{3})*(?:\.\d+)?")
+DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
+YEAR_PATTERN = re.compile(r"^\d{4}$")
 
 # --- Demo mode: anonymize titles/paths and backfill synthetic prices so a live
 # demo (or a README screenshot) never leaks real session titles or work repo
@@ -238,6 +241,66 @@ def short_path(path: str, width: int) -> str:
     if width <= 4:
         return path[-width:]
     return "..." + path[-(width - 3) :]
+
+
+def parse_range_text(raw: str) -> tuple[int | None, str | None, str | None]:
+    value = raw.strip().lower()
+    if value in ("", "a", "all", "all time", "all-time"):
+        return None, None, None
+
+    duration_match = re.fullmatch(
+        r"(?:last\s+)?(\d+)\s*(d(?:ays?)?|m(?:onths?)?|y(?:ears?)?)", value
+    )
+    if duration_match:
+        amount = int(duration_match.group(1))
+        unit = duration_match.group(2)[0]
+        if amount <= 0:
+            raise ValueError("range amount must be greater than 0")
+        days = amount * {"d": 1, "m": 30, "y": 365}[unit]
+        return days, None, None
+
+    if ".." in value:
+        since, until = (part.strip() or None for part in value.split("..", 1))
+        if since:
+            validate_date(since)
+        if until:
+            validate_date(until)
+        if since and until and since > until:
+            raise ValueError("since date must be before until date")
+        return None, since, until
+
+    if DATE_PATTERN.fullmatch(value):
+        validate_date(value)
+        return None, value, None
+
+    if MONTH_PATTERN.fullmatch(value):
+        return None, *month_bounds(value)
+
+    if YEAR_PATTERN.fullmatch(value):
+        return None, f"{value}-01-01", f"{value}-12-31"
+
+    raise ValueError("use all, 30d, 2m, 1y, YYYY, YYYY-MM, YYYY-MM-DD, or start..end")
+
+
+def validate_date(value: str) -> None:
+    if not DATE_PATTERN.fullmatch(value):
+        raise ValueError("use all, 30d, YYYY-MM-DD, or YYYY-MM-DD..YYYY-MM-DD")
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError(f"invalid date: {value}") from exc
+
+
+def month_bounds(value: str) -> tuple[str, str]:
+    try:
+        start = datetime.strptime(value, "%Y-%m")
+    except ValueError as exc:
+        raise ValueError(f"invalid month: {value}") from exc
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1) - timedelta(days=1)
+    else:
+        end = start.replace(month=start.month + 1) - timedelta(days=1)
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
 
 class Store:
@@ -543,6 +606,7 @@ class App:
         self.help = False
         self.sort_by = "cost"
         self.project_sort_by = "cost"
+        self.notice = ""
 
     @property
     def all_workflows(self) -> list[Workflow]:
@@ -570,6 +634,7 @@ class App:
         i += -1 if wider else 1  # presets go widest -> narrowest
         self.range_days = presets[max(0, min(i, len(presets) - 1))]
         self.restore_selection(anchor)
+        self.notice = f"range: {self.range_label()}"
 
     def set_all_time(self) -> None:
         anchor = self.selection_anchor()
@@ -577,6 +642,23 @@ class App:
         self.custom_until = None
         self.range_days = None
         self.restore_selection(anchor)
+        self.notice = "range: all time"
+
+    def range_input_value(self) -> str:
+        if self.custom_since or self.custom_until:
+            return f"{self.custom_since or ''}..{self.custom_until or ''}"
+        if self.range_days is None:
+            return "all"
+        return f"{self.range_days}d"
+
+    def set_range_from_text(self, raw: str) -> None:
+        anchor = self.selection_anchor()
+        days, since, until = parse_range_text(raw)
+        self.range_days = days
+        self.custom_since = since
+        self.custom_until = until
+        self.restore_selection(anchor)
+        self.notice = f"range: {self.range_label()}"
 
     def _reset_indices(self) -> None:
         self.month_index = 0
@@ -1167,6 +1249,9 @@ class App:
         if key == ord("a"):
             self.set_all_time()
             return True
+        if key == ord("R"):
+            self.prompt_range(stdscr)
+            return True
         if key == ord("p"):
             self.set_browse_mode("projects")
             return True
@@ -1185,6 +1270,7 @@ class App:
         if key == ord("x"):
             self.query = ""
             self.workflow_index = 0
+            self.notice = "filter cleared"
             return True
         if key == ord("\t"):
             self.toggle_focus()
@@ -1224,20 +1310,59 @@ class App:
         return True
 
     def prompt_filter(self, stdscr: curses.window) -> None:
-        height, width = stdscr.getmaxyx()
-        prompt = "Filter sessions: "
-        curses.curs_set(1)
-        stdscr.addstr(height - 1, 0, " " * (width - 1))
-        stdscr.addstr(height - 1, 0, prompt, curses.color_pair(1) | curses.A_BOLD)
-        stdscr.refresh()
-        curses.echo()
+        value = self.prompt_text(stdscr, "Filter title/project/id (Esc cancels): ", self.query)
+        if value is None:
+            return
+        self.query = value.strip()
+        self.workflow_index = 0
+        self.notice = "filter cleared" if not self.query else f"filter: {self.query}"
+
+    def prompt_range(self, stdscr: curses.window) -> None:
+        value = self.prompt_text(
+            stdscr,
+            "Range all | 30d | 2m | 2026 | 2026-05 | start..end (Esc cancels): ",
+            self.range_input_value(),
+        )
+        if value is None:
+            return
         try:
-            raw = stdscr.getstr(height - 1, len(prompt), max(1, width - len(prompt) - 1))
-            self.query = raw.decode("utf-8", errors="ignore").strip()
-            self.workflow_index = 0
+            self.set_range_from_text(value)
+        except ValueError as exc:
+            self.notice = f"range error: {exc}"
+
+    def prompt_text(self, stdscr: curses.window, prompt: str, initial: str = "") -> str | None:
+        height, width = stdscr.getmaxyx()
+        max_len = max(1, width - len(prompt) - 1)
+        value = initial
+        curses.curs_set(1)
+        try:
+            while True:
+                stdscr.addstr(height - 1, 0, " " * (width - 1))
+                stdscr.addstr(height - 1, 0, prompt, curses.color_pair(1) | curses.A_BOLD)
+                shown = shorten(value, max_len)
+                stdscr.addstr(height - 1, len(prompt), shown)
+                stdscr.move(height - 1, min(width - 2, len(prompt) + len(shown)))
+                stdscr.refresh()
+
+                value, done, cancelled = self.filter_prompt_step(value, stdscr.getch(), max_len)
+                if cancelled:
+                    return None
+                if done:
+                    return value
         finally:
-            curses.noecho()
             curses.curs_set(0)
+
+    @staticmethod
+    def filter_prompt_step(value: str, key: int, max_len: int) -> tuple[str, bool, bool]:
+        if key == 27:  # Esc cancels without changing the current filter.
+            return value, False, True
+        if key in (10, 13, curses.KEY_ENTER):
+            return value, True, False
+        if key in (curses.KEY_BACKSPACE, 127, 8):
+            return value[:-1], False, False
+        if 32 <= key <= 126 and len(value) < max_len:
+            return value + chr(key), False, False
+        return value, False, False
 
     def draw(self, stdscr: curses.window) -> None:
         stdscr.erase()
@@ -1316,6 +1441,8 @@ class App:
         trail = f"  ·  sort: {sort_by}" if sort_by else ""
         if self.query:
             trail += f"  ·  filter: {self.query}"
+        if self.notice:
+            trail += f"  ·  {self.notice}"
         x = 0
         if drilled:
             chip = " ZOOM "
@@ -1367,7 +1494,7 @@ class App:
         sort_key = "  s/S sort" if self.can_sort_current_view() else ""
         nav = "Tab months/days" if self.browse_mode == "time" else "Projects mode"
         mode_key = "" if self.view == "session" else "p projects  t time"
-        keys = f" j/k move  {nav}  {mode_key}  Enter in  Esc out  h/l tabs  [ / ] range  a all-time{sort_key}  / filter  ? help  q quit "
+        keys = f" j/k move  {nav}  {mode_key}  Enter in  Esc out  h/l tabs  [ ] presets  R range  a all-time{sort_key}  / filter  ? help  q quit "
         self.hline(stdscr, height - 2, 0, width)
         self.write(stdscr, height - 1, 0, shorten(keys, width - 1), curses.color_pair(4))
 
@@ -2133,10 +2260,11 @@ class App:
             "                   days fold Models into Overview)",
             "  j/k or Up/Down   move in the current list (or scroll detail)",
             "  g/G              top / bottom",
-            "  [ / ]            narrow / widen the time range (7d ... all time)",
+            "  [ / ]            narrow / widen preset range (7d ... all time)",
+            "  R                set range: all, 30d, 2m, 2026, 2026-05, or start..end",
             "  a                show all time, keeping the current selection when possible",
             "  s / S            cycle sort forward / backward on visible lists",
-            "  /                filter sessions by title/project/id",
+            "  /                filter sessions by title/project/id (Esc cancels)",
             "  x                clear filter",
             "  r                reload database",
             "  q                quit",

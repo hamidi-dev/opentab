@@ -103,10 +103,11 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `j`/`k` or arrows | Move in the current list / scroll detail |
 | `h`/`l` | Switch detail tabs |
 | `g` / `G` | Top / bottom |
-| `[` / `]` | Narrow / widen the time range (7d … all time) |
+| `[` / `]` | Narrow / widen the preset range (7d … all time) |
+| `R` | Set range (`all`, `30d`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`) |
 | `a` | Show all time |
 | `s` | Cycle sort for the session lists (cost / tokens / date / subagents / title) |
-| `/` | Filter; `x` clears |
+| `/` | Filter sessions by title/project/id; `Esc` cancels; `x` clears |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 

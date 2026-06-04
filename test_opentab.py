@@ -329,6 +329,72 @@ def test_p_and_t_switch_browse_modes_directly():
     assert app.browse_mode == "time"
 
 
+def test_filter_prompt_escape_cancels():
+    value, done, cancelled = ot.App.filter_prompt_step("old", 27, 20)
+
+    assert value == "old"
+    assert not done
+    assert cancelled
+
+
+def test_filter_prompt_editing():
+    value, done, cancelled = ot.App.filter_prompt_step("ho", ord("m"), 20)
+    assert (value, done, cancelled) == ("hom", False, False)
+
+    value, done, cancelled = ot.App.filter_prompt_step(value, 127, 20)
+    assert (value, done, cancelled) == ("ho", False, False)
+
+    value, done, cancelled = ot.App.filter_prompt_step(value, 10, 20)
+    assert (value, done, cancelled) == ("ho", True, False)
+
+
+def test_parse_range_text():
+    assert ot.parse_range_text("all") == (None, None, None)
+    assert ot.parse_range_text("30d") == (30, None, None)
+    assert ot.parse_range_text("2m") == (60, None, None)
+    assert ot.parse_range_text("1y") == (365, None, None)
+    assert ot.parse_range_text("last 14 days") == (14, None, None)
+    assert ot.parse_range_text("last 2 months") == (60, None, None)
+    assert ot.parse_range_text("2026") == (None, "2026-01-01", "2026-12-31")
+    assert ot.parse_range_text("2026-05") == (None, "2026-05-01", "2026-05-31")
+    assert ot.parse_range_text("2024-02") == (None, "2024-02-01", "2024-02-29")
+    assert ot.parse_range_text("2026-05-01") == (None, "2026-05-01", None)
+    assert ot.parse_range_text("2026-05-01..2026-05-31") == (
+        None,
+        "2026-05-01",
+        "2026-05-31",
+    )
+    assert ot.parse_range_text("..2026-05-31") == (None, None, "2026-05-31")
+
+
+def test_parse_range_text_rejects_bad_input():
+    for value in ("0d", "0m", "2026-13", "2026-02-31", "banana", "2026-06-01..2026-05-01"):
+        try:
+            ot.parse_range_text(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"accepted invalid range: {value}")
+
+
+def test_set_range_from_text_preserves_selection():
+    app = app_with(
+        [
+            workflow("june", "2026-06-01 12:00:00"),
+            workflow("may", "2026-05-01 12:00:00"),
+        ]
+    )
+    app.focus = "months"
+    app.month_index = 1
+
+    app.set_range_from_text("2026-05-01..2026-06-30")
+
+    assert app.custom_since == "2026-05-01"
+    assert app.custom_until == "2026-06-30"
+    assert app.range_days is None
+    assert app.selected_month_summary.month == "2026-05"
+
+
 def test_set_all_time_preserves_current_month_selection():
     app = app_with(
         [
