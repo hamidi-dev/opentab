@@ -110,7 +110,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `R` | Set range (`all`, `30d` or `30`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`) |
 | `a` | Show all time |
 | `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
-| `/` | Filter sessions by title/project/id; `Esc` cancels; `x` clears |
+| `/` | Filter sessions (title/project/id) and the project list; `Esc` cancels; `x` clears |
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |

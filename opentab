@@ -205,6 +205,7 @@ class ProjectSummary:
     tokens: int
     subagents: int
     unpriced_tokens: int
+    last_active: str = ""  # created_at of the project's most recent session
 
 
 def money(value: float) -> str:
@@ -1715,7 +1716,7 @@ class Renderer:
             "  R                set range: all, 30d (or 30), 2m (~60d), 2026, 2026-05, start..end",
             "  a                show all time, keeping the current selection when possible",
             "  s / S            cycle sort forward / backward on visible lists",
-            "  /                filter sessions by title/project/id (Esc cancels)",
+            "  /                filter sessions (title/project/id) and projects (Esc cancels)",
             "  x                clear filter",
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
@@ -1788,7 +1789,7 @@ class App:
     month_tabs = ("Overview", "Models", "Projects", "Sessions")
     project_tabs = ("Overview", "Models", "Sessions")
     sort_options = ("cost", "tokens", "date", "subagents", "title")
-    project_sort_options = ("cost", "tokens", "sessions", "subagents", "project")
+    project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
 
     def __init__(self, store: Store, args: argparse.Namespace):
@@ -1967,9 +1968,13 @@ class App:
                 tokens=sum(w.total_tokens for w in workflows),
                 subagents=sum(w.subagents for w in workflows),
                 unpriced_tokens=sum(w.unpriced_tokens for w in workflows),
+                last_active=max(w.created_at for w in workflows),
             )
             for directory, workflows in grouped.items()
         ]
+        if self.query:
+            q = self.query.lower()
+            projects = [p for p in projects if q in p.directory.lower()]
         return self.sorted_projects(projects)
 
     def sorted_projects(self, rows: list[ProjectSummary]) -> list[ProjectSummary]:
@@ -1986,6 +1991,8 @@ class App:
             return sorted(rows, key=lambda p: (p.subagents, p.cost), reverse=True)
         if sort_by == "project":
             return sorted(rows, key=lambda p: p.directory.lower())
+        if sort_by == "recency":
+            return sorted(rows, key=lambda p: p.last_active, reverse=True)
         return sorted(rows, key=lambda p: (p.cost, p.tokens), reverse=True)
 
     @property
@@ -2592,6 +2599,7 @@ class App:
             if self.query:
                 self.query = ""
                 self.workflow_index = 0
+                self.project_index = 0
                 self.notice = "filter cleared"
             else:
                 self.notice = "no active filter"
@@ -2643,14 +2651,13 @@ class App:
         return True
 
     def prompt_filter(self, stdscr: curses.window) -> None:
-        value = self.prompt_text(stdscr, "Filter title/project/id (Esc cancels): ", self.query)
+        value = self.prompt_text(stdscr, "Filter sessions/projects (Esc cancels): ", self.query)
         if value is None:
             return
         self.query = value.strip()
         self.workflow_index = 0
-        self.notice = (
-            "filter cleared" if not self.query else f"filter: {self.query} · sessions only"
-        )
+        self.project_index = 0
+        self.notice = "filter cleared" if not self.query else f"filter: {self.query}"
 
     def prompt_range(self, stdscr: curses.window) -> None:
         value = self.prompt_text(

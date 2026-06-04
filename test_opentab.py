@@ -284,6 +284,43 @@ def test_projects_sort_by_tokens_and_name():
     assert [p.directory for p in app.projects] == ["/tmp/a", "/tmp/b"]
 
 
+def test_projects_sort_by_recency():
+    app = app_with(
+        [
+            # /tmp/old's newest session predates /tmp/new's, despite costing more
+            workflow("o1", "2026-06-01 09:00:00", cost=99, directory="/tmp/old"),
+            workflow("n1", "2026-06-10 09:00:00", cost=1, directory="/tmp/new"),
+            workflow("o2", "2026-06-05 09:00:00", cost=50, directory="/tmp/old"),
+        ]
+    )
+    app.project_sort_by = "recency"
+    assert [p.directory for p in app.projects] == ["/tmp/new", "/tmp/old"]
+    # last_active reflects each project's most recent session
+    by_dir = {p.directory: p for p in app.projects}
+    assert by_dir["/tmp/old"].last_active == "2026-06-05 09:00:00"
+    assert by_dir["/tmp/new"].last_active == "2026-06-10 09:00:00"
+
+
+def test_filter_applies_to_projects():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", directory="/tmp/auth-service"),
+            workflow("b", "2026-06-02 12:00:00", directory="/tmp/billing"),
+            workflow("c", "2026-06-03 12:00:00", directory="/tmp/auth-ui"),
+        ]
+    )
+    assert {p.directory for p in app.projects} == {
+        "/tmp/auth-service",
+        "/tmp/billing",
+        "/tmp/auth-ui",
+    }
+    app.query = "auth"
+    assert {p.directory for p in app.projects} == {"/tmp/auth-service", "/tmp/auth-ui"}
+    # zoom-scoped project lists honor the filter too
+    app.focus = "months"
+    assert {p.directory for p in app.zoom_projects()} == {"/tmp/auth-service", "/tmp/auth-ui"}
+
+
 def test_project_list_s_cycles_project_sort():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.set_browse_mode("projects")
