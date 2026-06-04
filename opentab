@@ -512,6 +512,7 @@ class App:
     month_tabs = ("Overview", "Models", "Sessions")
     project_tabs = ("Overview", "Models", "Sessions")
     sort_options = ("cost", "tokens", "date", "subagents", "title")
+    project_sort_options = ("cost", "tokens", "sessions", "subagents", "project")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
 
     # Range windows for live cycling, widest -> narrowest. None means all time.
@@ -541,6 +542,7 @@ class App:
         self.scroll = 0
         self.help = False
         self.sort_by = "cost"
+        self.project_sort_by = "cost"
 
     @property
     def all_workflows(self) -> list[Workflow]:
@@ -668,7 +670,23 @@ class App:
             )
             for directory, workflows in grouped.items()
         ]
-        return sorted(projects, key=lambda p: (p.cost, p.tokens), reverse=True)
+        return self.sorted_projects(projects)
+
+    def sorted_projects(self, rows: list[ProjectSummary]) -> list[ProjectSummary]:
+        sort_by = (
+            self.project_sort_by
+            if self.project_sort_by in self.project_sort_options
+            else self.project_sort_options[0]
+        )
+        if sort_by == "tokens":
+            return sorted(rows, key=lambda p: (p.tokens, p.cost), reverse=True)
+        if sort_by == "sessions":
+            return sorted(rows, key=lambda p: (p.workflows, p.cost), reverse=True)
+        if sort_by == "subagents":
+            return sorted(rows, key=lambda p: (p.subagents, p.cost), reverse=True)
+        if sort_by == "project":
+            return sorted(rows, key=lambda p: p.directory.lower())
+        return sorted(rows, key=lambda p: (p.cost, p.tokens), reverse=True)
 
     @property
     def focused_month(self) -> str | None:
@@ -901,17 +919,29 @@ class App:
         return tabs[self.tab % len(tabs)] == "Subagents"
 
     def can_sort_current_view(self) -> bool:
-        return (self.view != "session" and self.on_sessions_tab) or (
+        return (self.view == "browse" and self.browse_mode == "projects") or (
+            self.view != "session" and self.on_sessions_tab
+        ) or (
             self.view == "session" and self.on_subagents_tab
         )
 
     def effective_sort_by(self) -> str | None:
+        if self.view == "browse" and self.browse_mode == "projects":
+            return self.project_sort_by if self.project_sort_by in self.project_sort_options else self.project_sort_options[0]
         options = self.current_sort_options()
         if not options:
             return None
         return self.sort_by if self.sort_by in options else options[0]
 
     def cycle_sort(self, step: int) -> None:
+        if self.view == "browse" and self.browse_mode == "projects":
+            options = self.project_sort_options
+            current = options.index(self.project_sort_by) if self.project_sort_by in options else 0
+            self.project_sort_by = options[(current + step) % len(options)]
+            self.project_index = 0
+            self.scroll = 0
+            return
+
         options = self.current_sort_options()
         if not options:
             return
@@ -1340,7 +1370,12 @@ class App:
     def sort_heading(self, key: str, label: str) -> str:
         if self.effective_sort_by() != key:
             return label
-        return f"{label} {'^' if key == 'title' else 'v'}"
+        return f"{label} {'^' if key in ('title', 'project', 'model', 'agent') else 'v'}"
+
+    def project_sort_heading(self, key: str, label: str) -> str:
+        if self.effective_sort_by() != key:
+            return label
+        return f"{label} {'^' if key == 'project' else 'v'}"
 
     def session_started(self, workflow: Workflow) -> str:
         return workflow.created_at[:10] if self.browse_mode == "projects" or self.focus == "months" else workflow.created_at[11:16]
@@ -1466,10 +1501,19 @@ class App:
             self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(5))
             return
 
-        visible = h - 3
+        header = (
+            f"  {self.project_sort_heading('project', 'Project'):<12} "
+            f"{self.project_sort_heading('cost', 'Cost'):>9} "
+            f"{self.project_sort_heading('tokens', 'Tokens'):>7} "
+            f"{self.project_sort_heading('sessions', 'Ses'):>5} "
+            f"{self.project_sort_heading('subagents', 'Subs'):>5}"
+        )
+        self.write(stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD)
+
+        visible = h - 4
         start = max(0, min(self.project_index - visible // 2, max(0, len(rows) - visible)))
-        for row_y, project in enumerate(rows[start : start + visible], y + 2):
-            selected = start + row_y - (y + 2) == self.project_index
+        for row_y, project in enumerate(rows[start : start + visible], y + 3):
+            selected = start + row_y - (y + 3) == self.project_index
             marker = ">" if selected else " "
             cost = money(project.cost)
             tok = human_tokens(project.tokens)

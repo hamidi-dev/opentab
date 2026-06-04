@@ -232,6 +232,32 @@ def test_projects_are_grouped_and_sorted_by_cost():
     assert app.projects[1].cost == 3
 
 
+def test_projects_sort_by_tokens_and_name():
+    app = app_with(
+        [
+            workflow("costly", "2026-06-01 12:00:00", cost=10, tokens=1, directory="/tmp/b"),
+            workflow("tokeny", "2026-06-02 12:00:00", cost=1, tokens=100, directory="/tmp/a"),
+        ]
+    )
+
+    app.project_sort_by = "tokens"
+    assert [p.directory for p in app.projects] == ["/tmp/a", "/tmp/b"]
+
+    app.project_sort_by = "project"
+    assert [p.directory for p in app.projects] == ["/tmp/a", "/tmp/b"]
+
+
+def test_project_list_s_cycles_project_sort():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.set_browse_mode("projects")
+
+    assert app.handle_key(None, ord("s"))
+    assert app.project_sort_by == "tokens"
+    assert app.sort_by == "cost"
+    assert app.handle_key(None, ord("S"))
+    assert app.project_sort_by == "cost"
+
+
 def test_project_mode_sessions_use_selected_project():
     app = app_with(
         [
@@ -245,6 +271,22 @@ def test_project_mode_sessions_use_selected_project():
     assert app.browse_mode == "projects"
     assert app.current_tabs() == app.project_tabs
     assert [w.id for w in app.current_sessions()] == ["b"]
+
+
+def test_project_sessions_s_keeps_session_sort():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, directory="/tmp/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=5, directory="/tmp/a"),
+        ]
+    )
+    app.set_browse_mode("projects")
+    app.tab = app.project_tabs.index("Sessions")
+    app.drill_in()
+
+    assert app.handle_key(None, ord("s"))
+    assert app.sort_by == "tokens"
+    assert app.project_sort_by == "cost"
 
 
 def test_project_sessions_drill_into_session():
