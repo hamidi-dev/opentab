@@ -501,6 +501,7 @@ class App:
     day_tabs = ("Overview", "Sessions")  # a day touches few models; folded into Overview
     month_tabs = ("Overview", "Models", "Sessions")
     sort_options = ("cost", "tokens", "date", "subagents", "title")
+    subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
 
     # Range windows for live cycling, widest -> narrowest. None means all time.
     range_presets = (None, 365, 180, 90, 60, 30, 14, 7)
@@ -768,13 +769,14 @@ class App:
         self.month_index = min(self.month_index, max(0, len(self.months) - 1))
 
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
-        if self.sort_by == "cost":
+        sort_by = self.sort_by if self.sort_by in self.sort_options else self.sort_options[0]
+        if sort_by == "cost":
             return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
-        if self.sort_by == "tokens":
+        if sort_by == "tokens":
             return sorted(rows, key=lambda item: (item.total_tokens, item.total_cost), reverse=True)
-        if self.sort_by == "subagents":
+        if sort_by == "subagents":
             return sorted(rows, key=lambda item: (item.subagents, item.total_tokens), reverse=True)
-        if self.sort_by == "title":
+        if sort_by == "title":
             return sorted(rows, key=lambda item: item.title.lower())
         return sorted(rows, key=lambda item: item.created_at, reverse=True)
 
@@ -828,8 +830,33 @@ class App:
         tabs = self.current_tabs()
         return tabs[self.tab % len(tabs)] == "Sessions"
 
+    @property
+    def on_subagents_tab(self) -> bool:
+        tabs = self.current_tabs()
+        return tabs[self.tab % len(tabs)] == "Subagents"
+
     def can_sort_current_view(self) -> bool:
-        return self.view != "session" and self.on_sessions_tab
+        return (self.view != "session" and self.on_sessions_tab) or (
+            self.view == "session" and self.on_subagents_tab
+        )
+
+    def effective_sort_by(self) -> str | None:
+        options = self.current_sort_options()
+        if not options:
+            return None
+        return self.sort_by if self.sort_by in options else options[0]
+
+    def cycle_sort(self, step: int) -> None:
+        options = self.current_sort_options()
+        if not options:
+            return
+        if self.sort_by not in options:
+            current = 0
+        else:
+            current = options.index(self.sort_by)
+        self.sort_by = options[(current + step) % len(options)]
+        self.workflow_index = 0
+        self.scroll = 0
 
     def toggle_focus(self) -> None:
         if self.view == "session":
@@ -881,8 +908,72 @@ class App:
             if n:
                 self.day_index = max(0, min(self.day_index + delta, n - 1))
 
-    def jump(self, to_end: bool) -> None:
-        self.move(10_000 if to_end else -10_000)
+    def jump(self, to_end: bool, stdscr: curses.window | None = None) -> None:
+        if self.view == "browse":
+            if self.focus == "months":
+                rows = self.months
+                if rows:
+                    self.month_index = len(rows) - 1 if to_end else 0
+                    self.day_index = 0
+            else:
+                rows = self.panel_days
+                if rows:
+                    self.day_index = len(rows) - 1 if to_end else 0
+            return
+
+        if self.view == "zoom" and self.on_sessions_tab:
+            rows = self.current_sessions()
+            if rows:
+                self.workflow_index = len(rows) - 1 if to_end else 0
+            return
+
+        if not to_end:
+            self.scroll = 0
+            return
+        if stdscr is None:
+            self.scroll = 10_000
+            return
+        self.scroll = self.max_scroll(stdscr)
+
+    def max_scroll(self, stdscr: curses.window) -> int:
+        height, width = stdscr.getmaxyx()
+        visible = max(1, height - 9)
+        lines = self.current_pager_lines(width)
+        return max(0, len(lines) - visible)
+
+    def current_pager_lines(self, width: int) -> list[str]:
+        content_width = max(1, width - 4)
+        if self.view == "session":
+            workflow = self.current_session()
+            if workflow is None:
+                return []
+            if self.tab == 0:
+                return self.detail_overview(workflow, content_width)
+            if self.tab == 1:
+                return self.detail_models(workflow, content_width)
+            return self.detail_subagents(workflow, content_width)
+
+        if self.view == "zoom":
+            if self.focus == "months":
+                month = self.selected_month_summary
+                if month is None:
+                    return []
+                current = self.current_tabs()[self.tab % len(self.current_tabs())]
+                if current == "Overview":
+                    return self.month_overview(month, content_width)
+                if current == "Models":
+                    return self.month_models(month, content_width)
+                return self.month_workflows(month, content_width)
+
+            day = self.selected_day_summary
+            if day is None:
+                return []
+            current = self.current_tabs()[self.tab % len(self.current_tabs())]
+            if current == "Overview":
+                return self.day_overview(day, content_width)
+            return self.day_workflows(day, content_width)
+
+        return []
 
     def run(self, stdscr: curses.window) -> None:
         if hasattr(curses, "set_escdelay"):
@@ -928,14 +1019,10 @@ class App:
             self.set_all_time()
             return True
         if key == ord("s"):
-            options = self.current_sort_options()
-            if not options:
-                return True
-            if self.sort_by not in options:
-                self.sort_by = options[0]
-            current = options.index(self.sort_by)
-            self.sort_by = options[(current + 1) % len(options)]
-            self.workflow_index = 0
+            self.cycle_sort(1)
+            return True
+        if key == ord("S"):
+            self.cycle_sort(-1)
             return True
         if key == ord("/"):
             self.prompt_filter(stdscr)
@@ -968,10 +1055,10 @@ class App:
             self.scroll = 0
             return True
         if key == ord("g"):
-            self.jump(to_end=False)
+            self.jump(to_end=False, stdscr=stdscr)
             return True
         if key == ord("G"):
-            self.jump(to_end=True)
+            self.jump(to_end=True, stdscr=stdscr)
             return True
         if key in (ord("j"), curses.KEY_DOWN):
             self.move(1)
@@ -1063,7 +1150,8 @@ class App:
                 curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD,
             )
         drilled = self.view in ("zoom", "session")
-        trail = f"  ·  sort: {self.sort_by}" if self.can_sort_current_view() else ""
+        sort_by = self.effective_sort_by()
+        trail = f"  ·  sort: {sort_by}" if sort_by else ""
         if self.query:
             trail += f"  ·  filter: {self.query}"
         x = 0
@@ -1103,7 +1191,7 @@ class App:
         return sep.join(s for s in segs if s)
 
     def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
-        sort_key = "  s sort" if self.can_sort_current_view() else ""
+        sort_key = "  s/S sort" if self.can_sort_current_view() else ""
         keys = f" j/k move  Tab months/days  Enter in  Esc out  h/l tabs  [ / ] range  a all-time{sort_key}  / filter  ? help  q quit "
         self.hline(stdscr, height - 2, 0, width)
         self.write(stdscr, height - 1, 0, shorten(keys, width - 1), curses.color_pair(4))
@@ -1115,11 +1203,15 @@ class App:
 
     def current_sort_options(self) -> tuple[str, ...]:
         # Left-hand months/days and non-session detail panes are fixed-order;
-        # sort only reorders visible session lists.
-        return self.sort_options if self.can_sort_current_view() else ()
+        # sort only reorders visible session or subagent lists.
+        if self.view == "session" and self.on_subagents_tab:
+            return self.subagent_sort_options
+        if self.view != "session" and self.on_sessions_tab:
+            return self.sort_options
+        return ()
 
     def sort_heading(self, key: str, label: str) -> str:
-        if self.sort_by != key:
+        if self.effective_sort_by() != key:
             return label
         return f"{label} {'^' if key == 'title' else 'v'}"
 
@@ -1455,7 +1547,7 @@ class App:
         mw = min(longest, max(20, width - 55))
         lines = [
             title,
-            f"{'Model':{mw}} {'Runs':>4} {'Cost':>10} {'Tokens':>9} {'CacheR':>9} {'CacheW':>9} {'Output':>8}",
+            f"{'Model':{mw}} {'Msgs':>4} {'Cost':>10} {'Tokens':>9} {'CacheR':>9} {'CacheW':>9} {'Output':>8}",
         ]
         for name, runs, cost, tok, cr, cw, out in rows:
             lines.append(
@@ -1477,7 +1569,7 @@ class App:
             return []
         mw = min(max(len(str(r[0])) for r in rows), max(20, width - 31))
         return [
-            f"{shorten(name, mw):{mw}} {money(float(cost)):>10} {human_tokens(int(tok)):>8} runs {int(runs)}"
+            f"{shorten(name, mw):{mw}} {money(float(cost)):>10} {human_tokens(int(tok)):>8} msgs {int(runs)}"
             for name, cost, tok, runs in rows
         ]
 
@@ -1664,13 +1756,37 @@ class App:
             )
         return lines
 
+    def sorted_subagent_rows(self, rows: list) -> list:
+        sort_by = (
+            self.sort_by
+            if self.sort_by in self.subagent_sort_options
+            else self.subagent_sort_options[0]
+        )
+        if sort_by == "tokens":
+            return sorted(rows, key=lambda row: (row["tokens_total"], row["cost"]), reverse=True)
+        if sort_by == "title":
+            return sorted(rows, key=lambda row: str(row["title"]).lower())
+        if sort_by == "model":
+            return sorted(rows, key=lambda row: str(row["model_name"]).lower())
+        if sort_by == "agent":
+            return sorted(rows, key=lambda row: str(row["agent"]).lower())
+        if sort_by == "depth":
+            return sorted(rows, key=lambda row: (row["depth"], row["tokens_total"]))
+        return sorted(rows, key=lambda row: (row["cost"], row["tokens_total"]), reverse=True)
+
     def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
         rows = [row for row in self.store.workflow_nodes(workflow.id) if row["depth"] > 0]
         if not rows:
             return ["# Subagents", "No subagents used in this workflow."]
+        rows = self.sorted_subagent_rows(rows)
         lines = [
-            "# Subagent Runs",
-            "D Agent          Model                              Cost     Tokens  Title",
+            "# Subagent Executions",
+            f"{self.sort_heading('depth', 'D'):<1} "
+            f"{self.sort_heading('agent', 'Agent'):14} "
+            f"{self.sort_heading('model', 'Model'):31} "
+            f"{self.sort_heading('cost', 'Cost'):>8} "
+            f"{self.sort_heading('tokens', 'Tokens'):>9}  "
+            f"{self.sort_heading('title', 'Title')}",
         ]
         for row in rows:
             lines.append(
@@ -1699,7 +1815,7 @@ class App:
             "  g/G              top / bottom",
             "  [ / ]            narrow / widen the time range (7d ... all time)",
             "  a                show all time, keeping the current selection when possible",
-            "  s                cycle sort on visible Sessions tabs",
+            "  s / S            cycle sort forward / backward on visible lists",
             "  /                filter sessions by title/project/id",
             "  x                clear filter",
             "  r                reload database",

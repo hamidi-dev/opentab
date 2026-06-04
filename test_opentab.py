@@ -179,6 +179,45 @@ def test_sort_only_changes_on_sessions_tab():
     assert app.sort_by == "tokens"
 
 
+def test_shift_s_cycles_sort_backward():
+    app = app_with([workflow("june", "2026-06-01 12:00:00")])
+    app.focus = "months"
+    app.view = "browse"
+    app.tab = app.month_tabs.index("Sessions")
+    app.sort_by = "tokens"
+
+    assert app.handle_key(None, ord("S"))
+    assert app.sort_by == "cost"
+
+
+def test_subagents_tab_is_sortable_by_tokens():
+    app = app_with([workflow("june", "2026-06-01 12:00:00")])
+    app.view = "session"
+    app.tab = app.workflow_tabs.index("Subagents")
+    app.sort_by = "tokens"
+    rows = [
+        {
+            "depth": 1,
+            "agent": "b",
+            "model_name": "m",
+            "cost": 1.0,
+            "tokens_total": 10,
+            "title": "b",
+        },
+        {
+            "depth": 1,
+            "agent": "a",
+            "model_name": "m",
+            "cost": 1.0,
+            "tokens_total": 20,
+            "title": "a",
+        },
+    ]
+
+    assert app.current_sort_options() == app.subagent_sort_options
+    assert app.sorted_subagent_rows(rows)[0]["title"] == "a"
+
+
 def test_set_all_time_preserves_current_month_selection():
     app = app_with(
         [
