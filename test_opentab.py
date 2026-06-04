@@ -60,6 +60,43 @@ def test_money_is_two_decimals():
     assert ot.money(1_234_567.5) == "$1,234,567.50"
 
 
+def test_money_marks_sub_cent_costs():
+    # A nonzero cost under a cent must not look identical to a truly-zero row.
+    assert ot.money(0.004) == "<$0.01"
+    assert ot.money(0.0001) == "<$0.01"
+    assert ot.money(0) == "$0.00"
+    assert ot.money(0.02) == "$0.02"
+
+
+def test_pct():
+    assert ot.pct(50, 200) == "25%"
+    assert ot.pct(1, 3) == "33%"
+    assert ot.pct(1, 1000) == "<1%"  # 0.1% rounds visibly, not to "0%"
+    assert ot.pct(0, 0) == "-"
+    assert ot.pct(0, 10) == "0%"
+
+
+def test_cost_bar():
+    assert ot.cost_bar(0, 10) == " " * 8
+    assert ot.cost_bar(10, 0) == " " * 8  # no peak -> blank, never divides by zero
+    assert ot.cost_bar(10, 10) == "█" * 8
+    assert all(len(ot.cost_bar(v, 10)) == 8 for v in (0, 1, 3, 5, 7, 10))
+    assert ot.cost_bar(5, 10).startswith("████") and not ot.cost_bar(5, 10).startswith("█████")
+    assert ot.cost_bar(1, 1000).startswith("▏")  # tiny-but-nonzero shows a sliver
+
+
+def test_bar_lane_keeps_the_bar_out_of_the_text_region():
+    # A wide panel gets a dedicated bar lane (so a row highlight never inverts it)
+    # plus a text region for everything else.
+    cells, text_w = ot.App.bar_lane(57)
+    assert cells == ot.BAR_CELLS
+    assert text_w == 57 - 2 - (ot.BAR_CELLS + 2)
+    # A narrow panel drops the bar and uses the full inner width for text.
+    cells, text_w = ot.App.bar_lane(40)
+    assert cells == 0
+    assert text_w == 38
+
+
 def test_demo_cost_zero_and_deterministic():
     assert ot.demo_cost(0, "seed") == 0.0
     a = ot.demo_cost(1_000_000, "seed")
@@ -413,6 +450,10 @@ def test_parse_range_text():
         "2026-05-31",
     )
     assert ot.parse_range_text("..2026-05-31") == (None, None, "2026-05-31")
+    # a bare number is "N days"; a 4-digit value stays a calendar year
+    assert ot.parse_range_text("30") == (30, None, None)
+    assert ot.parse_range_text("7") == (7, None, None)
+    assert ot.parse_range_text("2026") == (None, "2026-01-01", "2026-12-31")
 
 
 def test_parse_range_text_rejects_bad_input():
@@ -457,6 +498,41 @@ def test_set_all_time_preserves_current_month_selection():
     app.set_all_time()
 
     assert app.selected_month_summary.month == "2026-05"
+
+
+def test_export_dataset_follows_the_visible_view():
+    app = app_with(
+        [
+            workflow("june", "2026-06-01 12:00:00", cost=2, directory="/tmp/a"),
+            workflow("may", "2026-05-01 12:00:00", cost=3, directory="/tmp/b"),
+        ]
+    )
+
+    app.focus = "months"
+    app.view = "browse"
+    scope, header, rows = app._export_dataset()
+    assert scope == "months"
+    assert header[0] == "month"
+    assert [r[0] for r in rows] == ["2026-06", "2026-05"]  # newest-first
+    assert rows[0][1] == 2  # cost column
+
+    app.set_browse_mode("projects")
+    scope, header, rows = app._export_dataset()
+    assert scope == "projects"
+    assert {r[0] for r in rows} == {"/tmp/a", "/tmp/b"}
+
+
+def test_export_disabled_in_demo_mode():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.store.demo = True
+    app.export_current()
+    assert "demo" in app.notice
+
+
+def test_clear_filter_reports_when_nothing_to_clear():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    assert app.handle_key(None, ord("x"))
+    assert app.notice == "no active filter"
 
 
 def test_store_reads_db_without_session_token_columns():

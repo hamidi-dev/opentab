@@ -18,6 +18,9 @@ Python standard library. No `pip install`, ever.
 - Model attribution
 - Recursive subagent costs
 - Monthly, daily, and project views
+- Cost-share percentages and inline spend bars
+- CSV export of any view
+- Remembers your range and sort between runs
 - Local-only
 - Zero dependencies
 - Demo mode for screenshots
@@ -99,17 +102,27 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 |-----|--------|
 | `Tab` | Flip focus between the Months and Days panels |
 | `Enter` / `+` | Drill in: month/day zoom → (on Sessions tab) open a session |
-| `Esc` / `Shift-Tab` | Step back out (session → zoom → browse) |
+| `Esc` | Step back out (session → zoom → browse) |
+| `Shift-Tab` | Flip Months/Days focus while browsing; otherwise step back out |
 | `j`/`k` or arrows | Move in the current list / scroll detail |
 | `h`/`l` | Switch detail tabs |
 | `g` / `G` | Top / bottom |
 | `[` / `]` | Narrow / widen the preset range (7d … all time) |
-| `R` | Set range (`all`, `30d`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`) |
+| `R` | Set range (`all`, `30d` or `30`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`) |
 | `a` | Show all time |
 | `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
 | `/` | Filter sessions by title/project/id; `Esc` cancels; `x` clears |
+| `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
+| `y` | Copy the selected session id (or project path) to the clipboard |
+| `o` | Open the selected session's / project's directory |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
+
+The active **range and sort are remembered between runs** (stored in
+`~/.config/opentab/state.json`; pass `--no-state` to disable, and `--demo` never
+persists). Sub-cent costs render as `<$0.01` so they aren't confused with a red
+`$0.00`, which means *unpriced* (tokens with no local price). The Months and Days
+lists show a small bar scaled to the largest spend in view.
 
 ## Windows
 
