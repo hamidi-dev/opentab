@@ -19,6 +19,7 @@ Python standard library. No `pip install`, ever.
 - Recursive subagent costs
 - Monthly, daily, and project views
 - Cost-share percentages and inline spend bars
+- Trends overlay: daily/monthly spend charts and model-spend ranking
 - Git worktrees folded into their main repo
 - CSV export of any view
 - Remembers your range and sort between runs
@@ -128,6 +129,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `a` | Show all time |
 | `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
 | `/` | Filter sessions (title/project/id) and the project list; `Esc` cancels; `x` clears |
+| `T` | Trends overlay — Daily / Monthly cost bar charts + Model spend ranking (`h`/`l` tabs) |
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |

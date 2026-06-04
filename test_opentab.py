@@ -97,6 +97,63 @@ def test_bar_lane_keeps_the_bar_out_of_the_text_region():
     assert text_w == 38
 
 
+def test_day_and_month_range():
+    assert ot.day_range("2026-04-29", "2026-05-01") == ["2026-04-29", "2026-04-30", "2026-05-01"]
+    assert ot.month_range("2025-12", "2026-02") == ["2025-12", "2026-01", "2026-02"]
+
+
+def test_bar_chart_scales_and_summarizes():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    lines = app.renderer._bar_chart([("d1", 0.0), ("d2", 1.0), ("d3", 2.0)], 80, 12)
+    assert "█" in lines[0]  # the peak bucket reaches the top row
+    assert any("peak" in ln and "total" in ln and "avg" in ln for ln in lines)
+
+
+def test_trend_daily_charts_spend():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1),
+            workflow("b", "2026-06-03 12:00:00", cost=5),
+        ]
+    )
+    lines = app.renderer.trend_daily(80, 16)
+    assert lines[0].startswith("# Daily spend")
+    assert any("█" in ln for ln in lines) and any("peak" in ln for ln in lines)
+
+
+def test_trend_models_ranks_priced_models():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            {
+                "model_name": "anthropic/m",
+                "runs": 1,
+                "cost": 5.0,
+                "tokens_total": 10,
+                "cache_read": 0,
+                "cache_write": 0,
+                "output": 0,
+            }
+        ]
+    }
+    lines = app.renderer.trend_models(80, 12)
+    assert lines[0].startswith("# Model spend")
+    assert any("anthropic/m" in ln and "$5.00" in ln and "█" in ln for ln in lines)
+
+
+def test_trends_overlay_toggles_and_switches_tabs():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    assert not app.trends
+    app.handle_key(None, ord("T"))
+    assert app.trends and app.trend_tab == 0
+    app.handle_key(None, ord("l"))
+    assert app.trend_tab == 1
+    app.handle_key(None, ord("h"))
+    assert app.trend_tab == 0
+    app.handle_key(None, ord("j"))  # any non-tab key closes the overlay
+    assert not app.trends
+
+
 def test_resolve_project_root_folds_worktree():
     with tempfile.TemporaryDirectory() as tmp:
         main = os.path.join(tmp, "app")

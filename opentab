@@ -242,6 +242,33 @@ def cost_bar(value: float, peak: float, cells: int = 8) -> str:
     return ("█" * full + BAR_EIGHTHS[rem]).ljust(cells)
 
 
+BLOCKS_UP = " ▁▂▃▄▅▆▇"  # 0..7 eighths, bottom-aligned — the top cell of a rising bar
+
+
+def day_range(first: str, last: str) -> list[str]:
+    # Inclusive list of "YYYY-MM-DD" so a chart's x-axis is continuous time.
+    d0 = datetime.strptime(first, "%Y-%m-%d")
+    d1 = datetime.strptime(last, "%Y-%m-%d")
+    out = []
+    while d0 <= d1:
+        out.append(d0.strftime("%Y-%m-%d"))
+        d0 += timedelta(days=1)
+    return out
+
+
+def month_range(first: str, last: str) -> list[str]:
+    # Inclusive list of "YYYY-MM" so quiet months show as gaps, not skips.
+    y, m = int(first[:4]), int(first[5:7])
+    ly, lm = int(last[:4]), int(last[5:7])
+    out = []
+    while (y, m) <= (ly, lm):
+        out.append(f"{y:04d}-{m:02d}")
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+    return out
+
+
 def copy_to_clipboard(text: str) -> bool:
     for cmd in (
         ["pbcopy"],
@@ -832,6 +859,8 @@ class Renderer:
         avail = bottom - top
         if self.help:
             self.draw_help(stdscr, top, bottom, width)
+        elif self.trends:
+            self.draw_trends(stdscr, top, bottom, width)
         elif self.view == "session":
             self.draw_detail(stdscr, top, 0, avail, width)
         elif self.view == "zoom":
@@ -960,7 +989,7 @@ class Renderer:
             parts.append("p/t mode")
         if self.can_sort_current_view():
             parts.append("s/S sort")
-        parts += ["R range", "a all-time", "/ filter", "e export", "y copy", "o open"]
+        parts += ["R range", "/ filter", "T trends", "e export", "y copy", "o open"]
         parts += ["? help", "q quit"]
         keys = "  ".join(parts)
         self.hline(stdscr, height - 2, 0, width)
@@ -1762,6 +1791,7 @@ class Renderer:
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
+            "  T                Trends overlay: Daily / Monthly / Models charts (h/l tabs)",
             "  r                reload database",
             "  q                quit",
             "",
@@ -1782,6 +1812,119 @@ class Renderer:
                 shorten(line, width - 4),
                 curses.color_pair(4) if line.endswith(":") else curses.A_NORMAL,
             )
+
+    # --- Trends overlay -------------------------------------------------------
+    def draw_trends(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
+        h = bottom - y
+        self.box(stdscr, y, 0, h, width, f"Trends · {self.range_label()}")
+        tabs = self.trend_tabs
+        current = tabs[self.trend_tab % len(tabs)]
+        tab_line = "  ".join(f"[{t}]" if t == current else f" {t} " for t in tabs)
+        self.write(
+            stdscr, y + 1, 2, shorten(tab_line, width - 30), curses.color_pair(1) | curses.A_BOLD
+        )
+        self.write(stdscr, y + 1, width - 27, "h/l tabs · any key closes", curses.color_pair(4))
+        inner_w = width - 4
+        content_h = h - 4
+        if current == "Daily":
+            lines = self.trend_daily(inner_w, content_h)
+        elif current == "Monthly":
+            lines = self.trend_monthly(inner_w, content_h)
+        else:
+            lines = self.trend_models(inner_w, content_h)
+        for i, line in enumerate(lines[:content_h]):
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            )
+            self.write_rich(stdscr, y + 3 + i, 2, shorten(line, inner_w), attr)
+
+    def _bar_chart(self, pairs: list[tuple[str, float]], width: int, height: int) -> list[str]:
+        # Vertical bar chart from chronological (label, value) pairs. Shows the most
+        # recent buckets that fit; eighth-blocks give sub-row resolution on top.
+        if not pairs or height < 4:
+            return ["Not enough room to chart."]
+        gutter = 10
+        plot_w = max(4, width - gutter)
+        col_w = next((c for c in (4, 3, 2) if len(pairs) * c <= plot_w), 1)
+        fit = max(1, plot_w // col_w)
+        shown = pairs[-fit:]
+        peak = max((v for _, v in shown), default=0.0) or 1.0
+        rows_n = max(2, height - 2)  # reserve baseline + summary
+        out = []
+        for r in range(rows_n):
+            rb = rows_n - 1 - r  # this row's index counting from the bottom
+            if r == 0:
+                gut = f"{money(peak):>{gutter - 1}} "
+            elif r == rows_n // 2:
+                gut = f"{money(peak / 2):>{gutter - 1}} "
+            else:
+                gut = " " * gutter
+            cells = gut
+            for _, v in shown:
+                full, rem = divmod(round((v / peak) * rows_n * 8), 8)
+                if full > rb:
+                    ch = "█"
+                elif full == rb and rem:
+                    ch = BLOCKS_UP[rem]
+                else:
+                    ch = " "
+                cells += ch + " " * (col_w - 1)
+            out.append(cells)
+        out.append(" " * gutter + "─" * (len(shown) * col_w))
+        peak_label = max(shown, key=lambda kv: kv[1])[0]
+        total = sum(v for _, v in shown)  # match exactly what's charted
+        avg = total / len(shown)
+        out.append(
+            f"{' ' * gutter}{shown[0][0]} … {shown[-1][0]}    "
+            f"peak {money(peak)} ({peak_label})    total {money(total)}    avg {money(avg)}"
+        )
+        if len(shown) < len(pairs):
+            out.append(f"{' ' * gutter}(most recent {len(shown)} of {len(pairs)} — widen for more)")
+        return out
+
+    def trend_daily(self, width: int, height: int) -> list[str]:
+        by_day: dict[str, float] = defaultdict(float)
+        for w in self.all_workflows:
+            by_day[w.created_at[:10]] += w.total_cost
+        if not by_day:
+            return ["# Daily spend", "", "No spend in the active range."]
+        days = sorted(by_day)
+        # Cap the filled span so an all-time range doesn't build thousands of days;
+        # the Monthly tab is the long-horizon view.
+        last = days[-1]
+        start = max(
+            days[0], (datetime.strptime(last, "%Y-%m-%d") - timedelta(days=89)).strftime("%Y-%m-%d")
+        )
+        pairs = [(d[5:], by_day.get(d, 0.0)) for d in day_range(start, last)]
+        return ["# Daily spend (cost per day)", ""] + self._bar_chart(pairs, width, height - 2)
+
+    def trend_monthly(self, width: int, height: int) -> list[str]:
+        by_month: dict[str, float] = defaultdict(float)
+        for w in self.all_workflows:
+            by_month[w.created_at[:7]] += w.total_cost
+        if not by_month:
+            return ["# Monthly spend", "", "No spend in the active range."]
+        keys = sorted(by_month)
+        pairs = [(m, by_month.get(m, 0.0)) for m in month_range(keys[0], keys[-1])]
+        return ["# Monthly spend (cost per month)", ""] + self._bar_chart(pairs, width, height - 2)
+
+    def trend_models(self, width: int, height: int) -> list[str]:
+        agg = self.aggregate_models(self.all_workflows)
+        rows = [(name, float(it["cost"])) for name, it in agg if float(it["cost"]) > 0]
+        rows = rows[: max(1, height - 3)]
+        if not rows:
+            return ["# Model spend", "", "No priced model spend in the active range."]
+        total = sum(c for _, c in rows)
+        peak = max(c for _, c in rows) or 1.0
+        namew = min(30, max(len(n) for n, _ in rows))
+        barw = max(8, width - namew - 24)
+        lines = ["# Model spend (priced, in range)", ""]
+        for name, cost in rows:
+            bar = "█" * max(0, round((cost / peak) * barw))
+            lines.append(
+                f"{shorten(name, namew):{namew}}  {bar:<{barw}} {money(cost):>11} {pct(cost, total):>5}"
+            )
+        return lines
 
     def box(self, stdscr: curses.window, y: int, x: int, h: int, w: int, title: str) -> None:
         if h <= 1 or w <= 1:
@@ -1833,6 +1976,7 @@ class App:
     sort_options = ("cost", "tokens", "date", "subagents", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
+    trend_tabs = ("Daily", "Monthly", "Models")
 
     def __init__(self, store: Store, args: argparse.Namespace):
         self.store = store
@@ -1858,6 +2002,8 @@ class App:
         self.tab = 0
         self.scroll = 0
         self.help = False
+        self.trends = False  # the Trends overlay (T); trend_tab selects its tab
+        self.trend_tab = 0
         self.sort_by = "cost"
         self.project_sort_by = "cost"
         self.notice = ""
@@ -2625,11 +2771,22 @@ class App:
         if self.help:
             self.help = False
             return True
+        if self.trends:
+            if key in (ord("h"), curses.KEY_LEFT):
+                self.trend_tab = (self.trend_tab - 1) % len(self.trend_tabs)
+            elif key in (ord("l"), curses.KEY_RIGHT):
+                self.trend_tab = (self.trend_tab + 1) % len(self.trend_tabs)
+            else:
+                self.trends = False  # any other key closes the overlay
+            return True
 
         if key in (ord("q"), 3):
             return False
         if key == ord("?"):
             self.help = True
+            return True
+        if key == ord("T"):
+            self.trends = True
             return True
         if key == ord("r"):
             self.reload()
