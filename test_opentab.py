@@ -539,6 +539,33 @@ def test_project_sessions_drill_into_session():
     assert app.current_session().id == "a"
 
 
+def test_projects_drill_keeps_the_selected_project():
+    # Regression: drilling into a non-first project must zoom into THAT project,
+    # not reset the selection to projects[0].
+    app = app_with(
+        [
+            workflow("x", "2026-06-01 12:00:00", cost=9, directory="/tmp/expensive"),
+            workflow("y", "2026-06-02 12:00:00", cost=1, directory="/tmp/cheap"),
+        ]
+    )
+    app.set_browse_mode("projects")
+    app.project_index = 1  # cost-sorted: 0=/tmp/expensive, 1=/tmp/cheap
+    assert app.selected_project_summary.directory == "/tmp/cheap"
+
+    app.drill_in()
+
+    assert app.view == "zoom"
+    assert app.selected_project_summary.directory == "/tmp/cheap"
+
+
+def test_list_width_is_capped():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    # A very long row on a very wide terminal is capped, not left to eat the screen.
+    assert app.renderer.list_width(["x" * 200], 300) == ot.MAX_LIST_WIDTH
+    # Short content still sizes down to its own width (floored at 24).
+    assert app.renderer.list_width(["short"], 120) == 24
+
+
 def test_p_and_t_switch_browse_modes_directly():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
 

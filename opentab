@@ -227,6 +227,7 @@ def pct(part: float, whole: float) -> str:
 
 
 BAR_CELLS = 8  # width of the inline spend bar lane in the Months/Days lists
+MAX_LIST_WIDTH = 56  # cap on the left list panel; long paths truncate, not widen
 BAR_EIGHTHS = " ▏▎▍▌▋▊▉"  # 0..7 eighths of a cell; a full cell is "█"
 
 
@@ -751,9 +752,11 @@ class Renderer:
         )
 
     def list_width(self, rows_text: list[str], width: int) -> int:
-        # Size a left list to its content; keep at least 44 cols for the detail pane.
+        # Size a left list to its content, but never wider than it needs: keep at
+        # least 44 cols for the detail pane AND cap absolutely, so a few very long
+        # project paths (or a very wide terminal) don't let the list eat the screen.
         content = max((len(r) for r in rows_text), default=20)
-        return max(24, min(content + 3, max(24, width - 44)))
+        return max(24, min(content + 3, max(24, width - 44), MAX_LIST_WIDTH))
 
     def browse_left_width(self, width: int) -> int:
         if self.browse_mode == "projects":
@@ -2528,8 +2531,12 @@ class App:
                 self.view = "zoom"
                 self.scroll = 0
                 self.workflow_index = 0
-                self.project_index = 0
                 self.zoom_project = None
+                if self.browse_mode != "projects":
+                    # In time mode, project_index is only the zoom Projects-tab
+                    # picker; reset it. In projects mode it is the selected project
+                    # we are drilling into, so it must be left alone.
+                    self.project_index = 0
         elif self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
             # Pick a project in a month/day zoom -> view its sessions in this scope.
             project = self.zoom_selected_project()
