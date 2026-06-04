@@ -1841,15 +1841,23 @@ class Renderer:
     def _bar_chart(self, pairs: list[tuple[str, float]], width: int, height: int) -> list[str]:
         # Vertical bar chart from chronological (label, value) pairs. Shows the most
         # recent buckets that fit; eighth-blocks give sub-row resolution on top.
-        if not pairs or height < 4:
+        # Columns get wide enough to label every bucket when there's room; when
+        # dense (e.g. daily), bars pack in and x-ticks are spaced so they fit.
+        if not pairs or height < 5:
             return ["Not enough room to chart."]
         gutter = 10
         plot_w = max(4, width - gutter)
-        col_w = next((c for c in (4, 3, 2) if len(pairs) * c <= plot_w), 1)
+        label_w = max((len(label) for label, _ in pairs), default=2)
+        if len(pairs) * (label_w + 2) <= plot_w:
+            col_w = label_w + 2  # room for a label under every bar
+        else:
+            col_w = next((c for c in (4, 3, 2) if len(pairs) * c <= plot_w), 1)
         fit = max(1, plot_w // col_w)
         shown = pairs[-fit:]
+        bar_w = max(1, min(col_w - 1, 4))
+        lead = (col_w - bar_w) // 2  # center the bar within its column
         peak = max((v for _, v in shown), default=0.0) or 1.0
-        rows_n = max(2, height - 2)  # reserve baseline + summary
+        rows_n = max(2, height - 3)  # bars + baseline + x-ticks + summary
         out = []
         for r in range(rows_n):
             rb = rows_n - 1 - r  # this row's index counting from the bottom
@@ -1868,15 +1876,35 @@ class Renderer:
                     ch = BLOCKS_UP[rem]
                 else:
                     ch = " "
-                cells += ch + " " * (col_w - 1)
+                cells += " " * lead + ch * bar_w + " " * (col_w - bar_w - lead)
             out.append(cells)
         out.append(" " * gutter + "─" * (len(shown) * col_w))
+        # x-axis tick labels, greedily spaced left-to-right so they never overlap,
+        # with the final bucket always labelled at the right edge.
+        axis = [" "] * (gutter + len(shown) * col_w)
+
+        def place(pos: int, label: str) -> None:
+            for j, ch in enumerate(label):
+                if 0 <= pos + j < len(axis):
+                    axis[pos + j] = ch
+
+        # Always anchor the final (most recent) bucket at the right edge, then fill
+        # earlier ticks greedily in the space before it.
+        tail = len(axis) - len(shown[-1][0])
+        place(tail, shown[-1][0])
+        next_free = gutter
+        for i, (label, _) in enumerate(shown[:-1]):
+            pos = gutter + i * col_w + lead
+            if pos >= next_free and pos + len(label) < tail:
+                place(pos, label)
+                next_free = pos + len(label) + 1
+        out.append("".join(axis).rstrip())
         peak_label = max(shown, key=lambda kv: kv[1])[0]
         total = sum(v for _, v in shown)  # match exactly what's charted
         avg = total / len(shown)
         out.append(
-            f"{' ' * gutter}{shown[0][0]} … {shown[-1][0]}    "
-            f"peak {money(peak)} ({peak_label})    total {money(total)}    avg {money(avg)}"
+            f"{' ' * gutter}peak {money(peak)} on {peak_label}    "
+            f"total {money(total)}    avg {money(avg)}"
         )
         if len(shown) < len(pairs):
             out.append(f"{' ' * gutter}(most recent {len(shown)} of {len(pairs)} — widen for more)")

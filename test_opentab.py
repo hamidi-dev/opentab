@@ -102,10 +102,11 @@ def test_day_and_month_range():
     assert ot.month_range("2025-12", "2026-02") == ["2025-12", "2026-01", "2026-02"]
 
 
-def test_bar_chart_scales_and_summarizes():
+def test_bar_chart_scales_labels_and_summarizes():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     lines = app.renderer._bar_chart([("d1", 0.0), ("d2", 1.0), ("d3", 2.0)], 80, 12)
     assert "█" in lines[0]  # the peak bucket reaches the top row
+    assert any("d1" in ln and "d3" in ln for ln in lines)  # x-axis tick labels
     assert any("peak" in ln and "total" in ln and "avg" in ln for ln in lines)
 
 
