@@ -88,11 +88,11 @@ def test_cost_bar():
 def test_bar_lane_keeps_the_bar_out_of_the_text_region():
     # A wide panel gets a dedicated bar lane (so a row highlight never inverts it)
     # plus a text region for everything else.
-    cells, text_w = ot.App.bar_lane(57)
+    cells, text_w = ot.Renderer.bar_lane(57)
     assert cells == ot.BAR_CELLS
     assert text_w == 57 - 2 - (ot.BAR_CELLS + 2)
     # A narrow panel drops the bar and uses the full inner width for text.
-    cells, text_w = ot.App.bar_lane(40)
+    cells, text_w = ot.Renderer.bar_lane(40)
     assert cells == 0
     assert text_w == 38
 
@@ -301,8 +301,8 @@ def test_project_header_aligns_with_project_rows():
     )
     app.set_browse_mode("projects")
     project = app.projects[0]
-    header = app.project_header_text(80)
-    row = app.project_row_text(project, ">", 80)
+    header = app.renderer.project_header_text(80)
+    row = app.renderer.project_row_text(project, ">", 80)
 
     assert header.index("Cost") + len("Cost v") == row.index("$12.34") + len("$12.34")
     assert header.index("Tokens") + len("Tokens") == row.index("1.5k") + len("1.5k")
@@ -365,7 +365,7 @@ def test_month_projects_are_scoped_and_sortable():
     app.tab = app.month_tabs.index("Projects")
     app.project_sort_by = "tokens"
 
-    lines = app.month_projects(app.selected_month_summary, 100)
+    lines = app.renderer.month_projects(app.selected_month_summary, 100)
 
     assert "/tmp/a" in lines[2]
     assert "/tmp/b" in lines[3]
@@ -385,7 +385,7 @@ def test_day_projects_are_scoped():
     app.focus = "days"
     app.tab = app.day_tabs.index("Projects")
 
-    lines = app.day_projects(app.selected_day_summary, 100)
+    lines = app.renderer.day_projects(app.selected_day_summary, 100)
 
     assert any("/tmp/b" in line for line in lines)
     assert all("/tmp/a" not in line for line in lines)

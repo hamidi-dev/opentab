@@ -644,6 +644,1144 @@ class Store:
         return list(self.conn.execute(sql))
 
 
+class Renderer:
+    """All terminal drawing for OpenTab.
+
+    Holds the App and reads its state through __getattr__, so the App stays a
+    pure controller (state + input + data) with no curses/rendering code.
+    """
+
+    def __init__(self, app: App) -> None:
+        self.app = app
+
+    def __getattr__(self, name: str):
+        # Misses are App state/logic; read them from the App. (Renderer's own
+        # methods are found normally, so they win over this delegation.)
+        return getattr(self.app, name)
+
+    def month_row_text(self, month: MonthSummary, marker: str) -> str:
+        return (
+            f"{marker} {month.month} {money(month.cost):>9} "
+            f"{human_tokens(month.tokens):>7} {month.workflows:>3} ses {month.subagents:>3} subs"
+        )
+
+    def day_row_text(self, day: DaySummary, marker: str) -> str:
+        return (
+            f"{marker} {day.day} {money(day.cost):>9} "
+            f"{human_tokens(day.tokens):>7} {day.workflows:>3} ses {day.subagents:>3} subs"
+        )
+
+    @staticmethod
+    def project_name_width(width: int) -> int:
+        return max(8, width - 38)
+
+    def project_row_text(self, project: ProjectSummary, marker: str, width: int) -> str:
+        name_width = self.project_name_width(width)
+        return (
+            f"{marker} {short_path(project.directory, name_width):{name_width}} "
+            f"{money(project.cost):>9} {human_tokens(project.tokens):>7} "
+            f"{project.workflows:>3} ses {project.subagents:>3} subs"
+        )
+
+    def project_header_text(self, width: int) -> str:
+        name_width = self.project_name_width(width)
+        return (
+            f"  {self.project_sort_heading('project', 'Project'):{name_width}} "
+            f"{self.project_sort_heading('cost', 'Cost'):>9} "
+            f"{self.project_sort_heading('tokens', 'Tokens'):>7} "
+            f"{self.project_sort_heading('sessions', 'Ses'):>7} "
+            f"{self.project_sort_heading('subagents', 'Subs'):>8}"
+        )
+
+    def list_width(self, rows_text: list[str], width: int) -> int:
+        # Size a left list to its content; keep at least 44 cols for the detail pane.
+        content = max((len(r) for r in rows_text), default=20)
+        return max(24, min(content + 3, max(24, width - 44)))
+
+    def browse_left_width(self, width: int) -> int:
+        if self.browse_mode == "projects":
+            rows = [self.project_row_text(p, ">", width) for p in self.projects]
+            return self.list_width(rows, width)
+        rows = [self.month_row_text(m, ">") for m in self.months]
+        rows += [self.day_row_text(d, ">") for d in self.panel_days]
+        # Size to the text, then reserve a lane for the inline spend bar (without
+        # ever starving the detail pane of its minimum 44 columns).
+        base = self.list_width(rows, width)
+        return max(24, min(base + BAR_CELLS + 2, max(24, width - 44)))
+
+    @staticmethod
+    def bar_lane(w: int) -> tuple[int, int]:
+        # (bar_cells, text_width) for a list panel of inner width w. The bar gets
+        # its own lane on the right so it is never painted under a row highlight
+        # (which would invert it); 0 cells when the panel is too narrow to spare.
+        if w < 46:
+            return 0, w - 2
+        return BAR_CELLS, (w - 2) - (BAR_CELLS + 2)
+
+    def max_scroll(self, stdscr: curses.window) -> int:
+        height, width = stdscr.getmaxyx()
+        visible = max(1, height - 9)
+        lines = self.current_pager_lines(width)
+        return max(0, len(lines) - visible)
+
+    def current_pager_lines(self, width: int) -> list[str]:
+        content_width = max(1, width - 4)
+        if self.view == "session":
+            workflow = self.current_session()
+            if workflow is None:
+                return []
+            if self.tab == 0:
+                return self.detail_overview(workflow, content_width)
+            if self.tab == 1:
+                return self.detail_models(workflow, content_width)
+            return self.detail_subagents(workflow, content_width)
+
+        if self.view == "zoom":
+            if self.browse_mode == "projects":
+                project = self.selected_project_summary
+                if project is None:
+                    return []
+                current = self.current_tabs()[self.tab % len(self.current_tabs())]
+                if current == "Overview":
+                    return self.project_overview(project, content_width)
+                if current == "Models":
+                    return self.project_models(project, content_width)
+                return self.project_workflows(project, content_width)
+
+            if self.focus == "months":
+                month = self.selected_month_summary
+                if month is None:
+                    return []
+                current = self.current_tabs()[self.tab % len(self.current_tabs())]
+                if current == "Overview":
+                    return self.month_overview(month, content_width)
+                if current == "Models":
+                    return self.month_models(month, content_width)
+                if current == "Projects":
+                    return self.month_projects(month, content_width)
+                return self.month_workflows(month, content_width)
+
+            day = self.selected_day_summary
+            if day is None:
+                return []
+            current = self.current_tabs()[self.tab % len(self.current_tabs())]
+            if current == "Overview":
+                return self.day_overview(day, content_width)
+            if current == "Projects":
+                return self.day_projects(day, content_width)
+            return self.day_workflows(day, content_width)
+
+        return []
+
+    def draw(self, stdscr: curses.window) -> None:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        if height < 20 or width < 80:
+            self.write(
+                stdscr, 0, 0, "Terminal too small. Need at least 80x20.", curses.color_pair(5)
+            )
+            stdscr.refresh()
+            return
+
+        self.draw_header(stdscr, width)
+        self.draw_footer(stdscr, height, width)
+
+        top = 3
+        bottom = height - 2
+        avail = bottom - top
+        if self.help:
+            self.draw_help(stdscr, top, bottom, width)
+        elif self.view == "session":
+            self.draw_detail(stdscr, top, 0, avail, width)
+        elif self.view == "zoom":
+            if self.browse_mode == "projects":
+                self.draw_project_detail(stdscr, top, 0, avail, width)
+            elif self.focus == "months":
+                self.draw_month_detail(stdscr, top, 0, avail, width)
+            else:
+                self.draw_day_detail(stdscr, top, 0, avail, width)
+        else:
+            left = self.browse_left_width(width)
+            if self.browse_mode == "projects":
+                self.draw_project_list(stdscr, top, 0, avail, left)
+                self.draw_project_detail(stdscr, top, left, avail, width - left)
+                stdscr.refresh()
+                return
+            months_h = max(4, min(len(self.months) + 3, avail // 2))
+            days_h = avail - months_h
+            self.draw_month_list(stdscr, top, 0, months_h, left, active=self.focus == "months")
+            self.draw_day_list(stdscr, top + months_h, 0, days_h, left, active=self.focus == "days")
+            rx, rw = left, width - left
+            if self.focus == "months":
+                self.draw_month_detail(stdscr, top, rx, avail, rw)
+            else:
+                self.draw_day_detail(stdscr, top, rx, avail, rw)
+
+        stdscr.refresh()
+
+    def draw_header(self, stdscr: curses.window, width: int) -> None:
+        summary = self.store.summary(self.all_workflows)
+        title = " OpenTab "
+        info = (
+            f" {summary['workflows']} sessions "
+            f"cost {money(float(summary['cost']))} "
+            f"tokens {human_tokens(int(summary['tokens']))} "
+            f"subs {summary['subagents']} "
+        )
+        self.write(stdscr, 0, 0, title, curses.color_pair(2) | curses.A_BOLD)
+        tag = " DEMO — synthetic " if self.store.demo else ""
+        self.write(
+            stdscr,
+            0,
+            len(title),
+            shorten(info, width - len(title) - len(tag) - 1),
+            curses.color_pair(3),
+        )
+        if tag:
+            self.write(
+                stdscr,
+                0,
+                max(0, width - len(tag) - 1),
+                tag,
+                curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD,
+            )
+        drilled = self.view in ("zoom", "session")
+        sort_by = self.effective_sort_by()
+        trail = f"  ·  sort: {sort_by}" if sort_by else ""
+        if self.query:
+            trail += f"  ·  filter: {self.query}"
+        if self.notice:
+            trail += f"  ·  {self.notice}"
+        x = 0
+        if drilled:
+            chip = " ZOOM "
+            self.write(stdscr, 1, 0, chip, curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
+            x = len(chip) + 1
+        attr = curses.color_pair(1) | (curses.A_BOLD if drilled else 0)
+        self.write(stdscr, 1, x, shorten(self.breadcrumb() + trail, width - x - 1), attr)
+        self.hline(stdscr, 2, 0, width)
+
+    def breadcrumb(self) -> str:
+        # Always-visible "you are here" path: scope › month › day › session › tab.
+        # It is the only locator once a zoom hides the sidebar.
+        sep = " › "
+        tabs = self.current_tabs()
+        tab_name = tabs[self.tab % len(tabs)]
+        segs = [self.range_label()]
+        if self.browse_mode == "projects" and self.view != "session":
+            project = self.selected_project_summary
+            segs.append("projects")
+            if project:
+                segs.append(short_path(project.directory, 34))
+            segs.append(tab_name)
+            return sep.join(s for s in segs if s)
+        if self.view == "session":
+            if self.browse_mode == "projects":
+                project = self.selected_project_summary
+                if project:
+                    segs.append(short_path(project.directory, 34))
+            elif self.focused_month:
+                segs.append(self.focused_month)
+            if self.browse_mode != "projects" and self.focus == "days" and self.active_day:
+                segs.append(self.active_day)
+            if self.browse_mode != "projects" and self.zoom_project:
+                segs.append(short_path(self.zoom_project, 24))
+            sess = self.current_session()
+            segs.append(shorten(sess.title, 28) if sess else "session")
+            segs.append(tab_name)
+        elif self.focus == "months":
+            if self.focused_month:
+                segs.append(self.focused_month)
+            if self.zoom_project and self.on_sessions_tab:
+                segs.append(short_path(self.zoom_project, 24))
+            segs.append(tab_name)
+        else:
+            if self.focused_month:
+                segs.append(self.focused_month)
+            if self.active_day:
+                segs.append(self.active_day)
+            if self.zoom_project and self.on_sessions_tab:
+                segs.append(short_path(self.zoom_project, 24))
+            segs.append(tab_name)
+        return sep.join(s for s in segs if s)
+
+    def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
+        # Context-sensitive: show only keys that do something in the current view,
+        # so the strip stays short enough to read instead of silently truncating.
+        parts = ["j/k move"]
+        if self.view == "browse" and self.browse_mode == "time":
+            parts.append("Tab months/days")
+        parts.append("Enter in")
+        if self.view != "browse":
+            parts.append("Esc out")
+        parts.append("h/l tabs")
+        if self.view != "session":
+            parts.append("p/t mode")
+        if self.can_sort_current_view():
+            parts.append("s/S sort")
+        parts += ["R range", "a all-time", "/ filter", "e export", "y copy", "o open"]
+        parts += ["? help", "q quit"]
+        keys = "  ".join(parts)
+        self.hline(stdscr, height - 2, 0, width)
+        self.write(
+            stdscr, height - 1, 0, shorten(" " + keys + " ", width - 1), curses.color_pair(4)
+        )
+
+    def sort_heading(self, key: str, label: str) -> str:
+        if self.effective_sort_by() != key:
+            return label
+        return f"{label} {'^' if key in ('title', 'project', 'model', 'agent') else 'v'}"
+
+    def project_sort_heading(self, key: str, label: str) -> str:
+        if self.effective_sort_by() != key:
+            return label
+        return f"{label} {'^' if key == 'project' else 'v'}"
+
+    def session_started(self, workflow: Workflow) -> str:
+        return (
+            workflow.created_at[:10]
+            if self.browse_mode == "projects" or self.focus == "months"
+            else workflow.created_at[11:16]
+        )
+
+    def session_date_label(self) -> str:
+        return "Started" if self.browse_mode == "projects" or self.focus == "months" else "Time"
+
+    def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
+        return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
+
+    def money_attr(self, cost_text: str) -> int:
+        # "$0.00" means zero or unpriced (tokens with no local price); muted red so
+        # it stands out from real spend. "<$0.01" is a real cost and stays green.
+        if cost_text == "$0.00":
+            return curses.color_pair(5)
+        return curses.color_pair(3) | curses.A_BOLD
+
+    def token_attr(self, token_text: str) -> int:
+        if token_text.endswith("B"):
+            return curses.color_pair(5) | curses.A_BOLD
+        if token_text.endswith("M"):
+            return curses.color_pair(2) | curses.A_BOLD
+        if token_text.endswith("k"):
+            return curses.color_pair(1) | curses.A_BOLD
+        return curses.color_pair(3)
+
+    def write_colored_summary_row(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        text: str,
+        cost: str,
+        token_text: str,
+        width: int,
+    ) -> None:
+        rendered = shorten(text, width).ljust(width)
+        self.write(stdscr, y, x, rendered, curses.A_NORMAL)
+        cost_pos = rendered.find(cost)
+        if cost_pos >= 0:
+            self.write(stdscr, y, x + cost_pos, cost, self.money_attr(cost))
+        token_pos = rendered.find(token_text)
+        if token_pos >= 0:
+            self.write(stdscr, y, x + token_pos, token_text, self.token_attr(token_text))
+
+    def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        # Navigable session list on the Sessions tab of a zoomed month/day/project.
+        sessions = self.current_sessions()
+        cy = y + 3
+        date_label = self.session_date_label()
+        header = (
+            f"  {self.sort_heading('date', date_label):<10} "
+            f"{self.sort_heading('cost', 'Cost'):>9} "
+            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{self.sort_heading('subagents', 'Subs'):>6}  "
+            f"{self.sort_heading('title', 'Title')}"
+        )
+        self.write(
+            stdscr,
+            cy,
+            x + 2,
+            shorten(header, w - 4),
+            curses.color_pair(4) | curses.A_BOLD,
+        )
+        if not sessions:
+            self.write(stdscr, cy + 1, x + 2, "No sessions.", curses.color_pair(5))
+            return
+        visible = max(1, h - 5)
+        idx = max(0, min(self.workflow_index, len(sessions) - 1))
+        start = max(0, min(idx - visible // 2, max(0, len(sessions) - visible)))
+        for off, wf in enumerate(sessions[start : start + visible]):
+            ry = cy + 1 + off
+            marker = ">" if start + off == idx else " "
+            started = self.session_started(wf)
+            cost = money(wf.total_cost)
+            tok = human_tokens(wf.total_tokens)
+            text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  {wf.title}"
+            if start + off == idx:
+                self.write(
+                    stdscr,
+                    ry,
+                    x + 2,
+                    shorten(text, w - 4).ljust(w - 4),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
+        self.write(stdscr, cy, x + w - 22, "Enter: open session", curses.color_pair(1))
+
+    def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        # Navigable project list on the Projects tab of a zoomed month/day.
+        projects = self.zoom_projects()
+        cy = y + 3
+        header = self.project_header_text(w - 4)
+        self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
+        if not projects:
+            self.write(stdscr, cy + 1, x + 2, "No projects.", curses.color_pair(5))
+            return
+        visible = max(1, h - 5)
+        idx = max(0, min(self.project_index, len(projects) - 1))
+        start = max(0, min(idx - visible // 2, max(0, len(projects) - visible)))
+        for off, project in enumerate(projects[start : start + visible]):
+            ry = cy + 1 + off
+            marker = ">" if start + off == idx else " "
+            cost = money(project.cost)
+            tok = human_tokens(project.tokens)
+            text = self.project_row_text(project, marker, w - 4)
+            if start + off == idx:
+                self.write(
+                    stdscr,
+                    ry,
+                    x + 2,
+                    shorten(text, w - 4).ljust(w - 4),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
+        self.write(stdscr, cy, x + w - 24, "Enter: open sessions", curses.color_pair(1))
+
+    def draw_month_list(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
+        self.box(stdscr, y, x, h, w, "Months" + (" ▸" if active else ""))
+        rows = self.months
+        if not rows:
+            self.write(stdscr, y + 2, x + 2, "No months in range.", curses.color_pair(5))
+            return
+
+        peak = max((m.cost for m in rows), default=0.0)
+        bar_cells, text_w = self.bar_lane(w)
+        visible = h - 3
+        start = max(0, min(self.month_index - visible // 2, max(0, len(rows) - visible)))
+        for row_y, month in enumerate(rows[start : start + visible], y + 2):
+            selected = start + row_y - (y + 2) == self.month_index
+            marker = ">" if selected else " "
+            cost = money(month.cost)
+            tok = human_tokens(month.tokens)
+            text = self.month_row_text(month, marker)
+            if selected and active:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, text_w).ljust(text_w),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            elif selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, text_w).ljust(text_w),
+                    curses.color_pair(1) | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, text_w)
+            if bar_cells:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + w - 1 - bar_cells,
+                    cost_bar(month.cost, peak, bar_cells),
+                    curses.color_pair(1),
+                )
+
+    def draw_project_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        self.box(stdscr, y, x, h, w, "Projects ▸")
+        rows = self.projects
+        if not rows:
+            self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(5))
+            return
+
+        header = self.project_header_text(w - 2)
+        self.write(
+            stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD
+        )
+
+        visible = h - 4
+        start = max(0, min(self.project_index - visible // 2, max(0, len(rows) - visible)))
+        for row_y, project in enumerate(rows[start : start + visible], y + 3):
+            selected = start + row_y - (y + 3) == self.project_index
+            marker = ">" if selected else " "
+            cost = money(project.cost)
+            tok = human_tokens(project.tokens)
+            text = self.project_row_text(project, marker, w - 2)
+            if selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, w - 2).ljust(w - 2),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
+
+    def draw_project_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        project = self.selected_project_summary
+        title = (
+            "Project"
+            if project is None
+            else f"Project {short_path(project.directory, max(10, w - 14))}"
+        )
+        self.box(stdscr, y, x, h, w, title)
+        if project is None:
+            self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(5))
+            return
+
+        tab_line = "  ".join(
+            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
+        )
+        self.write(
+            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
+        )
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Overview":
+            lines = self.project_overview(project, w - 4)
+        elif current == "Models":
+            lines = self.project_models(project, w - 4)
+        else:
+            lines = self.project_workflows(project, w - 4)
+
+        visible = h - 4
+        self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
+        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            )
+            if line.startswith("! "):
+                attr = curses.color_pair(5) | curses.A_BOLD
+            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+
+    def draw_month_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        month = self.selected_month_summary
+        title = "Month" if month is None else f"Month {month.month}"
+        self.box(stdscr, y, x, h, w, title)
+        if month is None:
+            self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(5))
+            return
+
+        tab_line = "  ".join(
+            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
+        )
+        self.write(
+            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
+        )
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Projects" and self.view == "zoom":
+            self.draw_projects_picker(stdscr, y, x, h, w)
+            return
+        if current == "Overview":
+            lines = self.month_overview(month, w - 4)
+        elif current == "Models":
+            lines = self.month_models(month, w - 4)
+        elif current == "Projects":
+            lines = self.month_projects(month, w - 4)
+        else:
+            lines = self.month_workflows(month, w - 4)
+
+        visible = h - 4
+        self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
+        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            )
+            if line.startswith("! "):
+                attr = curses.color_pair(5) | curses.A_BOLD
+            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+
+    def draw_day_list(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
+        month = self.focused_month
+        self.box(
+            stdscr, y, x, h, w, (f"Days · {month}" if month else "Days") + (" ▸" if active else "")
+        )
+        rows = self.panel_days
+        if not rows:
+            self.write(stdscr, y + 2, x + 2, "No days in month.", curses.color_pair(5))
+            return
+
+        peak = max((d.cost for d in rows), default=0.0)
+        bar_cells, text_w = self.bar_lane(w)
+        visible = h - 3
+        start = max(0, min(self.day_index - visible // 2, max(0, len(rows) - visible)))
+        for row_y, day in enumerate(rows[start : start + visible], y + 2):
+            selected = start + row_y - (y + 2) == self.day_index
+            marker = ">" if selected else " "
+            cost = money(day.cost)
+            tok = human_tokens(day.tokens)
+            text = self.day_row_text(day, marker)
+            if selected and active:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, text_w).ljust(text_w),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            elif selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, text_w).ljust(text_w),
+                    curses.color_pair(1) | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, text_w)
+            if bar_cells:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + w - 1 - bar_cells,
+                    cost_bar(day.cost, peak, bar_cells),
+                    curses.color_pair(1),
+                )
+
+    def draw_day_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        day = self.selected_day_summary
+        title = "Day" if day is None else f"Day {day.day}"
+        self.box(stdscr, y, x, h, w, title)
+        if day is None:
+            self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(5))
+            return
+
+        tab_line = "  ".join(
+            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
+        )
+        self.write(
+            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
+        )
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Projects" and self.view == "zoom":
+            self.draw_projects_picker(stdscr, y, x, h, w)
+            return
+        if current == "Overview":
+            lines = self.day_overview(day, w - 4)
+        elif current == "Projects":
+            lines = self.day_projects(day, w - 4)
+        else:
+            lines = self.day_workflows(day, w - 4)
+
+        visible = h - 4
+        self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
+        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            )
+            if line.startswith("! "):
+                attr = curses.color_pair(5) | curses.A_BOLD
+            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+
+    def draw_workflow_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        day = self.active_day
+        title = f"Sessions · {day}" if day else "Sessions"
+        self.box(stdscr, y, x, h, w, title)
+        rows = self.workflows
+        if not rows:
+            self.write(stdscr, y + 2, x + 2, "No sessions match the filter.", curses.color_pair(5))
+            return
+
+        visible = h - 3
+        start = max(0, min(self.workflow_index - visible // 2, max(0, len(rows) - visible)))
+        for row_y, workflow in enumerate(rows[start : start + visible], y + 2):
+            selected = start + row_y - (y + 2) == self.workflow_index
+            marker = ">" if selected else " "
+            cost = money(workflow.total_cost)
+            tok = human_tokens(workflow.total_tokens)
+            text = (
+                f"{marker} {cost:>9} "
+                f"{tok:>7} "
+                f"{workflow.subagents:>3} subs "
+                f"{shorten(workflow.title, max(12, w - 25))}"
+            )
+            if selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    shorten(text, w - 2).ljust(w - 2),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
+
+    def draw_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        workflow = self.current_session()
+        title = "Detail" if workflow is None else shorten(workflow.title, max(10, w - 12))
+        self.box(stdscr, y, x, h, w, title)
+        if workflow is None:
+            self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(5))
+            return
+
+        tab_line = "  ".join(
+            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
+        )
+        self.write(
+            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
+        )
+
+        if self.tab == 0:
+            lines = self.detail_overview(workflow, w - 4)
+        elif self.tab == 1:
+            lines = self.detail_models(workflow, w - 4)
+        else:
+            lines = self.detail_subagents(workflow, w - 4)
+
+        visible = h - 4
+        self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
+        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            )
+            if line.startswith("! "):
+                attr = curses.color_pair(5) | curses.A_BOLD
+            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+
+    def _model_table(self, rows: list[tuple], title: str, width: int) -> list[str]:
+        # rows: (name, runs, cost, tokens, cache_read, cache_write, output). The
+        # model column fits the longest name (so the numbers sit right after it),
+        # capped by the available width so long names aren't cut when there's room.
+        longest = max([len(str(r[0])) for r in rows] + [len("Model")])
+        mw = min(longest, max(20, width - 61))
+        total_cost = sum(float(r[2]) for r in rows)
+        lines = [
+            title,
+            f"{'Model':{mw}} {'Msgs':>4} {'Cost':>10} {'Share':>5} {'Tokens':>9} {'CacheR':>9} {'CacheW':>9} {'Output':>8}",
+        ]
+        for name, runs, cost, tok, cr, cw, out in rows:
+            lines.append(
+                f"{shorten(name, mw):{mw}} {int(runs):>4} {money(float(cost)):>10} "
+                f"{pct(float(cost), total_cost):>5} "
+                f"{human_tokens(int(tok)):>9} {human_tokens(int(cr)):>9} {human_tokens(int(cw)):>9} {human_tokens(int(out)):>8}"
+            )
+        if any(str(name).startswith("unknown") for name, *_ in rows):
+            lines.extend(
+                [
+                    "",
+                    "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
+                ]
+            )
+        return lines
+
+    def _top_models(self, rows: list[tuple], width: int) -> list[str]:
+        # rows: (name, cost, tokens, runs). Compact list under "# Top Models".
+        if not rows:
+            return []
+        mw = min(max(len(str(r[0])) for r in rows), max(20, width - 37))
+        total_cost = sum(float(r[1]) for r in rows)
+        return [
+            f"{shorten(name, mw):{mw}} {money(float(cost)):>10} {pct(float(cost), total_cost):>5} "
+            f"{human_tokens(int(tok)):>8} msgs {int(runs)}"
+            for name, cost, tok, runs in rows
+        ]
+
+    @staticmethod
+    def _agg_rows(aggregate: list[tuple[str, dict]]) -> list[tuple]:
+        return [
+            (
+                m,
+                it["runs"],
+                it["cost"],
+                it["tokens"],
+                it["cache_read"],
+                it["cache_write"],
+                it["output"],
+            )
+            for m, it in aggregate
+        ]
+
+    @staticmethod
+    def _mix_rows(model_rows: list[dict]) -> list[tuple]:
+        return [
+            (
+                r["model_name"],
+                r["runs"],
+                r["cost"],
+                r["tokens_total"],
+                r["cache_read"],
+                r["cache_write"],
+                r["output"],
+            )
+            for r in model_rows
+        ]
+
+    def month_overview(self, month: MonthSummary, width: int) -> list[str]:
+        lines = [
+            "# Monthly Insight",
+            f"Month:           {month.month}",
+            f"Cost:            {money(month.cost)}",
+            f"Share of range:  {pct(month.cost, self.range_cost_total())}",
+            f"Tokens:          {tokens(month.tokens)}",
+            f"Sessions:        {month.workflows}",
+            f"Subagents:       {month.subagents}",
+            f"Unpriced tokens: {tokens(month.unpriced_tokens)}",
+        ]
+        if month.unpriced_tokens:
+            lines.extend(
+                [
+                    "",
+                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
+                ]
+            )
+        lines.extend(["", "# Top Models"])
+        agg = self.aggregate_models(self.workflows_for_month(month.month))
+        lines.extend(
+            self._top_models([(m, it["cost"], it["tokens"], it["runs"]) for m, it in agg], width)
+        )
+        lines.extend(["", "# Top Sessions"])
+        for workflow in self.top_sessions(self.workflows_for_month(month.month)):
+            lines.append(
+                f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, month.cost):>5} "
+                f"{human_tokens(workflow.total_tokens):>8} "
+                f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 37))}"
+            )
+        return lines
+
+    def month_models(self, month: MonthSummary, width: int) -> list[str]:
+        agg = self.aggregate_models(self.workflows_for_month(month.month))
+        return self._model_table(self._agg_rows(agg), "# Monthly Model Spend", width)
+
+    def month_workflows(self, month: MonthSummary, width: int) -> list[str]:
+        lines = [
+            "# Monthly Sessions",
+            f"{self.sort_heading('date', 'Started'):<10} "
+            f"{self.sort_heading('cost', 'Cost'):>9} "
+            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('title', 'Title')}",
+        ]
+        for workflow in self.sorted_workflows(self.workflows_for_month(month.month)):
+            lines.append(
+                f"{workflow.created_at[:10]:<10} "
+                f"{money(workflow.total_cost):>9} "
+                f"{human_tokens(workflow.total_tokens):>8} "
+                f"{workflow.subagents:>4} "
+                f"{workflow.model_count:>6}  "
+                f"{workflow.title}"
+            )
+        return lines
+
+    def day_overview(self, day: DaySummary, width: int) -> list[str]:
+        lines = [
+            "# Day Burn",
+            f"Day:             {day.day}",
+            f"Cost:            {money(day.cost)}",
+            f"Share of range:  {pct(day.cost, self.range_cost_total())}",
+            f"Tokens:          {tokens(day.tokens)}",
+            f"Sessions:        {day.workflows}",
+            f"Subagents:       {day.subagents}",
+            f"Unpriced tokens: {tokens(day.unpriced_tokens)}",
+        ]
+        if day.unpriced_tokens:
+            lines.extend(
+                [
+                    "",
+                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
+                ]
+            )
+        # A day touches few models, so the full model table lives here in the
+        # Overview rather than in its own (near-empty) tab.
+        agg = self.aggregate_models(self.workflows_for_day(day.day))
+        lines.append("")
+        lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
+        lines.extend(["", "# Top Sessions"])
+        for workflow in self.top_sessions(self.workflows_for_day(day.day)):
+            lines.append(
+                f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, day.cost):>5} "
+                f"{human_tokens(workflow.total_tokens):>8} "
+                f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 37))}"
+            )
+        return lines
+
+    def day_workflows(self, day: DaySummary, width: int) -> list[str]:
+        lines = [
+            "# Day Sessions",
+            f"{self.sort_heading('date', 'Time'):<10} "
+            f"{self.sort_heading('cost', 'Cost'):>9} "
+            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('title', 'Title')}",
+        ]
+        for workflow in self.sorted_workflows(self.workflows_for_day(day.day)):
+            lines.append(
+                f"{workflow.created_at[11:16]:<10} "
+                f"{money(workflow.total_cost):>9} "
+                f"{human_tokens(workflow.total_tokens):>8} "
+                f"{workflow.subagents:>4} "
+                f"{workflow.model_count:>6}  "
+                f"{workflow.title}"
+            )
+        return lines
+
+    def project_overview(self, project: ProjectSummary, width: int) -> list[str]:
+        workflows = self.workflows_for_project(project.directory)
+        lines = [
+            "# Project Spend",
+            f"Project:         {short_path(project.directory, max(20, width - 17))}",
+            f"Cost:            {money(project.cost)}",
+            f"Share of range:  {pct(project.cost, self.range_cost_total())}",
+            f"Tokens:          {tokens(project.tokens)}",
+            f"Sessions:        {project.workflows}",
+            f"Subagents:       {project.subagents}",
+            f"Unpriced tokens: {tokens(project.unpriced_tokens)}",
+        ]
+        if project.unpriced_tokens:
+            lines.extend(
+                [
+                    "",
+                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
+                ]
+            )
+        lines.extend(["", "# Top Models"])
+        agg = self.aggregate_models(workflows)
+        lines.extend(
+            self._top_models([(m, it["cost"], it["tokens"], it["runs"]) for m, it in agg], width)
+        )
+        lines.extend(["", "# Top Sessions"])
+        for workflow in self.top_sessions(workflows):
+            lines.append(
+                f"{workflow.created_at[:10]:<10} {money(workflow.total_cost):>10} "
+                f"{pct(workflow.total_cost, project.cost):>5} "
+                f"{human_tokens(workflow.total_tokens):>8} agents {workflow.subagents:<3} "
+                f"{shorten(workflow.title, max(20, width - 50))}"
+            )
+        return lines
+
+    def project_models(self, project: ProjectSummary, width: int) -> list[str]:
+        agg = self.aggregate_models(self.workflows_for_project(project.directory))
+        return self._model_table(self._agg_rows(agg), "# Project Model Spend", width)
+
+    def project_table(self, rows: list[ProjectSummary], title: str, width: int) -> list[str]:
+        lines = [title, self.project_header_text(width)]
+        if not rows:
+            lines.append("No projects.")
+            return lines
+        lines.extend(self.project_row_text(project, " ", width) for project in rows)
+        return lines
+
+    def month_projects(self, month: MonthSummary, width: int) -> list[str]:
+        projects = self.projects_for_workflows(self.workflows_for_month(month.month))
+        return self.project_table(projects, "# Monthly Projects", width)
+
+    def day_projects(self, day: DaySummary, width: int) -> list[str]:
+        projects = self.projects_for_workflows(self.workflows_for_day(day.day))
+        return self.project_table(projects, "# Day Projects", width)
+
+    def project_workflows(self, project: ProjectSummary, width: int) -> list[str]:
+        lines = [
+            "# Project Sessions",
+            f"{self.sort_heading('date', 'Started'):<10} "
+            f"{self.sort_heading('cost', 'Cost'):>9} "
+            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('title', 'Title')}",
+        ]
+        for workflow in self.sorted_workflows(self.workflows_for_project(project.directory)):
+            lines.append(
+                f"{workflow.created_at[:10]:<10} "
+                f"{money(workflow.total_cost):>9} "
+                f"{human_tokens(workflow.total_tokens):>8} "
+                f"{workflow.subagents:>4} "
+                f"{workflow.model_count:>6}  "
+                f"{workflow.title}"
+            )
+        return lines
+
+    def detail_overview(self, workflow: Workflow, width: int) -> list[str]:
+        lines = [
+            "# Session",
+            f"ID:       {workflow.id}",
+            f"Started:  {workflow.created_at}",
+            f"Project:  {short_path(workflow.directory, max(20, width - 10))}",
+            f"Title:    {workflow.title}",
+            "",
+            "# Money",
+            f"Total:    {money(workflow.total_cost)}",
+            f"Root:     {money(workflow.root_cost)}",
+            f"Subagent: {money(workflow.total_cost - workflow.root_cost)}",
+            f"Share:    {pct(workflow.total_cost, self.range_cost_total())} of range",
+            "",
+            "# Shape",
+            f"Subagents:       {workflow.subagents}",
+            f"Distinct models: {workflow.model_count}",
+            f"Tokens:          {tokens(workflow.total_tokens)}",
+            f"Unpriced tokens: {tokens(workflow.unpriced_tokens)}",
+        ]
+        if workflow.unpriced_tokens:
+            lines.extend(
+                ["", "! Some tokens have local cost = $0.00. Reconcile Copilot billing separately."]
+            )
+        lines.extend(["", "# Top Models"])
+        model_rows = self.model_mix(workflow.id)
+        lines.extend(
+            self._top_models(
+                [(r["model_name"], r["cost"], r["tokens_total"], r["runs"]) for r in model_rows],
+                width,
+            )
+        )
+        if any(row["model_name"].startswith("unknown") for row in model_rows):
+            lines.extend(
+                [
+                    "",
+                    "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
+                ]
+            )
+        return lines
+
+    def detail_models(self, workflow: Workflow, width: int) -> list[str]:
+        model_rows = self.model_mix(workflow.id)
+        lines = self._model_table(self._mix_rows(model_rows), "# Model Mix", width)
+        if any(row["model_name"].startswith("unknown") for row in model_rows):
+            lines.append(
+                "! $0.00 rows with tokens often mean local attribution lacks provider pricing, especially Copilot."
+            )
+        return lines
+
+    def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
+        rows = [row for row in self.store.workflow_nodes(workflow.id) if row["depth"] > 0]
+        if not rows:
+            return ["# Subagents", "No subagents used in this workflow."]
+        rows = self.sorted_subagent_rows(rows)
+        lines = [
+            "# Subagent Executions",
+            f"{self.sort_heading('depth', 'D'):<1} "
+            f"{self.sort_heading('agent', 'Agent'):14} "
+            f"{self.sort_heading('model', 'Model'):31} "
+            f"{self.sort_heading('cost', 'Cost'):>8} "
+            f"{self.sort_heading('tokens', 'Tokens'):>9}  "
+            f"{self.sort_heading('title', 'Title')}",
+        ]
+        for row in rows:
+            lines.append(
+                f"{row['depth']:<1} "
+                f"{shorten(row['agent'], 14):14} "
+                f"{shorten(row['model_name'], 31):31} "
+                f"{money(row['cost']):>8} "
+                f"{human_tokens(row['tokens_total']):>9}  "
+                f"{row['title']}"
+            )
+        return lines
+
+    def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
+        self.box(stdscr, y, 0, bottom - y, width, "Help")
+        lines = [
+            "OpenTab is a session browser, not a fuzzy-search toy.",
+            "",
+            "Navigation:",
+            "  p / t            switch to Projects / Time browse mode",
+            "  Tab              flip focus between Months and Days in Time mode",
+            "  Enter / +        zoom month/day/project detail; on the Sessions tab open the",
+            "                   selected session; on a zoom's Projects tab open that",
+            "                   project's sessions within the month/day",
+            "  Esc              step back out (session -> zoom -> browse)",
+            "  Shift-Tab        flip Months/Days while browsing; else step back out",
+            "  h/l              switch detail tabs (months: Overview/Models/Projects/Sessions;",
+            "                   days: Overview/Projects/Sessions)",
+            "  j/k or Up/Down   move in the current list (or scroll detail)",
+            "  g/G              top / bottom",
+            "  R                set range: all, 30d (or 30), 2m (~60d), 2026, 2026-05, start..end",
+            "  a                show all time, keeping the current selection when possible",
+            "  s / S            cycle sort forward / backward on visible lists",
+            "  /                filter sessions by title/project/id (Esc cancels)",
+            "  x                clear filter",
+            "  e                export the current list to a CSV in the working directory",
+            "  y                copy the selected session id (or project path)",
+            "  o                open the selected session's / project's directory",
+            "  r                reload database",
+            "  q                quit",
+            "",
+            "Cost caveat:",
+            "  Cost is OpenCode's local attribution. Token-based billing (e.g. Copilot)",
+            "  still needs account-level reconciliation; unpriced tokens are flagged.",
+            "  Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price).",
+            "  Range and sort are remembered between runs (~/.config/opentab; --no-state off).",
+            "",
+            "Press any key to close help.",
+        ]
+        for i, line in enumerate(lines[: bottom - y - 3], y + 2):
+            self.write(
+                stdscr,
+                i,
+                2,
+                shorten(line, width - 4),
+                curses.color_pair(4) if line.endswith(":") else curses.A_NORMAL,
+            )
+
+    def box(self, stdscr: curses.window, y: int, x: int, h: int, w: int, title: str) -> None:
+        if h <= 1 or w <= 1:
+            return
+        stdscr.addch(y, x, curses.ACS_ULCORNER)
+        stdscr.addch(y, x + w - 1, curses.ACS_URCORNER)
+        stdscr.addch(y + h - 1, x, curses.ACS_LLCORNER)
+        stdscr.addch(y + h - 1, x + w - 1, curses.ACS_LRCORNER)
+        stdscr.hline(y, x + 1, curses.ACS_HLINE, w - 2)
+        stdscr.hline(y + h - 1, x + 1, curses.ACS_HLINE, w - 2)
+        stdscr.vline(y + 1, x, curses.ACS_VLINE, h - 2)
+        stdscr.vline(y + 1, x + w - 1, curses.ACS_VLINE, h - 2)
+        self.write(
+            stdscr, y, x + 2, f" {shorten(title, w - 6)} ", curses.color_pair(1) | curses.A_BOLD
+        )
+
+    def hline(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
+        stdscr.hline(y, x, curses.ACS_HLINE, max(0, w - 1))
+
+    def write(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
+        height, width = stdscr.getmaxyx()
+        if y < 0 or y >= height or x < 0 or x >= width:
+            return
+        try:
+            stdscr.addstr(y, x, text[: max(0, width - x - 1)], attr)
+        except curses.error:
+            pass
+
+    def write_rich(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
+        self.write(stdscr, y, x, text, attr)
+        if attr & curses.A_BOLD and text.startswith("# "):
+            return
+        if text.lstrip().startswith("ID:"):
+            return  # session ids can contain money/token-like runs; don't recolor them
+        for match in MONEY_PATTERN.finditer(text):
+            self.write(
+                stdscr, y, x + match.start(), match.group(0), self.money_attr(match.group(0))
+            )
+        for match in TOKEN_PATTERN.finditer(text):
+            token_text = match.group(0)
+            self.write(stdscr, y, x + match.start(), token_text, self.token_attr(token_text))
+
+
 class App:
     workflow_tabs = ("Overview", "Models", "Subagents")
     day_tabs = ("Overview", "Projects", "Sessions")  # day models stay folded into Overview
@@ -683,6 +1821,9 @@ class App:
         # project's sessions within the zoomed scope. Drilled into from the
         # Projects tab; cleared on step-out or any scope change.
         self.zoom_project: str | None = None
+        # All screen output lives on the Renderer; the App stays curses-free
+        # (aside from the modal prompt line in prompt_text).
+        self.renderer = Renderer(self)
 
     @property
     def all_workflows(self) -> list[Workflow]:
@@ -1146,65 +2287,6 @@ class App:
             return sorted(rows, key=lambda item: item.title.lower())
         return sorted(rows, key=lambda item: item.created_at, reverse=True)
 
-    def month_row_text(self, month: MonthSummary, marker: str) -> str:
-        return (
-            f"{marker} {month.month} {money(month.cost):>9} "
-            f"{human_tokens(month.tokens):>7} {month.workflows:>3} ses {month.subagents:>3} subs"
-        )
-
-    def day_row_text(self, day: DaySummary, marker: str) -> str:
-        return (
-            f"{marker} {day.day} {money(day.cost):>9} "
-            f"{human_tokens(day.tokens):>7} {day.workflows:>3} ses {day.subagents:>3} subs"
-        )
-
-    @staticmethod
-    def project_name_width(width: int) -> int:
-        return max(8, width - 38)
-
-    def project_row_text(self, project: ProjectSummary, marker: str, width: int) -> str:
-        name_width = self.project_name_width(width)
-        return (
-            f"{marker} {short_path(project.directory, name_width):{name_width}} "
-            f"{money(project.cost):>9} {human_tokens(project.tokens):>7} "
-            f"{project.workflows:>3} ses {project.subagents:>3} subs"
-        )
-
-    def project_header_text(self, width: int) -> str:
-        name_width = self.project_name_width(width)
-        return (
-            f"  {self.project_sort_heading('project', 'Project'):{name_width}} "
-            f"{self.project_sort_heading('cost', 'Cost'):>9} "
-            f"{self.project_sort_heading('tokens', 'Tokens'):>7} "
-            f"{self.project_sort_heading('sessions', 'Ses'):>7} "
-            f"{self.project_sort_heading('subagents', 'Subs'):>8}"
-        )
-
-    def list_width(self, rows_text: list[str], width: int) -> int:
-        # Size a left list to its content; keep at least 44 cols for the detail pane.
-        content = max((len(r) for r in rows_text), default=20)
-        return max(24, min(content + 3, max(24, width - 44)))
-
-    def browse_left_width(self, width: int) -> int:
-        if self.browse_mode == "projects":
-            rows = [self.project_row_text(p, ">", width) for p in self.projects]
-            return self.list_width(rows, width)
-        rows = [self.month_row_text(m, ">") for m in self.months]
-        rows += [self.day_row_text(d, ">") for d in self.panel_days]
-        # Size to the text, then reserve a lane for the inline spend bar (without
-        # ever starving the detail pane of its minimum 44 columns).
-        base = self.list_width(rows, width)
-        return max(24, min(base + BAR_CELLS + 2, max(24, width - 44)))
-
-    @staticmethod
-    def bar_lane(w: int) -> tuple[int, int]:
-        # (bar_cells, text_width) for a list panel of inner width w. The bar gets
-        # its own lane on the right so it is never painted under a row highlight
-        # (which would invert it); 0 cells when the panel is too narrow to spare.
-        if w < 46:
-            return 0, w - 2
-        return BAR_CELLS, (w - 2) - (BAR_CELLS + 2)
-
     def zoom_scope_workflows(self) -> list[Workflow]:
         # The sessions in the currently zoomed month or day (time mode).
         if self.focus == "months":
@@ -1443,62 +2525,7 @@ class App:
         if stdscr is None:
             self.scroll = 10_000
             return
-        self.scroll = self.max_scroll(stdscr)
-
-    def max_scroll(self, stdscr: curses.window) -> int:
-        height, width = stdscr.getmaxyx()
-        visible = max(1, height - 9)
-        lines = self.current_pager_lines(width)
-        return max(0, len(lines) - visible)
-
-    def current_pager_lines(self, width: int) -> list[str]:
-        content_width = max(1, width - 4)
-        if self.view == "session":
-            workflow = self.current_session()
-            if workflow is None:
-                return []
-            if self.tab == 0:
-                return self.detail_overview(workflow, content_width)
-            if self.tab == 1:
-                return self.detail_models(workflow, content_width)
-            return self.detail_subagents(workflow, content_width)
-
-        if self.view == "zoom":
-            if self.browse_mode == "projects":
-                project = self.selected_project_summary
-                if project is None:
-                    return []
-                current = self.current_tabs()[self.tab % len(self.current_tabs())]
-                if current == "Overview":
-                    return self.project_overview(project, content_width)
-                if current == "Models":
-                    return self.project_models(project, content_width)
-                return self.project_workflows(project, content_width)
-
-            if self.focus == "months":
-                month = self.selected_month_summary
-                if month is None:
-                    return []
-                current = self.current_tabs()[self.tab % len(self.current_tabs())]
-                if current == "Overview":
-                    return self.month_overview(month, content_width)
-                if current == "Models":
-                    return self.month_models(month, content_width)
-                if current == "Projects":
-                    return self.month_projects(month, content_width)
-                return self.month_workflows(month, content_width)
-
-            day = self.selected_day_summary
-            if day is None:
-                return []
-            current = self.current_tabs()[self.tab % len(self.current_tabs())]
-            if current == "Overview":
-                return self.day_overview(day, content_width)
-            if current == "Projects":
-                return self.day_projects(day, content_width)
-            return self.day_workflows(day, content_width)
-
-        return []
+        self.scroll = self.renderer.max_scroll(stdscr)
 
     def run(self, stdscr: curses.window) -> None:
         if hasattr(curses, "set_escdelay"):
@@ -1513,7 +2540,7 @@ class App:
         stdscr.keypad(True)
 
         while True:
-            self.draw(stdscr)
+            self.renderer.draw(stdscr)
             key = stdscr.getch()
             notice_before = self.notice
             if not self.handle_key(stdscr, key):
@@ -1672,160 +2699,6 @@ class App:
             return value + chr(key), False, False
         return value, False, False
 
-    def draw(self, stdscr: curses.window) -> None:
-        stdscr.erase()
-        height, width = stdscr.getmaxyx()
-        if height < 20 or width < 80:
-            self.write(
-                stdscr, 0, 0, "Terminal too small. Need at least 80x20.", curses.color_pair(5)
-            )
-            stdscr.refresh()
-            return
-
-        self.draw_header(stdscr, width)
-        self.draw_footer(stdscr, height, width)
-
-        top = 3
-        bottom = height - 2
-        avail = bottom - top
-        if self.help:
-            self.draw_help(stdscr, top, bottom, width)
-        elif self.view == "session":
-            self.draw_detail(stdscr, top, 0, avail, width)
-        elif self.view == "zoom":
-            if self.browse_mode == "projects":
-                self.draw_project_detail(stdscr, top, 0, avail, width)
-            elif self.focus == "months":
-                self.draw_month_detail(stdscr, top, 0, avail, width)
-            else:
-                self.draw_day_detail(stdscr, top, 0, avail, width)
-        else:
-            left = self.browse_left_width(width)
-            if self.browse_mode == "projects":
-                self.draw_project_list(stdscr, top, 0, avail, left)
-                self.draw_project_detail(stdscr, top, left, avail, width - left)
-                stdscr.refresh()
-                return
-            months_h = max(4, min(len(self.months) + 3, avail // 2))
-            days_h = avail - months_h
-            self.draw_month_list(stdscr, top, 0, months_h, left, active=self.focus == "months")
-            self.draw_day_list(stdscr, top + months_h, 0, days_h, left, active=self.focus == "days")
-            rx, rw = left, width - left
-            if self.focus == "months":
-                self.draw_month_detail(stdscr, top, rx, avail, rw)
-            else:
-                self.draw_day_detail(stdscr, top, rx, avail, rw)
-
-        stdscr.refresh()
-
-    def draw_header(self, stdscr: curses.window, width: int) -> None:
-        summary = self.store.summary(self.all_workflows)
-        title = " OpenTab "
-        info = (
-            f" {summary['workflows']} sessions "
-            f"cost {money(float(summary['cost']))} "
-            f"tokens {human_tokens(int(summary['tokens']))} "
-            f"subs {summary['subagents']} "
-        )
-        self.write(stdscr, 0, 0, title, curses.color_pair(2) | curses.A_BOLD)
-        tag = " DEMO — synthetic " if self.store.demo else ""
-        self.write(
-            stdscr,
-            0,
-            len(title),
-            shorten(info, width - len(title) - len(tag) - 1),
-            curses.color_pair(3),
-        )
-        if tag:
-            self.write(
-                stdscr,
-                0,
-                max(0, width - len(tag) - 1),
-                tag,
-                curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD,
-            )
-        drilled = self.view in ("zoom", "session")
-        sort_by = self.effective_sort_by()
-        trail = f"  ·  sort: {sort_by}" if sort_by else ""
-        if self.query:
-            trail += f"  ·  filter: {self.query}"
-        if self.notice:
-            trail += f"  ·  {self.notice}"
-        x = 0
-        if drilled:
-            chip = " ZOOM "
-            self.write(stdscr, 1, 0, chip, curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
-            x = len(chip) + 1
-        attr = curses.color_pair(1) | (curses.A_BOLD if drilled else 0)
-        self.write(stdscr, 1, x, shorten(self.breadcrumb() + trail, width - x - 1), attr)
-        self.hline(stdscr, 2, 0, width)
-
-    def breadcrumb(self) -> str:
-        # Always-visible "you are here" path: scope › month › day › session › tab.
-        # It is the only locator once a zoom hides the sidebar.
-        sep = " › "
-        tabs = self.current_tabs()
-        tab_name = tabs[self.tab % len(tabs)]
-        segs = [self.range_label()]
-        if self.browse_mode == "projects" and self.view != "session":
-            project = self.selected_project_summary
-            segs.append("projects")
-            if project:
-                segs.append(short_path(project.directory, 34))
-            segs.append(tab_name)
-            return sep.join(s for s in segs if s)
-        if self.view == "session":
-            if self.browse_mode == "projects":
-                project = self.selected_project_summary
-                if project:
-                    segs.append(short_path(project.directory, 34))
-            elif self.focused_month:
-                segs.append(self.focused_month)
-            if self.browse_mode != "projects" and self.focus == "days" and self.active_day:
-                segs.append(self.active_day)
-            if self.browse_mode != "projects" and self.zoom_project:
-                segs.append(short_path(self.zoom_project, 24))
-            sess = self.current_session()
-            segs.append(shorten(sess.title, 28) if sess else "session")
-            segs.append(tab_name)
-        elif self.focus == "months":
-            if self.focused_month:
-                segs.append(self.focused_month)
-            if self.zoom_project and self.on_sessions_tab:
-                segs.append(short_path(self.zoom_project, 24))
-            segs.append(tab_name)
-        else:
-            if self.focused_month:
-                segs.append(self.focused_month)
-            if self.active_day:
-                segs.append(self.active_day)
-            if self.zoom_project and self.on_sessions_tab:
-                segs.append(short_path(self.zoom_project, 24))
-            segs.append(tab_name)
-        return sep.join(s for s in segs if s)
-
-    def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
-        # Context-sensitive: show only keys that do something in the current view,
-        # so the strip stays short enough to read instead of silently truncating.
-        parts = ["j/k move"]
-        if self.view == "browse" and self.browse_mode == "time":
-            parts.append("Tab months/days")
-        parts.append("Enter in")
-        if self.view != "browse":
-            parts.append("Esc out")
-        parts.append("h/l tabs")
-        if self.view != "session":
-            parts.append("p/t mode")
-        if self.can_sort_current_view():
-            parts.append("s/S sort")
-        parts += ["R range", "a all-time", "/ filter", "e export", "y copy", "o open"]
-        parts += ["? help", "q quit"]
-        keys = "  ".join(parts)
-        self.hline(stdscr, height - 2, 0, width)
-        self.write(
-            stdscr, height - 1, 0, shorten(" " + keys + " ", width - 1), curses.color_pair(4)
-        )
-
     def current_tabs(self) -> tuple[str, ...]:
         if self.view == "session":
             return self.workflow_tabs
@@ -1841,449 +2714,6 @@ class App:
         if self.view != "session" and self.on_sessions_tab:
             return self.sort_options
         return ()
-
-    def sort_heading(self, key: str, label: str) -> str:
-        if self.effective_sort_by() != key:
-            return label
-        return f"{label} {'^' if key in ('title', 'project', 'model', 'agent') else 'v'}"
-
-    def project_sort_heading(self, key: str, label: str) -> str:
-        if self.effective_sort_by() != key:
-            return label
-        return f"{label} {'^' if key == 'project' else 'v'}"
-
-    def session_started(self, workflow: Workflow) -> str:
-        return (
-            workflow.created_at[:10]
-            if self.browse_mode == "projects" or self.focus == "months"
-            else workflow.created_at[11:16]
-        )
-
-    def session_date_label(self) -> str:
-        return "Started" if self.browse_mode == "projects" or self.focus == "months" else "Time"
-
-    def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
-        return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
-
-    def money_attr(self, cost_text: str) -> int:
-        # "$0.00" means zero or unpriced (tokens with no local price); muted red so
-        # it stands out from real spend. "<$0.01" is a real cost and stays green.
-        if cost_text == "$0.00":
-            return curses.color_pair(5)
-        return curses.color_pair(3) | curses.A_BOLD
-
-    def token_attr(self, token_text: str) -> int:
-        if token_text.endswith("B"):
-            return curses.color_pair(5) | curses.A_BOLD
-        if token_text.endswith("M"):
-            return curses.color_pair(2) | curses.A_BOLD
-        if token_text.endswith("k"):
-            return curses.color_pair(1) | curses.A_BOLD
-        return curses.color_pair(3)
-
-    def write_colored_summary_row(
-        self,
-        stdscr: curses.window,
-        y: int,
-        x: int,
-        text: str,
-        cost: str,
-        token_text: str,
-        width: int,
-    ) -> None:
-        rendered = shorten(text, width).ljust(width)
-        self.write(stdscr, y, x, rendered, curses.A_NORMAL)
-        cost_pos = rendered.find(cost)
-        if cost_pos >= 0:
-            self.write(stdscr, y, x + cost_pos, cost, self.money_attr(cost))
-        token_pos = rendered.find(token_text)
-        if token_pos >= 0:
-            self.write(stdscr, y, x + token_pos, token_text, self.token_attr(token_text))
-
-    def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        # Navigable session list on the Sessions tab of a zoomed month/day/project.
-        sessions = self.current_sessions()
-        cy = y + 3
-        date_label = self.session_date_label()
-        header = (
-            f"  {self.sort_heading('date', date_label):<10} "
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Subs'):>6}  "
-            f"{self.sort_heading('title', 'Title')}"
-        )
-        self.write(
-            stdscr,
-            cy,
-            x + 2,
-            shorten(header, w - 4),
-            curses.color_pair(4) | curses.A_BOLD,
-        )
-        if not sessions:
-            self.write(stdscr, cy + 1, x + 2, "No sessions.", curses.color_pair(5))
-            return
-        visible = max(1, h - 5)
-        idx = max(0, min(self.workflow_index, len(sessions) - 1))
-        start = max(0, min(idx - visible // 2, max(0, len(sessions) - visible)))
-        for off, wf in enumerate(sessions[start : start + visible]):
-            ry = cy + 1 + off
-            marker = ">" if start + off == idx else " "
-            started = self.session_started(wf)
-            cost = money(wf.total_cost)
-            tok = human_tokens(wf.total_tokens)
-            text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  {wf.title}"
-            if start + off == idx:
-                self.write(
-                    stdscr,
-                    ry,
-                    x + 2,
-                    shorten(text, w - 4).ljust(w - 4),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
-            else:
-                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
-        self.write(stdscr, cy, x + w - 22, "Enter: open session", curses.color_pair(1))
-
-    def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        # Navigable project list on the Projects tab of a zoomed month/day.
-        projects = self.zoom_projects()
-        cy = y + 3
-        header = self.project_header_text(w - 4)
-        self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
-        if not projects:
-            self.write(stdscr, cy + 1, x + 2, "No projects.", curses.color_pair(5))
-            return
-        visible = max(1, h - 5)
-        idx = max(0, min(self.project_index, len(projects) - 1))
-        start = max(0, min(idx - visible // 2, max(0, len(projects) - visible)))
-        for off, project in enumerate(projects[start : start + visible]):
-            ry = cy + 1 + off
-            marker = ">" if start + off == idx else " "
-            cost = money(project.cost)
-            tok = human_tokens(project.tokens)
-            text = self.project_row_text(project, marker, w - 4)
-            if start + off == idx:
-                self.write(
-                    stdscr,
-                    ry,
-                    x + 2,
-                    shorten(text, w - 4).ljust(w - 4),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
-            else:
-                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
-        self.write(stdscr, cy, x + w - 24, "Enter: open sessions", curses.color_pair(1))
-
-    def draw_month_list(
-        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
-    ) -> None:
-        self.box(stdscr, y, x, h, w, "Months" + (" ▸" if active else ""))
-        rows = self.months
-        if not rows:
-            self.write(stdscr, y + 2, x + 2, "No months in range.", curses.color_pair(5))
-            return
-
-        peak = max((m.cost for m in rows), default=0.0)
-        bar_cells, text_w = self.bar_lane(w)
-        visible = h - 3
-        start = max(0, min(self.month_index - visible // 2, max(0, len(rows) - visible)))
-        for row_y, month in enumerate(rows[start : start + visible], y + 2):
-            selected = start + row_y - (y + 2) == self.month_index
-            marker = ">" if selected else " "
-            cost = money(month.cost)
-            tok = human_tokens(month.tokens)
-            text = self.month_row_text(month, marker)
-            if selected and active:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x + 1,
-                    shorten(text, text_w).ljust(text_w),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
-            elif selected:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x + 1,
-                    shorten(text, text_w).ljust(text_w),
-                    curses.color_pair(1) | curses.A_BOLD,
-                )
-            else:
-                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, text_w)
-            if bar_cells:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x + w - 1 - bar_cells,
-                    cost_bar(month.cost, peak, bar_cells),
-                    curses.color_pair(1),
-                )
-
-    def draw_project_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        self.box(stdscr, y, x, h, w, "Projects ▸")
-        rows = self.projects
-        if not rows:
-            self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(5))
-            return
-
-        header = self.project_header_text(w - 2)
-        self.write(
-            stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD
-        )
-
-        visible = h - 4
-        start = max(0, min(self.project_index - visible // 2, max(0, len(rows) - visible)))
-        for row_y, project in enumerate(rows[start : start + visible], y + 3):
-            selected = start + row_y - (y + 3) == self.project_index
-            marker = ">" if selected else " "
-            cost = money(project.cost)
-            tok = human_tokens(project.tokens)
-            text = self.project_row_text(project, marker, w - 2)
-            if selected:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x + 1,
-                    shorten(text, w - 2).ljust(w - 2),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
-            else:
-                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
-
-    def draw_project_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        project = self.selected_project_summary
-        title = (
-            "Project"
-            if project is None
-            else f"Project {short_path(project.directory, max(10, w - 14))}"
-        )
-        self.box(stdscr, y, x, h, w, title)
-        if project is None:
-            self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(5))
-            return
-
-        tab_line = "  ".join(
-            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
-        )
-        self.write(
-            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
-        )
-
-        current = self.current_tabs()[self.tab % len(self.current_tabs())]
-        if current == "Sessions" and self.view == "zoom":
-            self.draw_sessions_picker(stdscr, y, x, h, w)
-            return
-        if current == "Overview":
-            lines = self.project_overview(project, w - 4)
-        elif current == "Models":
-            lines = self.project_models(project, w - 4)
-        else:
-            lines = self.project_workflows(project, w - 4)
-
-        visible = h - 4
-        self.scroll = max(0, min(self.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
-            )
-            if line.startswith("! "):
-                attr = curses.color_pair(5) | curses.A_BOLD
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
-
-    def draw_month_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        month = self.selected_month_summary
-        title = "Month" if month is None else f"Month {month.month}"
-        self.box(stdscr, y, x, h, w, title)
-        if month is None:
-            self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(5))
-            return
-
-        tab_line = "  ".join(
-            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
-        )
-        self.write(
-            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
-        )
-
-        current = self.current_tabs()[self.tab % len(self.current_tabs())]
-        if current == "Sessions" and self.view == "zoom":
-            self.draw_sessions_picker(stdscr, y, x, h, w)
-            return
-        if current == "Projects" and self.view == "zoom":
-            self.draw_projects_picker(stdscr, y, x, h, w)
-            return
-        if current == "Overview":
-            lines = self.month_overview(month, w - 4)
-        elif current == "Models":
-            lines = self.month_models(month, w - 4)
-        elif current == "Projects":
-            lines = self.month_projects(month, w - 4)
-        else:
-            lines = self.month_workflows(month, w - 4)
-
-        visible = h - 4
-        self.scroll = max(0, min(self.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
-            )
-            if line.startswith("! "):
-                attr = curses.color_pair(5) | curses.A_BOLD
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
-
-    def draw_day_list(
-        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
-    ) -> None:
-        month = self.focused_month
-        self.box(
-            stdscr, y, x, h, w, (f"Days · {month}" if month else "Days") + (" ▸" if active else "")
-        )
-        rows = self.panel_days
-        if not rows:
-            self.write(stdscr, y + 2, x + 2, "No days in month.", curses.color_pair(5))
-            return
-
-        peak = max((d.cost for d in rows), default=0.0)
-        bar_cells, text_w = self.bar_lane(w)
-        visible = h - 3
-        start = max(0, min(self.day_index - visible // 2, max(0, len(rows) - visible)))
-        for row_y, day in enumerate(rows[start : start + visible], y + 2):
-            selected = start + row_y - (y + 2) == self.day_index
-            marker = ">" if selected else " "
-            cost = money(day.cost)
-            tok = human_tokens(day.tokens)
-            text = self.day_row_text(day, marker)
-            if selected and active:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x + 1,
-                    shorten(text, text_w).ljust(text_w),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
-            elif selected:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x + 1,
-                    shorten(text, text_w).ljust(text_w),
-                    curses.color_pair(1) | curses.A_BOLD,
-                )
-            else:
-                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, text_w)
-            if bar_cells:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x + w - 1 - bar_cells,
-                    cost_bar(day.cost, peak, bar_cells),
-                    curses.color_pair(1),
-                )
-
-    def draw_day_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        day = self.selected_day_summary
-        title = "Day" if day is None else f"Day {day.day}"
-        self.box(stdscr, y, x, h, w, title)
-        if day is None:
-            self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(5))
-            return
-
-        tab_line = "  ".join(
-            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
-        )
-        self.write(
-            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
-        )
-
-        current = self.current_tabs()[self.tab % len(self.current_tabs())]
-        if current == "Sessions" and self.view == "zoom":
-            self.draw_sessions_picker(stdscr, y, x, h, w)
-            return
-        if current == "Projects" and self.view == "zoom":
-            self.draw_projects_picker(stdscr, y, x, h, w)
-            return
-        if current == "Overview":
-            lines = self.day_overview(day, w - 4)
-        elif current == "Projects":
-            lines = self.day_projects(day, w - 4)
-        else:
-            lines = self.day_workflows(day, w - 4)
-
-        visible = h - 4
-        self.scroll = max(0, min(self.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
-            )
-            if line.startswith("! "):
-                attr = curses.color_pair(5) | curses.A_BOLD
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
-
-    def draw_workflow_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        day = self.active_day
-        title = f"Sessions · {day}" if day else "Sessions"
-        self.box(stdscr, y, x, h, w, title)
-        rows = self.workflows
-        if not rows:
-            self.write(stdscr, y + 2, x + 2, "No sessions match the filter.", curses.color_pair(5))
-            return
-
-        visible = h - 3
-        start = max(0, min(self.workflow_index - visible // 2, max(0, len(rows) - visible)))
-        for row_y, workflow in enumerate(rows[start : start + visible], y + 2):
-            selected = start + row_y - (y + 2) == self.workflow_index
-            marker = ">" if selected else " "
-            cost = money(workflow.total_cost)
-            tok = human_tokens(workflow.total_tokens)
-            text = (
-                f"{marker} {cost:>9} "
-                f"{tok:>7} "
-                f"{workflow.subagents:>3} subs "
-                f"{shorten(workflow.title, max(12, w - 25))}"
-            )
-            if selected:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x + 1,
-                    shorten(text, w - 2).ljust(w - 2),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
-            else:
-                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
-
-    def draw_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        workflow = self.current_session()
-        title = "Detail" if workflow is None else shorten(workflow.title, max(10, w - 12))
-        self.box(stdscr, y, x, h, w, title)
-        if workflow is None:
-            self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(5))
-            return
-
-        tab_line = "  ".join(
-            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
-        )
-        self.write(
-            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
-        )
-
-        if self.tab == 0:
-            lines = self.detail_overview(workflow, w - 4)
-        elif self.tab == 1:
-            lines = self.detail_models(workflow, w - 4)
-        else:
-            lines = self.detail_subagents(workflow, w - 4)
-
-        visible = h - 4
-        self.scroll = max(0, min(self.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
-            )
-            if line.startswith("! "):
-                attr = curses.color_pair(5) | curses.A_BOLD
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
 
     def workflows_for_day(self, day: str) -> list[Workflow]:
         return [workflow for workflow in self.all_workflows if workflow.created_at.startswith(day)]
@@ -2324,306 +2754,6 @@ class App:
             reverse=True,
         )
 
-    def _model_table(self, rows: list[tuple], title: str, width: int) -> list[str]:
-        # rows: (name, runs, cost, tokens, cache_read, cache_write, output). The
-        # model column fits the longest name (so the numbers sit right after it),
-        # capped by the available width so long names aren't cut when there's room.
-        longest = max([len(str(r[0])) for r in rows] + [len("Model")])
-        mw = min(longest, max(20, width - 61))
-        total_cost = sum(float(r[2]) for r in rows)
-        lines = [
-            title,
-            f"{'Model':{mw}} {'Msgs':>4} {'Cost':>10} {'Share':>5} {'Tokens':>9} {'CacheR':>9} {'CacheW':>9} {'Output':>8}",
-        ]
-        for name, runs, cost, tok, cr, cw, out in rows:
-            lines.append(
-                f"{shorten(name, mw):{mw}} {int(runs):>4} {money(float(cost)):>10} "
-                f"{pct(float(cost), total_cost):>5} "
-                f"{human_tokens(int(tok)):>9} {human_tokens(int(cr)):>9} {human_tokens(int(cw)):>9} {human_tokens(int(out)):>8}"
-            )
-        if any(str(name).startswith("unknown") for name, *_ in rows):
-            lines.extend(
-                [
-                    "",
-                    "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
-                ]
-            )
-        return lines
-
-    def _top_models(self, rows: list[tuple], width: int) -> list[str]:
-        # rows: (name, cost, tokens, runs). Compact list under "# Top Models".
-        if not rows:
-            return []
-        mw = min(max(len(str(r[0])) for r in rows), max(20, width - 37))
-        total_cost = sum(float(r[1]) for r in rows)
-        return [
-            f"{shorten(name, mw):{mw}} {money(float(cost)):>10} {pct(float(cost), total_cost):>5} "
-            f"{human_tokens(int(tok)):>8} msgs {int(runs)}"
-            for name, cost, tok, runs in rows
-        ]
-
-    @staticmethod
-    def _agg_rows(aggregate: list[tuple[str, dict]]) -> list[tuple]:
-        return [
-            (
-                m,
-                it["runs"],
-                it["cost"],
-                it["tokens"],
-                it["cache_read"],
-                it["cache_write"],
-                it["output"],
-            )
-            for m, it in aggregate
-        ]
-
-    @staticmethod
-    def _mix_rows(model_rows: list[dict]) -> list[tuple]:
-        return [
-            (
-                r["model_name"],
-                r["runs"],
-                r["cost"],
-                r["tokens_total"],
-                r["cache_read"],
-                r["cache_write"],
-                r["output"],
-            )
-            for r in model_rows
-        ]
-
-    def month_overview(self, month: MonthSummary, width: int) -> list[str]:
-        lines = [
-            "# Monthly Insight",
-            f"Month:           {month.month}",
-            f"Cost:            {money(month.cost)}",
-            f"Share of range:  {pct(month.cost, self.range_cost_total())}",
-            f"Tokens:          {tokens(month.tokens)}",
-            f"Sessions:        {month.workflows}",
-            f"Subagents:       {month.subagents}",
-            f"Unpriced tokens: {tokens(month.unpriced_tokens)}",
-        ]
-        if month.unpriced_tokens:
-            lines.extend(
-                [
-                    "",
-                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
-                ]
-            )
-        lines.extend(["", "# Top Models"])
-        agg = self.aggregate_models(self.workflows_for_month(month.month))
-        lines.extend(
-            self._top_models([(m, it["cost"], it["tokens"], it["runs"]) for m, it in agg], width)
-        )
-        lines.extend(["", "# Top Sessions"])
-        for workflow in self.top_sessions(self.workflows_for_month(month.month)):
-            lines.append(
-                f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, month.cost):>5} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 37))}"
-            )
-        return lines
-
-    def month_models(self, month: MonthSummary, width: int) -> list[str]:
-        agg = self.aggregate_models(self.workflows_for_month(month.month))
-        return self._model_table(self._agg_rows(agg), "# Monthly Model Spend", width)
-
-    def month_workflows(self, month: MonthSummary, width: int) -> list[str]:
-        lines = [
-            "# Monthly Sessions",
-            f"{self.sort_heading('date', 'Started'):<10} "
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
-            f"{self.sort_heading('title', 'Title')}",
-        ]
-        for workflow in self.sorted_workflows(self.workflows_for_month(month.month)):
-            lines.append(
-                f"{workflow.created_at[:10]:<10} "
-                f"{money(workflow.total_cost):>9} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>4} "
-                f"{workflow.model_count:>6}  "
-                f"{workflow.title}"
-            )
-        return lines
-
-    def day_overview(self, day: DaySummary, width: int) -> list[str]:
-        lines = [
-            "# Day Burn",
-            f"Day:             {day.day}",
-            f"Cost:            {money(day.cost)}",
-            f"Share of range:  {pct(day.cost, self.range_cost_total())}",
-            f"Tokens:          {tokens(day.tokens)}",
-            f"Sessions:        {day.workflows}",
-            f"Subagents:       {day.subagents}",
-            f"Unpriced tokens: {tokens(day.unpriced_tokens)}",
-        ]
-        if day.unpriced_tokens:
-            lines.extend(
-                [
-                    "",
-                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
-                ]
-            )
-        # A day touches few models, so the full model table lives here in the
-        # Overview rather than in its own (near-empty) tab.
-        agg = self.aggregate_models(self.workflows_for_day(day.day))
-        lines.append("")
-        lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
-        lines.extend(["", "# Top Sessions"])
-        for workflow in self.top_sessions(self.workflows_for_day(day.day)):
-            lines.append(
-                f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, day.cost):>5} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 37))}"
-            )
-        return lines
-
-    def day_workflows(self, day: DaySummary, width: int) -> list[str]:
-        lines = [
-            "# Day Sessions",
-            f"{self.sort_heading('date', 'Time'):<10} "
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
-            f"{self.sort_heading('title', 'Title')}",
-        ]
-        for workflow in self.sorted_workflows(self.workflows_for_day(day.day)):
-            lines.append(
-                f"{workflow.created_at[11:16]:<10} "
-                f"{money(workflow.total_cost):>9} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>4} "
-                f"{workflow.model_count:>6}  "
-                f"{workflow.title}"
-            )
-        return lines
-
-    def project_overview(self, project: ProjectSummary, width: int) -> list[str]:
-        workflows = self.workflows_for_project(project.directory)
-        lines = [
-            "# Project Spend",
-            f"Project:         {short_path(project.directory, max(20, width - 17))}",
-            f"Cost:            {money(project.cost)}",
-            f"Share of range:  {pct(project.cost, self.range_cost_total())}",
-            f"Tokens:          {tokens(project.tokens)}",
-            f"Sessions:        {project.workflows}",
-            f"Subagents:       {project.subagents}",
-            f"Unpriced tokens: {tokens(project.unpriced_tokens)}",
-        ]
-        if project.unpriced_tokens:
-            lines.extend(
-                [
-                    "",
-                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
-                ]
-            )
-        lines.extend(["", "# Top Models"])
-        agg = self.aggregate_models(workflows)
-        lines.extend(
-            self._top_models([(m, it["cost"], it["tokens"], it["runs"]) for m, it in agg], width)
-        )
-        lines.extend(["", "# Top Sessions"])
-        for workflow in self.top_sessions(workflows):
-            lines.append(
-                f"{workflow.created_at[:10]:<10} {money(workflow.total_cost):>10} "
-                f"{pct(workflow.total_cost, project.cost):>5} "
-                f"{human_tokens(workflow.total_tokens):>8} agents {workflow.subagents:<3} "
-                f"{shorten(workflow.title, max(20, width - 50))}"
-            )
-        return lines
-
-    def project_models(self, project: ProjectSummary, width: int) -> list[str]:
-        agg = self.aggregate_models(self.workflows_for_project(project.directory))
-        return self._model_table(self._agg_rows(agg), "# Project Model Spend", width)
-
-    def project_table(self, rows: list[ProjectSummary], title: str, width: int) -> list[str]:
-        lines = [title, self.project_header_text(width)]
-        if not rows:
-            lines.append("No projects.")
-            return lines
-        lines.extend(self.project_row_text(project, " ", width) for project in rows)
-        return lines
-
-    def month_projects(self, month: MonthSummary, width: int) -> list[str]:
-        projects = self.projects_for_workflows(self.workflows_for_month(month.month))
-        return self.project_table(projects, "# Monthly Projects", width)
-
-    def day_projects(self, day: DaySummary, width: int) -> list[str]:
-        projects = self.projects_for_workflows(self.workflows_for_day(day.day))
-        return self.project_table(projects, "# Day Projects", width)
-
-    def project_workflows(self, project: ProjectSummary, width: int) -> list[str]:
-        lines = [
-            "# Project Sessions",
-            f"{self.sort_heading('date', 'Started'):<10} "
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
-            f"{self.sort_heading('title', 'Title')}",
-        ]
-        for workflow in self.sorted_workflows(self.workflows_for_project(project.directory)):
-            lines.append(
-                f"{workflow.created_at[:10]:<10} "
-                f"{money(workflow.total_cost):>9} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>4} "
-                f"{workflow.model_count:>6}  "
-                f"{workflow.title}"
-            )
-        return lines
-
-    def detail_overview(self, workflow: Workflow, width: int) -> list[str]:
-        lines = [
-            "# Session",
-            f"ID:       {workflow.id}",
-            f"Started:  {workflow.created_at}",
-            f"Project:  {short_path(workflow.directory, max(20, width - 10))}",
-            f"Title:    {workflow.title}",
-            "",
-            "# Money",
-            f"Total:    {money(workflow.total_cost)}",
-            f"Root:     {money(workflow.root_cost)}",
-            f"Subagent: {money(workflow.total_cost - workflow.root_cost)}",
-            f"Share:    {pct(workflow.total_cost, self.range_cost_total())} of range",
-            "",
-            "# Shape",
-            f"Subagents:       {workflow.subagents}",
-            f"Distinct models: {workflow.model_count}",
-            f"Tokens:          {tokens(workflow.total_tokens)}",
-            f"Unpriced tokens: {tokens(workflow.unpriced_tokens)}",
-        ]
-        if workflow.unpriced_tokens:
-            lines.extend(
-                ["", "! Some tokens have local cost = $0.00. Reconcile Copilot billing separately."]
-            )
-        lines.extend(["", "# Top Models"])
-        model_rows = self.model_mix(workflow.id)
-        lines.extend(
-            self._top_models(
-                [(r["model_name"], r["cost"], r["tokens_total"], r["runs"]) for r in model_rows],
-                width,
-            )
-        )
-        if any(row["model_name"].startswith("unknown") for row in model_rows):
-            lines.extend(
-                [
-                    "",
-                    "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
-                ]
-            )
-        return lines
-
-    def detail_models(self, workflow: Workflow, width: int) -> list[str]:
-        model_rows = self.model_mix(workflow.id)
-        lines = self._model_table(self._mix_rows(model_rows), "# Model Mix", width)
-        if any(row["model_name"].startswith("unknown") for row in model_rows):
-            lines.append(
-                "! $0.00 rows with tokens often mean local attribution lacks provider pricing, especially Copilot."
-            )
-        return lines
-
     def sorted_subagent_rows(self, rows: list) -> list:
         sort_by = (
             self.sort_by
@@ -2642,76 +2772,6 @@ class App:
             return sorted(rows, key=lambda row: (row["depth"], row["tokens_total"]))
         return sorted(rows, key=lambda row: (row["cost"], row["tokens_total"]), reverse=True)
 
-    def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
-        rows = [row for row in self.store.workflow_nodes(workflow.id) if row["depth"] > 0]
-        if not rows:
-            return ["# Subagents", "No subagents used in this workflow."]
-        rows = self.sorted_subagent_rows(rows)
-        lines = [
-            "# Subagent Executions",
-            f"{self.sort_heading('depth', 'D'):<1} "
-            f"{self.sort_heading('agent', 'Agent'):14} "
-            f"{self.sort_heading('model', 'Model'):31} "
-            f"{self.sort_heading('cost', 'Cost'):>8} "
-            f"{self.sort_heading('tokens', 'Tokens'):>9}  "
-            f"{self.sort_heading('title', 'Title')}",
-        ]
-        for row in rows:
-            lines.append(
-                f"{row['depth']:<1} "
-                f"{shorten(row['agent'], 14):14} "
-                f"{shorten(row['model_name'], 31):31} "
-                f"{money(row['cost']):>8} "
-                f"{human_tokens(row['tokens_total']):>9}  "
-                f"{row['title']}"
-            )
-        return lines
-
-    def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
-        self.box(stdscr, y, 0, bottom - y, width, "Help")
-        lines = [
-            "OpenTab is a session browser, not a fuzzy-search toy.",
-            "",
-            "Navigation:",
-            "  p / t            switch to Projects / Time browse mode",
-            "  Tab              flip focus between Months and Days in Time mode",
-            "  Enter / +        zoom month/day/project detail; on the Sessions tab open the",
-            "                   selected session; on a zoom's Projects tab open that",
-            "                   project's sessions within the month/day",
-            "  Esc              step back out (session -> zoom -> browse)",
-            "  Shift-Tab        flip Months/Days while browsing; else step back out",
-            "  h/l              switch detail tabs (months: Overview/Models/Projects/Sessions;",
-            "                   days: Overview/Projects/Sessions)",
-            "  j/k or Up/Down   move in the current list (or scroll detail)",
-            "  g/G              top / bottom",
-            "  R                set range: all, 30d (or 30), 2m (~60d), 2026, 2026-05, start..end",
-            "  a                show all time, keeping the current selection when possible",
-            "  s / S            cycle sort forward / backward on visible lists",
-            "  /                filter sessions by title/project/id (Esc cancels)",
-            "  x                clear filter",
-            "  e                export the current list to a CSV in the working directory",
-            "  y                copy the selected session id (or project path)",
-            "  o                open the selected session's / project's directory",
-            "  r                reload database",
-            "  q                quit",
-            "",
-            "Cost caveat:",
-            "  Cost is OpenCode's local attribution. Token-based billing (e.g. Copilot)",
-            "  still needs account-level reconciliation; unpriced tokens are flagged.",
-            "  Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price).",
-            "  Range and sort are remembered between runs (~/.config/opentab; --no-state off).",
-            "",
-            "Press any key to close help.",
-        ]
-        for i, line in enumerate(lines[: bottom - y - 3], y + 2):
-            self.write(
-                stdscr,
-                i,
-                2,
-                shorten(line, width - 4),
-                curses.color_pair(4) if line.endswith(":") else curses.A_NORMAL,
-            )
-
     def range_label(self) -> str:
         if self.custom_since or self.custom_until:
             label = f"since {self.custom_since}" if self.custom_since else "from start"
@@ -2721,47 +2781,6 @@ class App:
         if self.range_days is None:
             return "all time"
         return f"last {self.range_days} days"
-
-    def box(self, stdscr: curses.window, y: int, x: int, h: int, w: int, title: str) -> None:
-        if h <= 1 or w <= 1:
-            return
-        stdscr.addch(y, x, curses.ACS_ULCORNER)
-        stdscr.addch(y, x + w - 1, curses.ACS_URCORNER)
-        stdscr.addch(y + h - 1, x, curses.ACS_LLCORNER)
-        stdscr.addch(y + h - 1, x + w - 1, curses.ACS_LRCORNER)
-        stdscr.hline(y, x + 1, curses.ACS_HLINE, w - 2)
-        stdscr.hline(y + h - 1, x + 1, curses.ACS_HLINE, w - 2)
-        stdscr.vline(y + 1, x, curses.ACS_VLINE, h - 2)
-        stdscr.vline(y + 1, x + w - 1, curses.ACS_VLINE, h - 2)
-        self.write(
-            stdscr, y, x + 2, f" {shorten(title, w - 6)} ", curses.color_pair(1) | curses.A_BOLD
-        )
-
-    def hline(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
-        stdscr.hline(y, x, curses.ACS_HLINE, max(0, w - 1))
-
-    def write(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
-        height, width = stdscr.getmaxyx()
-        if y < 0 or y >= height or x < 0 or x >= width:
-            return
-        try:
-            stdscr.addstr(y, x, text[: max(0, width - x - 1)], attr)
-        except curses.error:
-            pass
-
-    def write_rich(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
-        self.write(stdscr, y, x, text, attr)
-        if attr & curses.A_BOLD and text.startswith("# "):
-            return
-        if text.lstrip().startswith("ID:"):
-            return  # session ids can contain money/token-like runs; don't recolor them
-        for match in MONEY_PATTERN.finditer(text):
-            self.write(
-                stdscr, y, x + match.start(), match.group(0), self.money_attr(match.group(0))
-            )
-        for match in TOKEN_PATTERN.finditer(text):
-            token_text = match.group(0)
-            self.write(stdscr, y, x + match.start(), token_text, self.token_attr(token_text))
 
 
 def parse_args() -> argparse.Namespace:
