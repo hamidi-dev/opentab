@@ -2,30 +2,31 @@
 
 > OpenCode keeps a tab. OpenTab opens it.
 
-https://github.com/user-attachments/assets/6b63e1fc-effc-4b0f-bda1-7eb84f0b603f
+https://github.com/user-attachments/assets/4362f4b0-e242-4a3c-a0ac-4b86b9c0c2a1
 
-A local, dependency-free terminal UI for your [OpenCode](https://opencode.ai)
-spend. OpenTab reads OpenCode's own SQLite database and shows you exactly where
-your tokens and money went — by month, day, project, session, model, and subagent —
-including the recursive cost of every subagent a session spawned.
+A local, zero-dependency terminal UI for your [OpenCode](https://opencode.ai)
+spend. It reads OpenCode's own SQLite database — the one already on your disk —
+and shows you where your tokens and money actually went: by month, day, project,
+session, and model, down to the subagent tree on the sessions that spawned one.
 
-No backend. No telemetry. No accounts. Just `curses` + `sqlite3` from the
-Python standard library. No `pip install`, ever.
+OpenCode already keeps this ledger; OpenTab is just the reader for it. No backend,
+no telemetry, no accounts — it opens the database **read-only**, so it physically
+cannot change your data. Just `curses` + `sqlite3` from the Python standard
+library — no `pip install`, ever.
 
 ## Features
 
-- Session cost breakdown
-- Model attribution
-- Recursive subagent costs
-- Monthly, daily, and project views
+- Cost by month, day, project, session, and model
+- Trends overlay: daily / monthly spend charts + model-spend ranking
 - Cost-share percentages and inline spend bars
-- Trends overlay: daily/monthly spend charts and model-spend ranking
+- Per-session model mix and token breakdown
+- Recursive subagent costs, on the sessions that delegated work
 - Git worktrees folded into their main repo
+- Filter (title / project / id) and live date-range scoping
 - CSV export of any view
 - Remembers your range and sort between runs
-- Local-only
-- Zero dependencies
-- Demo mode for screenshots
+- Read-only, local-only, zero dependencies
+- Demo mode for screenshots and live demos
 
 ## Why this exists
 

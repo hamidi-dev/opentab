@@ -2917,10 +2917,11 @@ class App:
         self.notice = "filter cleared" if not self.query else f"filter: {self.query}"
 
     def prompt_range(self, stdscr: curses.window) -> None:
+        initial = "" if self.range_input_value() == "all" else self.range_input_value()
         value = self.prompt_text(
             stdscr,
             "Range all | 30d | 2m | 2026 | 2026-05 | start..end (Esc cancels): ",
-            self.range_input_value(),
+            initial,
         )
         if value is None:
             return
