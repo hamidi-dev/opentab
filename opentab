@@ -699,8 +699,9 @@ class Store:
         group by tree.root_id, model_name
         """
         # In demo mode the per-model rows are reconciled to each session's total
-        # in App._load_model_cache (Copilot rows have real runs but 0 cost/tokens
-        # in the message JSON, so they can't be priced in isolation here).
+        # in App._load_model_cache (subscription/credit rows -- Copilot, Codex,
+        # Claude Code -- have real runs but 0 cost/tokens in the message JSON, so
+        # they can't be priced in isolation here).
         return list(self.conn.execute(sql))
 
 
@@ -1524,7 +1525,7 @@ class Renderer:
             lines.extend(
                 [
                     "",
-                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
+                    "! $0.00-cost tokens: subscription or credit plans (Claude Code, Codex, Copilot) aren't billed per token.",
                 ]
             )
         month_ws = self.workflows_for_month(month.month)
@@ -1581,7 +1582,7 @@ class Renderer:
             lines.extend(
                 [
                     "",
-                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
+                    "! $0.00-cost tokens: subscription or credit plans (Claude Code, Codex, Copilot) aren't billed per token.",
                 ]
             )
         # A day touches few models, so the full model table lives here in the
@@ -1634,7 +1635,7 @@ class Renderer:
             lines.extend(
                 [
                     "",
-                    "! Some tokens have local cost = $0.00. Copilot billing may still charge account credits.",
+                    "! $0.00-cost tokens: subscription or credit plans (Claude Code, Codex, Copilot) aren't billed per token.",
                 ]
             )
         lines.extend(["", "# Top Models"])
@@ -1714,7 +1715,10 @@ class Renderer:
         ]
         if workflow.unpriced_tokens:
             lines.extend(
-                ["", "! Some tokens have local cost = $0.00. Reconcile Copilot billing separately."]
+                [
+                    "",
+                    "! $0.00 tokens here are covered by a subscription/credit plan (Claude Code, Codex, Copilot), not priced per token.",
+                ]
             )
         lines.extend(["", "# Top Models"])
         model_rows = self.model_mix(workflow.id)
@@ -1738,7 +1742,7 @@ class Renderer:
         lines = self._model_table(self._mix_rows(model_rows), "# Model Mix", width)
         if any(row["model_name"].startswith("unknown") for row in model_rows):
             lines.append(
-                "! $0.00 rows with tokens often mean local attribution lacks provider pricing, especially Copilot."
+                "! $0.00 rows with tokens = no local per-token price; common on subscription/credit plans (Claude Code, Codex, Copilot)."
             )
         return lines
 
@@ -1797,8 +1801,9 @@ class Renderer:
             "  q                quit",
             "",
             "Cost caveat:",
-            "  Cost is OpenCode's local attribution. Token-based billing (e.g. Copilot)",
-            "  still needs account-level reconciliation; unpriced tokens are flagged.",
+            "  Cost is OpenCode's local attribution. Subscription or credit plans",
+            "  (Claude Code, Codex, Copilot) aren't priced per token, so their usage",
+            "  shows as unpriced $0.00 -- check your provider/subscription for the total.",
             "  Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price).",
             "  Range and sort are remembered between runs (~/.config/opentab; --no-state off).",
             "  Git worktrees fold into their main repo (--no-worktrees to keep them split).",
@@ -2373,8 +2378,9 @@ class App:
 
     def _reconcile_demo_models(self) -> None:
         # Make each session's per-model rows sum exactly to that session's demo
-        # total cost/tokens. Copilot rows carry real `runs` but 0 cost/tokens in
-        # the message JSON, so we distribute the session's synthetic shortfall
+        # total cost/tokens. Subscription/credit rows (Copilot, Codex, Claude
+        # Code) carry real `runs` but 0 cost/tokens in the message JSON, so we
+        # distribute the session's synthetic shortfall
         # across the zero-cost rows by message count. Keeps the Models tab
         # internally consistent with the Money panel at every zoom level.
         by_id = {w.id: w for w in self.loaded}

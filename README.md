@@ -189,10 +189,13 @@ ruff format opentab test_opentab.py
 
 The numbers come straight from OpenCode's own data (cost/tokens per message,
 rolled up per session). They are *local attribution* of what OpenCode recorded.
-For providers with token-based or credit-based billing (e.g. GitHub Copilot),
-some sessions show tokens with a `$0.00` local cost — those need account-level
-reconciliation against your provider, not this tool. OpenTab surfaces these as
-"unpriced tokens" so you know where attribution is incomplete.
+Some sessions show tokens with a `$0.00` local cost — OpenCode recorded the usage
+but no per-token price. That's normal whenever billing isn't per token:
+subscription plans (Claude Code, Codex) and credit/token plans (GitHub Copilot)
+both leave the per-message cost empty. Those tokens aren't missing money so much
+as billed elsewhere — by your subscription or account credits — so the real total
+lives with your provider, not this tool. OpenTab surfaces them as "unpriced
+tokens" so you know where local attribution is incomplete.
 
 ## Not affiliated
 
