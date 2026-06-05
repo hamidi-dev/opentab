@@ -1,8 +1,14 @@
-# OpenTab
+<h1 align="center">OpenTab</h1>
 
-> OpenCode keeps a tab. OpenTab opens it.
+<p align="center"><em>OpenCode keeps a tab. OpenTab opens it.</em></p>
 
-https://github.com/user-attachments/assets/4362f4b0-e242-4a3c-a0ac-4b86b9c0c2a1
+<p align="center">
+  <a href="https://github.com/user-attachments/assets/4362f4b0-e242-4a3c-a0ac-4b86b9c0c2a1">
+    <img src="https://github.com/user-attachments/assets/bf6410bf-fd43-45ca-8319-f7061f87a062" alt="OpenTab — browse your OpenCode spend" width="820">
+  </a>
+  <br>
+  <sub><a href="https://github.com/user-attachments/assets/4362f4b0-e242-4a3c-a0ac-4b86b9c0c2a1">▶ Watch the full-quality video</a></sub>
+</p>
 
 A local, zero-dependency terminal UI for your [OpenCode](https://opencode.ai)
 spend. It reads OpenCode's own SQLite database — the one already on your disk —
