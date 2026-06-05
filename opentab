@@ -438,7 +438,25 @@ class Store:
         uri = "file:" + quote(os.path.abspath(db)) + "?mode=ro"
         self.conn = sqlite3.connect(uri, uri=True)
         self.conn.row_factory = sqlite3.Row
+        self._tune(self.conn)
         self.session_columns = self._table_columns("session")
+
+    @staticmethod
+    def _tune(conn: sqlite3.Connection) -> None:
+        # The startup cost is dominated by scanning the (potentially gigabyte-scale)
+        # message table and json_extract-ing blobs out of it. Memory-mapping the DB
+        # avoids buffered read() syscalls over all that JSON -- a big win on slower
+        # disks / cold caches -- and keeping GROUP BY temp b-trees in RAM trims the
+        # rest. Read-only, so none of this can touch the user's data.
+        for pragma in (
+            "mmap_size = 2147483648",  # up to 2 GiB memory-mapped (capped at file size)
+            "cache_size = -131072",  # 128 MiB page cache
+            "temp_store = memory",
+        ):
+            try:
+                conn.execute(f"pragma {pragma}")
+            except sqlite3.Error:
+                pass  # best-effort; a missing pragma must never block launch
 
     def _table_columns(self, table: str) -> set[str]:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
@@ -560,13 +578,6 @@ class Store:
             sum(case when node_cost = 0 then tokens_total else 0 end) as unpriced_tokens
           from nodes
           group by root_id
-        ), msg_models as (
-          select tree.root_id,
-            count(distinct {MSG_MODEL_EXPR}) as model_count
-          from message m
-          join tree on tree.id = m.session_id
-          where json_extract(m.data, '$.role') = 'assistant'
-          group by tree.root_id
         )
         select
           root.id,
@@ -576,12 +587,11 @@ class Store:
           rollup.root_cost,
           rollup.total_cost,
           rollup.subagents,
-          coalesce(msg_models.model_count, 0) as model_count,
+          0 as model_count,  -- filled in by App._load_model_cache from model_breakdown
           rollup.total_tokens,
           rollup.unpriced_tokens
         from rollup
         join session root on root.id = rollup.root_id
-        left join msg_models on msg_models.root_id = rollup.root_id
         order by rollup.total_cost desc, rollup.total_tokens desc
         """
         rows = [Workflow(**dict(row)) for row in self.conn.execute(sql)]
@@ -2009,7 +2019,13 @@ class App:
         self.args = args
         self.loaded = store.workflows()  # every root session, all time
         self._resolve_project_roots()
-        self._load_model_cache()
+        # The per-model breakdown is the one heavy scan of the (huge) message
+        # table; it's deferred so the first frame paints off the fast session
+        # rollup. run() loads it right after that first paint, before any key is
+        # handled -- so model_count and the Models tabs are ready by the time
+        # anything shows them. Empty until then; model_mix tolerates that.
+        self._model_by_root: dict[str, list[dict]] = defaultdict(list)
+        self._models_loaded = False
         # Active range: custom bounds from CLI take precedence, else a day window
         # (None = all). Default is all time so the Months panel is actually useful.
         self.custom_since = args.since
@@ -2320,10 +2336,23 @@ class App:
         self._model_by_root: dict[str, list[dict]] = defaultdict(list)
         for row in self.store.model_breakdown():
             self._model_by_root[row["root_id"]].append(dict(row))
+        # model_count rides along on the breakdown (one message scan at startup
+        # instead of two): distinct models per root == its number of breakdown rows.
+        # MSG_MODEL_EXPR coalesces to 'unknown', so a root never gets a NULL group;
+        # this equals the old count(distinct ...). Done before any demo renaming.
+        for w in self.loaded:
+            w.model_count = len(self._model_by_root.get(w.id, ()))
         if self.store.demo:
             for root_id, models in self._model_by_root.items():
                 self._model_by_root[root_id] = self._demo_rename_models(models)
             self._reconcile_demo_models()
+        self._models_loaded = True
+
+    def _ensure_models(self) -> None:
+        # Run the deferred model-breakdown load once, on demand. Idempotent so the
+        # run() loop, reload(), or any first model access all converge to one scan.
+        if not self._models_loaded:
+            self._load_model_cache()
 
     @staticmethod
     def _demo_rename_models(models: list[dict]) -> list[dict]:
@@ -2782,8 +2811,16 @@ class App:
         curses.init_pair(5, curses.COLOR_RED, -1)
         stdscr.keypad(True)
 
+        first = True
         while True:
             self.renderer.draw(stdscr)
+            if first:
+                # First frame is up off the fast session rollup; now do the one
+                # heavy message scan, then repaint so model_count / Models tabs are
+                # populated before the user's first keystroke is handled.
+                first = False
+                self._ensure_models()
+                self.renderer.draw(stdscr)
             key = stdscr.getch()
             notice_before = self.notice
             if not self.handle_key(stdscr, key):
