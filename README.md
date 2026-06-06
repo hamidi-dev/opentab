@@ -203,6 +203,15 @@ as billed elsewhere — by your subscription or account credits — so the real 
 lives with your provider, not this tool. OpenTab surfaces them as "unpriced
 tokens" so you know where local attribution is incomplete.
 
+Press `$` in non-demo mode to switch to an API-equivalent estimate: real recorded
+spend plus what `$0.00` subscription/credit usage would have cost at published
+API list prices. The estimate uses an embedded table generated from models.dev
+for Anthropic, OpenAI, and Google, with hand-kept family fallbacks for version or
+suffix churn and a mid-range fallback for unknown models. Nothing is fetched at
+runtime, so the TUI stays single-file, offline, and standard-library only. To
+refresh the embedded table, run `python3 scripts/update_prices.py` and commit the
+changed `opentab` file.
+
 ## Not affiliated
 
 This project is not affiliated with or endorsed by GitHub, Microsoft, OpenCode,

@@ -315,8 +315,13 @@ def test_reconcile_makes_models_sum_to_session_total():
 
 def test_api_price_helpers():
     # input/output/cache priced per 1M, reasoning billed as output.
-    assert ot.model_price("github-copilot/claude-haiku-4.5") == [1.0, 5.0, 0.1, 1.25]
-    assert ot.model_price("openai/gpt-5.2-xhigh")[:2] == [1.75, 14.0]  # variant suffix tolerated
+    assert "gpt-4o-2024-05-13" in ot.MODEL_PRICE_TABLE
+    assert "claude-sonnet-4-5" in ot.MODEL_PRICE_TABLE
+    assert "gemini-2.5-pro" in ot.MODEL_PRICE_TABLE
+    assert ot.model_price("openai/gpt-4o-2024-05-13") == (5.0, 15.0, 0.0, 0.0)  # exact table hit
+    assert ot.model_price("github-copilot/claude-haiku-4.5") == (1.0, 5.0, 0.1, 1.25)
+    assert ot.model_price("openai/gpt-5.2-xhigh")[:2] == (1.75, 14.0)  # variant suffix tolerated
+    assert ot.model_price("unknown/future-model") == ot.FALLBACK_PRICE
     # 1M input + 1M output(+reasoning) of Haiku = $1 + $5 = $6.
     assert round(ot.api_equivalent_cost("x/claude-haiku-4.5", 1e6, 5e5, 5e5, 0, 0), 2) == 6.0
 
@@ -385,6 +390,58 @@ def test_api_price_toggle_prices_unpriced_usage():
         ]
         == 0.0
     )
+
+
+def test_api_price_toggle_prices_unpriced_part_of_mixed_model_row():
+    app = ot.App.__new__(ot.App)
+
+    class _Store:
+        demo = False
+
+    app.store = _Store()
+    app.show_api_prices = False
+    app._models_loaded = True
+    app.loaded = [
+        ot.Workflow(
+            id="r",
+            title="t",
+            directory="d",
+            created_at="2026-01-01",
+            root_cost=10.0,
+            total_cost=10.0,
+            subagents=0,
+            model_count=1,
+            total_tokens=0,
+            unpriced_tokens=0,
+        )
+    ]
+    app._snapshot_real_costs()
+    app._model_by_root = {
+        "r": [
+            {
+                "model_name": "github-copilot/claude-haiku-4.5",
+                "runs": 2,
+                "cost": 10.0,  # one message was billed, one was subscription/credit
+                "tokens_total": 2_000_000,
+                "input": 2_000_000,
+                "output": 0,
+                "reasoning": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "unpriced_input": 1_000_000,
+                "unpriced_output": 0,
+                "unpriced_reasoning": 0,
+                "unpriced_cache_read": 0,
+                "unpriced_cache_write": 0,
+            }
+        ]
+    }
+
+    app._compute_api_costs()
+    app.toggle_api_prices()
+
+    assert round(app.loaded[0].total_cost, 2) == 11.0
+    assert app.model_mix("r")[0]["cost"] == 11.0
 
 
 def test_drill_in_preserves_visible_sessions_tab():
