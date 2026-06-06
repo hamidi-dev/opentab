@@ -136,6 +136,8 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `R` | Set range (`all`, `30d` or `30`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`) |
 | `a` | Show all time |
 | `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
+| `i` | Ignore/unignore the selected project from project lists |
+| `I` | Show/hide ignored projects so they can be unignored |
 | `/` | Filter sessions (title/project/id) and the project list; `Esc` cancels; `x` clears |
 | `T` | Trends overlay — Daily / Monthly cost charts + Model spend ranking (`h`/`l` tabs, `j`/`k` month) |
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
@@ -144,7 +146,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 
-The active **range and sort are remembered between runs** (stored in
+The active **range, sort, and ignored projects are remembered between runs** (stored in
 `~/.config/opentab/state.json`; pass `--no-state` to disable, and `--demo` never
 persists). Sub-cent costs render as `<$0.01` so they aren't confused with a red
 `$0.00`, which means *unpriced* (tokens with no local price). The Months and Days

@@ -231,6 +231,142 @@ def test_projects_group_worktrees_under_root():
     assert {w.id for w in app.workflows_for_project("/repo/app")} == {"m", "w"}
 
 
+def test_ignored_projects_are_filtered_but_can_be_shown_and_unignored():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, directory="/repo/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=5, directory="/repo/b"),
+        ]
+    )
+    app.browse_mode = "projects"
+    app.project_index = 0
+
+    assert [p.directory for p in app.projects] == ["/repo/b", "/repo/a"]
+    assert app.handle_key(None, ord("i"))
+
+    assert app.ignored_projects == {"/repo/b"}
+    assert [w.id for w in app.all_workflows] == ["a"]
+    assert app.months[0].cost == 1
+    assert [p.directory for p in app.projects] == ["/repo/a"]
+    assert app.current_sessions()[0].id == "a"
+
+    assert app.handle_key(None, ord("I"))
+    shown = {p.directory: p for p in app.projects}
+    assert set(shown) == {"/repo/a", "/repo/b"}
+    assert shown["/repo/b"].ignored
+
+    app.project_index = next(i for i, p in enumerate(app.projects) if p.directory == "/repo/b")
+    assert app.handle_key(None, ord("i"))
+    assert app.ignored_projects == set()
+    assert sum(w.total_cost for w in app.all_workflows) == 6
+
+
+def test_ignored_project_detail_still_uses_its_workflows_when_shown():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, directory="/repo/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=5, directory="/repo/b"),
+        ]
+    )
+    app.ignored_projects = {"/repo/b"}
+    app.show_ignored_projects = True
+    app.browse_mode = "projects"
+    app.project_index = next(i for i, p in enumerate(app.projects) if p.directory == "/repo/b")
+    project = app.selected_project_summary
+
+    assert project and project.ignored
+    assert {w.id for w in app.workflows_for_project(project.directory)} == set()
+    assert {w.id for w in app.workflows_for_project(project.directory, include_ignored=True)} == {
+        "b"
+    }
+    assert any("b" in line for line in app.renderer.project_workflows(project, 100))
+
+
+def test_ignored_zoom_project_opens_sessions_when_shown():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, directory="/repo/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=5, directory="/repo/b"),
+        ]
+    )
+    app.ignored_projects = {"/repo/b"}
+    app.show_ignored_projects = True
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Projects")
+    app.project_index = next(
+        i for i, p in enumerate(app.zoom_projects()) if p.directory == "/repo/b"
+    )
+
+    app.drill_in()
+
+    assert app.zoom_project == "/repo/b"
+    assert app.on_sessions_tab
+    assert [w.id for w in app.current_sessions()] == ["b"]
+
+
+def test_project_ignore_only_targets_navigable_project_lists():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, directory="/repo/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=5, directory="/repo/b"),
+        ]
+    )
+    app.focus = "months"
+    app.view = "browse"
+    app.tab = app.month_tabs.index("Projects")  # right-side text table, no cursor
+
+    assert app.handle_key(None, ord("i"))
+
+    assert app.ignored_projects == set()
+    assert "select a project" in app.notice
+
+
+def test_hiding_ignored_projects_clears_ignored_zoom_target():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, directory="/repo/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=5, directory="/repo/b"),
+        ]
+    )
+    app.ignored_projects = {"/repo/b"}
+    app.show_ignored_projects = True
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Projects")
+    app.project_index = next(
+        i for i, p in enumerate(app.zoom_projects()) if p.directory == "/repo/b"
+    )
+    app.drill_in()
+    assert app.current_sessions()[0].id == "b"
+
+    app.handle_key(None, ord("I"))
+
+    assert not app.show_ignored_projects
+    assert app.zoom_project is None
+    assert app.on_projects_tab
+
+
+def test_ignored_projects_are_persisted_in_state():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/repo/a")])
+    app.ignored_projects = {"/repo/a", "/repo/b"}
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00", directory="/repo/a")])
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+    assert restored.ignored_projects == {"/repo/a", "/repo/b"}
+    assert restored.all_workflows == []
+
+
 def test_demo_cost_zero_and_deterministic():
     assert ot.demo_cost(0, "seed") == 0.0
     a = ot.demo_cost(1_000_000, "seed")
@@ -1228,6 +1364,15 @@ def test_export_dataset_follows_the_visible_view():
     scope, header, rows = app._export_dataset()
     assert scope == "projects"
     assert {r[0] for r in rows} == {"/tmp/a", "/tmp/b"}
+
+    app.set_browse_mode("time")
+    app.view = "zoom"
+    app.focus = "months"
+    app.tab = app.month_tabs.index("Projects")
+    scope, header, rows = app._export_dataset()
+    assert scope == "projects"
+    assert header[0] == "directory"
+    assert {r[0] for r in rows} == {"/tmp/a"}
 
 
 def test_export_disabled_in_demo_mode():

@@ -370,6 +370,7 @@ class ProjectSummary:
     subagents: int
     unpriced_tokens: int
     last_active: str = ""  # created_at of the project's most recent session
+    ignored: bool = False
 
 
 def money(value: float) -> str:
@@ -971,8 +972,11 @@ class Renderer:
 
     def project_row_text(self, project: ProjectSummary, marker: str, width: int) -> str:
         name_width = self.project_name_width(width)
+        name = short_path(project.directory, max(1, name_width - (2 if project.ignored else 0)))
+        if project.ignored:
+            name = f"× {name}"
         return (
-            f"{marker} {short_path(project.directory, name_width):{name_width}} "
+            f"{marker} {name:{name_width}} "
             f"{money(project.cost):>9} {human_tokens(project.tokens):>7} "
             f"{project.workflows:>3} ses {project.subagents:>3} subs"
         )
@@ -1158,6 +1162,8 @@ class Renderer:
         trail = f"  ·  sort: {sort_by}" if sort_by else ""
         if self.query:
             trail += f"  ·  filter: {self.query}"
+        if self.ignored_projects:
+            trail += f"  ·  ignored: {len(self.ignored_projects)}"
         if self.notice:
             trail += f"  ·  {self.notice}"
         x = 0
@@ -1227,6 +1233,10 @@ class Renderer:
             parts.append("p/t mode")
         if self.can_sort_current_view():
             parts.append("s/S sort")
+        if self.can_toggle_project_ignore():
+            parts.append("i ignore")
+        if self.ignored_projects:
+            parts.append("I ignored" + ("*" if self.show_ignored_projects else ""))
         parts += ["R range", "/ filter", "T trends", "e export", "y copy", "o open"]
         if not self.store.demo:
             parts.append("$ api-$" + ("*" if self.show_api_prices else ""))
@@ -1866,12 +1876,18 @@ class Renderer:
         return lines
 
     def project_overview(self, project: ProjectSummary, width: int) -> list[str]:
-        workflows = self.workflows_for_project(project.directory)
+        workflows = self.workflows_for_project(project.directory, include_ignored=project.ignored)
+        share_total = (
+            sum(w.total_cost for w in self.ranged_workflows)
+            if project.ignored
+            else self.range_cost_total()
+        )
         lines = [
             "# Project Spend",
             f"Project:         {short_path(project.directory, max(20, width - 17))}",
+            f"Ignored:         {'yes' if project.ignored else 'no'}",
             f"Cost:            {money(project.cost)}",
-            f"Share of range:  {pct(project.cost, self.range_cost_total())}",
+            f"Share of range:  {pct(project.cost, share_total)}",
             f"Tokens:          {tokens(project.tokens)}",
             f"Sessions:        {project.workflows}",
             f"Subagents:       {project.subagents}",
@@ -1900,7 +1916,9 @@ class Renderer:
         return lines
 
     def project_models(self, project: ProjectSummary, width: int) -> list[str]:
-        agg = self.aggregate_models(self.workflows_for_project(project.directory))
+        agg = self.aggregate_models(
+            self.workflows_for_project(project.directory, include_ignored=project.ignored)
+        )
         return self._model_table(self._agg_rows(agg), "# Project Model Spend", width)
 
     def project_table(self, rows: list[ProjectSummary], title: str, width: int) -> list[str]:
@@ -1928,7 +1946,8 @@ class Renderer:
             f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
             f"{self.sort_heading('title', 'Title')}",
         ]
-        for workflow in self.sorted_workflows(self.workflows_for_project(project.directory)):
+        workflows = self.workflows_for_project(project.directory, include_ignored=project.ignored)
+        for workflow in self.sorted_workflows(workflows):
             lines.append(
                 f"{workflow.created_at[:10]:<10} "
                 f"{money(workflow.total_cost):>9} "
@@ -2039,6 +2058,8 @@ class Renderer:
             "  R                set range: all, 30d (or 30), 2m (~60d), 2026, 2026-05, start..end",
             "  a                show all time, keeping the current selection when possible",
             "  s / S            cycle sort forward / backward on visible lists",
+            "  i                ignore/unignore the selected project (project lists only)",
+            "  I                show/hide ignored projects so they can be unignored",
             "  /                filter sessions (title/project/id) and projects (Esc cancels)",
             "  x                clear filter",
             "  e                export the current list to a CSV in the working directory",
@@ -2331,6 +2352,8 @@ class App:
         self.trend_month_index = 0  # which month the Daily tab shows (0 = newest)
         self.sort_by = "cost"
         self.project_sort_by = "cost"
+        self.ignored_projects: set[str] = set()
+        self.show_ignored_projects = False
         self.notice = ""
         # When set (in a month/day zoom), the Sessions list is narrowed to this
         # project's sessions within the zoomed scope. Drilled into from the
@@ -2340,14 +2363,16 @@ class App:
         # (aside from the modal prompt line in prompt_text).
         self.renderer = Renderer(self)
 
+    def _invalidate_workflow_cache(self) -> None:
+        self._rw_key = self._rw_cache = self._aw_key = self._aw_cache = None
+
     @property
-    def all_workflows(self) -> list[Workflow]:
-        # Cached: this is read many times per frame (months/days/projects/summary
-        # all funnel through here). The key changes whenever the loaded data or
-        # the active range changes, so a fresh list is built only when it must be.
+    def ranged_workflows(self) -> list[Workflow]:
+        # Cached range-only source. Ignored-project filtering happens in
+        # all_workflows so ignored projects can still be shown for unignore.
         key = (id(self.loaded), self.custom_since, self.custom_until, self.range_days)
-        if getattr(self, "_aw_key", None) == key:
-            return self._aw_cache
+        if getattr(self, "_rw_key", None) == key:
+            return self._rw_cache
         rows = self.loaded
         if self.custom_since or self.custom_until:
             if self.custom_since:
@@ -2357,6 +2382,28 @@ class App:
         elif self.range_days is not None:
             cutoff = (datetime.now() - timedelta(days=self.range_days)).strftime("%Y-%m-%d")
             rows = [w for w in rows if w.created_at[:10] >= cutoff]
+        self._rw_key = key
+        self._rw_cache = list(rows)
+        return self._rw_cache
+
+    @property
+    def all_workflows(self) -> list[Workflow]:
+        # Every visible workflow in the active range. Ignored projects are removed
+        # here, so summaries, trends, sessions, and exports all agree.
+        key = (
+            id(self.loaded),
+            self.custom_since,
+            self.custom_until,
+            self.range_days,
+            tuple(sorted(self.ignored_projects)),
+        )
+        if getattr(self, "_aw_key", None) == key:
+            return self._aw_cache
+        rows = [
+            w
+            for w in self.ranged_workflows
+            if self.project_root(w.directory) not in self.ignored_projects
+        ]
         self._aw_key = key
         self._aw_cache = list(rows)
         return self._aw_cache
@@ -2483,12 +2530,17 @@ class App:
 
     @property
     def projects(self) -> list[ProjectSummary]:
-        return self.projects_for_workflows(self.all_workflows)
+        source = self.ranged_workflows if self.show_ignored_projects else self.all_workflows
+        return self.projects_for_workflows(source, include_ignored=self.show_ignored_projects)
 
-    def projects_for_workflows(self, workflows: list[Workflow]) -> list[ProjectSummary]:
+    def projects_for_workflows(
+        self, workflows: list[Workflow], include_ignored: bool = False
+    ) -> list[ProjectSummary]:
         grouped: dict[str, list[Workflow]] = defaultdict(list)
         for workflow in workflows:
-            grouped[self.project_root(workflow.directory)].append(workflow)
+            directory = self.project_root(workflow.directory)
+            if include_ignored or directory not in self.ignored_projects:
+                grouped[directory].append(workflow)
         projects = [
             ProjectSummary(
                 directory=directory,
@@ -2498,6 +2550,7 @@ class App:
                 subagents=sum(w.subagents for w in workflows),
                 unpriced_tokens=sum(w.unpriced_tokens for w in workflows),
                 last_active=max(w.created_at for w in workflows),
+                ignored=directory in self.ignored_projects,
             )
             for directory, workflows in grouped.items()
         ]
@@ -2563,6 +2616,67 @@ class App:
             return None
         self.project_index = max(0, min(self.project_index, len(rows) - 1))
         return rows[self.project_index]
+
+    def active_project_for_toggle(self) -> ProjectSummary | None:
+        if self.browse_mode == "projects":
+            return self.selected_project_summary
+        if self.view == "zoom" and self.on_projects_tab:
+            return self.zoom_selected_project()
+        return None
+
+    def can_toggle_project_ignore(self) -> bool:
+        return self.active_project_for_toggle() is not None
+
+    def toggle_ignored_projects_view(self) -> None:
+        if not self.ignored_projects:
+            self.notice = "no ignored projects"
+            return
+        project = self.active_project_for_toggle()
+        project_dir = project.directory if project else None
+        self.show_ignored_projects = not self.show_ignored_projects
+        if not self.show_ignored_projects and self.zoom_project in self.ignored_projects:
+            self.zoom_project = None
+            if (
+                self.view == "zoom"
+                and self.browse_mode != "projects"
+                and "Projects" in self.current_tabs()
+            ):
+                self.tab = self.current_tabs().index("Projects")
+        self.restore_project_selection(project_dir)
+        self.notice = (
+            "showing ignored projects" if self.show_ignored_projects else "hiding ignored projects"
+        )
+
+    def toggle_project_ignore(self) -> None:
+        project = self.active_project_for_toggle()
+        if project is None:
+            self.notice = "ignore: select a project first"
+            return
+        directory = project.directory
+        if directory in self.ignored_projects:
+            self.ignored_projects.remove(directory)
+            self.notice = f"unignored {short_path(directory, 40)}"
+        else:
+            self.ignored_projects.add(directory)
+            self.notice = f"ignored {short_path(directory, 40)}"
+        self._invalidate_workflow_cache()
+        if self.zoom_project in self.ignored_projects and not self.show_ignored_projects:
+            self.zoom_project = None
+        self.restore_project_selection(directory)
+
+    def restore_project_selection(self, directory: str | None) -> None:
+        rows = (
+            self.zoom_projects()
+            if self.view == "zoom" and self.browse_mode != "projects" and self.on_projects_tab
+            else self.projects
+        )
+        if directory and rows:
+            self.project_index = next(
+                (i for i, row in enumerate(rows) if row.directory == directory),
+                min(self.project_index, len(rows) - 1),
+            )
+        else:
+            self.project_index = min(self.project_index, max(0, len(rows) - 1))
 
     def selection_anchor(self) -> tuple[str | None, str | None, str | None, str | None]:
         month = self.focused_month
@@ -2862,6 +2976,15 @@ class App:
         ]
         return "sessions", header, rows
 
+    @staticmethod
+    def _projects_dataset(projects: list[ProjectSummary]) -> tuple[str, list[str], list[list]]:
+        header = ["directory", "cost", "tokens", "sessions", "subagents", "unpriced_tokens"]
+        rows = [
+            [p.directory, p.cost, p.tokens, p.workflows, p.subagents, p.unpriced_tokens]
+            for p in projects
+        ]
+        return "projects", header, rows
+
     def _export_dataset(self) -> tuple[str, list[str], list[list]]:
         # Export whatever list is in front of the user, at full precision.
         if self.view == "session":
@@ -2879,15 +3002,12 @@ class App:
                 for r in self.sorted_subagent_rows(nodes)
             ]
             return "subagents", header, rows
+        if self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
+            return self._projects_dataset(self.zoom_projects())
         if self.view == "zoom":
             return self._sessions_dataset(self.current_sessions())
         if self.browse_mode == "projects":
-            header = ["directory", "cost", "tokens", "sessions", "subagents", "unpriced_tokens"]
-            rows = [
-                [p.directory, p.cost, p.tokens, p.workflows, p.subagents, p.unpriced_tokens]
-                for p in self.projects
-            ]
-            return "projects", header, rows
+            return self._projects_dataset(self.projects)
         if self.focus == "months":
             header = ["month", "cost", "tokens", "sessions", "subagents", "unpriced_tokens"]
             rows = [
@@ -2977,17 +3097,21 @@ class App:
             return sorted(rows, key=lambda item: item.title.lower())
         return sorted(rows, key=lambda item: item.created_at, reverse=True)
 
-    def zoom_scope_workflows(self) -> list[Workflow]:
+    def zoom_scope_workflows(self, include_ignored: bool = False) -> list[Workflow]:
         # The sessions in the currently zoomed month or day (time mode).
+        source = self.ranged_workflows if include_ignored else self.all_workflows
         if self.focus == "months":
             item = self.selected_month_summary
-            return self.workflows_for_month(item.month) if item else []
+            return self.workflows_for_month(item.month, source) if item else []
         item = self.selected_day_summary
-        return self.workflows_for_day(item.day) if item else []
+        return self.workflows_for_day(item.day, source) if item else []
 
     def zoom_projects(self) -> list[ProjectSummary]:
         # Projects active within the zoomed month/day — the navigable Projects tab.
-        return self.projects_for_workflows(self.zoom_scope_workflows())
+        return self.projects_for_workflows(
+            self.zoom_scope_workflows(include_ignored=self.show_ignored_projects),
+            include_ignored=self.show_ignored_projects,
+        )
 
     def zoom_selected_project(self) -> ProjectSummary | None:
         rows = self.zoom_projects()
@@ -2999,13 +3123,15 @@ class App:
     def current_sessions(self) -> list[Workflow]:
         if self.browse_mode == "projects":
             item = self.selected_project_summary
-            rows = self.workflows_for_project(item.directory) if item else []
+            rows = self.workflows_for_project(item.directory, include_ignored=True) if item else []
         elif self.focus == "months":
             item = self.selected_month_summary
-            rows = self.workflows_for_month(item.month) if item else []
+            source = self.ranged_workflows if self._zooming_ignored_project() else None
+            rows = self.workflows_for_month(item.month, source) if item else []
         else:
             item = self.selected_day_summary
-            rows = self.workflows_for_day(item.day) if item else []
+            source = self.ranged_workflows if self._zooming_ignored_project() else None
+            rows = self.workflows_for_day(item.day, source) if item else []
         if self.zoom_project and self.browse_mode != "projects":
             rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
         if self.query:
@@ -3016,6 +3142,14 @@ class App:
                 if q in w.title.lower() or q in w.directory.lower() or q in w.id.lower()
             ]
         return self.sorted_workflows(rows)
+
+    def _zooming_ignored_project(self) -> bool:
+        return bool(
+            self.show_ignored_projects
+            and self.zoom_project
+            and self.zoom_project in self.ignored_projects
+            and self.browse_mode != "projects"
+        )
 
     def current_session(self) -> Workflow | None:
         rows = self.current_sessions()
@@ -3308,6 +3442,12 @@ class App:
         if key == ord("S"):
             self.cycle_sort(-1)
             return True
+        if key == ord("i"):
+            self.toggle_project_ignore()
+            return True
+        if key == ord("I"):
+            self.toggle_ignored_projects_view()
+            return True
         if key == ord("/"):
             self.prompt_filter(stdscr)
             return True
@@ -3442,16 +3582,21 @@ class App:
             return self.sort_options
         return ()
 
-    def workflows_for_day(self, day: str) -> list[Workflow]:
-        return [workflow for workflow in self.all_workflows if workflow.created_at.startswith(day)]
+    def workflows_for_day(self, day: str, source: list[Workflow] | None = None) -> list[Workflow]:
+        rows = self.all_workflows if source is None else source
+        return [workflow for workflow in rows if workflow.created_at.startswith(day)]
 
-    def workflows_for_month(self, month: str) -> list[Workflow]:
-        return [
-            workflow for workflow in self.all_workflows if workflow.created_at.startswith(month)
-        ]
+    def workflows_for_month(
+        self, month: str, source: list[Workflow] | None = None
+    ) -> list[Workflow]:
+        rows = self.all_workflows if source is None else source
+        return [workflow for workflow in rows if workflow.created_at.startswith(month)]
 
-    def workflows_for_project(self, directory: str) -> list[Workflow]:
-        return [w for w in self.all_workflows if self.project_root(w.directory) == directory]
+    def workflows_for_project(
+        self, directory: str, include_ignored: bool = False
+    ) -> list[Workflow]:
+        rows = self.ranged_workflows if include_ignored else self.all_workflows
+        return [w for w in rows if self.project_root(w.directory) == directory]
 
     def aggregate_models(
         self, workflows: list[Workflow]
@@ -3582,6 +3727,7 @@ def save_state(app: App) -> None:
         "sort_by": app.sort_by,
         "project_sort_by": app.project_sort_by,
         "browse_mode": app.browse_mode,
+        "ignored_projects": sorted(app.ignored_projects),
     }
     path = state_path()
     try:
@@ -3608,6 +3754,10 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.project_sort_by = state["project_sort_by"]
     if state.get("browse_mode") in ("time", "projects"):
         app.browse_mode = state["browse_mode"]
+    ignored = state.get("ignored_projects")
+    if isinstance(ignored, list):
+        app.ignored_projects = {p for p in ignored if isinstance(p, str) and p}
+        app._invalidate_workflow_cache()
     app.notice = ""
 
 
