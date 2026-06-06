@@ -10,6 +10,7 @@ import argparse
 import csv
 import json
 import os
+import random
 import re
 import shutil
 import sqlite3
@@ -60,11 +61,13 @@ DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 YEAR_PATTERN = re.compile(r"^\d{4}$")
 
-# --- Demo mode: anonymize titles/paths and backfill synthetic prices so a live
-# demo (or a README screenshot) never leaks real session titles or work repo
-# paths, and shows no "$0.00 / unpriced" gaps. The *shape* of the data stays
-# real (token counts, model mix, real prices); only labels and the $0 holes are
-# synthetic. Everything is keyed by a stable seed so it never flickers on redraw.
+# --- Demo mode: anonymize titles/paths, backfill synthetic prices for "$0.00 /
+# unpriced" gaps, and scale every cost/token by one hidden per-process factor so a
+# live demo (or a README screenshot) never leaks real session titles, work repo
+# paths, or actual spend -- tokens x list price would otherwise recover the dollars.
+# What stays real is the *shape*: relative proportions between sessions/months and
+# the model mix (which models, in what ratio). Labels are seeded for stability across
+# redraws; the scale factor (Store.demo_scale) is drawn once per run, not seeded.
 DEMO_VERBS = (
     "refactor",
     "fix",
@@ -611,6 +614,13 @@ class Store:
         self.db = db
         self.args = args
         self.demo = getattr(args, "demo", False)
+        # Demo mode multiplies every cost and token count by one hidden factor so a
+        # screenshot or recording can't be reverse-engineered into real spend --
+        # tokens x list price would otherwise recover the actual dollars. Log-uniform
+        # around 1 (~0.33x..3x) so the direction of scaling is hidden too; drawn once
+        # per process and unseeded, so it stays stable across redraws but differs every
+        # run and isn't recoverable from the (open) source. 1.0 outside demo.
+        self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
         # Open read-only (URI mode) so opentab physically cannot modify the
         # OpenCode database it reads -- the "never writes" promise, enforced.
         uri = "file:" + quote(os.path.abspath(db)) + "?mode=ro"
@@ -777,6 +787,12 @@ class Store:
             rows = [self._demo_workflow(w) for w in rows]
         return rows
 
+    def _demo_money(self, value: float) -> float:
+        return round(value * self.demo_scale, 4)
+
+    def _demo_tokens(self, value: float) -> int:
+        return int(round(value * self.demo_scale))
+
     def _demo_workflow(self, w: Workflow) -> Workflow:
         w.title = demo_title(w.id)
         w.directory = demo_dir(w.id)
@@ -786,6 +802,11 @@ class Store:
             if w.root_cost == 0:
                 w.root_cost += add
             w.unpriced_tokens = 0
+        # Scale magnitudes by the hidden factor so the figures on screen don't trace
+        # back to real spend; counts (subagents, model_count) stay structural.
+        w.total_cost = self._demo_money(w.total_cost)
+        w.root_cost = self._demo_money(w.root_cost)
+        w.total_tokens = self._demo_tokens(w.total_tokens)
         return w
 
     def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
@@ -848,6 +869,16 @@ class Store:
             d["model_name"] = demo_model(d["model_name"])
             if d["cost"] == 0:
                 d["cost"] = demo_cost(d["tokens_total"], d["id"])
+            d["cost"] = self._demo_money(d["cost"])
+            for f in (
+                "tokens_input",
+                "tokens_output",
+                "tokens_reasoning",
+                "tokens_cache_read",
+                "tokens_cache_write",
+                "tokens_total",
+            ):
+                d[f] = self._demo_tokens(d[f])
             out.append(d)
         return out
 
@@ -1962,7 +1993,9 @@ class Renderer:
         return lines
 
     def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
-        rows = [row for row in self.store.workflow_nodes(workflow.id) if row["depth"] > 0]
+        rows = self._priced_nodes(
+            [row for row in self.store.workflow_nodes(workflow.id) if row["depth"] > 0]
+        )
         if not rows:
             return ["# Subagents", "No subagents used in this workflow."]
         rows = self.sorted_subagent_rows(rows)
@@ -2593,7 +2626,11 @@ class App:
             w.model_count = len(self._model_by_root.get(w.id, ()))
         if self.store.demo:
             for root_id, models in self._model_by_root.items():
-                self._model_by_root[root_id] = self._demo_rename_models(models)
+                self._model_by_root[root_id] = self._scale_demo_models(
+                    self._demo_rename_models(models)
+                )
+            # Reconcile after scaling: the model rows and the workflow totals are now
+            # both multiplied by the same factor, so the synthetic fill stays consistent.
             self._reconcile_demo_models()
         else:
             self._compute_api_costs()
@@ -2643,6 +2680,41 @@ class App:
             else:
                 merged[key] = m
         return list(merged.values())
+
+    # Per-model magnitude fields scaled by the demo factor: costs round to cents,
+    # token counts to ints. runs/model_name are structural and left untouched.
+    _DEMO_MONEY_FIELDS = ("cost", "root_cost")
+    _DEMO_TOKEN_FIELDS = (
+        "tokens_total",
+        "input",
+        "reasoning",
+        "cache_read",
+        "cache_write",
+        "output",
+        "unpriced_input",
+        "unpriced_reasoning",
+        "unpriced_cache_read",
+        "unpriced_cache_write",
+        "unpriced_output",
+        "root_unpriced_input",
+        "root_unpriced_reasoning",
+        "root_unpriced_cache_read",
+        "root_unpriced_cache_write",
+        "root_unpriced_output",
+    )
+
+    def _scale_demo_models(self, models: list[dict]) -> list[dict]:
+        # Apply the hidden demo factor to every per-model cost/token so the Models tab
+        # can't be multiplied back into real spend, matching the scaled workflow totals.
+        k = self.store.demo_scale
+        for m in models:
+            for f in self._DEMO_MONEY_FIELDS:
+                if f in m:
+                    m[f] = round(m[f] * k, 4)
+            for f in self._DEMO_TOKEN_FIELDS:
+                if f in m:
+                    m[f] = int(round(m[f] * k))
+        return models
 
     def _reconcile_demo_models(self) -> None:
         # Make each session's per-model rows sum exactly to that session's demo
@@ -2795,7 +2867,9 @@ class App:
         if self.view == "session":
             session = self.current_session()
             nodes = (
-                [r for r in self.store.workflow_nodes(session.id) if r["depth"] > 0]
+                self._priced_nodes(
+                    [r for r in self.store.workflow_nodes(session.id) if r["depth"] > 0]
+                )
                 if session
                 else []
             )
@@ -3406,6 +3480,28 @@ class App:
             key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
             reverse=True,
         )
+
+    def _priced_nodes(self, rows: list) -> list[dict]:
+        # In API mode, reprice each unpriced ($0) subagent node at API list prices
+        # so the per-execution list matches the Overview/Models "$" figures. A $0
+        # node is wholly unpriced, so its full token columns are the unpriced part.
+        # Returns plain dicts (sqlite Rows are read-only) so sort/render/CSV all see
+        # one effective cost.
+        api = self.show_api_prices and not self.store.demo
+        out = []
+        for row in rows:
+            d = dict(row)
+            if api and not d["cost"]:
+                d["cost"] = api_equivalent_cost(
+                    d["model_name"],
+                    d["tokens_input"],
+                    d["tokens_output"],
+                    d["tokens_reasoning"],
+                    d["tokens_cache_read"],
+                    d["tokens_cache_write"],
+                )
+            out.append(d)
+        return out
 
     def sorted_subagent_rows(self, rows: list) -> list:
         sort_by = (

@@ -323,6 +323,111 @@ def test_reconcile_makes_models_sum_to_session_total():
     assert sum(r["tokens_total"] for r in rows) == 1000
 
 
+def test_demo_scale_hides_real_magnitudes_consistently():
+    # Demo mode must not leave enough real data to reconstruct actual spend: every
+    # cost and token is multiplied by one hidden factor, consistently across the
+    # workflow totals, the model mix, and the subagent nodes. We force the factor so
+    # the assertions are deterministic.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            create table session (
+              id text primary key,
+              parent_id text,
+              title text,
+              directory text,
+              time_created integer,
+              cost real default 0 not null,
+              tokens_input integer default 0 not null,
+              tokens_output integer default 0 not null,
+              tokens_reasoning integer default 0 not null,
+              tokens_cache_read integer default 0 not null,
+              tokens_cache_write integer default 0 not null
+            );
+            create table message (session_id text, data text);
+            """
+        )
+        conn.executemany(
+            "insert into session values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "root",
+                    None,
+                    "Root",
+                    "/work/secret-repo",
+                    1760000000000,
+                    10.0,
+                    2_000_000,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+                (
+                    "child",
+                    "root",
+                    "Child",
+                    "/work/secret-repo",
+                    1760000001000,
+                    4.0,
+                    1_000_000,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            ],
+        )
+        conn.executemany(
+            "insert into message values (?, ?)",
+            [
+                (
+                    "root",
+                    '{"role":"assistant","providerID":"anthropic","modelID":"claude-opus-4.5","cost":10.0,"tokens":{"input":2000000,"output":0}}',
+                ),
+                (
+                    "child",
+                    '{"role":"assistant","providerID":"anthropic","modelID":"claude-sonnet-4.5","cost":4.0,"tokens":{"input":1000000,"output":0}}',
+                ),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        args = type("Args", (), {"since": None, "until": None, "days": None})
+
+        real = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
+        real._ensure_models()
+        rw = real.loaded[0]
+
+        store = ot.Store(db, type("A", (), {"demo": True})())
+        store.demo_scale = 0.5  # pin the otherwise-random hidden factor
+        demo = ot.App(store, args())
+        demo._ensure_models()
+        dw = demo.loaded[0]
+
+        # Workflow totals are scaled, so the screen no longer shows real spend.
+        assert dw.total_cost == round(rw.total_cost * 0.5, 4)
+        assert dw.root_cost == round(rw.root_cost * 0.5, 4)
+        assert dw.total_tokens == int(round(rw.total_tokens * 0.5))
+        assert dw.total_cost != rw.total_cost  # genuinely obscured, not a no-op
+
+        # Model mix carries the same factor (so tokens x list price can't recover it).
+        real_mix = {m["model_name"]: m for m in real.model_mix("root")}
+        for dm in demo.model_mix("root"):
+            rm = real_mix[dm["model_name"]]  # anthropic names pass through unrenamed
+            assert dm["cost"] == round(rm["cost"] * 0.5, 4)
+            assert dm["tokens_total"] == int(round(rm["tokens_total"] * 0.5))
+
+        # Subagent execution rows (the Subagents tab / CSV) are scaled too.
+        real_child = next(r for r in real.store.workflow_nodes("root") if r["depth"] > 0)
+        demo_child = next(r for r in store.workflow_nodes("root") if r["depth"] > 0)
+        assert demo_child["cost"] == round(real_child["cost"] * 0.5, 4)
+        assert demo_child["tokens_total"] == int(round(real_child["tokens_total"] * 0.5))
+
+
 def test_api_price_helpers():
     # input/output/cache priced per 1M, reasoning billed as output.
     assert "gpt-4o-2024-05-13" in ot.MODEL_PRICE_TABLE
@@ -588,6 +693,85 @@ def test_api_price_split_uses_store_root_unpriced_columns_for_same_model():
         assert round(app.loaded[0].total_cost, 2) == 1.5
         assert round(app.loaded[0].root_cost, 2) == 1.0
         assert round(app.loaded[0].total_cost - app.loaded[0].root_cost, 2) == 0.5
+
+
+def test_subagents_tab_reprices_unpriced_node_in_api_mode():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            create table session (
+              id text primary key,
+              parent_id text,
+              title text,
+              directory text,
+              time_created integer,
+              cost real default 0 not null,
+              tokens_input integer default 0 not null,
+              tokens_output integer default 0 not null,
+              tokens_reasoning integer default 0 not null,
+              tokens_cache_read integer default 0 not null,
+              tokens_cache_write integer default 0 not null
+            );
+            create table message (session_id text, data text);
+            """
+        )
+        conn.executemany(
+            "insert into session values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("root", None, "Root", "/tmp/project", 1760000000000, 0.2, 0, 1000, 0, 0, 0),
+                (
+                    "child",
+                    "root",
+                    "Child",
+                    "/tmp/project",
+                    1760000001000,
+                    0.0,
+                    1_000_000,
+                    0,
+                    0,
+                    0,
+                    0,
+                ),
+            ],
+        )
+        conn.executemany(
+            "insert into message values (?, ?)",
+            [
+                (
+                    "root",
+                    '{"role":"assistant","providerID":"anthropic","modelID":"claude-opus-4.5","cost":0.2,"tokens":{"input":0,"output":1000}}',
+                ),
+                # Unpriced Copilot/Opus subagent: $0 in OpenCode, real token usage.
+                (
+                    "child",
+                    '{"role":"assistant","providerID":"github-copilot","modelID":"claude-opus-4.5","cost":0,"tokens":{"input":1000000,"output":0}}',
+                ),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        store = ot.Store(db, type("Args", (), {"demo": False})())
+        app = ot.App(store, type("Args", (), {"since": None, "until": None, "days": None})())
+
+        expected = ot.api_equivalent_cost("github-copilot/claude-opus-4.5", 1_000_000, 0, 0, 0, 0)
+        assert expected > 0  # guard: model must resolve to a real list price
+
+        # Real mode: the unpriced subagent reads as $0.00.
+        real = app._priced_nodes([r for r in store.workflow_nodes("root") if r["depth"] > 0])
+        assert real[0]["cost"] == 0.0
+        assert "$0.00" in app.renderer.detail_subagents(app.loaded[0], 200)[-1]
+
+        # API mode: it is repriced to the Opus API-equivalent. _priced_nodes feeds
+        # both the rendered tab and the CSV export, so asserting it covers both.
+        app.toggle_api_prices()
+        priced = app._priced_nodes([r for r in store.workflow_nodes("root") if r["depth"] > 0])
+        assert round(priced[0]["cost"], 6) == round(expected, 6)
+        sub_line = app.renderer.detail_subagents(app.loaded[0], 200)[-1]
+        assert ot.money(expected) in sub_line
+        assert "$0.00" not in sub_line
 
 
 def test_drill_in_preserves_visible_sessions_tab():

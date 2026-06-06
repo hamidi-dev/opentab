@@ -111,9 +111,10 @@ on load:
 - Sessions OpenCode recorded with no cost get a synthetic price derived from
   their real token counts, so there are no `$0.00 / unpriced` gaps on screen.
 
-The *shape* of your data stays real — token counts, model mix, and already-priced
-costs are untouched. A `DEMO — synthetic` tag shows in the header so synthetic
-numbers are never mistaken for real ones.
+The *shape* of your data stays real — the relative proportions between sessions
+and months, and the model mix (which models, in what ratio) — but the absolute
+numbers do not. A `DEMO — synthetic` tag shows in the header so synthetic figures
+are never mistaken for real ones.
 
 OpenTab opens on a stacked **Months / Days** sidebar (lazygit-style). `Tab` flips
 focus between the two panels. `Enter` **zooms** the focused month's or day's
@@ -153,8 +154,7 @@ lists show a small bar scaled to the largest spend in view.
 
 OpenTab uses Python's `curses`, which is **Unix-only** (not bundled with Windows
 Python). The supported way to run it on Windows is **WSL** — and that's the
-natural fit, since OpenCode on Windows usually runs inside WSL, so its database
-already lives in the WSL filesystem where OpenTab can read it.
+natural fit, since OpenCode is recommended to be used on Windows inside WSL.
 
 If OpenCode's DB is somewhere non-standard, point OpenTab at it:
 
@@ -211,11 +211,6 @@ suffix churn and a mid-range fallback for unknown models. Nothing is fetched at
 runtime, so the TUI stays single-file, offline, and standard-library only. To
 refresh the embedded table, run `python3 scripts/update_prices.py` and commit the
 changed `opentab` file.
-
-## Not affiliated
-
-This project is not affiliated with or endorsed by GitHub, Microsoft, OpenCode,
-SST, or any provider. It only reads a local database you already have.
 
 ## License
 
