@@ -135,6 +135,60 @@ DEMO_MODEL_POOL = (
     "google/gemini-2.5-pro",
     "anthropic/claude-haiku-4.5",
 )
+# Published per-1M-token list prices (input, output, cache_read, cache_write),
+# copied from models.dev (fetched 2026-06) -- hardcoded so opentab stays offline
+# and dependency-free; no JSON is fetched or stored at runtime. Powers the "$"
+# API-price toggle, which reprices unpriced/subscription usage at real rates to
+# show what it would have cost at API list prices. Matched by substring against
+# the model id (the part after "provider/"), first hit wins, so order specific
+# before generic. To refresh, re-pull from models.dev and update the numbers.
+# Approximate by design (list prices, point in time); real invoices differ.
+MODEL_PRICES = (
+    # anthropic
+    ("claude-3-opus", 15.0, 75.0, 1.5, 18.75),
+    ("claude-3-5-haiku", 0.8, 4.0, 0.08, 1.0),
+    ("haiku", 1.0, 5.0, 0.1, 1.25),
+    ("sonnet", 3.0, 15.0, 0.3, 3.75),
+    ("opus", 5.0, 25.0, 0.5, 6.25),
+    # openai (gpt-5.x dotted variants before the bare "gpt-5"; codex/effort
+    # suffixes price the same as their base and match via substring)
+    ("gpt-5.5", 5.0, 30.0, 0.5, 0.0),
+    ("gpt-5.4", 2.5, 15.0, 0.25, 0.0),
+    ("gpt-5.3", 1.75, 14.0, 0.175, 0.0),
+    ("gpt-5.2", 1.75, 14.0, 0.175, 0.0),
+    ("gpt-5.1", 1.25, 10.0, 0.125, 0.0),
+    ("gpt-5-nano", 0.05, 0.4, 0.005, 0.0),
+    ("gpt-5-mini", 0.25, 2.0, 0.025, 0.0),
+    ("gpt-5", 1.25, 10.0, 0.125, 0.0),
+    ("gpt-4o-mini", 0.15, 0.6, 0.075, 0.0),
+    ("gpt-4o", 2.5, 10.0, 1.25, 0.0),
+    ("gpt-4.1-mini", 0.4, 1.6, 0.1, 0.0),
+    ("gpt-4.1", 2.0, 8.0, 0.5, 0.0),
+    # google
+    ("gemini-3-pro", 2.0, 12.0, 0.2, 0.0),
+    ("gemini-3-flash", 0.5, 3.0, 0.05, 0.0),
+    ("gemini-2.5-flash-lite", 0.1, 0.4, 0.01, 0.0),
+    ("gemini-2.5-flash", 0.3, 2.5, 0.03, 0.0),
+    ("gemini", 1.25, 10.0, 0.125, 0.0),
+)
+# An unknown model (not in the table above) is priced at a mid-range rate so it
+# still yields a plausible estimate instead of $0; exact once the table learns it.
+FALLBACK_PRICE = (2.0, 8.0, 0.2, 0.0)
+
+
+def model_price(name: str) -> tuple[float, float, float, float]:
+    # (input, output, cache_read, cache_write) per 1M tokens for the model.
+    mid = str(name).rsplit("/", 1)[-1].lower()
+    return next((p for needle, *p in MODEL_PRICES if needle in mid), list(FALLBACK_PRICE))
+
+
+def api_equivalent_cost(
+    name: str, inp: float, out: float, reasoning: float, cache_read: float, cache_write: float
+) -> float:
+    # What this usage would cost at API list prices. Reasoning tokens bill as
+    # output; cache reads/writes at their own discounted/surcharged rates.
+    ir, orr, crr, cwr = model_price(name)
+    return (inp * ir + (out + reasoning) * orr + cache_read * crr + cache_write * cwr) / 1e6
 
 
 def _seed(value: str) -> int:
@@ -175,6 +229,14 @@ class Workflow:
     model_count: int
     total_tokens: int
     unpriced_tokens: int
+    # total_cost/root_cost hold the *active* figures; the App keeps a real snapshot
+    # and an API-equivalent (real spend + what unpriced usage would cost at list
+    # prices) so the "$" toggle can swap which one every panel reads. Not loaded
+    # from SQL -- populated by App._snapshot_real_costs / _compute_api_costs.
+    real_total_cost: float = 0.0
+    real_root_cost: float = 0.0
+    api_total_cost: float = 0.0
+    api_root_cost: float = 0.0
 
 
 @dataclass
@@ -707,6 +769,8 @@ class Store:
           count(*) as runs,
           sum(coalesce(json_extract(m.data, '$.cost'), 0)) as cost,
           sum({MSG_TOKEN_TOTAL_EXPR}) as tokens_total,
+          sum(coalesce(json_extract(m.data, '$.tokens.input'), 0)) as input,
+          sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as reasoning,
           sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)) as cache_read,
           sum(coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)) as cache_write,
           sum(coalesce(json_extract(m.data, '$.tokens.output'), 0)) as output
@@ -715,10 +779,10 @@ class Store:
         where json_extract(m.data, '$.role') = 'assistant'
         group by tree.root_id, model_name
         """
-        # In demo mode the per-model rows are reconciled to each session's total
-        # in App._load_model_cache (subscription/credit rows -- Copilot, Codex,
-        # Claude Code -- have real runs but 0 cost/tokens in the message JSON, so
-        # they can't be priced in isolation here).
+        # Subscription/credit rows (Copilot, Codex, Claude Code) carry real runs
+        # AND real token counts but cost 0 in the message JSON. Demo mode reconciles
+        # them to each session's synthetic total; the "$" toggle prices their tokens
+        # at API list prices -- both in App._load_model_cache.
         return list(self.conn.execute(sql))
 
 
@@ -916,7 +980,12 @@ class Renderer:
             f"subs {summary['subagents']} "
         )
         self.write(stdscr, 0, 0, title, curses.color_pair(2) | curses.A_BOLD)
-        tag = " DEMO — synthetic " if self.store.demo else ""
+        if self.store.demo:
+            tag = " DEMO — synthetic "
+        elif self.show_api_prices:
+            tag = " API prices — would-have-paid "
+        else:
+            tag = ""
         self.write(
             stdscr,
             0,
@@ -1007,6 +1076,8 @@ class Renderer:
         if self.can_sort_current_view():
             parts.append("s/S sort")
         parts += ["R range", "/ filter", "T trends", "e export", "y copy", "o open"]
+        if not self.store.demo:
+            parts.append("$ api-$" + ("*" if self.show_api_prices else ""))
         parts += ["? help", "q quit"]
         keys = "  ".join(parts)
         self.hline(stdscr, height - 2, 0, width)
@@ -1814,6 +1885,7 @@ class Renderer:
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
             "  T                Trends overlay: Daily / Monthly / Models (h/l tabs; j/k month)",
+            "  $                toggle API-equivalent prices (what unpriced usage would cost)",
             "  r                reload database",
             "  q                quit",
             "",
@@ -1821,6 +1893,8 @@ class Renderer:
             "  Cost is OpenCode's local attribution. Subscription or credit plans",
             "  (Claude Code, Codex, Copilot) aren't priced per token, so their usage",
             "  shows as unpriced $0.00 -- check your provider/subscription for the total.",
+            "  Press $ to price that usage at API list prices (models.dev) -- an estimate",
+            "  of what you'd have paid without the subscription.",
             "  Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price).",
             "  Range and sort are remembered between runs (~/.config/opentab; --no-state off).",
             "  Git worktrees fold into their main repo (--no-worktrees to keep them split).",
@@ -2064,6 +2138,8 @@ class App:
         self.store = store
         self.args = args
         self.loaded = store.workflows()  # every root session, all time
+        self.show_api_prices = False  # "$" toggles real cost <-> API-equivalent
+        self._snapshot_real_costs()
         self._resolve_project_roots()
         # The per-model breakdown is the one heavy scan of the (huge) message
         # table; it's deferred so the first frame paints off the fast session
@@ -2392,7 +2468,10 @@ class App:
             for root_id, models in self._model_by_root.items():
                 self._model_by_root[root_id] = self._demo_rename_models(models)
             self._reconcile_demo_models()
+        else:
+            self._compute_api_costs()
         self._models_loaded = True
+        self._apply_price_mode()  # re-assert the active ($/API) view onto fresh rows
 
     def _ensure_models(self) -> None:
         # Run the deferred model-breakdown load once, on demand. Idempotent so the
@@ -2411,7 +2490,17 @@ class App:
             key = m["model_name"]
             if key in merged:
                 acc = merged[key]
-                for f in ("runs", "cost", "tokens_total", "cache_read", "cache_write", "output"):
+                fields = (
+                    "runs",
+                    "cost",
+                    "tokens_total",
+                    "input",
+                    "reasoning",
+                    "cache_read",
+                    "cache_write",
+                    "output",
+                )
+                for f in fields:
                     acc[f] = acc.get(f, 0) + m.get(f, 0)
             else:
                 merged[key] = m
@@ -2419,11 +2508,10 @@ class App:
 
     def _reconcile_demo_models(self) -> None:
         # Make each session's per-model rows sum exactly to that session's demo
-        # total cost/tokens. Subscription/credit rows (Copilot, Codex, Claude
-        # Code) carry real `runs` but 0 cost/tokens in the message JSON, so we
-        # distribute the session's synthetic shortfall
-        # across the zero-cost rows by message count. Keeps the Models tab
-        # internally consistent with the Money panel at every zoom level.
+        # total cost/tokens. Subscription/credit rows (Copilot, Codex, Claude Code)
+        # carry real runs/tokens but $0 cost in the message JSON, so we distribute
+        # the session's synthetic shortfall across those rows by message count.
+        # Keeps the Models tab consistent with the Money panel at every zoom level.
         by_id = {w.id: w for w in self.loaded}
         for root_id, models in self._model_by_root.items():
             wf = by_id.get(root_id)
@@ -2445,8 +2533,70 @@ class App:
         rows = self._model_by_root.get(workflow_id, [])
         return sorted(rows, key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
+    def _snapshot_real_costs(self) -> None:
+        # Freshly loaded rows carry only real cost; seed the real/api snapshots so
+        # _apply_price_mode is safe even before the (deferred) model scan runs.
+        for w in self.loaded:
+            w.real_total_cost = w.api_total_cost = w.total_cost
+            w.real_root_cost = w.api_root_cost = w.root_cost
+
+    def _compute_api_costs(self) -> None:
+        # For each model row, keep its real cost and an API-equivalent (the same
+        # real cost when it was actually billed; its tokens priced at list rates
+        # when it was a $0 subscription/credit row). A session's API-equivalent is
+        # its real total plus what its unpriced rows would have cost.
+        by_id = {w.id: w for w in self.loaded}
+        for root_id, rows in self._model_by_root.items():
+            for m in rows:
+                m["real_cost"] = m["cost"]
+                m["api_cost"] = (
+                    m["cost"]
+                    if m["cost"] > 0
+                    else api_equivalent_cost(
+                        m["model_name"],
+                        m.get("input", 0),
+                        m.get("output", 0),
+                        m.get("reasoning", 0),
+                        m.get("cache_read", 0),
+                        m.get("cache_write", 0),
+                    )
+                )
+            wf = by_id.get(root_id)
+            if not wf:
+                continue
+            delta = sum(m["api_cost"] - m["real_cost"] for m in rows)  # only $0 rows differ
+            wf.api_total_cost = wf.total_cost + delta
+            # Split the added cost across root/subagents in proportion to real spend;
+            # a fully-unpriced session has no split to go on, so it lands on root.
+            frac = wf.root_cost / wf.total_cost if wf.total_cost else 1.0
+            wf.api_root_cost = wf.root_cost + delta * frac
+
+    def _apply_price_mode(self) -> None:
+        # Point every panel's cost at either the real or the API-equivalent figure.
+        api = self.show_api_prices and not self.store.demo
+        for w in self.loaded:
+            w.total_cost = w.api_total_cost if api else w.real_total_cost
+            w.root_cost = w.api_root_cost if api else w.real_root_cost
+        for rows in self._model_by_root.values():
+            for m in rows:
+                m["cost"] = m.get("api_cost", m["cost"]) if api else m.get("real_cost", m["cost"])
+
+    def toggle_api_prices(self) -> None:
+        if self.store.demo:
+            self.notice = "API-price view is for real data, not the demo"
+            return
+        self._ensure_models()  # needs the per-model token breakdown
+        self.show_api_prices = not self.show_api_prices
+        self._apply_price_mode()
+        self.notice = (
+            "API-equivalent prices (what unpriced usage would cost)"
+            if self.show_api_prices
+            else "actual cost"
+        )
+
     def reload(self) -> None:
         self.loaded = self.store.workflows()
+        self._snapshot_real_costs()
         self._resolve_project_roots()
         self._load_model_cache()
         self.zoom_project = None
@@ -2953,6 +3103,9 @@ class App:
             return True
         if key == ord("o"):
             self.open_current()
+            return True
+        if key == ord("$"):
+            self.toggle_api_prices()
             return True
         if key == ord("\t"):
             self.toggle_focus()

@@ -313,6 +313,80 @@ def test_reconcile_makes_models_sum_to_session_total():
     assert sum(r["tokens_total"] for r in rows) == 1000
 
 
+def test_api_price_helpers():
+    # input/output/cache priced per 1M, reasoning billed as output.
+    assert ot.model_price("github-copilot/claude-haiku-4.5") == [1.0, 5.0, 0.1, 1.25]
+    assert ot.model_price("openai/gpt-5.2-xhigh")[:2] == [1.75, 14.0]  # variant suffix tolerated
+    # 1M input + 1M output(+reasoning) of Haiku = $1 + $5 = $6.
+    assert round(ot.api_equivalent_cost("x/claude-haiku-4.5", 1e6, 5e5, 5e5, 0, 0), 2) == 6.0
+
+
+def test_api_price_toggle_prices_unpriced_usage():
+    app = ot.App.__new__(ot.App)
+
+    class _Store:
+        demo = False
+
+    app.store = _Store()
+    app.show_api_prices = False
+    app._models_loaded = True  # skip the deferred scan in toggle_api_prices
+    app.loaded = [
+        ot.Workflow(
+            id="r",
+            title="t",
+            directory="d",
+            created_at="2026-01-01",
+            root_cost=10.0,
+            total_cost=10.0,  # one model really billed $10
+            subagents=0,
+            model_count=2,
+            total_tokens=0,
+            unpriced_tokens=0,
+        )
+    ]
+    app._snapshot_real_costs()
+
+    def row(name, cost, inp):
+        return {
+            "model_name": name,
+            "runs": 1,
+            "cost": cost,
+            "tokens_total": inp,
+            "input": inp,
+            "output": 0,
+            "reasoning": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+        }
+
+    # a real $10 row + a $0 subscription row that used 1M Haiku input tokens (=$1)
+    app._model_by_root = {
+        "r": [
+            row("anthropic/claude-opus-4-6", 10.0, 0),
+            row("github-copilot/claude-haiku-4.5", 0.0, 1_000_000),
+        ]
+    }
+    app._compute_api_costs()
+
+    assert app.loaded[0].total_cost == 10.0  # default view is actual cost
+    app.toggle_api_prices()
+    assert app.show_api_prices
+    assert round(app.loaded[0].total_cost, 2) == 11.0  # real $10 + would-have-paid $1
+    costs = {m["model_name"]: m["cost"] for m in app.model_mix("r")}
+    assert costs["github-copilot/claude-haiku-4.5"] == 1.0  # priced from tokens
+    assert costs["anthropic/claude-opus-4-6"] == 10.0  # real spend untouched
+    app.toggle_api_prices()  # reversible
+    assert not app.show_api_prices
+    assert app.loaded[0].total_cost == 10.0
+    assert (
+        app.model_mix("r")
+        and {m["model_name"]: m["cost"] for m in app.model_mix("r")}[
+            "github-copilot/claude-haiku-4.5"
+        ]
+        == 0.0
+    )
+
+
 def test_drill_in_preserves_visible_sessions_tab():
     app = app_with([workflow("june", "2026-06-01 12:00:00")])
     app.focus = "months"
