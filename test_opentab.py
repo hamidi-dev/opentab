@@ -454,6 +454,142 @@ def test_api_price_toggle_prices_unpriced_part_of_mixed_model_row():
     assert app.model_mix("r")[0]["cost"] == 11.0
 
 
+def test_api_price_toggle_splits_root_and_subagent_unpriced_usage():
+    app = ot.App.__new__(ot.App)
+
+    class _Store:
+        demo = False
+
+    app.store = _Store()
+    app.show_api_prices = False
+    app._models_loaded = True
+    app.loaded = [
+        ot.Workflow(
+            id="r",
+            title="t",
+            directory="d",
+            created_at="2026-01-01",
+            root_cost=0.0,
+            total_cost=0.5,  # real spend happened only in a child session
+            subagents=1,
+            model_count=2,
+            total_tokens=0,
+            unpriced_tokens=0,
+        )
+    ]
+    app._snapshot_real_costs()
+    app._model_by_root = {
+        "r": [
+            {
+                "model_name": "github-copilot/claude-haiku-4.5",
+                "runs": 1,
+                "cost": 0.0,
+                "root_cost": 0.0,
+                "tokens_total": 1_000_000,
+                "input": 1_000_000,
+                "output": 0,
+                "reasoning": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "unpriced_input": 1_000_000,
+                "unpriced_output": 0,
+                "unpriced_reasoning": 0,
+                "unpriced_cache_read": 0,
+                "unpriced_cache_write": 0,
+                "root_unpriced_input": 1_000_000,
+                "root_unpriced_output": 0,
+                "root_unpriced_reasoning": 0,
+                "root_unpriced_cache_read": 0,
+                "root_unpriced_cache_write": 0,
+            },
+            {
+                "model_name": "openai/gpt-5-mini",
+                "runs": 1,
+                "cost": 0.5,
+                "root_cost": 0.0,
+                "tokens_total": 0,
+                "input": 0,
+                "output": 0,
+                "reasoning": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "unpriced_input": 0,
+                "unpriced_output": 0,
+                "unpriced_reasoning": 0,
+                "unpriced_cache_read": 0,
+                "unpriced_cache_write": 0,
+                "root_unpriced_input": 0,
+                "root_unpriced_output": 0,
+                "root_unpriced_reasoning": 0,
+                "root_unpriced_cache_read": 0,
+                "root_unpriced_cache_write": 0,
+            },
+        ]
+    }
+
+    app._compute_api_costs()
+    app.toggle_api_prices()
+
+    assert round(app.loaded[0].total_cost, 2) == 1.5
+    assert round(app.loaded[0].root_cost, 2) == 1.0
+    assert round(app.loaded[0].total_cost - app.loaded[0].root_cost, 2) == 0.5
+
+
+def test_api_price_split_uses_store_root_unpriced_columns_for_same_model():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            create table session (
+              id text primary key,
+              parent_id text,
+              title text,
+              directory text,
+              time_created integer,
+              cost real default 0 not null,
+              tokens_input integer default 0 not null,
+              tokens_output integer default 0 not null,
+              tokens_reasoning integer default 0 not null,
+              tokens_cache_read integer default 0 not null,
+              tokens_cache_write integer default 0 not null
+            );
+            create table message (session_id text, data text);
+            """
+        )
+        conn.executemany(
+            "insert into session values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("root", None, "Root", "/tmp/project", 1760000000000, 0.0, 1_000_000, 0, 0, 0, 0),
+                ("child", "root", "Child", "/tmp/project", 1760000001000, 0.5, 0, 1, 0, 0, 0),
+            ],
+        )
+        conn.executemany(
+            "insert into message values (?, ?)",
+            [
+                (
+                    "root",
+                    '{"role":"assistant","providerID":"github-copilot","modelID":"claude-haiku-4.5","cost":0,"tokens":{"input":1000000,"output":0}}',
+                ),
+                (
+                    "child",
+                    '{"role":"assistant","providerID":"github-copilot","modelID":"claude-haiku-4.5","cost":0.5,"tokens":{"input":0,"output":1}}',
+                ),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        store = ot.Store(db, type("Args", (), {"demo": False})())
+        app = ot.App(store, type("Args", (), {"since": None, "until": None, "days": None})())
+        app._ensure_models()
+        app.toggle_api_prices()
+
+        assert round(app.loaded[0].total_cost, 2) == 1.5
+        assert round(app.loaded[0].root_cost, 2) == 1.0
+        assert round(app.loaded[0].total_cost - app.loaded[0].root_cost, 2) == 0.5
+
+
 def test_drill_in_preserves_visible_sessions_tab():
     app = app_with([workflow("june", "2026-06-01 12:00:00")])
     app.focus = "months"

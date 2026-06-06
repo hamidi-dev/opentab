@@ -857,16 +857,18 @@ class Store:
         # sessions). The App caches this and slices it per session/day/month, so we
         # never run a query per workflow.
         sql = f"""
-        with recursive tree(root_id, id) as (
-          select id, id from session where parent_id is null
+        with recursive tree(root_id, id, depth) as (
+          select id, id, 0 from session where parent_id is null
           union all
-          select tree.root_id, child.id from session child join tree on child.parent_id = tree.id
+          select tree.root_id, child.id, tree.depth + 1
+          from session child join tree on child.parent_id = tree.id
         )
         select
           tree.root_id as root_id,
           {MSG_MODEL_EXPR} as model_name,
           count(*) as runs,
           sum(coalesce(json_extract(m.data, '$.cost'), 0)) as cost,
+          sum(case when tree.depth = 0 then coalesce(json_extract(m.data, '$.cost'), 0) else 0 end) as root_cost,
           sum({MSG_TOKEN_TOTAL_EXPR}) as tokens_total,
           sum(coalesce(json_extract(m.data, '$.tokens.input'), 0)) as input,
           sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as reasoning,
@@ -882,7 +884,17 @@ class Store:
           sum(case when coalesce(json_extract(m.data, '$.cost'), 0) = 0
               then coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) else 0 end) as unpriced_cache_write,
           sum(case when coalesce(json_extract(m.data, '$.cost'), 0) = 0
-              then coalesce(json_extract(m.data, '$.tokens.output'), 0) else 0 end) as unpriced_output
+              then coalesce(json_extract(m.data, '$.tokens.output'), 0) else 0 end) as unpriced_output,
+          sum(case when tree.depth = 0 and coalesce(json_extract(m.data, '$.cost'), 0) = 0
+              then coalesce(json_extract(m.data, '$.tokens.input'), 0) else 0 end) as root_unpriced_input,
+          sum(case when tree.depth = 0 and coalesce(json_extract(m.data, '$.cost'), 0) = 0
+              then coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) else 0 end) as root_unpriced_reasoning,
+          sum(case when tree.depth = 0 and coalesce(json_extract(m.data, '$.cost'), 0) = 0
+              then coalesce(json_extract(m.data, '$.tokens.cache.read'), 0) else 0 end) as root_unpriced_cache_read,
+          sum(case when tree.depth = 0 and coalesce(json_extract(m.data, '$.cost'), 0) = 0
+              then coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) else 0 end) as root_unpriced_cache_write,
+          sum(case when tree.depth = 0 and coalesce(json_extract(m.data, '$.cost'), 0) = 0
+              then coalesce(json_extract(m.data, '$.tokens.output'), 0) else 0 end) as root_unpriced_output
         from message m
         join tree on tree.id = m.session_id
         where json_extract(m.data, '$.role') = 'assistant'
@@ -1671,7 +1683,9 @@ class Renderer:
             return []
         runs_width = max([len("Msgs")] + [len(str(int(r[3]))) for r in rows])
         suffix_width = 1 + 10 + 1 + 5 + 1 + 8 + 1 + runs_width
-        mw = min(max([len("Model")] + [len(str(r[0])) for r in rows]), max(20, width - suffix_width))
+        mw = min(
+            max([len("Model")] + [len(str(r[0])) for r in rows]), max(20, width - suffix_width)
+        )
         total_cost = sum(float(r[1]) for r in rows)
         lines = [f"{'Model':{mw}} {'Cost':>10} {'Share':>5} {'Tokens':>8} {'Msgs':>{runs_width}}"]
         lines.extend(
@@ -2617,6 +2631,12 @@ class App:
                     "unpriced_cache_read",
                     "unpriced_cache_write",
                     "unpriced_output",
+                    "root_cost",
+                    "root_unpriced_input",
+                    "root_unpriced_reasoning",
+                    "root_unpriced_cache_read",
+                    "root_unpriced_cache_write",
+                    "root_unpriced_output",
                 )
                 for f in fields:
                     acc[f] = acc.get(f, 0) + m.get(f, 0)
@@ -2665,6 +2685,8 @@ class App:
         # mixed in one row; the unpriced_* fields preserve that split.
         by_id = {w.id: w for w in self.loaded}
         for root_id, rows in self._model_by_root.items():
+            has_root_split = any("root_unpriced_input" in m for m in rows)
+            root_delta = 0.0
             for m in rows:
                 m["real_cost"] = m["cost"]
                 # Tests and older in-memory callers may not carry unpriced_*;
@@ -2678,15 +2700,27 @@ class App:
                     m.get("cache_read", 0) if all_unpriced else m.get("unpriced_cache_read", 0),
                     m.get("cache_write", 0) if all_unpriced else m.get("unpriced_cache_write", 0),
                 )
+                if has_root_split:
+                    root_delta += api_equivalent_cost(
+                        m["model_name"],
+                        m.get("root_unpriced_input", 0),
+                        m.get("root_unpriced_output", 0),
+                        m.get("root_unpriced_reasoning", 0),
+                        m.get("root_unpriced_cache_read", 0),
+                        m.get("root_unpriced_cache_write", 0),
+                    )
             wf = by_id.get(root_id)
             if not wf:
                 continue
             delta = sum(m["api_cost"] - m["real_cost"] for m in rows)  # only $0 rows differ
             wf.api_total_cost = wf.total_cost + delta
-            # Split the added cost across root/subagents in proportion to real spend;
-            # a fully-unpriced session has no split to go on, so it lands on root.
-            frac = wf.root_cost / wf.total_cost if wf.total_cost else 1.0
-            wf.api_root_cost = wf.root_cost + delta * frac
+            if has_root_split:
+                wf.api_root_cost = wf.root_cost + root_delta
+            else:
+                # Older in-memory test rows lack root-vs-subagent token splits.
+                # Fall back to the old approximation only when exact data is absent.
+                frac = wf.root_cost / wf.total_cost if wf.total_cost else 1.0
+                wf.api_root_cost = wf.root_cost + delta * frac
 
     def _apply_price_mode(self) -> None:
         # Point every panel's cost at either the real or the API-equivalent figure.
