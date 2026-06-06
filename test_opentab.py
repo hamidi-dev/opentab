@@ -111,6 +111,16 @@ def test_bar_chart_labels_bars_and_summarizes():
     assert any("peak" in ln and "total" in ln and "avg" in ln for ln in lines)
 
 
+def test_top_models_has_column_header():
+    app = app_with([])
+    lines = app.renderer._top_models([("m", 1.0, 205_600_000, 3648)], 80)
+    assert lines[0].split() == ["Model", "Cost", "Share", "Tokens", "Msgs"]
+    assert "$1.00" in lines[1]
+    assert "205.6M" in lines[1]
+    assert "3648" in lines[1]
+    assert "msgs" not in lines[1]
+
+
 def test_trend_daily_shows_one_navigable_month():
     app = app_with(
         [

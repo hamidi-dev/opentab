@@ -1669,13 +1669,17 @@ class Renderer:
         # rows: (name, cost, tokens, runs). Compact list under "# Top Models".
         if not rows:
             return []
-        mw = min(max(len(str(r[0])) for r in rows), max(20, width - 37))
+        runs_width = max([len("Msgs")] + [len(str(int(r[3]))) for r in rows])
+        suffix_width = 1 + 10 + 1 + 5 + 1 + 8 + 1 + runs_width
+        mw = min(max([len("Model")] + [len(str(r[0])) for r in rows]), max(20, width - suffix_width))
         total_cost = sum(float(r[1]) for r in rows)
-        return [
+        lines = [f"{'Model':{mw}} {'Cost':>10} {'Share':>5} {'Tokens':>8} {'Msgs':>{runs_width}}"]
+        lines.extend(
             f"{shorten(name, mw):{mw}} {money(float(cost)):>10} {pct(float(cost), total_cost):>5} "
-            f"{human_tokens(int(tok)):>8} msgs {int(runs)}"
+            f"{human_tokens(int(tok)):>8} {int(runs):>{runs_width}}"
             for name, cost, tok, runs in rows
-        ]
+        )
+        return lines
 
     @staticmethod
     def _agg_rows(aggregate: list[tuple[str, dict]]) -> list[tuple]:
