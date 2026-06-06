@@ -440,6 +440,13 @@ def month_range(first: str, last: str) -> list[str]:
     return out
 
 
+def week_key(date_str: str) -> str:
+    # The Monday ("YYYY-MM-DD") of the ISO week a date falls in. Sorts chronologically
+    # as a plain string (so year boundaries are handled) and reads as "week of <date>".
+    d = datetime.strptime(date_str[:10], "%Y-%m-%d")
+    return (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
+
+
 def copy_to_clipboard(text: str) -> bool:
     for cmd in (
         ["pbcopy"],
@@ -2065,7 +2072,7 @@ class Renderer:
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
-            "  T                Trends overlay: Daily / Monthly / Models (h/l tabs; j/k month)",
+            "  T                Trends overlay: Daily / Weekly / Monthly / Models (h/l tabs; j/k month/week)",
             "  $                toggle API-equivalent prices (what unpriced usage would cost)",
             "  r                reload database",
             "  q                quit",
@@ -2098,9 +2105,8 @@ class Renderer:
         tabs = self.trend_tabs
         current = tabs[self.trend_tab % len(tabs)]
         tab_line = "  ".join(f"[{t}]" if t == current else f" {t} " for t in tabs)
-        hint = (
-            "h/l tabs · j/k month · esc closes" if current == "Daily" else "h/l tabs · esc closes"
-        )
+        unit = {"Daily": "month", "Weekly": "week"}.get(current)
+        hint = f"h/l tabs · j/k {unit} · esc closes" if unit else "h/l tabs · esc closes"
         self.write(
             stdscr,
             y + 1,
@@ -2113,6 +2119,8 @@ class Renderer:
         content_h = h - 4
         if current == "Daily":
             lines = self.trend_daily(inner_w, content_h)
+        elif current == "Weekly":
+            lines = self.trend_weekly(inner_w, content_h)
         elif current == "Monthly":
             lines = self.trend_monthly(inner_w, content_h)
         else:
@@ -2142,14 +2150,15 @@ class Renderer:
         shown = pairs[-fit:]
         bar_w = max(1, min(col_w - 1, 4))
         lead = (col_w - bar_w) // 2  # center the bar within its column
-        peak = max((v for _, v in shown), default=0.0) or 1.0
+        peak = max((v for _, v in shown), default=0.0)
+        scale = peak or 1.0  # bar-height denominator; guards an all-empty window
         rows_n = max(2, height - 4)  # value labels + bars + baseline + x-ticks + summary
         total_w = margin + len(shown) * col_w
         # grid row 0 is the label margin above the tallest bar; 1..rows_n are bars.
         grid = [[" "] * total_w for _ in range(rows_n + 1)]
         tops: list[tuple[int, int, float]] = []  # (col, top filled row, value)
         for i, (_, v) in enumerate(shown):
-            full, rem = divmod(round((v / peak) * rows_n * 8), 8)
+            full, rem = divmod(round((v / scale) * rows_n * 8), 8)
             x0 = margin + i * col_w + lead
             for b in range(full):  # full cells from the bottom up
                 for dx in range(bar_w):
@@ -2205,13 +2214,15 @@ class Renderer:
                 place(pos, label)
                 next_free = pos + len(label) + 1
         out.append("".join(axis).rstrip())
-        peak_label = max(shown, key=lambda kv: kv[1])[0]
         total = sum(v for _, v in shown)  # match exactly what's charted
-        avg = total / len(shown)
-        out.append(
-            f"{' ' * margin}peak {money(peak)} on {peak_label}    "
-            f"total {money(total)}    avg {money(avg)}"
-        )
+        if total:
+            peak_label = max(shown, key=lambda kv: kv[1])[0]
+            out.append(
+                f"{' ' * margin}peak {money(peak)} on {peak_label}    "
+                f"total {money(total)}    avg {money(total / len(shown))}"
+            )
+        else:
+            out.append(f"{' ' * margin}no spend in view")
         if len(shown) < len(pairs):
             out.append(f"{' ' * margin}(most recent {len(shown)} of {len(pairs)} — widen for more)")
         return out
@@ -2233,6 +2244,30 @@ class Renderer:
         title = f"# Daily spend · {month}"
         if len(months) > 1:
             title += f"   ({idx + 1}/{len(months)} — j/k older/newer month)"
+        return [title, ""] + self._bar_chart(pairs, width, height - 2)
+
+    def trend_weekly(self, width: int, height: int) -> list[str]:
+        # One ISO week at a time (navigate with j/k), x-axis is Mon..Sun of that week.
+        # Like trend_daily, but a week instead of a month -- finer-grained browsing.
+        weeks = sorted({week_key(w.created_at) for w in self.all_workflows}, reverse=True)
+        if not weeks:
+            return ["# Weekly spend", "", "No spend in the active range."]
+        idx = max(0, min(self.trend_week_index, len(weeks) - 1))
+        monday = weeks[idx]
+        start = datetime.strptime(monday, "%Y-%m-%d")
+        by_date: dict[str, float] = defaultdict(float)
+        for w in self.all_workflows:
+            if week_key(w.created_at) == monday:
+                by_date[w.created_at[:10]] += w.total_cost
+        names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        pairs = [
+            (names[i], by_date.get((start + timedelta(days=i)).strftime("%Y-%m-%d"), 0.0))
+            for i in range(7)
+        ]
+        sunday = (start + timedelta(days=6)).strftime("%Y-%m-%d")
+        title = f"# Weekly spend · {monday} – {sunday}"
+        if len(weeks) > 1:
+            title += f"   ({idx + 1}/{len(weeks)} — j/k older/newer week)"
         return [title, ""] + self._bar_chart(pairs, width, height - 2)
 
     def trend_monthly(self, width: int, height: int) -> list[str]:
@@ -2313,7 +2348,7 @@ class App:
     sort_options = ("cost", "tokens", "date", "subagents", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
-    trend_tabs = ("Daily", "Monthly", "Models")
+    trend_tabs = ("Daily", "Weekly", "Monthly", "Models")
 
     def __init__(self, store: Store, args: argparse.Namespace):
         self.store = store
@@ -2350,6 +2385,7 @@ class App:
         self.trends = False  # the Trends overlay (T); trend_tab selects its tab
         self.trend_tab = 0
         self.trend_month_index = 0  # which month the Daily tab shows (0 = newest)
+        self.trend_week_index = 0  # which week the Weekly tab shows (0 = newest)
         self.sort_by = "cost"
         self.project_sort_by = "cost"
         self.ignored_projects: set[str] = set()
@@ -3387,24 +3423,34 @@ class App:
             if self.notice == notice_before:
                 self.notice = ""
 
+    @staticmethod
+    def _step_trend_index(index: int, count: int, older: bool) -> int:
+        # 0 == newest; higher == further back. Clamp to the available buckets.
+        if older:
+            return min(index + 1, max(0, count - 1))
+        return max(index - 1, 0)
+
     def handle_key(self, stdscr: curses.window, key: int) -> bool:
         if self.help:
             self.help = False
             return True
         if self.trends:
-            on_daily = self.trend_tabs[self.trend_tab % len(self.trend_tabs)] == "Daily"
+            current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
             if key in (ord("h"), curses.KEY_LEFT):
                 self.trend_tab = (self.trend_tab - 1) % len(self.trend_tabs)
             elif key in (ord("l"), curses.KEY_RIGHT):
                 self.trend_tab = (self.trend_tab + 1) % len(self.trend_tabs)
             elif key in (ord("j"), curses.KEY_DOWN, ord("["), ord("k"), curses.KEY_UP, ord("]")):
-                # Navigate the Daily tab's month; a no-op on the other tabs.
-                if on_daily:
-                    months = len({w.created_at[:7] for w in self.all_workflows})
-                    if key in (ord("j"), curses.KEY_DOWN, ord("[")):  # older
-                        self.trend_month_index = min(self.trend_month_index + 1, max(0, months - 1))
-                    else:  # newer (toward the present)
-                        self.trend_month_index = max(self.trend_month_index - 1, 0)
+                # Page the Daily tab's month / the Weekly tab's week; no-op elsewhere.
+                older = key in (ord("j"), curses.KEY_DOWN, ord("["))
+                if current == "Daily":
+                    n = len({w.created_at[:7] for w in self.all_workflows})
+                    self.trend_month_index = self._step_trend_index(
+                        self.trend_month_index, n, older
+                    )
+                elif current == "Weekly":
+                    n = len({week_key(w.created_at) for w in self.all_workflows})
+                    self.trend_week_index = self._step_trend_index(self.trend_week_index, n, older)
             else:
                 self.trends = False  # any other key closes the overlay
             return True
@@ -3417,6 +3463,7 @@ class App:
         if key == ord("T"):
             self.trends = True
             self.trend_month_index = 0  # start at the most recent month
+            self.trend_week_index = 0  # and the most recent week
             return True
         if key == ord("r"):
             self.reload()

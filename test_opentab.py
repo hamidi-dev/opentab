@@ -102,6 +102,16 @@ def test_month_range():
     assert ot.month_range("2026-05", "2026-05") == ["2026-05"]
 
 
+def test_week_key_buckets_monday_to_sunday():
+    # Mon..Sun of one ISO week all fold to that week's Monday; the label sorts as a
+    # plain string, so the year boundary lands in the right (prior) week.
+    assert ot.week_key("2026-06-01 09:00:00") == "2026-06-01"  # Monday
+    assert ot.week_key("2026-06-03 12:00:00") == "2026-06-01"  # Wednesday, same week
+    assert ot.week_key("2026-06-07 23:59:59") == "2026-06-01"  # Sunday, still same week
+    assert ot.week_key("2026-06-08 00:00:00") == "2026-06-08"  # next Monday, next week
+    assert ot.week_key("2026-01-01 12:00:00") == "2025-12-29"  # folds into prior year's week
+
+
 def test_bar_chart_labels_bars_and_summarizes():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     lines = app.renderer._bar_chart([("d1", 0.0), ("d2", 1.0), ("d3", 2.0)], 80, 12)
@@ -109,6 +119,16 @@ def test_bar_chart_labels_bars_and_summarizes():
     assert "$2.00" in lines[0]  # the peak's spend rides on top of its bar, not a y-axis
     assert any("d1" in ln and "d3" in ln for ln in lines)  # x-axis tick labels
     assert any("peak" in ln and "total" in ln and "avg" in ln for ln in lines)
+
+
+def test_bar_chart_all_zero_window_reads_as_no_spend():
+    # An all-empty window (e.g. browsing to a quiet week) must not borrow the
+    # divide-by-zero guard (1.0) as a fake "$1.00 peak".
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    lines = app.renderer._bar_chart([("Mon", 0.0), ("Tue", 0.0), ("Wed", 0.0)], 80, 12)
+    assert any("no spend in view" in ln for ln in lines)
+    assert not any("$1.00" in ln for ln in lines)
+    assert not any("peak" in ln for ln in lines)
 
 
 def test_top_models_has_column_header():
@@ -138,6 +158,49 @@ def test_trend_daily_shows_one_navigable_month():
     assert app.renderer.trend_daily(80, 16)[0].startswith("# Daily spend · 2026-05")
 
 
+def test_trend_weekly_shows_one_navigable_week():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=5),  # Mon, week of 2026-06-01
+            workflow("b", "2026-06-03 12:00:00", cost=3),  # Wed, same week
+            workflow("c", "2026-05-25 12:00:00", cost=2),  # Mon, the prior week
+        ]
+    )
+    # Default: most recent week, x-axis Mon..Sun of that week.
+    app.trend_week_index = 0
+    lines = app.renderer.trend_weekly(80, 16)
+    assert lines[0].startswith("# Weekly spend · 2026-06-01 – 2026-06-07")
+    assert any("Mon" in ln for ln in lines) and any("Wed" in ln for ln in lines)
+    assert any("█" in ln for ln in lines)
+    # Monday ($5) outspends Wednesday ($3) within this week, so it is the peak.
+    assert any("peak" in ln and "$5.00" in ln and "Mon" in ln for ln in lines)
+    # Navigating older shows the previous week (2026-05-25).
+    app.trend_week_index = 1
+    assert app.renderer.trend_weekly(80, 16)[0].startswith("# Weekly spend · 2026-05-25")
+
+
+def test_trends_weekly_week_navigation_keys():
+    app = app_with(
+        [
+            workflow("w1", "2026-06-01 12:00:00"),  # week of 2026-06-01 (newest)
+            workflow("w2", "2026-05-25 12:00:00"),  # week of 2026-05-25
+            workflow("w3", "2026-05-18 12:00:00"),  # week of 2026-05-18 (oldest)
+        ]
+    )
+    app.handle_key(None, ord("T"))  # opens on Daily at the newest bucket
+    app.handle_key(None, ord("l"))  # -> Weekly tab
+    assert app.trends and app.trend_tabs[app.trend_tab] == "Weekly"
+    assert app.trend_week_index == 0
+    app.handle_key(None, ord("j"))  # older
+    assert app.trend_week_index == 1
+    app.handle_key(None, ord("j"))
+    assert app.trend_week_index == 2
+    app.handle_key(None, ord("j"))  # clamped at the oldest of 3 weeks
+    assert app.trend_week_index == 2
+    app.handle_key(None, ord("k"))  # newer
+    assert app.trend_week_index == 1
+
+
 def test_trends_daily_month_navigation_keys():
     app = app_with(
         [
@@ -156,7 +219,7 @@ def test_trends_daily_month_navigation_keys():
     assert app.trend_month_index == 2
     app.handle_key(None, ord("k"))  # newer
     assert app.trend_month_index == 1
-    app.handle_key(None, ord("l"))  # switch to Monthly tab; still open
+    app.handle_key(None, ord("l"))  # switch to the next tab (Weekly); still open
     assert app.trends and app.trend_tab == 1
 
 
