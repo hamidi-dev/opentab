@@ -55,7 +55,11 @@ MSG_TOKEN_TOTAL_EXPR = " + ".join(
         "coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)",
     ]
 )
-TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.])\d+(?:\.\d+)?[kMB](?![A-Za-z0-9_])")
+# Real token figures from human_tokens are always decimal + space-delimited
+# ("35.0B", "1.0M"); model param tags are integer + hyphen-delimited ("-35B-A3B").
+# Requiring the decimal and excluding hyphen boundaries keeps name segments from
+# being mistaken for token counts (e.g. the "35B" in Qwen3.6-35B-A3B).
+TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.\-])\d+\.\d+[kMB](?![A-Za-z0-9_\-])")
 MONEY_PATTERN = re.compile(r"\$\d+(?:,\d{3})*(?:\.\d+)?")
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
@@ -1090,7 +1094,7 @@ class Renderer:
         height, width = stdscr.getmaxyx()
         if height < 20 or width < 80:
             self.write(
-                stdscr, 0, 0, "Terminal too small. Need at least 80x20.", curses.color_pair(5)
+                stdscr, 0, 0, "Terminal too small. Need at least 80x20.", curses.color_pair(1)
             )
             stdscr.refresh()
             return
@@ -1278,10 +1282,10 @@ class Renderer:
         return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
 
     def money_attr(self, cost_text: str) -> int:
-        # "$0.00" means zero or unpriced (tokens with no local price); muted red so
-        # it stands out from real spend. "<$0.01" is a real cost and stays green.
+        # "$0.00" means zero or unpriced (tokens with no local price); muted grey so
+        # it recedes behind real spend. "<$0.01" is a real cost and stays green.
         if cost_text == "$0.00":
-            return curses.color_pair(5)
+            return curses.color_pair(1)
         return curses.color_pair(3) | curses.A_BOLD
 
     def token_attr(self, token_text: str) -> int:
@@ -1291,7 +1295,7 @@ class Renderer:
             return curses.color_pair(2) | curses.A_BOLD
         if token_text.endswith("k"):
             return curses.color_pair(1) | curses.A_BOLD
-        return curses.color_pair(3)
+        return curses.color_pair(1)
 
     def write_colored_summary_row(
         self,
@@ -1332,7 +1336,7 @@ class Renderer:
             curses.color_pair(4) | curses.A_BOLD,
         )
         if not sessions:
-            self.write(stdscr, cy + 1, x + 2, "No sessions.", curses.color_pair(5))
+            self.write(stdscr, cy + 1, x + 2, "No sessions.", curses.color_pair(1))
             return
         visible = max(1, h - 5)
         idx = max(0, min(self.workflow_index, len(sessions) - 1))
@@ -1364,7 +1368,7 @@ class Renderer:
         header = self.project_header_text(w - 4)
         self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
         if not projects:
-            self.write(stdscr, cy + 1, x + 2, "No projects.", curses.color_pair(5))
+            self.write(stdscr, cy + 1, x + 2, "No projects.", curses.color_pair(1))
             return
         visible = max(1, h - 5)
         idx = max(0, min(self.project_index, len(projects) - 1))
@@ -1425,7 +1429,7 @@ class Renderer:
         self.box(stdscr, y, x, h, w, "Months" + (" ▸" if active else ""), active=active)
         rows = self.months
         if not rows:
-            self.write(stdscr, y + 2, x + 2, "No months in range.", curses.color_pair(5))
+            self.write(stdscr, y + 2, x + 2, "No months in range.", curses.color_pair(1))
             return
 
         peak = max((m.cost for m in rows), default=0.0)
@@ -1469,7 +1473,7 @@ class Renderer:
         self.box(stdscr, y, x, h, w, "Projects ▸", active=True)
         rows = self.projects
         if not rows:
-            self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(5))
+            self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(1))
             return
 
         header = self.project_header_text(w - 2)
@@ -1507,7 +1511,7 @@ class Renderer:
         )
         self.box(stdscr, y, x, h, w, title, active=active)
         if project is None:
-            self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(5))
+            self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(1))
             return
 
         self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
@@ -1540,7 +1544,7 @@ class Renderer:
         title = "Month" if month is None else f"Month {month.month}"
         self.box(stdscr, y, x, h, w, title, active=active)
         if month is None:
-            self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(5))
+            self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(1))
             return
 
         self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
@@ -1586,7 +1590,7 @@ class Renderer:
         )
         rows = self.panel_days
         if not rows:
-            self.write(stdscr, y + 2, x + 2, "No days in month.", curses.color_pair(5))
+            self.write(stdscr, y + 2, x + 2, "No days in month.", curses.color_pair(1))
             return
 
         peak = max((d.cost for d in rows), default=0.0)
@@ -1633,7 +1637,7 @@ class Renderer:
         title = "Day" if day is None else f"Day {day.day}"
         self.box(stdscr, y, x, h, w, title, active=active)
         if day is None:
-            self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(5))
+            self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(1))
             return
 
         self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
@@ -1668,7 +1672,7 @@ class Renderer:
         self.box(stdscr, y, x, h, w, title, active=True)
         rows = self.workflows
         if not rows:
-            self.write(stdscr, y + 2, x + 2, "No sessions match the filter.", curses.color_pair(5))
+            self.write(stdscr, y + 2, x + 2, "No sessions match the filter.", curses.color_pair(1))
             return
 
         visible = h - 3
@@ -1700,7 +1704,7 @@ class Renderer:
         title = "Detail" if workflow is None else shorten(workflow.title, max(10, w - 12))
         self.box(stdscr, y, x, h, w, title, active=True)
         if workflow is None:
-            self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(5))
+            self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(1))
             return
 
         self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
@@ -3426,14 +3430,23 @@ class App:
             curses.set_escdelay(25)
         curses.curs_set(0)
         curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_CYAN, -1)
-        curses.init_pair(2, curses.COLOR_MAGENTA, -1)
-        curses.init_pair(3, curses.COLOR_GREEN, -1)
-        curses.init_pair(4, curses.COLOR_YELLOW, -1)
-        curses.init_pair(5, curses.COLOR_RED, -1)
-        orange = 208 if curses.COLORS >= 256 else curses.COLOR_YELLOW
-        curses.init_pair(6, orange, -1)
-        curses.init_pair(7, curses.COLOR_BLACK, orange)
+        # One restrained palette instead of a full ANSI rainbow: a grey baseline,
+        # warm amber + orange accents for focus/brand, green for money, soft red
+        # reserved for genuine alerts. 256-color where available, 8-color fallback.
+        has256 = curses.COLORS >= 256
+        grey = 245 if has256 else curses.COLOR_WHITE
+        amber = 214 if has256 else curses.COLOR_YELLOW
+        slate = 67 if has256 else curses.COLOR_BLUE
+        green = 35 if has256 else curses.COLOR_GREEN
+        soft_red = 203 if has256 else curses.COLOR_RED
+        accent = 208 if has256 else curses.COLOR_YELLOW
+        curses.init_pair(1, grey, -1)  # secondary: hints, breadcrumb, bars, small tokens
+        curses.init_pair(2, amber, -1)  # warm accent: title, drilldown chip, M-tokens
+        curses.init_pair(3, green, -1)  # money
+        curses.init_pair(4, slate, -1)  # structural: headers, keybar, markdown '#'
+        curses.init_pair(5, soft_red, -1)  # alerts only: errors, billions of tokens
+        curses.init_pair(6, accent, -1)  # active panel border / focus
+        curses.init_pair(7, curses.COLOR_BLACK, accent)  # active tab
         stdscr.keypad(True)
 
         first = True

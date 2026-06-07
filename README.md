@@ -3,11 +3,11 @@
 <p align="center"><em>OpenCode keeps a tab. OpenTab opens it.</em></p>
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/4362f4b0-e242-4a3c-a0ac-4b86b9c0c2a1">
-    <img src="https://github.com/user-attachments/assets/bf6410bf-fd43-45ca-8319-f7061f87a062" alt="OpenTab — browse your OpenCode spend" width="820">
+  <a href="https://github.com/user-attachments/assets/89bd4092-5233-48fe-b287-d72a7505ca21">
+    <img src="https://github.com/user-attachments/assets/67d0949a-2fb8-4e95-9dbf-6a24b301d580" alt="OpenTab — browse your OpenCode spend" width="820">
   </a>
   <br>
-  <sub><a href="https://github.com/user-attachments/assets/4362f4b0-e242-4a3c-a0ac-4b86b9c0c2a1">▶ Watch the full-quality video</a></sub>
+  <sub><a href="https://github.com/user-attachments/assets/89bd4092-5233-48fe-b287-d72a7505ca21">▶ Watch the full-quality video</a></sub>
 </p>
 
 A local, zero-dependency terminal UI for your [OpenCode](https://opencode.ai)
