@@ -1118,7 +1118,7 @@ class Renderer:
             left = self.browse_left_width(width)
             if self.browse_mode == "projects":
                 self.draw_project_list(stdscr, top, 0, avail, left)
-                self.draw_project_detail(stdscr, top, left, avail, width - left)
+                self.draw_project_detail(stdscr, top, left, avail, width - left, active=False)
                 stdscr.refresh()
                 return
             months_h = max(4, min(len(self.months) + 3, avail // 2))
@@ -1127,9 +1127,9 @@ class Renderer:
             self.draw_day_list(stdscr, top + months_h, 0, days_h, left, active=self.focus == "days")
             rx, rw = left, width - left
             if self.focus == "months":
-                self.draw_month_detail(stdscr, top, rx, avail, rw)
+                self.draw_month_detail(stdscr, top, rx, avail, rw, active=False)
             else:
-                self.draw_day_detail(stdscr, top, rx, avail, rw)
+                self.draw_day_detail(stdscr, top, rx, avail, rw, active=False)
 
         stdscr.refresh()
 
@@ -1388,10 +1388,41 @@ class Renderer:
         hint = "Enter: open sessions"
         self.write(stdscr, y + 1, x + w - len(hint) - 2, hint, curses.color_pair(1))
 
+    def draw_tabs(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        width: int,
+        tabs: tuple[str, ...],
+        active_index: int,
+    ) -> None:
+        if width <= 0 or not tabs:
+            return
+        cx = x
+        active_index %= len(tabs)
+        remaining = width
+        for i, tab in enumerate(tabs):
+            label = f" {tab} " if i != active_index else f"[{tab}]"
+            if i > 0:
+                sep = "  "
+                self.write(stdscr, y, cx, shorten(sep, remaining), curses.A_NORMAL)
+                cx += min(len(sep), remaining)
+                remaining -= min(len(sep), remaining)
+            if remaining <= 0:
+                return
+            attr = (
+                curses.color_pair(7) | curses.A_BOLD if i == active_index else curses.color_pair(1)
+            )
+            text = shorten(label, remaining)
+            self.write(stdscr, y, cx, text, attr)
+            cx += len(text)
+            remaining -= len(text)
+
     def draw_month_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
     ) -> None:
-        self.box(stdscr, y, x, h, w, "Months" + (" ▸" if active else ""))
+        self.box(stdscr, y, x, h, w, "Months" + (" ▸" if active else ""), active=active)
         rows = self.months
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No months in range.", curses.color_pair(5))
@@ -1435,7 +1466,7 @@ class Renderer:
                 )
 
     def draw_project_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        self.box(stdscr, y, x, h, w, "Projects ▸")
+        self.box(stdscr, y, x, h, w, "Projects ▸", active=True)
         rows = self.projects
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(5))
@@ -1465,24 +1496,21 @@ class Renderer:
             else:
                 self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
 
-    def draw_project_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def draw_project_detail(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
         project = self.selected_project_summary
         title = (
             "Project"
             if project is None
             else f"Project {short_path(project.directory, max(10, w - 14))}"
         )
-        self.box(stdscr, y, x, h, w, title)
+        self.box(stdscr, y, x, h, w, title, active=active)
         if project is None:
             self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(5))
             return
 
-        tab_line = "  ".join(
-            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
-        )
-        self.write(
-            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
-        )
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -1505,20 +1533,17 @@ class Renderer:
                 attr = curses.color_pair(5) | curses.A_BOLD
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
 
-    def draw_month_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def draw_month_detail(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
         month = self.selected_month_summary
         title = "Month" if month is None else f"Month {month.month}"
-        self.box(stdscr, y, x, h, w, title)
+        self.box(stdscr, y, x, h, w, title, active=active)
         if month is None:
             self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(5))
             return
 
-        tab_line = "  ".join(
-            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
-        )
-        self.write(
-            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
-        )
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -1551,7 +1576,13 @@ class Renderer:
     ) -> None:
         month = self.focused_month
         self.box(
-            stdscr, y, x, h, w, (f"Days · {month}" if month else "Days") + (" ▸" if active else "")
+            stdscr,
+            y,
+            x,
+            h,
+            w,
+            (f"Days · {month}" if month else "Days") + (" ▸" if active else ""),
+            active=active,
         )
         rows = self.panel_days
         if not rows:
@@ -1595,20 +1626,17 @@ class Renderer:
                     curses.color_pair(1),
                 )
 
-    def draw_day_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+    def draw_day_detail(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
         day = self.selected_day_summary
         title = "Day" if day is None else f"Day {day.day}"
-        self.box(stdscr, y, x, h, w, title)
+        self.box(stdscr, y, x, h, w, title, active=active)
         if day is None:
             self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(5))
             return
 
-        tab_line = "  ".join(
-            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
-        )
-        self.write(
-            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
-        )
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -1637,7 +1665,7 @@ class Renderer:
     def draw_workflow_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         day = self.active_day
         title = f"Sessions · {day}" if day else "Sessions"
-        self.box(stdscr, y, x, h, w, title)
+        self.box(stdscr, y, x, h, w, title, active=True)
         rows = self.workflows
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No sessions match the filter.", curses.color_pair(5))
@@ -1670,17 +1698,12 @@ class Renderer:
     def draw_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         workflow = self.current_session()
         title = "Detail" if workflow is None else shorten(workflow.title, max(10, w - 12))
-        self.box(stdscr, y, x, h, w, title)
+        self.box(stdscr, y, x, h, w, title, active=True)
         if workflow is None:
             self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(5))
             return
 
-        tab_line = "  ".join(
-            f"[{tab}]" if i == self.tab else f" {tab} " for i, tab in enumerate(self.current_tabs())
-        )
-        self.write(
-            stdscr, y + 1, x + 2, shorten(tab_line, w - 4), curses.color_pair(1) | curses.A_BOLD
-        )
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
 
         if self.tab == 0:
             lines = self.detail_overview(workflow, w - 4)
@@ -2101,19 +2124,12 @@ class Renderer:
     # --- Trends overlay -------------------------------------------------------
     def draw_trends(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         h = bottom - y
-        self.box(stdscr, y, 0, h, width, f"Trends · {self.range_label()}")
+        self.box(stdscr, y, 0, h, width, f"Trends · {self.range_label()}", active=True)
         tabs = self.trend_tabs
         current = tabs[self.trend_tab % len(tabs)]
-        tab_line = "  ".join(f"[{t}]" if t == current else f" {t} " for t in tabs)
         unit = {"Daily": "month", "Weekly": "week"}.get(current)
         hint = f"h/l tabs · j/k {unit} · esc closes" if unit else "h/l tabs · esc closes"
-        self.write(
-            stdscr,
-            y + 1,
-            2,
-            shorten(tab_line, width - len(hint) - 4),
-            curses.color_pair(1) | curses.A_BOLD,
-        )
+        self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, tabs, self.trend_tab)
         self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
         content_h = h - 4
@@ -2298,20 +2314,29 @@ class Renderer:
             )
         return lines
 
-    def box(self, stdscr: curses.window, y: int, x: int, h: int, w: int, title: str) -> None:
+    def box(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        h: int,
+        w: int,
+        title: str,
+        active: bool = False,
+    ) -> None:
         if h <= 1 or w <= 1:
             return
-        stdscr.addch(y, x, curses.ACS_ULCORNER)
-        stdscr.addch(y, x + w - 1, curses.ACS_URCORNER)
-        stdscr.addch(y + h - 1, x, curses.ACS_LLCORNER)
-        stdscr.addch(y + h - 1, x + w - 1, curses.ACS_LRCORNER)
-        stdscr.hline(y, x + 1, curses.ACS_HLINE, w - 2)
-        stdscr.hline(y + h - 1, x + 1, curses.ACS_HLINE, w - 2)
-        stdscr.vline(y + 1, x, curses.ACS_VLINE, h - 2)
-        stdscr.vline(y + 1, x + w - 1, curses.ACS_VLINE, h - 2)
-        self.write(
-            stdscr, y, x + 2, f" {shorten(title, w - 6)} ", curses.color_pair(1) | curses.A_BOLD
-        )
+        border_attr = curses.color_pair(6) | curses.A_BOLD if active else curses.A_NORMAL
+        title_attr = border_attr if active else curses.color_pair(1) | curses.A_BOLD
+        stdscr.addch(y, x, curses.ACS_ULCORNER, border_attr)
+        stdscr.addch(y, x + w - 1, curses.ACS_URCORNER, border_attr)
+        stdscr.addch(y + h - 1, x, curses.ACS_LLCORNER, border_attr)
+        stdscr.addch(y + h - 1, x + w - 1, curses.ACS_LRCORNER, border_attr)
+        stdscr.hline(y, x + 1, curses.ACS_HLINE, w - 2, border_attr)
+        stdscr.hline(y + h - 1, x + 1, curses.ACS_HLINE, w - 2, border_attr)
+        stdscr.vline(y + 1, x, curses.ACS_VLINE, h - 2, border_attr)
+        stdscr.vline(y + 1, x + w - 1, curses.ACS_VLINE, h - 2, border_attr)
+        self.write(stdscr, y, x + 2, f" {shorten(title, w - 6)} ", title_attr)
 
     def hline(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
         stdscr.hline(y, x, curses.ACS_HLINE, max(0, w - 1))
@@ -3401,6 +3426,9 @@ class App:
         curses.init_pair(3, curses.COLOR_GREEN, -1)
         curses.init_pair(4, curses.COLOR_YELLOW, -1)
         curses.init_pair(5, curses.COLOR_RED, -1)
+        orange = 208 if curses.COLORS >= 256 else curses.COLOR_YELLOW
+        curses.init_pair(6, orange, -1)
+        curses.init_pair(7, curses.COLOR_BLACK, orange)
         stdscr.keypad(True)
 
         first = True
