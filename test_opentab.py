@@ -121,6 +121,17 @@ def test_bar_chart_labels_bars_and_summarizes():
     assert any("peak" in ln and "total" in ln and "avg" in ln for ln in lines)
 
 
+def test_bar_chart_compacts_crowded_edge_value_labels():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    lines = app.renderer._bar_chart(
+        [(str(i), v) for i, v in enumerate((4.0, 17.0, 25.0, 7.0, 30.0, 26.0, 5.0), 1)],
+        36,
+        14,
+    )
+    assert any("$4" in ln for ln in lines)
+    assert any("$5" in ln for ln in lines)
+
+
 def test_bar_chart_all_zero_window_reads_as_no_spend():
     # An all-empty window (e.g. browsing to a quiet week) must not borrow the
     # divide-by-zero guard (1.0) as a fake "$1.00 peak".

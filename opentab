@@ -2187,20 +2187,25 @@ class Renderer:
                 tops.append((i, rows_n - filled + 1, v))
 
         def place_value(i: int, top_row: int, v: float) -> None:
-            text = money_label(v)
-            if not text:
+            labels = [money_label(v)]
+            if 1 <= v < 1000:
+                labels.append(f"${v:.0f}")
+            labels = [label for n, label in enumerate(labels) if label and label not in labels[:n]]
+            if not labels:
                 return
             center = margin + i * col_w + lead + bar_w // 2
-            start = max(margin, min(center - len(text) // 2, total_w - len(text)))
             lrow = top_row - 1
             if lrow < 0:
                 return
             row = grid[lrow]
-            lo, hi = start - 1, start + len(text)  # keep a blank column on each side
-            if any(row[c] != " " for c in range(max(margin, lo), min(total_w, hi + 1))):
+            for text in labels:
+                start = max(margin, min(center - len(text) // 2, total_w - len(text)))
+                lo, hi = start - 1, start + len(text)  # keep a blank column on each side
+                if any(row[c] != " " for c in range(max(margin, lo), min(total_w, hi + 1))):
+                    continue
+                for k, ch in enumerate(text):
+                    row[start + k] = ch
                 return
-            for k, ch in enumerate(text):
-                row[start + k] = ch
 
         # Peak first so its value is never crowded out, then the rest left-to-right.
         tops.sort(key=lambda t: t[2], reverse=True)
