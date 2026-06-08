@@ -554,10 +554,12 @@ def short_path(path: str, width: int) -> str:
     return "..." + path[-(width - 3) :]
 
 
-def parse_range_text(raw: str) -> tuple[int | None, str | None, str | None]:
+def parse_range_text(raw: str) -> tuple[int | None, int | None, str | None, str | None]:
+    # Returns (days, months, since, until). Days and months are *relative*
+    # windows re-evaluated each run; since/until are absolute bounds.
     value = raw.strip().lower()
     if value in ("", "a", "all", "all time", "all-time"):
-        return None, None, None
+        return None, None, None, None
 
     duration_match = re.fullmatch(
         r"(?:last\s+)?(\d+)\s*(d(?:ays?)?|m(?:onths?)?|y(?:ears?)?)", value
@@ -567,15 +569,18 @@ def parse_range_text(raw: str) -> tuple[int | None, str | None, str | None]:
         unit = duration_match.group(2)[0]
         if amount <= 0:
             raise ValueError("range amount must be greater than 0")
-        days = amount * {"d": 1, "m": 30, "y": 365}[unit]
-        return days, None, None
+        # Days stay a rolling day window; months and years are calendar-accurate
+        # (a year is just twelve months), so "2m" is two whole months, not 60 days.
+        if unit == "d":
+            return amount, None, None, None
+        return None, amount * (12 if unit == "y" else 1), None, None
 
     # A bare number is the obvious "N days" intent (4-digit values stay years).
     if value.isdigit() and not YEAR_PATTERN.fullmatch(value):
         amount = int(value)
         if amount <= 0:
             raise ValueError("range amount must be greater than 0")
-        return amount, None, None
+        return amount, None, None, None
 
     if ".." in value:
         since, until = (part.strip() or None for part in value.split("..", 1))
@@ -585,17 +590,17 @@ def parse_range_text(raw: str) -> tuple[int | None, str | None, str | None]:
             validate_date(until)
         if since and until and since > until:
             raise ValueError("since date must be before until date")
-        return None, since, until
+        return None, None, since, until
 
     if DATE_PATTERN.fullmatch(value):
         validate_date(value)
-        return None, value, None
+        return None, None, value, None
 
     if MONTH_PATTERN.fullmatch(value):
-        return None, *month_bounds(value)
+        return None, None, *month_bounds(value)
 
     if YEAR_PATTERN.fullmatch(value):
-        return None, f"{value}-01-01", f"{value}-12-31"
+        return None, None, f"{value}-01-01", f"{value}-12-31"
 
     raise ValueError("use all, 30d, 2m, 1y, YYYY, YYYY-MM, YYYY-MM-DD, or start..end")
 
@@ -619,6 +624,16 @@ def month_bounds(value: str) -> tuple[str, str]:
     else:
         end = start.replace(month=start.month + 1) - timedelta(days=1)
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def month_window_start(n: int, today: datetime | None = None) -> str:
+    # First day of the calendar month that opens a trailing window of n months:
+    # this month plus the n-1 before it. So "2m" spans exactly two month buckets
+    # (this month and last), whatever today's day-of-month is -- which is what the
+    # month-oriented views expect, rather than a 60-day window straddling three.
+    base = today or datetime.now()
+    year, month0 = divmod(base.year * 12 + (base.month - 1) - (n - 1), 12)
+    return datetime(year, month0 + 1, 1).strftime("%Y-%m-%d")
 
 
 class Store:
@@ -2089,7 +2104,7 @@ class Renderer:
             "                   days: Overview/Projects/Sessions)",
             "  j/k or Up/Down   move in the current list (or scroll detail)",
             "  g/G              top / bottom",
-            "  R                set range: all, 30d (or 30), 2m (~60d), 2026, 2026-05, start..end",
+            "  R                set range: all, 30d (or 30), 2m, 1y, 2026, 2026-05, start..end",
             "  a                show all time, keeping the current selection when possible",
             "  s / S            cycle sort forward / backward on visible lists",
             "  i                ignore/unignore the selected project (project lists only)",
@@ -2403,6 +2418,7 @@ class App:
         self.custom_since = args.since
         self.custom_until = args.until
         self.range_days = None if (args.since or args.until or args.days is None) else args.days
+        self.range_months: int | None = None  # set by an "Nm"/"Ny" range, calendar-based
         self.query = ""
         self.day_index = 0
         self.month_index = 0
@@ -2440,7 +2456,13 @@ class App:
     def ranged_workflows(self) -> list[Workflow]:
         # Cached range-only source. Ignored-project filtering happens in
         # all_workflows so ignored projects can still be shown for unignore.
-        key = (id(self.loaded), self.custom_since, self.custom_until, self.range_days)
+        key = (
+            id(self.loaded),
+            self.custom_since,
+            self.custom_until,
+            self.range_days,
+            self.range_months,
+        )
         if getattr(self, "_rw_key", None) == key:
             return self._rw_cache
         rows = self.loaded
@@ -2451,6 +2473,9 @@ class App:
                 rows = [w for w in rows if w.created_at[:10] <= self.custom_until]
         elif self.range_days is not None:
             cutoff = (datetime.now() - timedelta(days=self.range_days)).strftime("%Y-%m-%d")
+            rows = [w for w in rows if w.created_at[:10] >= cutoff]
+        elif self.range_months is not None:
+            cutoff = month_window_start(self.range_months)
             rows = [w for w in rows if w.created_at[:10] >= cutoff]
         self._rw_key = key
         self._rw_cache = list(rows)
@@ -2465,6 +2490,7 @@ class App:
             self.custom_since,
             self.custom_until,
             self.range_days,
+            self.range_months,
             tuple(sorted(self.ignored_projects)),
         )
         if getattr(self, "_aw_key", None) == key:
@@ -2487,21 +2513,25 @@ class App:
         self.custom_since = None
         self.custom_until = None
         self.range_days = None
+        self.range_months = None
         self.restore_selection(anchor)
         self.notice = "range: all time"
 
     def range_input_value(self) -> str:
         if self.custom_since or self.custom_until:
             return f"{self.custom_since or ''}..{self.custom_until or ''}"
-        if self.range_days is None:
-            return "all"
-        return f"{self.range_days}d"
+        if self.range_days is not None:
+            return f"{self.range_days}d"
+        if self.range_months is not None:
+            return f"{self.range_months}m"
+        return "all"
 
     def set_range_from_text(self, raw: str) -> None:
         self.zoom_project = None
         anchor = self.selection_anchor()
-        days, since, until = parse_range_text(raw)
+        days, months, since, until = parse_range_text(raw)
         self.range_days = days
+        self.range_months = months
         self.custom_since = since
         self.custom_until = until
         self.restore_selection(anchor)
@@ -3765,9 +3795,14 @@ class App:
             if self.custom_until:
                 label += f" until {self.custom_until}"
             return label
-        if self.range_days is None:
-            return "all time"
-        return f"last {self.range_days} days"
+        if self.range_days is not None:
+            return f"last {self.range_days} days"
+        if self.range_months is not None:
+            if self.range_months % 12 == 0:
+                years = self.range_months // 12
+                return f"last {years} year{'s' if years != 1 else ''}"
+            return f"last {self.range_months} month{'s' if self.range_months != 1 else ''}"
+        return "all time"
 
 
 def parse_args() -> argparse.Namespace:

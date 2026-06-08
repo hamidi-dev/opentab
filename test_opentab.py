@@ -1352,26 +1352,56 @@ def test_filter_prompt_editing():
 
 
 def test_parse_range_text():
-    assert ot.parse_range_text("all") == (None, None, None)
-    assert ot.parse_range_text("30d") == (30, None, None)
-    assert ot.parse_range_text("2m") == (60, None, None)
-    assert ot.parse_range_text("1y") == (365, None, None)
-    assert ot.parse_range_text("last 14 days") == (14, None, None)
-    assert ot.parse_range_text("last 2 months") == (60, None, None)
-    assert ot.parse_range_text("2026") == (None, "2026-01-01", "2026-12-31")
-    assert ot.parse_range_text("2026-05") == (None, "2026-05-01", "2026-05-31")
-    assert ot.parse_range_text("2024-02") == (None, "2024-02-01", "2024-02-29")
-    assert ot.parse_range_text("2026-05-01") == (None, "2026-05-01", None)
+    # (days, months, since, until)
+    assert ot.parse_range_text("all") == (None, None, None, None)
+    assert ot.parse_range_text("30d") == (30, None, None, None)
+    # months and years are calendar windows, not day approximations
+    assert ot.parse_range_text("2m") == (None, 2, None, None)
+    assert ot.parse_range_text("1y") == (None, 12, None, None)
+    assert ot.parse_range_text("last 14 days") == (14, None, None, None)
+    assert ot.parse_range_text("last 2 months") == (None, 2, None, None)
+    assert ot.parse_range_text("2026") == (None, None, "2026-01-01", "2026-12-31")
+    assert ot.parse_range_text("2026-05") == (None, None, "2026-05-01", "2026-05-31")
+    assert ot.parse_range_text("2024-02") == (None, None, "2024-02-01", "2024-02-29")
+    assert ot.parse_range_text("2026-05-01") == (None, None, "2026-05-01", None)
     assert ot.parse_range_text("2026-05-01..2026-05-31") == (
+        None,
         None,
         "2026-05-01",
         "2026-05-31",
     )
-    assert ot.parse_range_text("..2026-05-31") == (None, None, "2026-05-31")
+    assert ot.parse_range_text("..2026-05-31") == (None, None, None, "2026-05-31")
     # a bare number is "N days"; a 4-digit value stays a calendar year
-    assert ot.parse_range_text("30") == (30, None, None)
-    assert ot.parse_range_text("7") == (7, None, None)
-    assert ot.parse_range_text("2026") == (None, "2026-01-01", "2026-12-31")
+    assert ot.parse_range_text("30") == (30, None, None, None)
+    assert ot.parse_range_text("7") == (7, None, None, None)
+    assert ot.parse_range_text("2026") == (None, None, "2026-01-01", "2026-12-31")
+
+
+def test_month_window_start_is_bucket_aligned():
+    base = ot.datetime(2026, 6, 8)
+    # "2m" = this month + last => starts at the first of last month (two buckets)
+    assert ot.month_window_start(2, base) == "2026-05-01"
+    assert ot.month_window_start(1, base) == "2026-06-01"  # just this month
+    assert ot.month_window_start(12, base) == "2025-07-01"  # trailing twelve months
+    # wraps across the year boundary
+    assert ot.month_window_start(2, ot.datetime(2026, 1, 15)) == "2025-12-01"
+
+
+def test_relative_month_range_round_trips():
+    app = app_with([workflow("a", "2026-06-07 12:00:00")])
+    app.set_range_from_text("2m")
+    assert app.range_months == 2
+    assert app.range_days is None
+    assert app.range_input_value() == "2m"  # persisted form re-parses to the same window
+    assert app.range_label() == "last 2 months"
+
+    app.set_range_from_text("1y")  # a year is twelve calendar months
+    assert app.range_months == 12
+    assert app.range_input_value() == "12m"
+    assert app.range_label() == "last 1 year"
+
+    app.set_all_time()
+    assert app.range_months is None
 
 
 def test_parse_range_text_rejects_bad_input():
