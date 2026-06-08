@@ -974,11 +974,36 @@ class Renderer:
 
     def __init__(self, app: App) -> None:
         self.app = app
+        # Clickable hit regions, rebuilt every draw() so they always match what is
+        # on screen. Each is ("rows", kind, y0, y_last, x0, x1, start) for a list
+        # (click row y selects index start + (y - y0)) or (kind, y, x0, x1, index)
+        # for a tab label where kind is "tab"/"trend". hit() resolves a click.
+        self.regions: list[tuple] = []
 
     def __getattr__(self, name: str):
         # Misses are App state/logic; read them from the App. (Renderer's own
         # methods are found normally, so they win over this delegation.)
         return getattr(self.app, name)
+
+    def _add_rows_region(
+        self, kind: str, y_first: int, x0: int, x1: int, start: int, drawn: int
+    ) -> None:
+        if drawn > 0:
+            self.regions.append(("rows", kind, y_first, y_first + drawn - 1, x0, x1, start))
+
+    def hit(self, my: int, mx: int) -> tuple[str, int] | None:
+        # Resolve a mouse (y, x) to (kind, value): a list index for "rows" regions,
+        # or a tab index for "tab"/"trend" regions. First match wins.
+        for region in self.regions:
+            if region[0] == "rows":
+                _, kind, y0, y_last, x0, x1, start = region
+                if y0 <= my <= y_last and x0 <= mx <= x1:
+                    return kind, start + (my - y0)
+            else:
+                kind, y, x0, x1, index = region  # ("tab"|"trend", y, x0, x1, index)
+                if my == y and x0 <= mx <= x1:
+                    return kind, index
+        return None
 
     def month_row_text(self, month: MonthSummary, marker: str) -> str:
         return (
@@ -1106,6 +1131,7 @@ class Renderer:
 
     def draw(self, stdscr: curses.window) -> None:
         stdscr.erase()
+        self.regions = []  # rebuilt below as panels draw, for this frame's clicks
         height, width = stdscr.getmaxyx()
         if height < 20 or width < 80:
             self.write(
@@ -1122,6 +1148,8 @@ class Renderer:
         avail = bottom - top
         if self.help:
             self.draw_help(stdscr, top, bottom, width)
+        elif self.show_prices:
+            self.draw_prices(stdscr, top, bottom, width)
         elif self.trends:
             self.draw_trends(stdscr, top, bottom, width)
         elif self.view == "session":
@@ -1263,7 +1291,7 @@ class Renderer:
             parts.append("i ignore")
         if self.ignored_projects:
             parts.append("I ignored" + ("*" if self.show_ignored_projects else ""))
-        parts += ["R range", "/ filter", "T trends", "e export", "y copy", "o open"]
+        parts += ["R range", "/ filter", "T trends", "P prices", "e export", "y copy", "o open"]
         if not self.store.demo:
             parts.append("$ what-if" + ("*" if self.show_api_prices else ""))
         parts += ["? help", "q quit"]
@@ -1356,6 +1384,9 @@ class Renderer:
         visible = max(1, h - 5)
         idx = max(0, min(self.workflow_index, len(sessions) - 1))
         start = max(0, min(idx - visible // 2, max(0, len(sessions) - visible)))
+        self._add_rows_region(
+            "session", cy + 1, x, x + w - 1, start, len(sessions[start : start + visible])
+        )
         for off, wf in enumerate(sessions[start : start + visible]):
             ry = cy + 1 + off
             marker = ">" if start + off == idx else " "
@@ -1388,6 +1419,9 @@ class Renderer:
         visible = max(1, h - 5)
         idx = max(0, min(self.project_index, len(projects) - 1))
         start = max(0, min(idx - visible // 2, max(0, len(projects) - visible)))
+        self._add_rows_region(
+            "zoomproject", cy + 1, x, x + w - 1, start, len(projects[start : start + visible])
+        )
         for off, project in enumerate(projects[start : start + visible]):
             ry = cy + 1 + off
             marker = ">" if start + off == idx else " "
@@ -1415,6 +1449,7 @@ class Renderer:
         width: int,
         tabs: tuple[str, ...],
         active_index: int,
+        kind: str = "tab",
     ) -> None:
         if width <= 0 or not tabs:
             return
@@ -1435,6 +1470,7 @@ class Renderer:
             )
             text = shorten(label, remaining)
             self.write(stdscr, y, cx, text, attr)
+            self.regions.append((kind, y, cx, cx + len(text) - 1, i))  # clickable tab
             cx += len(text)
             remaining -= len(text)
 
@@ -1451,6 +1487,9 @@ class Renderer:
         bar_cells, text_w = self.bar_lane(w)
         visible = h - 3
         start = max(0, min(self.month_index - visible // 2, max(0, len(rows) - visible)))
+        self._add_rows_region(
+            "month", y + 2, x, x + w - 1, start, len(rows[start : start + visible])
+        )
         for row_y, month in enumerate(rows[start : start + visible], y + 2):
             selected = start + row_y - (y + 2) == self.month_index
             marker = ">" if selected else " "
@@ -1498,6 +1537,9 @@ class Renderer:
 
         visible = h - 4
         start = max(0, min(self.project_index - visible // 2, max(0, len(rows) - visible)))
+        self._add_rows_region(
+            "project", y + 3, x, x + w - 1, start, len(rows[start : start + visible])
+        )
         for row_y, project in enumerate(rows[start : start + visible], y + 3):
             selected = start + row_y - (y + 3) == self.project_index
             marker = ">" if selected else " "
@@ -1612,6 +1654,7 @@ class Renderer:
         bar_cells, text_w = self.bar_lane(w)
         visible = h - 3
         start = max(0, min(self.day_index - visible // 2, max(0, len(rows) - visible)))
+        self._add_rows_region("day", y + 2, x, x + w - 1, start, len(rows[start : start + visible]))
         for row_y, day in enumerate(rows[start : start + visible], y + 2):
             selected = start + row_y - (y + 2) == self.day_index
             marker = ">" if selected else " "
@@ -2103,6 +2146,7 @@ class Renderer:
             "  h/l              switch detail tabs (months: Overview/Models/Projects/Sessions;",
             "                   days: Overview/Projects/Sessions)",
             "  j/k or Up/Down   move in the current list (or scroll detail)",
+            "  mouse            wheel scrolls; click selects; double-click drills; click a tab",
             "  g/G              top / bottom",
             "  R                set range: all, 30d (or 30), 2m, 1y, 2026, 2026-05, start..end",
             "  a                show all time, keeping the current selection when possible",
@@ -2114,7 +2158,9 @@ class Renderer:
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
-            "  T                Trends overlay: Daily / Weekly / Monthly / Models (h/l tabs; j/k month/week)",
+            "  T                Trends overlay: Daily / Weekly / Monthly / Models",
+            "                   (h/l tabs; j/k month/week; $ toggles what-if prices)",
+            "  P                model prices (the models.dev API rates used for $ what-if)",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
             "  q                quit",
@@ -2140,6 +2186,62 @@ class Renderer:
                 curses.color_pair(4) if line.endswith(":") else curses.A_NORMAL,
             )
 
+    def price_table_lines(self, width: int) -> list[str]:
+        # The models you have used (most spend first) and the models.dev API list
+        # prices OpenTab applies for the "$" what-if estimate. Pure text so it can
+        # be tested without a screen; draw_prices just paints these.
+        totals: dict[str, float] = defaultdict(float)
+        for rows in self._model_by_root.values():
+            for m in rows:
+                totals[m["model_name"]] += float(m.get("cost", 0) or 0)
+        names = sorted(totals, key=lambda n: totals[n], reverse=True)
+        lines = [
+            "API list prices from models.dev, per 1M tokens. These are the rates",
+            "OpenTab uses to estimate the $ what-if cost of unpriced subscription or",
+            "credit usage -- approximate list prices, embedded offline, not your invoice.",
+            "",
+        ]
+        if not names:
+            lines.append("No model usage on record yet.")
+        else:
+            namew = min(max(len(n) for n in names), max(12, width - 34))
+            lines.append(
+                f"{'model':{namew}}  {'input':>7} {'output':>7} {'cache-r':>7} {'cache-w':>7}"
+            )
+            for name in names:
+                ir, orr, crr, cwr = model_price(name)
+                lines.append(
+                    f"{shorten(name, namew):{namew}}  "
+                    f"{ir:>7.2f} {orr:>7.2f} {crr:>7.2f} {cwr:>7.2f}"
+                )
+        return lines
+
+    def draw_prices(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
+        # Reference overlay (toggled with P) so the rates behind the "$" what-if
+        # number are visible. A pager: j/k scroll, any other key closes it.
+        self.box(
+            stdscr,
+            y,
+            0,
+            bottom - y,
+            width,
+            "Model prices  ·  j/k scroll · any other key closes",
+            active=True,
+        )
+        inner_w = width - 4
+        lines = self.price_table_lines(inner_w)
+        visible = max(1, bottom - y - 3)
+        scroll = max(0, min(self.app.prices_scroll, max(0, len(lines) - visible)))
+        self.app.prices_scroll = scroll
+        for offset, line in enumerate(lines[scroll : scroll + visible]):
+            if line.startswith("model "):
+                attr = curses.color_pair(4) | curses.A_BOLD
+            elif "models.dev" in line:
+                attr = curses.color_pair(4)
+            else:
+                attr = curses.A_NORMAL
+            self.write(stdscr, y + 2 + offset, 2, shorten(line, inner_w), attr)
+
     # --- Trends overlay -------------------------------------------------------
     def draw_trends(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         h = bottom - y
@@ -2148,7 +2250,7 @@ class Renderer:
         current = tabs[self.trend_tab % len(tabs)]
         unit = {"Daily": "month", "Weekly": "week"}.get(current)
         hint = f"h/l tabs · j/k {unit} · esc closes" if unit else "h/l tabs · esc closes"
-        self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, tabs, self.trend_tab)
+        self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, tabs, self.trend_tab, kind="trend")
         self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
         content_h = h - 4
@@ -2440,6 +2542,8 @@ class App:
         self.trend_tab = 0
         self.trend_month_index = 0  # which month the Daily tab shows (0 = newest)
         self.trend_week_index = 0  # which week the Weekly tab shows (0 = newest)
+        self.show_prices = False  # the "P" model-prices reference overlay
+        self.prices_scroll = 0  # pager offset within that overlay
         self.sort_by = "cost"
         self.project_sort_by = "cost"
         self.ignored_projects: set[str] = set()
@@ -3482,6 +3586,25 @@ class App:
         curses.init_pair(6, accent, -1)  # active panel border / focus
         curses.init_pair(7, curses.COLOR_BLACK, accent)  # active tab
         stdscr.keypad(True)
+        # Wheel-down is BUTTON5, but some curses builds (notably macOS system
+        # ncurses) don't expose BUTTON5_PRESSED; on them the wheel-down bit is the
+        # one otherwise labelled REPORT_MOUSE_POSITION, and enabling it does NOT
+        # switch on motion reporting. Fall back to that so scroll-down works too.
+        self._wheel_down = getattr(curses, "BUTTON5_PRESSED", 0) or getattr(
+            curses, "REPORT_MOUSE_POSITION", 0
+        )
+        try:
+            # Wheel + left click / double-click; clicks select, double-clicks drill.
+            # The wheel-down bit must be in the mask or ncurses filters the event.
+            curses.mousemask(
+                curses.BUTTON1_CLICKED
+                | curses.BUTTON1_DOUBLE_CLICKED
+                | curses.BUTTON4_PRESSED
+                | self._wheel_down
+            )
+            curses.mouseinterval(200)  # needed for click / double-click synthesis
+        except (curses.error, AttributeError):
+            pass  # a terminal without mouse support just keeps the keyboard
 
         first = True
         while True:
@@ -3511,8 +3634,23 @@ class App:
         return max(index - 1, 0)
 
     def handle_key(self, stdscr: curses.window, key: int) -> bool:
+        if key == curses.KEY_MOUSE:
+            return self.handle_mouse()
         if self.help:
             self.help = False
+            return True
+        if self.show_prices:
+            # A pager: j/k/arrows and g/G scroll; any other key closes it.
+            if key in (ord("j"), curses.KEY_DOWN):
+                self.prices_scroll += 1
+            elif key in (ord("k"), curses.KEY_UP):
+                self.prices_scroll = max(0, self.prices_scroll - 1)
+            elif key == ord("g"):
+                self.prices_scroll = 0
+            elif key == ord("G"):
+                self.prices_scroll = 10_000  # clamped to the last page on draw
+            else:
+                self.show_prices = False
             return True
         if self.trends:
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
@@ -3546,6 +3684,10 @@ class App:
             self.trends = True
             self.trend_month_index = 0  # start at the most recent month
             self.trend_week_index = 0  # and the most recent week
+            return True
+        if key == ord("P"):
+            self.show_prices = True
+            self.prices_scroll = 0
             return True
         if key == ord("r"):
             self.reload()
@@ -3637,6 +3779,93 @@ class App:
             self.move(-1)
             return True
         return True
+
+    def handle_mouse(self) -> bool:
+        # The screen's clickable regions were registered by the last draw(), so a
+        # click resolves against exactly what the user sees. Wheel scrolls the
+        # current context; a click selects; a double-click selects then drills in.
+        try:
+            _id, mx, my, _z, bstate = curses.getmouse()
+        except curses.error:
+            return True
+        up = bool(bstate & curses.BUTTON4_PRESSED)
+        down = bool(bstate & getattr(self, "_wheel_down", 0))
+        click = bool(bstate & curses.BUTTON1_CLICKED)
+        double = bool(bstate & curses.BUTTON1_DOUBLE_CLICKED)
+
+        if self.help:
+            if up or down or click or double:
+                self.help = False
+            return True
+        if self.show_prices:
+            if up:
+                self.prices_scroll = max(0, self.prices_scroll - 3)
+            elif down:
+                self.prices_scroll += 3
+            elif click or double:
+                self.show_prices = False
+            return True
+        if self.trends:
+            return self._mouse_trends(my, mx, up, down, click or double)
+        if up or down:
+            self.move(-3 if up else 3)
+            return True
+        if not (click or double):
+            return True
+        target = self.renderer.hit(my, mx)
+        if target:
+            self._apply_click(target, drill=double)
+        return True
+
+    def _mouse_trends(self, my: int, mx: int, up: bool, down: bool, click: bool) -> bool:
+        current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
+        if up or down:
+            older = down  # wheel down pages to older buckets, mirroring j/k
+            if current == "Daily":
+                n = len({w.created_at[:7] for w in self.all_workflows})
+                self.trend_month_index = self._step_trend_index(self.trend_month_index, n, older)
+            elif current == "Weekly":
+                n = len({week_key(w.created_at) for w in self.all_workflows})
+                self.trend_week_index = self._step_trend_index(self.trend_week_index, n, older)
+            return True
+        if click:
+            target = self.renderer.hit(my, mx)
+            if target and target[0] == "trend":
+                self.trend_tab = target[1]
+        return True
+
+    def _apply_click(self, target: tuple[str, int], drill: bool) -> None:
+        kind, value = target
+        if kind == "tab":
+            if self.tab != value:
+                self.tab = value
+                self.scroll = 0
+            return
+        if kind == "month" and self.view == "browse" and self.browse_mode == "time":
+            if self.focus != "months":
+                self.focus = "months"
+                self.tab = 0
+                self.scroll = 0
+                self.zoom_project = None
+            self.month_index = value
+            self.day_index = 0
+        elif kind == "day" and self.view == "browse" and self.browse_mode == "time":
+            if self.focus != "days":
+                self.focus = "days"
+                self.tab = 0
+                self.scroll = 0
+                self.zoom_project = None
+            self.day_index = value
+        elif kind == "project":
+            self.project_index = value
+        elif kind == "session":
+            self.workflow_index = value
+        elif kind == "zoomproject":
+            self.project_index = value
+        else:
+            return
+        if drill:
+            self.drill_in()
 
     def prompt_filter(self, stdscr: curses.window) -> None:
         value = self.prompt_text(stdscr, "Filter sessions/projects (Esc cancels): ", self.query)

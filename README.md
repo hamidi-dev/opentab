@@ -16,9 +16,9 @@ and shows you where your tokens and money actually went: by month, day, project,
 session, and model, down to the subagent tree on the sessions that spawned one.
 
 OpenCode already keeps this ledger; OpenTab is just the reader for it. No backend,
-no telemetry, no accounts — it opens the database **read-only**, so it physically
-cannot change your data. Just `curses` + `sqlite3` from the Python standard
-library — no `pip install`, ever.
+no telemetry, no accounts — it opens the database **read-only**, so today it only
+reads and leaves your data untouched. Just `curses` + `sqlite3` from the Python
+standard library — no `pip install` needed.
 
 ## Features
 
@@ -27,10 +27,13 @@ library — no `pip install`, ever.
 - Cost-share percentages and inline spend bars
 - Per-session model mix and token breakdown
 - Recursive subagent costs, on the sessions that delegated work
+- "What-if" pricing (`$`): re-price unpriced subscription/credit usage at
+  models.dev API list rates; `P` shows the price table behind it
 - Git worktrees folded into their main repo
 - Filter (title / project / id) and live date-range scoping
 - CSV export of any view
-- Remembers your range and sort between runs
+- Keyboard- and mouse-driven (scroll, click to select, double-click to drill)
+- Remembers your range, sort, ignored projects, and the `$` view between runs
 - Read-only, local-only, zero dependencies
 - Demo mode for screenshots and live demos
 
@@ -49,7 +52,7 @@ AI usage*. OpenTab is what that looks like when you do.
 ## What it touches
 
 Local-only, no network, no telemetry, no accounts — and it opens the OpenCode
-database **read-only**, so it physically cannot modify it. For full transparency,
+database **read-only**, so as it stands it doesn't modify it. For full transparency,
 everything it touches, all on your own machine:
 
 - **Reads** the OpenCode SQLite DB (read-only). To fold git worktrees into their
@@ -64,7 +67,7 @@ everything it touches, all on your own machine:
 
 ## Requirements
 
-Python **3.9+** (standard library only — no `pip install`, ever) and a Unix-like
+Python **3.9+** (standard library only — no `pip install` needed) and a Unix-like
 OS with `curses` (macOS, Linux, WSL).
 
 ## Install
@@ -103,8 +106,7 @@ opentab --demo                   # safe for live demos / screenshots (see below)
 ### Demo mode
 
 `opentab --demo` is for showing the tool to other people without leaking your real
-work. It **never writes to the database** — everything is transformed in memory
-on load:
+work. Everything is transformed in memory on load and nothing is written back:
 
 - Session titles and project paths are replaced with deterministic, plausible
   fakes (stable across redraws).
@@ -132,37 +134,45 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `Shift-Tab` | Flip Months/Days focus while browsing; otherwise step back out |
 | `j`/`k` or arrows | Move in the current list / scroll detail |
 | `h`/`l` | Switch detail tabs |
+| Mouse | Wheel scrolls; click a row or tab to select; double-click to drill in |
 | `g` / `G` | Top / bottom |
-| `R` | Set range (`all`, `30d` or `30`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`) |
+| `R` | Set range (`all`, `30d` or `30`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`); `2m`/`1y` are whole calendar months |
 | `a` | Show all time |
 | `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
 | `i` | Ignore/unignore the selected project from project lists |
 | `I` | Show/hide ignored projects so they can be unignored |
 | `/` | Filter sessions (title/project/id) and the project list; `Esc` cancels; `x` clears |
-| `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model spend ranking (`h`/`l` tabs, `j`/`k` month/week) |
+| `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model spend ranking (`h`/`l` tabs, `j`/`k` month/week, `$` toggles what-if) |
+| `$` | What-if pricing: re-price unpriced subscription/credit usage at models.dev API list prices |
+| `P` | Show the models.dev API price table OpenTab uses for `$` |
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 
-The active **range, sort, and ignored projects are remembered between runs** (stored in
-`~/.config/opentab/state.json`; pass `--no-state` to disable, and `--demo` never
-persists). Sub-cent costs render as `<$0.01` so they aren't confused with a red
+The active **range, sort, ignored projects, and `$` what-if view are remembered
+between runs** (stored in `~/.config/opentab/state.json`; pass `--no-state` to
+disable, and `--demo` does not persist). Sub-cent costs render as `<$0.01` so they aren't confused with a red
 `$0.00`, which means *unpriced* (tokens with no local price). The Months and Days
 lists show a small bar scaled to the largest spend in view.
 
 ## Windows
 
 OpenTab uses Python's `curses`, which is **Unix-only** (not bundled with Windows
-Python). The supported way to run it on Windows is **WSL** — and that's the
-natural fit, since OpenCode is recommended to be used on Windows inside WSL.
-
-If OpenCode's DB is somewhere non-standard, point OpenTab at it:
+Python), so you run it from **WSL**. OpenCode itself does not have to run inside
+WSL, though: even when OpenCode runs on native Windows it keeps its database
+under your Windows home, at `%USERPROFILE%\.local\share\opencode\opencode.db`,
+which WSL can read through `/mnt/c`. Point OpenTab at it:
 
 ```sh
-opentab --db /path/to/opencode.db
+# from inside WSL, reading the Windows-side OpenCode database
+opentab --db /mnt/c/Users/<you>/.local/share/opencode/opencode.db
 ```
+
+If OpenCode runs inside WSL, the default path (`~/.local/share/opencode/opencode.db`)
+just works with a plain `opentab`. Either way, `--db` points at any non-standard
+location.
 
 Native Windows (cmd/PowerShell) is not supported; it would need
 `pip install windows-curses`, which is untested here. OpenTab prints a short
@@ -205,14 +215,15 @@ as billed elsewhere — by your subscription or account credits — so the real 
 lives with your provider, not this tool. OpenTab surfaces them as "unpriced
 tokens" so you know where local attribution is incomplete.
 
-Press `$` in non-demo mode to switch to an API-equivalent estimate: real recorded
-spend plus what `$0.00` subscription/credit usage would have cost at published
-API list prices. The estimate uses an embedded table generated from models.dev
-for Anthropic, OpenAI, and Google, with hand-kept family fallbacks for version or
-suffix churn and a mid-range fallback for unknown models. Nothing is fetched at
-runtime, so the TUI stays single-file, offline, and standard-library only. To
-refresh the embedded table, run `python3 scripts/update_prices.py` and commit the
-changed `opentab` file.
+Press `$` in non-demo mode for the **what-if** view: real recorded spend plus
+what `$0.00` subscription/credit usage would have cost at published API list
+prices. Press `P` to see the exact per-model rates behind that estimate. The
+estimate uses an embedded table generated from models.dev for Anthropic, OpenAI,
+and Google, with hand-kept family fallbacks for version or suffix churn and a
+mid-range fallback for unknown models. Nothing is fetched at runtime, so the TUI
+stays single-file, offline, and standard-library only. To refresh the embedded
+table, run `python3 scripts/update_prices.py` and commit the changed `opentab`
+file.
 
 ## License
 

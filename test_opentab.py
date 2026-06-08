@@ -274,6 +274,50 @@ def test_trend_models_shows_long_names_in_full():
     assert any(long_name in ln for ln in lines)  # full id, not cut off
 
 
+def test_capital_p_opens_model_prices_overlay():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            {
+                "model_name": "claude-opus-4-8",
+                "runs": 1,
+                "cost": 5.0,
+                "tokens_total": 10,
+                "cache_read": 0,
+                "cache_write": 0,
+                "output": 0,
+            }
+        ]
+    }
+    assert not app.show_prices
+    app.handle_key(None, ord("P"))
+    assert app.show_prices  # opens the reference overlay
+    lines = app.renderer.price_table_lines(80)
+    # opus-4-8 lists at $5 in / $25 out per 1M, from the embedded models.dev table
+    assert any("claude-opus-4-8" in ln and "5.00" in ln and "25.00" in ln for ln in lines)
+    assert any("models.dev" in ln for ln in lines)
+    app.handle_key(None, 27)  # esc (a non-nav key) closes it
+    assert not app.show_prices
+
+
+def test_jk_scrolls_the_prices_overlay():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app.handle_key(None, ord("P"))
+    assert app.show_prices and app.prices_scroll == 0
+    app.handle_key(None, ord("j"))
+    assert app.prices_scroll == 1 and app.show_prices  # scrolls, stays open
+    app.handle_key(None, ord("k"))
+    assert app.prices_scroll == 0
+    app.handle_key(None, ord("k"))  # floored at the top
+    assert app.prices_scroll == 0
+    app.handle_key(None, ord("G"))
+    assert app.prices_scroll > 0  # jumps toward the bottom (clamped on draw)
+    app.handle_key(None, ord("g"))
+    assert app.prices_scroll == 0
+    app.handle_key(None, ord("x"))  # any other key closes
+    assert not app.show_prices
+
+
 def test_trends_overlay_toggles_and_switches_tabs():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     assert not app.trends
@@ -297,6 +341,74 @@ def test_dollar_key_toggles_prices_without_closing_trends():
     assert app.trends  # and the overlay stayed open
     app.handle_key(None, ord("$"))
     assert not app.show_api_prices and app.trends
+
+
+def test_mouse_hit_resolves_clicks_against_regions():
+    app = app_with(
+        [
+            workflow("jun", "2026-06-01 12:00:00"),
+            workflow("may", "2026-05-01 12:00:00"),
+        ]
+    )
+    app.focus = "months"
+    # The regions a draw() would register: a months list at rows y=5..6 and a
+    # detail tab label on row y=3.
+    app.renderer.regions = [
+        ("rows", "month", 5, 6, 0, 30, 0),
+        ("tab", 3, 10, 19, 2),
+    ]
+    assert app.renderer.hit(5, 4) == ("month", 0)
+    assert app.renderer.hit(6, 4) == ("month", 1)
+    assert app.renderer.hit(6, 99) is None  # outside the x range
+    assert app.renderer.hit(7, 4) is None  # below the rows
+    assert app.renderer.hit(3, 12) == ("tab", 2)
+
+
+def test_mouse_click_selects_and_double_click_drills():
+    app = app_with(
+        [
+            workflow("jun", "2026-06-01 12:00:00"),
+            workflow("may", "2026-05-01 12:00:00"),
+        ]
+    )
+    app.focus = "months"
+    app._apply_click(("month", 1), drill=False)
+    assert app.month_index == 1 and app.view == "browse"  # single click only selects
+    app._apply_click(("month", 1), drill=True)
+    assert app.view == "zoom"  # double-click drills in
+    app._apply_click(("tab", 2), drill=False)
+    assert app.tab == 2  # clicking a tab switches detail tab
+
+
+def test_mouse_click_on_day_row_switches_focus():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.focus = "months"
+    app._apply_click(("day", 0), drill=False)
+    assert app.focus == "days"  # clicking the days panel focuses it
+
+
+def test_handle_mouse_wheel_scrolls_the_list():
+    app = app_with(
+        [
+            workflow("a", "2026-06-10 12:00:00"),
+            workflow("b", "2026-05-10 12:00:00"),
+            workflow("c", "2026-04-10 12:00:00"),
+        ]
+    )
+    app.focus = "months"
+    # Mirror run(): on builds without BUTTON5_PRESSED the wheel-down bit is the one
+    # otherwise labelled REPORT_MOUSE_POSITION.
+    app._wheel_down = getattr(ot.curses, "BUTTON5_PRESSED", 0) or ot.curses.REPORT_MOUSE_POSITION
+    orig = ot.curses.getmouse
+    try:
+        ot.curses.getmouse = lambda: (0, 0, 0, 0, app._wheel_down)  # wheel down
+        app.handle_mouse()
+        assert app.month_index == 2  # scrolled down by 3, clamped to last month
+        ot.curses.getmouse = lambda: (0, 0, 0, 0, ot.curses.BUTTON4_PRESSED)  # wheel up
+        app.handle_mouse()
+        assert app.month_index == 0  # scrolled back up
+    finally:
+        ot.curses.getmouse = orig
 
 
 def test_resolve_project_root_folds_worktree():
