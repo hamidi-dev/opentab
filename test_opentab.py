@@ -267,6 +267,18 @@ def test_trends_overlay_toggles_and_switches_tabs():
     assert not app.trends
 
 
+def test_dollar_key_toggles_prices_without_closing_trends():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app._models_loaded = True  # skip the deferred scan in toggle_api_prices
+    app.show_api_prices = False
+    app.handle_key(None, ord("T"))
+    app.handle_key(None, ord("$"))
+    assert app.show_api_prices  # repriced in place
+    assert app.trends  # and the overlay stayed open
+    app.handle_key(None, ord("$"))
+    assert not app.show_api_prices and app.trends
+
+
 def test_resolve_project_root_folds_worktree():
     with tempfile.TemporaryDirectory() as tmp:
         main = os.path.join(tmp, "app")

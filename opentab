@@ -1165,7 +1165,7 @@ class Renderer:
         if self.store.demo:
             tag = " DEMO — synthetic "
         elif self.show_api_prices:
-            tag = " API prices — would-have-paid "
+            tag = " WHAT-IF — would-have-paid at API prices "
         else:
             tag = ""
         self.write(
@@ -1265,7 +1265,7 @@ class Renderer:
             parts.append("I ignored" + ("*" if self.show_ignored_projects else ""))
         parts += ["R range", "/ filter", "T trends", "e export", "y copy", "o open"]
         if not self.store.demo:
-            parts.append("$ api-$" + ("*" if self.show_api_prices else ""))
+            parts.append("$ what-if" + ("*" if self.show_api_prices else ""))
         parts += ["? help", "q quit"]
         keys = "  ".join(parts)
         self.hline(stdscr, height - 2, 0, width)
@@ -2115,7 +2115,7 @@ class Renderer:
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
             "  T                Trends overlay: Daily / Weekly / Monthly / Models (h/l tabs; j/k month/week)",
-            "  $                toggle API-equivalent prices (what unpriced usage would cost)",
+            "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
             "  q                quit",
             "",
@@ -2123,8 +2123,8 @@ class Renderer:
             "  Cost is OpenCode's local attribution. Subscription or credit plans",
             "  (Claude Code, Codex, Copilot) aren't priced per token, so their usage",
             "  shows as unpriced $0.00 -- check your provider/subscription for the total.",
-            "  Press $ to price that usage at API list prices (models.dev) -- an estimate",
-            "  of what you'd have paid without the subscription.",
+            "  Press $ for the what-if view: that usage priced at API list prices",
+            "  (models.dev) -- an estimate of what you'd have paid without the subscription.",
             "  Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price).",
             "  Range and sort are remembered between runs (~/.config/opentab; --no-state off).",
             "  Git worktrees fold into their main repo (--no-worktrees to keep them split).",
@@ -3026,7 +3026,7 @@ class App:
         self.show_api_prices = not self.show_api_prices
         self._apply_price_mode()
         self.notice = (
-            "API-equivalent prices (what unpriced usage would cost)"
+            "what-if prices (what unpriced usage would cost at API list prices)"
             if self.show_api_prices
             else "actual cost"
         )
@@ -3527,6 +3527,8 @@ class App:
                 elif current == "Weekly":
                     n = len({week_key(w.created_at) for w in self.all_workflows})
                     self.trend_week_index = self._step_trend_index(self.trend_week_index, n, older)
+            elif key == ord("$"):
+                self.toggle_api_prices()  # re-prices the charts in place, stays open
             else:
                 self.trends = False  # any other key closes the overlay
             return True
