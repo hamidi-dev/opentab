@@ -2328,8 +2328,12 @@ class Renderer:
             return ["# Model spend", "", "No priced model spend in the active range."]
         total = sum(c for _, c in rows)
         peak = max(c for _, c in rows) or 1.0
-        namew = min(30, max(len(n) for n, _ in rows))
-        barw = max(8, width - namew - 24)
+        # Names get priority so long ids like claude-opus-4-5-20251101 show in
+        # full; the bar takes only the leftover (kept modest) instead of eating
+        # the width and forcing names to truncate.
+        tail = 20  # spacing + money (>=11) + percent (5)
+        namew = min(max(len(n) for n, _ in rows), max(12, width - tail - 4))
+        barw = max(3, min(24, width - namew - tail))
         lines = ["# Model spend (priced, in range)", ""]
         for name, cost in rows:
             bar = "█" * max(0, round((cost / peak) * barw))

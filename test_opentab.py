@@ -254,6 +254,26 @@ def test_trend_models_ranks_priced_models():
     assert any("anthropic/m" in ln and "$5.00" in ln and "█" in ln for ln in lines)
 
 
+def test_trend_models_shows_long_names_in_full():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    long_name = "anthropic/claude-opus-4-5-20251101"  # 34 chars, would have truncated at 30
+    app._model_by_root = {
+        "a": [
+            {
+                "model_name": long_name,
+                "runs": 1,
+                "cost": 5.0,
+                "tokens_total": 10,
+                "cache_read": 0,
+                "cache_write": 0,
+                "output": 0,
+            }
+        ]
+    }
+    lines = app.renderer.trend_models(80, 12)
+    assert any(long_name in ln for ln in lines)  # full id, not cut off
+
+
 def test_trends_overlay_toggles_and_switches_tabs():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     assert not app.trends
