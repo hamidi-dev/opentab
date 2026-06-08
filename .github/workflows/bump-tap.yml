@@ -1,0 +1,80 @@
+name: Bump Homebrew tap
+
+# When a release is published, recompute the tarball URL + sha256 and update
+# the formula in hamidi-dev/homebrew-tap. Without this, `brew install` keeps
+# serving the old version because the formula still points at the previous tag.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish to the tap (e.g. v0.3.1)
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve release tag
+        id: rel
+        run: |
+          tag="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          if [ -z "$tag" ]; then echo "No tag resolved" >&2; exit 1; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Compute source URL + sha256
+        id: src
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.rel.outputs.tag }}
+        run: |
+          url="https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz"
+          sha="$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${TAG} -> ${sha}"
+
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: hamidi-dev/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update formula
+        id: edit
+        env:
+          URL: ${{ steps.src.outputs.url }}
+          SHA: ${{ steps.src.outputs.sha }}
+        run: |
+          sed -i -E "s|^  url \".*\"|  url \"${URL}\"|" Formula/opentab.rb
+          sed -i -E "s|^  sha256 \".*\"|  sha256 \"${SHA}\"|" Formula/opentab.rb
+          if git diff --quiet -- Formula/opentab.rb; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Formula already up to date; nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git --no-pager diff -- Formula/opentab.rb
+          fi
+
+      - name: Open and merge bump PR
+        if: steps.edit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          URL: ${{ steps.src.outputs.url }}
+          SHA: ${{ steps.src.outputs.sha }}
+        run: |
+          branch="bump-opentab-${TAG}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git commit -am "opentab ${TAG}"
+          git push -f origin "$branch"
+          body="$(printf 'Automated formula bump to %s.\n\n- url: %s\n- sha256: `%s`' "$TAG" "$URL" "$SHA")"
+          gh pr create --base main --head "$branch" \
+            --title "opentab ${TAG}" --body "$body" || echo "PR already exists for ${branch}"
+          gh pr merge "$branch" --squash --delete-branch --admin

@@ -72,6 +72,16 @@ OS with `curses` (macOS, Linux, WSL).
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```sh
+brew install hamidi-dev/tap/opentab
+```
+
+Upgrade later with `brew upgrade opentab`.
+
+### Install script
+
 One line (installs `opentab` into `~/.local/bin`; re-run to update):
 
 ```sh
@@ -90,8 +100,7 @@ curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/opentab \
   -o ~/.local/bin/opentab && chmod +x ~/.local/bin/opentab
 ```
 
-`BIN_DIR=~/bin` overrides the install target. A Homebrew tap
-(`brew install hamidi-dev/tap/opentab`) is planned once the first release is tagged.
+`BIN_DIR=~/bin` overrides the install target.
 
 ## Usage
 
