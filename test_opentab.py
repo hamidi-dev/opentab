@@ -453,6 +453,26 @@ def test_ignored_projects_are_persisted_in_state():
     assert restored.all_workflows == []
 
 
+def test_what_if_price_view_is_persisted_in_state():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.show_api_prices = True
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+            assert not restored.show_api_prices
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+    assert restored.show_api_prices
+
+
 def test_demo_cost_zero_and_deterministic():
     assert ot.demo_cost(0, "seed") == 0.0
     a = ot.demo_cost(1_000_000, "seed")
