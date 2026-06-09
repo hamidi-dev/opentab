@@ -142,14 +142,26 @@ def test_bar_chart_all_zero_window_reads_as_no_spend():
     assert not any("peak" in ln for ln in lines)
 
 
-def test_top_models_has_column_header():
+def test_top_models_has_full_model_columns():
+    # The "Top Models" overview section reuses the Models-tab table, so it carries
+    # the cache/output columns too (name, runs, cost, tokens, cacheR, cacheW, output).
     app = app_with([])
-    lines = app.renderer._top_models([("m", 1.0, 205_600_000, 3648)], 80)
-    assert lines[0].split() == ["Model", "Cost", "Share", "Tokens", "Msgs"]
-    assert "$1.00" in lines[1]
-    assert "205.6M" in lines[1]
-    assert "3648" in lines[1]
-    assert "msgs" not in lines[1]
+    rows = [("m", 3648, 1.0, 205_600_000, 1_000_000, 2_000_000, 5_000_000)]
+    lines = app.renderer._model_table(rows, "# Top Models", 120)
+    assert lines[0] == "# Top Models"
+    assert lines[1].split() == [
+        "Model",
+        "Msgs",
+        "Cost",
+        "Share",
+        "Tokens",
+        "CacheR",
+        "CacheW",
+        "Output",
+    ]
+    assert "$1.00" in lines[2]
+    assert "205.6M" in lines[2]
+    assert "3648" in lines[2]
 
 
 def test_trend_daily_shows_one_navigable_month():
