@@ -132,10 +132,14 @@ DEMO_REPOS = (
 # (e.g. credit-based providers). Tuned so a few-million-token session lands in a
 # believable single-digit-dollar range.
 DEMO_RATE = 1.6e-6
-# Local models (ollama, lmstudio, ...) get remapped to recognizable cloud models
-# in demo mode, so screenshots show a clean, relatable provider/model mix instead
-# of whatever local tags you happen to run. Deterministic per source name.
-DEMO_LOCAL_PROVIDERS = ("ollama", "lmstudio", "llamacpp", "local")
+# Providers whose models run on your own hardware. There is no per-token API bill,
+# so the "$" what-if view must price them at $0 (pricing them at cloud list rates
+# would invent spend that never existed). Demo mode also remaps them to a
+# recognizable cloud model so screenshots show a clean provider/model mix instead
+# of whatever local tags you happen to run.
+LOCAL_PROVIDERS = frozenset(
+    {"ollama", "lmstudio", "lm-studio", "llamacpp", "llama.cpp", "llama-cpp", "mlx", "local"}
+)
 DEMO_MODEL_POOL = (
     "anthropic/claude-opus-4.6",
     "anthropic/claude-sonnet-4.5",
@@ -282,8 +286,15 @@ MODEL_PRICE_FALLBACKS = (
 FALLBACK_PRICE = (2.0, 8.0, 0.2, 0.0)  # unknown model: a mid-range estimate
 
 
+def is_local_provider(name: str) -> bool:
+    # name is "provider/model"; local-hardware providers have no API token cost.
+    return str(name).split("/", 1)[0].lower() in LOCAL_PROVIDERS
+
+
 def model_price(name: str) -> tuple[float, float, float, float]:
     # (input, output, cache_read, cache_write) per 1M tokens for the model.
+    if is_local_provider(name):
+        return (0.0, 0.0, 0.0, 0.0)  # runs on your hardware -- no per-token API bill
     mid = str(name).rsplit("/", 1)[-1].lower()
     if mid in MODEL_PRICE_TABLE:
         return MODEL_PRICE_TABLE[mid]
@@ -319,8 +330,7 @@ def demo_cost(tokens: float, seed: str) -> float:
 
 def demo_model(name: str) -> str:
     # Remap local-model names to a stable cloud model; leave cloud models as-is.
-    provider = str(name).split("/", 1)[0].lower()
-    if provider in DEMO_LOCAL_PROVIDERS:
+    if is_local_provider(name):
         return DEMO_MODEL_POOL[_seed(name) % len(DEMO_MODEL_POOL)]
     return name
 
@@ -2126,7 +2136,7 @@ class Renderer:
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
-            "  T                Trends overlay: Daily / Weekly / Monthly / Models",
+            "  T                Trends overlay: Daily / Weekly / Monthly / Models / Providers",
             "                   (h/l tabs; j/k month/week; $ toggles what-if prices)",
             "  P                model prices (the models.dev API rates used for $ what-if)",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
@@ -2177,6 +2187,9 @@ class Renderer:
                 f"{'model':{namew}}  {'input':>7} {'output':>7} {'cache-r':>7} {'cache-w':>7}"
             )
             for name in names:
+                if is_local_provider(name):
+                    lines.append(f"{shorten(name, namew):{namew}}  {'local — no API cost':>31}")
+                    continue
                 ir, orr, crr, cwr = model_price(name)
                 lines.append(
                     f"{shorten(name, namew):{namew}}  "
@@ -2228,6 +2241,8 @@ class Renderer:
             lines = self.trend_weekly(inner_w, content_h)
         elif current == "Monthly":
             lines = self.trend_monthly(inner_w, content_h)
+        elif current == "Providers":
+            lines = self.trend_providers(inner_w, content_h)
         else:
             lines = self.trend_models(inner_w, content_h)
         content = lines[:content_h]
@@ -2422,6 +2437,50 @@ class Renderer:
             )
         return lines
 
+    def trend_providers(self, width: int, height: int) -> list[str]:
+        # Roll the per-model spend up to its provider (the "openai" in "openai/gpt-5"),
+        # so you can compare e.g. openai vs github-copilot. Subscription/credit providers
+        # record $0 per message, so their cost only shows once "$" reprices unpriced
+        # usage at API list rates -- the cost column and bar react to it live. We still
+        # list those providers when "$" is off (tokens are the tell) and nudge toward "$".
+        by_provider: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {"cost": 0.0, "tokens": 0, "runs": 0}
+        )
+        for name, it in self.aggregate_models(self.all_workflows):
+            item = by_provider[str(name).split("/", 1)[0] or "unknown"]
+            item["cost"] = float(item["cost"]) + float(it["cost"])
+            item["tokens"] = int(item["tokens"]) + int(it["tokens"])
+            item["runs"] = int(item["runs"]) + int(it["runs"])
+        rows = sorted(
+            by_provider.items(),
+            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+            reverse=True,
+        )
+        if not rows:
+            return ["# Spend by provider", "", "No model usage in the active range."]
+        rows = rows[: max(1, height - 4)]
+        total_cost = sum(float(it["cost"]) for _, it in rows)
+        peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
+        namew = min(max(len(p) for p, _ in rows), max(10, width - 44))
+        barw = max(3, min(20, width - namew - 38))
+        lines = [
+            "# Spend by provider",
+            "",
+            f"{'Provider':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Msgs':>7}",
+        ]
+        for provider, it in rows:
+            bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
+            lines.append(
+                f"{shorten(provider, namew):{namew}}  {bar:<{barw}} "
+                f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total_cost):>5} "
+                f"{human_tokens(int(it['tokens'])):>9} {int(it['runs']):>7}"
+            )
+        if not self.show_api_prices and any(
+            float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
+        ):
+            lines += ["", "$ prices subscription/credit usage at API list rates"]
+        return lines
+
     def box(
         self,
         stdscr: curses.window,
@@ -2481,7 +2540,7 @@ class App:
     sort_options = ("cost", "tokens", "date", "subagents", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
-    trend_tabs = ("Daily", "Weekly", "Monthly", "Models")
+    trend_tabs = ("Daily", "Weekly", "Monthly", "Models", "Providers")
 
     def __init__(self, store: Store, args: argparse.Namespace):
         self.store = store

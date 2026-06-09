@@ -286,6 +286,49 @@ def test_trend_models_shows_long_names_in_full():
     assert any(long_name in ln for ln in lines)  # full id, not cut off
 
 
+def _model_row(model_name, cost, tokens):
+    return {
+        "model_name": model_name,
+        "runs": 1,
+        "cost": cost,
+        "tokens_total": tokens,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 0,
+    }
+
+
+def test_trend_providers_rolls_models_up_to_provider():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("anthropic/claude-opus-4-8", 5.0, 10),
+            _model_row("anthropic/claude-haiku-4-5", 1.0, 4),
+            _model_row("openai/gpt-5-mini", 2.0, 7),
+        ]
+    }
+    lines = app.renderer.trend_providers(80, 12)
+    assert lines[0].startswith("# Spend by provider")
+    # The two Anthropic models collapse into one "anthropic" row at $6.00 (5 + 1).
+    anthropic = next(ln for ln in lines if ln.startswith("anthropic"))
+    assert "$6.00" in anthropic and "█" in anthropic
+    openai = next(ln for ln in lines if ln.startswith("openai"))
+    assert "$2.00" in openai
+    # Anthropic outspends OpenAI, so it ranks first.
+    assert lines.index(anthropic) < lines.index(openai)
+
+
+def test_trend_providers_lists_unpriced_provider_and_hints_at_dollar():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {"a": [_model_row("github-copilot/gpt-5", 0.0, 5_000)]}
+    lines = app.renderer.trend_providers(80, 12)
+    # A subscription/credit provider records $0 but still shows its token volume...
+    row = next(ln for ln in lines if ln.startswith("github-copilot"))
+    assert "$0.00" in row and "5.0k" in row
+    # ...and the view nudges toward "$" to price it.
+    assert any("$ prices subscription" in ln for ln in lines)
+
+
 def test_capital_p_opens_model_prices_overlay():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {
@@ -825,6 +868,40 @@ def test_api_price_helpers():
     assert ot.model_price("unknown/future-model") == ot.FALLBACK_PRICE
     # 1M input + 1M output(+reasoning) of Haiku = $1 + $5 = $6.
     assert round(ot.api_equivalent_cost("x/claude-haiku-4.5", 1e6, 5e5, 5e5, 0, 0), 2) == 6.0
+
+
+def test_local_providers_are_not_priced():
+    # Local models run on your own hardware: there is no per-token API bill, so the
+    # "$" what-if must leave them at $0 rather than inventing cloud list prices.
+    for name in ("ollama/llama3.1:70b", "mlx/qwen2.5", "lmstudio/whatever", "local/foo"):
+        assert ot.model_price(name) == (0.0, 0.0, 0.0, 0.0)
+        assert ot.api_equivalent_cost(name, 5e6, 1e6, 0, 0, 0) == 0.0
+    # the same model id behind a cloud provider is still priced
+    assert ot.api_equivalent_cost("anthropic/claude-haiku-4.5", 1e6, 0, 0, 0, 0) > 0
+
+
+def test_local_usage_stays_zero_in_what_if_view():
+    # A local-only session: $0 recorded, real tokens. The "$" what-if must not turn
+    # those tokens into cloud dollars.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", cost=0, directory="/x")])
+    app._model_by_root = {
+        "a": [
+            {**_model_row("ollama/llama3.1", 0.0, 1_000_000), "input": 900_000, "output": 100_000}
+        ]
+    }
+    app._compute_api_costs()
+    app.show_api_prices = True
+    app._apply_price_mode()
+    assert app.loaded[0].api_total_cost == 0.0  # no invented spend
+    ollama = next(ln for ln in app.renderer.trend_providers(80, 12) if ln.startswith("ollama"))
+    assert "$0.00" in ollama
+
+
+def test_price_table_marks_local_models():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {"a": [_model_row("ollama/llama3.1", 0.0, 1000)]}
+    row = next(ln for ln in app.renderer.price_table_lines(80) if ln.startswith("ollama/llama3.1"))
+    assert "local" in row and "0.00" not in row  # labelled local, no fake price
 
 
 def test_api_price_toggle_prices_unpriced_usage():

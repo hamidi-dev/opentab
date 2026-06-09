@@ -23,7 +23,7 @@ standard library — no `pip install` needed.
 ## Features
 
 - Cost by month, day, project, session, and model
-- Trends overlay: daily / weekly / monthly spend charts + model-spend ranking
+- Trends overlay: daily / weekly / monthly spend charts + model- and provider-spend ranking
 - Cost-share percentages and inline spend bars
 - Per-session model mix and token breakdown
 - Recursive subagent costs, on the sessions that delegated work
@@ -151,7 +151,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `i` | Ignore/unignore the selected project from project lists |
 | `I` | Show/hide ignored projects so they can be unignored |
 | `/` | Filter sessions (title/project/id) and the project list; `Esc` cancels; `x` clears |
-| `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model spend ranking (`h`/`l` tabs, `j`/`k` month/week, `$` toggles what-if) |
+| `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model and Provider spend ranking (`h`/`l` tabs, `j`/`k` month/week, `$` toggles what-if) |
 | `$` | What-if pricing: re-price unpriced subscription/credit usage at models.dev API list prices |
 | `P` | Show the models.dev API price table OpenTab uses for `$` |
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
