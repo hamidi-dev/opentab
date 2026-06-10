@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import glob
 import json
 import os
 import random
@@ -25,7 +26,7 @@ except ImportError:  # native Windows has no stdlib curses
     curses = None
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 __version__ = "0.4.0"
 
@@ -356,6 +357,9 @@ class Workflow:
     real_root_cost: float = 0.0
     api_total_cost: float = 0.0
     api_root_cost: float = 0.0
+    # Which backend produced this workflow ("OpenCode" / "Claude Code"); shown in the
+    # sessions list (combined view) and the session detail. Empty for in-memory rows.
+    source: str = ""
 
 
 @dataclass
@@ -531,6 +535,46 @@ def resolve_project_root(directory: str) -> str:
     return directory
 
 
+def git_root(directory: str) -> str:
+    # Walk up from `directory` to the nearest ancestor that contains a `.git`
+    # entry, so a Claude Code session started in a subdir (frontend/, src/, ...)
+    # rolls up to its repo instead of showing as its own bare-basename project.
+    # Pure filesystem reads; returns `directory` unchanged when the path no longer
+    # exists or no repo is found (App.resolve_project_root then folds worktrees).
+    try:
+        cur = os.path.abspath(os.path.expanduser(directory))
+    except (OSError, ValueError):
+        return directory
+    if not os.path.isdir(cur):
+        return directory  # path gone -- can't probe; keep the recorded cwd
+    while True:
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return directory  # reached filesystem root with no repo
+        cur = parent
+
+
+def iso_to_local(ts: str) -> str:
+    # Claude Code timestamps are ISO-8601 UTC ("2026-06-10T18:46:00.000Z"); render
+    # them as local "YYYY-MM-DD HH:MM:SS" to match Store's created_at (datetime(...,
+    # 'localtime')). Python 3.9's fromisoformat rejects the "Z"/millisecond form, so
+    # fall back to parsing the leading seconds as UTC.
+    if not ts:
+        return ""
+    try:
+        dt = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return ts[:19].replace("T", " ")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def tokens(value: int) -> str:
     return f"{value:,}"
 
@@ -650,6 +694,13 @@ def month_window_start(n: int, today: datetime | None = None) -> str:
 
 
 class Store:
+    # OpenCode records real per-message dollar cost; records_cost=False marks sources
+    # (Claude Code) whose cost is $0 until "$" reprices their tokens, driving a header
+    # hint. source_name labels the active backend; combined is set only by CombinedStore.
+    records_cost = True
+    combined = False
+    source_name = "OpenCode"
+
     def __init__(self, db: str, args: argparse.Namespace):
         self.db = db
         self.args = args
@@ -823,6 +874,8 @@ class Store:
         order by rollup.total_cost desc, rollup.total_tokens desc
         """
         rows = [Workflow(**dict(row)) for row in self.conn.execute(sql)]
+        for w in rows:
+            w.source = self.source_name
         if self.demo:
             rows = [self._demo_workflow(w) for w in rows]
         return rows
@@ -976,6 +1029,455 @@ class Store:
         # them to each session's synthetic total; the "$" toggle prices their tokens
         # at API list prices -- both in App._load_model_cache.
         return list(self.conn.execute(sql))
+
+
+class ClaudeStore:
+    """Read Claude Code transcripts (~/.claude/projects/**/*.jsonl) behind the same
+    interface App expects from Store: workflows(), summary(), workflow_nodes(),
+    model_breakdown(), plus the .demo/.demo_scale attributes.
+
+    Claude Code records no per-message dollar cost -- only token usage. So a Claude
+    session is exactly an OpenCode *subscription* session: every message has a real
+    recorded cost of $0, and its tokens are reported as "unpriced". That lets the
+    normal real-vs-"$" machinery work unchanged -- normal mode shows $0, and "$"
+    (what-if) reprices the tokens at API list rates via the same _compute_api_costs /
+    api_equivalent_cost path Store uses. records_cost = False just drives a header
+    hint that $0 means "not recorded, press $".
+
+    A "workflow" is one sessionId; depth-0 is its main thread (isSidechain == False)
+    and each group of sidechain messages (Task subagents) becomes a depth-1 node, so
+    the subagent tree and root/total cost split mirror Store's recursive CTE.
+    """
+
+    records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
+    combined = False
+    source_name = "Claude Code"
+
+    def __init__(self, root_dir: str, args: argparse.Namespace):
+        self.root_dir = root_dir
+        self.args = args
+        self.demo = getattr(args, "demo", False)
+        # Same hidden per-process factor Store uses so a demo screenshot can't be
+        # multiplied back into real spend; 1.0 outside demo. See Store.__init__.
+        self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
+        self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
+        self._git_root_cache: dict[str, str] = {}
+
+    # --- token accumulation helpers ------------------------------------------
+    @staticmethod
+    def _new_acc() -> dict[str, int]:
+        return {
+            "runs": 0,
+            "input": 0,
+            "output": 0,
+            "reasoning": 0,  # thinking tokens are already counted in output_tokens
+            "cache_read": 0,
+            "cache_write": 0,
+            "tokens_total": 0,
+        }
+
+    @staticmethod
+    def _add_usage(acc: dict[str, int], u: dict) -> None:
+        i = int(u.get("input_tokens", 0) or 0)
+        o = int(u.get("output_tokens", 0) or 0)
+        cr = int(u.get("cache_read_input_tokens", 0) or 0)
+        cw = int(u.get("cache_creation_input_tokens", 0) or 0)  # cache creation == write
+        acc["runs"] += 1
+        acc["input"] += i
+        acc["output"] += o
+        acc["cache_read"] += cr
+        acc["cache_write"] += cw
+        acc["tokens_total"] += i + o + cr + cw
+
+    @staticmethod
+    def _price(model_name: str, acc: dict[str, int]) -> float:
+        return api_equivalent_cost(
+            model_name,
+            acc["input"],
+            acc["output"],
+            acc["reasoning"],
+            acc["cache_read"],
+            acc["cache_write"],
+        )
+
+    def _git_root(self, cwd: str) -> str:
+        if cwd not in self._git_root_cache:
+            self._git_root_cache[cwd] = git_root(cwd)
+        return self._git_root_cache[cwd]
+
+    @staticmethod
+    def _prompt_text(message) -> str | None:
+        # First user prompt, as a last-resort session title when no aiTitle exists.
+        if not isinstance(message, dict):
+            return None
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()[:80] or None
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    return (block.get("text") or "").strip()[:80] or None
+                if isinstance(block, str):
+                    return block.strip()[:80] or None
+        return None
+
+    # --- parsing -------------------------------------------------------------
+    def _files(self) -> list[str]:
+        return glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
+
+    def _parse(self) -> dict[str, dict]:
+        if self._sessions is not None:
+            return self._sessions
+        sessions: dict[str, dict] = {}
+        seen: set = set()  # dedupe resumed/forked overlap on (message.id, requestId)
+        for path in self._files():
+            try:
+                fh = open(path, errors="replace")
+            except OSError:
+                continue
+            with fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    self._ingest(obj, sessions, seen)
+        for sid, s in sessions.items():
+            self._finalize(sid, s)
+        self._sessions = sessions
+        return sessions
+
+    def _ingest(self, o: dict, sessions: dict[str, dict], seen: set) -> None:
+        sid = o.get("sessionId")
+        if not sid:
+            return
+        s = sessions.get(sid)
+        if s is None:
+            s = sessions[sid] = {
+                "cwd": None,
+                "ts_min": None,
+                "title_ai": None,
+                "title_custom": None,
+                "title_prompt": None,
+                "models": {},  # model_name -> {"total": acc, "root": acc}
+                "uuid_parent": {},  # uuid -> parentUuid (for grouping sidechains)
+                "side_uuids": set(),  # uuids flagged isSidechain
+                "side_usage": {},  # sidechain-assistant uuid -> (model_name, acc)
+            }
+        cwd = o.get("cwd")
+        if cwd and not s["cwd"]:
+            s["cwd"] = cwd
+        ts = o.get("timestamp")
+        if ts and (s["ts_min"] is None or ts < s["ts_min"]):
+            s["ts_min"] = ts
+        uuid = o.get("uuid")
+        if uuid:
+            s["uuid_parent"][uuid] = o.get("parentUuid")
+            if o.get("isSidechain") is True:
+                s["side_uuids"].add(uuid)
+        typ = o.get("type")
+        if typ == "ai-title":
+            s["title_ai"] = o.get("aiTitle") or o.get("title") or s["title_ai"]
+        elif typ == "custom-title":
+            s["title_custom"] = o.get("title") or o.get("customTitle") or s["title_custom"]
+        elif typ == "user" and not s["title_prompt"]:
+            s["title_prompt"] = self._prompt_text(o.get("message"))
+        if typ != "assistant":
+            return
+        msg = o.get("message")
+        if not isinstance(msg, dict):
+            return
+        usage, model = msg.get("usage"), msg.get("model")
+        if not isinstance(usage, dict) or not model or model == "<synthetic>":
+            return  # nothing priceable on this row
+        key = (msg.get("id"), o.get("requestId"))
+        if all(key):
+            if key in seen:
+                return
+            seen.add(key)
+        # Claude Code models are bare ("claude-opus-4-8"); prefix the provider so
+        # model_price strips it the same way and the Providers tab can roll up.
+        model_name = model if "/" in model else "anthropic/" + model
+        entry = s["models"].get(model_name)
+        if entry is None:
+            entry = s["models"][model_name] = {"total": self._new_acc(), "root": self._new_acc()}
+        self._add_usage(entry["total"], usage)
+        if o.get("isSidechain") is True:
+            acc = self._new_acc()
+            self._add_usage(acc, usage)
+            s["side_usage"][uuid or len(s["side_usage"])] = (model_name, acc)
+        else:
+            self._add_usage(entry["root"], usage)
+
+    def _finalize(self, sid: str, s: dict) -> None:
+        s["title"] = s["title_custom"] or s["title_ai"] or s["title_prompt"] or "(untitled)"
+        s["directory"] = self._git_root(s["cwd"]) if s["cwd"] else "(unknown)"
+        s["created_at"] = iso_to_local(s["ts_min"])
+        rows: list[dict] = []
+        for model_name, e in s["models"].items():
+            tot, root = e["total"], e["root"]
+            # Recorded cost is $0 (Claude logs none); every token is "unpriced", so
+            # the unpriced_* / root_unpriced_* splits carry the full counts and "$"
+            # reprices them at list rates through App._compute_api_costs.
+            rows.append(
+                {
+                    "root_id": sid,
+                    "model_name": model_name,
+                    "runs": tot["runs"],
+                    "cost": 0.0,
+                    "root_cost": 0.0,
+                    "tokens_total": tot["tokens_total"],
+                    "input": tot["input"],
+                    "reasoning": tot["reasoning"],
+                    "cache_read": tot["cache_read"],
+                    "cache_write": tot["cache_write"],
+                    "output": tot["output"],
+                    "unpriced_input": tot["input"],
+                    "unpriced_reasoning": tot["reasoning"],
+                    "unpriced_cache_read": tot["cache_read"],
+                    "unpriced_cache_write": tot["cache_write"],
+                    "unpriced_output": tot["output"],
+                    "root_unpriced_input": root["input"],
+                    "root_unpriced_reasoning": root["reasoning"],
+                    "root_unpriced_cache_read": root["cache_read"],
+                    "root_unpriced_cache_write": root["cache_write"],
+                    "root_unpriced_output": root["output"],
+                }
+            )
+        s["model_rows"] = rows
+        s["unpriced_tokens"] = sum(r["tokens_total"] for r in rows)  # all of it is unpriced
+        s["subagents"] = self._build_subagents(sid, s)
+
+    def _build_subagents(self, sid: str, s: dict) -> list[dict]:
+        # Group sidechain assistant messages into distinct subagent runs: a run is a
+        # maximal chain of sidechain uuids, so walking parentUuid up while still
+        # inside side_uuids lands on the run's outermost message. Best-effort -- this
+        # user has none -- but keeps the subagent tree correct where they exist.
+        if not s["side_usage"]:
+            return []
+        parent, side = s["uuid_parent"], s["side_uuids"]
+
+        def run_root(u: str) -> str:
+            seen, cur = set(), u
+            while True:
+                p = parent.get(cur)
+                if p in side and p not in seen:
+                    seen.add(p)
+                    cur = p
+                else:
+                    return cur
+
+        groups: dict[str, dict[str, dict]] = {}  # run -> model_name -> acc
+        for u, (model_name, acc) in s["side_usage"].items():
+            run = run_root(u) if isinstance(u, str) else u
+            by_model = groups.setdefault(run, {})
+            ga = by_model.get(model_name)
+            if ga is None:
+                ga = by_model[model_name] = self._new_acc()
+            for k in ga:
+                ga[k] += acc[k]
+        nodes = []
+        for run, by_model in groups.items():
+            tot = self._new_acc()
+            best, best_runs = "unknown", -1
+            for model_name, acc in by_model.items():
+                for k in tot:
+                    tot[k] += acc[k]
+                if acc["runs"] > best_runs:
+                    best_runs, best = acc["runs"], model_name
+            # cost 0 (recorded); _priced_nodes reprices from the token columns in "$".
+            nodes.append(
+                self._node(
+                    str(run)[:8], 1, "subagent", "subagent run", s["created_at"], best, 0.0, tot
+                )
+            )
+        return nodes
+
+    @staticmethod
+    def _node(
+        node_id: str,
+        depth: int,
+        agent: str,
+        title: str,
+        created_at: str,
+        model_name: str,
+        cost: float,
+        acc: dict[str, int],
+    ) -> dict:
+        return {
+            "id": node_id,
+            "depth": depth,
+            "agent": agent,
+            "title": title,
+            "created_at": created_at,
+            "cost": round(cost, 6),
+            "model_name": model_name,
+            "tokens_input": acc["input"],
+            "tokens_output": acc["output"],
+            "tokens_reasoning": acc["reasoning"],
+            "tokens_cache_read": acc["cache_read"],
+            "tokens_cache_write": acc["cache_write"],
+            "tokens_total": acc["tokens_total"],
+        }
+
+    # --- Store interface -----------------------------------------------------
+    def workflows(self) -> list[Workflow]:
+        self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
+        sessions = self._parse()
+        rows = []
+        for sid, s in sessions.items():
+            model_rows = s["model_rows"]
+            rows.append(
+                Workflow(
+                    id=sid,
+                    title=s["title"],
+                    directory=s["directory"],
+                    created_at=s["created_at"],
+                    root_cost=0.0,  # recorded cost is $0; "$" reprices the tokens
+                    total_cost=0.0,
+                    subagents=len(s["subagents"]),
+                    model_count=0,  # filled by App._load_model_cache
+                    total_tokens=sum(r["tokens_total"] for r in model_rows),
+                    unpriced_tokens=s["unpriced_tokens"],
+                    source=self.source_name,
+                )
+            )
+        if self.demo:
+            rows = [self._demo_workflow(w) for w in rows]
+        rows.sort(key=lambda w: (w.total_cost, w.total_tokens), reverse=True)
+        return rows
+
+    def _demo_workflow(self, w: Workflow) -> Workflow:
+        # Mirror Store._demo_workflow: anonymize, backfill a synthetic price for the
+        # (all-unpriced) tokens so the demo shows plausible spend, then scale.
+        w.title = demo_title(w.id)
+        w.directory = demo_dir(w.id)
+        if w.unpriced_tokens > 0:
+            add = demo_cost(w.unpriced_tokens, w.id)
+            w.total_cost += add
+            w.root_cost += add
+            w.unpriced_tokens = 0
+        w.total_cost = round(w.total_cost * self.demo_scale, 4)
+        w.root_cost = round(w.root_cost * self.demo_scale, 4)
+        w.total_tokens = int(round(w.total_tokens * self.demo_scale))
+        return w
+
+    def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
+        return {
+            "workflows": len(workflows),
+            "cost": sum(w.total_cost for w in workflows),
+            "tokens": sum(w.total_tokens for w in workflows),
+            "subagents": sum(w.subagents for w in workflows),
+            "unpriced_tokens": sum(w.unpriced_tokens for w in workflows),
+            "paid_workflows": sum(1 for w in workflows if w.total_cost > 0),
+        }
+
+    def model_breakdown(self) -> list[dict]:
+        out: list[dict] = []
+        for s in self._parse().values():
+            out.extend(s["model_rows"])
+        return out
+
+    def workflow_nodes(self, workflow_id: str) -> list[dict]:
+        s = self._parse().get(workflow_id)
+        if not s:
+            return []
+        root_tot = self._new_acc()
+        best, best_runs = "unknown (not recorded)", -1
+        for model_name, e in s["models"].items():
+            r = e["root"]
+            for k in root_tot:
+                root_tot[k] += r[k]
+            if r["runs"] > best_runs:
+                best_runs, best = r["runs"], model_name
+        # cost 0 (recorded); _priced_nodes reprices from the token columns under "$".
+        nodes = [self._node(workflow_id, 0, "-", s["title"], s["created_at"], best, 0.0, root_tot)]
+        nodes.extend(dict(n) for n in s["subagents"])
+        if self.demo:
+            nodes = [self._demo_node(n) for n in nodes]
+        return nodes
+
+    def _demo_node(self, n: dict) -> dict:
+        n["title"] = demo_title(n["id"])
+        n["model_name"] = demo_model(n["model_name"])
+        if n["cost"] == 0:  # backfill a synthetic price for the unpriced tokens
+            n["cost"] = demo_cost(n["tokens_total"], n["id"])
+        n["cost"] = round(n["cost"] * self.demo_scale, 4)
+        for f in (
+            "tokens_input",
+            "tokens_output",
+            "tokens_reasoning",
+            "tokens_cache_read",
+            "tokens_cache_write",
+            "tokens_total",
+        ):
+            n[f] = int(round(n[f] * self.demo_scale))
+        return n
+
+
+class CombinedStore:
+    """Merge several backends (OpenCode Store + Claude Code ClaudeStore) into one view
+    by delegating the same four methods to each and concatenating the results.
+
+    Workflow ids are globally unique across sources (OpenCode "ses_..." vs Claude
+    UUIDs), so model_breakdown root_ids never clash and workflow_nodes routing stays
+    unambiguous; an _owner map (built in workflows()) records which backend produced
+    each workflow so workflow_nodes goes straight to it. Projects group by directory
+    across both tools, so the same repo worked in OpenCode and Claude Code rolls up
+    into one row.
+
+    Cost is mixed -- OpenCode's recorded dollars plus Claude Code's $0 (until "$"
+    reprices its tokens). The normal "$" what-if reprices every unpriced row across
+    both backends, so it just works. records_cost is False when any backend doesn't
+    record cost (i.e. Claude is in the mix), driving the header hint; combined=True
+    turns on the per-session source tags in the sessions list.
+    """
+
+    combined = True
+    source_name = "all"  # the merged view; per-session origin lives on Workflow.source
+
+    def __init__(self, stores: list):
+        self.stores = stores
+        self.records_cost = all(getattr(s, "records_cost", True) for s in stores)
+        # Demo can't coherently span backends with independent hidden scales, so
+        # build_store rejects --demo here; these keep the App's guards happy.
+        self.demo = False
+        self.demo_scale = 1.0
+        self._owner: dict[str, object] = {}
+
+    def workflows(self) -> list[Workflow]:
+        out: list[Workflow] = []
+        owner: dict[str, object] = {}
+        for store in self.stores:
+            for w in store.workflows():
+                owner[w.id] = store
+                out.append(w)
+        self._owner = owner
+        out.sort(key=lambda w: (w.total_cost, w.total_tokens), reverse=True)
+        return out
+
+    def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
+        # summary() is pure over the passed workflows, so any backend computes it.
+        return self.stores[0].summary(workflows)
+
+    def model_breakdown(self) -> list:
+        out: list = []
+        for store in self.stores:
+            out.extend(store.model_breakdown())
+        return out
+
+    def workflow_nodes(self, workflow_id: str) -> list:
+        owner = self._owner.get(workflow_id)
+        if owner is not None:
+            return owner.workflow_nodes(workflow_id)
+        for store in self.stores:  # fallback before workflows() has populated _owner
+            nodes = store.workflow_nodes(workflow_id)
+            if nodes:
+                return nodes
+        return []
 
 
 class Renderer:
@@ -1203,17 +1705,29 @@ class Renderer:
             f"subs {summary['subagents']} "
         )
         self.write(stdscr, 0, 0, title, curses.color_pair(2) | curses.A_BOLD)
+        # Source chip, always visible (and live-switchable with `c`): which backend
+        # this data comes from — OpenCode / Claude Code / both.
+        chip = f" {self.store.source_name} "
+        self.write(stdscr, 0, len(title), chip, curses.color_pair(7) | curses.A_BOLD)
         if self.store.demo:
             tag = " DEMO — synthetic "
         elif self.show_api_prices:
-            tag = " WHAT-IF — would-have-paid at API prices "
+            if getattr(self.store, "records_cost", True):
+                tag = " WHAT-IF — would-have-paid at API prices "
+            else:
+                # No recorded dollars exist to deviate from, so this isn't a
+                # "what-if" — the estimate is the only meaningful number.
+                tag = " ESTIMATED — tokens × API list prices "
+        elif not getattr(self.store, "records_cost", True):
+            tag = " $0 = no recorded cost · press $ to estimate "
         else:
             tag = ""
+        info_x = len(title) + len(chip)
         self.write(
             stdscr,
             0,
-            len(title),
-            shorten(info, width - len(title) - len(tag) - 1),
+            info_x,
+            shorten(info, max(0, width - info_x - len(tag) - 1)),
             curses.color_pair(3),
         )
         if tag:
@@ -1287,15 +1801,16 @@ class Renderer:
         return sep.join(s for s in segs if s)
 
     def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
-        # Context-sensitive: show only keys that do something in the current view,
-        # so the strip stays short enough to read instead of silently truncating.
-        parts = ["j/k move"]
+        # Context-sensitive: show only keys that do something in the current view, so
+        # the strip stays short enough to read instead of silently truncating. Plain
+        # movement (j/k/h/l, arrows) is deliberately omitted -- vim users know it and
+        # everyone else reaches for the arrow keys.
+        parts = []
         if self.view == "browse" and self.browse_mode == "time":
             parts.append("Tab months/days")
         parts.append("Enter in")
         if self.view != "browse":
             parts.append("Esc out")
-        parts.append("h/l tabs")
         if self.view != "session":
             parts.append("p/t mode")
         if self.can_sort_current_view():
@@ -1304,6 +1819,10 @@ class Renderer:
             parts.append("i ignore")
         if self.ignored_projects:
             parts.append("I ignored" + ("*" if self.show_ignored_projects else ""))
+        if self.can_switch_source():
+            # Show the destination, not the current source (that's the header
+            # chip) — "c all" otherwise reads like "press c to get all".
+            parts.append(f"c → {self.next_source_name()}")
         parts += ["R range", "/ filter", "T trends", "P prices", "e export", "y copy", "o open"]
         if not self.store.demo:
             parts.append("$ what-if" + ("*" if self.show_api_prices else ""))
@@ -1336,6 +1855,37 @@ class Renderer:
 
     def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
         return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
+
+    @staticmethod
+    def _source_abbrev(workflow: Workflow) -> str:
+        return {"OpenCode": "oc", "Claude Code": "cc"}.get(
+            workflow.source, (workflow.source or "??")[:2].lower()
+        )
+
+    def source_tag(self, workflow: Workflow) -> str:
+        # A compact origin marker ("[cc] ") prepended to titles in the sessions
+        # picker and Top Sessions lists, only when sources are merged, so you can
+        # tell OpenCode from Claude Code rows at a glance. Empty in single-source
+        # views (the header chip already says which).
+        if not getattr(self.store, "combined", False) or not workflow.source:
+            return ""
+        return f"[{self._source_abbrev(workflow)}] "
+
+    def src_col(self, workflow: Workflow | None = None) -> str:
+        # The "Src" column in the session tables (None = the header cell), only
+        # when sources are merged — the one view where a row's origin isn't implied.
+        if not getattr(self.store, "combined", False):
+            return ""
+        if workflow is None:
+            return "Src "
+        return f"{self._source_abbrev(workflow):<3} "
+
+    def unpriced_hint(self) -> str:
+        # Trails any block whose totals include $0.00 subscription tokens. Worded
+        # per price mode so it never says "not billed" beside estimated dollars.
+        if self.show_api_prices:
+            return "! estimates — subscription tokens at API list prices"
+        return "! $0.00 = subscription tokens — press $ to estimate"
 
     def money_attr(self, cost_text: str) -> int:
         # "$0.00" means zero or unpriced (tokens with no local price); muted grey so
@@ -1406,7 +1956,10 @@ class Renderer:
             started = self.session_started(wf)
             cost = money(wf.total_cost)
             tok = human_tokens(wf.total_tokens)
-            text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  {wf.title}"
+            text = (
+                f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  "
+                f"{self.source_tag(wf)}{wf.title}"
+            )
             if start + off == idx:
                 self.write(
                     stdscr,
@@ -1865,12 +2418,7 @@ class Renderer:
             f"Unpriced tokens: {tokens(month.unpriced_tokens)}",
         ]
         if month.unpriced_tokens:
-            lines.extend(
-                [
-                    "",
-                    "! $0.00-cost tokens: subscription or credit plans (Claude Code, Codex, Copilot) aren't billed per token.",
-                ]
-            )
+            lines.extend(["", self.unpriced_hint()])
         month_ws = self.workflows_for_month(month.month)
         lines.append("")
         agg = self.aggregate_models(month_ws)
@@ -1880,7 +2428,8 @@ class Renderer:
             lines.append(
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, month.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
-                f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 37))}"
+                f"agents {workflow.subagents:<3} "
+                f"{shorten(self.source_tag(workflow) + workflow.title, max(20, width - 37))}"
             )
         return lines
 
@@ -1895,7 +2444,7 @@ class Renderer:
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
             f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
-            f"{self.sort_heading('title', 'Title')}",
+            f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
         for workflow in self.sorted_workflows(self.workflows_for_month(month.month)):
             lines.append(
@@ -1904,7 +2453,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>4} "
                 f"{workflow.model_count:>6}  "
-                f"{workflow.title}"
+                f"{self.src_col(workflow)}{workflow.title}"
             )
         return lines
 
@@ -1920,12 +2469,7 @@ class Renderer:
             f"Unpriced tokens: {tokens(day.unpriced_tokens)}",
         ]
         if day.unpriced_tokens:
-            lines.extend(
-                [
-                    "",
-                    "! $0.00-cost tokens: subscription or credit plans (Claude Code, Codex, Copilot) aren't billed per token.",
-                ]
-            )
+            lines.extend(["", self.unpriced_hint()])
         # A day touches few models, so the full model table lives here in the
         # Overview rather than in its own (near-empty) tab.
         agg = self.aggregate_models(self.workflows_for_day(day.day))
@@ -1936,7 +2480,8 @@ class Renderer:
             lines.append(
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, day.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
-                f"agents {workflow.subagents:<3} {shorten(workflow.title, max(20, width - 37))}"
+                f"agents {workflow.subagents:<3} "
+                f"{shorten(self.source_tag(workflow) + workflow.title, max(20, width - 37))}"
             )
         return lines
 
@@ -1947,7 +2492,7 @@ class Renderer:
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
             f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
-            f"{self.sort_heading('title', 'Title')}",
+            f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
         for workflow in self.sorted_workflows(self.workflows_for_day(day.day)):
             lines.append(
@@ -1956,7 +2501,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>4} "
                 f"{workflow.model_count:>6}  "
-                f"{workflow.title}"
+                f"{self.src_col(workflow)}{workflow.title}"
             )
         return lines
 
@@ -1979,12 +2524,7 @@ class Renderer:
             f"Unpriced tokens: {tokens(project.unpriced_tokens)}",
         ]
         if project.unpriced_tokens:
-            lines.extend(
-                [
-                    "",
-                    "! $0.00-cost tokens: subscription or credit plans (Claude Code, Codex, Copilot) aren't billed per token.",
-                ]
-            )
+            lines.extend(["", self.unpriced_hint()])
         lines.append("")
         agg = self.aggregate_models(workflows)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
@@ -1994,7 +2534,7 @@ class Renderer:
                 f"{workflow.created_at[:10]:<10} {money(workflow.total_cost):>10} "
                 f"{pct(workflow.total_cost, project.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} agents {workflow.subagents:<3} "
-                f"{shorten(workflow.title, max(20, width - 50))}"
+                f"{shorten(self.source_tag(workflow) + workflow.title, max(20, width - 50))}"
             )
         return lines
 
@@ -2027,7 +2567,7 @@ class Renderer:
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
             f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
-            f"{self.sort_heading('title', 'Title')}",
+            f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
         workflows = self.workflows_for_project(project.directory, include_ignored=project.ignored)
         for workflow in self.sorted_workflows(workflows):
@@ -2037,7 +2577,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>4} "
                 f"{workflow.model_count:>6}  "
-                f"{workflow.title}"
+                f"{self.src_col(workflow)}{workflow.title}"
             )
         return lines
 
@@ -2048,6 +2588,10 @@ class Renderer:
             f"Started:  {workflow.created_at}",
             f"Project:  {short_path(workflow.directory, max(20, width - 10))}",
             f"Title:    {workflow.title}",
+        ]
+        if workflow.source:
+            lines.append(f"Source:   {workflow.source}")
+        lines += [
             "",
             "# Money",
             f"Total:    {money(workflow.total_cost)}",
@@ -2062,12 +2606,7 @@ class Renderer:
             f"Unpriced tokens: {tokens(workflow.unpriced_tokens)}",
         ]
         if workflow.unpriced_tokens:
-            lines.extend(
-                [
-                    "",
-                    "! $0.00 tokens here are covered by a subscription/credit plan (Claude Code, Codex, Copilot), not priced per token.",
-                ]
-            )
+            lines.extend(["", self.unpriced_hint()])
         lines.append("")
         model_rows = self.model_mix(workflow.id)
         lines.extend(self._model_table(self._mix_rows(model_rows), "# Top Models", width))
@@ -2137,7 +2676,8 @@ class Renderer:
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
-            "  T                Trends overlay: Daily / Weekly / Monthly / Models / Providers",
+            "  c                switch data source: OpenCode / Claude Code / all (when present)",
+            "  T                Trends overlay: Daily / Weekly / Monthly / Models / Providers / Sources",
             "                   (h/l tabs; j/k month/week; $ toggles what-if prices)",
             "  P                model prices (the models.dev API rates used for $ what-if)",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
@@ -2244,6 +2784,8 @@ class Renderer:
             lines = self.trend_monthly(inner_w, content_h)
         elif current == "Providers":
             lines = self.trend_providers(inner_w, content_h)
+        elif current == "Sources":
+            lines = self.trend_sources(inner_w, content_h)
         else:
             lines = self.trend_models(inner_w, content_h)
         content = lines[:content_h]
@@ -2482,6 +3024,48 @@ class Renderer:
             lines += ["", "$ prices subscription/credit usage at API list rates"]
         return lines
 
+    def trend_sources(self, width: int, height: int) -> list[str]:
+        # Spend grouped by the *tool* it came from (OpenCode vs Claude Code, and later
+        # Codex / Copilot) -- the headline cut for the combined view. Claude Code rows
+        # cost $0 until "$" reprices their tokens, so the bar reacts to "$" live.
+        by_source: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
+        )
+        for w in self.all_workflows:
+            item = by_source[w.source or "unknown"]
+            item["cost"] = float(item["cost"]) + w.total_cost
+            item["tokens"] = int(item["tokens"]) + w.total_tokens
+            item["sessions"] = int(item["sessions"]) + 1
+        rows = sorted(
+            by_source.items(),
+            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+            reverse=True,
+        )
+        if not rows:
+            return ["# Spend by source", "", "No sessions in the active range."]
+        rows = rows[: max(1, height - 4)]
+        total_cost = sum(float(it["cost"]) for _, it in rows)
+        peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
+        namew = min(max(len(s) for s, _ in rows), max(10, width - 44))
+        barw = max(3, min(20, width - namew - 38))
+        lines = [
+            "# Spend by source",
+            "",
+            f"{'Source':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}",
+        ]
+        for source, it in rows:
+            bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
+            lines.append(
+                f"{shorten(source, namew):{namew}}  {bar:<{barw}} "
+                f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total_cost):>5} "
+                f"{human_tokens(int(it['tokens'])):>9} {int(it['sessions']):>7}"
+            )
+        if not self.show_api_prices and any(
+            float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
+        ):
+            lines += ["", "$ prices subscription/credit usage at API list rates"]
+        return lines
+
     def box(
         self,
         stdscr: curses.window,
@@ -2541,13 +3125,22 @@ class App:
     sort_options = ("cost", "tokens", "date", "subagents", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
-    trend_tabs = ("Daily", "Weekly", "Monthly", "Models", "Providers")
+    trend_tabs = ("Daily", "Weekly", "Monthly", "Models", "Providers", "Sources")
 
-    def __init__(self, store: Store, args: argparse.Namespace):
+    def __init__(self, store: Store, args: argparse.Namespace, source_key: str = ""):
         self.store = store
         self.args = args
+        # Live source switching (the `c` key). source_key is the active backend's key;
+        # built stores are cached so cycling back is instant. Empty when the App was
+        # constructed without a key (tests / single fixed store).
+        self.source_key = source_key
+        self._store_cache: dict[str, object] = {source_key: store} if source_key else {}
         self.loaded = store.workflows()  # every root session, all time
-        self.show_api_prices = False  # "$" toggles real cost <-> API-equivalent
+        # "$" toggles real cost <-> API-equivalent. When no active backend records
+        # dollars (Claude Code alone, or "all" with Claude in the mix) the real view
+        # is a wall of $0.00, so start in the estimate view; an explicit saved pref
+        # (apply_state) or the $ key takes over from there.
+        self.show_api_prices = not getattr(store, "records_cost", True) and not store.demo
         self._snapshot_real_costs()
         self._resolve_project_roots()
         # The per-model breakdown is the one heavy scan of the (huge) message
@@ -3189,6 +3782,51 @@ class App:
         self.project_index = min(self.project_index, max(0, len(self.projects) - 1))
         self.notice = "reloaded"
 
+    # --- Live source switching (the `c` key) ---------------------------------
+    def can_switch_source(self) -> bool:
+        return len(source_cycle(self.args)) > 1
+
+    def next_source_name(self) -> str:
+        # Display name of the source `c` would switch to (for the footer).
+        order = source_cycle(self.args)
+        cur = self.source_key if self.source_key in order else order[0]
+        nxt = order[(order.index(cur) + 1) % len(order)]
+        return SOURCE_LABELS.get(nxt, nxt)
+
+    def cycle_source(self, step: int = 1) -> None:
+        order = source_cycle(self.args)
+        if len(order) < 2:
+            self.notice = "only one data source available"
+            return
+        cur = self.source_key if self.source_key in order else order[0]
+        key = order[(order.index(cur) + step) % len(order)]
+        if key not in self._store_cache:
+            try:
+                self._store_cache[key] = make_store(self.args, key)[0]
+            except SystemExit as exc:
+                self.notice = str(exc)
+                return
+        self.source_key = key
+        self.store = self._store_cache[key]
+        self._reload_for_source()
+
+    def _reload_for_source(self) -> None:
+        # Re-seed every per-store cache from the newly active backend and reset the
+        # view to the top -- the months/projects/sessions are a different dataset now.
+        self.loaded = self.store.workflows()
+        self._snapshot_real_costs()
+        self._resolve_project_roots()
+        self._models_loaded = False
+        self._load_model_cache()
+        self._invalidate_workflow_cache()
+        self.zoom_project = None
+        self.query = ""
+        self.view = "browse"
+        self.focus = "months"
+        self.tab = self.scroll = 0
+        self.workflow_index = self.month_index = self.day_index = self.project_index = 0
+        self.notice = f"source: {self.store.source_name}"
+
     # --- Export / clipboard / open -------------------------------------------
     def _sessions_dataset(self, sessions: list[Workflow]) -> tuple[str, list[str], list[list]]:
         header = [
@@ -3730,6 +4368,9 @@ class App:
         if key == ord("r"):
             self.reload()
             return True
+        if key == ord("c"):
+            self.cycle_source(1)
+            return True
         if key == ord("+"):
             self.drill_in()
             return True
@@ -4081,7 +4722,19 @@ class App:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="opentab", description="OpenTab — OpenCode spend TUI")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--source",
+        choices=("auto", "opencode", "claude", "all"),
+        default="auto",
+        help="data source: opencode (SQLite), claude (Claude Code transcripts), or "
+        "all (both merged); auto prefers OpenCode's DB, else Claude Code (default: auto)",
+    )
     parser.add_argument("--db", default=os.path.expanduser("~/.local/share/opencode/opencode.db"))
+    parser.add_argument(
+        "--claude-dir",
+        default=os.path.expanduser("~/.claude/projects"),
+        help="Claude Code projects directory (for --source claude)",
+    )
     parser.add_argument(
         "--days",
         type=int,
@@ -4131,6 +4784,7 @@ def save_state(app: App) -> None:
         "browse_mode": app.browse_mode,
         "ignored_projects": sorted(app.ignored_projects),
         "show_api_prices": app.show_api_prices,
+        "source": app.source_key,  # restore the last source (opencode/claude/all) next run
     }
     path = state_path()
     try:
@@ -4164,12 +4818,78 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     # Restore the what-if ($) view. Only the flag is set here; the actual reprice
     # rides on the deferred model scan in run() (via _load_model_cache ->
     # _apply_price_mode), so the first paint still comes up off the fast rollup.
-    if state.get("show_api_prices") and not app.store.demo:
-        app.show_api_prices = True
+    # An explicit saved value (True or False) overrides the records_cost-based
+    # default from App.__init__; absent (first run), that default stands.
+    saved_api = state.get("show_api_prices")
+    if saved_api is not None and not app.store.demo:
+        app.show_api_prices = bool(saved_api)
     app.notice = ""
 
 
 MIN_PYTHON = (3, 9)
+
+
+def _claude_available(claude_dir: str) -> bool:
+    return os.path.isdir(claude_dir) and bool(
+        glob.glob(os.path.join(claude_dir, "**", "*.jsonl"), recursive=True)
+    )
+
+
+# Display names for the source keys, matching each backend's source_name.
+SOURCE_LABELS = {"opencode": "OpenCode", "claude": "Claude Code", "all": "all"}
+
+
+def available_sources(args: argparse.Namespace) -> list[str]:
+    # The single-source backends actually present on this machine, in priority order.
+    keys = []
+    if os.path.exists(args.db):
+        keys.append("opencode")
+    if _claude_available(args.claude_dir):
+        keys.append("claude")
+    return keys
+
+
+def source_cycle(args: argparse.Namespace) -> list[str]:
+    # The order the `c` key cycles through: each present source, plus "all" (merged)
+    # when at least two exist. Demo can't merge independently-scaled backends.
+    keys = available_sources(args)
+    if len(keys) >= 2 and not getattr(args, "demo", False):
+        keys.append("all")
+    return keys
+
+
+def resolve_source(args: argparse.Namespace, state: dict | None = None) -> str:
+    # The concrete starting source: an explicit --source wins; otherwise restore the
+    # last-used source from saved state (when it's still available), else auto-prefer
+    # OpenCode's DB / the first present source. Never auto-merges without prior intent.
+    if args.source != "auto":
+        return args.source
+    saved = (state or {}).get("source")
+    if saved in source_cycle(args):  # valid + available (incl. "all" only when >=2)
+        return saved
+    present = available_sources(args)
+    return "opencode" if "opencode" in present else (present[0] if present else "opencode")
+
+
+def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
+    # Build the backend for a concrete source key. Returns (store, loading-hint);
+    # exits with a clear message when the chosen source isn't present.
+    if key == "all":
+        if args.demo:
+            raise SystemExit("--demo works with one source; use --source opencode or claude")
+        subs = [make_store(args, k)[0] for k in available_sources(args)]
+        if not subs:
+            raise SystemExit("no data sources found (no OpenCode DB, no Claude Code transcripts)")
+        if len(subs) == 1:
+            return subs[0], "OpenTab: loading…\r"
+        return CombinedStore(subs), "OpenTab: loading all sources…\r"
+    if key == "claude":
+        if not os.path.isdir(args.claude_dir):
+            raise SystemExit(f"Claude Code projects directory not found: {args.claude_dir}")
+        return ClaudeStore(args.claude_dir, args), "OpenTab: loading Claude Code sessions…\r"
+    if not os.path.exists(args.db):
+        raise SystemExit(f"OpenCode database not found: {args.db}")
+    return Store(args.db, args), "OpenTab: loading OpenCode database…\r"
 
 
 def main() -> int:
@@ -4185,19 +4905,23 @@ def main() -> int:
             "  - Recommended: run opentab under WSL (where OpenCode's database usually lives anyway).\n"
             "  - Or on native Windows: pip install windows-curses (untested)."
         )
-    if not os.path.exists(args.db):
-        raise SystemExit(f"OpenCode database not found: {args.db}")
-    store = Store(args.db, args)
-    # The first load runs the recursive roll-up over the whole DB, which can take
-    # a beat on a large database. Show a hint, then clear it before curses starts.
-    sys.stderr.write("OpenTab: loading OpenCode database…\r")
+    # Load saved prefs first so the start source can be restored (resolve_source uses
+    # it) and the store is built once for the right backend -- the model scan stays
+    # deferred. Disabled by --demo / --no-state.
+    use_state = not args.demo and not args.no_state
+    state = load_state() if use_state else {}
+    source_key = resolve_source(args, state)
+    store, loading = make_store(args, source_key)
+    # The first load runs the recursive roll-up over the whole DB / parses every
+    # transcript, which can take a beat at scale. Show a hint, then clear it before
+    # curses starts.
+    sys.stderr.write(loading)
     sys.stderr.flush()
-    app = App(store, args)
+    app = App(store, args, source_key=source_key)
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()
-    use_state = not args.demo and not args.no_state
     if use_state:
-        apply_state(app, args, load_state())
+        apply_state(app, args, state)
     curses.wrapper(app.run)
     if use_state:
         save_state(app)

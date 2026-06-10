@@ -109,8 +109,41 @@ opentab                          # open the browser, all time
 opentab --days 30                # start within a window (change live with R)
 opentab --since 2026-05-01 --until 2026-05-31
 opentab --db /path/to/opencode.db  # default: ~/.local/share/opencode/opencode.db
+opentab --source claude          # browse Claude Code spend instead (see below)
 opentab --demo                   # safe for live demos / screenshots (see below)
 ```
+
+### Claude Code
+
+OpenTab can also read **Claude Code** sessions from `~/.claude/projects/**/*.jsonl`:
+
+```sh
+opentab --source claude                     # default ~/.claude/projects
+opentab --source claude --claude-dir /path  # non-standard location
+opentab --source all                        # OpenCode + Claude Code, merged
+```
+
+`--source auto` (the default) reads OpenCode when its database is present, otherwise
+falls back to Claude Code (it never auto-merges). The active source shows as a chip in
+the header, and you can **switch live with `c`** (OpenCode → Claude Code → all). The
+whole TUI works the same — months, days, projects, sessions, models, trends — with two
+differences, because Claude Code records **only tokens, no per-message cost**:
+
+- A Claude session works like an OpenCode subscription session: it shows **$0 in
+  normal mode** (nothing is recorded) and its **estimate** (tokens × API list price)
+  under the **`$`** view. Since a Claude-only (or merged) view would otherwise be a
+  wall of `$0.00`, the estimate view **starts on by default** there (header tag:
+  `ESTIMATED — tokens × API list prices`); press `$` to see the recorded numbers, and
+  your choice is remembered.
+- Projects roll up to their **git root**, so sessions started in subdirectories
+  (`frontend/`, `src/`, …) group under the repo instead of bare folder names.
+
+`--source all` merges both into one view: the same repo worked in both tools rolls up
+into a single project row, every session row shows its origin (a `Src` column in the
+session tables, `[oc]` / `[cc]` tags elsewhere), and the Trends overlay
+gains a **Sources** tab (spend by tool). `$` reprices the unpriced usage across both —
+OpenCode's subscription/credit messages and all of Claude's. (Demo mode is
+single-source only.)
 
 ### Demo mode
 
@@ -151,18 +184,20 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `i` | Ignore/unignore the selected project from project lists |
 | `I` | Show/hide ignored projects so they can be unignored |
 | `/` | Filter sessions (title/project/id) and the project list; `Esc` cancels; `x` clears |
-| `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model and Provider spend ranking (`h`/`l` tabs, `j`/`k` month/week, `$` toggles what-if) |
+| `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model, Provider, and Source spend ranking (`h`/`l` tabs, `j`/`k` month/week, `$` toggles what-if) |
 | `$` | What-if pricing: re-price unpriced subscription/credit usage at models.dev API list prices |
 | `P` | Show the models.dev API price table OpenTab uses for `$` |
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
+| `c` | Switch data source: OpenCode / Claude Code / all (when more than one is present) |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 
-The active **range, sort, ignored projects, and `$` what-if view are remembered
-between runs** (stored in `~/.config/opentab/state.json`; pass `--no-state` to
-disable, and `--demo` does not persist). Sub-cent costs render as `<$0.01` so they aren't confused with a red
+The active **source, range, sort, ignored projects, and `$` what-if view are
+remembered between runs** (stored in `~/.config/opentab/state.json`; pass `--no-state`
+to disable, and `--demo` does not persist). An explicit `--source` overrides the saved
+one. Sub-cent costs render as `<$0.01` so they aren't confused with a red
 `$0.00`, which means *unpriced* (tokens with no local price). The Months and Days
 lists show a small bar scaled to the largest spend in view.
 

@@ -5,6 +5,7 @@ third-party test runner -- in keeping with opentab's stdlib-only spirit.
 The module under test has no .py extension, so we load it by path.
 """
 
+import json
 import os
 import sqlite3
 import tempfile
@@ -658,6 +659,50 @@ def test_what_if_price_view_is_persisted_in_state():
                 os.environ["XDG_CONFIG_HOME"] = old_xdg
 
     assert restored.show_api_prices
+
+
+def test_source_is_persisted_and_restored():
+    with tempfile.TemporaryDirectory() as tmp:
+        # make both sources "present" so the cycle is opencode / claude / all
+        db = os.path.join(tmp, "opencode.db")
+        open(db, "w").close()
+        cdir = os.path.join(tmp, "projects", "slug")
+        os.makedirs(cdir)
+        _write_jsonl(
+            os.path.join(cdir, "s.jsonl"),
+            [_claude_msg("s", "claude-opus-4-8", _usage(1, 1, 0, 0), uuid="u", cwd=tmp)],
+        )
+        args = type(
+            "Args",
+            (),
+            {
+                "source": "auto",
+                "db": db,
+                "claude_dir": os.path.join(tmp, "projects"),
+                "demo": False,
+            },
+        )()
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            app = app_with([workflow("a", "2026-06-01 12:00:00")])
+            app.source_key = "all"
+            ot.save_state(app)
+            state = ot.load_state()
+            assert state["source"] == "all"
+            # auto restores the saved source when it's still available
+            assert ot.resolve_source(args, state) == "all"
+            # an explicit --source overrides the saved one
+            args.source = "claude"
+            assert ot.resolve_source(args, state) == "claude"
+            # a saved source that's no longer available falls back to the default
+            args.source = "auto"
+            assert ot.resolve_source(args, {"source": "bogus"}) == "opencode"
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
 
 
 def test_demo_cost_zero_and_deterministic():
@@ -1802,6 +1847,316 @@ def test_store_reads_db_without_session_token_columns():
         assert workflows[0].subagents == 1
         assert nodes[1]["tokens_total"] == 5
         assert nodes[1]["agent"] == "-"
+
+
+def _claude_msg(
+    session, model, usage, *, uuid, cwd, parent=None, side=False, mid=None, req=None, ts=None
+):
+    return {
+        "type": "assistant",
+        "sessionId": session,
+        "cwd": cwd,
+        "timestamp": ts or "2026-06-10T18:46:00.000Z",
+        "uuid": uuid,
+        "parentUuid": parent,
+        "isSidechain": side,
+        "requestId": req or (uuid + "-req"),
+        "message": {
+            "id": mid or (uuid + "-id"),
+            "model": model,
+            "role": "assistant",
+            "usage": usage,
+        },
+    }
+
+
+def _usage(inp=0, out=0, cr=0, cw=0):
+    return {
+        "input_tokens": inp,
+        "output_tokens": out,
+        "cache_read_input_tokens": cr,
+        "cache_creation_input_tokens": cw,
+    }
+
+
+def _write_jsonl(path, rows):
+    with open(path, "w") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+
+
+def test_claude_store_prices_tokens_dedupes_and_rolls_up_to_git_root():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        # cwd is <repo>/sub but the repo root (.git) is <repo> -> a session started
+        # in a subdir must roll up to the repo, not the bare basename "sub".
+        repo = os.path.join(tmp, "repo")
+        sub = os.path.join(repo, "sub")
+        os.makedirs(sub)
+        os.makedirs(os.path.join(repo, ".git"))
+        m1 = _claude_msg(
+            "s1",
+            "claude-opus-4-8",
+            _usage(1000, 500, 2000, 300),
+            uuid="u1",
+            cwd=sub,
+            mid="m1",
+            req="r1",
+        )
+        m2 = _claude_msg(
+            "s1", "claude-opus-4-8", _usage(10, 20, 100, 0), uuid="u2", cwd=sub, mid="m2", req="r2"
+        )
+        dup = dict(m1)  # same (message.id, requestId) -> must be deduped, not double-counted
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [m1, dup, m2])
+
+        args = type("Args", (), {"demo": False})()
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), args)
+        workflows = store.workflows()
+
+        assert len(workflows) == 1
+        w = workflows[0]
+        # tokens summed across the two distinct messages (dup ignored)
+        assert w.total_tokens == (1000 + 500 + 2000 + 300) + (10 + 20 + 100)
+        # recorded cost is $0 (Claude logs none); all of it is "unpriced" until $
+        assert w.total_cost == 0.0 and w.root_cost == 0.0
+        assert w.unpriced_tokens == w.total_tokens
+        assert w.subagents == 0
+        assert w.source == "Claude Code"
+        assert w.directory == repo  # folded to the git root
+        assert w.created_at.startswith("2026-06") and len(w.created_at) == 19
+
+        rows = store.model_breakdown()
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["runs"] == 2  # dup deduped
+        assert r["model_name"] == "anthropic/claude-opus-4-8"
+        assert r["cost"] == 0.0
+        # the unpriced split carries the full token counts so "$" can reprice them
+        assert (r["unpriced_input"], r["unpriced_output"], r["unpriced_cache_read"]) == (
+            1010,
+            520,
+            2100,
+        )
+        expected = ot.api_equivalent_cost("anthropic/claude-opus-4-8", 1010, 520, 0, 2100, 300)
+        assert abs(expected - round(expected, 6)) < 1e-9 and expected > 0
+
+
+def test_claude_store_groups_sidechain_subagents_into_tree():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        main = _claude_msg("s1", "claude-opus-4-8", _usage(100, 50, 0, 0), uuid="u0", cwd=cwd)
+        # two sidechain messages chained off the main thread -> one subagent run
+        s1 = _claude_msg(
+            "s1",
+            "claude-opus-4-8",
+            _usage(40, 10, 0, 0),
+            uuid="u1",
+            cwd=cwd,
+            parent="u0",
+            side=True,
+        )
+        s2 = _claude_msg(
+            "s1", "claude-opus-4-8", _usage(20, 5, 0, 0), uuid="u2", cwd=cwd, parent="u1", side=True
+        )
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [main, s1, s2])
+
+        args = type("Args", (), {"demo": False})()
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), args)
+        w = store.workflows()[0]
+        nodes = store.workflow_nodes("s1")
+
+        assert w.subagents == 1  # the two sidechain msgs collapse to one run
+        assert w.total_tokens == 150 + 50 + 25
+        assert w.total_cost == 0.0 and w.root_cost == 0.0  # recorded cost; $ reprices
+
+        # the root vs subagent split lives in the (un)priced token fields
+        r = store.model_breakdown()[0]
+        assert r["root_unpriced_input"] == 100  # main thread only
+        assert r["unpriced_input"] == 100 + 40 + 20  # main + both sidechain msgs
+
+        assert len(nodes) == 2
+        assert nodes[0]["depth"] == 0 and nodes[0]["agent"] == "-"
+        assert nodes[1]["depth"] == 1 and nodes[1]["agent"] == "subagent"
+        assert nodes[1]["tokens_total"] == (40 + 10) + (20 + 5)
+        assert nodes[0]["cost"] == 0.0 and nodes[1]["cost"] == 0.0  # recorded; $ reprices
+
+
+def test_combined_store_merges_sources_and_routes_workflow_nodes():
+    with tempfile.TemporaryDirectory() as tmp:
+        # an OpenCode SQLite source...
+        db = os.path.join(tmp, "opencode.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            create table session (id text primary key, parent_id text, title text,
+              directory text, time_created integer);
+            create table message (session_id text, data text);
+            """
+        )
+        conn.execute(
+            "insert into session values (?, ?, ?, ?, ?)",
+            ("ses_oc", None, "OC", "/tmp/project", 1760000000000),
+        )
+        conn.execute(
+            "insert into message values (?, ?)",
+            (
+                "ses_oc",
+                '{"role":"assistant","providerID":"openai","modelID":"gpt-5-mini","cost":1.25,'
+                '"tokens":{"total":10,"input":4,"output":6}}',
+            ),
+        )
+        conn.commit()
+        conn.close()
+        # ...and a Claude Code source
+        cdir = os.path.join(tmp, "projects", "slug")
+        os.makedirs(cdir)
+        msg = _claude_msg("cc-uuid", "claude-opus-4-8", _usage(1000, 500, 0, 0), uuid="u1", cwd=tmp)
+        _write_jsonl(os.path.join(cdir, "cc.jsonl"), [msg])
+
+        args = type("Args", (), {"demo": False})()
+        oc, cc = ot.Store(db, args), ot.ClaudeStore(os.path.join(tmp, "projects"), args)
+        store = ot.CombinedStore([oc, cc])
+
+        workflows = store.workflows()
+        ids = {w.id for w in workflows}
+        assert ids == {"ses_oc", "cc-uuid"}  # both sources merged
+        assert store.combined and not store.records_cost  # Claude in the mix
+
+        # summary sums recorded cost across both: OpenCode's $1.25 + Claude's $0
+        # (Claude is unpriced until "$" reprices it; tested at App level elsewhere)
+        summary = store.summary(workflows)
+        assert summary["workflows"] == 2
+        assert abs(summary["cost"] - 1.25) < 1e-9
+        assert summary["unpriced_tokens"] == 1500  # all of Claude's tokens
+
+        # workflow_nodes routes each id to the backend that produced it
+        oc_nodes = store.workflow_nodes("ses_oc")
+        cc_nodes = store.workflow_nodes("cc-uuid")
+        assert oc_nodes[0]["model_name"].startswith("openai/")
+        assert cc_nodes[0]["model_name"] == "anthropic/claude-opus-4-8"
+
+        # model_breakdown concatenates rows from both, keyed by their real root ids
+        roots = {r["root_id"] for r in store.model_breakdown()}
+        assert roots == {"ses_oc", "cc-uuid"}
+
+
+def test_claude_shows_zero_in_normal_mode_and_estimate_under_dollar():
+    with tempfile.TemporaryDirectory() as tmp:
+        cdir = os.path.join(tmp, "projects", "slug")
+        os.makedirs(cdir)
+        msg = _claude_msg("s1", "claude-opus-4-8", _usage(1000, 500, 200, 50), uuid="u1", cwd=tmp)
+        _write_jsonl(os.path.join(cdir, "s1.jsonl"), [msg])
+
+        args = type(
+            "Args",
+            (),
+            {"demo": False, "no_worktrees": True, "since": None, "until": None, "days": None},
+        )()
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), args)
+        app = ot.App(store, args)
+        app._load_model_cache()  # the deferred per-model scan
+
+        # Claude records no cost, so the app starts in the $ estimate view
+        # (tokens repriced at list rates), not on a wall of $0.00
+        assert app.show_api_prices
+        expected = ot.api_equivalent_cost("anthropic/claude-opus-4-8", 1000, 500, 0, 200, 50)
+        assert expected > 0
+        assert abs(app.range_cost_total() - expected) < 1e-6
+        # "$" flips to the recorded numbers: $0 (Claude logs none)
+        app.toggle_api_prices()
+        assert app.range_cost_total() == 0.0
+        # and back to the estimate
+        app.toggle_api_prices()
+        assert abs(app.range_cost_total() - expected) < 1e-6
+        # and the model mix reflects the same flip
+        assert (
+            app.model_mix("s1")[0]["cost"] == round(expected, 6)
+            or abs(app.model_mix("s1")[0]["cost"] - expected) < 1e-6
+        )
+
+
+def test_no_recorded_cost_defaults_to_estimate_view():
+    # A backend that records no dollars (Claude Code) would paint a wall of
+    # $0.00 in normal mode, so the $ estimate view starts on by default...
+    class SubscriptionStore(FakeStore):
+        records_cost = False
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(SubscriptionStore([workflow("a", "2026-06-01 12:00:00")]), args)
+    assert app.show_api_prices
+    # ...but an explicit saved preference (user toggled $ off and quit) wins...
+    ot.apply_state(app, args, {"show_api_prices": False})
+    assert not app.show_api_prices
+    # ...and cost-recording stores keep the real-cost default.
+    assert not app_with([workflow("a", "2026-06-01 12:00:00")]).show_api_prices
+
+
+def test_combined_sessions_tables_get_a_src_column():
+    class MergedStore(FakeStore):
+        combined = True
+
+    a = workflow("a", "2026-06-01 12:00:00", title="opencode session")
+    a.source = "OpenCode"
+    b = workflow("b", "2026-06-02 12:00:00", title="claude session")
+    b.source = "Claude Code"
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(MergedStore([a, b]), args)
+    month = app.months[0]
+    lines = app.renderer.month_workflows(month, 120)
+    assert "Src" in lines[1]  # header gains the column
+    assert any("oc  opencode session" in ln for ln in lines)
+    assert any("cc  claude session" in ln for ln in lines)
+    # Top Sessions in the overview carries the bracket tag instead
+    over = app.renderer.month_overview(month, 120)
+    assert any("[cc] claude session" in ln for ln in over)
+    # single-source views stay untouched (origin is implied by the header chip)
+    plain = app_with([workflow("a", "2026-06-01 12:00:00")])
+    assert "Src" not in plain.renderer.month_workflows(plain.months[0], 120)[1]
+
+
+def test_unpriced_hint_matches_price_mode():
+    # The hint teaches $ in normal mode and must not say "not billed" next to
+    # nonzero estimated dollars in the $ view.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.show_api_prices = False
+    assert "press $" in app.renderer.unpriced_hint()
+    app.show_api_prices = True
+    hint = app.renderer.unpriced_hint()
+    assert "estimate" in hint and "press $" not in hint
+
+
+def test_next_source_name_names_the_destination():
+    with tempfile.TemporaryDirectory() as tmp:
+        # both sources present -> the cycle is opencode / claude / all
+        db = os.path.join(tmp, "opencode.db")
+        open(db, "w").close()
+        cdir = os.path.join(tmp, "projects", "slug")
+        os.makedirs(cdir)
+        with open(os.path.join(cdir, "s.jsonl"), "w") as fh:
+            fh.write("{}\n")
+        args = type(
+            "Args",
+            (),
+            {
+                "since": None,
+                "until": None,
+                "days": None,
+                "source": "auto",
+                "db": db,
+                "claude_dir": os.path.join(tmp, "projects"),
+                "demo": False,
+            },
+        )()
+        app = ot.App(FakeStore([workflow("a", "2026-06-01 12:00:00")]), args)
+        app.source_key = "opencode"
+        assert app.next_source_name() == "Claude Code"
+        app.source_key = "claude"
+        assert app.next_source_name() == "all"
+        app.source_key = "all"
+        assert app.next_source_name() == "OpenCode"
 
 
 if __name__ == "__main__":
