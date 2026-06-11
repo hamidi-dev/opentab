@@ -30,7 +30,7 @@ standard library — no `pip install` needed.
 - "What-if" pricing (`$`): re-price unpriced subscription/credit usage at
   models.dev API list rates; `P` shows the price table behind it
 - Git worktrees folded into their main repo
-- Filter (title / project / id) and live date-range scoping
+- Live fuzzy filter (fzf-style, title / project / id) and live date-range scoping
 - CSV export of any view
 - Keyboard- and mouse-driven (scroll, click to select, double-click to drill)
 - Remembers your range, sort, ignored projects, and the `$` view between runs
@@ -183,7 +183,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
 | `i` | Ignore/unignore the selected project from project lists |
 | `I` | Show/hide ignored projects so they can be unignored |
-| `/` | Filter sessions (title/project/id) and the project list; `Esc` cancels; `x` clears |
+| `/` | Live fuzzy filter: the lists narrow and re-rank (best match first) as you type, fzf-style subsequence matching over title/project/id; `↑`/`↓` select while typing, `Enter` keeps the filter, `Esc` cancels, `Ctrl-U` clears the input, `x` clears it later |
 | `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model, Provider, and Source spend ranking (`h`/`l` tabs, `j`/`k` month/week, `$` toggles what-if) |
 | `$` | What-if pricing: re-price unpriced subscription/credit usage at models.dev API list prices |
 | `P` | Show the models.dev API price table OpenTab uses for `$` |

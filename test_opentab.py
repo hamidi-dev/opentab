@@ -2159,6 +2159,63 @@ def test_next_source_name_names_the_destination():
         assert app.next_source_name() == "OpenCode"
 
 
+def test_fuzzy_score_matches_subsequences():
+    assert ot.fuzzy_score("", "anything") == 0  # empty query matches everything
+    assert ot.fuzzy_score("otb", "opentab") is not None  # subsequence, not substring
+    assert ot.fuzzy_score("xyz", "opentab") is None
+    assert ot.fuzzy_score("TREND", "Trend view") is not None  # case-insensitive
+    # tight matches outrank scattered ones
+    assert ot.fuzzy_score("trend", "fix trend view") > ot.fuzzy_score(
+        "trend", "travel reimbursement node"
+    )
+    # word starts outrank mid-word hits
+    assert ot.fuzzy_score("tv", "trend view") > ot.fuzzy_score("tv", "octave")
+
+
+def test_live_filter_ranks_best_fuzzy_match_first():
+    # b would win the default cost sort; with a query the match quality decides.
+    a = workflow("a", "2026-06-01 12:00:00", title="fix trends view", cost=1.0)
+    b = workflow("b", "2026-06-02 12:00:00", title="travel reimbursement node", cost=50.0)
+    c = workflow("c", "2026-06-03 12:00:00", title="unrelated", cost=99.0)
+    app = app_with([a, b, c])
+    app.query = "trend"
+    rows = app.current_sessions()
+    assert [w.id for w in rows] == ["a", "b"]  # both match; tight one first, c dropped
+    app.query = ""
+    assert [w.id for w in app.current_sessions()] == ["c", "b", "a"]  # cost sort returns
+
+
+def test_slash_enters_live_filter_mode():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", title="alpha"),
+            workflow("b", "2026-06-02 12:00:00", title="beta"),
+        ]
+    )
+    assert app.handle_key(None, ord("/")) and app.filter_active
+    for ch in "bet":
+        app.handle_key(None, ord(ch))
+    assert app.query == "bet"  # edits apply live, no Enter needed
+    assert [w.title for w in app.current_sessions()] == ["beta"]
+    app.handle_key(None, 127)  # backspace
+    assert app.query == "be"
+    app.handle_key(None, 10)  # Enter keeps the filter and leaves the mode
+    assert not app.filter_active and app.query == "be"
+    # Esc restores the query from before `/`
+    app.handle_key(None, ord("/"))
+    app.handle_key(None, ord("x"))  # types into the query, doesn't clear the filter
+    assert app.query == "bex"
+    app.handle_key(None, 27)
+    assert not app.filter_active and app.query == "be"
+    # Ctrl-U clears the input while staying in the mode
+    app.handle_key(None, ord("/"))
+    app.handle_key(None, 21)
+    assert app.filter_active and app.query == ""
+    # q is text here, not quit; Ctrl-C still quits
+    assert app.handle_key(None, ord("q")) and app.query == "q"
+    assert app.handle_key(None, 3) is False
+
+
 if __name__ == "__main__":
     import sys
 

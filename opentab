@@ -611,6 +611,43 @@ def short_path(path: str, width: int) -> str:
     return "..." + path[-(width - 3) :]
 
 
+def fuzzy_score(query: str, text: str) -> int | None:
+    """fzf-style subsequence match (case-insensitive): every query character
+    must appear in `text` in order. Returns None on no match, else a score —
+    higher is better. Consecutive matches and word starts score up; the gap
+    skipped to reach each character scores down, so tight matches beat
+    scattered ones ("trend" ranks "trend view" above "travel node script")."""
+    if not query:
+        return 0
+    t = text.lower()
+    score = 0
+    pos = 0
+    prev = -2
+    for ch in query.lower():
+        found = t.find(ch, pos)
+        if found < 0:
+            return None
+        if found == prev + 1:
+            score += 3  # extends a consecutive run
+        if found == 0 or t[found - 1] in " -_/.":
+            score += 2  # word / path-segment start
+        score -= found - pos
+        prev = found
+        pos = found + 1
+    return score
+
+
+def workflow_fuzzy_score(query: str, workflow: Workflow) -> int | None:
+    # Best match across the fields people aim for, nudged so a title hit
+    # outranks an equally good directory or id hit.
+    best = None
+    for bonus, text in ((2, workflow.title), (1, workflow.directory), (0, workflow.id)):
+        s = fuzzy_score(query, text)
+        if s is not None and (best is None or s + bonus > best):
+            best = s + bonus
+    return best
+
+
 def parse_range_text(raw: str) -> tuple[int | None, int | None, str | None, str | None]:
     # Returns (days, months, since, until). Days and months are *relative*
     # windows re-evaluated each run; since/until are absolute bounds.
@@ -1741,7 +1778,9 @@ class Renderer:
         drilled = self.view in ("zoom", "session")
         sort_by = self.effective_sort_by()
         trail = f"  ·  sort: {sort_by}" if sort_by else ""
-        if self.query:
+        if self.filter_active:
+            trail += f"  ·  filter: {self.query}▌"  # live mode: the block is the cursor
+        elif self.query:
             trail += f"  ·  filter: {self.query}"
         if self.ignored_projects:
             trail += f"  ·  ignored: {len(self.ignored_projects)}"
@@ -1805,6 +1844,13 @@ class Renderer:
         # the strip stays short enough to read instead of silently truncating. Plain
         # movement (j/k/h/l, arrows) is deliberately omitted -- vim users know it and
         # everyone else reaches for the arrow keys.
+        if self.filter_active:
+            keys = "type to filter (fuzzy)  ↑/↓ select  Enter keep  Esc cancel  Ctrl-U clear"
+            self.hline(stdscr, height - 2, 0, width)
+            self.write(
+                stdscr, height - 1, 0, shorten(" " + keys + " ", width - 1), curses.color_pair(4)
+            )
+            return
         parts = []
         if self.view == "browse" and self.browse_mode == "time":
             parts.append("Tab months/days")
@@ -2446,7 +2492,7 @@ class Renderer:
             f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
             f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
-        for workflow in self.sorted_workflows(self.workflows_for_month(month.month)):
+        for workflow in self.filtered_sessions(self.workflows_for_month(month.month)):
             lines.append(
                 f"{workflow.created_at[:10]:<10} "
                 f"{money(workflow.total_cost):>9} "
@@ -2494,7 +2540,7 @@ class Renderer:
             f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
             f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
-        for workflow in self.sorted_workflows(self.workflows_for_day(day.day)):
+        for workflow in self.filtered_sessions(self.workflows_for_day(day.day)):
             lines.append(
                 f"{workflow.created_at[11:16]:<10} "
                 f"{money(workflow.total_cost):>9} "
@@ -2570,7 +2616,7 @@ class Renderer:
             f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
         workflows = self.workflows_for_project(project.directory, include_ignored=project.ignored)
-        for workflow in self.sorted_workflows(workflows):
+        for workflow in self.filtered_sessions(workflows):
             lines.append(
                 f"{workflow.created_at[:10]:<10} "
                 f"{money(workflow.total_cost):>9} "
@@ -2671,7 +2717,8 @@ class Renderer:
             "  s / S            cycle sort forward / backward on visible lists",
             "  i                ignore/unignore the selected project (project lists only)",
             "  I                show/hide ignored projects so they can be unignored",
-            "  /                filter sessions (title/project/id) and projects (Esc cancels)",
+            "  /                live fuzzy filter over sessions (title/project/id) and projects; best match first",
+            "                   while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
             "  x                clear filter",
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
@@ -3157,6 +3204,8 @@ class App:
         self.range_days = None if (args.since or args.until or args.days is None) else args.days
         self.range_months: int | None = None  # set by an "Nm"/"Ny" range, calendar-based
         self.query = ""
+        self.filter_active = False  # live `/` filter mode: keys edit the query
+        self._filter_before = ""  # the query as it was when `/` opened the mode (Esc restores)
         self.day_index = 0
         self.month_index = 0
         self.project_index = 0
@@ -3296,14 +3345,19 @@ class App:
         # Sessions of the selected day — the lazygit "commits of this branch".
         day = self.active_day
         rows = self.workflows_for_day(day) if day else []
-        if self.query:
-            q = self.query.lower()
-            rows = [
-                w
-                for w in rows
-                if q in w.title.lower() or q in w.directory.lower() or q in w.id.lower()
-            ]
-        return self.sorted_workflows(rows)
+        return self.filtered_sessions(rows)
+
+    def filtered_sessions(self, rows: list[Workflow]) -> list[Workflow]:
+        # The active sort first, then (with a query) rank fuzzy matches by
+        # score. The sort is stable input to the ranking, so equally good
+        # matches keep their cost/date order.
+        rows = self.sorted_workflows(rows)
+        if not self.query:
+            return rows
+        scored = [(workflow_fuzzy_score(self.query, w), w) for w in rows]
+        ranked = [(s, w) for s, w in scored if s is not None]
+        ranked.sort(key=lambda pair: -pair[0])
+        return [w for _, w in ranked]
 
     def _day_summaries(self, workflows: list[Workflow]) -> list[DaySummary]:
         grouped: dict[str, list[Workflow]] = defaultdict(list)
@@ -3393,10 +3447,13 @@ class App:
             )
             for directory, workflows in grouped.items()
         ]
+        projects = self.sorted_projects(projects)
         if self.query:
-            q = self.query.lower()
-            projects = [p for p in projects if q in p.directory.lower()]
-        return self.sorted_projects(projects)
+            scored = [(fuzzy_score(self.query, p.directory), p) for p in projects]
+            ranked = [(s, p) for s, p in scored if s is not None]
+            ranked.sort(key=lambda pair: -pair[0])  # stable: ties keep the sort order
+            projects = [p for _, p in ranked]
+        return projects
 
     def sorted_projects(self, rows: list[ProjectSummary]) -> list[ProjectSummary]:
         sort_by = (
@@ -4018,14 +4075,7 @@ class App:
             rows = self.workflows_for_day(item.day, source) if item else []
         if self.zoom_project and self.browse_mode != "projects":
             rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
-        if self.query:
-            q = self.query.lower()
-            rows = [
-                w
-                for w in rows
-                if q in w.title.lower() or q in w.directory.lower() or q in w.id.lower()
-            ]
-        return self.sorted_workflows(rows)
+        return self.filtered_sessions(rows)
 
     def _zooming_ignored_project(self) -> bool:
         return bool(
@@ -4351,6 +4401,9 @@ class App:
                 self.trends = False  # any other key closes the overlay
             return True
 
+        if self.filter_active:
+            return self.handle_filter_key(key)
+
         if key in (ord("q"), 3):
             return False
         if key == ord("?"):
@@ -4399,7 +4452,8 @@ class App:
             self.toggle_ignored_projects_view()
             return True
         if key == ord("/"):
-            self.prompt_filter(stdscr)
+            self.filter_active = True
+            self._filter_before = self.query
             return True
         if key == ord("x"):
             if self.query:
@@ -4458,6 +4512,38 @@ class App:
             self.move(-1)
             return True
         return True
+
+    def handle_filter_key(self, key: int) -> bool:
+        # Live fuzzy filter mode (`/`): printable keys edit the query and every
+        # list re-ranks on the very next paint. Arrows still move the selection,
+        # so you can land on a match without leaving the mode.
+        if key == 3:  # Ctrl-C still quits
+            return False
+        if key == 27:  # Esc restores the query from before `/`
+            self.query = self._filter_before
+            self.filter_active = False
+            self._filter_edited()
+            self.notice = "filter cancelled"
+        elif key in (10, 13, curses.KEY_ENTER):
+            self.filter_active = False
+            self.notice = f"filter: {self.query}" if self.query else "filter cleared"
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            self.query = self.query[:-1]
+            self._filter_edited()
+        elif key == 21:  # Ctrl-U clears the input
+            self.query = ""
+            self._filter_edited()
+        elif key in (curses.KEY_UP, curses.KEY_DOWN):
+            self.move(1 if key == curses.KEY_DOWN else -1)
+        elif 32 <= key <= 126:
+            self.query += chr(key)
+            self._filter_edited()
+        return True
+
+    def _filter_edited(self) -> None:
+        # Selection snaps to the best-ranked match whenever the query changes.
+        self.workflow_index = 0
+        self.project_index = 0
 
     def handle_mouse(self) -> bool:
         # The screen's clickable regions were registered by the last draw(), so a
@@ -4545,15 +4631,6 @@ class App:
             return
         if drill:
             self.drill_in()
-
-    def prompt_filter(self, stdscr: curses.window) -> None:
-        value = self.prompt_text(stdscr, "Filter sessions/projects (Esc cancels): ", self.query)
-        if value is None:
-            return
-        self.query = value.strip()
-        self.workflow_index = 0
-        self.project_index = 0
-        self.notice = "filter cleared" if not self.query else f"filter: {self.query}"
 
     def prompt_range(self, stdscr: curses.window) -> None:
         initial = "" if self.range_input_value() == "all" else self.range_input_value()
