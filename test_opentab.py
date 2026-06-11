@@ -2151,6 +2151,21 @@ def test_unpriced_hint_matches_price_mode():
     assert "estimate" in hint and "press $" not in hint
 
 
+def test_resume_command_cds_to_the_project_first():
+    a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/my project")
+    a.source = "OpenCode"
+    app = app_with([a])
+    assert app.resume_command(a) == "cd '/repo/my project' && opencode --session ses_1"
+    a.source = "Claude Code"
+    assert app.resume_command(a) == "cd '/repo/my project' && claude --resume ses_1"
+    # no command without a source stamp or a usable directory
+    a.source = ""
+    assert app.resume_command(a) is None
+    a.source = "Claude Code"
+    a.directory = "(unknown)"
+    assert app.resume_command(a) is None
+
+
 def test_next_source_name_names_the_destination():
     with tempfile.TemporaryDirectory() as tmp:
         # both sources present -> the cycle is opencode / claude / all

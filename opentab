@@ -13,6 +13,7 @@ import json
 import os
 import random
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -1879,6 +1880,7 @@ class Renderer:
             # chip) — "c all" otherwise reads like "press c to get all".
             parts.append(f"c → {self.next_source_name()}")
         parts += ["R range", "/ filter", "T trends", "P prices", "e export", "y copy", "o open"]
+        parts.append("L launch")
         if not self.store.demo:
             parts.append("$ what-if" + ("*" if self.show_api_prices else ""))
         parts += ["? help", "q quit"]
@@ -2732,6 +2734,7 @@ class Renderer:
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
+            "  L                copy a resume command: cd <project> && opencode --session / claude --resume <id>",
             "  c                switch data source: OpenCode / Claude Code / all (when present)",
             "  T                Trends overlay: Daily / Weekly / Monthly / Models / Providers / Sources",
             "                   (h/l tabs; j/k month/week; $ toggles what-if prices)",
@@ -4035,6 +4038,35 @@ class App:
         else:
             self.notice = "no opener found (open/xdg-open)"
 
+    def resume_command(self, workflow: Workflow) -> str | None:
+        # The shell command that reopens a session in its own tool, cd-ing to the
+        # project first so the resumed session starts in the right directory.
+        cli = RESUME_COMMANDS.get(workflow.source)
+        directory = workflow.directory
+        if not cli or not directory or directory == "(unknown)":
+            return None
+        return f"cd {shlex.quote(directory)} && {cli} {shlex.quote(workflow.id)}"
+
+    def launch_current(self) -> None:
+        # `L` copies a ready-to-paste resume command for the selected session.
+        # opentab owns the terminal (curses), so it hands the command to the
+        # clipboard instead of spawning a TUI inside a TUI.
+        if self.store.demo:
+            self.notice = "launch disabled in demo mode"
+            return
+        session = self.current_session()
+        if not session:
+            self.notice = "no session selected"
+            return
+        command = self.resume_command(session)
+        if not command:
+            self.notice = "no launch command for this session"
+            return
+        if copy_to_clipboard(command):
+            self.notice = f"copied: {shorten(command, 60)}"
+        else:
+            self.notice = "clipboard tool not found (pbcopy/wl-copy/xclip/xsel)"
+
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
         sort_by = self.sort_by if self.sort_by in self.sort_options else self.sort_options[0]
         if sort_by == "cost":
@@ -4482,6 +4514,9 @@ class App:
         if key == ord("o"):
             self.open_current()
             return True
+        if key == ord("L"):
+            self.launch_current()
+            return True
         if key == ord("$"):
             self.toggle_api_prices()
             return True
@@ -4923,6 +4958,10 @@ def _claude_available(claude_dir: str) -> bool:
 
 # Display names for the source keys, matching each backend's source_name.
 SOURCE_LABELS = {"opencode": "OpenCode", "claude": "Claude Code", "all": "all"}
+
+# How each tool reopens one of its sessions (the `L` key copies this command,
+# keyed by Workflow.source).
+RESUME_COMMANDS = {"OpenCode": "opencode --session", "Claude Code": "claude --resume"}
 
 
 def available_sources(args: argparse.Namespace) -> list[str]:

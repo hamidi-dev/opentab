@@ -206,6 +206,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
+| `L` | Copy a launch command for the selected session: `cd <project> && opencode --session <id>` (or `claude --resume <id>`) — paste it in a terminal to resume the session in its tool |
 | `c` | Switch data source: OpenCode / Claude Code / all (when more than one is present) |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
