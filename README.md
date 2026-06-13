@@ -73,8 +73,10 @@ touches, all on your own machine:
   source, range, and sort; disable with `--no-state`), and — only when you press `e` — an
   `opentab-*.csv` export in the current directory.
 - **Runs** external programs only on the key you press: your clipboard tool
-  (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for `y`, and your file opener
-  (`open`/`xdg-open`) for `o`. Both are disabled in `--demo`.
+  (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for `y`, your file opener
+  (`open`/`xdg-open`) for `o`, and for `L` either `tmux` or your own
+  [launcher hook](#custom-launchers) (`~/.config/opentab/launcher`). All are
+  disabled in `--demo`.
 
 ## Requirements
 
@@ -206,7 +208,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
-| `L` | Copy a launch command for the selected session: `cd <project> && opencode --session <id>` (or `claude --resume <id>`) — paste it in a terminal to resume the session in its tool |
+| `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project); outside tmux (or with `y`) the `cd <project> && …` command is copied to the clipboard instead. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
 | `c` | Switch data source: OpenCode / Claude Code / all (when more than one is present) |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
@@ -217,6 +219,33 @@ to disable, and `--demo` does not persist). An explicit `--source` overrides the
 one. Sub-cent costs render as `<$0.01` so they aren't confused with a red
 `$0.00`, which means *unpriced* (tokens with no local price). The Months and Days
 lists show a small bar scaled to the largest spend in view.
+
+### Custom launchers
+
+If an executable exists at `~/.config/opentab/launcher` (or `$OPENTAB_LAUNCHER`
+points at one), every `L`-menu launch is handed to it instead of the built-in
+tmux commands — git-hooks style. It's called as
+
+```sh
+launcher <kind> <directory> <command>
+# kind ∈ window | hsplit | vsplit | popup
+# e.g. launcher window /repo/myproj 'claude --resume abc123'
+```
+
+and a nonzero exit shows its stderr as the launch error. The footer reads
+"launch via launcher hook" when one is active. Use it to route launches through
+your own popup manager, zellij, kitty tabs, a different multiplexer — anything:
+
+```sh
+#!/bin/sh
+# ~/.config/opentab/launcher — example: zellij instead of tmux
+kind=$1 dir=$2 cmd=$3
+case $kind in
+  window) exec zellij action new-tab --cwd "$dir" -- sh -c "$cmd" ;;
+  popup)  exec zellij run --floating --cwd "$dir" -- sh -c "$cmd" ;;
+  *)      exec zellij run --cwd "$dir" -- sh -c "$cmd" ;;
+esac
+```
 
 ## Windows
 

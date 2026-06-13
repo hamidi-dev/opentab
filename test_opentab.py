@@ -2166,6 +2166,120 @@ def test_resume_command_cds_to_the_project_first():
     assert app.resume_command(a) is None
 
 
+def test_tmux_launch_argv_builds_window_split_popup():
+    cmd = "claude --resume abc123"
+    # directory rides on -c / -d flags
+    assert ot.tmux_launch_argv("window", "/repo/a", cmd) == [
+        "tmux",
+        "new-window",
+        "-c",
+        "/repo/a",
+        cmd,
+    ]
+    assert ot.tmux_launch_argv("hsplit", "/repo/a", cmd)[:3] == ["tmux", "split-window", "-h"]
+    assert ot.tmux_launch_argv("vsplit", "/repo/a", cmd)[:3] == ["tmux", "split-window", "-v"]
+    popup = ot.tmux_launch_argv("popup", "/repo/a", cmd)
+    assert popup[:3] == ["tmux", "display-popup", "-E"]
+    assert "/repo/a" in popup and cmd in popup
+
+
+def test_launcher_hook_detected_via_env_then_config():
+    old_env = os.environ.get("OPENTAB_LAUNCHER")
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            # nothing installed: no hook
+            os.environ.pop("OPENTAB_LAUNCHER", None)
+            os.environ["XDG_CONFIG_HOME"] = tmp
+            assert ot.launcher_hook() is None
+            # the well-known config path is picked up once executable
+            hook = os.path.join(tmp, "opentab", "launcher")
+            os.makedirs(os.path.dirname(hook))
+            with open(hook, "w") as fh:
+                fh.write("#!/bin/sh\n")
+            assert ot.launcher_hook() is None  # not executable yet
+            os.chmod(hook, 0o755)
+            assert ot.launcher_hook() == hook
+            # the env override wins over the config path
+            override = os.path.join(tmp, "other")
+            with open(override, "w") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(override, 0o755)
+            os.environ["OPENTAB_LAUNCHER"] = override
+            assert ot.launcher_hook() == override
+            # a bogus override falls through to the config path
+            os.environ["OPENTAB_LAUNCHER"] = os.path.join(tmp, "missing")
+            assert ot.launcher_hook() == hook
+        finally:
+            for key, val in (("OPENTAB_LAUNCHER", old_env), ("XDG_CONFIG_HOME", old_xdg)):
+                if val is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = val
+
+
+def test_tmux_launch_runs_the_hook_and_reports_its_stderr():
+    old_env = os.environ.get("OPENTAB_LAUNCHER")
+    with tempfile.TemporaryDirectory() as tmp:
+        log = os.path.join(tmp, "log")
+        hook = os.path.join(tmp, "launcher")
+        with open(hook, "w") as fh:
+            fh.write(f'#!/bin/sh\nprintf "%s|%s|%s" "$1" "$2" "$3" > {log}\n')
+        os.chmod(hook, 0o755)
+        try:
+            os.environ["OPENTAB_LAUNCHER"] = hook
+            assert ot.tmux_launch("window", "/repo/a", "claude --resume x1") is None
+            with open(log) as fh:
+                assert fh.read() == "window|/repo/a|claude --resume x1"
+            # a failing hook surfaces its stderr as the launch error
+            with open(hook, "w") as fh:
+                fh.write('#!/bin/sh\necho "no such kind" >&2\nexit 1\n')
+            assert ot.tmux_launch("vsplit", "/repo/a", "claude --resume x1") == "no such kind"
+        finally:
+            if old_env is None:
+                os.environ.pop("OPENTAB_LAUNCHER", None)
+            else:
+                os.environ["OPENTAB_LAUNCHER"] = old_env
+
+
+def test_launch_menu_opens_in_tmux_and_copies_outside():
+    a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
+    a.source = "Claude Code"
+    app = app_with([a])
+    old_tmux = os.environ.get("TMUX")
+    real_launch, real_copy = ot.tmux_launch, ot.copy_to_clipboard
+    launches, copies = [], []
+    try:
+        ot.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        ot.copy_to_clipboard = lambda v: copies.append(v) or True
+        os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
+        app.handle_key(None, ord("L"))
+        assert app.launch_menu is not None and not launches  # menu open, nothing run
+        app.handle_key(None, ord("w"))
+        assert app.launch_menu is None
+        assert launches == [("window", "/repo/a", "claude --resume ses_1")]
+        # Esc cancels without launching
+        app.handle_key(None, ord("L"))
+        app.handle_key(None, 27)
+        assert len(launches) == 1 and "cancelled" in app.notice
+        # y inside the menu copies the cd-prefixed command
+        app.handle_key(None, ord("L"))
+        app.handle_key(None, ord("y"))
+        assert copies == ["cd /repo/a && claude --resume ses_1"]
+        # outside tmux, L skips the menu and copies directly
+        os.environ.pop("TMUX")
+        app.handle_key(None, ord("L"))
+        assert app.launch_menu is None
+        assert copies[-1] == "cd /repo/a && claude --resume ses_1" and len(copies) == 2
+    finally:
+        ot.tmux_launch = real_launch
+        ot.copy_to_clipboard = real_copy
+        if old_tmux is None:
+            os.environ.pop("TMUX", None)
+        else:
+            os.environ["TMUX"] = old_tmux
+
+
 def test_next_source_name_names_the_destination():
     with tempfile.TemporaryDirectory() as tmp:
         # both sources present -> the cycle is opencode / claude / all

@@ -503,6 +503,63 @@ def open_path(path: str) -> bool:
         return False
 
 
+def in_tmux() -> bool:
+    # Inside a tmux session (not merely "tmux installed"): only then can the
+    # launch menu create windows/splits/popups next to opentab's own pane.
+    return bool(os.environ.get("TMUX"))
+
+
+def launcher_hook() -> str | None:
+    # Optional user hook, git-hooks style: an executable that receives every
+    # launch-menu action instead of the built-in tmux commands, so launches can
+    # be routed through personal tooling (custom popup managers, zellij, kitty,
+    # ...) without any of it living here. Called as:
+    #   <hook> <kind> <directory> <command>     kind ∈ window|hsplit|vsplit|popup
+    # Exit 0 = handled; nonzero = stderr is shown as the launch error.
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    candidates = (
+        os.environ.get("OPENTAB_LAUNCHER", ""),
+        os.path.join(base, "opentab", "launcher"),
+    )
+    for path in candidates:
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def tmux_launch_argv(kind: str, directory: str, command: str) -> list[str]:
+    # Build the tmux invocation for one launch-menu action. `command` is the
+    # bare resume command ("claude --resume <id>"); the directory rides on the
+    # -c/-d flags.
+    if kind == "window":
+        return ["tmux", "new-window", "-c", directory, command]
+    if kind == "hsplit":
+        return ["tmux", "split-window", "-h", "-c", directory, command]
+    if kind == "vsplit":
+        return ["tmux", "split-window", "-v", "-c", directory, command]
+    return ["tmux", "display-popup", "-E", "-d", directory, "-w", "85%", "-h", "75%", command]
+
+
+def tmux_launch(kind: str, directory: str, command: str) -> str | None:
+    """Run a resume command in a new tmux window/split/popup — or hand the
+    whole action to the user's launcher hook when one is installed. Returns an
+    error message, or None when the launch was issued."""
+    hook = launcher_hook()
+    argv = [hook, kind, directory, command] if hook else tmux_launch_argv(kind, directory, command)
+    try:
+        if kind == "popup":
+            # display-popup (and popup hooks that wrap it) can block until the
+            # popup closes; fire and forget so the TUI keeps running underneath.
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return None
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)
+    if proc.returncode != 0:
+        return (proc.stderr or ("launcher hook failed" if hook else "tmux failed")).strip()
+    return None
+
+
 def resolve_project_root(directory: str) -> str:
     # Fold a git worktree into its main repo so feature worktrees don't show as
     # separate projects. Two strategies, both pure local reads (no `git`):
@@ -1861,6 +1918,14 @@ class Renderer:
                 stdscr, height - 1, 0, shorten(" " + keys + " ", width - 1), curses.color_pair(4)
             )
             return
+        if self.launch_menu is not None:
+            via = "via launcher hook" if launcher_hook() else "in tmux"
+            keys = f"launch {via}: w window  s split │  v split ─  p popup  y copy cmd  Esc cancel"
+            self.hline(stdscr, height - 2, 0, width)
+            self.write(
+                stdscr, height - 1, 0, shorten(" " + keys + " ", width - 1), curses.color_pair(4)
+            )
+            return
         parts = []
         if self.view == "browse" and self.browse_mode == "time":
             parts.append("Tab months/days")
@@ -2734,7 +2799,9 @@ class Renderer:
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
-            "  L                copy a resume command: cd <project> && opencode --session / claude --resume <id>",
+            "  L                launch the selected session in its tool (opencode --session / claude --resume)",
+            "                   inside tmux: w window · s split · v vsplit · p popup · y copy command",
+            "                   outside tmux: copies `cd <project> && <tool> --resume <id>` to the clipboard",
             "  c                switch data source: OpenCode / Claude Code / all (when present)",
             "  T                Trends overlay: Daily / Weekly / Monthly / Models / Providers / Sources",
             "                   (h/l tabs; j/k month/week; $ toggles what-if prices)",
@@ -3218,6 +3285,7 @@ class App:
         self.query = ""
         self.filter_active = False  # live `/` filter mode: keys edit the query
         self._filter_before = ""  # the query as it was when `/` opened the mode (Esc restores)
+        self.launch_menu: Workflow | None = None  # session awaiting an `L` launch-target key
         self.day_index = 0
         self.month_index = 0
         self.project_index = 0
@@ -4038,18 +4106,27 @@ class App:
         else:
             self.notice = "no opener found (open/xdg-open)"
 
-    def resume_command(self, workflow: Workflow) -> str | None:
-        # The shell command that reopens a session in its own tool, cd-ing to the
-        # project first so the resumed session starts in the right directory.
+    def resume_parts(self, workflow: Workflow) -> tuple[str, str] | None:
+        # (project directory, bare resume command) for the selected session —
+        # the tmux launch paths pass the directory separately (-c/-d flags).
         cli = RESUME_COMMANDS.get(workflow.source)
         directory = workflow.directory
         if not cli or not directory or directory == "(unknown)":
             return None
-        return f"cd {shlex.quote(directory)} && {cli} {shlex.quote(workflow.id)}"
+        return directory, f"{cli} {shlex.quote(workflow.id)}"
+
+    def resume_command(self, workflow: Workflow) -> str | None:
+        # The ready-to-paste shell form: cd to the project, then resume.
+        parts = self.resume_parts(workflow)
+        if not parts:
+            return None
+        directory, command = parts
+        return f"cd {shlex.quote(directory)} && {command}"
 
     def launch_current(self) -> None:
-        # `L` copies a ready-to-paste resume command for the selected session.
-        # opentab owns the terminal (curses), so it hands the command to the
+        # `L`: inside tmux, open the launch menu (window/split/popup — handled
+        # by handle_launch_key on the next keystroke). Outside tmux opentab owns
+        # the terminal, so it hands a ready-to-paste resume command to the
         # clipboard instead of spawning a TUI inside a TUI.
         if self.store.demo:
             self.notice = "launch disabled in demo mode"
@@ -4058,14 +4135,40 @@ class App:
         if not session:
             self.notice = "no session selected"
             return
-        command = self.resume_command(session)
-        if not command:
+        if self.resume_parts(session) is None:
             self.notice = "no launch command for this session"
             return
-        if copy_to_clipboard(command):
+        if not in_tmux():
+            self.copy_resume_command(session)
+            return
+        self.launch_menu = session
+
+    def copy_resume_command(self, session: Workflow) -> None:
+        command = self.resume_command(session)
+        if command and copy_to_clipboard(command):
             self.notice = f"copied: {shorten(command, 60)}"
         else:
             self.notice = "clipboard tool not found (pbcopy/wl-copy/xclip/xsel)"
+
+    def handle_launch_key(self, key: int) -> bool:
+        # One keystroke picks the launch target; anything else cancels.
+        session, self.launch_menu = self.launch_menu, None
+        if key == 3:  # Ctrl-C still quits
+            return False
+        if key == ord("y"):
+            self.copy_resume_command(session)
+            return True
+        kind = {ord("w"): "window", ord("s"): "hsplit", ord("v"): "vsplit", ord("p"): "popup"}.get(
+            key
+        )
+        parts = self.resume_parts(session)
+        if not kind or not parts:
+            self.notice = "launch cancelled"
+            return True
+        directory, command = parts
+        error = tmux_launch(kind, directory, command)
+        self.notice = f"launch failed: {error}" if error else f"{kind}: {shorten(command, 50)}"
+        return True
 
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
         sort_by = self.sort_by if self.sort_by in self.sort_options else self.sort_options[0]
@@ -4444,6 +4547,8 @@ class App:
 
         if self.filter_active:
             return self.handle_filter_key(key)
+        if self.launch_menu is not None:
+            return self.handle_launch_key(key)
 
         if key in (ord("q"), 3):
             return False
