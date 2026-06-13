@@ -12,10 +12,11 @@
 
 A local, zero-dependency terminal UI for your AI coding spend. It reads the records
 your coding tools already keep on disk — [OpenCode](https://opencode.ai)'s SQLite
-database and [Claude Code](https://claude.com/claude-code)'s session transcripts — and
-shows you where your tokens and money actually went: by month, day, project, session,
-and model, down to the subagent tree on the sessions that spawned one. Browse one tool
-at a time, or merge them into a single view.
+database, [Claude Code](https://claude.com/claude-code)'s session transcripts, and
+[Codex](https://developers.openai.com/codex)'s CLI rollouts — and shows you where your
+tokens and money actually went: by month, day, project, session, and model, down to the
+subagent tree on the sessions that spawned one. Browse one tool at a time, or merge them
+into a single view.
 
 Your tools already keep this ledger; OpenTab is just the reader for it. No backend, no
 telemetry, no accounts — it opens those files **read-only**, so it only reads and leaves
@@ -24,7 +25,7 @@ your data untouched. Just `curses` + `sqlite3` from the Python standard library 
 
 ## Features
 
-- Reads OpenCode and Claude Code — one tool at a time, or merged into a single view
+- Reads OpenCode, Claude Code, and Codex — one tool at a time, or merged into a single view
 - Cost by month, day, project, session, and model
 - Trends overlay: daily / weekly / monthly spend charts + model- and provider-spend ranking
 - Cost-share percentages and inline spend bars
@@ -50,14 +51,36 @@ database:
 ~/.local/share/opencode/opencode.db
 ```
 
-Claude Code keeps newline-delimited JSON transcripts:
+Claude Code and Codex keep newline-delimited JSON transcripts:
 
 ```
-~/.claude/projects/**/*.jsonl
+~/.claude/projects/**/*.jsonl       # Claude Code
+~/.codex/sessions/**/rollout-*.jsonl  # Codex CLI
 ```
 
 That's the whole pitch: the data is already sitting on your disk, so you can *see your
 own AI usage* without sending it anywhere. OpenTab is what that looks like when you do.
+
+## Why a browser, not just a usage CLI
+
+Plenty of tools will print your token totals. OpenTab is built to *explore* them:
+
+- **Interactive, not a one-shot report.** Drill month → day → project → session →
+  model, fuzzy-filter the lists live, rescope the date range on the fly, sort, and
+  navigate by keyboard or mouse — a lazygit-style browser, not a table you re-run with
+  different flags.
+- **Subagent cost trees.** When a session delegated work, OpenTab attributes the cost
+  across its whole recursive subagent subtree — so you see *where* the spend went, not
+  just the session total.
+- **One file, zero dependencies.** Just `curses` + `sqlite3` from the standard library:
+  no `pip install`, no Node, no `npx`, no build step. Copy one script and run it
+  anywhere Python 3.9+ exists, including a locked-down box.
+- **Honest cost for subscription usage.** Subscription/credit sessions show a truthful
+  `$0` recorded, and the **`$`** view reprices their tokens at API list rates — a clear
+  "what this would have cost metered" estimate you can toggle on and off.
+
+If you just want a single number in your terminal, a usage CLI does the job. OpenTab is
+for when you want to *poke at* the spend. (See also [A note on cost accuracy](#a-note-on-cost-accuracy).)
 
 ## What it touches
 
@@ -65,10 +88,11 @@ Local-only, no network, no telemetry, no accounts — it opens every source file
 **read-only**, so it doesn't modify any of them. For full transparency, everything it
 touches, all on your own machine:
 
-- **Reads** your tools' own records, read-only: OpenCode's SQLite database and Claude
-  Code's JSONL transcripts under `~/.claude/projects`. To fold git worktrees into their
-  main repo it also reads the `.git` file of project directories (no `git` process is
-  spawned; disable with `--no-worktrees`).
+- **Reads** your tools' own records, read-only: OpenCode's SQLite database, Claude
+  Code's JSONL transcripts under `~/.claude/projects`, and Codex's CLI rollouts under
+  `~/.codex/sessions`. To fold git worktrees into their main repo it also reads the
+  `.git` file of project directories (no `git` process is spawned; disable with
+  `--no-worktrees`).
 - **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
   source, range, and sort; disable with `--no-state`), and — only when you press `e` — an
   `opentab-*.csv` export in the current directory.
@@ -128,40 +152,44 @@ opentab --demo                   # safe for live demos / screenshots (see below)
 
 ### Data sources
 
-OpenTab reads the local records each AI coding tool keeps. Today there are two
-backends — **OpenCode** (its SQLite database) and **Claude Code** (its session
-transcripts under `~/.claude/projects/**/*.jsonl`) — picked with `--source`:
+OpenTab reads the local records each AI coding tool keeps. There are three
+backends — **OpenCode** (its SQLite database), **Claude Code** (its session
+transcripts under `~/.claude/projects/**/*.jsonl`), and **Codex** (its CLI rollouts
+under `~/.codex/sessions/**/rollout-*.jsonl`) — picked with `--source`:
 
 ```sh
 opentab --source opencode                    # OpenCode only
 opentab --source claude                      # Claude Code only (default ~/.claude/projects)
 opentab --source claude --claude-dir /path   # non-standard Claude Code location
-opentab --source all                         # OpenCode + Claude Code, merged
+opentab --source codex                       # Codex only (default ~/.codex/sessions)
+opentab --source codex --codex-dir /path     # non-standard Codex sessions location
+opentab --source all                         # all present sources, merged
 ```
 
 `--source auto` (the default) reads OpenCode when its database is present, otherwise
-falls back to Claude Code (it never auto-merges). The active source shows as a chip in
-the header, and you can **switch live with `c`** (OpenCode → Claude Code → all). The
-whole TUI works the same — months, days, projects, sessions, models, trends — with two
-differences, because Claude Code records **only tokens, no per-message cost**:
+falls back to the first present source (it never auto-merges). The active source shows
+as a chip in the header, and you can **switch live with `c`** (OpenCode → Claude Code →
+Codex → all, for whichever are present). The whole TUI works the same — months, days,
+projects, sessions, models, trends — with two differences, because **Claude Code and
+Codex record only tokens, no per-message cost**:
 
-- A Claude session works like an OpenCode subscription session: it shows **$0 in
-  normal mode** (nothing is recorded) and its **estimate** (tokens × API list price)
-  under the **`$`** view. Since a Claude-only (or merged) view would otherwise be a
-  wall of `$0.00`, the estimate view **starts on by default** there (header tag:
+- A Claude Code or Codex session works like an OpenCode subscription session: it shows
+  **$0 in normal mode** (nothing is recorded) and its **estimate** (tokens × API list
+  price) under the **`$`** view. Since such a view would otherwise be a wall of `$0.00`,
+  the estimate view **starts on by default** there (header tag:
   `ESTIMATED — tokens × API list prices`); press `$` to see the recorded numbers, and
   your choice is remembered.
 - Projects roll up to their **git root**, so sessions started in subdirectories
   (`frontend/`, `src/`, …) group under the repo instead of bare folder names.
 
-`--source all` merges both into one view: the same repo worked in both tools rolls up
-into a single project row, every session row shows its origin (a `Src` column in the
-session tables, `[oc]` / `[cc]` tags elsewhere), and the Trends overlay
-gains a **Sources** tab (spend by tool). `$` reprices the unpriced usage across both —
-OpenCode's subscription/credit messages and all of Claude's. (When more than one source
-is present, `--demo` **defaults to this merged view** — it shows off the most — and
-anonymizes both backends under a single shared scale so the OpenCode-vs-Claude proportion
-stays truthful.)
+`--source all` merges every present source into one view: the same repo worked in
+multiple tools rolls up into a single project row, every session row shows its origin (a
+`Src` column in the session tables, `[oc]` / `[cc]` / `[cx]` tags elsewhere), and the
+Trends overlay gains a **Sources** tab (spend by tool). `$` reprices the unpriced usage
+across all of them — OpenCode's subscription/credit messages plus all of Claude Code's
+and Codex's. (When more than one source is present, `--demo` **defaults to this merged
+view** — it shows off the most — and anonymizes every backend under a single shared
+scale so the cross-tool proportion stays truthful.)
 
 ### Demo mode
 
@@ -208,8 +236,8 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
-| `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project); outside tmux (or with `y`) the `cd <project> && …` command is copied to the clipboard instead. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
-| `c` | Switch data source: OpenCode / Claude Code / all (when more than one is present) |
+| `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>` / `codex resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project); outside tmux (or with `y`) the `cd <project> && …` command is copied to the clipboard instead. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
+| `c` | Switch data source: OpenCode / Claude Code / Codex / all (when more than one is present) |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 
@@ -306,7 +334,7 @@ lives with your provider, not this tool. OpenTab surfaces them as "unpriced
 tokens" so you know where local attribution is incomplete.
 
 Press `$` in non-demo mode for the **what-if** view: real recorded spend plus
-what `$0.00` subscription/credit usage would have cost at published API list
+what `$0.00` subscription/credit usage _would have cost_ at published API list
 prices. Press `P` to see the exact per-model rates behind that estimate. The
 estimate uses an embedded table generated from models.dev for Anthropic, OpenAI,
 and Google, with hand-kept family fallbacks for version or suffix churn and a

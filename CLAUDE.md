@@ -11,12 +11,13 @@ session / model, including the recursive subagent tree. Standard library only �
 script, no `.py` extension).
 
 It also reads **Claude Code** transcripts (`~/.claude/projects/**/*.jsonl`) via a
-second backend (`ClaudeStore`), and can merge both (`CombinedStore`). Pick with
-`--source {auto,opencode,claude,all}`, or switch live in the TUI with **`c`**.
-Claude Code records no per-message cost, so a Claude session behaves like an
-OpenCode *subscription* session: it shows **$0 in normal mode** and its estimate
-(tokens × API list price) only under the **`$`** what-if view — see the
-`ClaudeStore` notes under Architecture.
+second backend (`ClaudeStore`) and **Codex CLI** rollouts
+(`~/.codex/sessions/**/rollout-*.jsonl`) via a third (`CodexStore`), and can merge
+any of them (`CombinedStore`). Pick with `--source {auto,opencode,claude,codex,all}`,
+or switch live in the TUI with **`c`**. Neither Claude Code nor Codex records a
+per-message cost, so their sessions behave like an OpenCode *subscription* session:
+they show **$0 in normal mode** and an estimate (tokens × API list price) only under
+the **`$`** what-if view — see the `ClaudeStore`/`CodexStore` notes under Architecture.
 
 ## Commands
 
@@ -80,26 +81,46 @@ Three layers, all in `opentab`:
   (Task-subagent) messages become depth-1 nodes grouped by `parentUuid`, mirroring
   `Store`'s recursive subtree. Each `Workflow` is stamped with `.source` (the backend's
   `source_name`).
+- **`CodexStore`** — a third backend over Codex CLI rollout transcripts
+  (`~/.codex/sessions/**/rollout-*.jsonl`), implementing the same four methods. Like
+  Claude Code it records **no per-message cost**, so it is another *subscription*
+  backend (`records_cost = False`, same `$0`/`$`-estimate behavior and UI nudges as
+  `ClaudeStore`). Codex's token accounting differs and `CodexStore` is the only place
+  that knows it: each turn logs a **cumulative** `total_token_usage` in a `token_count`
+  event and Codex writes that count **twice** (the turn result, then an echo after the
+  next `turn_context`), so it drives per-turn deltas off the **monotonic cumulative
+  total** — a larger total is a new turn (`delta = total − prev`), an **equal** total is
+  the duplicate echo (skip), a **smaller** total is a context-compaction reset (the new
+  total is fresh usage). The accepted deltas sum back to the authoritative final total
+  and each is attributed to the model active at that turn (`turn_context.model`, prefixed
+  `openai/`). OpenAI's `input_tokens` **includes** the cached read and there is no
+  cache-write, so input is split into uncached + `cache_read` (cache_write stays 0) and
+  reasoning is folded into output (never priced twice), exactly matching the
+  `unpriced_*` row schema the `$` machinery expects. Codex has **no subagent tree**
+  (every session is one depth-0 node); `cwd` folds to its **git root**; sessions with no
+  recorded usage are dropped.
 - **`CombinedStore`** — wraps several backends and concatenates the same four methods,
-  for `--source all` (OpenCode + Claude Code in one view). Workflow ids are globally
-  unique across sources, so it routes `workflow_nodes` by an `id → backend` map built
-  in `workflows()`; projects group by directory across both tools. `$` reprices every
-  unpriced row across both backends. `records_cost` is the AND of its backends (False
-  when Claude is present); `combined = True` turns on the per-session origin markers —
-  a `Src` column in the session tables (`Renderer.src_col`) and `[oc]`/`[cc]` title
-  tags in the picker and Top Sessions lists (`Renderer.source_tag`). Combined **demo**
-  works: `CombinedStore.__init__` forces every sub-store to one shared `demo_scale` (each
-  backend would otherwise draw its own random scale, distorting the cross-source ratio the
-  Sources view shows); it's still private (a single hidden factor can't be inverted).
+  for `--source all` (OpenCode + Claude Code + Codex in one view). Workflow ids are
+  globally unique across sources, so it routes `workflow_nodes` by an `id → backend` map
+  built in `workflows()`; projects group by directory across all tools. `$` reprices
+  every unpriced row across all backends. `records_cost` is the AND of its backends
+  (False when any subscription backend — Claude Code or Codex — is present);
+  `combined = True` turns on the per-session origin markers — a `Src` column in the
+  session tables (`Renderer.src_col`) and `[oc]`/`[cc]`/`[cx]` title tags in the picker
+  and Top Sessions lists (`Renderer.source_tag`, abbreviations in `_source_abbrev`).
+  Combined **demo** works: `CombinedStore.__init__` forces every sub-store to one shared
+  `demo_scale` (each backend would otherwise draw its own random scale, distorting the
+  cross-source ratio the Sources view shows); it's still private (a single hidden factor
+  can't be inverted).
 - **Source selection** lives in `make_store()`/`resolve_source()`/`available_sources()`/
   `source_cycle()` (module level). `main` resolves the start source from
-  `--source {auto,opencode,claude,all}`; on `auto` it restores the last-used source
+  `--source {auto,opencode,claude,codex,all}`; on `auto` it restores the last-used source
   from `state.json` (when still available); failing that, **`--demo` defaults to `all`**
-  (the merged view showcases the most) while non-demo prefers OpenCode's DB (never
-  auto-combines). The TUI switches live with **`c`** (`App.cycle_source` → cached build
-  + `_reload_for_source`); the active source (`app.source_key`) is saved with the rest
-  of the prefs. It shows as a header chip and the Trends overlay has a **Sources** tab
-  (spend by tool).
+  (the merged view showcases the most) while non-demo prefers OpenCode's DB, else the
+  first present source (never auto-combines). The TUI switches live with **`c`**
+  (`App.cycle_source` → cached build + `_reload_for_source`); the active source
+  (`app.source_key`) is saved with the rest of the prefs. It shows as a header chip and
+  the Trends overlay has a **Sources** tab (spend by tool).
 - **`App`** — all state and the keyboard/mouse state machine; stays curses-free except
   the modal prompt line. Holds the view stack and selection indices.
 - **`Renderer`** — all drawing. `Renderer.__getattr__` delegates unknown attributes to
