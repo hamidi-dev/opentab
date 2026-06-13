@@ -87,12 +87,15 @@ Three layers, all in `opentab`:
   unpriced row across both backends. `records_cost` is the AND of its backends (False
   when Claude is present); `combined = True` turns on the per-session origin markers —
   a `Src` column in the session tables (`Renderer.src_col`) and `[oc]`/`[cc]` title
-  tags in the picker and Top Sessions lists (`Renderer.source_tag`). Demo can't span
-  two independently-scaled backends, so `--demo --source all` is rejected.
+  tags in the picker and Top Sessions lists (`Renderer.source_tag`). Combined **demo**
+  works: `CombinedStore.__init__` forces every sub-store to one shared `demo_scale` (each
+  backend would otherwise draw its own random scale, distorting the cross-source ratio the
+  Sources view shows); it's still private (a single hidden factor can't be inverted).
 - **Source selection** lives in `make_store()`/`resolve_source()`/`available_sources()`/
   `source_cycle()` (module level). `main` resolves the start source from
   `--source {auto,opencode,claude,all}`; on `auto` it restores the last-used source
-  from `state.json` (when still available), else prefers OpenCode's DB (never
+  from `state.json` (when still available); failing that, **`--demo` defaults to `all`**
+  (the merged view showcases the most) while non-demo prefers OpenCode's DB (never
   auto-combines). The TUI switches live with **`c`** (`App.cycle_source` → cached build
   + `_reload_for_source`); the active source (`app.source_key`) is saved with the rest
   of the prefs. It shows as a header chip and the Trends overlay has a **Sources** tab
@@ -145,6 +148,8 @@ version/suffix churn. `P` shows this table; nothing is fetched at runtime.
 `Store` transforms rows in memory on load: `demo_title`/`demo_dir`/`demo_model` produce
 deterministic fakes, `demo_cost` synthesizes prices for `$0.00` rows, and a single hidden
 per-process factor scales every cost/token so token×list-price can't recover real dollars.
+`ClaudeStore` mirrors this; under `--source all` the `CombinedStore` makes every backend
+share one factor (see above) and `--demo` **defaults to `all`** when >1 source is present.
 Demo never persists state and disables clipboard/file-opener side effects. The data's
 *shape* (proportions, model mix) stays real; absolute numbers do not.
 

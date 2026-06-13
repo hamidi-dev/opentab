@@ -698,11 +698,34 @@ def test_source_is_persisted_and_restored():
             # a saved source that's no longer available falls back to the default
             args.source = "auto"
             assert ot.resolve_source(args, {"source": "bogus"}) == "opencode"
+            # demo defaults to the merged "all" view, and `c` can reach it in demo
+            args.demo = True
+            assert "all" in ot.source_cycle(args)
+            assert ot.resolve_source(args, {}) == "all"
+            args.demo = False
         finally:
             if old_xdg is None:
                 os.environ.pop("XDG_CONFIG_HOME", None)
             else:
                 os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
+def test_combined_demo_shares_one_scale():
+    # A merged demo must scale every backend by the SAME hidden factor, or the
+    # cross-source ratio (the Sources view) would be distorted by two random scales.
+    class Stub:
+        def __init__(self, scale):
+            self.demo = True
+            self.demo_scale = scale
+            self.records_cost = False
+
+    a, b = Stub(0.5), Stub(2.0)
+    cs = ot.CombinedStore([a, b])
+    assert cs.demo is True
+    assert a.demo_scale == b.demo_scale == cs.demo_scale  # one shared scale wins
+    # non-demo stays unscaled
+    plain = ot.CombinedStore([type("S", (), {"records_cost": True})()])
+    assert plain.demo is False and plain.demo_scale == 1.0
 
 
 def test_demo_cost_zero_and_deterministic():

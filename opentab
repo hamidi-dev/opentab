@@ -1479,10 +1479,19 @@ class CombinedStore:
     def __init__(self, stores: list):
         self.stores = stores
         self.records_cost = all(getattr(s, "records_cost", True) for s in stores)
-        # Demo can't coherently span backends with independent hidden scales, so
-        # build_store rejects --demo here; these keep the App's guards happy.
-        self.demo = False
-        self.demo_scale = 1.0
+        # Combined demo: each backend would otherwise draw its own random hidden scale,
+        # which would distort the cross-source ratio (the Sources view lies about the
+        # OpenCode-vs-Claude proportion). Share ONE scale across all backends so the
+        # proportions stay truthful -- still private (a single hidden factor can't be
+        # inverted to real dollars).
+        self.demo = any(getattr(s, "demo", False) for s in stores)
+        if self.demo:
+            scale = next((s.demo_scale for s in stores if getattr(s, "demo", False)), 1.0)
+            for s in stores:
+                s.demo_scale = scale
+            self.demo_scale = scale
+        else:
+            self.demo_scale = 1.0
         self._owner: dict[str, object] = {}
 
     def workflows(self) -> list[Workflow]:
@@ -4928,22 +4937,25 @@ def available_sources(args: argparse.Namespace) -> list[str]:
 
 def source_cycle(args: argparse.Namespace) -> list[str]:
     # The order the `c` key cycles through: each present source, plus "all" (merged)
-    # when at least two exist. Demo can't merge independently-scaled backends.
+    # when at least two exist. Demo merges too -- CombinedStore shares one hidden scale.
     keys = available_sources(args)
-    if len(keys) >= 2 and not getattr(args, "demo", False):
+    if len(keys) >= 2:
         keys.append("all")
     return keys
 
 
 def resolve_source(args: argparse.Namespace, state: dict | None = None) -> str:
     # The concrete starting source: an explicit --source wins; otherwise restore the
-    # last-used source from saved state (when it's still available), else auto-prefer
-    # OpenCode's DB / the first present source. Never auto-merges without prior intent.
+    # last-used source from saved state (when it's still available). Demo defaults to the
+    # merged "all" view (it showcases everything); non-demo auto-prefers OpenCode / the
+    # first present source and never auto-merges without prior intent.
     if args.source != "auto":
         return args.source
     saved = (state or {}).get("source")
     if saved in source_cycle(args):  # valid + available (incl. "all" only when >=2)
         return saved
+    if getattr(args, "demo", False) and "all" in source_cycle(args):
+        return "all"
     present = available_sources(args)
     return "opencode" if "opencode" in present else (present[0] if present else "opencode")
 
@@ -4952,8 +4964,6 @@ def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
     # Build the backend for a concrete source key. Returns (store, loading-hint);
     # exits with a clear message when the chosen source isn't present.
     if key == "all":
-        if args.demo:
-            raise SystemExit("--demo works with one source; use --source opencode or claude")
         subs = [make_store(args, k)[0] for k in available_sources(args)]
         if not subs:
             raise SystemExit("no data sources found (no OpenCode DB, no Claude Code transcripts)")

@@ -1,27 +1,30 @@
 <h1 align="center">OpenTab</h1>
 
-<p align="center"><em>OpenCode keeps a tab. OpenTab opens it.</em></p>
+<p align="center"><em>Your AI coding tools keep a tab. OpenTab opens it.</em></p>
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/89bd4092-5233-48fe-b287-d72a7505ca21">
-    <img src="https://github.com/user-attachments/assets/67d0949a-2fb8-4e95-9dbf-6a24b301d580" alt="OpenTab — browse your OpenCode spend" width="820">
+  <a href="https://github.com/user-attachments/assets/19ad1687-a18a-417d-a2c4-62e3fa765970">
+    <img src="https://github.com/user-attachments/assets/2d782465-e82c-4a98-b40f-f765eb5d28d2" alt="OpenTab — browse your AI coding spend" width="820">
   </a>
   <br>
-  <sub><a href="https://github.com/user-attachments/assets/89bd4092-5233-48fe-b287-d72a7505ca21">▶ Watch the full-quality video</a></sub>
+  <sub><a href="https://github.com/user-attachments/assets/19ad1687-a18a-417d-a2c4-62e3fa765970">▶ Watch the full-quality video</a></sub>
 </p>
 
-A local, zero-dependency terminal UI for your [OpenCode](https://opencode.ai)
-spend. It reads OpenCode's own SQLite database — the one already on your disk —
-and shows you where your tokens and money actually went: by month, day, project,
-session, and model, down to the subagent tree on the sessions that spawned one.
+A local, zero-dependency terminal UI for your AI coding spend. It reads the records
+your coding tools already keep on disk — [OpenCode](https://opencode.ai)'s SQLite
+database and [Claude Code](https://claude.com/claude-code)'s session transcripts — and
+shows you where your tokens and money actually went: by month, day, project, session,
+and model, down to the subagent tree on the sessions that spawned one. Browse one tool
+at a time, or merge them into a single view.
 
-OpenCode already keeps this ledger; OpenTab is just the reader for it. No backend,
-no telemetry, no accounts — it opens the database **read-only**, so today it only
-reads and leaves your data untouched. Just `curses` + `sqlite3` from the Python
-standard library — no `pip install` needed.
+Your tools already keep this ledger; OpenTab is just the reader for it. No backend, no
+telemetry, no accounts — it opens those files **read-only**, so it only reads and leaves
+your data untouched. Just `curses` + `sqlite3` from the Python standard library — no
+`pip install` needed.
 
 ## Features
 
+- Reads OpenCode and Claude Code — one tool at a time, or merged into a single view
 - Cost by month, day, project, session, and model
 - Trends overlay: daily / weekly / monthly spend charts + model- and provider-spend ranking
 - Cost-share percentages and inline spend bars
@@ -39,27 +42,35 @@ standard library — no `pip install` needed.
 
 ## Why this exists
 
-OpenCode logs every session — cost, token breakdown, model, and the full
-parent/child subagent tree — into a plain SQLite file:
+Your coding tools already log every session — cost, token breakdown, model, and the
+full parent/child subagent tree — into plain local files. OpenCode keeps a real SQLite
+database:
 
 ```
 ~/.local/share/opencode/opencode.db
 ```
 
-That's the whole pitch: because it's a real database, you can *query your own
-AI usage*. OpenTab is what that looks like when you do.
+Claude Code keeps newline-delimited JSON transcripts:
+
+```
+~/.claude/projects/**/*.jsonl
+```
+
+That's the whole pitch: the data is already sitting on your disk, so you can *see your
+own AI usage* without sending it anywhere. OpenTab is what that looks like when you do.
 
 ## What it touches
 
-Local-only, no network, no telemetry, no accounts — and it opens the OpenCode
-database **read-only**, so as it stands it doesn't modify it. For full transparency,
-everything it touches, all on your own machine:
+Local-only, no network, no telemetry, no accounts — it opens every source file
+**read-only**, so it doesn't modify any of them. For full transparency, everything it
+touches, all on your own machine:
 
-- **Reads** the OpenCode SQLite DB (read-only). To fold git worktrees into their
-  main repo it also reads the `.git` file of project directories (no `git`
-  process is spawned; disable with `--no-worktrees`).
+- **Reads** your tools' own records, read-only: OpenCode's SQLite database and Claude
+  Code's JSONL transcripts under `~/.claude/projects`. To fold git worktrees into their
+  main repo it also reads the `.git` file of project directories (no `git` process is
+  spawned; disable with `--no-worktrees`).
 - **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
-  range and sort; disable with `--no-state`), and — only when you press `e` — an
+  source, range, and sort; disable with `--no-state`), and — only when you press `e` — an
   `opentab-*.csv` export in the current directory.
 - **Runs** external programs only on the key you press: your clipboard tool
   (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for `y`, and your file opener
@@ -113,14 +124,17 @@ opentab --source claude          # browse Claude Code spend instead (see below)
 opentab --demo                   # safe for live demos / screenshots (see below)
 ```
 
-### Claude Code
+### Data sources
 
-OpenTab can also read **Claude Code** sessions from `~/.claude/projects/**/*.jsonl`:
+OpenTab reads the local records each AI coding tool keeps. Today there are two
+backends — **OpenCode** (its SQLite database) and **Claude Code** (its session
+transcripts under `~/.claude/projects/**/*.jsonl`) — picked with `--source`:
 
 ```sh
-opentab --source claude                     # default ~/.claude/projects
-opentab --source claude --claude-dir /path  # non-standard location
-opentab --source all                        # OpenCode + Claude Code, merged
+opentab --source opencode                    # OpenCode only
+opentab --source claude                      # Claude Code only (default ~/.claude/projects)
+opentab --source claude --claude-dir /path   # non-standard Claude Code location
+opentab --source all                         # OpenCode + Claude Code, merged
 ```
 
 `--source auto` (the default) reads OpenCode when its database is present, otherwise
@@ -142,8 +156,10 @@ differences, because Claude Code records **only tokens, no per-message cost**:
 into a single project row, every session row shows its origin (a `Src` column in the
 session tables, `[oc]` / `[cc]` tags elsewhere), and the Trends overlay
 gains a **Sources** tab (spend by tool). `$` reprices the unpriced usage across both —
-OpenCode's subscription/credit messages and all of Claude's. (Demo mode is
-single-source only.)
+OpenCode's subscription/credit messages and all of Claude's. (When more than one source
+is present, `--demo` **defaults to this merged view** — it shows off the most — and
+anonymizes both backends under a single shared scale so the OpenCode-vs-Claude proportion
+stays truthful.)
 
 ### Demo mode
 
@@ -249,9 +265,9 @@ ruff format opentab test_opentab.py
 
 ## A note on cost accuracy
 
-The numbers come straight from OpenCode's own data (cost/tokens per message,
-rolled up per session). They are *local attribution* of what OpenCode recorded.
-Some sessions show tokens with a `$0.00` local cost — OpenCode recorded the usage
+The numbers come straight from each tool's own data (cost/tokens per message,
+rolled up per session). They are *local attribution* of what your tools recorded.
+Some sessions show tokens with a `$0.00` local cost — the tool recorded the usage
 but no per-token price. That's normal whenever billing isn't per token:
 subscription plans (Claude Code, Codex) and credit/token plans (GitHub Copilot)
 both leave the per-message cost empty. Those tokens aren't missing money so much
