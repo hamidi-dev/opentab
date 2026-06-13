@@ -860,10 +860,15 @@ def test_demo_scale_hides_real_magnitudes_consistently():
 def test_api_price_helpers():
     # input/output/cache priced per 1M, reasoning billed as output.
     assert "gpt-4o-2024-05-13" in ot.MODEL_PRICE_TABLE
+    assert "claude-fable-5" in ot.MODEL_PRICE_TABLE
     assert "claude-sonnet-4-5" in ot.MODEL_PRICE_TABLE
     assert "gemini-2.5-pro" in ot.MODEL_PRICE_TABLE
     assert ot.model_price("openai/gpt-4o-2024-05-13") == (5.0, 15.0, 0.0, 0.0)  # exact table hit
+    assert ot.model_price("anthropic/claude-fable-5") == (10.0, 50.0, 1.0, 12.5)
+    assert ot.model_price("anthropic/claude-fable-5-20260613") == (10.0, 50.0, 1.0, 12.5)
     assert ot.model_price("github-copilot/claude-haiku-4.5") == (1.0, 5.0, 0.1, 1.25)
+    assert ot.model_price("openai/o1-mini") == (1.1, 4.4, 0.55, 0.0)
+    assert ot.model_price("openai/o1-preview") == (15.0, 60.0, 7.5, 0.0)
     assert ot.model_price("openai/gpt-5.2-xhigh")[:2] == (1.75, 14.0)  # variant suffix tolerated
     assert ot.model_price("unknown/future-model") == ot.FALLBACK_PRICE
     # 1M input + 1M output(+reasoning) of Haiku = $1 + $5 = $6.

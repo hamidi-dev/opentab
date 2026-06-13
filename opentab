@@ -160,7 +160,7 @@ DEMO_MODEL_POOL = (
 # Approximate by design (list prices, a point in time); real invoices differ.
 
 # ===== BEGIN GENERATED PRICES (scripts/update_prices.py) =====
-# Generated from models.dev on 2026-06-06 for providers: anthropic, openai, google.
+# Generated from models.dev on 2026-06-13 for providers: anthropic, openai, google.
 MODEL_PRICE_TABLE: dict[str, tuple[float, float, float, float]] = {
     "claude-3-5-haiku-20241022": (0.8, 4.0, 0.08, 1.0),
     "claude-3-5-haiku-latest": (0.8, 4.0, 0.08, 1.0),
@@ -170,6 +170,7 @@ MODEL_PRICE_TABLE: dict[str, tuple[float, float, float, float]] = {
     "claude-3-haiku-20240307": (0.25, 1.25, 0.03, 0.3),
     "claude-3-opus-20240229": (15.0, 75.0, 1.5, 18.75),
     "claude-3-sonnet-20240229": (3.0, 15.0, 0.3, 0.3),
+    "claude-fable-5": (10.0, 50.0, 1.0, 12.5),
     "claude-haiku-4-5": (1.0, 5.0, 0.1, 1.25),
     "claude-haiku-4-5-20251001": (1.0, 5.0, 0.1, 1.25),
     "claude-opus-4-0": (15.0, 75.0, 1.5, 18.75),
@@ -192,7 +193,6 @@ MODEL_PRICE_TABLE: dict[str, tuple[float, float, float, float]] = {
     "gemini-2.5-flash-image": (0.3, 30.0, 0.075, 0.0),
     "gemini-2.5-flash-lite": (0.1, 0.4, 0.01, 0.0),
     "gemini-2.5-flash-preview-tts": (0.5, 10.0, 0.0, 0.0),
-    "gemini-2.5-flash-tts": (0.5, 10.0, 0.0, 0.0),
     "gemini-2.5-pro": (1.25, 10.0, 0.125, 0.0),
     "gemini-2.5-pro-preview-tts": (1.0, 20.0, 0.0, 0.0),
     "gemini-3-flash-preview": (0.5, 3.0, 0.05, 0.0),
@@ -243,8 +243,6 @@ MODEL_PRICE_TABLE: dict[str, tuple[float, float, float, float]] = {
     "gpt-5.5": (5.0, 30.0, 0.5, 0.0),
     "gpt-5.5-pro": (30.0, 180.0, 0.0, 0.0),
     "o1": (15.0, 60.0, 7.5, 0.0),
-    "o1-mini": (1.1, 4.4, 0.55, 0.0),
-    "o1-preview": (15.0, 60.0, 7.5, 0.0),
     "o1-pro": (150.0, 600.0, 0.0, 0.0),
     "o3": (2.0, 8.0, 0.5, 0.0),
     "o3-deep-research": (10.0, 40.0, 2.5, 0.0),
@@ -262,6 +260,7 @@ MODEL_PRICE_TABLE: dict[str, tuple[float, float, float, float]] = {
 MODEL_PRICE_FALLBACKS = (
     ("claude-3-opus", 15.0, 75.0, 1.5, 18.75),
     ("claude-3-5-haiku", 0.8, 4.0, 0.08, 1.0),
+    ("fable", 10.0, 50.0, 1.0, 12.5),
     ("haiku", 1.0, 5.0, 0.1, 1.25),
     ("sonnet", 3.0, 15.0, 0.3, 3.75),
     ("opus", 5.0, 25.0, 0.5, 6.25),
@@ -273,6 +272,8 @@ MODEL_PRICE_FALLBACKS = (
     ("gpt-5-nano", 0.05, 0.4, 0.005, 0.0),
     ("gpt-5-mini", 0.25, 2.0, 0.025, 0.0),
     ("gpt-5", 1.25, 10.0, 0.125, 0.0),
+    ("o1-preview", 15.0, 60.0, 7.5, 0.0),
+    ("o1-mini", 1.1, 4.4, 0.55, 0.0),
     ("gpt-4o-mini", 0.15, 0.6, 0.075, 0.0),
     ("gpt-4o", 2.5, 10.0, 1.25, 0.0),
     ("gpt-4.1-mini", 0.4, 1.6, 0.1, 0.0),
