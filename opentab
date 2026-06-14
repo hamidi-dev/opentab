@@ -1867,6 +1867,304 @@ class CodexStore:
         return n
 
 
+class HermesStore:
+    """Read Hermes Agent sessions (~/.hermes/state.db) behind the same interface
+    App expects from Store: workflows(), summary(), workflow_nodes(),
+    model_breakdown(), plus the .demo/.demo_scale attributes.
+
+    Hermes records token usage but no per-message cost (billing_mode =
+    'subscription_included'), so every token is "unpriced" and the "$" what-if
+    machinery reprices at API list rates. records_cost = False drives the same
+    header hints as ClaudeStore / CodexStore.
+
+    Each session row already has fully-aggregated token counts (input_tokens,
+    output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens).
+    Sessions with a parent_session_id form a subagent tree; HermesStore rolls
+    child tokens up into the root's totals. Reasoning tokens are a subset of
+    output_tokens (OpenAI convention) and are folded in rather than priced twice.
+    cwd is resolved to the git repo root. Archived sessions are excluded.
+    """
+
+    records_cost = False
+    combined = False
+    source_name = "Hermes"
+
+    def __init__(self, db_path: str, args: argparse.Namespace):
+        self.db_path = db_path
+        self.args = args
+        self.demo = getattr(args, "demo", False)
+        self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
+        self._sessions: dict[str, dict] | None = None
+        self._git_root_cache: dict[str, str] = {}
+
+    def _git_root(self, cwd: str) -> str:
+        if cwd not in self._git_root_cache:
+            self._git_root_cache[cwd] = git_root(cwd)
+        return self._git_root_cache[cwd]
+
+    @staticmethod
+    def _ts_to_local(ts: float) -> str:
+        if not ts:
+            return ""
+        try:
+            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        except (OSError, OverflowError, ValueError):
+            return ""
+
+    @staticmethod
+    def _prefix_model(model: str) -> str:
+        # Hermes sessions use bare OpenAI model names; prefix so model_price() matches.
+        if model and "/" not in model:
+            return "openai/" + model
+        return model or "unknown"
+
+    def _parse(self) -> dict[str, dict]:
+        if self._sessions is not None:
+            return self._sessions
+        conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                "SELECT id, title, model, cwd, parent_session_id, started_at,"
+                " input_tokens, output_tokens, cache_read_tokens,"
+                " cache_write_tokens, reasoning_tokens"
+                " FROM sessions WHERE archived = 0 ORDER BY started_at"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        # Flat map of all sessions
+        flat: dict[str, dict] = {}
+        for row in rows:
+            inp = row["input_tokens"] or 0
+            out = row["output_tokens"] or 0
+            cr = row["cache_read_tokens"] or 0
+            cw = row["cache_write_tokens"] or 0
+            flat[row["id"]] = {
+                "id": row["id"],
+                "title": row["title"] or "(untitled)",
+                "model": self._prefix_model(row["model"] or ""),
+                "cwd": row["cwd"] or "",
+                "parent_id": row["parent_session_id"],
+                "started_at": row["started_at"] or 0.0,
+                "inp": inp,
+                "out": out,
+                "cr": cr,
+                "cw": cw,
+                "tokens_total": inp + out + cr + cw,
+            }
+
+        # Map root_id -> list of direct children
+        children: dict[str, list[str]] = {}
+        for sid, s in flat.items():
+            pid = s["parent_id"]
+            if pid and pid in flat:
+                children.setdefault(pid, []).append(sid)
+
+        result: dict[str, dict] = {}
+        for sid, s in flat.items():
+            if s["parent_id"]:
+                continue  # handled as a subagent node under its root
+            if s["tokens_total"] == 0 and not children.get(sid):
+                continue  # no recorded usage
+
+            created_at = self._ts_to_local(s["started_at"])
+            directory = self._git_root(s["cwd"]) if s["cwd"] else "(unknown)"
+
+            # Root session's own token counts (for root node and root_unpriced_* split)
+            r_inp, r_out, r_cr, r_cw = s["inp"], s["out"], s["cr"], s["cw"]
+            r_tot = s["tokens_total"]
+            root_acc = {
+                "runs": 1,
+                "input": r_inp,
+                "output": r_out,
+                "reasoning": 0,
+                "cache_read": r_cr,
+                "cache_write": r_cw,
+                "tokens_total": r_tot,
+            }
+
+            # Aggregate totals (root + all child sessions)
+            tot_inp, tot_out, tot_cr, tot_cw = r_inp, r_out, r_cr, r_cw
+            subagent_nodes: list[dict] = []
+            for child_id in children.get(sid, []):
+                c = flat[child_id]
+                tot_inp += c["inp"]
+                tot_out += c["out"]
+                tot_cr += c["cr"]
+                tot_cw += c["cw"]
+                c_acc = {
+                    "runs": 1,
+                    "input": c["inp"],
+                    "output": c["out"],
+                    "reasoning": 0,
+                    "cache_read": c["cr"],
+                    "cache_write": c["cw"],
+                    "tokens_total": c["tokens_total"],
+                }
+                subagent_nodes.append(
+                    self._node(
+                        child_id, 1, "subagent", c["title"],
+                        self._ts_to_local(c["started_at"]), c["model"], 0.0, c_acc,
+                    )
+                )
+            tot_total = tot_inp + tot_out + tot_cr + tot_cw
+
+            model_rows = [
+                {
+                    "root_id": sid,
+                    "model_name": s["model"],
+                    "runs": 1 + len(subagent_nodes),
+                    "cost": 0.0,
+                    "root_cost": 0.0,
+                    "tokens_total": tot_total,
+                    "input": tot_inp,
+                    "output": tot_out,
+                    "reasoning": 0,
+                    "cache_read": tot_cr,
+                    "cache_write": tot_cw,
+                    "unpriced_input": tot_inp,
+                    "unpriced_output": tot_out,
+                    "unpriced_reasoning": 0,
+                    "unpriced_cache_read": tot_cr,
+                    "unpriced_cache_write": tot_cw,
+                    "root_unpriced_input": r_inp,
+                    "root_unpriced_output": r_out,
+                    "root_unpriced_reasoning": 0,
+                    "root_unpriced_cache_read": r_cr,
+                    "root_unpriced_cache_write": r_cw,
+                }
+            ]
+
+            result[sid] = {
+                "title": s["title"],
+                "directory": directory,
+                "created_at": created_at,
+                "total_tokens": tot_total,
+                "unpriced_tokens": tot_total,
+                "model": s["model"],
+                "root_acc": root_acc,
+                "model_rows": model_rows,
+                "subagents": subagent_nodes,
+            }
+
+        self._sessions = result
+        return result
+
+    @staticmethod
+    def _node(
+        node_id: str,
+        depth: int,
+        agent: str,
+        title: str,
+        created_at: str,
+        model_name: str,
+        cost: float,
+        acc: dict,
+    ) -> dict:
+        return {
+            "id": node_id,
+            "depth": depth,
+            "agent": agent,
+            "title": title,
+            "created_at": created_at,
+            "cost": round(cost, 6),
+            "model_name": model_name,
+            "tokens_input": acc["input"],
+            "tokens_output": acc["output"],
+            "tokens_reasoning": acc["reasoning"],
+            "tokens_cache_read": acc["cache_read"],
+            "tokens_cache_write": acc["cache_write"],
+            "tokens_total": acc["tokens_total"],
+        }
+
+    def workflows(self) -> list[Workflow]:
+        self._sessions = None  # reload on `r`
+        sessions = self._parse()
+        rows = []
+        for sid, s in sessions.items():
+            rows.append(
+                Workflow(
+                    id=sid,
+                    title=s["title"],
+                    directory=s["directory"],
+                    created_at=s["created_at"],
+                    root_cost=0.0,
+                    total_cost=0.0,
+                    subagents=len(s["subagents"]),
+                    model_count=0,  # filled by App._load_model_cache
+                    total_tokens=s["total_tokens"],
+                    unpriced_tokens=s["unpriced_tokens"],
+                    source=self.source_name,
+                )
+            )
+        if self.demo:
+            rows = [self._demo_workflow(w) for w in rows]
+        rows.sort(key=lambda w: (w.total_cost, w.total_tokens), reverse=True)
+        return rows
+
+    def _demo_workflow(self, w: Workflow) -> Workflow:
+        w.title = demo_title(w.id)
+        w.directory = demo_dir(w.id)
+        if w.unpriced_tokens > 0:
+            add = demo_cost(w.unpriced_tokens, w.id)
+            w.total_cost += add
+            w.root_cost += add
+            w.unpriced_tokens = 0
+        w.total_cost = round(w.total_cost * self.demo_scale, 4)
+        w.root_cost = round(w.root_cost * self.demo_scale, 4)
+        w.total_tokens = int(round(w.total_tokens * self.demo_scale))
+        return w
+
+    def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
+        return {
+            "workflows": len(workflows),
+            "cost": sum(w.total_cost for w in workflows),
+            "tokens": sum(w.total_tokens for w in workflows),
+            "subagents": sum(w.subagents for w in workflows),
+            "unpriced_tokens": sum(w.unpriced_tokens for w in workflows),
+            "paid_workflows": sum(1 for w in workflows if w.total_cost > 0),
+        }
+
+    def model_breakdown(self) -> list[dict]:
+        out: list[dict] = []
+        for s in self._parse().values():
+            out.extend(s["model_rows"])
+        return out
+
+    def workflow_nodes(self, workflow_id: str) -> list[dict]:
+        s = self._parse().get(workflow_id)
+        if not s:
+            return []
+        nodes = [
+            self._node(
+                workflow_id, 0, "-", s["title"], s["created_at"],
+                s["model"], 0.0, s["root_acc"],
+            )
+        ]
+        nodes.extend(dict(n) for n in s["subagents"])
+        if self.demo:
+            nodes = [self._demo_node(n) for n in nodes]
+        return nodes
+
+    def _demo_node(self, n: dict) -> dict:
+        n["title"] = demo_title(n["id"])
+        n["model_name"] = demo_model(n["model_name"])
+        if n["cost"] == 0:
+            n["cost"] = demo_cost(n["tokens_total"], n["id"])
+        n["cost"] = round(n["cost"] * self.demo_scale, 4)
+        for f in (
+            "tokens_input",
+            "tokens_output",
+            "tokens_reasoning",
+            "tokens_cache_read",
+            "tokens_cache_write",
+            "tokens_total",
+        ):
+            n[f] = int(round(n[f] * self.demo_scale))
+        return n
+
+
 class CombinedStore:
     """Merge several backends (OpenCode Store + Claude Code ClaudeStore + Codex
     CodexStore) into one view by delegating the same four methods to each and
@@ -2389,7 +2687,7 @@ class Renderer:
 
     @staticmethod
     def _source_abbrev(workflow: Workflow) -> str:
-        return {"OpenCode": "oc", "Claude Code": "cc", "Codex": "cx"}.get(
+        return {"OpenCode": "oc", "Claude Code": "cc", "Codex": "cx", "Hermes": "hm"}.get(
             workflow.source, (workflow.source or "??")[:2].lower()
         )
 
@@ -5769,11 +6067,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--source",
-        choices=("auto", "opencode", "claude", "codex", "all"),
+        choices=("auto", "opencode", "claude", "codex", "hermes", "all"),
         default="auto",
         help="data source: opencode (SQLite), claude (Claude Code transcripts), codex "
-        "(Codex CLI rollouts), or all (merged); auto prefers OpenCode's DB, else the "
-        "first present source (default: auto)",
+        "(Codex CLI rollouts), hermes (Hermes Agent DB), or all (merged); auto prefers "
+        "OpenCode's DB, else the first present source (default: auto)",
     )
     parser.add_argument("--db", default=os.path.expanduser("~/.local/share/opencode/opencode.db"))
     parser.add_argument(
@@ -5785,6 +6083,11 @@ def parse_args() -> argparse.Namespace:
         "--codex-dir",
         default=os.path.expanduser("~/.codex/sessions"),
         help="Codex CLI sessions directory (for --source codex)",
+    )
+    parser.add_argument(
+        "--hermes-db",
+        default=os.path.expanduser("~/.hermes/state.db"),
+        help="Hermes Agent database path (for --source hermes)",
     )
     parser.add_argument(
         "--days",
@@ -5890,7 +6193,7 @@ def _jsonl_dir_available(directory: str) -> bool:
 
 
 # Display names for the source keys, matching each backend's source_name.
-SOURCE_LABELS = {"opencode": "OpenCode", "claude": "Claude Code", "codex": "Codex", "all": "all"}
+SOURCE_LABELS = {"opencode": "OpenCode", "claude": "Claude Code", "codex": "Codex", "hermes": "Hermes", "all": "all"}
 
 # How each tool reopens one of its sessions (the `L` key copies this command,
 # keyed by Workflow.source).
@@ -5898,6 +6201,7 @@ RESUME_COMMANDS = {
     "OpenCode": "opencode --session",
     "Claude Code": "claude --resume",
     "Codex": "codex resume",
+    "Hermes": "hermes --session",
 }
 
 
@@ -5910,6 +6214,8 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("claude")
     if _jsonl_dir_available(getattr(args, "codex_dir", "")):
         keys.append("codex")
+    if os.path.exists(getattr(args, "hermes_db", "")):
+        keys.append("hermes")
     return keys
 
 
@@ -5956,6 +6262,11 @@ def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
         if not os.path.isdir(args.codex_dir):
             raise SystemExit(f"Codex sessions directory not found: {args.codex_dir}")
         return CodexStore(args.codex_dir, args), "OpenTab: loading Codex sessions…\r"
+    if key == "hermes":
+        db = getattr(args, "hermes_db", "")
+        if not os.path.exists(db):
+            raise SystemExit(f"Hermes database not found: {db}")
+        return HermesStore(db, args), "OpenTab: loading Hermes sessions…\r"
     if not os.path.exists(args.db):
         raise SystemExit(f"OpenCode database not found: {args.db}")
     return Store(args.db, args), "OpenTab: loading OpenCode database…\r"
