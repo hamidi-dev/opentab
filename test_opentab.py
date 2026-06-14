@@ -2266,6 +2266,109 @@ def test_sources_tab_is_hidden_with_a_single_backend():
     assert "Sources" not in app.current_tabs()
 
 
+def test_years_panel_groups_and_scopes_months_to_the_focused_year():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=2),
+            workflow("b", "2026-05-01 12:00:00", cost=1),
+            workflow("c", "2025-11-01 12:00:00", cost=4),
+        ]
+    )
+    assert [y.year for y in app.years] == ["2026", "2025"]  # newest-first
+
+    # The middle panel shows only the focused year's months.
+    app.year_index = next(i for i, y in enumerate(app.years) if y.year == "2026")
+    assert [m.month for m in app.months] == ["2026-06", "2026-05"]
+    app.year_index = next(i for i, y in enumerate(app.years) if y.year == "2025")
+    assert [m.month for m in app.months] == ["2025-11"]
+
+
+def test_year_defaults_to_current_year_then_newest_fallback():
+    from datetime import datetime
+
+    cy = datetime.now().year
+    # Current year present -> start there (with focus on the Months panel).
+    app = app_with(
+        [
+            workflow("a", f"{cy}-03-01 12:00:00"),
+            workflow("b", f"{cy - 1}-03-01 12:00:00"),
+        ]
+    )
+    assert app.focus == "months"
+    assert app.focused_year == str(cy)
+
+    # Current year absent -> fall back to the newest year with data.
+    older = app_with([workflow("a", f"{cy - 2}-03-01 12:00:00")])
+    assert older.focused_year == str(cy - 2)
+
+
+def test_tab_cycles_year_month_day_focus():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.focus = "years"
+    app.cycle_focus(1)
+    assert app.focus == "months"
+    app.cycle_focus(1)
+    assert app.focus == "days"
+    app.cycle_focus(1)
+    assert app.focus == "years"  # wraps
+    app.cycle_focus(-1)
+    assert app.focus == "days"  # Shift-Tab walks back
+
+
+def test_moving_year_reanchors_months_and_changes_the_visible_months():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00"),
+            workflow("b", "2025-11-01 12:00:00"),
+        ]
+    )
+    app.focus = "years"
+    app.year_index = 0  # 2026
+    app.month_index = 5  # deliberately stale
+    app.move(1)  # step to the next (older) year
+    assert app.focused_year == "2025"
+    assert app.month_index == 0  # re-anchored when the year changed
+    assert [m.month for m in app.months] == ["2025-11"]
+
+
+def test_drilling_into_a_year_zooms_and_lists_its_sessions():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", title="recent"),
+            workflow("b", "2026-02-01 12:00:00", title="older"),
+            workflow("c", "2025-11-01 12:00:00", title="last year"),
+        ]
+    )
+    app.focus = "years"
+    app.year_index = next(i for i, y in enumerate(app.years) if y.year == "2026")
+    app.drill_in()
+    assert app.view == "zoom"
+    lines = app.renderer.year_overview(app.selected_year_summary, 100)
+    assert lines[0] == "# Yearly Insight"
+    assert any("Year:" in ln and "2026" in ln for ln in lines)
+    # The Sessions tab is scoped to the focused year (2026 sessions only).
+    app.tab = app.current_tabs().index("Sessions")
+    assert {w.id for w in app.current_sessions()} == {"a", "b"}
+
+
+def test_year_sources_tab_appears_in_combined_view():
+    a = workflow("a", "2026-06-01 12:00:00", title="oc", cost=3)
+    a.source = "OpenCode"
+    b = workflow("b", "2026-03-01 09:00:00", title="cx", cost=0)
+    b.source = "Codex"
+
+    class MergedStore(FakeStore):
+        combined = True
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(MergedStore([a, b]), args)
+    app.focus = "years"
+    assert app.current_tabs()[:2] == ("Overview", "Sources")
+    lines = app.renderer.year_sources(app.selected_year_summary, 100)
+    assert lines[0].startswith("# Spend by source")
+    assert any("OpenCode" in ln for ln in lines) and any("Codex" in ln for ln in lines)
+
+
 def test_codex_joins_the_source_cycle_and_builds_a_resume_command():
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
