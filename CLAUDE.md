@@ -11,13 +11,16 @@ session / model, including the recursive subagent tree. Standard library only �
 script, no `.py` extension).
 
 It also reads **Claude Code** transcripts (`~/.claude/projects/**/*.jsonl`) via a
-second backend (`ClaudeStore`) and **Codex CLI** rollouts
-(`~/.codex/sessions/**/rollout-*.jsonl`) via a third (`CodexStore`), and can merge
-any of them (`CombinedStore`). Pick with `--source {auto,opencode,claude,codex,all}`,
-or switch live in the TUI with **`c`**. Neither Claude Code nor Codex records a
-per-message cost, so their sessions behave like an OpenCode *subscription* session:
-they show **$0 in normal mode** and an estimate (tokens × API list price) only under
-the **`$`** what-if view — see the `ClaudeStore`/`CodexStore` notes under Architecture.
+second backend (`ClaudeStore`), **Codex CLI** rollouts
+(`~/.codex/sessions/**/rollout-*.jsonl`) via a third (`CodexStore`), and **Hermes
+Agent** sessions (`~/.hermes/state.db`, SQLite) via a fourth (`HermesStore`), and can
+merge any of them (`CombinedStore`). Pick with
+`--source {auto,opencode,claude,codex,hermes,all}`, or switch live in the TUI with
+**`c`**. Claude Code and Codex never record a per-message cost, so their sessions behave
+like an OpenCode *subscription* session: **$0 in normal mode** and an estimate (tokens ×
+API list price) only under the **`$`** what-if view. Hermes is usually the same
+(subscription routes record $0) but **can** be metered — see the
+`ClaudeStore`/`CodexStore`/`HermesStore` notes under Architecture.
 
 ## Commands
 
@@ -99,23 +102,46 @@ Three layers, all in `opentab`:
   `unpriced_*` row schema the `$` machinery expects. Codex has **no subagent tree**
   (every session is one depth-0 node); `cwd` folds to its **git root**; sessions with no
   recorded usage are dropped.
+- **`HermesStore`** — a fourth backend over Hermes Agent's SQLite state DB
+  (`~/.hermes/state.db`), implementing the same four methods. Hermes is **multi-provider**
+  (OpenAI / Anthropic / Google / OpenRouter / Nous / local / …) but **normalizes every
+  provider's usage to one canonical shape before writing the row**, so there is **no
+  per-provider token special-casing** here: `input_tokens` is the *uncached* prompt
+  (cache_read / cache_write are tracked separately, never folded in) and `output_tokens`
+  already *includes* reasoning as a subset (priced once via output). Total = input +
+  output + cache_read + cache_write — matching Hermes' own `total_tokens` **exactly**
+  (cross-checked against ccusage, which runs *high* by double-counting reasoning). **Cost
+  is mixed**, unlike Claude/Codex: subscription routes (`billing_mode =
+  'subscription_included'`, e.g. openai-codex) record $0 → their tokens are unpriced and
+  `$` estimates them; **metered** routes (OpenRouter, Nous, direct API keys) record a real
+  per-session cost in `actual_cost_usd` / `estimated_cost_usd` (actual preferred, mirroring
+  ccusage) → those price as real spend in normal mode with `unpriced_*` zeroed. Because
+  cost is mixed, **`records_cost` is a per-DB instance attr** (True iff any live session
+  has a recorded cost), computed by a cheap probe in `__init__` so `CombinedStore` can read
+  it before `workflows()`. Sessions with a `parent_session_id` form a subagent tree rolled
+  into the root's totals; the model label is derived from `billing_provider` (mapped via
+  `_PROVIDER_ALIASES`, else inferred from the name) rather than a hard-coded prefix; `cwd`
+  folds to its **git root**; archived sessions are excluded. The SQL is **schema-adaptive**
+  (`_probe_columns`/`_select_sql`, like `Store`) — missing optional columns degrade
+  gracefully instead of crashing.
 - **`CombinedStore`** — wraps several backends and concatenates the same four methods,
-  for `--source all` (OpenCode + Claude Code + Codex in one view). Workflow ids are
+  for `--source all` (OpenCode + Claude Code + Codex + Hermes in one view). Workflow ids are
   globally unique across sources, so it routes `workflow_nodes` by an `id → backend` map
   built in `workflows()`; projects group by directory across all tools. `$` reprices
   every unpriced row across all backends. `records_cost` is the AND of its backends
-  (False when any subscription backend — Claude Code or Codex — is present);
+  (False when any backend reports no recorded cost — Claude Code, Codex, or a
+  subscription-only Hermes DB);
   `combined = True` turns on the per-session origin markers — a `Src` column in the
-  session tables (`Renderer.src_col`) and `[oc]`/`[cc]`/`[cx]` title tags in the picker
-  and Top Sessions lists (`Renderer.source_tag`, abbreviations in `_source_abbrev`).
+  session tables (`Renderer.src_col`) and `[oc]`/`[cc]`/`[cx]`/`[hm]` title tags in the
+  picker and Top Sessions lists (`Renderer.source_tag`, abbreviations in `_source_abbrev`).
   Combined **demo** works: `CombinedStore.__init__` forces every sub-store to one shared
   `demo_scale` (each backend would otherwise draw its own random scale, distorting the
   cross-source ratio the Sources view shows); it's still private (a single hidden factor
   can't be inverted).
 - **Source selection** lives in `make_store()`/`resolve_source()`/`available_sources()`/
   `source_cycle()` (module level). `main` resolves the start source from
-  `--source {auto,opencode,claude,codex,all}`; on `auto` it restores the last-used source
-  from `state.json` (when still available); failing that, **`--demo` defaults to `all`**
+  `--source {auto,opencode,claude,codex,hermes,all}`; on `auto` it restores the last-used
+  source from `state.json` (when still available); failing that, **`--demo` defaults to `all`**
   (the merged view showcases the most) while non-demo prefers OpenCode's DB, else the
   first present source (never auto-combines). The TUI switches live with **`c`**
   (`App.cycle_source` → cached build + `_reload_for_source`); the active source
