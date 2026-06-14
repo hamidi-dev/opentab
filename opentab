@@ -2063,6 +2063,8 @@ class Renderer:
                 current = self.current_tabs()[self.tab % len(self.current_tabs())]
                 if current == "Overview":
                     return self.project_overview(project, content_width)
+                if current == "Sources":
+                    return self.project_sources(project, content_width)
                 if current == "Models":
                     return self.project_models(project, content_width)
                 return self.project_workflows(project, content_width)
@@ -2074,6 +2076,8 @@ class Renderer:
                 current = self.current_tabs()[self.tab % len(self.current_tabs())]
                 if current == "Overview":
                     return self.month_overview(month, content_width)
+                if current == "Sources":
+                    return self.month_sources(month, content_width)
                 if current == "Models":
                     return self.month_models(month, content_width)
                 if current == "Projects":
@@ -2086,6 +2090,8 @@ class Renderer:
             current = self.current_tabs()[self.tab % len(self.current_tabs())]
             if current == "Overview":
                 return self.day_overview(day, content_width)
+            if current == "Sources":
+                return self.day_sources(day, content_width)
             if current == "Projects":
                 return self.day_projects(day, content_width)
             return self.day_workflows(day, content_width)
@@ -2611,6 +2617,8 @@ class Renderer:
             return
         if current == "Overview":
             lines = self.project_overview(project, w - 4)
+        elif current == "Sources":
+            lines = self.project_sources(project, w - 4)
         elif current == "Models":
             lines = self.project_models(project, w - 4)
         else:
@@ -2647,6 +2655,8 @@ class Renderer:
             return
         if current == "Overview":
             lines = self.month_overview(month, w - 4)
+        elif current == "Sources":
+            lines = self.month_sources(month, w - 4)
         elif current == "Models":
             lines = self.month_models(month, w - 4)
         elif current == "Projects":
@@ -2741,6 +2751,8 @@ class Renderer:
             return
         if current == "Overview":
             lines = self.day_overview(day, w - 4)
+        elif current == "Sources":
+            lines = self.day_sources(day, w - 4)
         elif current == "Projects":
             lines = self.day_projects(day, w - 4)
         else:
@@ -2903,6 +2915,9 @@ class Renderer:
         agg = self.aggregate_models(self.workflows_for_month(month.month))
         return self._model_table(self._agg_rows(agg), "# Monthly Model Spend", width)
 
+    def month_sources(self, month: MonthSummary, width: int) -> list[str]:
+        return self.source_table(self.workflows_for_month(month.month), width)
+
     def month_workflows(self, month: MonthSummary, width: int) -> list[str]:
         lines = [
             "# Monthly Sessions",
@@ -2950,6 +2965,9 @@ class Renderer:
                 f"{shorten(self.source_tag(workflow) + workflow.title, max(20, width - 37))}"
             )
         return lines
+
+    def day_sources(self, day: DaySummary, width: int) -> list[str]:
+        return self.source_table(self.workflows_for_day(day.day), width)
 
     def day_workflows(self, day: DaySummary, width: int) -> list[str]:
         lines = [
@@ -3009,6 +3027,11 @@ class Renderer:
             self.workflows_for_project(project.directory, include_ignored=project.ignored)
         )
         return self._model_table(self._agg_rows(agg), "# Project Model Spend", width)
+
+    def project_sources(self, project: ProjectSummary, width: int) -> list[str]:
+        return self.source_table(
+            self.workflows_for_project(project.directory, include_ignored=project.ignored), width
+        )
 
     def project_table(self, rows: list[ProjectSummary], title: str, width: int) -> list[str]:
         lines = [title, self.project_header_text(width)]
@@ -3128,7 +3151,8 @@ class Renderer:
             "  Esc              step back out (session -> zoom -> browse)",
             "  Shift-Tab        flip Months/Days while browsing; else step back out",
             "  h/l              switch detail tabs (months: Overview/Models/Projects/Sessions;",
-            "                   days: Overview/Projects/Sessions)",
+            "                   days: Overview/Projects/Sessions; a Sources tab joins after",
+            "                   Overview in the merged 'all' view)",
             "  j/k or Up/Down   move in the current list (or scroll detail)",
             "  mouse            wheel scrolls; click selects; double-click drills; click a tab",
             "  g/G              top / bottom",
@@ -3495,13 +3519,20 @@ class Renderer:
         return lines
 
     def trend_sources(self, width: int, height: int) -> list[str]:
-        # Spend grouped by the *tool* it came from (OpenCode / Claude Code / Codex) --
-        # the headline cut for the combined view. Subscription rows (Claude Code, Codex)
-        # cost $0 until "$" reprices their tokens, so the bar reacts to "$" live.
+        # The Trends overlay's headline cut: spend by tool across the whole range.
+        return self.source_table(self.all_workflows, width, limit=max(1, height - 4))
+
+    def source_table(
+        self, workflows: list[Workflow], width: int, limit: int | None = None
+    ) -> list[str]:
+        # Spend grouped by the *tool* it came from (OpenCode / Claude Code / Codex).
+        # Shared by the Trends "Sources" tab (whole range) and the per-month/day/
+        # project "Sources" detail tabs (a scoped slice). Subscription rows (Claude
+        # Code, Codex) cost $0 until "$" reprices their tokens, so the bar reacts live.
         by_source: dict[str, dict[str, float | int]] = defaultdict(
             lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
         )
-        for w in self.all_workflows:
+        for w in workflows:
             item = by_source[w.source or "unknown"]
             item["cost"] = float(item["cost"]) + w.total_cost
             item["tokens"] = int(item["tokens"]) + w.total_tokens
@@ -3513,7 +3544,8 @@ class Renderer:
         )
         if not rows:
             return ["# Spend by source", "", "No sessions in the active range."]
-        rows = rows[: max(1, height - 4)]
+        if limit is not None:
+            rows = rows[:limit]
         total_cost = sum(float(it["cost"]) for _, it in rows)
         peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
         namew = min(max(len(s) for s, _ in rows), max(10, width - 44))
@@ -5177,8 +5209,15 @@ class App:
         if self.view == "session":
             return self.workflow_tabs
         if self.browse_mode == "projects":
-            return self.project_tabs
-        return self.month_tabs if self.focus == "months" else self.day_tabs
+            base = self.project_tabs
+        else:
+            base = self.month_tabs if self.focus == "months" else self.day_tabs
+        # In the merged view a per-source cut is meaningful, so expose it right
+        # after Overview. With one backend every row is the same source (a 100%
+        # bar), so the tab would be noise -- omit it unless sources are combined.
+        if getattr(self.store, "combined", False):
+            return base[:1] + ("Sources",) + base[1:]
+        return base
 
     def current_sort_options(self) -> tuple[str, ...]:
         # Left-hand months/days and non-session detail panes are fixed-order;

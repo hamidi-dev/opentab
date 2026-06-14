@@ -120,7 +120,10 @@ Three layers, all in `opentab`:
   first present source (never auto-combines). The TUI switches live with **`c`**
   (`App.cycle_source` → cached build + `_reload_for_source`); the active source
   (`app.source_key`) is saved with the rest of the prefs. It shows as a header chip and
-  the Trends overlay has a **Sources** tab (spend by tool).
+  the Trends overlay has a **Sources** tab (spend by tool). In the merged view only,
+  `App.current_tabs` also injects a per-scope **Sources** tab right after Overview in the
+  Month/Day/Project detail views (omitted with a single backend, where it'd be one 100%
+  row); it and the Trends tab share `Renderer.source_table`.
 - **`App`** — all state and the keyboard/mouse state machine; stays curses-free except
   the modal prompt line. Holds the view stack and selection indices.
 - **`Renderer`** — all drawing. `Renderer.__getattr__` delegates unknown attributes to

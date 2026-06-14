@@ -2200,6 +2200,45 @@ def test_codex_in_combined_view_carries_a_cx_source_tag():
     assert any("[cx] codex session" in ln for ln in over)  # Top Sessions bracket tag
 
 
+def test_sources_tab_appears_in_combined_view_and_aggregates_by_source():
+    a = workflow("a", "2026-06-01 12:00:00", title="opencode session", cost=3, tokens=300)
+    a.source = "OpenCode"
+    b = workflow("b", "2026-06-01 09:00:00", title="codex session", cost=0, tokens=200)
+    b.source = "Codex"
+
+    class MergedStore(FakeStore):
+        combined = True
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(MergedStore([a, b]), args)
+
+    # The tab joins right after Overview in every aggregate detail view.
+    app.focus = "months"
+    assert app.current_tabs()[:2] == ("Overview", "Sources")
+    app.focus = "days"
+    assert app.current_tabs()[:2] == ("Overview", "Sources")
+    app.set_browse_mode("projects")
+    assert app.current_tabs()[:2] == ("Overview", "Sources")
+
+    # It renders a per-source breakdown scoped to that slice.
+    month = app.months[0]
+    lines = app.renderer.month_sources(month, 120)
+    assert lines[0].startswith("# Spend by source")
+    assert any("OpenCode" in ln for ln in lines)
+    assert any("Codex" in ln for ln in lines)
+
+
+def test_sources_tab_is_hidden_with_a_single_backend():
+    # One backend -> every row is the same source (a 100% bar), so the tab is noise.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])  # FakeStore: not combined
+    app.focus = "months"
+    assert "Sources" not in app.current_tabs()
+    app.focus = "days"
+    assert "Sources" not in app.current_tabs()
+    app.set_browse_mode("projects")
+    assert "Sources" not in app.current_tabs()
+
+
 def test_codex_joins_the_source_cycle_and_builds_a_resume_command():
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
