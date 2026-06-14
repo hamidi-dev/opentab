@@ -7,6 +7,7 @@ No tmux. No fzf. No external Python packages. Just curses + sqlite.
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import glob
 import json
@@ -2295,7 +2296,10 @@ class Renderer:
             # chip) — "c all" otherwise reads like "press c to get all".
             parts.append(f"c → {self.next_source_name()}")
         parts += ["R range", "/ filter", "T trends", "P prices", "e export", "y copy", "o open"]
-        parts.append("L launch")
+        if self.can_launch_current():
+            parts.append("L launch")
+        if self.source_key:
+            parts.append("D real" if self.store.demo else "D demo")
         if not self.store.demo:
             parts.append("$ what-if" + ("*" if self.show_api_prices else ""))
         parts += ["? help", "q quit"]
@@ -3138,7 +3142,7 @@ class Renderer:
         return lines
 
     def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
-        self.box(stdscr, y, 0, bottom - y, width, "Help")
+        self.box(stdscr, y, 0, bottom - y, width, "Help · j/k scroll · any other key closes")
         lines = [
             "OpenTab is a session browser, not a fuzzy-search toy.",
             "",
@@ -3167,9 +3171,11 @@ class Renderer:
             "  e                export the current list to a CSV in the working directory",
             "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
-            "  L                launch the selected session in its tool (opencode --session / claude --resume / codex resume)",
+            "  L                launch the selected session in its tool (Sessions tab/session detail only)",
+            "                   opencode --session / claude --resume / codex resume",
             "                   inside tmux: w window · s split · v vsplit · p popup · y copy command",
             "                   outside tmux: copies `cd <project> && <tool> resume <id>` to the clipboard",
+            "  D                toggle real/demo data on the fly (demo anonymizes titles/paths)",
             "  c                switch data source: OpenCode / Claude Code / Codex / all (when present)",
             "  T                Trends overlay: Daily / Weekly / Monthly / Models / Providers / Sources",
             "                   (h/l tabs; j/k month/week; $ toggles what-if prices)",
@@ -3188,12 +3194,15 @@ class Renderer:
             "  Range, sort, and the $ what-if view are remembered between runs (--no-state off).",
             "  Git worktrees fold into their main repo (--no-worktrees to keep them split).",
             "",
-            "Press any key to close help.",
+            "Press any other key to close help.",
         ]
-        for i, line in enumerate(lines[: bottom - y - 3], y + 2):
+        visible = max(1, bottom - y - 3)
+        scroll = max(0, min(self.app.help_scroll, max(0, len(lines) - visible)))
+        self.app.help_scroll = scroll
+        for offset, line in enumerate(lines[scroll : scroll + visible]):
             self.write(
                 stdscr,
-                i,
+                y + 2 + offset,
                 2,
                 shorten(line, width - 4),
                 curses.color_pair(4) if line.endswith(":") else curses.A_NORMAL,
@@ -3636,7 +3645,9 @@ class App:
         # built stores are cached so cycling back is instant. Empty when the App was
         # constructed without a key (tests / single fixed store).
         self.source_key = source_key
-        self._store_cache: dict[str, object] = {source_key: store} if source_key else {}
+        self._store_cache: dict[tuple[str, bool], object] = (
+            {(source_key, bool(getattr(store, "demo", False))): store} if source_key else {}
+        )
         self.loaded = store.workflows()  # every root session, all time
         # "$" toggles real cost <-> API-equivalent. When no active backend records
         # dollars (Claude Code alone, or "all" with Claude in the mix) the real view
@@ -3674,6 +3685,7 @@ class App:
         self.tab = 0
         self.scroll = 0
         self.help = False
+        self.help_scroll = 0  # pager offset within the help overlay
         self.trends = False  # the Trends overlay (T); trend_tab selects its tab
         self.trend_tab = 0
         self.trend_month_index = 0  # which month the Daily tab shows (0 = newest)
@@ -4299,6 +4311,11 @@ class App:
     def can_switch_source(self) -> bool:
         return len(source_cycle(self.args)) > 1
 
+    def _args_with_demo(self, demo: bool) -> argparse.Namespace:
+        args = copy.copy(self.args)
+        args.demo = demo
+        return args
+
     def next_source_name(self) -> str:
         # Display name of the source `c` would switch to (for the footer).
         order = source_cycle(self.args)
@@ -4313,17 +4330,53 @@ class App:
             return
         cur = self.source_key if self.source_key in order else order[0]
         key = order[(order.index(cur) + step) % len(order)]
-        if key not in self._store_cache:
+        cache_key = (key, bool(getattr(self.store, "demo", False)))
+        if cache_key not in self._store_cache:
             try:
-                self._store_cache[key] = make_store(self.args, key)[0]
+                self._store_cache[cache_key] = make_store(self._args_with_demo(cache_key[1]), key)[
+                    0
+                ]
             except SystemExit as exc:
                 self.notice = str(exc)
                 return
         self.source_key = key
-        self.store = self._store_cache[key]
+        self.store = self._store_cache[cache_key]
         self._reload_for_source()
 
-    def _reload_for_source(self) -> None:
+    def toggle_demo(self) -> None:
+        if not self.source_key:
+            self.notice = "demo toggle unavailable"
+            return
+        snapshot = self.ui_snapshot()
+        demo = not bool(getattr(self.store, "demo", False))
+        cache_key = (self.source_key, demo)
+        if cache_key not in self._store_cache:
+            try:
+                self._store_cache[cache_key] = make_store(
+                    self._args_with_demo(demo), self.source_key
+                )[0]
+            except SystemExit as exc:
+                self.notice = str(exc)
+                return
+        self.store = self._store_cache[cache_key]
+        self._reload_for_source(snapshot)
+        self.notice = "demo mode" if demo else "real data"
+
+    def ui_snapshot(self) -> dict:
+        tabs = self.current_tabs()
+        return {
+            "view": self.view,
+            "browse_mode": self.browse_mode,
+            "focus": self.focus,
+            "tab_name": tabs[self.tab % len(tabs)] if tabs else None,
+            "tab": self.tab,
+            "scroll": self.scroll,
+            "query": self.query,
+            "zoom_project": self.zoom_project,
+            "anchor": self.selection_anchor(),
+        }
+
+    def _reload_for_source(self, restore: dict | None = None) -> None:
         # Re-seed every per-store cache from the newly active backend and reset the
         # view to the top -- the months/projects/sessions are a different dataset now.
         self.loaded = self.store.workflows()
@@ -4332,6 +4385,30 @@ class App:
         self._models_loaded = False
         self._load_model_cache()
         self._invalidate_workflow_cache()
+        if restore:
+            self.browse_mode = restore["browse_mode"]
+            self.focus = restore["focus"]
+            self.view = restore["view"]
+            zoom_project = restore["zoom_project"]
+            self.zoom_project = (
+                zoom_project
+                if zoom_project
+                and any(self.project_root(w.directory) == zoom_project for w in self.loaded)
+                else None
+            )
+            self.query = restore["query"]
+            self.restore_selection(restore["anchor"])
+            tabs = self.current_tabs()
+            tab_name = restore["tab_name"]
+            self.tab = (
+                tabs.index(tab_name)
+                if tab_name in tabs
+                else min(int(restore["tab"]), max(0, len(tabs) - 1))
+            )
+            if self.view == "session" and not self.current_session():
+                self.view = "zoom"
+            self.scroll = max(0, int(restore["scroll"]))
+            return
         self.zoom_project = None
         self.query = ""
         self.view = "browse"
@@ -4507,9 +4584,9 @@ class App:
         if self.store.demo:
             self.notice = "launch disabled in demo mode"
             return
-        session = self.current_session()
+        session = self.launch_session()
         if not session:
-            self.notice = "no session selected"
+            self.notice = "launch works on sessions only"
             return
         if self.resume_parts(session) is None:
             self.notice = "no launch command for this session"
@@ -4518,6 +4595,11 @@ class App:
             self.copy_resume_command(session)
             return
         self.launch_menu = session
+
+    def launch_session(self) -> Workflow | None:
+        if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
+            return self.current_session()
+        return None
 
     def copy_resume_command(self, session: Workflow) -> None:
         command = self.resume_command(session)
@@ -4638,6 +4720,9 @@ class App:
             or (self.view != "session" and self.on_sessions_tab)
             or (self.view == "session" and self.on_subagents_tab)
         )
+
+    def can_launch_current(self) -> bool:
+        return self.view == "session" or (self.view == "zoom" and self.on_sessions_tab)
 
     def effective_sort_by(self) -> str | None:
         if self.in_project_sort_context():
@@ -4883,7 +4968,18 @@ class App:
         if key == curses.KEY_MOUSE:
             return self.handle_mouse()
         if self.help:
-            self.help = False
+            # A pager like the price overlay: j/k/arrows and g/G scroll;
+            # any other key closes it.
+            if key in (ord("j"), curses.KEY_DOWN):
+                self.help_scroll += 1
+            elif key in (ord("k"), curses.KEY_UP):
+                self.help_scroll = max(0, self.help_scroll - 1)
+            elif key == ord("g"):
+                self.help_scroll = 0
+            elif key == ord("G"):
+                self.help_scroll = 10_000  # clamped to the last page on draw
+            else:
+                self.help = False
             return True
         if self.show_prices:
             # A pager: j/k/arrows and g/G scroll; any other key closes it.
@@ -4930,6 +5026,7 @@ class App:
             return False
         if key == ord("?"):
             self.help = True
+            self.help_scroll = 0
             return True
         if key == ord("T"):
             self.trends = True
@@ -4945,6 +5042,9 @@ class App:
             return True
         if key == ord("c"):
             self.cycle_source(1)
+            return True
+        if key == ord("D"):
+            self.toggle_demo()
             return True
         if key == ord("+"):
             self.drill_in()
@@ -5553,7 +5653,7 @@ def main() -> int:
     if use_state:
         apply_state(app, args, state)
     curses.wrapper(app.run)
-    if use_state:
+    if use_state and not app.store.demo:
         save_state(app)
     return 0
 

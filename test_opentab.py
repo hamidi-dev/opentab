@@ -32,6 +32,8 @@ def workflow(id, created_at, title=None, cost=1.0, tokens=100, directory="/tmp/p
 
 class FakeStore:
     demo = False
+    records_cost = True
+    source_name = "OpenCode"
 
     def __init__(self, workflows):
         self._workflows = workflows
@@ -41,6 +43,15 @@ class FakeStore:
 
     def model_breakdown(self):
         return []
+
+    def summary(self, workflows):
+        return {
+            "workflows": len(workflows),
+            "cost": sum(w.total_cost for w in workflows),
+            "tokens": sum(w.total_tokens for w in workflows),
+            "subagents": sum(w.subagents for w in workflows),
+            "unpriced_tokens": sum(w.unpriced_tokens for w in workflows),
+        }
 
 
 def app_with(workflows, since=None, until=None, days=None):
@@ -372,6 +383,22 @@ def test_jk_scrolls_the_prices_overlay():
     assert app.prices_scroll == 0
     app.handle_key(None, ord("x"))  # any other key closes
     assert not app.show_prices
+
+
+def test_jk_scrolls_the_help_overlay():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app.handle_key(None, ord("?"))
+    assert app.help and app.help_scroll == 0
+    app.handle_key(None, ord("j"))
+    assert app.help_scroll == 1 and app.help
+    app.handle_key(None, ord("k"))
+    assert app.help_scroll == 0
+    app.handle_key(None, ord("G"))
+    assert app.help_scroll > 0
+    app.handle_key(None, ord("g"))
+    assert app.help_scroll == 0
+    app.handle_key(None, ord("x"))
+    assert not app.help
 
 
 def test_trends_overlay_toggles_and_switches_tabs():
@@ -2529,6 +2556,8 @@ def test_launch_menu_opens_in_tmux_and_copies_outside():
     a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
     a.source = "Claude Code"
     app = app_with([a])
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
     old_tmux = os.environ.get("TMUX")
     real_launch, real_copy = ot.tmux_launch, ot.copy_to_clipboard
     launches, copies = [], []
@@ -2563,6 +2592,19 @@ def test_launch_menu_opens_in_tmux_and_copies_outside():
             os.environ["TMUX"] = old_tmux
 
 
+def test_launch_only_works_on_session_contexts():
+    a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
+    a.source = "OpenCode"
+    app = app_with([a])
+
+    app.handle_key(None, ord("L"))
+    assert app.launch_menu is None and app.notice == "launch works on sessions only"
+
+    app.set_browse_mode("projects")
+    app.handle_key(None, ord("L"))
+    assert app.launch_menu is None and app.notice == "launch works on sessions only"
+
+
 def test_next_source_name_names_the_destination():
     with tempfile.TemporaryDirectory() as tmp:
         # both sources present -> the cycle is opencode / claude / all
@@ -2592,6 +2634,52 @@ def test_next_source_name_names_the_destination():
         assert app.next_source_name() == "all"
         app.source_key = "all"
         assert app.next_source_name() == "OpenCode"
+
+
+def test_capital_d_toggles_real_and_demo_store():
+    real = FakeStore(
+        [
+            workflow("ses_1", "2026-06-01 12:00:00", title="real one", cost=1.0),
+            workflow("ses_2", "2026-06-02 12:00:00", title="real two", cost=2.0),
+        ]
+    )
+    demo = FakeStore(
+        [
+            workflow("ses_1", "2026-06-01 12:00:00", title="demo one", cost=1.0),
+            workflow("ses_2", "2026-06-02 12:00:00", title="demo two", cost=2.0),
+        ]
+    )
+    demo.demo = True
+    demo.demo_scale = 2.0
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(real, args, source_key="opencode")
+    app.view = "zoom"
+    app.focus = "months"
+    app.tab = app.current_tabs().index("Models")
+    real_make_store = ot.make_store
+    calls = []
+    try:
+        ot.make_store = lambda a, key: calls.append((a.demo, key)) or (demo if a.demo else real, "")
+
+        app.handle_key(None, ord("D"))
+        assert app.store is demo
+        assert app.view == "zoom" and app.current_tabs()[app.tab] == "Models"
+        assert {w.title for w in app.loaded} == {"demo one", "demo two"}
+        assert app.notice == "demo mode"
+
+        app.tab = app.current_tabs().index("Sessions")
+        app.workflow_index = 1
+        assert app.current_session().id == "ses_1"
+
+        app.handle_key(None, ord("D"))
+        assert app.store is real
+        assert app.view == "zoom" and app.current_tabs()[app.tab] == "Sessions"
+        assert app.current_session().id == "ses_1"
+        assert {w.title for w in app.loaded} == {"real one", "real two"}
+        assert app.notice == "real data"
+        assert calls == [(True, "opencode")]  # real store was already cached
+    finally:
+        ot.make_store = real_make_store
 
 
 def test_fuzzy_score_matches_subsequences():
