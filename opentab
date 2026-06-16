@@ -11,6 +11,7 @@ import copy
 import csv
 import glob
 import json
+import locale
 import os
 import random
 import re
@@ -6464,12 +6465,40 @@ def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
     return Store(args.db, args), "OpenTab: loading OpenCode database…\r"
 
 
+def enable_unicode_locale() -> None:
+    # ncurses renders the Unicode bars/blocks (█ ▁▂▃, the ─ rules) only when the C
+    # library is in a UTF-8 locale; otherwise it drops those multibyte bytes and only
+    # the (locale-independent) ACS box frame survives. CPython applies the env locale
+    # to LC_CTYPE at startup, so this already works wherever $LANG is a UTF-8 locale
+    # (macOS, most servers). WSL typically ships with $LANG unset or "C" -- so apply
+    # the env locale first, then, if that didn't land on UTF-8, force a UTF-8 locale
+    # so the chart renders regardless of how the shell is configured. opentab does no
+    # locale-aware formatting (explicit f-strings, code-point sorts), so forcing one
+    # is side-effect-free. Must run before curses initscr().
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
+    try:
+        if "utf" in locale.nl_langinfo(locale.CODESET).lower():
+            return
+    except (AttributeError, ValueError):
+        return  # nl_langinfo/CODESET unavailable -- leave the locale as-is
+    for name in ("C.UTF-8", "C.utf8", "en_US.UTF-8"):
+        try:
+            locale.setlocale(locale.LC_ALL, name)
+            return
+        except locale.Error:
+            continue
+
+
 def main() -> int:
     if sys.version_info < MIN_PYTHON:
         raise SystemExit(
             f"OpenTab requires Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ "
             f"(found {sys.version_info[0]}.{sys.version_info[1]})."
         )
+    enable_unicode_locale()
     args = parse_args()  # handles --help first, so it works even without curses
     if curses is None:
         raise SystemExit(
