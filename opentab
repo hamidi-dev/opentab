@@ -385,6 +385,15 @@ class MonthSummary:
     unpriced_tokens: int
 
 
+# Sentinel YearSummary.year for the synthetic "All years" row, which unscopes the
+# Months panel to the whole history. Picked so it never collides with a real "YYYY".
+ALL_YEARS = "all"
+
+
+def year_label(value: str) -> str:
+    return "All years" if value == ALL_YEARS else value
+
+
 @dataclass
 class YearSummary:
     year: str
@@ -2466,7 +2475,7 @@ class Renderer:
 
     def year_row_text(self, year: YearSummary, marker: str) -> str:
         return (
-            f"{marker} {year.year}    {money(year.cost):>9} "
+            f"{marker} {year_label(year.year):<9} {money(year.cost):>9} "
             f"{human_tokens(year.tokens):>7} {year.workflows:>3} ses {year.subagents:>3} subs"
         )
 
@@ -3065,7 +3074,9 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No years in range.", curses.color_pair(1))
             return
 
-        peak = max((yr.cost for yr in rows), default=0.0)
+        # Scale per-year bars among the concrete years; "All years" (the sum) would
+        # otherwise dwarf them. cost_bar clamps the all-years row to a full bar.
+        peak = max((yr.cost for yr in rows if yr.year != ALL_YEARS), default=0.0)
         bar_cells, text_w = self.bar_lane(w)
         visible = h - 3
         start = max(0, min(self.year_index - visible // 2, max(0, len(rows) - visible)))
@@ -3231,7 +3242,13 @@ class Renderer:
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
     ) -> None:
         year = self.selected_year_summary
-        title = "Year" if year is None else f"Year {year.year}"
+        title = (
+            "Year"
+            if year is None
+            else "All years"
+            if year.year == ALL_YEARS
+            else f"Year {year.year}"
+        )
         self.box(stdscr, y, x, h, w, title, active=active)
         if year is None:
             self.write(stdscr, y + 2, x + 2, "No year selected.", curses.color_pair(1))
@@ -3574,7 +3591,7 @@ class Renderer:
     def year_overview(self, year: YearSummary, width: int) -> list[str]:
         lines = [
             "# Yearly Insight",
-            f"Year:            {year.year}",
+            f"Year:            {year_label(year.year)}",
             f"Cost:            {money(year.cost)}",
             f"Share of range:  {pct(year.cost, self.range_cost_total())}",
             f"Tokens:          {tokens(year.tokens)}",
@@ -4408,15 +4425,22 @@ class App:
         # All screen output lives on the Renderer; the App stays curses-free
         # (aside from the modal prompt line in prompt_text).
         self.renderer = Renderer(self)
-        self._anchor_default_year()
+        self._anchor_default_selection()
 
-    def _anchor_default_year(self) -> None:
-        # Start on the current calendar year when it has data, else the newest year
-        # present. Called at startup, after restoring saved prefs, and on a source
-        # switch -- any time the dataset (and so the years list) changes under us.
+    def _anchor_default_selection(self) -> None:
+        # Open on "All years" (so the Months panel lists the whole history) with the
+        # Months focus sitting on the current calendar month -- falling back to the
+        # newest month when this month has no data yet. Called at startup, after
+        # restoring saved prefs, and on a source switch -- any time the dataset
+        # (and so the years/months) changes under us. The year must be set before
+        # reading self.months, which is scoped to the focused year.
         years = self.years
-        current = str(datetime.now().year)
-        self.year_index = next((i for i, y in enumerate(years) if y.year == current), 0)
+        # Prefer the synthetic "All years" row; with a single year it isn't shown,
+        # so fall back to that lone year (index 0).
+        self.year_index = next((i for i, y in enumerate(years) if y.year == ALL_YEARS), 0)
+        months = self.months
+        now = datetime.now().strftime("%Y-%m")
+        self.month_index = next((i for i, m in enumerate(months) if m.month == now), 0)
 
     def _invalidate_workflow_cache(self) -> None:
         self._rw_key = self._rw_cache = self._aw_key = self._aw_cache = None
@@ -4585,7 +4609,23 @@ class App:
             for year, workflows in grouped.items()
         ]
         # Always newest-first — left-hand nav is date-sorted.
-        return sorted(years, key=lambda y: y.year, reverse=True)
+        years.sort(key=lambda y: y.year, reverse=True)
+        # An "All years" row at the top unscopes the Months panel to the full
+        # history. Only worth showing with >1 year (otherwise it just mirrors it).
+        if len(years) > 1:
+            allw = self.all_workflows
+            years.insert(
+                0,
+                YearSummary(
+                    year=ALL_YEARS,
+                    workflows=len(allw),
+                    cost=sum(w.total_cost for w in allw),
+                    tokens=sum(w.total_tokens for w in allw),
+                    subagents=sum(w.subagents for w in allw),
+                    unpriced_tokens=sum(w.unpriced_tokens for w in allw),
+                ),
+            )
+        return years
 
     @property
     def months(self) -> list[MonthSummary]:
@@ -4683,7 +4723,9 @@ class App:
         if not rows:
             return None
         self.year_index = max(0, min(self.year_index, len(rows) - 1))
-        return rows[self.year_index].year
+        year = rows[self.year_index].year
+        # "All years" scopes to the whole history -> no single-year filter.
+        return None if year == ALL_YEARS else year
 
     @property
     def focused_month(self) -> str | None:
@@ -4797,7 +4839,10 @@ class App:
     def selection_anchor(
         self,
     ) -> tuple[str | None, str | None, str | None, str | None, str | None]:
-        year = self.focused_year
+        # Capture the selected row's value (not focused_year, which is None for the
+        # "All years" row) so an "All years" selection survives a reload/source switch.
+        sel_year = self.selected_year_summary
+        year = sel_year.year if sel_year else None
         month = self.focused_month
         day = self.active_day if month else None
         project = self.selected_project_summary
@@ -5188,7 +5233,7 @@ class App:
         self.focus = "months"
         self.tab = self.scroll = 0
         self.workflow_index = self.month_index = self.day_index = self.project_index = 0
-        self._anchor_default_year()
+        self._anchor_default_selection()
         self.notice = f"source: {self.store.source_name}"
 
     # --- Export / clipboard / open -------------------------------------------
@@ -5547,9 +5592,15 @@ class App:
         # walks back. No-op in session view and projects mode (no left-panel focus).
         if self.view == "session" or self.browse_mode == "projects":
             return
+        # Keep the same detail tab across the switch (Models stays on Models). Carry it
+        # by name since the levels differ; fall back to Overview when the target level
+        # lacks it (e.g. Days has no Models tab).
+        tabs = self.current_tabs()
+        active_tab = tabs[self.tab % len(tabs)]
         i = self.FOCUS_CYCLE.index(self.focus) if self.focus in self.FOCUS_CYCLE else 1
         self.focus = self.FOCUS_CYCLE[(i + step) % len(self.FOCUS_CYCLE)]
-        self.tab = 0
+        new_tabs = self.current_tabs()
+        self.tab = new_tabs.index(active_tab) if active_tab in new_tabs else 0
         self.scroll = 0
         self.zoom_project = None
 
@@ -6157,6 +6208,8 @@ class App:
         # A year is just a coarser date prefix than a month (created_at is
         # "YYYY-MM-DD ..."), so the same startswith match selects the whole year.
         rows = self.all_workflows if source is None else source
+        if year == ALL_YEARS:  # the synthetic "All years" row spans every session
+            return list(rows)
         return [workflow for workflow in rows if workflow.created_at.startswith(year)]
 
     def workflows_for_project(
@@ -6344,9 +6397,9 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         if saved_range:
             try:
                 app.set_range_from_text(saved_range)
-                # The restored range can change which years have data, so re-pick
-                # the default (current year, else newest) against the new slice.
-                app._anchor_default_year()
+                # The restored range can change which years/months have data, so
+                # re-pick the default (All years, current month) against the new slice.
+                app._anchor_default_selection()
             except ValueError:
                 pass
     if state.get("sort_by") in app.sort_options:

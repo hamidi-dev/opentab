@@ -2274,7 +2274,8 @@ def test_years_panel_groups_and_scopes_months_to_the_focused_year():
             workflow("c", "2025-11-01 12:00:00", cost=4),
         ]
     )
-    assert [y.year for y in app.years] == ["2026", "2025"]  # newest-first
+    # An "All years" row leads, then the concrete years newest-first.
+    assert [y.year for y in app.years] == [ot.ALL_YEARS, "2026", "2025"]
 
     # The middle panel shows only the focused year's months.
     app.year_index = next(i for i, y in enumerate(app.years) if y.year == "2026")
@@ -2282,24 +2283,93 @@ def test_years_panel_groups_and_scopes_months_to_the_focused_year():
     app.year_index = next(i for i, y in enumerate(app.years) if y.year == "2025")
     assert [m.month for m in app.months] == ["2025-11"]
 
+    # "All years" unscopes Months to every month across every year.
+    app.year_index = next(i for i, y in enumerate(app.years) if y.year == ot.ALL_YEARS)
+    assert app.focused_year is None
+    assert [m.month for m in app.months] == ["2026-06", "2026-05", "2025-11"]
 
-def test_year_defaults_to_current_year_then_newest_fallback():
-    from datetime import datetime
 
-    cy = datetime.now().year
-    # Current year present -> start there (with focus on the Months panel).
+def test_all_years_row_omitted_with_a_single_year():
+    # With one year an "All years" row would just mirror it, so it's not shown.
     app = app_with(
         [
-            workflow("a", f"{cy}-03-01 12:00:00"),
-            workflow("b", f"{cy - 1}-03-01 12:00:00"),
+            workflow("a", "2026-06-01 12:00:00"),
+            workflow("b", "2026-05-01 12:00:00"),
+        ]
+    )
+    assert [y.year for y in app.years] == ["2026"]
+
+
+def test_drilling_into_all_years_scopes_to_every_session():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=2),
+            workflow("b", "2025-11-01 12:00:00", cost=4),
+        ]
+    )
+    app.focus = "years"
+    app.year_index = next(i for i, y in enumerate(app.years) if y.year == ot.ALL_YEARS)
+    assert {w.id for w in app.zoom_scope_workflows()} == {"a", "b"}
+
+
+def test_cycle_focus_keeps_the_active_tab_by_name():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=2),
+            workflow("b", "2025-11-01 12:00:00", cost=4),
+        ]
+    )
+    app.focus = "years"
+    app.tab = app.current_tabs().index("Models")
+    app.cycle_focus(1)  # years -> months
+    assert app.focus == "months"
+    assert app.current_tabs()[app.tab] == "Models"  # carried over
+    app.cycle_focus(1)  # months -> days (which has no Models tab)
+    assert app.focus == "days"
+    assert app.current_tabs()[app.tab] == "Overview"  # graceful fallback
+
+
+def test_default_opens_on_all_years_focused_on_current_month():
+    from datetime import datetime
+
+    now = datetime.now()
+    cm = now.strftime("%Y-%m")
+    # Multiple years -> open on "All years" (focused_year None) with the Months panel
+    # focused, sitting on the current month.
+    app = app_with(
+        [
+            workflow("a", f"{cm}-01 12:00:00"),  # this month
+            workflow("b", f"{now.year - 1}-03-01 12:00:00"),  # a prior year
         ]
     )
     assert app.focus == "months"
-    assert app.focused_year == str(cy)
+    assert app.focused_year is None  # "All years"
+    assert app.months[app.month_index].month == cm  # current month is the selection
 
-    # Current year absent -> fall back to the newest year with data.
-    older = app_with([workflow("a", f"{cy - 2}-03-01 12:00:00")])
-    assert older.focused_year == str(cy - 2)
+
+def test_default_month_falls_back_to_newest_when_current_absent():
+    from datetime import datetime
+
+    py = datetime.now().year - 1
+    app = app_with(
+        [
+            workflow("a", f"{py}-08-01 12:00:00"),
+            workflow("b", f"{py - 1}-02-01 12:00:00"),
+        ]
+    )
+    # Two years -> still "All years"; current month has no data, so the Months focus
+    # falls back to the newest month overall.
+    assert app.focused_year is None
+    assert app.months[app.month_index].month == f"{py}-08"
+
+
+def test_single_year_defaults_to_that_year():
+    from datetime import datetime
+
+    py = datetime.now().year - 2
+    # One year -> no "All years" row; default lands on that year.
+    older = app_with([workflow("a", f"{py}-03-01 12:00:00")])
+    assert older.focused_year == str(py)
 
 
 def test_tab_cycles_year_month_day_focus():
@@ -2323,7 +2393,7 @@ def test_moving_year_reanchors_months_and_changes_the_visible_months():
         ]
     )
     app.focus = "years"
-    app.year_index = 0  # 2026
+    app.year_index = next(i for i, y in enumerate(app.years) if y.year == "2026")
     app.month_index = 5  # deliberately stale
     app.move(1)  # step to the next (older) year
     assert app.focused_year == "2025"
