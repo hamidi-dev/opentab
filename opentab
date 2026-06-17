@@ -12,6 +12,7 @@ import csv
 import glob
 import json
 import locale
+import math
 import os
 import random
 import re
@@ -490,22 +491,88 @@ def week_key(date_str: str) -> str:
     return (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
 
 
-HEAT_MAX_LEVEL = 6  # shades 1..6 (plus level 0 = an in-range day with no spend)
-HEAT_GLYPHS = "·░▒▓███"  # one glyph per level 0..HEAT_MAX_LEVEL; hot days are solid blocks
-# (the color ramp green→red carries the top end; · marks a tracked-but-empty day)
+# The Calendar heat map's granularity is live-adjustable with +/- between these
+# bounds; level 0 is always an in-range day with no spend. More levels = more shades,
+# capped at the number of maximally-distinct colors the ramp can hold (so no two
+# adjacent levels ever look the same).
+HEAT_MIN_LEVELS = 3
+HEAT_MAX_LEVELS = 11
+HEAT_DEFAULT_LEVELS = 6
+HEAT_EMPTY_GLYPH = "·"  # a tracked-but-empty day (level 0)
+HEAT_RAMP = "░▒▓█"  # density glyphs; on 256-color the *color* carries the fine steps
+
+# 256-color: the high-contrast green→red edge of the xterm color cube — eleven
+# maximally-distinct steps (pure green, lime, yellow, orange, pure red). We sample N
+# of these so each level is a clearly different hue even at the finest granularity;
+# the four density glyphs necessarily repeat, but the color never does.
+HEAT_CUBE_RAMP = (46, 82, 118, 154, 190, 226, 220, 214, 208, 202, 196)
 
 
-def heat_level(value: float, peak: float) -> int:
-    # Bucket a day's spend into one of HEAT_MAX_LEVEL shades relative to the busiest
-    # day of the year, so the peak day is always the hottest and any nonzero day shows
-    # at least the faintest tier (mirroring cost_bar's "a sliver is never nothing").
+def heat_level(value: float, peak: float, levels: int) -> int:
+    # Bucket a day's spend into one of `levels` shades relative to the busiest day of
+    # the year. Spend spans orders of magnitude — a few heavy days dwarf the rest — so a
+    # *linear* ramp dumps almost every ordinary day into the faintest tier and the map
+    # reads as one flat shade. A log scale spreads the common low-spend days across the
+    # whole ramp instead, while the peak day still tops out and any nonzero day shows at
+    # least the faintest tier (mirroring cost_bar's "a sliver is never nothing").
     if value <= 0 or peak <= 0:
         return 0
-    frac = value / peak
-    for level in range(1, HEAT_MAX_LEVEL):
-        if frac <= level / HEAT_MAX_LEVEL:
-            return level
-    return HEAT_MAX_LEVEL
+    if value >= peak:
+        return levels
+    frac = math.log1p(value) / math.log1p(peak)
+    return max(1, min(levels, math.ceil(frac * levels)))
+
+
+def heat_band_label(v: float) -> str:
+    # Compact dollar label for a legend bound: whole dollars past $10 (no gratuitous
+    # decimals), but a decimal below it so the log scale's bunched low-end bounds stay
+    # distinct instead of all rounding to the same "$1".
+    if v >= 10:
+        return f"${v:,.0f}"
+    if v >= 1:
+        return f"${v:.1f}".rstrip("0").rstrip(".")
+    return f"${v:.2f}".rstrip("0").rstrip(".")
+
+
+def _heat_ansi_ramp() -> tuple[tuple[int, str], ...]:
+    # 8-color fallback: only green/yellow/red exist, so each level is a distinct
+    # (color, glyph) *pair* climbing in heat, keeping adjacent levels apart where the
+    # 256-color ramp would collapse. Eleven pairs, matching HEAT_MAX_LEVELS.
+    g, y, r = curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_RED
+    return (
+        (g, "░"), (g, "▒"), (g, "▓"),
+        (y, "░"), (y, "▒"), (y, "▓"), (y, "█"),
+        (r, "░"), (r, "▒"), (r, "▓"), (r, "█"),
+    )  # fmt: skip
+
+
+def heat_sample(n: int, ramp: tuple) -> list:
+    # Evenly pick n entries from ramp; distinct whenever n <= len(ramp) (our level cap).
+    if n <= 1:
+        return [ramp[-1]]
+    return [ramp[round(i * (len(ramp) - 1) / (n - 1))] for i in range(n)]
+
+
+def heat_glyph(level: int, levels: int, has256: bool = True) -> str:
+    # The glyph for a level. On 256-color it's a coarse ░▒▓█ density (the color carries
+    # the real distinction); on 8-color it's the paired glyph that keeps each level
+    # apart from its neighbours within the same ANSI color.
+    if level <= 0:
+        return HEAT_EMPTY_GLYPH
+    if not has256:
+        return heat_sample(levels, _heat_ansi_ramp())[level - 1][1]
+    idx = level * len(HEAT_RAMP) // max(1, levels)
+    return HEAT_RAMP[min(len(HEAT_RAMP) - 1, idx)]
+
+
+def heat_palette(n: int, has256: bool) -> list[int]:
+    # `n` colors from green (coolest) to red (hottest), sampled from the high-contrast
+    # ramp so every level is a genuinely different shade. 256-color walks the cube's
+    # green→red edge; 8-color collapses to the three ANSI heat colors (paired with the
+    # glyph by heat_glyph to stay distinct).
+    if has256:
+        return list(heat_sample(n, HEAT_CUBE_RAMP))
+    return [color for color, _glyph in heat_sample(n, _heat_ansi_ramp())]
 
 
 MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -3943,7 +4010,8 @@ class Renderer:
             "  c                switch data source: OpenCode / Claude Code / Codex / all (when present)",
             "  T                Trends overlay: Daily / Weekly / Monthly / Calendar / Models / Providers / Sources",
             "                   (h/l tabs; j/k month/week/year; $ what-if prices)",
-            "                   Calendar is a spend heat map: ↑↓←→ pick a day, Enter opens it",
+            "                   Calendar is a spend heat map: ↑↓←→ pick a day, Enter opens it,",
+            "                   +/- adjusts the color granularity",
             "  P                model prices (the models.dev API rates used for $ what-if)",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
@@ -4040,7 +4108,7 @@ class Renderer:
         current = tabs[self.trend_tab % len(tabs)]
         unit = {"Daily": "month", "Weekly": "week"}.get(current)
         if current == "Calendar":
-            hint = "↑↓←→ pick · Enter open · h/l tabs · esc"
+            hint = "↑↓←→ pick · +/- shades · Enter open · esc"
         elif unit:
             hint = f"h/l tabs · j/k {unit} · esc closes"
         else:
@@ -4263,6 +4331,8 @@ class Renderer:
         peak = max(by_date.values(), default=0.0)
         total = sum(by_date.values())
         active = sum(1 for v in by_date.values() if v > 0)
+        levels = self.cal_levels  # live granularity (+/-): more levels = more shades
+        self._sync_heat_palette()  # restyle the color pairs to the current granularity
 
         gutter = 4  # the weekday label ("Mon") plus a trailing space, then the grid
         pitch = 2  # one glyph + a one-column gap per day, so cells don't run together
@@ -4313,7 +4383,12 @@ class Renderer:
                 cell = grid[r][start_col + c]
                 if cell is None:
                     continue  # a padding day outside the year: leave it blank
-                self.write(stdscr, ry, gx + c * pitch, *self._heat_cell(heat_level(cell, peak)))
+                self.write(
+                    stdscr,
+                    ry,
+                    gx + c * pitch,
+                    *self._heat_cell(heat_level(cell, peak, levels), levels),
+                )
 
         # Frame the highlighted day in the gap columns around its cell, so the brackets
         # never overwrite a neighbouring glyph.
@@ -4326,26 +4401,28 @@ class Renderer:
                 self.write(stdscr, cy, cxx - 1, "[", curses.color_pair(6) | curses.A_BOLD)
                 self.write(stdscr, cy, cxx + 1, "]", curses.color_pair(6) | curses.A_BOLD)
 
-        # Legend: spell out the per-day dollar band each shade stands for, scaled to
-        # the busiest day, so the colors read as numbers (· is a day with no spend;
-        # each shade is "up to" its fraction of the peak, the hottest = the peak day).
+        # Legend: spell out the per-day dollar band each shade stands for, on the same
+        # log scale as the cells, so the colors read as numbers (· is a day with no
+        # spend; each shade is "up to" its bound, the hottest = the peak day). The bounds
+        # bunch up toward the low end — that's the log scale spreading the common days.
         ly = top + 3 + 6 * row_pitch + 2  # one blank line below the last weekday row
         lx = left + xoff
+        sep = "  " if levels <= 6 else " "  # tighten the bands so a finer ramp still fits
         if peak > 0:
             self.write(stdscr, ly, lx, "per day  ", curses.color_pair(1))
             lx += 9
-            bounds = [peak * i / HEAT_MAX_LEVEL for i in range(HEAT_MAX_LEVEL + 1)]
-            for level in range(HEAT_MAX_LEVEL + 1):
-                self.write(stdscr, ly, lx, *self._heat_cell(level))
+            bounds = [math.expm1(math.log1p(peak) * i / levels) for i in range(levels + 1)]
+            for level in range(levels + 1):
+                self.write(stdscr, ly, lx, *self._heat_cell(level, levels))
                 lx += 1
-                label = " $0  " if level == 0 else f" ≤${bounds[level]:,.0f}  "
+                label = f" $0{sep}" if level == 0 else f" ≤{heat_band_label(bounds[level])}{sep}"
                 self.write(stdscr, ly, lx, label, curses.color_pair(1))
                 lx += len(label)
         else:
             self.write(stdscr, ly, lx, "Less ", curses.color_pair(1))
             lx += 5
-            for level in range(HEAT_MAX_LEVEL + 1):
-                self.write(stdscr, ly, lx, *self._heat_cell(level))
+            for level in range(levels + 1):
+                self.write(stdscr, ly, lx, *self._heat_cell(level, levels))
                 lx += 1
             self.write(stdscr, ly, lx, " More", curses.color_pair(1))
         if total > 0:
@@ -4378,13 +4455,18 @@ class Renderer:
                 break
             self.write_rich(stdscr, row_y, left + xoff, shorten(line, width), curses.A_NORMAL)
 
-    @staticmethod
-    def _heat_cell(level: int) -> tuple[str, int]:
-        # (glyph, attr) for one heat level: the ░▒▓█ density doubles as the level so the
-        # map still reads where the color ramp collapses (8-color / mono terminals).
-        if level == 0:
-            return HEAT_GLYPHS[0], curses.color_pair(1) | curses.A_DIM
-        return HEAT_GLYPHS[level], curses.color_pair(7 + level) | curses.A_BOLD
+    def _sync_heat_palette(self) -> None:
+        # Re-init the heat color pairs (8..) to the current granularity so +/- restyles
+        # the map live. App stays curses-free, so this init_pair lives in the renderer.
+        for i, col in enumerate(heat_palette(self.cal_levels, self.has256)):
+            curses.init_pair(8 + i, col, -1)
+
+    def _heat_cell(self, level: int, levels: int) -> tuple[str, int]:
+        # (glyph, attr) for one heat level: a distinct color per level, plus a glyph that
+        # keeps levels apart where the color ramp collapses (8-color / mono terminals).
+        if level <= 0:
+            return HEAT_EMPTY_GLYPH, curses.color_pair(1) | curses.A_DIM
+        return heat_glyph(level, levels, self.has256), curses.color_pair(7 + level) | curses.A_BOLD
 
     def trend_models(self, width: int, height: int) -> list[str]:
         agg = self.aggregate_models(self.all_workflows)
@@ -4619,6 +4701,8 @@ class App:
         self.trend_week_index = 0  # which week the Weekly tab shows (0 = newest)
         self.trend_year_index = 0  # which year the Calendar tab shows (0 = newest)
         self.cal_cursor: str | None = None  # highlighted day on the Calendar tab (None = peak)
+        self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
+        self.has256 = False  # set in run() once curses knows the terminal's color depth
         self._cal_geom: tuple | None = None  # last calendar grid geometry, for mouse hit-testing
         self._cal_return: str | None = None  # day drilled in from the heat map; Esc returns there
         self.show_prices = False  # the "P" model-prices reference overlay
@@ -5984,6 +6068,7 @@ class App:
         # warm amber + orange accents for focus/brand, green for money, soft red
         # reserved for genuine alerts. 256-color where available, 8-color fallback.
         has256 = curses.COLORS >= 256
+        self.has256 = has256  # draw_calendar regenerates its ramp against this
         grey = 245 if has256 else curses.COLOR_WHITE
         amber = 214 if has256 else curses.COLOR_YELLOW
         slate = 67 if has256 else curses.COLOR_BLUE
@@ -5997,23 +6082,11 @@ class App:
         curses.init_pair(5, soft_red, -1)  # alerts only: errors, billions of tokens
         curses.init_pair(6, accent, -1)  # active panel border / focus
         curses.init_pair(7, curses.COLOR_BLACK, accent)  # active tab
-        # Heat-map ramp (pairs 8..8+HEAT_MAX_LEVEL-1) for the Calendar tab: a
-        # green→lime→yellow→orange→red gradient where a hotter shade means a heavier
-        # spend day and the busiest tier is red. The glyph density (░▒▓█) also encodes
-        # the low end, so it still reads on an 8-color terminal where these hues collapse.
-        heat = (
-            (65, 71, 149, 185, 208, 196)
-            if has256
-            else (
-                curses.COLOR_GREEN,
-                curses.COLOR_GREEN,
-                curses.COLOR_GREEN,
-                curses.COLOR_YELLOW,
-                curses.COLOR_YELLOW,
-                curses.COLOR_RED,
-            )
-        )
-        for i, col in enumerate(heat):
+        # Heat-map ramp (pairs 8..8+HEAT_MAX_LEVELS-1) for the Calendar tab: a green→red
+        # gradient where a hotter shade means a heavier spend day. The granularity is
+        # live (+/- on the tab), so draw_calendar re-inits these per frame to match
+        # self.cal_levels; seed the current count here so the pairs exist beforehand.
+        for i, col in enumerate(heat_palette(self.cal_levels, has256)):
             curses.init_pair(8 + i, col, -1)
         stdscr.keypad(True)
         # Wheel-down is BUTTON5, but some curses builds (notably macOS system
@@ -6113,8 +6186,15 @@ class App:
         return True
 
     def _calendar_key(self, key: int) -> bool:
-        # Arrow keys walk the day cursor (←/→ = ∓1 week, ↑/↓ = ∓1 day, clamped to the
+        # +/- tune the heat-map granularity live (more shades = finer spend bands);
+        # arrow keys walk the day cursor (←/→ = ∓1 week, ↑/↓ = ∓1 day, clamped to the
         # shown year); Enter drills into the highlighted day.
+        if key in (ord("+"), ord("=")):
+            self.cal_levels = min(HEAT_MAX_LEVELS, self.cal_levels + 1)
+            return True
+        if key in (ord("-"), ord("_")):
+            self.cal_levels = max(HEAT_MIN_LEVELS, self.cal_levels - 1)
+            return True
         cursor = self.calendar_cursor()
         if cursor is None:
             return True
@@ -6186,9 +6266,13 @@ class App:
                 10,
                 13,
                 curses.KEY_ENTER,
+                ord("+"),
+                ord("="),
+                ord("-"),
+                ord("_"),
             ):
-                # On the Calendar tab the arrows drive the day cursor and Enter drills
-                # in; tab/year nav stays on the letter keys (h/l/j/k) below.
+                # On the Calendar tab the arrows drive the day cursor, +/- tune the heat
+                # granularity, and Enter drills in; tab/year nav stays on the letter keys.
                 return self._calendar_key(key)
             if key in (ord("h"), curses.KEY_LEFT):
                 self.trend_tab = (self.trend_tab - 1) % len(self.trend_tabs)
@@ -6742,6 +6826,7 @@ def save_state(app: App) -> None:
         "ignored_projects": sorted(app.ignored_projects),
         "show_api_prices": app.show_api_prices,
         "source": app.source_key,  # restore the last source (opencode/claude/all) next run
+        "cal_levels": app.cal_levels,  # the Calendar heat-map granularity (+/-)
     }
     path = state_path()
     try:
@@ -6783,6 +6868,9 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     saved_api = state.get("show_api_prices")
     if saved_api is not None and not app.store.demo:
         app.show_api_prices = bool(saved_api)
+    saved_levels = state.get("cal_levels")
+    if isinstance(saved_levels, int):
+        app.cal_levels = max(HEAT_MIN_LEVELS, min(HEAT_MAX_LEVELS, saved_levels))
     app.notice = ""
 
 

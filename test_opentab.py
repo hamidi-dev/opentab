@@ -295,12 +295,57 @@ def test_trends_daily_month_navigation_keys():
 
 
 def test_heat_level_buckets():
-    assert ot.heat_level(0, 10) == 0  # no spend -> no shade
-    assert ot.heat_level(5, 0) == 0  # no peak -> no shade, never divides by zero
-    assert ot.heat_level(10, 10) == ot.HEAT_MAX_LEVEL  # the busiest day is the hottest tier
-    assert ot.heat_level(1, 1000) == 1  # any nonzero day shows at least the faintest tier
-    # The tiers climb monotonically through the peak's sixths (HEAT_MAX_LEVEL == 6).
-    assert [ot.heat_level(v, 6) for v in (1, 2, 3, 4, 5, 6)] == [1, 2, 3, 4, 5, 6]
+    assert ot.heat_level(0, 10, 6) == 0  # no spend -> no shade
+    assert ot.heat_level(5, 0, 6) == 0  # no peak -> no shade, never divides by zero
+    assert ot.heat_level(10, 10, 6) == 6  # the busiest day is the hottest tier
+    assert ot.heat_level(0.001, 1000, 6) == 1  # any nonzero day shows at least the faintest tier
+    # Log scale: levels climb monotonically with spend, and a mid-magnitude day lands
+    # mid-ramp instead of being shoved into the faintest tier like a linear ramp would.
+    climbing = [ot.heat_level(v, 1000, 6) for v in (1, 10, 100, 1000)]
+    assert climbing == sorted(climbing) and climbing[-1] == 6  # non-decreasing, peak on top
+    assert 1 < ot.heat_level(1000**0.5, 1000, 6) < 6  # the geometric midpoint is mid-ramp
+
+
+def test_log_scale_spreads_a_skewed_spend_distribution():
+    # The user's complaint: a few heavy days set a high peak, the bulk are small, and a
+    # linear ramp dumped nearly all of them into tier 1 so every cell looked the same.
+    # The log scale must light the common low-spend days up across several distinct tiers.
+    peak = 127.0
+    bulk = (0.5, 1, 2, 4, 8)  # ordinary days, all well under the peak
+    shades = {ot.heat_level(v, peak, 11) for v in bulk}
+    assert len(shades) >= 4  # not one flat shade
+
+
+def test_heat_palette_grows_greener_to_red():
+    # Every level is a genuinely distinct shade on a 256-color terminal, all the way up
+    # to the finest granularity, and the ramp runs from green to red.
+    for n in range(ot.HEAT_MIN_LEVELS, ot.HEAT_MAX_LEVELS + 1):
+        pal = ot.heat_palette(n, has256=True)
+        assert len(pal) == n and len(set(pal)) == n  # no two levels share a color
+    full = ot.heat_palette(ot.HEAT_MAX_LEVELS, has256=True)
+    cool, hot = full[0], full[-1]  # cube index = 16 + 36*r + 6*g + b (r,g,b in 0..5)
+    assert (cool - 16) // 6 % 6 > (cool - 16) // 36  # cool end: green channel > red
+    assert (hot - 16) // 36 > (hot - 16) // 6 % 6  # hot end: red channel > green
+    # The 8-color fallback collapses the hues into the three ANSI heat colors.
+    eight = ot.heat_palette(6, has256=False)
+    assert eight[0] == ot.curses.COLOR_GREEN and eight[-1] == ot.curses.COLOR_RED
+
+
+def test_heat_levels_are_visually_distinct():
+    # The user's complaint: two adjacent legend swatches looked identical. Guard it —
+    # on 256-color every level is a distinct color; on 8-color (where only three colors
+    # exist) every level is a distinct (color, glyph) pair, so none ever look the same.
+    for n in range(ot.HEAT_MIN_LEVELS, ot.HEAT_MAX_LEVELS + 1):
+        colors = ot.heat_palette(n, has256=False)
+        glyphs = [ot.heat_glyph(lvl, n, has256=False) for lvl in range(1, n + 1)]
+        assert len(set(zip(colors, glyphs))) == n  # no repeated (color, glyph) combo
+
+
+def test_heat_glyph_spans_the_density_ramp():
+    assert ot.heat_glyph(0, 6) == "·"  # an in-range day with no spend
+    for levels in (3, 6, 9):
+        assert ot.heat_glyph(1, levels) in "░▒"  # the faintest tier is light
+        assert ot.heat_glyph(levels, levels) == "█"  # the hottest tier is a solid block
 
 
 def test_calendar_cells_layout():
@@ -352,18 +397,19 @@ def test_draw_calendar_paints_heat_grid():
     app.trend_year_index = 0
     # Wide enough that all 53 weeks (so every month) fit without truncation.
     screen = FakeScreen(24, 130)
-    # color_pair() needs a live initscr(); stub it so the painter runs headless.
-    orig = ot.curses.color_pair
+    # color_pair()/init_pair() need a live initscr(); stub them so it runs headless.
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
     ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
     try:
         app.renderer.draw_calendar(screen, 0, 0, 24, 130)
     finally:
-        ot.curses.color_pair = orig
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
     text = screen_text(screen)
     assert "Spend calendar · 2026" in text  # heading names the navigated year
     assert "Mon" in text and "Sun" in text  # every weekday row is labeled
     assert "Jan" in text and "Dec" in text  # all twelve months are labeled
-    assert "per day" in text and "≤$25" in text  # legend names each shade's $ band (no decimals)
+    assert "per day" in text and "≤$50" in text  # legend's hottest band is the peak day
     assert "total" in text and "$50.00" in text  # peak day priced into the summary
     assert "█" in text  # the busiest day paints the hottest shade
     assert any(g in text for g in "·░▒▓")  # cooler tiers (empty + light days) render too
@@ -396,6 +442,22 @@ def test_calendar_arrow_keys_walk_the_day_cursor():
     app.cal_cursor = "2026-01-01"
     app.handle_key(None, ot.curses.KEY_LEFT)  # would land in 2025 -> ignored
     assert app.cal_cursor == "2026-01-01"
+
+
+def test_calendar_plus_minus_tunes_granularity():
+    app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
+    open_calendar(app)
+    assert app.cal_levels == ot.HEAT_DEFAULT_LEVELS
+    app.handle_key(None, ord("+"))  # one more shade
+    assert app.cal_levels == ot.HEAT_DEFAULT_LEVELS + 1
+    for _ in range(10):  # spam + past the ceiling
+        app.handle_key(None, ord("="))  # '=' is '+' without shift
+    assert app.cal_levels == ot.HEAT_MAX_LEVELS  # clamped at the finest ramp
+    for _ in range(20):  # spam - past the floor
+        app.handle_key(None, ord("-"))
+    assert app.cal_levels == ot.HEAT_MIN_LEVELS  # clamped at the coarsest ramp
+    # The cursor is untouched by granularity changes.
+    assert app.cal_cursor in (None, "2026-07-09")
 
 
 def test_calendar_enter_drills_into_the_day():
@@ -445,12 +507,13 @@ def test_calendar_mouse_click_resolves_and_double_click_drills():
     app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
     open_calendar(app)
     screen = FakeScreen(24, 130)
-    orig = ot.curses.color_pair
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
     ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
     try:
         app.renderer.draw_calendar(screen, 0, 0, 24, 130)
     finally:
-        ot.curses.color_pair = orig
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
     gy0, row_pitch, gx, pitch, start_col, shown, year, grid_start = app._cal_geom
     cd = datetime.strptime("2026-07-09", "%Y-%m-%d")
     col = (cd - grid_start).days // 7 - start_col
@@ -925,6 +988,26 @@ def test_what_if_price_view_is_persisted_in_state():
                 os.environ["XDG_CONFIG_HOME"] = old_xdg
 
     assert restored.show_api_prices
+
+
+def test_calendar_granularity_is_persisted_in_state():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.cal_levels = ot.HEAT_MAX_LEVELS
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+            assert restored.cal_levels == ot.HEAT_DEFAULT_LEVELS  # the default until restored
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+    assert restored.cal_levels == ot.HEAT_MAX_LEVELS
 
 
 def test_source_is_persisted_and_restored():
