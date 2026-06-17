@@ -490,6 +490,49 @@ def week_key(date_str: str) -> str:
     return (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
 
 
+HEAT_GLYPHS = "·░▒▓█"  # heat level 0..4; level 0 is an in-range day with no spend
+
+
+def heat_level(value: float, peak: float) -> int:
+    # Bucket a day's spend into one of four shades relative to the busiest day of
+    # the year, so the peak day is always the hottest and any nonzero day shows at
+    # least the faintest tier (mirroring cost_bar's "a sliver is never nothing").
+    if value <= 0 or peak <= 0:
+        return 0
+    frac = value / peak
+    for level, upper in enumerate((0.25, 0.5, 0.75), start=1):
+        if frac <= upper:
+            return level
+    return 4
+
+
+MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def calendar_cells(
+    year: str, by_date: dict[str, float]
+) -> tuple[list[list[float | None]], list[tuple[int, str]], int]:
+    # GitHub-style contribution grid for one calendar year: 7 rows (Mon..Sun) by up
+    # to 53 week-columns. Each cell is that day's spend, or None for the padding days
+    # of the leading/trailing partial weeks that spill outside the year. Also returns
+    # the (column, "Jan".."Dec") anchors for the month labels, and the column count.
+    y = int(year)
+    jan1 = datetime(y, 1, 1)
+    dec31 = datetime(y, 12, 31)
+    grid_start = jan1 - timedelta(days=jan1.weekday())  # the Monday on/before Jan 1
+    ncols = (dec31 - grid_start).days // 7 + 1
+    grid: list[list[float | None]] = [[None] * ncols for _ in range(7)]
+    months: list[tuple[int, str]] = []
+    day = jan1
+    while day <= dec31:
+        col = (day - grid_start).days // 7
+        grid[day.weekday()][col] = by_date.get(day.strftime("%Y-%m-%d"), 0.0)
+        if day.day == 1:
+            months.append((col, MONTH_ABBR[day.month - 1]))  # English, never locale-folded
+        day += timedelta(days=1)
+    return grid, months, ncols
+
+
 def copy_to_clipboard(text: str) -> bool:
     for cmd in (
         ["pbcopy"],
@@ -3896,7 +3939,7 @@ class Renderer:
             "                   outside tmux: copies `cd <project> && <tool> resume <id>` to the clipboard",
             "  D                toggle real/demo data on the fly (demo anonymizes titles/paths)",
             "  c                switch data source: OpenCode / Claude Code / Codex / all (when present)",
-            "  T                Trends overlay: Daily / Weekly / Monthly / Models / Providers / Sources",
+            "  T                Trends overlay: Daily / Weekly / Monthly / Calendar / Models / Providers / Sources",
             "                   (h/l tabs; j/k month/week; $ toggles what-if prices)",
             "  P                model prices (the models.dev API rates used for $ what-if)",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
@@ -3992,12 +4035,17 @@ class Renderer:
         self.box(stdscr, y, 0, h, width, f"Trends · {self.range_label()}", active=True)
         tabs = self.trend_tabs
         current = tabs[self.trend_tab % len(tabs)]
-        unit = {"Daily": "month", "Weekly": "week"}.get(current)
+        unit = {"Daily": "month", "Weekly": "week", "Calendar": "year"}.get(current)
         hint = f"h/l tabs · j/k {unit} · esc closes" if unit else "h/l tabs · esc closes"
         self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, tabs, self.trend_tab, kind="trend")
         self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
         content_h = h - 4
+        if current == "Calendar":
+            # The heat map paints itself: its cells carry per-cell color attributes,
+            # so it bypasses the generic string -> write_rich path the other tabs use.
+            self.draw_calendar(stdscr, y + 3, 2, content_h, inner_w)
+            return
         if current == "Daily":
             lines = self.trend_daily(inner_w, content_h)
         elif current == "Weekly":
@@ -4180,6 +4228,127 @@ class Renderer:
         pairs = [(m, by_month.get(m, 0.0)) for m in month_range(keys[0], keys[-1])]
         return ["# Monthly spend (cost per month)", ""] + self._bar_chart(pairs, width, height - 2)
 
+    def draw_calendar(
+        self, stdscr: curses.window, top: int, left: int, height: int, width: int
+    ) -> None:
+        # GitHub-style spend heat map for one navigable calendar year: weekday rows
+        # (Mon..Sun) by week columns, each day shaded by how it compares to the year's
+        # busiest day. Paints its own cells (unlike the string-returning trend_* tabs)
+        # because the heat shades are per-cell color attributes, not regex spans.
+        years = self.calendar_years()
+        if not years:
+            self.write(stdscr, top, left, "No spend in the active range.", curses.color_pair(1))
+            return
+        if height < 13 or width < 24:
+            self.write(stdscr, top, left, "Not enough room for the calendar.", curses.color_pair(1))
+            return
+        idx = max(0, min(self.trend_year_index, len(years) - 1))
+        year = years[idx]
+        by_date: dict[str, float] = defaultdict(float)
+        sessions = 0
+        for w in self.all_workflows:
+            if w.created_at[:4] == year:
+                by_date[w.created_at[:10]] += w.total_cost
+                sessions += 1
+        grid, months, ncols = calendar_cells(year, by_date)
+        peak = max(by_date.values(), default=0.0)
+        total = sum(by_date.values())
+        active = sum(1 for v in by_date.values() if v > 0)
+
+        gutter = 4  # the weekday label ("Mon") plus a trailing space, then the grid
+        pitch = 2  # one glyph + a one-column gap per day, so cells don't run together
+        # A narrow panel can't hold all 53 weeks; show the most recent ones that fit.
+        max_cols = max(1, (width - gutter) // pitch)
+        start_col = max(0, ncols - max_cols)
+        shown = ncols - start_col
+        grid_w = shown * pitch
+        xoff = max(0, (width - (gutter + grid_w)) // 2)  # center the block in the panel
+        gx = left + xoff + gutter  # screen x of the first shown grid column
+        # Breathe vertically when the panel is tall: a blank line between weekday rows
+        # (else keep them tight so a short panel still fits in its 13-row minimum).
+        row_pitch = 2 if height >= 20 else 1
+
+        title = f"Spend calendar · {year}"
+        if len(years) > 1:
+            title += f"   ({idx + 1}/{len(years)} — j/k older/newer year)"
+        self.write(
+            stdscr,
+            top,
+            left + max(0, (width - len(title)) // 2),
+            title,
+            curses.color_pair(4) | curses.A_BOLD,
+        )
+
+        # Month labels anchored over each month's first week column; the spacing leaves
+        # room for all twelve, but skip any that would collide with the previous one.
+        next_free_x = gx
+        for col, abbr in months:
+            c = col - start_col
+            mx = gx + c * pitch
+            if c >= 0 and mx >= next_free_x and mx + len(abbr) <= gx + grid_w:
+                self.write(stdscr, top + 2, mx, abbr, curses.color_pair(1))
+                next_free_x = mx + len(abbr) + 1
+
+        # Every weekday gets its own labeled row; the heat grid sits to the right.
+        weekday_labels = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        for r in range(7):
+            ry = top + 3 + r * row_pitch
+            self.write(stdscr, ry, left + xoff, weekday_labels[r], curses.color_pair(1))
+            for c in range(shown):
+                cell = grid[r][start_col + c]
+                if cell is None:
+                    continue  # a padding day outside the year: leave it blank
+                self.write(stdscr, ry, gx + c * pitch, *self._heat_cell(heat_level(cell, peak)))
+
+        # Legend: spell out the per-day dollar band each shade stands for, scaled to
+        # the busiest day, so the colors read as numbers (· is a day with no spend;
+        # each shade is "up to" its quarter of the peak, the hottest = the peak day).
+        ly = top + 3 + 6 * row_pitch + 2  # one blank line below the last weekday row
+        lx = left + xoff
+        if peak > 0:
+            self.write(stdscr, ly, lx, "per day  ", curses.color_pair(1))
+            lx += 9
+            bounds = (0.0, 0.25 * peak, 0.5 * peak, 0.75 * peak, peak)
+            for level in range(5):
+                self.write(stdscr, ly, lx, *self._heat_cell(level))
+                lx += 1
+                label = " $0   " if level == 0 else f" ≤${bounds[level]:,.0f}   "
+                self.write(stdscr, ly, lx, label, curses.color_pair(1))
+                lx += len(label)
+        else:
+            self.write(stdscr, ly, lx, "Less ", curses.color_pair(1))
+            lx += 5
+            for level in range(5):
+                self.write(stdscr, ly, lx, *self._heat_cell(level))
+                lx += 1
+            self.write(stdscr, ly, lx, " More", curses.color_pair(1))
+        if total > 0:
+            peak_date = max(by_date, key=by_date.__getitem__)
+            summary = (
+                f"total {money(total)}   peak {money(peak)} on {peak_date}   {active} active days"
+            )
+        elif sessions:
+            summary = f"{sessions} sessions, no recorded spend this year"
+        else:
+            summary = "no spend this year"
+        self.write_rich(stdscr, ly + 1, left + xoff, shorten(summary, width), curses.A_NORMAL)
+        if total == 0 and sessions and not self.show_api_prices and ly + 2 < top + height:
+            self.write(
+                stdscr,
+                ly + 2,
+                left + xoff,
+                "$ prices subscription/credit usage at API list rates",
+                curses.color_pair(1),
+            )
+
+    @staticmethod
+    def _heat_cell(level: int) -> tuple[str, int]:
+        # (glyph, attr) for one heat level: the ░▒▓█ density doubles as the level so the
+        # map still reads where the color ramp collapses (8-color / mono terminals).
+        if level == 0:
+            return HEAT_GLYPHS[0], curses.color_pair(1) | curses.A_DIM
+        return HEAT_GLYPHS[level], curses.color_pair(7 + level) | curses.A_BOLD
+
     def trend_models(self, width: int, height: int) -> list[str]:
         agg = self.aggregate_models(self.all_workflows)
         rows = [(name, float(it["cost"])) for name, it in agg if float(it["cost"]) > 0]
@@ -4356,7 +4525,7 @@ class App:
     sort_options = ("cost", "tokens", "date", "subagents", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
-    trend_tabs = ("Daily", "Weekly", "Monthly", "Models", "Providers", "Sources")
+    trend_tabs = ("Daily", "Weekly", "Monthly", "Calendar", "Models", "Providers", "Sources")
 
     def __init__(self, store: Store, args: argparse.Namespace, source_key: str = ""):
         self.store = store
@@ -4411,6 +4580,7 @@ class App:
         self.trend_tab = 0
         self.trend_month_index = 0  # which month the Daily tab shows (0 = newest)
         self.trend_week_index = 0  # which week the Weekly tab shows (0 = newest)
+        self.trend_year_index = 0  # which year the Calendar tab shows (0 = newest)
         self.show_prices = False  # the "P" model-prices reference overlay
         self.prices_scroll = 0  # pager offset within that overlay
         self.sort_by = "cost"
@@ -5771,6 +5941,17 @@ class App:
         curses.init_pair(5, soft_red, -1)  # alerts only: errors, billions of tokens
         curses.init_pair(6, accent, -1)  # active panel border / focus
         curses.init_pair(7, curses.COLOR_BLACK, accent)  # active tab
+        # Heat-map ramp (pairs 8..11) for the Calendar tab: a green→amber→orange
+        # gradient where a hotter shade means a heavier spend day. The glyph density
+        # (░▒▓█) encodes the level too, so it still reads on an 8-color terminal
+        # where these hues collapse.
+        heat = (
+            (65, 71, 178, 208)
+            if has256
+            else (curses.COLOR_GREEN, curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_RED)
+        )
+        for i, col in enumerate(heat):
+            curses.init_pair(8 + i, col, -1)
         stdscr.keypad(True)
         # Wheel-down is BUTTON5, but some curses builds (notably macOS system
         # ncurses) don't expose BUTTON5_PRESSED; on them the wheel-down bit is the
@@ -5819,6 +6000,11 @@ class App:
             return min(index + 1, max(0, count - 1))
         return max(index - 1, 0)
 
+    def calendar_years(self) -> list[str]:
+        # Years with spend in the active range, newest first -- the Calendar tab's
+        # navigable buckets (index 0 == newest), shared by the key/mouse handlers.
+        return sorted({w.created_at[:4] for w in self.all_workflows}, reverse=True)
+
     def handle_key(self, stdscr: curses.window, key: int) -> bool:
         if key == curses.KEY_MOUSE:
             return self.handle_mouse()
@@ -5866,6 +6052,9 @@ class App:
                 elif current == "Weekly":
                     n = len({week_key(w.created_at) for w in self.all_workflows})
                     self.trend_week_index = self._step_trend_index(self.trend_week_index, n, older)
+                elif current == "Calendar":
+                    n = len(self.calendar_years())
+                    self.trend_year_index = self._step_trend_index(self.trend_year_index, n, older)
             elif key == ord("$"):
                 self.toggle_api_prices()  # re-prices the charts in place, stays open
             else:
@@ -5887,6 +6076,7 @@ class App:
             self.trends = True
             self.trend_month_index = 0  # start at the most recent month
             self.trend_week_index = 0  # and the most recent week
+            self.trend_year_index = 0  # and the most recent year
             return True
         if key == ord("P"):
             self.show_prices = True
@@ -6072,6 +6262,9 @@ class App:
             elif current == "Weekly":
                 n = len({week_key(w.created_at) for w in self.all_workflows})
                 self.trend_week_index = self._step_trend_index(self.trend_week_index, n, older)
+            elif current == "Calendar":
+                n = len(self.calendar_years())
+                self.trend_year_index = self._step_trend_index(self.trend_year_index, n, older)
             return True
         if click:
             target = self.renderer.hit(my, mx)

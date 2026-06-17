@@ -59,6 +59,34 @@ def app_with(workflows, since=None, until=None, days=None):
     return ot.App(FakeStore(workflows), args)
 
 
+class FakeScreen:
+    # Just enough curses surface for the self-painting draw_* methods (which only
+    # addstr onto a sized grid). Records every glyph by (y, x) so a test can read
+    # back what was painted; ignores attributes (color is irrelevant to text checks).
+    def __init__(self, height=24, width=80):
+        self.height, self.width = height, width
+        self.cells = {}
+
+    def getmaxyx(self):
+        return (self.height, self.width)
+
+    def addstr(self, y, x, text, attr=0):
+        for i, ch in enumerate(text):
+            self.cells[(y, x + i)] = ch
+
+
+def screen_text(screen):
+    # Flatten the painted cells back into newline-joined rows (gaps become spaces).
+    rows = {}
+    for (y, x), ch in screen.cells.items():
+        rows.setdefault(y, {})[x] = ch
+    lines = []
+    for y in sorted(rows):
+        cols = rows[y]
+        lines.append("".join(cols.get(x, " ") for x in range(min(cols), max(cols) + 1)))
+    return "\n".join(lines)
+
+
 def test_human_tokens():
     assert ot.human_tokens(999) == "999"
     assert ot.human_tokens(1_500) == "1.5k"
@@ -256,6 +284,81 @@ def test_trends_daily_month_navigation_keys():
     assert app.trend_month_index == 1
     app.handle_key(None, ord("l"))  # switch to the next tab (Weekly); still open
     assert app.trends and app.trend_tab == 1
+
+
+def test_heat_level_buckets():
+    assert ot.heat_level(0, 10) == 0  # no spend -> no shade
+    assert ot.heat_level(5, 0) == 0  # no peak -> no shade, never divides by zero
+    assert ot.heat_level(10, 10) == 4  # the busiest day is always the hottest tier
+    assert ot.heat_level(1, 1000) == 1  # any nonzero day shows at least the faintest tier
+    # The four tiers climb monotonically across the quartile thresholds of the peak.
+    assert [ot.heat_level(v, 8) for v in (2, 4, 6, 8)] == [1, 2, 3, 4]
+
+
+def test_calendar_cells_layout():
+    by_date = {"2026-01-01": 3.0, "2026-12-31": 5.0}
+    grid, months, ncols = ot.calendar_cells("2026", by_date)
+    assert len(grid) == 7 and ncols == 53  # 7 weekday rows by 53 week columns
+    # 2026-01-01 is a Thursday (weekday 3) and lands in the first column.
+    assert grid[3][0] == 3.0
+    # The Mon/Wed before it are padding days outside the year, not zero-spend days.
+    assert grid[0][0] is None and grid[2][0] is None
+    # An in-year day with no spend is 0.0 (a real cell), not None.
+    assert grid[4][0] == 0.0  # Fri 2026-01-02
+    # The last day of the year is a Thursday in the final column.
+    assert grid[3][52] == 5.0  # Thu 2026-12-31
+    # Every month is anchored once; January sits at column 0.
+    assert (0, "Jan") in months and len(months) == 12
+
+
+def test_trends_calendar_year_navigation_keys():
+    app = app_with(
+        [
+            workflow("y26", "2026-03-01 12:00:00"),  # newest year
+            workflow("y25", "2025-03-01 12:00:00"),
+            workflow("y24", "2024-03-01 12:00:00"),  # oldest year
+        ]
+    )
+    app.handle_key(None, ord("T"))  # opens on Daily
+    for _ in range(3):  # Daily -> Weekly -> Monthly -> Calendar
+        app.handle_key(None, ord("l"))
+    assert app.trends and app.trend_tabs[app.trend_tab] == "Calendar"
+    assert app.trend_year_index == 0
+    app.handle_key(None, ord("j"))  # older
+    assert app.trend_year_index == 1
+    app.handle_key(None, ord("j"))
+    assert app.trend_year_index == 2
+    app.handle_key(None, ord("j"))  # clamped at the oldest of 3 years
+    assert app.trend_year_index == 2
+    app.handle_key(None, ord("k"))  # newer
+    assert app.trend_year_index == 1
+
+
+def test_draw_calendar_paints_heat_grid():
+    app = app_with(
+        [
+            workflow("big", "2026-06-15 12:00:00", cost=50),  # the busiest day
+            workflow("small", "2026-02-03 12:00:00", cost=1),
+        ]
+    )
+    app.trend_year_index = 0
+    # Wide enough that all 53 weeks (so every month) fit without truncation.
+    screen = FakeScreen(24, 130)
+    # color_pair() needs a live initscr(); stub it so the painter runs headless.
+    orig = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: 0
+    try:
+        app.renderer.draw_calendar(screen, 0, 0, 24, 130)
+    finally:
+        ot.curses.color_pair = orig
+    text = screen_text(screen)
+    assert "Spend calendar · 2026" in text  # heading names the navigated year
+    assert "Mon" in text and "Sun" in text  # every weekday row is labeled
+    assert "Jan" in text and "Dec" in text  # all twelve months are labeled
+    assert "per day" in text and "≤$25" in text  # legend names each shade's $ band (no decimals)
+    assert "total" in text and "$50.00" in text  # peak day priced into the summary
+    assert "█" in text  # the busiest day paints the hottest shade
+    assert any(g in text for g in "·░▒▓")  # cooler tiers (empty + light days) render too
 
 
 def test_trend_models_ranks_priced_models():
