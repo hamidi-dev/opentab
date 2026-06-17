@@ -490,20 +490,22 @@ def week_key(date_str: str) -> str:
     return (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
 
 
-HEAT_GLYPHS = "·░▒▓█"  # heat level 0..4; level 0 is an in-range day with no spend
+HEAT_MAX_LEVEL = 6  # shades 1..6 (plus level 0 = an in-range day with no spend)
+HEAT_GLYPHS = "·░▒▓███"  # one glyph per level 0..HEAT_MAX_LEVEL; hot days are solid blocks
+# (the color ramp green→red carries the top end; · marks a tracked-but-empty day)
 
 
 def heat_level(value: float, peak: float) -> int:
-    # Bucket a day's spend into one of four shades relative to the busiest day of
-    # the year, so the peak day is always the hottest and any nonzero day shows at
-    # least the faintest tier (mirroring cost_bar's "a sliver is never nothing").
+    # Bucket a day's spend into one of HEAT_MAX_LEVEL shades relative to the busiest
+    # day of the year, so the peak day is always the hottest and any nonzero day shows
+    # at least the faintest tier (mirroring cost_bar's "a sliver is never nothing").
     if value <= 0 or peak <= 0:
         return 0
     frac = value / peak
-    for level, upper in enumerate((0.25, 0.5, 0.75), start=1):
-        if frac <= upper:
+    for level in range(1, HEAT_MAX_LEVEL):
+        if frac <= level / HEAT_MAX_LEVEL:
             return level
-    return 4
+    return HEAT_MAX_LEVEL
 
 
 MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -3940,7 +3942,8 @@ class Renderer:
             "  D                toggle real/demo data on the fly (demo anonymizes titles/paths)",
             "  c                switch data source: OpenCode / Claude Code / Codex / all (when present)",
             "  T                Trends overlay: Daily / Weekly / Monthly / Calendar / Models / Providers / Sources",
-            "                   (h/l tabs; j/k month/week; $ toggles what-if prices)",
+            "                   (h/l tabs; j/k month/week/year; $ what-if prices)",
+            "                   Calendar is a spend heat map: ↑↓←→ pick a day, Enter opens it",
             "  P                model prices (the models.dev API rates used for $ what-if)",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
@@ -4035,8 +4038,13 @@ class Renderer:
         self.box(stdscr, y, 0, h, width, f"Trends · {self.range_label()}", active=True)
         tabs = self.trend_tabs
         current = tabs[self.trend_tab % len(tabs)]
-        unit = {"Daily": "month", "Weekly": "week", "Calendar": "year"}.get(current)
-        hint = f"h/l tabs · j/k {unit} · esc closes" if unit else "h/l tabs · esc closes"
+        unit = {"Daily": "month", "Weekly": "week"}.get(current)
+        if current == "Calendar":
+            hint = "↑↓←→ pick · Enter open · h/l tabs · esc"
+        elif unit:
+            hint = f"h/l tabs · j/k {unit} · esc closes"
+        else:
+            hint = "h/l tabs · esc closes"
         self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, tabs, self.trend_tab, kind="trend")
         self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
@@ -4235,6 +4243,7 @@ class Renderer:
         # (Mon..Sun) by week columns, each day shaded by how it compares to the year's
         # busiest day. Paints its own cells (unlike the string-returning trend_* tabs)
         # because the heat shades are per-cell color attributes, not regex spans.
+        self.app._cal_geom = None  # cleared until a full grid is drawn (mouse hit-testing)
         years = self.calendar_years()
         if not years:
             self.write(stdscr, top, left, "No spend in the active range.", curses.color_pair(1))
@@ -4267,6 +4276,12 @@ class Renderer:
         # Breathe vertically when the panel is tall: a blank line between weekday rows
         # (else keep them tight so a short panel still fits in its 13-row minimum).
         row_pitch = 2 if height >= 20 else 1
+        gy0 = top + 3  # screen row of the first (Mon) weekday line
+        jan1 = datetime(int(year), 1, 1)
+        grid_start = jan1 - timedelta(days=jan1.weekday())  # Monday of week column 0
+        # Stash the geometry so a mouse click can resolve back to a date.
+        self.app._cal_geom = (gy0, row_pitch, gx, pitch, start_col, shown, year, grid_start)
+        cursor = self._effective_cursor(year, by_date)  # the highlighted day
 
         title = f"Spend calendar · {year}"
         if len(years) > 1:
@@ -4300,25 +4315,36 @@ class Renderer:
                     continue  # a padding day outside the year: leave it blank
                 self.write(stdscr, ry, gx + c * pitch, *self._heat_cell(heat_level(cell, peak)))
 
+        # Frame the highlighted day in the gap columns around its cell, so the brackets
+        # never overwrite a neighbouring glyph.
+        if cursor and cursor[:4] == year:
+            cd = datetime.strptime(cursor, "%Y-%m-%d")
+            ccol = (cd - grid_start).days // 7 - start_col
+            if 0 <= ccol < shown:
+                cy = gy0 + cd.weekday() * row_pitch
+                cxx = gx + ccol * pitch
+                self.write(stdscr, cy, cxx - 1, "[", curses.color_pair(6) | curses.A_BOLD)
+                self.write(stdscr, cy, cxx + 1, "]", curses.color_pair(6) | curses.A_BOLD)
+
         # Legend: spell out the per-day dollar band each shade stands for, scaled to
         # the busiest day, so the colors read as numbers (· is a day with no spend;
-        # each shade is "up to" its quarter of the peak, the hottest = the peak day).
+        # each shade is "up to" its fraction of the peak, the hottest = the peak day).
         ly = top + 3 + 6 * row_pitch + 2  # one blank line below the last weekday row
         lx = left + xoff
         if peak > 0:
             self.write(stdscr, ly, lx, "per day  ", curses.color_pair(1))
             lx += 9
-            bounds = (0.0, 0.25 * peak, 0.5 * peak, 0.75 * peak, peak)
-            for level in range(5):
+            bounds = [peak * i / HEAT_MAX_LEVEL for i in range(HEAT_MAX_LEVEL + 1)]
+            for level in range(HEAT_MAX_LEVEL + 1):
                 self.write(stdscr, ly, lx, *self._heat_cell(level))
                 lx += 1
-                label = " $0   " if level == 0 else f" ≤${bounds[level]:,.0f}   "
+                label = " $0  " if level == 0 else f" ≤${bounds[level]:,.0f}  "
                 self.write(stdscr, ly, lx, label, curses.color_pair(1))
                 lx += len(label)
         else:
             self.write(stdscr, ly, lx, "Less ", curses.color_pair(1))
             lx += 5
-            for level in range(5):
+            for level in range(HEAT_MAX_LEVEL + 1):
                 self.write(stdscr, ly, lx, *self._heat_cell(level))
                 lx += 1
             self.write(stdscr, ly, lx, " More", curses.color_pair(1))
@@ -4331,15 +4357,26 @@ class Renderer:
             summary = f"{sessions} sessions, no recorded spend this year"
         else:
             summary = "no spend this year"
-        self.write_rich(stdscr, ly + 1, left + xoff, shorten(summary, width), curses.A_NORMAL)
-        if total == 0 and sessions and not self.show_api_prices and ly + 2 < top + height:
-            self.write(
-                stdscr,
-                ly + 2,
-                left + xoff,
-                "$ prices subscription/credit usage at API list rates",
-                curses.color_pair(1),
-            )
+        # The year summary, then the highlighted day, then (for $0 years) the $ nudge —
+        # painted top-down and clipped to whatever rows are left in the panel.
+        info = [summary]
+        if cursor:
+            cd = datetime.strptime(cursor, "%Y-%m-%d")
+            day_cost = by_date.get(cursor, 0.0)
+            day_sessions = sum(1 for w in self.all_workflows if w.created_at[:10] == cursor)
+            label = f"▸ {weekday_labels[cd.weekday()]} {cursor}   "
+            if day_sessions:
+                noun = "session" if day_sessions == 1 else "sessions"
+                info.append(f"{label}{money(day_cost)}   {day_sessions} {noun}   Enter opens")
+            else:
+                info.append(f"{label}no sessions   move with ←↑↓→")
+        if total == 0 and sessions and not self.show_api_prices:
+            info.append("$ prices subscription/credit usage at API list rates")
+        for i, line in enumerate(info):
+            row_y = ly + 1 + i
+            if row_y >= top + height:
+                break
+            self.write_rich(stdscr, row_y, left + xoff, shorten(line, width), curses.A_NORMAL)
 
     @staticmethod
     def _heat_cell(level: int) -> tuple[str, int]:
@@ -4581,6 +4618,9 @@ class App:
         self.trend_month_index = 0  # which month the Daily tab shows (0 = newest)
         self.trend_week_index = 0  # which week the Weekly tab shows (0 = newest)
         self.trend_year_index = 0  # which year the Calendar tab shows (0 = newest)
+        self.cal_cursor: str | None = None  # highlighted day on the Calendar tab (None = peak)
+        self._cal_geom: tuple | None = None  # last calendar grid geometry, for mouse hit-testing
+        self._cal_return: str | None = None  # day drilled in from the heat map; Esc returns there
         self.show_prices = False  # the "P" model-prices reference overlay
         self.prices_scroll = 0  # pager offset within that overlay
         self.sort_by = "cost"
@@ -5805,6 +5845,7 @@ class App:
                 self.scroll = 0
                 self.workflow_index = 0
                 self.zoom_project = None
+                self._cal_return = None  # a fresh drill; the calendar re-sets this if it began one
                 if self.browse_mode != "projects":
                     # In time mode, project_index is only the zoom Projects-tab
                     # picker; reset it. In projects mode it is the selected project
@@ -5839,7 +5880,22 @@ class App:
             else:
                 self.view = "browse"
                 self.zoom_project = None
+                if self._cal_return is not None:
+                    self._reopen_calendar(self._cal_return)
         self.scroll = 0
+
+    def _reopen_calendar(self, date: str) -> None:
+        # Stepping out of a day we drilled into from the heat map returns to it: reopen
+        # the Calendar tab on that year, cursor back on the day we came from.
+        self._cal_return = None
+        years = self.calendar_years()
+        yi = next((i for i, y in enumerate(years) if y == date[:4]), None)
+        if yi is None:
+            return  # the day's year is gone (range/source changed) — just stay in browse
+        self.trends = True
+        self.trend_tab = self.trend_tabs.index("Calendar")
+        self.trend_year_index = yi
+        self.cal_cursor = date
 
     def move(self, delta: int) -> None:
         if self.view == "session":
@@ -5941,14 +5997,21 @@ class App:
         curses.init_pair(5, soft_red, -1)  # alerts only: errors, billions of tokens
         curses.init_pair(6, accent, -1)  # active panel border / focus
         curses.init_pair(7, curses.COLOR_BLACK, accent)  # active tab
-        # Heat-map ramp (pairs 8..11) for the Calendar tab: a green→amber→orange
-        # gradient where a hotter shade means a heavier spend day. The glyph density
-        # (░▒▓█) encodes the level too, so it still reads on an 8-color terminal
-        # where these hues collapse.
+        # Heat-map ramp (pairs 8..8+HEAT_MAX_LEVEL-1) for the Calendar tab: a
+        # green→lime→yellow→orange→red gradient where a hotter shade means a heavier
+        # spend day and the busiest tier is red. The glyph density (░▒▓█) also encodes
+        # the low end, so it still reads on an 8-color terminal where these hues collapse.
         heat = (
-            (65, 71, 178, 208)
+            (65, 71, 149, 185, 208, 196)
             if has256
-            else (curses.COLOR_GREEN, curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_RED)
+            else (
+                curses.COLOR_GREEN,
+                curses.COLOR_GREEN,
+                curses.COLOR_GREEN,
+                curses.COLOR_YELLOW,
+                curses.COLOR_YELLOW,
+                curses.COLOR_RED,
+            )
         )
         for i, col in enumerate(heat):
             curses.init_pair(8 + i, col, -1)
@@ -6005,6 +6068,84 @@ class App:
         # navigable buckets (index 0 == newest), shared by the key/mouse handlers.
         return sorted({w.created_at[:4] for w in self.all_workflows}, reverse=True)
 
+    def _calendar_by_date(self, year: str) -> dict[str, float]:
+        by_date: dict[str, float] = defaultdict(float)
+        for w in self.all_workflows:
+            if w.created_at[:4] == year:
+                by_date[w.created_at[:10]] += w.total_cost
+        return by_date
+
+    def _effective_cursor(self, year: str, by_date: dict[str, float]) -> str | None:
+        # The highlighted day: the remembered cursor while it's still in the shown
+        # year, else default to the busiest day (the hottest cell draws the eye).
+        if self.cal_cursor and self.cal_cursor[:4] == year:
+            return self.cal_cursor
+        return max(by_date, key=by_date.__getitem__) if by_date else None
+
+    def calendar_cursor(self) -> str | None:
+        years = self.calendar_years()
+        if not years:
+            return None
+        year = years[max(0, min(self.trend_year_index, len(years) - 1))]
+        return self._effective_cursor(year, self._calendar_by_date(year))
+
+    def drill_into_date(self, date: str) -> bool:
+        # Jump from the Calendar heat map straight into a day's detail: point the
+        # time-browse panels at <date> and zoom in. Returns False (no jump) when that
+        # day has no sessions (an empty cell), so the caller can nudge instead.
+        if not any(w.created_at[:10] == date for w in self.all_workflows):
+            return False
+        years = self.years
+        yi = next((i for i, y in enumerate(years) if y.year == date[:4]), None)
+        if yi is None:
+            return False
+        self.view = "browse"  # the overlay may sit over a zoom; land back in browse first
+        self.browse_mode = "time"
+        self.focus = "days"
+        self.year_index = yi
+        self.tab = 0
+        self.scroll = 0
+        self.zoom_project = None
+        # Resolve the month/day indices against the now-scoped panels, then drill.
+        self.month_index = next((i for i, m in enumerate(self.months) if m.month == date[:7]), 0)
+        self.day_index = next((i for i, d in enumerate(self.panel_days) if d.day == date), 0)
+        self.drill_in()
+        return True
+
+    def _calendar_key(self, key: int) -> bool:
+        # Arrow keys walk the day cursor (←/→ = ∓1 week, ↑/↓ = ∓1 day, clamped to the
+        # shown year); Enter drills into the highlighted day.
+        cursor = self.calendar_cursor()
+        if cursor is None:
+            return True
+        if key in (10, 13, curses.KEY_ENTER):
+            if self.drill_into_date(cursor):
+                self._cal_return = cursor  # Esc out of the day returns to the heat map
+                self.trends = False
+            else:
+                self.notice = f"no sessions on {cursor}"
+            return True
+        delta = {curses.KEY_LEFT: -7, curses.KEY_RIGHT: 7, curses.KEY_UP: -1, curses.KEY_DOWN: 1}
+        nxt = datetime.strptime(cursor, "%Y-%m-%d") + timedelta(days=delta[key])
+        if nxt.strftime("%Y") == cursor[:4]:  # stay inside the shown calendar year
+            self.cal_cursor = nxt.strftime("%Y-%m-%d")
+        return True
+
+    def _calendar_date_at(self, my: int, mx: int) -> str | None:
+        # Resolve a mouse (y, x) to the calendar day under it, or None (a gap, padding,
+        # or outside the grid). Reads the geometry the last draw_calendar() stashed.
+        geom = self._cal_geom
+        if geom is None:
+            return None
+        gy0, row_pitch, gx, pitch, start_col, shown, year, grid_start = geom
+        if my < gy0 or mx < gx:
+            return None
+        row, col = (my - gy0) // row_pitch, (mx - gx) // pitch
+        if row > 6 or col >= shown:
+            return None
+        date = (grid_start + timedelta(days=(start_col + col) * 7 + row)).strftime("%Y-%m-%d")
+        return date if date[:4] == year else None
+
     def handle_key(self, stdscr: curses.window, key: int) -> bool:
         if key == curses.KEY_MOUSE:
             return self.handle_mouse()
@@ -6037,12 +6178,24 @@ class App:
             return True
         if self.trends:
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
+            if current == "Calendar" and key in (
+                curses.KEY_LEFT,
+                curses.KEY_RIGHT,
+                curses.KEY_UP,
+                curses.KEY_DOWN,
+                10,
+                13,
+                curses.KEY_ENTER,
+            ):
+                # On the Calendar tab the arrows drive the day cursor and Enter drills
+                # in; tab/year nav stays on the letter keys (h/l/j/k) below.
+                return self._calendar_key(key)
             if key in (ord("h"), curses.KEY_LEFT):
                 self.trend_tab = (self.trend_tab - 1) % len(self.trend_tabs)
             elif key in (ord("l"), curses.KEY_RIGHT):
                 self.trend_tab = (self.trend_tab + 1) % len(self.trend_tabs)
             elif key in (ord("j"), curses.KEY_DOWN, ord("["), ord("k"), curses.KEY_UP, ord("]")):
-                # Page the Daily tab's month / the Weekly tab's week; no-op elsewhere.
+                # Page the Daily tab's month / the Weekly tab's week / the Calendar's year.
                 older = key in (ord("j"), curses.KEY_DOWN, ord("["))
                 if current == "Daily":
                     n = len({w.created_at[:7] for w in self.all_workflows})
@@ -6055,6 +6208,7 @@ class App:
                 elif current == "Calendar":
                     n = len(self.calendar_years())
                     self.trend_year_index = self._step_trend_index(self.trend_year_index, n, older)
+                    self.cal_cursor = None  # re-anchor the cursor on the new year's peak
             elif key == ord("$"):
                 self.toggle_api_prices()  # re-prices the charts in place, stays open
             else:
@@ -6077,6 +6231,7 @@ class App:
             self.trend_month_index = 0  # start at the most recent month
             self.trend_week_index = 0  # and the most recent week
             self.trend_year_index = 0  # and the most recent year
+            self.cal_cursor = None  # Calendar cursor defaults to that year's peak day
             return True
         if key == ord("P"):
             self.show_prices = True
@@ -6241,7 +6396,7 @@ class App:
                 self.show_prices = False
             return True
         if self.trends:
-            return self._mouse_trends(my, mx, up, down, click or double)
+            return self._mouse_trends(my, mx, up, down, click, double)
         if up or down:
             self.move(-3 if up else 3)
             return True
@@ -6252,7 +6407,9 @@ class App:
             self._apply_click(target, drill=double)
         return True
 
-    def _mouse_trends(self, my: int, mx: int, up: bool, down: bool, click: bool) -> bool:
+    def _mouse_trends(
+        self, my: int, mx: int, up: bool, down: bool, click: bool, double: bool
+    ) -> bool:
         current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
         if up or down:
             older = down  # wheel down pages to older buckets, mirroring j/k
@@ -6265,8 +6422,21 @@ class App:
             elif current == "Calendar":
                 n = len(self.calendar_years())
                 self.trend_year_index = self._step_trend_index(self.trend_year_index, n, older)
+                self.cal_cursor = None  # re-anchor the cursor on the new year's peak
             return True
-        if click:
+        if current == "Calendar" and (click or double):
+            # A click moves the day cursor onto that cell; a double-click drills in.
+            date = self._calendar_date_at(my, mx)
+            if date:
+                self.cal_cursor = date
+                if double:
+                    if self.drill_into_date(date):
+                        self._cal_return = date  # Esc out of the day returns to the heat map
+                        self.trends = False
+                    else:
+                        self.notice = f"no sessions on {date}"
+                return True
+        if click or double:
             target = self.renderer.hit(my, mx)
             if target and target[0] == "trend":
                 self.trend_tab = target[1]

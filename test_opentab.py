@@ -87,6 +87,14 @@ def screen_text(screen):
     return "\n".join(lines)
 
 
+def open_calendar(app):
+    # Open the Trends overlay and tab across to the Calendar heat map.
+    app.handle_key(None, ord("T"))
+    while app.trend_tabs[app.trend_tab] != "Calendar":
+        app.handle_key(None, ord("l"))
+    return app
+
+
 def test_human_tokens():
     assert ot.human_tokens(999) == "999"
     assert ot.human_tokens(1_500) == "1.5k"
@@ -289,10 +297,10 @@ def test_trends_daily_month_navigation_keys():
 def test_heat_level_buckets():
     assert ot.heat_level(0, 10) == 0  # no spend -> no shade
     assert ot.heat_level(5, 0) == 0  # no peak -> no shade, never divides by zero
-    assert ot.heat_level(10, 10) == 4  # the busiest day is always the hottest tier
+    assert ot.heat_level(10, 10) == ot.HEAT_MAX_LEVEL  # the busiest day is the hottest tier
     assert ot.heat_level(1, 1000) == 1  # any nonzero day shows at least the faintest tier
-    # The four tiers climb monotonically across the quartile thresholds of the peak.
-    assert [ot.heat_level(v, 8) for v in (2, 4, 6, 8)] == [1, 2, 3, 4]
+    # The tiers climb monotonically through the peak's sixths (HEAT_MAX_LEVEL == 6).
+    assert [ot.heat_level(v, 6) for v in (1, 2, 3, 4, 5, 6)] == [1, 2, 3, 4, 5, 6]
 
 
 def test_calendar_cells_layout():
@@ -359,6 +367,134 @@ def test_draw_calendar_paints_heat_grid():
     assert "total" in text and "$50.00" in text  # peak day priced into the summary
     assert "█" in text  # the busiest day paints the hottest shade
     assert any(g in text for g in "·░▒▓")  # cooler tiers (empty + light days) render too
+
+
+def test_calendar_cursor_defaults_to_the_busiest_day():
+    app = app_with(
+        [
+            workflow("hot", "2026-07-09 12:00:00", cost=40),
+            workflow("cool", "2026-03-02 12:00:00", cost=5),
+        ]
+    )
+    open_calendar(app)
+    assert app.cal_cursor is None  # nothing pinned yet
+    assert app.calendar_cursor() == "2026-07-09"  # defaults to the peak-spend day
+
+
+def test_calendar_arrow_keys_walk_the_day_cursor():
+    app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
+    open_calendar(app)
+    app.handle_key(None, ot.curses.KEY_UP)  # -1 day
+    assert app.cal_cursor == "2026-07-08"
+    app.handle_key(None, ot.curses.KEY_LEFT)  # -7 days
+    assert app.cal_cursor == "2026-07-01"
+    app.handle_key(None, ot.curses.KEY_DOWN)  # +1 day
+    assert app.cal_cursor == "2026-07-02"
+    app.handle_key(None, ot.curses.KEY_RIGHT)  # +7 days
+    assert app.cal_cursor == "2026-07-09"
+    # Movement is clamped to the shown year: stepping before Jan 1 is a no-op.
+    app.cal_cursor = "2026-01-01"
+    app.handle_key(None, ot.curses.KEY_LEFT)  # would land in 2025 -> ignored
+    assert app.cal_cursor == "2026-01-01"
+
+
+def test_calendar_enter_drills_into_the_day():
+    app = app_with(
+        [
+            workflow("a", "2026-07-09 09:00:00", cost=40),
+            workflow("b", "2026-07-09 18:00:00", cost=10),  # second session, same day
+            workflow("c", "2026-02-01 12:00:00", cost=5),
+        ]
+    )
+    open_calendar(app)
+    app.cal_cursor = "2026-07-09"
+    app.handle_key(None, 10)  # Enter
+    assert not app.trends  # overlay closed
+    assert app.view == "zoom" and app.focus == "days"
+    assert app.active_day == "2026-07-09"
+    assert len(app.workflows) == 2  # both of that day's sessions
+
+
+def test_calendar_enter_on_empty_day_nudges_and_stays():
+    app = app_with([workflow("a", "2026-07-09 09:00:00", cost=40)])
+    open_calendar(app)
+    app.cal_cursor = "2026-07-10"  # an in-year day with no sessions
+    app.handle_key(None, 10)  # Enter
+    assert app.trends and app.view == "browse"  # stayed in the calendar, no drill
+    assert "no sessions" in app.notice
+
+
+def test_calendar_year_paging_reanchors_the_cursor():
+    app = app_with(
+        [
+            workflow("y26", "2026-07-09 12:00:00", cost=40),
+            workflow("y25", "2025-05-01 12:00:00", cost=8),
+        ]
+    )
+    open_calendar(app)
+    app.cal_cursor = "2026-07-09"
+    app.handle_key(None, ord("j"))  # page to the older year (2025)
+    assert app.calendar_years()[app.trend_year_index] == "2025"
+    assert app.cal_cursor is None  # re-anchored off the stale 2026 day
+    assert app.calendar_cursor() == "2025-05-01"  # that year's peak day
+
+
+def test_calendar_mouse_click_resolves_and_double_click_drills():
+    from datetime import datetime
+
+    app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
+    open_calendar(app)
+    screen = FakeScreen(24, 130)
+    orig = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: 0
+    try:
+        app.renderer.draw_calendar(screen, 0, 0, 24, 130)
+    finally:
+        ot.curses.color_pair = orig
+    gy0, row_pitch, gx, pitch, start_col, shown, year, grid_start = app._cal_geom
+    cd = datetime.strptime("2026-07-09", "%Y-%m-%d")
+    col = (cd - grid_start).days // 7 - start_col
+    my, mx = gy0 + cd.weekday() * row_pitch, gx + col * pitch
+    assert app._calendar_date_at(my, mx) == "2026-07-09"
+    assert app._calendar_date_at(gy0 - 1, mx) is None  # above the grid -> no cell
+    # A single click moves the cursor; a double-click drills in.
+    app._mouse_trends(my, mx, up=False, down=False, click=True, double=False)
+    assert app.cal_cursor == "2026-07-09" and app.trends
+    app._mouse_trends(my, mx, up=False, down=False, click=False, double=True)
+    assert not app.trends and app.view == "zoom" and app.active_day == "2026-07-09"
+
+
+def test_calendar_escape_returns_to_the_heat_map():
+    app = app_with(
+        [
+            workflow("a", "2026-07-09 12:00:00", cost=40),
+            workflow("b", "2025-05-01 12:00:00", cost=8),
+        ]
+    )
+    open_calendar(app)
+    app.cal_cursor = "2026-07-09"
+    app.handle_key(None, 10)  # Enter -> drill into that day
+    assert not app.trends and app.view == "zoom"
+    app.handle_key(None, 27)  # Esc -> back to the heat map, not just to browse
+    assert app.trends and app.trend_tabs[app.trend_tab] == "Calendar"
+    assert app.view == "browse"
+    assert app.trend_year_index == app.calendar_years().index("2026")
+    assert app.cal_cursor == "2026-07-09"  # cursor restored to the day we came from
+
+
+def test_normal_day_drill_does_not_bounce_back_to_the_calendar():
+    # Only a heat-map drill arms the Esc-return; an ordinary panel drill must clear it.
+    app = app_with([workflow("a", "2026-07-09 12:00:00", cost=40)])
+    open_calendar(app)
+    app.cal_cursor = "2026-07-09"
+    app.handle_key(None, 10)  # heat-map drill arms the return
+    assert app._cal_return == "2026-07-09"
+    app.view = "browse"  # back out to the panels and drill a day the ordinary way
+    app.focus = "days"
+    app.drill_in()
+    assert app._cal_return is None  # the fresh drill disarmed it
+    app.drill_out()
+    assert not app.trends  # so Esc stays in browse, no calendar bounce
 
 
 def test_trend_models_ranks_priced_models():
