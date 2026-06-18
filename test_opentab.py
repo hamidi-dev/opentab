@@ -1044,10 +1044,11 @@ def test_source_is_persisted_and_restored():
             # an explicit --source overrides the saved one
             args.source = "claude"
             assert ot.resolve_source(args, state) == "claude"
-            # a saved source that's no longer available falls back to the default
+            # a saved source that's no longer available falls back to the default, which
+            # merges every present source so you never need --source to see them together
             args.source = "auto"
-            assert ot.resolve_source(args, {"source": "bogus"}) == "opencode"
-            # demo defaults to the merged "all" view, and `c` can reach it in demo
+            assert ot.resolve_source(args, {"source": "bogus"}) == "all"
+            # demo merges too, and `c` can reach the merged view in demo
             args.demo = True
             assert "all" in ot.source_cycle(args)
             assert ot.resolve_source(args, {}) == "all"
@@ -3837,6 +3838,247 @@ def test_hermes_joins_the_source_cycle_and_builds_a_resume_command():
         wf = workflow("h1-sess", "2026-06-01 12:00:00", title="t", directory="/tmp/proj")
         wf.source = "Hermes"
         assert app.resume_command(wf) == "cd /tmp/proj && hermes --resume h1-sess"
+
+
+# --- CSV adapter (a CSV of logged API requests, e.g. GitHub Copilot) ---------
+
+
+def _write_csv(path, header, rows):
+    import csv as _csv
+
+    with open(path, "w", newline="") as fh:
+        w = _csv.writer(fh)
+        w.writerow(header)
+        for r in rows:
+            w.writerow(r)
+
+
+def _csv_args():
+    return type("Args", (), {"demo": False})()
+
+
+def test_csv_store_splits_cache_prefixes_providers_and_stays_unpriced():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "copilot.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "output_tokens", "cached_tokens", "session_id"],
+            [
+                # input_tokens includes the cached read (OpenAI style) -> uncached 8000
+                ["2026-06-18T10:00:00Z", "claude-sonnet-4", 12000, 800, 4000, "s1"],
+                ["2026-06-18T10:05:00Z", "gpt-4o", 5000, 300, 0, "s1"],
+                ["2026-06-17T09:00:00Z", "gemini-2.5-pro", 2000, 150, 0, "s2"],
+            ],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        assert store.records_cost is False  # no cost column -> subscription-style
+        workflows = store.workflows()
+        assert {w.id for w in workflows} == {"s1", "s2"}
+        s1 = next(w for w in workflows if w.id == "s1")
+        assert s1.source == "CSV"
+        assert s1.subagents == 0  # CSV has no subagent tree
+        assert s1.total_cost == 0.0  # recorded cost is $0
+        assert s1.total_tokens == s1.unpriced_tokens == 12800 + 5300  # all unpriced
+
+        rows = {r["model_name"]: r for r in store.model_breakdown() if r["root_id"] == "s1"}
+        # mixed providers each get the right prefix so pricing + the Providers tab work
+        assert set(rows) == {"anthropic/claude-sonnet-4", "openai/gpt-4o"}
+        cl = rows["anthropic/claude-sonnet-4"]
+        assert cl["input"] == 8000 and cl["cache_read"] == 4000  # cached split out of input
+        assert cl["unpriced_input"] == 8000 and cl["unpriced_cache_read"] == 4000
+
+        # the "$" what-if reprices the unpriced tokens at list price (non-zero)
+        est = ot.api_equivalent_cost(
+            cl["model_name"],
+            cl["unpriced_input"],
+            cl["unpriced_output"],
+            cl["unpriced_reasoning"],
+            cl["unpriced_cache_read"],
+            cl["unpriced_cache_write"],
+        )
+        assert est > 0
+
+        # one flat depth-0 node aggregating both of s1's models
+        nodes = store.workflow_nodes("s1")
+        assert len(nodes) == 1 and nodes[0]["depth"] == 0
+        assert nodes[0]["tokens_input"] == 13000  # 8000 + 5000 uncached
+        assert nodes[0]["tokens_total"] == 18100
+        assert nodes[0]["cost"] == 0.0  # _priced_nodes reprices a $0 node under "$"
+
+
+def test_csv_groups_by_day_and_project_when_no_session_id():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "copilot.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "output_tokens", "project"],
+            [
+                ["2026-06-18T10:00:00Z", "gpt-4o", 100, 10, "alpha"],
+                ["2026-06-18T11:00:00Z", "gpt-4o", 200, 20, "alpha"],  # same day+project
+                ["2026-06-18T12:00:00Z", "gpt-4o", 50, 5, "beta"],  # different project
+                ["2026-06-19T09:00:00Z", "gpt-4o", 70, 7, "alpha"],  # different day
+            ],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        workflows = store.workflows()
+        # one synthetic session per (date, project): (18,alpha) (18,beta) (19,alpha)
+        assert len(workflows) == 3
+        alpha18 = next(w for w in workflows if w.directory == "alpha" and "06-18" in w.created_at)
+        assert alpha18.total_tokens == 100 + 10 + 200 + 20  # both rows folded together
+
+
+def test_csv_credits_column_prices_as_real_spend():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "copilot.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "output_tokens", "credits", "session_id"],
+            [
+                ["2026-06-18T10:00:00Z", "claude-opus-4-5", 10000, 2000, 150, "m1"],
+                ["2026-06-18T10:10:00Z", "claude-opus-4-5", 3000, 500, 40, "m1"],
+            ],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        assert store.records_cost is True  # a populated cost column -> metered
+        w = store.workflows()[0]
+        assert w.total_cost == round((150 + 40) * 0.01, 6)  # credits x $0.01 = $1.90
+        assert w.unpriced_tokens == 0  # metered rows are not re-estimated under "$"
+        row = store.model_breakdown()[0]
+        assert row["unpriced_input"] == 0 and row["unpriced_output"] == 0
+
+
+def test_csv_tolerates_header_aliases_and_epoch_timestamps():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "copilot.csv")
+        # alias headers (Time / Model Name / Input / Output) and an epoch-seconds stamp
+        _write_csv(
+            path,
+            ["Time", "Model Name", "Input", "Output", "session"],
+            [["1750240800", "gpt-4o", 1000, 100, "e1"]],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        w = store.workflows()[0]
+        assert w.id == "e1"
+        assert w.created_at.startswith("2025-06-18")  # epoch parsed
+        assert w.total_tokens == 1100
+        assert store.model_breakdown()[0]["model_name"] == "openai/gpt-4o"
+
+
+def test_csv_tolerates_missing_empty_and_garbage_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        missing = os.path.join(tmp, "nope.csv")
+        store = ot.CsvStore(missing, _csv_args())
+        assert store.records_cost is False
+        assert store.workflows() == []  # never crashes on a missing file
+
+        empty = os.path.join(tmp, "empty.csv")
+        open(empty, "w").close()
+        assert ot.CsvStore(empty, _csv_args()).workflows() == []
+
+        garbage = os.path.join(tmp, "garbage.csv")
+        _write_csv(garbage, ["a", "b", "c"], [["1", "2", "3"]])  # no usable columns
+        assert ot.CsvStore(garbage, _csv_args()).workflows() == []
+
+
+def test_csv_joins_the_source_cycle_and_has_no_resume_command():
+    with tempfile.TemporaryDirectory() as tmp:
+        oc_db = os.path.join(tmp, "opencode.db")
+        open(oc_db, "w").close()
+        csv_path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            csv_path,
+            ["timestamp", "model", "input_tokens", "output_tokens"],
+            [["2026-06-18T10:00:00Z", "gpt-4o", 100, 10]],
+        )
+        args = type(
+            "Args",
+            (),
+            {
+                "since": None,
+                "until": None,
+                "days": None,
+                "source": "auto",
+                "db": oc_db,
+                "claude_dir": os.path.join(tmp, "no-claude"),
+                "codex_dir": os.path.join(tmp, "no-codex"),
+                "hermes_db": os.path.join(tmp, "no-hermes.db"),
+                "csv": csv_path,
+                "demo": False,
+            },
+        )()
+        assert ot.available_sources(args) == ["opencode", "csv"]
+        assert ot.source_cycle(args) == ["opencode", "csv", "all"]
+        # no saved pref and >=2 sources present -> auto merges them (no --source needed)
+        assert ot.resolve_source(args, {}) == "all"
+        store, _ = ot.make_store(args, "csv")
+        assert isinstance(store, ot.CsvStore)
+
+        app = ot.App(FakeStore([workflow("a", "2026-06-01 12:00:00")]), args)
+        app.source_key = "opencode"
+        assert app.next_source_name() == "CSV"
+
+        # A CSV/Copilot source has no CLI resume, so L produces no command (never crashes)
+        wf = workflow("s1", "2026-06-01 12:00:00", title="t", directory="/tmp/proj")
+        wf.source = "CSV"
+        assert app.resume_command(wf) is None
+
+
+def _parse(argv):
+    import sys as _sys
+
+    old = _sys.argv
+    _sys.argv = ["opentab"] + list(argv)
+    try:
+        return ot.parse_args()
+    finally:
+        _sys.argv = old
+
+
+def test_path_and_csv_flag_both_select_the_csv_source():
+    with tempfile.TemporaryDirectory() as tmp:
+        csv_path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            csv_path,
+            ["timestamp", "model", "input_tokens", "output_tokens"],
+            [["2026-06-18T10:00:00Z", "gpt-4o", 100, 10]],
+        )
+        # All three forms point at the same CSV and open it on its own -- no saying
+        # "csv" twice. (The bare positional, the --csv flag, and --source csv + path.)
+        for argv in ([csv_path], ["--csv", csv_path], ["--source", "csv", csv_path]):
+            a = _parse(argv)
+            assert a.source == "csv", argv
+            assert a.csv == csv_path, argv
+        # Bare `opentab` is unchanged: auto-merge, CSV auto-discovered at the default path.
+        bare = _parse([])
+        assert bare.source == "auto"
+        assert bare.csv == ot.DEFAULT_CSV_PATH
+
+
+def test_path_arg_infers_source_routes_under_all_and_rejects_bad_paths():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        open(db, "w").close()
+        # A .db positional selects opencode and fills --db.
+        a = _parse([db])
+        assert a.source == "opencode" and a.db == db
+
+        csv_path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            csv_path,
+            ["timestamp", "model", "input_tokens", "output_tokens"],
+            [["2026-06-18T10:00:00Z", "gpt-4o", 100, 10]],
+        )
+        # --source all keeps the merged view but still routes the path into the csv slot.
+        a = _parse(["--source", "all", csv_path])
+        assert a.source == "all" and a.csv == csv_path
+
+        # A missing file and an ambiguous directory both exit with an error.
+        for bad in ([os.path.join(tmp, "nope.csv")], [tmp]):
+            try:
+                _parse(bad)
+                raise AssertionError(f"expected an error for {bad}")
+            except SystemExit:
+                pass
 
 
 if __name__ == "__main__":
