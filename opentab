@@ -32,7 +32,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-__version__ = "0.5.0"
+__version__ = "0.8.0"
 
 MODEL_EXPR = """
 case
