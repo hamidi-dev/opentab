@@ -119,8 +119,9 @@ touches, all on your own machine:
 
 ## Requirements
 
-Python **3.9+** (standard library only — no `pip install` needed) and a Unix-like
-OS with `curses` (macOS, Linux, WSL).
+Python **3.9+** and a terminal with `curses` — already present on macOS, Linux,
+and WSL (standard library only, no `pip install`). Native Windows works too with
+a one-time `pip install windows-curses` (see [Windows](#windows)).
 
 ## Install
 
@@ -292,24 +293,39 @@ esac
 
 ## Windows
 
-OpenTab uses Python's `curses`, which is **Unix-only** (not bundled with Windows
-Python), so you run it from **WSL**. OpenCode itself does not have to run inside
-WSL, though: even when OpenCode runs on native Windows it keeps its database
+OpenTab uses Python's `curses`, which native Windows Python doesn't bundle. Two
+ways to run it:
+
+**Native Windows (cmd / PowerShell).** Install the curses shim once, then run
+OpenTab normally:
+
+```sh
+pip install windows-curses
+opentab
+```
+
+That's the one exception to "no `pip install`": `windows-curses` is just an
+OS-level provider for the stdlib `curses` module, not a dependency of OpenTab's
+own code. Confirmed working against the **OpenCode** source; the Claude Code and
+Codex backends read plain JSON files and should behave the same, but are less
+exercised on native Windows.
+
+**WSL.** `curses` is already there, so a plain `opentab` works. OpenCode itself
+doesn't have to run inside WSL — even on native Windows it keeps its database
 under your Windows home, at `%USERPROFILE%\.local\share\opencode\opencode.db`,
-which WSL can read through `/mnt/c`. Point OpenTab at it:
+which WSL reads through `/mnt/c`:
 
 ```sh
 # from inside WSL, reading the Windows-side OpenCode database
 opentab --db /mnt/c/Users/<you>/.local/share/opencode/opencode.db
 ```
 
-If OpenCode runs inside WSL, the default path (`~/.local/share/opencode/opencode.db`)
-just works with a plain `opentab`. Either way, `--db` points at any non-standard
-location.
+If OpenCode runs inside WSL, the default path
+(`~/.local/share/opencode/opencode.db`) just works. Either way, `--db` points
+OpenTab at any non-standard location.
 
-Native Windows (cmd/PowerShell) is not supported; it would need
-`pip install windows-curses`, which is untested here. OpenTab prints a short
-hint instead of crashing if `curses` is missing.
+If `curses` is missing, OpenTab prints a short hint (install `windows-curses`)
+instead of crashing.
 
 ## Development
 

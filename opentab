@@ -8288,9 +8288,9 @@ def main() -> int:
     args = parse_args()  # handles --help first, so it works even without curses
     if curses is None:
         raise SystemExit(
-            "OpenTab needs Python's curses module, which is not available on native Windows.\n"
-            "  - Recommended: run opentab under WSL (where OpenCode's database usually lives anyway).\n"
-            "  - Or on native Windows: pip install windows-curses (untested)."
+            "OpenTab needs Python's curses module, which native Windows Python doesn't bundle.\n"
+            "  - Native Windows: pip install windows-curses, then rerun opentab.\n"
+            "  - Or run opentab under WSL (where OpenCode's database usually lives anyway)."
         )
     # Load saved prefs first so the start source can be restored (resolve_source uses
     # it) and the store is built once for the right backend -- the model scan stays
