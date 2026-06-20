@@ -66,13 +66,24 @@ Three layers, all in `opentab`:
   `_needs_message_usage`) and builds cost/token SQL expressions dynamically
   (`_cost_expr`, `_token_exprs`, `_message_usage_cte/_join`). When per-session cost
   columns are absent it falls back to aggregating the `message` table. Always go through
-  these helpers when touching SQL — never hard-code column names.
+  these helpers when touching SQL — never hard-code column names. `Store` alone adds an
+  **optional fifth method** `tool_breakdown(workflow_id)` (the Tools tab; see below) —
+  per-`(tool, model)` token/cost attribution from the `part` table, scoped to one
+  session. It's gated by `supports_tool_breakdown` (probed once: does the `part` table
+  exist), so older schemas degrade to no tab. Unlike `model_breakdown` it is **not** a
+  startup scan: it filters `part` to the session tree first (the `part_session_idx`
+  index), so it's cheap enough for `App` to call **lazily on drill-in** and cache.
 - **`ClaudeStore`** — a second backend implementing the **same four methods** `App`
   calls (`workflows`, `summary`, `workflow_nodes`, `model_breakdown`) plus the
   `demo`/`demo_scale` attributes, over Claude Code's JSONL transcripts instead of SQL.
   That four-method surface is the whole `App`↔store contract, so `App`/`Renderer` are
   backend-agnostic — keep them that way (don't reach past these methods into SQL or
-  JSONL). Claude Code stores **no per-message cost**, only tokens, so a Claude session
+  JSONL). (`tool_breakdown` is an OpenCode-only **opt-in** on top of the four, never
+  required: `App` calls it via `getattr` and hides the Tools tab unless the
+  **selected session's** backend reports `supports_tools(workflow_id)` (a per-session
+  gate, so a Claude/Codex/Hermes/CSV session never shows the tab even in the merged
+  view — `CombinedStore.supports_tools` routes by owning backend), so the other
+  backends need only the four.) Claude Code stores **no per-message cost**, only tokens, so a Claude session
   is exactly an OpenCode *subscription* session: `model_breakdown` reports `cost = 0`
   and puts the full token counts in the `unpriced_*` / `root_unpriced_*` splits, so the
   ordinary `_compute_api_costs` + `$` machinery shows **$0 in normal mode and the
@@ -85,7 +96,13 @@ Three layers, all in `opentab`:
   **git root** (`git_root()`) so subdir launches roll up to the repo. Sidechain
   (Task-subagent) messages become depth-1 nodes grouped by `parentUuid`, mirroring
   `Store`'s recursive subtree. Each `Workflow` is stamped with `.source` (the backend's
-  `source_name`).
+  `source_name`). Session **title** precedence is `custom-title` → `ai-title` (Claude's
+  own generated title, present for most sessions) → first **real** user prompt →
+  `(untitled)`; `_prompt_text` skips Claude Code's injected `user` messages (the
+  local-command caveat, `<command-name>` and other `<…>` wrappers) and `_ingest` skips
+  `isMeta`/sidechain ones, so a slash-command-started session titles from the actual
+  prompt — but a genuinely one-word session (e.g. an "ok" resume stub with no
+  `ai-title`) honestly keeps that word.
 - **`CodexStore`** — a third backend over Codex CLI rollout transcripts
   (`~/.codex/sessions/**/rollout-*.jsonl`), implementing the same four methods. Like
   Claude Code it records **no per-message cost**, so it is another *subscription*
@@ -150,8 +167,11 @@ Three layers, all in `opentab`:
 - **`CombinedStore`** — wraps several backends and concatenates the same four methods,
   for `--source all` (OpenCode + Claude Code + Codex + Hermes + CSV/Copilot in one view).
   Workflow ids are
-  globally unique across sources, so it routes `workflow_nodes` by an `id → backend` map
-  built in `workflows()`; projects group by directory across all tools. `$` reprices
+  globally unique across sources, so it routes `workflow_nodes` (and `tool_breakdown`)
+  by an `id → backend` map built in `workflows()`; projects group by directory across all
+  tools. `supports_tool_breakdown` is OR-ed across backends, but the Tools tab is gated
+  per session by `supports_tools(workflow_id)` (routed to the owning backend) so it
+  shows only on OpenCode sessions in the merged view, never empty on the others. `$` reprices
   every unpriced row across all backends. `records_cost` is the AND of its backends
   (False when any backend reports no recorded cost — Claude Code, Codex, a
   subscription-only Hermes DB, or a CSV with no cost column);
@@ -199,7 +219,13 @@ Three layers, all in `opentab`:
 Esc). `self.browse_mode` is `"time"` (Months/Days sidebar, `self.focus` flips between
 them) or `"projects"`. Overlays are separate booleans on top of any view: `self.trends`
 (T), `self.help` (?), `self.show_prices` (P). Detail tabs per zoom level are the class
-tuples `month_tabs`/`day_tabs`/`project_tabs`/`workflow_tabs`, indexed by `self.tab`.
+tuples `month_tabs`/`day_tabs`/`project_tabs`/`workflow_tabs`. `current_tabs()` is the
+source of truth (don't index a class tuple directly): it appends a **Tools** tab to a
+session's `workflow_tabs` when the *selected* session's backend reports
+`supports_tools(id)` (OpenCode only — per-session, so the merged view hides it on
+non-OpenCode sessions), and
+injects **Sources** in the merged view — so `draw_detail` dispatches the session tabs by
+**name**, not by a fixed `self.tab` index.
 
 ### Data flow & the deferred model scan
 
@@ -212,6 +238,15 @@ tuples `month_tabs`/`day_tabs`/`project_tabs`/`workflow_tabs`, indexed by `self.
 - The breakdown is computed once for every root session and cached in `_model_by_root`,
   then sliced per session/day/month (`model_mix`, `aggregate_models`) — never re-queried
   per workflow.
+- The **Tools tab** (per-tool / MCP-server token attribution, OpenCode only) is the
+  opposite trade-off: it's a *per-session* `part`-table scan (`store.tool_breakdown`),
+  cheap enough to fetch **lazily when you drill into a session** and memoize in
+  `_tool_by_session` (cleared on reload / source switch). Each assistant message is one
+  LLM step whose recorded tokens/cost are attributed to the tools it invoked that step,
+  split evenly across parallel tool calls — i.e. "tokens in turns that used this tool",
+  **not** the tool's own output size. `detail_tools` aggregates those `(tool, model)`
+  rows per tool and per server (`tool_namespace`: built-in vs `server_*` MCP prefix) and
+  reprices `$0` rows under `$` exactly like `_priced_nodes` does for subagents.
 - Subagent costs are recursive: `workflow_nodes` walks `session.parent_id` with a
   recursive CTE so a root session's cost includes its whole subagent subtree.
 - Range/projection: `ranged_workflows` (date-filtered) → `all_workflows` (also drops

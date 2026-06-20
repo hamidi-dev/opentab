@@ -62,6 +62,48 @@ MSG_TOKEN_TOTAL_EXPR = " + ".join(
         "coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)",
     ]
 )
+
+# OpenCode's built-in tools. Everything else is an MCP server or a local plugin
+# tool, which OpenCode names "{server}_{tool}" (e.g. serena_find_symbol,
+# playwright_browser_navigate) -- so the server is the segment before the first
+# underscore. This set is only used to LABEL the Tools tab's server rollup
+# (built-in vs MCP); the token/cost attribution itself never depends on it. Built-in
+# names that themselves contain an underscore (apply_patch, plan_exit, todowrite...)
+# must stay listed here so they aren't mis-split into a fake "apply"/"plan" server.
+OPENCODE_BUILTIN_TOOLS = frozenset(
+    {
+        "bash",
+        "read",
+        "edit",
+        "write",
+        "grep",
+        "glob",
+        "list",
+        "ls",
+        "webfetch",
+        "task",
+        "todowrite",
+        "todoread",
+        "patch",
+        "apply_patch",
+        "multiedit",
+        "question",
+        "skill",
+        "plan_exit",
+        "invalid",
+    }
+)
+
+
+def tool_namespace(tool: str) -> str:
+    # Group a tool name into its source for the Tools tab's server rollup: a built-in
+    # tool folds to "(built-in)"; an MCP/plugin tool ("server_name") to its server
+    # prefix; anything else stands alone as its own bucket.
+    if tool in OPENCODE_BUILTIN_TOOLS:
+        return "(built-in)"
+    return tool.split("_", 1)[0] if "_" in tool else tool
+
+
 # Real token figures from human_tokens are always decimal + space-delimited
 # ("35.0B", "1.0M"); model param tags are integer + hyphen-delimited ("-35B-A3B").
 # Requiring the decimal and excluding hyphen boundaries keeps name segments from
@@ -947,6 +989,10 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self._tune(self.conn)
         self.session_columns = self._table_columns("session")
+        # The Tools tab attributes tokens to individual tool calls, which live in the
+        # `part` table (one row per tool invocation). Older OpenCode schemas predate
+        # it, so probe once: without it the tab is simply not offered.
+        self.supports_tool_breakdown = self._table_exists("part")
 
     @staticmethod
     def _tune(conn: sqlite3.Connection) -> None:
@@ -969,6 +1015,13 @@ class Store:
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
             raise ValueError(f"invalid table name: {table}")
         return {row["name"] for row in self.conn.execute(f"pragma table_info({table})")}
+
+    def _table_exists(self, table: str) -> bool:
+        return bool(
+            self.conn.execute(
+                "select 1 from sqlite_master where type='table' and name=?", [table]
+            ).fetchone()
+        )
 
     def _has_session_token_columns(self) -> bool:
         return {
@@ -1258,6 +1311,66 @@ class Store:
         # at API list prices -- both in App._load_model_cache.
         return list(self.conn.execute(sql))
 
+    def tool_breakdown(self, workflow_id: str) -> list[sqlite3.Row]:
+        # Per-(tool, model) token/cost attribution for ONE session tree (root +
+        # subagents). Each assistant message is exactly one LLM step whose recorded
+        # tokens/cost live on the message; the tools it invoked that step are its
+        # `part` rows. We attribute the message's tokens/cost to those tools, split
+        # evenly when a step calls several in parallel (so the per-tool figures sum
+        # back to the tokens of every tool-calling step). Grouping also by model lets
+        # the "$" view reprice $0 (subscription) rows at that model's list price.
+        #
+        # Restricting `part` to the session tree FIRST (part_session_idx) keeps this a
+        # ~per-session scan -- cheap enough to run lazily on drill-in rather than as a
+        # whole-table scan at startup, unlike model_breakdown.
+        if not self.supports_tool_breakdown:
+            return []
+        sql = f"""
+        with recursive tree(id) as (
+          select id from session where id = ?
+          union all
+          select child.id from session child join tree on child.parent_id = tree.id
+        ),
+        session_parts as (
+          select message_id,
+                 json_extract(data, '$.type') as ptype,
+                 json_extract(data, '$.tool') as tool
+          from part
+          where session_id in (select id from tree)
+        ),
+        tool_counts as (  -- how many tools each step called (the even-split divisor)
+          select message_id, count(*) as n
+          from session_parts where ptype = 'tool' group by message_id
+        ),
+        tools as (
+          select message_id, tool from session_parts where ptype = 'tool'
+        )
+        select
+          t.tool as tool,
+          {MSG_MODEL_EXPR} as model_name,
+          count(*) as calls,
+          sum(({MSG_TOKEN_TOTAL_EXPR}) * 1.0 / tc.n) as tokens_total,
+          sum(coalesce(json_extract(m.data, '$.tokens.input'), 0) * 1.0 / tc.n) as input,
+          sum(coalesce(json_extract(m.data, '$.tokens.output'), 0) * 1.0 / tc.n) as output,
+          sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) * 1.0 / tc.n) as reasoning,
+          sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0) * 1.0 / tc.n) as cache_read,
+          sum(coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) * 1.0 / tc.n) as cache_write,
+          sum(coalesce(json_extract(m.data, '$.cost'), 0) * 1.0 / tc.n) as cost
+        from tools t
+        join message m on m.id = t.message_id
+        join tool_counts tc on tc.message_id = t.message_id
+        group by t.tool, model_name
+        order by cost desc, tokens_total desc
+        """
+        return list(self.conn.execute(sql, [workflow_id]))
+
+    def supports_tools(self, workflow_id: str) -> bool:
+        # Per-session capability gate for the Tools tab. A single OpenCode DB is
+        # uniform (every session is backed by the part table or none is), so the id
+        # is ignored here; CombinedStore overrides this to route by owning backend so
+        # only OpenCode sessions in a merged view offer the tab.
+        return self.supports_tool_breakdown
+
 
 class ClaudeStore:
     """Read Claude Code transcripts (~/.claude/projects/**/*.jsonl) behind the same
@@ -1333,21 +1446,46 @@ class ClaudeStore:
             self._git_root_cache[cwd] = git_root(cwd)
         return self._git_root_cache[cwd]
 
-    @staticmethod
-    def _prompt_text(message) -> str | None:
-        # First user prompt, as a last-resort session title when no aiTitle exists.
+    # Claude Code injects its own "user" messages around slash commands and hooks
+    # (the local-command caveat, the <command-name> wrapper, bash stdout, system
+    # reminders). They're scaffolding, not the user's prompt, so they must never
+    # become a session title -- skipping them lets the first *real* prompt win.
+    _WRAPPER_TAGS = (
+        "<local-command",
+        "<command-name",
+        "<command-message",
+        "<command-args",
+        "<command-stdout",
+        "<command-contents",
+        "<system-reminder",
+        "<bash-input",
+        "<bash-stdout",
+        "<bash-stderr",
+        "<user-memory-input",
+    )
+
+    @classmethod
+    def _prompt_text(cls, message) -> str | None:
+        # First *real* user prompt, as a last-resort session title when no aiTitle
+        # exists. Returns None for empty content or an injected wrapper (see above),
+        # so the caller keeps scanning to the next user message.
         if not isinstance(message, dict):
             return None
         content = message.get("content")
+        text = None
         if isinstance(content, str):
-            return content.strip()[:80] or None
-        if isinstance(content, list):
+            text = content.strip()
+        elif isinstance(content, list):
             for block in content:
                 if isinstance(block, dict) and block.get("type") == "text":
-                    return (block.get("text") or "").strip()[:80] or None
+                    text = (block.get("text") or "").strip()
+                    break
                 if isinstance(block, str):
-                    return block.strip()[:80] or None
-        return None
+                    text = block.strip()
+                    break
+        if not text or text.startswith(cls._WRAPPER_TAGS):
+            return None
+        return text[:80]
 
     # --- parsing -------------------------------------------------------------
     def _files(self) -> list[str]:
@@ -1411,7 +1549,14 @@ class ClaudeStore:
             s["title_ai"] = o.get("aiTitle") or o.get("title") or s["title_ai"]
         elif typ == "custom-title":
             s["title_custom"] = o.get("title") or o.get("customTitle") or s["title_custom"]
-        elif typ == "user" and not s["title_prompt"]:
+        elif (
+            typ == "user"
+            and not s["title_prompt"]
+            and not o.get("isMeta")
+            and o.get("isSidechain") is not True
+        ):
+            # First non-meta, non-sidechain user message -- _prompt_text further skips
+            # command/system wrappers, so the title is the first prompt the user typed.
             s["title_prompt"] = self._prompt_text(o.get("message"))
         if typ != "assistant":
             return
@@ -2971,6 +3116,11 @@ class CombinedStore:
             self.demo_scale = scale
         else:
             self.demo_scale = 1.0
+        # Tool breakdown is OpenCode-only today; offer the Tools tab if any backend
+        # in the mix supports it. tool_breakdown() routes per session to its owner.
+        self.supports_tool_breakdown = any(
+            getattr(s, "supports_tool_breakdown", False) for s in stores
+        )
         self._owner: dict[str, object] = {}
 
     def workflows(self) -> list[Workflow]:
@@ -3003,6 +3153,20 @@ class CombinedStore:
             if nodes:
                 return nodes
         return []
+
+    def tool_breakdown(self, workflow_id: str) -> list:
+        # Route to the owning backend; only OpenCode produces rows, the rest don't
+        # implement it (so the Tools tab is empty for a Claude/Codex/Hermes/CSV
+        # session even in the merged view).
+        owner = self._owner.get(workflow_id)
+        fetch = getattr(owner, "tool_breakdown", None)
+        return fetch(workflow_id) if fetch else []
+
+    def supports_tools(self, workflow_id: str) -> bool:
+        # Only the owning backend decides -- so an OpenCode session offers the Tools
+        # tab even in the merged view, while a Claude/Codex/Hermes/CSV session never
+        # does (they don't implement tool_breakdown yet).
+        return getattr(self._owner.get(workflow_id), "supports_tool_breakdown", False)
 
 
 class Renderer:
@@ -4035,14 +4199,18 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
+        tabs = self.current_tabs()
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab)
 
-        if self.tab == 0:
-            lines = self.detail_overview(workflow, w - 4)
-        elif self.tab == 1:
+        current = tabs[self.tab % len(tabs)]
+        if current == "Models":
             lines = self.detail_models(workflow, w - 4)
-        else:
+        elif current == "Subagents":
             lines = self.detail_subagents(workflow, w - 4)
+        elif current == "Tools":
+            lines = self.detail_tools(workflow, w - 4)
+        else:
+            lines = self.detail_overview(workflow, w - 4)
 
         visible = h - 4
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
@@ -4054,20 +4222,29 @@ class Renderer:
                 attr = curses.color_pair(5) | curses.A_BOLD
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
 
-    def _model_table(self, rows: list[tuple], title: str, width: int) -> list[str]:
-        # rows: (name, runs, cost, tokens, cache_read, cache_write, output). The
-        # model column fits the longest name (so the numbers sit right after it),
+    def _model_table(
+        self,
+        rows: list[tuple],
+        title: str,
+        width: int,
+        name_label: str = "Model",
+        count_label: str = "Msgs",
+    ) -> list[str]:
+        # rows: (name, count, cost, tokens, cache_read, cache_write, output). The
+        # name column fits the longest entry (so the numbers sit right after it),
         # capped by the available width so long names aren't cut when there's room.
-        longest = max([len(str(r[0])) for r in rows] + [len("Model")])
-        mw = min(longest, max(20, width - 61))
+        # name_label/count_label let the Tools tab reuse this as Tool/Calls.
+        cw_ = max(4, len(count_label))
+        longest = max([len(str(r[0])) for r in rows] + [len(name_label)])
+        mw = min(longest, max(20, width - 57 - cw_))
         total_cost = sum(float(r[2]) for r in rows)
         lines = [
             title,
-            f"{'Model':{mw}} {'Msgs':>4} {'Cost':>10} {'Share':>5} {'Tokens':>9} {'CacheR':>9} {'CacheW':>9} {'Output':>8}",
+            f"{name_label:{mw}} {count_label:>{cw_}} {'Cost':>10} {'Share':>5} {'Tokens':>9} {'CacheR':>9} {'CacheW':>9} {'Output':>8}",
         ]
         for name, runs, cost, tok, cr, cw, out in rows:
             lines.append(
-                f"{shorten(name, mw):{mw}} {int(runs):>4} {money(float(cost)):>10} "
+                f"{shorten(name, mw):{mw}} {int(runs):>{cw_}} {money(float(cost)):>10} "
                 f"{pct(float(cost), total_cost):>5} "
                 f"{human_tokens(int(tok)):>9} {human_tokens(int(cr)):>9} {human_tokens(int(cw)):>9} {human_tokens(int(out)):>8}"
             )
@@ -4436,6 +4613,90 @@ class Renderer:
             )
         return lines
 
+    def detail_tools(self, workflow: Workflow, width: int) -> list[str]:
+        # Which tools (and MCP servers) the LLM calls cost the most. Each row is the
+        # tokens/cost of the assistant steps that invoked a tool, split evenly when a
+        # step called several -- so this is "tokens spent in turns that used this
+        # tool", not the tool's own output size. The "$" view reprices $0
+        # (subscription) rows at list price, like every other panel.
+        if not self.session_supports_tools(workflow.id):
+            return [
+                "# Tools",
+                "Per-tool token attribution is only available for OpenCode sessions.",
+            ]
+        rows = self.session_tool_rows(workflow.id)
+        if not rows:
+            return ["# Tools", "No tool calls recorded for this session."]
+        api = self.show_api_prices and not self.store.demo
+
+        def agg() -> dict[str, dict]:
+            return defaultdict(
+                lambda: {
+                    "calls": 0,
+                    "cost": 0.0,
+                    "tokens": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "output": 0,
+                }
+            )
+
+        by_tool, by_server = agg(), agg()
+        for r in rows:
+            # A wholly-$0 (tool, model) row is unpriced -- estimate it at list price in
+            # the "$" view (mirrors _priced_nodes); a priced row keeps its real cost.
+            cost = r["cost"]
+            if api and not cost:
+                cost = api_equivalent_cost(
+                    r["model_name"],
+                    r["input"],
+                    r["output"],
+                    r["reasoning"],
+                    r["cache_read"],
+                    r["cache_write"],
+                )
+            for bucket, key in ((by_tool, r["tool"]), (by_server, tool_namespace(r["tool"]))):
+                it = bucket[key]
+                it["calls"] += r["calls"]
+                it["cost"] += cost
+                it["tokens"] += r["tokens_total"]
+                it["cache_read"] += r["cache_read"]
+                it["cache_write"] += r["cache_write"]
+                it["output"] += r["output"]
+
+        def table_rows(bucket: dict[str, dict]) -> list[tuple]:
+            ordered = sorted(
+                bucket.items(), key=lambda kv: (kv[1]["cost"], kv[1]["tokens"]), reverse=True
+            )
+            return [
+                (
+                    name,
+                    it["calls"],
+                    it["cost"],
+                    it["tokens"],
+                    it["cache_read"],
+                    it["cache_write"],
+                    it["output"],
+                )
+                for name, it in ordered
+            ]
+
+        lines = self._model_table(
+            table_rows(by_tool), "# Tools — this session", width, "Tool", "Calls"
+        )
+        lines.append("")
+        lines.extend(
+            self._model_table(
+                table_rows(by_server), "# By server / namespace", width, "Server", "Calls"
+            )
+        )
+        lines += [
+            "",
+            "! Tokens/cost are for the LLM turns that invoked each tool (split evenly across",
+            "! a turn's tools), not the tool's own output size.",
+        ]
+        return lines
+
     def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         self.box(stdscr, y, 0, bottom - y, width, "Help · j/k scroll · any other key closes")
         lines = [
@@ -4450,8 +4711,9 @@ class Renderer:
             "  Esc              step back out (session -> zoom -> browse)",
             "  Shift-Tab        cycle focus backward while browsing; else step back out",
             "  h/l              switch detail tabs (years/months: Overview/Models/Projects/",
-            "                   Sessions; days: Overview/Projects/Sessions; a Sources tab joins",
-            "                   after Overview in the merged 'all' view)",
+            "                   Sessions; days: Overview/Projects/Sessions; a session adds a",
+            "                   Tools tab -- per-tool/MCP-server token spend, OpenCode only;",
+            "                   a Sources tab joins after Overview in the merged 'all' view)",
             "  j/k or Up/Down   move in the current list (or scroll detail)",
             "  mouse            wheel scrolls; click selects; double-click drills; click a tab",
             "  g/G              top / bottom",
@@ -5149,6 +5411,10 @@ class App:
         # anything shows them. Empty until then; model_mix tolerates that.
         self._model_by_root: dict[str, list[dict]] = defaultdict(list)
         self._models_loaded = False
+        # Per-tool attribution (OpenCode only) is fetched lazily on drill-in and
+        # cached per session id -- it's a ~per-session scan of the part table, not
+        # the startup-wide message scan model_breakdown does. See session_tool_rows.
+        self._tool_by_session: dict[str, list[dict]] = {}
         # Active range: custom bounds from CLI take precedence, else a day window
         # (None = all). Default is all time so the Months panel is actually useful.
         self.custom_since = args.since
@@ -5811,6 +6077,43 @@ class App:
         rows = self._model_by_root.get(workflow_id, [])
         return sorted(rows, key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
+    def session_supports_tools(self, workflow_id: str) -> bool:
+        # Whether the Tools tab applies to this session -- backends that don't
+        # implement tool_breakdown (Claude/Codex/Hermes/CSV) have no supports_tools,
+        # so the tab is hidden rather than shown empty.
+        check = getattr(self.store, "supports_tools", None)
+        return bool(check(workflow_id)) if check else False
+
+    def session_tool_rows(self, workflow_id: str) -> list[dict]:
+        # Raw per-(tool, model) attribution for one session, fetched once and cached.
+        # The store call is the heavy bit (~per-session part scan), so memoize it; the
+        # Tools renderer aggregates/reprices these on top each frame (cheap).
+        cached = self._tool_by_session.get(workflow_id)
+        if cached is not None:
+            return cached
+        fetch = getattr(self.store, "tool_breakdown", None)
+        rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
+        if self.store.demo:
+            rows = self._scale_demo_tools(workflow_id, rows)
+        self._tool_by_session[workflow_id] = rows
+        return rows
+
+    def _scale_demo_tools(self, workflow_id: str, rows: list[dict]) -> list[dict]:
+        # Hide real magnitudes the same way _demo_workflow does: synthesize a price for
+        # $0 (subscription) rows so the tab isn't a wall of red $0.00, then scale every
+        # cost/token by the hidden per-process factor. Tool/model names aren't
+        # sensitive, so they pass through unchanged.
+        k = self.store.demo_scale
+        for r in rows:
+            if r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
+                r["cost"] = demo_cost(
+                    r["tokens_total"], f"{workflow_id}:{r['tool']}:{r['model_name']}"
+                )
+            for f in ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write"):
+                r[f] = int(round(r.get(f, 0) * k))
+            r["cost"] = round(r.get("cost", 0) * k, 4)
+        return rows
+
     def _snapshot_real_costs(self) -> None:
         # Freshly loaded rows carry only real cost; seed the real/api snapshots so
         # _apply_price_mode is safe even before the (deferred) model scan runs.
@@ -5889,6 +6192,7 @@ class App:
         self.loaded = self.store.workflows()
         self._snapshot_real_costs()
         self._resolve_project_roots()
+        self._tool_by_session.clear()
         self._load_model_cache()
         self.zoom_project = None
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
@@ -5973,6 +6277,7 @@ class App:
         self._snapshot_real_costs()
         self._resolve_project_roots()
         self._models_loaded = False
+        self._tool_by_session.clear()
         self._load_model_cache()
         self._invalidate_workflow_cache()
         if restore:
@@ -7096,6 +7401,13 @@ class App:
 
     def current_tabs(self) -> tuple[str, ...]:
         if self.view == "session":
+            # The Tools tab (per-tool token attribution) rides on the part table,
+            # which only OpenCode has -- gate it on the SELECTED session's backend so
+            # in the merged view a Claude/Codex/Hermes/CSV session never shows an
+            # unsupported (empty) tab, only OpenCode sessions do.
+            wf = self.current_session()
+            if wf is not None and self.session_supports_tools(wf.id):
+                return self.workflow_tabs + ("Tools",)
             return self.workflow_tabs
         if self.browse_mode == "projects":
             base = self.project_tabs

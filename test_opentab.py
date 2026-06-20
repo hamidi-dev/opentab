@@ -1297,6 +1297,141 @@ def test_demo_scale_hides_real_magnitudes_consistently():
         assert demo_child["tokens_total"] == int(round(real_child["tokens_total"] * 0.5))
 
 
+def _write_opencode_db_with_tools(db):
+    # Minimal OpenCode-shaped DB exercising the `part` table the Tools tab reads.
+    # One subscription ($0) step calls TWO tools in parallel; one priced ($6) step
+    # calls one tool. Token totals are chosen so even-split attribution is visible.
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        create table session (
+          id text primary key, parent_id text, title text, directory text,
+          time_created integer, cost real default 0 not null,
+          tokens_input integer default 0 not null, tokens_output integer default 0 not null,
+          tokens_reasoning integer default 0 not null, tokens_cache_read integer default 0 not null,
+          tokens_cache_write integer default 0 not null
+        );
+        create table message (id text primary key, session_id text, data text);
+        create table part (id text primary key, message_id text, session_id text, data text);
+        """
+    )
+    conn.execute(
+        "insert into session values (?,?,?,?,?,?,?,?,?,?,?)",
+        ("s1", None, "Root", "/work/repo", 1760000000000, 6.0, 0, 0, 0, 0, 0),
+    )
+    conn.executemany(
+        "insert into message values (?,?,?)",
+        [
+            (
+                "m1",
+                "s1",
+                '{"role":"assistant","providerID":"anthropic","modelID":"claude-haiku-4.5",'
+                '"cost":0,"tokens":{"input":2000000,"output":0}}',
+            ),
+            (
+                "m2",
+                "s1",
+                '{"role":"assistant","providerID":"anthropic","modelID":"claude-haiku-4.5",'
+                '"cost":6.0,"tokens":{"input":6000000,"output":0}}',
+            ),
+        ],
+    )
+    conn.executemany(
+        "insert into part values (?,?,?,?)",
+        [
+            ("p1", "m1", "s1", '{"type":"step-start"}'),  # non-tool parts are ignored
+            ("p2", "m1", "s1", '{"type":"tool","tool":"bash"}'),
+            ("p3", "m1", "s1", '{"type":"tool","tool":"serena_read_file"}'),
+            ("p4", "m2", "s1", '{"type":"tool","tool":"bash"}'),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_tool_namespace_classification():
+    # Built-ins (even ones with underscores) fold to "(built-in)"; MCP/plugin tools
+    # ("server_tool") roll up to their server prefix; anything else stands alone.
+    assert ot.tool_namespace("bash") == "(built-in)"
+    assert ot.tool_namespace("apply_patch") == "(built-in)"
+    assert ot.tool_namespace("plan_exit") == "(built-in)"
+    assert ot.tool_namespace("serena_find_symbol") == "serena"
+    assert ot.tool_namespace("playwright_browser_navigate") == "playwright"
+    assert ot.tool_namespace("standalone") == "standalone"
+
+
+def test_tool_breakdown_even_splits_parallel_tool_calls():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_tools(db)
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        assert store.supports_tool_breakdown
+        rows = {r["tool"]: r for r in store.tool_breakdown("s1")}
+        # m1's 2M tokens split across its two tools -> 1M each; bash also gets m2's 6M.
+        assert round(rows["bash"]["tokens_total"]) == 7_000_000
+        assert round(rows["serena_read_file"]["tokens_total"]) == 1_000_000
+        assert rows["bash"]["calls"] == 2
+        assert rows["serena_read_file"]["calls"] == 1
+        # Only the priced step carries real cost; it lands on bash, serena stays $0.
+        assert rows["bash"]["cost"] == 6.0
+        assert rows["serena_read_file"]["cost"] == 0
+        # Attributed tokens reconcile to the tool-calling steps' totals (2M + 6M).
+        assert round(sum(r["tokens_total"] for r in rows.values())) == 8_000_000
+
+
+def test_tools_tab_offered_only_with_part_table():
+    args = type("Args", (), {"since": None, "until": None, "days": None})
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_tools(db)
+        app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
+        app.view = "session"
+        assert app.current_tabs() == ("Overview", "Models", "Subagents", "Tools")
+    # A backend without the part table / support flag never shows the tab.
+    bare = ot.App(FakeStore([]), args())
+    bare.view = "session"
+    assert "Tools" not in bare.current_tabs()
+
+
+def test_detail_tools_reprices_unpriced_under_dollar():
+    args = type("Args", (), {"since": None, "until": None, "days": None})
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_tools(db)
+        app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
+        rnd = ot.Renderer(app)
+        wf = app.loaded[0]
+        normal = rnd.detail_tools(wf, 92)
+        joined = "\n".join(normal)
+        assert "# Tools" in joined
+        assert "# By server / namespace" in joined
+        assert "(built-in)" in joined  # the server rollup labels built-in vs MCP
+        # The subscription session records $0; under "$" the wholly-unpriced serena
+        # row picks up its list-price estimate (1M Haiku input @ $1/M = $1.00).
+        app.show_api_prices = True
+        app._ensure_models()
+        serena_line = next(
+            line for line in rnd.detail_tools(wf, 92) if line.startswith("serena_read_file")
+        )
+        assert "$1.00" in serena_line
+
+
+def test_tools_tab_gated_to_opencode_sessions_in_combined_view():
+    # In the merged view the Tools tab must follow the SELECTED session's backend:
+    # an OpenCode session offers it, a non-OpenCode session never shows it empty.
+    args = type("Args", (), {"since": None, "until": None, "days": None})
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_tools(db)
+        oc = ot.Store(db, type("A", (), {"demo": False})())
+        other = FakeStore([workflow("cc1", "2026-06-01 12:00:00")])  # no tool support
+        app = ot.App(ot.CombinedStore([oc, other]), args())
+        assert app.store.supports_tools("s1") is True
+        assert app.store.supports_tools("cc1") is False
+        assert app.session_supports_tools("s1") is True
+        assert app.session_supports_tools("cc1") is False
+
+
 def test_api_price_helpers():
     # input/output/cache priced per 1M, reasoning billed as output.
     assert "gpt-4o-2024-05-13" in ot.MODEL_PRICE_TABLE
@@ -2377,6 +2512,56 @@ def test_claude_store_groups_sidechain_subagents_into_tree():
         assert nodes[1]["depth"] == 1 and nodes[1]["agent"] == "subagent"
         assert nodes[1]["tokens_total"] == (40 + 10) + (20 + 5)
         assert nodes[0]["cost"] == 0.0 and nodes[1]["cost"] == 0.0  # recorded; $ reprices
+
+
+def _claude_user(text, *, cwd, meta=False, side=False, uuid="u"):
+    return {
+        "type": "user",
+        "sessionId": "s1",
+        "cwd": cwd,
+        "timestamp": "2026-06-10T18:46:00.000Z",
+        "uuid": uuid,
+        "isMeta": meta,
+        "isSidechain": side,
+        "message": {"role": "user", "content": text},
+    }
+
+
+def test_claude_title_skips_injected_command_and_meta_messages():
+    # A session started by a slash command opens with Claude Code's injected
+    # messages (meta caveat, <command-name> wrapper). With no ai-title, the title
+    # must fall through to the first *real* user prompt, not the scaffolding.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        rows = [
+            _claude_user("<local-command-caveat>Caveat: ...", cwd=repo, meta=True, uuid="u0"),
+            _claude_user("<command-name>/clear</command-name>", cwd=repo, uuid="u1"),
+            _claude_user("the real prompt about heat maps", cwd=repo, uuid="u2"),
+            _claude_msg("s1", "claude-opus-4-8", _usage(10, 20, 30, 0), uuid="ua", cwd=repo),
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), rows)
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        assert store.workflows()[0].title == "the real prompt about heat maps"
+
+
+def test_claude_title_keeps_genuine_short_first_prompt():
+    # When the only real user message is "ok" (a continuation/resume stub) and there
+    # is no ai-title, opentab honestly shows "ok" rather than inventing a title.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        rows = [
+            _claude_user("ok", cwd=repo, uuid="u0"),
+            _claude_msg("s1", "claude-opus-4-8", _usage(10, 20, 30, 0), uuid="ua", cwd=repo),
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), rows)
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        assert store.workflows()[0].title == "ok"
 
 
 # --- Codex CLI rollout helpers (~/.codex/sessions/**/rollout-*.jsonl) ---------
