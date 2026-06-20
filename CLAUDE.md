@@ -66,24 +66,28 @@ Three layers, all in `opentab`:
   `_needs_message_usage`) and builds cost/token SQL expressions dynamically
   (`_cost_expr`, `_token_exprs`, `_message_usage_cte/_join`). When per-session cost
   columns are absent it falls back to aggregating the `message` table. Always go through
-  these helpers when touching SQL — never hard-code column names. `Store` alone adds an
-  **optional fifth method** `tool_breakdown(workflow_id)` (the Tools tab; see below) —
-  per-`(tool, model)` token/cost attribution from the `part` table, scoped to one
-  session. It's gated by `supports_tool_breakdown` (probed once: does the `part` table
-  exist), so older schemas degrade to no tab. Unlike `model_breakdown` it is **not** a
-  startup scan: it filters `part` to the session tree first (the `part_session_idx`
-  index), so it's cheap enough for `App` to call **lazily on drill-in** and cache.
+  these helpers when touching SQL — never hard-code column names. On top of the four-method
+  contract `Store` adds two **optional per-session opt-ins**, both fetched **lazily on
+  drill-in** and cached (never startup scans, unlike `model_breakdown`): `tool_breakdown`
+  (the Tools tab; see below) — per-`(tool, model)` attribution from the `part` table,
+  gated by `supports_tool_breakdown`/`supports_tools`; and `message_timeline(workflow_id)`
+  (the **Turns** tab) — every assistant message (one LLM step) in the session tree ordered
+  by `$.time.created`, with subagent turns (depth > 0) interleaved by time, gated by
+  `supports_message_timeline`/`supports_turns`. Both filter to the session subtree first
+  so they stay ~per-session, not whole-table.
 - **`ClaudeStore`** — a second backend implementing the **same four methods** `App`
   calls (`workflows`, `summary`, `workflow_nodes`, `model_breakdown`) plus the
   `demo`/`demo_scale` attributes, over Claude Code's JSONL transcripts instead of SQL.
   That four-method surface is the whole `App`↔store contract, so `App`/`Renderer` are
   backend-agnostic — keep them that way (don't reach past these methods into SQL or
-  JSONL). (`tool_breakdown` is an OpenCode-only **opt-in** on top of the four, never
-  required: `App` calls it via `getattr` and hides the Tools tab unless the
-  **selected session's** backend reports `supports_tools(workflow_id)` (a per-session
-  gate, so a Claude/Codex/Hermes/CSV session never shows the tab even in the merged
-  view — `CombinedStore.supports_tools` routes by owning backend), so the other
-  backends need only the four.) Claude Code stores **no per-message cost**, only tokens, so a Claude session
+  JSONL). (The per-session **opt-ins** ride on top of the four, never required: `App`
+  calls each via `getattr` and hides its tab unless the **selected session's** backend
+  reports the matching `supports_*(workflow_id)` gate — so a Claude/Codex/Hermes/CSV
+  session never shows an empty tab in the merged view, `CombinedStore` routing by owning
+  backend. `tool_breakdown`/`supports_tools` (Tools) is **OpenCode-only**; but
+  `message_timeline`/`supports_turns` (the **Turns** tab — per-turn cost over time)
+  `ClaudeStore` **also** implements, since it's already message-based, so Turns shows on
+  both OpenCode and Claude sessions, Tools only on OpenCode.) Claude Code stores **no per-message cost**, only tokens, so a Claude session
   is exactly an OpenCode *subscription* session: `model_breakdown` reports `cost = 0`
   and puts the full token counts in the `unpriced_*` / `root_unpriced_*` splits, so the
   ordinary `_compute_api_costs` + `$` machinery shows **$0 in normal mode and the
@@ -220,12 +224,12 @@ Esc). `self.browse_mode` is `"time"` (Months/Days sidebar, `self.focus` flips be
 them) or `"projects"`. Overlays are separate booleans on top of any view: `self.trends`
 (T), `self.help` (?), `self.show_prices` (P). Detail tabs per zoom level are the class
 tuples `month_tabs`/`day_tabs`/`project_tabs`/`workflow_tabs`. `current_tabs()` is the
-source of truth (don't index a class tuple directly): it appends a **Tools** tab to a
-session's `workflow_tabs` when the *selected* session's backend reports
-`supports_tools(id)` (OpenCode only — per-session, so the merged view hides it on
-non-OpenCode sessions), and
-injects **Sources** in the merged view — so `draw_detail` dispatches the session tabs by
-**name**, not by a fixed `self.tab` index.
+source of truth (don't index a class tuple directly): it appends, in order, a **Turns**
+tab (when `supports_turns(id)` — OpenCode + Claude) and a **Tools** tab (when
+`supports_tools(id)` — OpenCode only) to the *selected* session's `workflow_tabs`, each
+gated per-session so the merged view hides an unsupported tab rather than showing it
+empty, and injects **Sources** in the merged view — so `draw_detail` dispatches the
+session tabs by **name**, not by a fixed `self.tab` index.
 
 ### Data flow & the deferred model scan
 
@@ -247,6 +251,22 @@ injects **Sources** in the merged view — so `draw_detail` dispatches the sessi
   **not** the tool's own output size. `detail_tools` aggregates those `(tool, model)`
   rows per tool and per server (`tool_namespace`: built-in vs `server_*` MCP prefix) and
   reprices `$0` rows under `$` exactly like `_priced_nodes` does for subagents.
+- The **Turns tab** (per-turn cost over time, OpenCode + Claude) is the same lazy
+  per-session trade-off: `store.message_timeline` returns every assistant message (one
+  LLM step) in the session subtree ordered by time, memoized in `_turns_by_session`
+  (cleared on reload / source switch, demo-scaled by `_scale_demo_turns`). It also pulls
+  the `user` messages so each turn carries the **owning prompt** (the most recent user
+  message in time owns every turn until the next): OpenCode titles it from
+  `summary.title` → first text part, Claude from the first real prompt text (reusing
+  `_prompt_text`'s wrapper/tool-result skipping). `detail_turns` reprices `$0` turns
+  under `$` like the Tools tab, **groups** turns under a `▸ <prompt>` header (rendered in
+  the orange accent via a `draw_detail` prefix case) carrying that prompt's subtotal, and
+  renders a running **Cumulative** column across the whole session — the point of the tab
+  is *when* the money was spent, so rows are chronological (never cost-sorted) and the
+  header-vs-rows split *is* the user-vs-llm distinction. Subagent (Task) turns are
+  interleaved by time and tagged in the Agent column; demo anonymizes prompt titles
+  (stable per `prompt_id`). The Time column shows date + clock (`MM-DD HH:MM:SS`) on every
+  row — turns can be seconds apart and a resumed session spans days.
 - Subagent costs are recursive: `workflow_nodes` walks `session.parent_id` with a
   recursive CTE so a root session's cost includes its whole subagent subtree.
 - Range/projection: `ranged_workflows` (date-filtered) → `all_workflows` (also drops

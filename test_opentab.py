@@ -7,6 +7,7 @@ The module under test has no .py extension, so we load it by path.
 
 import json
 import os
+import re
 import sqlite3
 import tempfile
 from importlib.machinery import SourceFileLoader
@@ -1386,11 +1387,13 @@ def test_tools_tab_offered_only_with_part_table():
         _write_opencode_db_with_tools(db)
         app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
         app.view = "session"
-        assert app.current_tabs() == ("Overview", "Models", "Subagents", "Tools")
+        # An OpenCode session offers both per-session tabs (Turns then Tools).
+        assert app.current_tabs() == ("Overview", "Models", "Subagents", "Turns", "Tools")
     # A backend without the part table / support flag never shows the tab.
     bare = ot.App(FakeStore([]), args())
     bare.view = "session"
     assert "Tools" not in bare.current_tabs()
+    assert "Turns" not in bare.current_tabs()
 
 
 def test_detail_tools_reprices_unpriced_under_dollar():
@@ -1430,6 +1433,210 @@ def test_tools_tab_gated_to_opencode_sessions_in_combined_view():
         assert app.store.supports_tools("cc1") is False
         assert app.session_supports_tools("s1") is True
         assert app.session_supports_tools("cc1") is False
+
+
+def _write_opencode_db_with_turns(db):
+    # OpenCode-shaped DB for the Turns tab: a root session s1 with two assistant
+    # messages and a subagent child s2 with one. Messages are inserted out of time
+    # order (and carry $.time.created) so the timeline must sort them chronologically;
+    # one priced ($3) step plus two $0 (subscription) steps exercise the "$" reprice.
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        create table session (
+          id text primary key, parent_id text, title text, directory text, agent text,
+          time_created integer
+        );
+        create table message (id text primary key, session_id text, data text);
+        create table part (id text primary key, message_id text, session_id text, data text);
+        """
+    )
+    conn.executemany(
+        "insert into session values (?,?,?,?,?,?)",
+        [
+            ("s1", None, "Root", "/work/repo", None, 1760000000000),
+            ("s2", "s1", "Explore", "/work/repo", "explore", 1760000000000),
+        ],
+    )
+
+    def msg(model, cost, created, inp):
+        return (
+            f'{{"role":"assistant","providerID":"anthropic","modelID":"{model}",'
+            f'"cost":{cost},"time":{{"created":{created}}},"tokens":{{"input":{inp},"output":0}}}}'
+        )
+
+    def user(created, title):
+        return f'{{"role":"user","time":{{"created":{created}}},"summary":{{"title":"{title}"}}}}'
+
+    conn.executemany(
+        "insert into message values (?,?,?)",
+        [
+            # inserted last-first to prove the query orders by time, not rowid
+            ("m2", "s1", msg("claude-sonnet-4-5", 3.0, 2000, 500000)),  # priced, t=2000
+            ("m1", "s1", msg("claude-haiku-4.5", 0, 1000, 1000000)),  # $0, t=1000
+            ("m3", "s2", msg("claude-haiku-4.5", 0, 1500, 2000000)),  # subagent $0, t=1500
+            # two user prompts: u1 owns m1+m3 (t<=1500), u2 owns m2 (t=2000)
+            ("u1", "s1", user(500, "Add feature X")),
+            ("u2", "s1", user(1800, "Fix the bug")),
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_message_timeline_orders_by_time_and_marks_subagent_turns():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_turns(db)
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        assert store.supports_turns("s1")
+        rows = store.message_timeline("s1")
+        # chronological (t=1000, 1500, 2000), NOT insertion order (m2,m1,m3)
+        assert [r["tokens_total"] for r in rows] == [1_000_000, 2_000_000, 500_000]
+        assert [r["cost"] for r in rows] == [0, 0, 3.0]
+        # the middle turn is the subagent (depth 1, its session's agent label)
+        assert [r["depth"] for r in rows] == [0, 1, 0]
+        assert rows[1]["agent"] == "explore"
+        assert rows[0]["agent"] == "-" and rows[2]["agent"] == "-"
+        assert rows[1]["model_name"] == "anthropic/claude-haiku-4.5"
+        # each turn is tagged with the user prompt that owns it (most recent in time):
+        # u1 (summary.title) owns m1 + the subagent m3; u2 owns the later m2.
+        assert [r["prompt_title"] for r in rows] == [
+            "Add feature X",
+            "Add feature X",
+            "Fix the bug",
+        ]
+        assert rows[0]["prompt_id"] == "u1" and rows[2]["prompt_id"] == "u2"
+
+
+def test_detail_turns_cumulative_and_reprices_under_dollar():
+    args = type("Args", (), {"since": None, "until": None, "days": None})
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_turns(db)
+        app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
+        rnd = ot.Renderer(app)
+        wf = app.loaded[0]
+        # Normal mode: only the priced step counts -> $3.00 total, ends at 100%.
+        normal = rnd.detail_turns(wf, 96)
+        joined = "\n".join(normal)
+        assert normal[0] == "# Turns — 3 turns, $3.00 total"
+        assert "! Grouped by the user prompt" in joined
+        assert "$3.00 · 100%" in joined  # last turn's cumulative cell
+        # turns are grouped under their owning user prompt (▸ header), m2 under u2
+        assert "▸ Add feature X" in joined and "▸ Fix the bug" in joined
+        # each row shows the date + clock ("MM-DD HH:MM:SS"), not just the time
+        assert any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in normal)
+        # Under "$" the two $0 haiku turns estimate at list price (1M+2M @ $1/M),
+        # so the total grows to $1 + $2 + $3 = $6.00 and each shows its estimate.
+        app.show_api_prices = True
+        priced = rnd.detail_turns(wf, 96)
+        assert priced[0] == "# Turns — 3 turns, $6.00 total"
+        pjoined = "\n".join(priced)
+        assert "$1.00" in pjoined and "$2.00" in pjoined and "$6.00 · 100%" in pjoined
+        # the per-prompt subtotal sits on the group header (u1 = $1+$2 estimate = $3.00)
+        assert "▸ Add feature X" in pjoined
+
+
+def test_turns_tab_gated_per_session_in_combined_view():
+    # Like the Tools tab, Turns follows the SELECTED session's backend: OpenCode (and
+    # Claude) offer it; a backend without message_timeline never shows it.
+    args = type("Args", (), {"since": None, "until": None, "days": None})
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_turns(db)
+        oc = ot.Store(db, type("A", (), {"demo": False})())
+        other = FakeStore([workflow("x1", "2026-06-01 12:00:00")])  # no timeline support
+        app = ot.App(ot.CombinedStore([oc, other]), args())
+        assert app.store.supports_turns("s1") is True
+        assert app.store.supports_turns("x1") is False
+        assert app.session_supports_turns("s1") is True
+        assert app.session_supports_turns("x1") is False
+        assert app.store.message_timeline("x1") == []
+
+
+def test_claude_message_timeline_orders_by_time_and_marks_sidechain():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        # main thread at :02, a sidechain (subagent) turn at :01 -> the sidechain must
+        # sort first by time even though it's logged second, and be marked depth 1.
+        main = _claude_msg(
+            "s1",
+            "claude-opus-4-8",
+            _usage(100, 50, 0, 0),
+            uuid="u0",
+            cwd=cwd,
+            ts="2026-06-10T18:46:02.000Z",
+        )
+        side = _claude_msg(
+            "s1",
+            "claude-opus-4-8",
+            _usage(40, 10, 0, 0),
+            uuid="u1",
+            cwd=cwd,
+            parent="u0",
+            side=True,
+            ts="2026-06-10T18:46:01.000Z",
+        )
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [main, side])
+
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        store.workflows()  # parse
+        rows = store.message_timeline("s1")
+        assert store.supports_turns("s1") is True
+        assert [r["depth"] for r in rows] == [1, 0]  # sidechain (earlier) first
+        assert rows[0]["agent"] == "subagent" and rows[1]["agent"] == "-"
+        assert rows[0]["tokens_total"] == 50 and rows[1]["tokens_total"] == 150
+        assert rows[0]["cost"] == 0.0 and rows[1]["cost"] == 0.0  # recorded; $ reprices
+        assert rows[0]["time"] < rows[1]["time"]  # "HH:MM:SS" display, in order
+
+
+def test_claude_message_timeline_groups_turns_by_owning_user_prompt():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+
+        def user(text, ts, uuid):
+            return {
+                "type": "user",
+                "sessionId": "s1",
+                "cwd": cwd,
+                "timestamp": ts,
+                "uuid": uuid,
+                "message": {"role": "user", "content": text},
+            }
+
+        # two prompts; each assistant turn belongs to the most recent earlier prompt
+        rows_in = [
+            user("first question", "2026-06-10T18:46:00.000Z", "ua"),
+            _claude_msg(
+                "s1",
+                "claude-opus-4-8",
+                _usage(100, 50),
+                uuid="a1",
+                cwd=cwd,
+                ts="2026-06-10T18:46:05.000Z",
+            ),
+            user("second question", "2026-06-10T18:47:00.000Z", "ub"),
+            _claude_msg(
+                "s1",
+                "claude-opus-4-8",
+                _usage(20, 5),
+                uuid="a2",
+                cwd=cwd,
+                ts="2026-06-10T18:47:05.000Z",
+            ),
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), rows_in)
+
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        store.workflows()
+        rows = store.message_timeline("s1")
+        assert [r["prompt_title"] for r in rows] == ["first question", "second question"]
+        assert rows[0]["prompt_id"] == "ua" and rows[1]["prompt_id"] == "ub"
 
 
 def test_api_price_helpers():

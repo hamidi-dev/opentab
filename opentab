@@ -833,6 +833,15 @@ def shorten(value: str, width: int) -> str:
     return value[: width - 3] + "..."
 
 
+def _clean_prompt(text, limit: int = 160) -> str:
+    # A user prompt collapsed to a one-line turn-group title: fold whitespace and
+    # cap it (the Turns renderer shortens further to the panel width). Empty in,
+    # empty out, so callers can treat "" as "no prompt".
+    if not text:
+        return ""
+    return " ".join(str(text).split())[:limit]
+
+
 def short_path(path: str, width: int) -> str:
     home = os.path.expanduser("~")
     if path.startswith(home):
@@ -993,6 +1002,10 @@ class Store:
         # `part` table (one row per tool invocation). Older OpenCode schemas predate
         # it, so probe once: without it the tab is simply not offered.
         self.supports_tool_breakdown = self._table_exists("part")
+        # The Turns tab lists every assistant message (one LLM step) chronologically.
+        # It only needs the message table, which every OpenCode schema has, but probe
+        # so a degenerate DB without it simply omits the tab instead of crashing.
+        self.supports_message_timeline = self._table_exists("message")
 
     @staticmethod
     def _tune(conn: sqlite3.Connection) -> None:
@@ -1371,6 +1384,97 @@ class Store:
         # only OpenCode sessions in a merged view offer the tab.
         return self.supports_tool_breakdown
 
+    def message_timeline(self, workflow_id: str) -> list[dict]:
+        # Every assistant message (one LLM step = one "turn") in the session tree,
+        # ordered chronologically -- the raw material for the Turns tab's
+        # cost-over-time view. Like tool_breakdown this restricts the scan to the
+        # session subtree first, so it's a cheap per-session query fetched lazily on
+        # drill-in, not the whole-table model_breakdown scan. Subagent turns
+        # (depth > 0) are interleaved by time with the root's, each tagged with its
+        # depth/agent so the renderer can mark them. Recorded $0 (subscription) rows
+        # keep their token columns so the "$" view can reprice them at list price.
+        #
+        # We also pull the `user` messages (not just `assistant`) so each turn can be
+        # tagged with the prompt that triggered it: walking the time-ordered stream,
+        # the most recent user message owns every assistant turn until the next one.
+        # A user message's title is OpenCode's generated `summary.title`, falling back
+        # to its first text part (the raw prompt) when that's empty.
+        if not self.supports_message_timeline:
+            return []
+        agent_expr = self._session_text_expr("s", ["agent"], "'-'")
+        # The per-message wall-clock time lives in the JSON ($.time.created, epoch ms),
+        # present regardless of whether the message table carries a time_created
+        # column, so sort/format off that and fall back to rowid for untimed rows.
+        # Return the full localtime datetime (like created_at) and let the renderer
+        # pick the display width -- a session can span days, so the date matters.
+        ts_expr = "json_extract(m.data, '$.time.created')"
+        summary_title = "nullif(json_extract(m.data, '$.summary.title'), '')"
+        if self.supports_tool_breakdown:  # the raw prompt text lives in the part table
+            part_text = (
+                "(select json_extract(p.data, '$.text') from part p "
+                "where p.message_id = m.id and json_extract(p.data, '$.type') = 'text' "
+                "order by p.rowid limit 1)"
+            )
+            title_expr = (
+                f"case when json_extract(m.data, '$.role') = 'user' "
+                f"then coalesce({summary_title}, {part_text}) end"
+            )
+        else:
+            title_expr = (
+                f"case when json_extract(m.data, '$.role') = 'user' then {summary_title} end"
+            )
+        sql = f"""
+        with recursive tree(id, depth) as (
+          select id, 0 from session where id = ?
+          union all
+          select child.id, tree.depth + 1
+          from session child join tree on child.parent_id = tree.id
+        )
+        select
+          json_extract(m.data, '$.role') as role,
+          m.id as mid,
+          datetime({ts_expr} / 1000, 'unixepoch', 'localtime') as time,
+          tree.depth as depth,
+          {agent_expr} as agent,
+          {MSG_MODEL_EXPR} as model_name,
+          coalesce(json_extract(m.data, '$.cost'), 0) as cost,
+          coalesce(json_extract(m.data, '$.tokens.input'), 0) as input,
+          coalesce(json_extract(m.data, '$.tokens.output'), 0) as output,
+          coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) as reasoning,
+          coalesce(json_extract(m.data, '$.tokens.cache.read'), 0) as cache_read,
+          coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) as cache_write,
+          ({MSG_TOKEN_TOTAL_EXPR}) as tokens_total,
+          {title_expr} as prompt_title
+        from message m
+        join tree on tree.id = m.session_id
+        join session s on s.id = m.session_id
+        where json_extract(m.data, '$.role') in ('user', 'assistant')
+        order by {ts_expr}, m.rowid
+        """
+        out = []
+        cur_id, cur_title = "", ""
+        for r in self.conn.execute(sql, [workflow_id]):
+            d = dict(r)
+            if d["role"] == "user":  # opens/owns the following assistant turns
+                cur_id = d["mid"] or ""
+                cur_title = _clean_prompt(d["prompt_title"])
+                continue
+            # A turn that recorded neither tokens nor cost (an aborted/errored step) is
+            # noise on a "how the money accrued" timeline -- drop it.
+            if not (d["tokens_total"] or d["cost"]):
+                continue
+            d["time"] = d["time"] or ""
+            d["prompt_id"] = cur_id
+            d["prompt_title"] = cur_title
+            del d["role"], d["mid"]
+            out.append(d)
+        return out
+
+    def supports_turns(self, workflow_id: str) -> bool:
+        # Per-session gate for the Turns tab. Like supports_tools, a single OpenCode DB
+        # is uniform so the id is ignored; CombinedStore routes by owning backend.
+        return self.supports_message_timeline
+
 
 class ClaudeStore:
     """Read Claude Code transcripts (~/.claude/projects/**/*.jsonl) behind the same
@@ -1532,6 +1636,8 @@ class ClaudeStore:
                 "uuid_parent": {},  # uuid -> parentUuid (for grouping sidechains)
                 "side_uuids": set(),  # uuids flagged isSidechain
                 "side_usage": {},  # sidechain-assistant uuid -> (model_name, acc)
+                "turns": [],  # per-message rows for the Turns tab (chronological)
+                "prompts": [],  # {ts,title,id} per real user prompt, for Turns grouping
             }
         cwd = o.get("cwd")
         if cwd and not s["cwd"]:
@@ -1549,15 +1655,18 @@ class ClaudeStore:
             s["title_ai"] = o.get("aiTitle") or o.get("title") or s["title_ai"]
         elif typ == "custom-title":
             s["title_custom"] = o.get("title") or o.get("customTitle") or s["title_custom"]
-        elif (
-            typ == "user"
-            and not s["title_prompt"]
-            and not o.get("isMeta")
-            and o.get("isSidechain") is not True
-        ):
-            # First non-meta, non-sidechain user message -- _prompt_text further skips
-            # command/system wrappers, so the title is the first prompt the user typed.
-            s["title_prompt"] = self._prompt_text(o.get("message"))
+        elif typ == "user" and not o.get("isMeta") and o.get("isSidechain") is not True:
+            # A real (non-meta, non-sidechain) user prompt -- _prompt_text further
+            # skips command/system wrappers and tool-result messages (no text block),
+            # so only genuine prompts pass. Record every one (for the Turns tab's
+            # per-prompt grouping); the first also seeds the session title.
+            text = self._prompt_text(o.get("message"))
+            if text:
+                s["prompts"].append(
+                    {"ts": ts or "", "title": text, "id": uuid or f"p{len(s['prompts'])}"}
+                )
+                if not s["title_prompt"]:
+                    s["title_prompt"] = text
         if typ != "assistant":
             return
         msg = o.get("message")
@@ -1578,6 +1687,30 @@ class ClaudeStore:
         if entry is None:
             entry = s["models"][model_name] = {"total": self._new_acc(), "root": self._new_acc()}
         self._add_usage(entry["total"], usage)
+        # One assistant message = one LLM step ("turn"). Record it for the Turns tab
+        # with its own timestamp; sidechain turns are depth-1 so the renderer marks
+        # them, mirroring the subagent split. Cost is $0 (recorded) -- the "$" view
+        # reprices from the token columns, like every other Claude panel.
+        i = int(usage.get("input_tokens", 0) or 0)
+        out_t = int(usage.get("output_tokens", 0) or 0)
+        cr = int(usage.get("cache_read_input_tokens", 0) or 0)
+        cw = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        side = o.get("isSidechain") is True
+        s["turns"].append(
+            {
+                "ts": o.get("timestamp") or "",
+                "depth": 1 if side else 0,
+                "agent": "subagent" if side else "-",
+                "model_name": model_name,
+                "cost": 0.0,
+                "input": i,
+                "output": out_t,
+                "reasoning": 0,
+                "cache_read": cr,
+                "cache_write": cw,
+                "tokens_total": i + out_t + cr + cw,
+            }
+        )
         if o.get("isSidechain") is True:
             acc = self._new_acc()
             self._add_usage(acc, usage)
@@ -1772,6 +1905,34 @@ class ClaudeStore:
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes
+
+    def message_timeline(self, workflow_id: str) -> list[dict]:
+        # Chronological per-turn rows for the Turns tab. ISO-8601 "Z" timestamps sort
+        # lexicographically in time order, so a plain sort is correct; the renderer
+        # gets the full localtime "YYYY-MM-DD HH:MM:SS" and picks the display width.
+        # Walking the two time-sorted streams in lockstep, the latest prompt with
+        # ts <= the turn's ts owns it -- so each turn is tagged with the prompt that
+        # triggered it (sidechain turns inherit the main thread's current prompt).
+        # Real rows -- App._scale_demo_turns hides magnitudes in demo, like Tools.
+        s = self._parse().get(workflow_id)
+        if not s:
+            return []
+        prompts = sorted(s["prompts"], key=lambda p: p["ts"])
+        out = []
+        pi, cur_id, cur_title = 0, "", ""
+        for t in sorted(s["turns"], key=lambda r: r["ts"]):
+            while pi < len(prompts) and prompts[pi]["ts"] <= t["ts"]:
+                cur_id, cur_title = prompts[pi]["id"], _clean_prompt(prompts[pi]["title"])
+                pi += 1
+            r = dict(t)
+            r["time"] = iso_to_local(r.pop("ts"))
+            r["prompt_id"] = cur_id
+            r["prompt_title"] = cur_title
+            out.append(r)
+        return out
+
+    def supports_turns(self, workflow_id: str) -> bool:
+        return True
 
     def _demo_node(self, n: dict) -> dict:
         n["title"] = demo_title(n["id"])
@@ -3168,6 +3329,17 @@ class CombinedStore:
         # does (they don't implement tool_breakdown yet).
         return getattr(self._owner.get(workflow_id), "supports_tool_breakdown", False)
 
+    def message_timeline(self, workflow_id: str) -> list:
+        # Route to the owning backend; only OpenCode and Claude Code implement it, so
+        # a Codex/Hermes/CSV session has no Turns tab even in the merged view.
+        owner = self._owner.get(workflow_id)
+        fetch = getattr(owner, "message_timeline", None)
+        return fetch(workflow_id) if fetch else []
+
+    def supports_turns(self, workflow_id: str) -> bool:
+        check = getattr(self._owner.get(workflow_id), "supports_turns", None)
+        return bool(check(workflow_id)) if check else False
+
 
 class Renderer:
     """All terminal drawing for OpenTab.
@@ -3471,23 +3643,50 @@ class Renderer:
             )
         drilled = self.view in ("zoom", "session")
         sort_by = self.effective_sort_by()
-        trail = f"  ·  sort: {sort_by}" if sort_by else ""
+        # The trail is built in three pieces so the active filter can be highlighted
+        # in place (orange): while you type, the input you're editing is the focal
+        # point right here at the top -- the footer hint then stays plain, not a second
+        # orange bar competing for attention away from where the text actually appears.
+        pre = self.breadcrumb() + (f"  ·  sort: {sort_by}" if sort_by else "")
         if self.filter_active:
-            trail += f"  ·  filter: {self.query}▌"  # live mode: the block is the cursor
+            filter_seg = f"  ·  filter: {self.query}▌"  # live mode: the block is the cursor
         elif self.query:
-            trail += f"  ·  filter: {self.query}"
+            filter_seg = f"  ·  filter: {self.query}"
+        else:
+            filter_seg = ""
+        post = ""
         if self.ignored_projects:
-            trail += f"  ·  ignored: {len(self.ignored_projects)}"
+            post += f"  ·  ignored: {len(self.ignored_projects)}"
         if self.notice:
-            trail += f"  ·  {self.notice}"
+            post += f"  ·  {self.notice}"
         x = 0
         if drilled:
             chip = " ZOOM "
             self.write(stdscr, 1, 0, chip, curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             x = len(chip) + 1
-        attr = curses.color_pair(1) | (curses.A_BOLD if drilled else 0)
-        self.write(stdscr, 1, x, shorten(self.breadcrumb() + trail, width - x - 1), attr)
+        base_attr = curses.color_pair(1) | (curses.A_BOLD if drilled else 0)
+        x = self.write_seg(stdscr, 1, x, pre, base_attr, width)
+        x = self.write_seg(
+            stdscr,
+            1,
+            x,
+            filter_seg,
+            curses.color_pair(6) | curses.A_BOLD if self.filter_active else base_attr,
+            width,
+        )
+        self.write_seg(stdscr, 1, x, post, base_attr, width)
         self.hline(stdscr, 2, 0, width)
+
+    def write_seg(
+        self, stdscr: curses.window, y: int, x: int, text: str, attr: int, width: int
+    ) -> int:
+        # Write one clipped segment of a single-line strip and return the next x, so a
+        # line can be painted piece by piece with per-segment colours.
+        if not text or x >= width - 1:
+            return x
+        clipped = shorten(text, width - x - 1)
+        self.write(stdscr, y, x, clipped, attr)
+        return x + len(clipped)
 
     def breadcrumb(self) -> str:
         # Always-visible "you are here" path: scope › month › day › session › tab.
@@ -3548,51 +3747,85 @@ class Renderer:
         # movement (j/k/h/l, arrows) is deliberately omitted -- vim users know it and
         # everyone else reaches for the arrow keys.
         if self.filter_active:
-            keys = "type to filter (fuzzy)  ↑/↓ select  Enter keep  Esc cancel  Ctrl-U clear"
-            self.hline(stdscr, height - 2, 0, width)
-            self.write(
-                stdscr, height - 1, 0, shorten(" " + keys + " ", width - 1), curses.color_pair(4)
-            )
+            # The query you're editing is highlighted up in the header (where it shows
+            # live), so this strip is just a plain hint -- no second orange bar pulling
+            # your eye away from the text.
+            keys = "type to filter (fuzzy) — see header ↑  ↑/↓ select  Enter keep  Esc cancel  Ctrl-U clear"
+            self.draw_prompt_bar(stdscr, height, width, keys, highlight=False)
             return
         if self.launch_menu is not None:
             via = "via launcher hook" if launcher_hook() else "in tmux"
             keys = f"launch {via}: w window  s split │  v split ─  p popup  y copy cmd  Esc cancel"
-            self.hline(stdscr, height - 2, 0, width)
-            self.write(
-                stdscr, height - 1, 0, shorten(" " + keys + " ", width - 1), curses.color_pair(4)
-            )
+            self.draw_prompt_bar(stdscr, height, width, keys)
             return
-        parts = []
+        # Each entry is (label, active). An active toggle -- its overlay or mode is
+        # currently ON -- renders in the orange accent so the footer reflects state at
+        # a glance (e.g. hitting T highlights "T trends" while the overlay is open).
+        parts: list[tuple[str, bool]] = []
         if self.view == "browse" and self.browse_mode == "time":
-            parts.append("Tab yr/mo/day")
-        parts.append("Enter in")
+            parts.append(("Tab yr/mo/day", False))
+        parts.append(("Enter in", False))
         if self.view != "browse":
-            parts.append("Esc out")
+            parts.append(("Esc out", False))
         if self.view != "session":
-            parts.append("p/t mode")
+            parts.append(("p/t mode", False))
         if self.can_sort_current_view():
-            parts.append("s/S sort")
+            parts.append(("s/S sort", False))
         if self.can_toggle_project_ignore():
-            parts.append("i ignore")
+            parts.append(("i ignore", False))
         if self.ignored_projects:
-            parts.append("I ignored" + ("*" if self.show_ignored_projects else ""))
+            parts.append(("I ignored", self.show_ignored_projects))
         if self.can_switch_source():
             # Show the destination, not the current source (that's the header
             # chip) — "c all" otherwise reads like "press c to get all".
-            parts.append(f"c → {self.next_source_name()}")
-        parts += ["R range", "/ filter", "T trends", "P prices", "e export", "y copy", "o open"]
+            parts.append((f"c → {self.next_source_name()}", False))
+        parts += [
+            ("R range", False),
+            ("/ filter", False),
+            ("T trends", self.trends),
+            ("P prices", self.show_prices),
+            ("e export", False),
+            ("y copy", False),
+            ("o open", False),
+        ]
         if self.can_launch_current():
-            parts.append("L launch")
+            parts.append(("L launch", False))
         if self.source_key:
-            parts.append("D real" if self.store.demo else "D demo")
+            parts.append(("D real" if self.store.demo else "D demo", False))
         if not self.store.demo:
-            parts.append("$ what-if" + ("*" if self.show_api_prices else ""))
-        parts += ["? help", "q quit"]
-        keys = "  ".join(parts)
+            parts.append(("$ what-if", self.show_api_prices))
+        parts += [("? help", self.help), ("q quit", False)]
         self.hline(stdscr, height - 2, 0, width)
-        self.write(
-            stdscr, height - 1, 0, shorten(" " + keys + " ", width - 1), curses.color_pair(4)
-        )
+        self.draw_keybar(stdscr, height - 1, width, parts)
+
+    def draw_prompt_bar(
+        self, stdscr: curses.window, height: int, width: int, text: str, highlight: bool = True
+    ) -> None:
+        # A transient action bar at the bottom. Orange (highlight=True) when this line
+        # is where you act -- the `L` launch menu, the `R` range prompt (via
+        # prompt_text) -- so it pulls focus. Plain (highlight=False) for the `/` filter,
+        # whose input is highlighted up in the header instead, so this stays a quiet hint.
+        self.hline(stdscr, height - 2, 0, width)
+        attr = curses.color_pair(6) | curses.A_BOLD if highlight else curses.color_pair(4)
+        self.write(stdscr, height - 1, 0, shorten(" " + text + " ", width - 1), attr)
+
+    def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts) -> None:
+        # Render the footer key strip segment by segment so active toggles can stand
+        # out in the orange accent (pair 6) against the slate baseline (pair 4),
+        # instead of one flat-coloured joined string.
+        base = curses.color_pair(4)
+        active = curses.color_pair(6) | curses.A_BOLD
+        x = 0
+        self.write(stdscr, y, x, " ", base)
+        x += 1
+        for i, (text, on) in enumerate(parts):
+            if x >= width - 1:
+                break
+            if i:
+                self.write(stdscr, y, x, "  ", base)
+                x += 2
+            self.write(stdscr, y, x, text, active if on else base)
+            x += len(text)
 
     def sort_heading(self, key: str, label: str) -> str:
         if self.effective_sort_by() != key:
@@ -4207,6 +4440,8 @@ class Renderer:
             lines = self.detail_models(workflow, w - 4)
         elif current == "Subagents":
             lines = self.detail_subagents(workflow, w - 4)
+        elif current == "Turns":
+            lines = self.detail_turns(workflow, w - 4)
         elif current == "Tools":
             lines = self.detail_tools(workflow, w - 4)
         else:
@@ -4220,6 +4455,8 @@ class Renderer:
             )
             if line.startswith("! "):
                 attr = curses.color_pair(5) | curses.A_BOLD
+            elif line.startswith("▸ "):  # Turns tab: a user-prompt group header
+                attr = curses.color_pair(6) | curses.A_BOLD
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
 
     def _model_table(
@@ -4697,6 +4934,85 @@ class Renderer:
         ]
         return lines
 
+    def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
+        # How this session's cost accrued, one LLM step ("turn") at a time, in
+        # chronological order -- not sorted by cost -- grouped under the user prompt
+        # that triggered each run. A "▸ <prompt>" header opens each group (with that
+        # prompt's subtotal); the indented turns beneath are the agent's work on it,
+        # so the user-vs-llm split is the header-vs-rows. Subagent (Task) turns are
+        # interleaved by time and tagged in the Agent column. The Cumulative column is
+        # the point: a running total you read top-to-bottom. Wholly-unpriced ($0)
+        # turns are repriced at list price under "$", like every other panel.
+        if not self.session_supports_turns(workflow.id):
+            return [
+                "# Turns",
+                "A per-turn timeline is only available for OpenCode and Claude Code sessions.",
+            ]
+        rows = self.session_turn_rows(workflow.id)
+        if not rows:
+            return ["# Turns", "No turns recorded for this session."]
+        api = self.show_api_prices and not self.store.demo
+        costs = []
+        for r in rows:
+            cost = r["cost"]
+            if api and not cost:  # a recorded $0 turn is wholly unpriced -- estimate it
+                cost = api_equivalent_cost(
+                    r["model_name"],
+                    r["input"],
+                    r["output"],
+                    r["reasoning"],
+                    r["cache_read"],
+                    r["cache_write"],
+                )
+            costs.append(cost)
+        total = sum(costs)
+        subtotal: dict[str, float] = defaultdict(float)  # per-prompt spend, for headers
+        for r, cost in zip(rows, costs):
+            subtotal[r.get("prompt_id", "")] += cost
+
+        # time is the full localtime "YYYY-MM-DD HH:MM:SS"; show date + clock ("MM-DD
+        # HH:MM:SS") on every row. The seconds matter (turns can be seconds apart) and
+        # the date matters too (a resumed session spans days), so keep both. Rows are
+        # indented two spaces to nest under their "▸" prompt header.
+        time_w = 14
+
+        def clock(t: str) -> str:
+            return t[5:19] if t else "--"  # "MM-DD HH:MM:SS"
+
+        idx_w = max(2, len(str(len(rows))))
+        agent_w = min(10, max(5, max((len(r["agent"]) for r in rows), default=5)))
+        mw = max(16, min(34, width - (idx_w + agent_w + time_w + 42)))  # model flexes
+        lines = [
+            f"# Turns — {len(rows)} turns, {money(total)} total",
+            f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Model':<{mw}} {'Agent':<{agent_w}} "
+            f"{'Tokens':>9} {'Cost':>9} {'Cumulative':>16}",
+        ]
+        cum = 0.0
+        last_pid = object()  # sentinel: the first row always opens a group
+        for n, (r, cost) in enumerate(zip(rows, costs), start=1):
+            pid = r.get("prompt_id", "")
+            if pid != last_pid:
+                last_pid = pid
+                gc = money(subtotal[pid])
+                title = (r.get("prompt_title") or "").strip() or "(no preceding prompt)"
+                title = shorten(title, max(10, width - len(gc) - 5))
+                head = "▸ " + title
+                lines.append(head + " " * max(1, width - len(head) - len(gc)) + gc)
+            cum += cost
+            agent = r["agent"] if r["depth"] else "-"
+            cumlabel = f"{money(cum)} · {pct(cum, total)}"
+            lines.append(
+                f"  {n:>{idx_w}} {clock(r['time']):<{time_w}} {shorten(r['model_name'], mw):<{mw}} "
+                f"{shorten(agent, agent_w):<{agent_w}} "
+                f"{human_tokens(r['tokens_total']):>9} {money(cost):>9} {cumlabel:>16}"
+            )
+        lines += [
+            "",
+            "! Grouped by the user prompt (▸) that triggered each run; indented rows are the",
+            "! agent's turns. Time order, not cost; Cumulative is the running session total.",
+        ]
+        return lines
+
     def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         self.box(stdscr, y, 0, bottom - y, width, "Help · j/k scroll · any other key closes")
         lines = [
@@ -4712,7 +5028,8 @@ class Renderer:
             "  Shift-Tab        cycle focus backward while browsing; else step back out",
             "  h/l              switch detail tabs (years/months: Overview/Models/Projects/",
             "                   Sessions; days: Overview/Projects/Sessions; a session adds a",
-            "                   Tools tab -- per-tool/MCP-server token spend, OpenCode only;",
+            "                   Turns tab -- per-turn cost over time (OpenCode + Claude) -- and",
+            "                   a Tools tab -- per-tool/MCP-server token spend, OpenCode only;",
             "                   a Sources tab joins after Overview in the merged 'all' view)",
             "  j/k or Up/Down   move in the current list (or scroll detail)",
             "  mouse            wheel scrolls; click selects; double-click drills; click a tab",
@@ -5415,6 +5732,9 @@ class App:
         # cached per session id -- it's a ~per-session scan of the part table, not
         # the startup-wide message scan model_breakdown does. See session_tool_rows.
         self._tool_by_session: dict[str, list[dict]] = {}
+        # Per-turn timeline (OpenCode + Claude), same lazy/cached-per-session deal as
+        # the tool rows above -- a cheap per-session scan, never loaded at startup.
+        self._turns_by_session: dict[str, list[dict]] = {}
         # Active range: custom bounds from CLI take precedence, else a day window
         # (None = all). Default is all time so the Months panel is actually useful.
         self.custom_since = args.since
@@ -6114,6 +6434,45 @@ class App:
             r["cost"] = round(r.get("cost", 0) * k, 4)
         return rows
 
+    def session_supports_turns(self, workflow_id: str) -> bool:
+        # Whether the Turns tab applies to this session. Only OpenCode and Claude Code
+        # implement message_timeline, so a Codex/Hermes/CSV (or FakeStore) session has
+        # no supports_turns and the tab is hidden rather than shown empty.
+        check = getattr(self.store, "supports_turns", None)
+        return bool(check(workflow_id)) if check else False
+
+    def session_turn_rows(self, workflow_id: str) -> list[dict]:
+        # Chronological per-turn rows for one session, fetched once and cached. The
+        # store call is the heavy bit (~per-session message scan); the Turns renderer
+        # reprices/accumulates on top each frame (cheap), same as session_tool_rows.
+        cached = self._turns_by_session.get(workflow_id)
+        if cached is not None:
+            return cached
+        fetch = getattr(self.store, "message_timeline", None)
+        rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
+        if self.store.demo:
+            rows = self._scale_demo_turns(workflow_id, rows)
+        self._turns_by_session[workflow_id] = rows
+        return rows
+
+    def _scale_demo_turns(self, workflow_id: str, rows: list[dict]) -> list[dict]:
+        # Hide real magnitudes like _scale_demo_tools: remap local model names, give
+        # $0 (subscription) turns a synthetic price so the cumulative column isn't a
+        # wall of red, then scale every cost/token by the hidden per-process factor.
+        k = self.store.demo_scale
+        for n, r in enumerate(rows):
+            r["model_name"] = demo_model(r["model_name"])
+            # Anonymize the prompt title (a real prompt would leak); keep it stable per
+            # prompt_id so a group's turns stay under one fake header.
+            if "prompt_title" in r:
+                r["prompt_title"] = demo_title(r.get("prompt_id") or "noprompt")
+            if r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
+                r["cost"] = demo_cost(r["tokens_total"], f"{workflow_id}:{n}")
+            for f in ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write"):
+                r[f] = int(round(r.get(f, 0) * k))
+            r["cost"] = round(r.get("cost", 0) * k, 4)
+        return rows
+
     def _snapshot_real_costs(self) -> None:
         # Freshly loaded rows carry only real cost; seed the real/api snapshots so
         # _apply_price_mode is safe even before the (deferred) model scan runs.
@@ -6193,6 +6552,7 @@ class App:
         self._snapshot_real_costs()
         self._resolve_project_roots()
         self._tool_by_session.clear()
+        self._turns_by_session.clear()
         self._load_model_cache()
         self.zoom_project = None
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
@@ -6278,6 +6638,7 @@ class App:
         self._resolve_project_roots()
         self._models_loaded = False
         self._tool_by_session.clear()
+        self._turns_by_session.clear()
         self._load_model_cache()
         self._invalidate_workflow_cache()
         if restore:
@@ -7373,7 +7734,9 @@ class App:
         try:
             while True:
                 stdscr.addstr(height - 1, 0, " " * (width - 1))
-                stdscr.addstr(height - 1, 0, prompt, curses.color_pair(1) | curses.A_BOLD)
+                # Orange label matches the `/` filter and `L` launch bars -- a
+                # transient prompt awaiting input pulls focus to the bottom line.
+                stdscr.addstr(height - 1, 0, prompt, curses.color_pair(6) | curses.A_BOLD)
                 shown = shorten(value, max_len)
                 stdscr.addstr(height - 1, len(prompt), shown)
                 stdscr.move(height - 1, min(width - 2, len(prompt) + len(shown)))
@@ -7406,9 +7769,12 @@ class App:
             # in the merged view a Claude/Codex/Hermes/CSV session never shows an
             # unsupported (empty) tab, only OpenCode sessions do.
             wf = self.current_session()
+            tabs = self.workflow_tabs
+            if wf is not None and self.session_supports_turns(wf.id):
+                tabs += ("Turns",)
             if wf is not None and self.session_supports_tools(wf.id):
-                return self.workflow_tabs + ("Tools",)
-            return self.workflow_tabs
+                tabs += ("Tools",)
+            return tabs
         if self.browse_mode == "projects":
             base = self.project_tabs
         elif self.focus == "years":
