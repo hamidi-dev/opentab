@@ -3618,18 +3618,18 @@ def test_live_filter_ranks_best_fuzzy_match_first():
     assert [w.id for w in app.current_sessions()] == ["c", "b", "a"]  # cost sort returns
 
 
-def test_slash_enters_live_filter_mode():
+def test_f_enters_live_filter_mode():
     app = app_with(
         [
             workflow("a", "2026-06-01 12:00:00", title="alpha"),
             workflow("b", "2026-06-02 12:00:00", title="beta"),
         ]
     )
-    # "/" only filters where a session/project list is shown -- put it on a Sessions tab
+    # "f" only filters where a session/project list is shown -- put it on a Sessions tab
     app.view = "zoom"
     app.tab = app.current_tabs().index("Sessions")
     assert app.can_filter_current_view()
-    assert app.handle_key(None, ord("/")) and app.filter_active
+    assert app.handle_key(None, ord("f")) and app.filter_active
     for ch in "bet":
         app.handle_key(None, ord(ch))
     assert app.query == "bet"  # edits apply live, no Enter needed
@@ -3638,14 +3638,14 @@ def test_slash_enters_live_filter_mode():
     assert app.query == "be"
     app.handle_key(None, 10)  # Enter keeps the filter and leaves the mode
     assert not app.filter_active and app.query == "be"
-    # Esc restores the query from before `/`
-    app.handle_key(None, ord("/"))
+    # Esc restores the query from before `f`
+    app.handle_key(None, ord("f"))
     app.handle_key(None, ord("x"))  # types into the query, doesn't clear the filter
     assert app.query == "bex"
     app.handle_key(None, 27)
     assert not app.filter_active and app.query == "be"
     # Ctrl-U clears the input while staying in the mode
-    app.handle_key(None, ord("/"))
+    app.handle_key(None, ord("f"))
     app.handle_key(None, 21)
     assert app.filter_active and app.query == ""
     # q is text here, not quit; Ctrl-C still quits
@@ -3653,9 +3653,9 @@ def test_slash_enters_live_filter_mode():
     assert app.handle_key(None, 3) is False
 
 
-def test_slash_is_a_noop_where_no_list_is_filtered():
+def test_f_is_a_noop_where_no_list_is_filtered():
     # The time-browse main view shows Months/Days, not a session/project list, so the
-    # query would filter nothing -- "/" must not enter filter mode there, and the
+    # query would filter nothing -- "f" must not enter filter mode there, and the
     # footer must not advertise it (mirrors how "s/S sort" is gated).
     app = app_with(
         [
@@ -3664,13 +3664,13 @@ def test_slash_is_a_noop_where_no_list_is_filtered():
         ]
     )
     assert app.view == "browse" and not app.can_filter_current_view()
-    assert app.handle_key(None, ord("/")) and not app.filter_active  # consumed, but no-op
+    assert app.handle_key(None, ord("f")) and not app.filter_active  # consumed, but no-op
     assert "nothing to filter" in app.notice
     # on a Sessions tab it works again
     app.view = "zoom"
     app.tab = app.current_tabs().index("Sessions")
     assert app.can_filter_current_view()
-    assert app.handle_key(None, ord("/")) and app.filter_active
+    assert app.handle_key(None, ord("f")) and app.filter_active
 
 
 # --- Hermes Agent database helpers (~/.hermes/state.db) ----------------------

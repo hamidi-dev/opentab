@@ -229,7 +229,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
 | `i` | Ignore/unignore the selected project from project lists |
 | `I` | Show/hide ignored projects so they can be unignored |
-| `/` | Live fuzzy filter: the lists narrow and re-rank (best match first) as you type, fzf-style subsequence matching over title/project/id; `↑`/`↓` select while typing, `Enter` keeps the filter, `Esc` cancels, `Ctrl-U` clears the input, `x` clears it later |
+| `f` | Live fuzzy filter: the lists narrow and re-rank (best match first) as you type, fzf-style subsequence matching over title/project/id; `↑`/`↓` select while typing, `Enter` keeps the filter, `Esc` cancels, `Ctrl-U` clears the input, `x` clears it later |
 | `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model, Provider, and Source spend ranking (`h`/`l` tabs, `j`/`k` month/week, `$` toggles what-if) |
 | `$` | What-if pricing: re-price unpriced subscription/credit usage at models.dev API list prices |
 | `P` | Show the models.dev API price table OpenTab uses for `$` |

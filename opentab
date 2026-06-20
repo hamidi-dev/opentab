@@ -3793,11 +3793,11 @@ class Renderer:
             parts.append((f"c → {self.next_source_name()}", False))
         # active/non-default modifiers light up too, matching the header chips: a
         # range that isn't "all time", a committed filter query. Range narrows every
-        # view so it's always offered; "/" only filters session/project lists, so it
+        # view so it's always offered; "f" only filters session/project lists, so it
         # appears only where it does something (like "s/S sort").
         parts.append(("R range", self.range_label() != "all time"))
         if self.can_filter_current_view():
-            parts.append(("/ filter", bool(self.query)))
+            parts.append(("f filter", bool(self.query)))
         parts += [
             ("T trends", self.trends),
             ("P prices", self.show_prices),
@@ -5054,7 +5054,7 @@ class Renderer:
             "  s / S            cycle sort forward / backward on visible lists",
             "  i                ignore/unignore the selected project (project lists only)",
             "  I                show/hide ignored projects so they can be unignored",
-            "  /                live fuzzy filter over sessions (title/project/id) and projects; best match first",
+            "  f                live fuzzy filter over sessions (title/project/id) and projects; best match first",
             "                   while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
             "  x                clear filter",
             "  e                export the current list to a CSV in the working directory",
@@ -5757,7 +5757,7 @@ class App:
         self.range_days = None if (args.since or args.until or args.days is None) else args.days
         self.range_months: int | None = None  # set by an "Nm"/"Ny" range, calendar-based
         self.query = ""
-        self.filter_active = False  # live `/` filter mode: keys edit the query
+        self.filter_active = False  # live `f` filter mode: keys edit the query
         self._filter_before = ""  # the query as it was when `/` opened the mode (Esc restores)
         self.launch_menu: Workflow | None = None  # session awaiting an `L` launch-target key
         self.day_index = 0
@@ -7001,9 +7001,9 @@ class App:
         )
 
     def can_filter_current_view(self) -> bool:
-        # The "/" query only fuzzy-filters the session list (a Sessions tab) and the
+        # The "f" query only fuzzy-filters the session list (a Sessions tab) and the
         # project list (projects mode / a Projects tab). Months/Days, Overview/Models,
-        # and Subagents are not query-filtered, so "/" is a no-op there -- don't offer
+        # and Subagents are not query-filtered, so "f" is a no-op there -- don't offer
         # it. (Range, by contrast, narrows all_workflows everywhere, so it always is.)
         return self.in_project_sort_context() or (self.view != "session" and self.on_sessions_tab)
 
@@ -7523,7 +7523,7 @@ class App:
         if key == ord("I"):
             self.toggle_ignored_projects_view()
             return True
-        if key == ord("/"):
+        if key == ord("f"):
             if not self.can_filter_current_view():
                 self.notice = "nothing to filter here — open a sessions or projects list"
                 return True
