@@ -180,6 +180,28 @@ def test_bar_chart_compacts_crowded_edge_value_labels():
     assert any("$5" in ln for ln in lines)
 
 
+def test_bar_chart_floats_blocked_labels_up_so_no_bar_loses_its_price():
+    # Regression: two equal-height bars below the peak sit close enough that their
+    # value labels would land on the same row and collide. The blocked one must
+    # float up to the next free row, not get dropped -- every bar keeps its price.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    lines = app.renderer._bar_chart([("1", 50.0), ("2", 20.0), ("3", 20.0)], 12, 16)
+    assert "$50" in lines[0]  # peak still labelled on top
+    assert sum(ln.count("$20") for ln in lines) == 2  # both shorter bars, not one
+
+
+def test_bar_chart_fills_width_when_bars_are_dense():
+    # A full month of bars must spread across (nearly) the whole plot width, not
+    # stop a third short because an integer column width didn't divide the width
+    # evenly -- that empty right margin is what crammed the wide "$x.xx" labels
+    # together. The baseline rule should run almost the full width.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    pairs = [(str(d), float(d)) for d in range(1, 31)]
+    lines = app.renderer._bar_chart(pairs, 80, 18)
+    baseline = next(ln for ln in lines if set(ln.strip()) == {"─"})
+    assert len(baseline) >= 76  # fills ~width 80; the old fixed col_w stopped at ~61
+
+
 def test_bar_chart_all_zero_window_reads_as_no_spend():
     # An all-empty window (e.g. browsing to a quiet week) must not borrow the
     # divide-by-zero guard (1.0) as a fake "$1.00 peak".

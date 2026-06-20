@@ -4625,24 +4625,37 @@ class Renderer:
         margin = 1  # the y-axis is gone; just a sliver of left padding
         plot_w = max(4, width - margin)
         label_w = max((len(label) for label, _ in pairs), default=2)
-        if len(pairs) * (label_w + 2) <= plot_w:
-            col_w = label_w + 2  # room for a label under every bar
+        ideal = label_w + 2  # the slot that fits an x-tick label with a column of air
+        if len(pairs) * ideal <= plot_w:
+            col_w = ideal  # room for a label under every bar
         else:
             col_w = next((c for c in (4, 3, 2) if len(pairs) * c <= plot_w), 1)
         fit = max(1, plot_w // col_w)
         shown = pairs[-fit:]
-        bar_w = max(1, min(col_w - 1, 4))
-        lead = (col_w - bar_w) // 2  # center the bar within its column
+        n = len(shown)
+        # Spread the shown bars across the *whole* plot width with a fractional
+        # step, capped at the ideal slot so a handful of bars stay clustered (not
+        # stretched comically wide). When bars are dense the integer col_w would
+        # leave the right side empty and cram the wide "$x.xx" value labels;
+        # filling the width gives every bar a little more horizontal air.
+        step = min(float(ideal), plot_w / n)
+        bar_w = max(1, min(int(step) - 1, 4))
+
+        def x0_of(i: int) -> int:  # left edge of bar i, centred in its float-width slot
+            lo = round(i * step)
+            hi = round((i + 1) * step)
+            return margin + lo + max(0, (hi - lo - bar_w) // 2)
+
         peak = max((v for _, v in shown), default=0.0)
         scale = peak or 1.0  # bar-height denominator; guards an all-empty window
         rows_n = max(2, height - 4)  # value labels + bars + baseline + x-ticks + summary
-        total_w = margin + len(shown) * col_w
+        total_w = margin + round(n * step)
         # grid row 0 is the label margin above the tallest bar; 1..rows_n are bars.
         grid = [[" "] * total_w for _ in range(rows_n + 1)]
         tops: list[tuple[int, int, float]] = []  # (col, top filled row, value)
         for i, (_, v) in enumerate(shown):
             full, rem = divmod(round((v / scale) * rows_n * 8), 8)
-            x0 = margin + i * col_w + lead
+            x0 = x0_of(i)
             for b in range(full):  # full cells from the bottom up
                 for dx in range(bar_w):
                     grid[rows_n - b][x0 + dx] = "█"
@@ -4657,22 +4670,23 @@ class Renderer:
             labels = [money_label(v)]
             if 1 <= v < 1000:
                 labels.append(f"${v:.0f}")
-            labels = [label for n, label in enumerate(labels) if label and label not in labels[:n]]
+            labels = [label for j, label in enumerate(labels) if label and label not in labels[:j]]
             if not labels:
                 return
-            center = margin + i * col_w + lead + bar_w // 2
-            lrow = top_row - 1
-            if lrow < 0:
+            center = x0_of(i) + bar_w // 2
+            if top_row - 1 < 0:
                 return
-            row = grid[lrow]
             for text in labels:
                 start = max(margin, min(center - len(text) // 2, total_w - len(text)))
                 lo, hi = start - 1, start + len(text)  # keep a blank column on each side
-                if any(row[c] != " " for c in range(max(margin, lo), min(total_w, hi + 1))):
-                    continue
-                for k, ch in enumerate(text):
-                    row[start + k] = ch
-                return
+                cols = range(max(margin, lo), min(total_w, hi + 1))
+                # Sit just above the bar; if a neighbour's label already owns that
+                # row, float up to the next free one so the bar still gets its price.
+                for lrow in range(top_row - 1, -1, -1):
+                    if all(grid[lrow][c] == " " for c in cols):
+                        for k, ch in enumerate(text):
+                            grid[lrow][start + k] = ch
+                        return
 
         # Peak first so its value is never crowded out, then the rest left-to-right.
         tops.sort(key=lambda t: t[2], reverse=True)
@@ -4681,7 +4695,7 @@ class Renderer:
         for spec in sorted(tops[1:], key=lambda t: t[0]):
             place_value(*spec)
         out = ["".join(r).rstrip() for r in grid]
-        out.append(" " * margin + "─" * (len(shown) * col_w))
+        out.append(" " * margin + "─" * (total_w - margin))
         # x-axis tick labels, greedily spaced left-to-right so they never overlap,
         # with the final bucket always labelled at the right edge.
         axis = [" "] * total_w
@@ -4697,7 +4711,7 @@ class Renderer:
         place(tail, shown[-1][0])
         next_free = margin
         for i, (label, _) in enumerate(shown[:-1]):
-            pos = margin + i * col_w + lead
+            pos = x0_of(i)
             if pos >= next_free and pos + len(label) < tail:
                 place(pos, label)
                 next_free = pos + len(label) + 1
