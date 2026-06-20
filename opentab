@@ -3643,45 +3643,42 @@ class Renderer:
             )
         drilled = self.view in ("zoom", "session")
         sort_by = self.effective_sort_by()
-        # The trail is built in three pieces so the active filter can be highlighted
-        # in place (orange): while you type, the input you're editing is the focal
-        # point right here at the top -- the footer hint then stays plain, not a second
-        # orange bar competing for attention away from where the text actually appears.
-        pre = self.breadcrumb() + (f"  ·  sort: {sort_by}" if sort_by else "")
-        if self.filter_active:
-            filter_seg = f"  ·  filter: {self.query}▌"  # live mode: the block is the cursor
-        elif self.query:
-            filter_seg = f"  ·  filter: {self.query}"
-        else:
-            filter_seg = ""
-        post = ""
-        if self.ignored_projects:
-            post += f"  ·  ignored: {len(self.ignored_projects)}"
-        if self.notice:
-            post += f"  ·  {self.notice}"
+        # The header is persistent view state. A modifier that LIMITS what you see --
+        # a non-default range, a committed filter, ignored projects -- is shown in the
+        # orange accent so you can't forget your view is narrowed; everything else (the
+        # scope path, sort order, transient notice) stays quiet grey. Same single
+        # meaning for orange as everywhere else: active / non-default / notice this.
+        # The live filter query is NOT echoed here -- it's in the bottom command line
+        # while you type -- so the filter shows only once committed.
         x = 0
         if drilled:
             chip = " ZOOM "
             self.write(stdscr, 1, 0, chip, curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             x = len(chip) + 1
-        base_attr = curses.color_pair(1) | (curses.A_BOLD if drilled else 0)
-        x = self.write_seg(stdscr, 1, x, pre, base_attr, width)
-        x = self.write_seg(
-            stdscr,
-            1,
-            x,
-            filter_seg,
-            curses.color_pair(6) | curses.A_BOLD if self.filter_active else base_attr,
-            width,
-        )
-        self.write_seg(stdscr, 1, x, post, base_attr, width)
+        base = curses.color_pair(1) | (curses.A_BOLD if drilled else 0)
+        active = curses.color_pair(6) | curses.A_BOLD
+        range_lbl = self.range_label()
+        bc = self.breadcrumb()  # always starts with range_lbl (its root segment)
+        rest_bc = bc[len(range_lbl) :] if bc.startswith(range_lbl) else bc
+        segs = [(range_lbl, active if range_lbl != "all time" else base), (rest_bc, base)]
+        if sort_by:
+            segs.append((f"  ·  sort: {sort_by}", base))
+        if self.query and not self.filter_active:
+            segs.append((f"  ·  filter: {self.query}", active))
+        if self.ignored_projects:
+            segs.append((f"  ·  ignored: {len(self.ignored_projects)}", active))
+        if self.notice:
+            segs.append((f"  ·  {self.notice}", base))
+        for text, attr in segs:
+            x = self.write_seg(stdscr, 1, x, text, attr, width)
         self.hline(stdscr, 2, 0, width)
 
     def write_seg(
         self, stdscr: curses.window, y: int, x: int, text: str, attr: int, width: int
     ) -> int:
         # Write one clipped segment of a single-line strip and return the next x, so a
-        # line can be painted piece by piece with per-segment colours.
+        # line can be painted piece by piece with per-segment colours (the bottom
+        # command line uses it to highlight just the input field, not the whole bar).
         if not text or x >= width - 1:
             return x
         clipped = shorten(text, width - x - 1)
@@ -3747,11 +3744,26 @@ class Renderer:
         # movement (j/k/h/l, arrows) is deliberately omitted -- vim users know it and
         # everyone else reaches for the arrow keys.
         if self.filter_active:
-            # The query you're editing is highlighted up in the header (where it shows
-            # live), so this strip is just a plain hint -- no second orange bar pulling
-            # your eye away from the text.
-            keys = "type to filter (fuzzy) — see header ↑  ↑/↓ select  Enter keep  Esc cancel  Ctrl-U clear"
-            self.draw_prompt_bar(stdscr, height, width, keys, highlight=False)
+            # Bottom command line: you type here. The whole input field -- the
+            # "filter:" label, the query, and the block cursor -- is orange; only the
+            # key hints stay plain, so the accent marks the field, not the whole bar.
+            self.hline(stdscr, height - 2, 0, width)
+            x = self.write_seg(
+                stdscr,
+                height - 1,
+                0,
+                f" filter: {self.query}▌",
+                curses.color_pair(6) | curses.A_BOLD,
+                width,
+            )
+            self.write_seg(
+                stdscr,
+                height - 1,
+                x,
+                "   ↑/↓ select  Enter keep  Esc cancel  Ctrl-U clear",
+                curses.color_pair(4),
+                width,
+            )
             return
         if self.launch_menu is not None:
             via = "via launcher hook" if launcher_hook() else "in tmux"
@@ -3779,9 +3791,14 @@ class Renderer:
             # Show the destination, not the current source (that's the header
             # chip) — "c all" otherwise reads like "press c to get all".
             parts.append((f"c → {self.next_source_name()}", False))
+        # active/non-default modifiers light up too, matching the header chips: a
+        # range that isn't "all time", a committed filter query. Range narrows every
+        # view so it's always offered; "/" only filters session/project lists, so it
+        # appears only where it does something (like "s/S sort").
+        parts.append(("R range", self.range_label() != "all time"))
+        if self.can_filter_current_view():
+            parts.append(("/ filter", bool(self.query)))
         parts += [
-            ("R range", False),
-            ("/ filter", False),
             ("T trends", self.trends),
             ("P prices", self.show_prices),
             ("e export", False),
@@ -3798,16 +3815,14 @@ class Renderer:
         self.hline(stdscr, height - 2, 0, width)
         self.draw_keybar(stdscr, height - 1, width, parts)
 
-    def draw_prompt_bar(
-        self, stdscr: curses.window, height: int, width: int, text: str, highlight: bool = True
-    ) -> None:
-        # A transient action bar at the bottom. Orange (highlight=True) when this line
-        # is where you act -- the `L` launch menu, the `R` range prompt (via
-        # prompt_text) -- so it pulls focus. Plain (highlight=False) for the `/` filter,
-        # whose input is highlighted up in the header instead, so this stays a quiet hint.
+    def draw_prompt_bar(self, stdscr: curses.window, height: int, width: int, text: str) -> None:
+        # The `L` launch menu's key strip. It's a discrete-key menu (no text field), so
+        # like the normal keybar it stays plain slate -- orange is reserved for the one
+        # live element (an on-toggle, or an input cursor), never a whole bar.
         self.hline(stdscr, height - 2, 0, width)
-        attr = curses.color_pair(6) | curses.A_BOLD if highlight else curses.color_pair(4)
-        self.write(stdscr, height - 1, 0, shorten(" " + text + " ", width - 1), attr)
+        self.write(
+            stdscr, height - 1, 0, shorten(" " + text + " ", width - 1), curses.color_pair(4)
+        )
 
     def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts) -> None:
         # Render the footer key strip segment by segment so active toggles can stand
@@ -6985,6 +7000,13 @@ class App:
             or (self.view == "session" and self.on_subagents_tab)
         )
 
+    def can_filter_current_view(self) -> bool:
+        # The "/" query only fuzzy-filters the session list (a Sessions tab) and the
+        # project list (projects mode / a Projects tab). Months/Days, Overview/Models,
+        # and Subagents are not query-filtered, so "/" is a no-op there -- don't offer
+        # it. (Range, by contrast, narrows all_workflows everywhere, so it always is.)
+        return self.in_project_sort_context() or (self.view != "session" and self.on_sessions_tab)
+
     def can_launch_current(self) -> bool:
         return self.view == "session" or (self.view == "zoom" and self.on_sessions_tab)
 
@@ -7502,6 +7524,9 @@ class App:
             self.toggle_ignored_projects_view()
             return True
         if key == ord("/"):
+            if not self.can_filter_current_view():
+                self.notice = "nothing to filter here — open a sessions or projects list"
+                return True
             self.filter_active = True
             self._filter_before = self.query
             return True
@@ -7579,7 +7604,10 @@ class App:
             self.notice = "filter cancelled"
         elif key in (10, 13, curses.KEY_ENTER):
             self.filter_active = False
-            self.notice = f"filter: {self.query}" if self.query else "filter cleared"
+            # The committed query already shows as a persistent orange "filter:" chip in
+            # the header, so a "filter: x" notice would just duplicate it -- only the
+            # cleared case (no chip) needs a word.
+            self.notice = "" if self.query else "filter cleared"
         elif key in (curses.KEY_BACKSPACE, 127, 8):
             self.query = self.query[:-1]
             self._filter_edited()
@@ -7716,7 +7744,8 @@ class App:
         initial = "" if self.range_input_value() == "all" else self.range_input_value()
         value = self.prompt_text(
             stdscr,
-            "Range all | 30d | 2m | 2026 | 2026-05 | start..end (Esc cancels): ",
+            "range: ",
+            "all · 30d · 2m · 2026 · 2026-05 · start..end · Esc cancel",
             initial,
         )
         if value is None:
@@ -7726,20 +7755,31 @@ class App:
         except ValueError as exc:
             self.notice = f"range error: {exc}"
 
-    def prompt_text(self, stdscr: curses.window, prompt: str, initial: str = "") -> str | None:
+    def prompt_text(
+        self, stdscr: curses.window, label: str, hint: str = "", initial: str = ""
+    ) -> str | None:
+        # Modal bottom command line, laid out exactly like the `/` filter so input
+        # never drifts: a short "<label>: " + the value you type is the input field
+        # (orange) at the far LEFT, and the format hint sits to its right in plain
+        # slate -- never a whole-orange line. The real cursor sits at the value's end.
         height, width = stdscr.getmaxyx()
-        max_len = max(1, width - len(prompt) - 1)
+        head = " " + label
+        max_len = max(1, width - len(head) - len(hint) - 6)
+        field = curses.color_pair(6) | curses.A_BOLD
         value = initial
         curses.curs_set(1)
         try:
             while True:
                 stdscr.addstr(height - 1, 0, " " * (width - 1))
-                # Orange label matches the `/` filter and `L` launch bars -- a
-                # transient prompt awaiting input pulls focus to the bottom line.
-                stdscr.addstr(height - 1, 0, prompt, curses.color_pair(6) | curses.A_BOLD)
                 shown = shorten(value, max_len)
-                stdscr.addstr(height - 1, len(prompt), shown)
-                stdscr.move(height - 1, min(width - 2, len(prompt) + len(shown)))
+                left = head + shown
+                stdscr.addstr(height - 1, 0, left[: width - 1], field)
+                hx = len(left)
+                if hint and hx < width - 1:  # format hint in plain slate, to the right
+                    stdscr.addstr(
+                        height - 1, hx, ("   " + hint)[: width - hx - 1], curses.color_pair(4)
+                    )
+                stdscr.move(height - 1, min(width - 2, len(left)))
                 stdscr.refresh()
 
                 value, done, cancelled = self.filter_prompt_step(value, stdscr.getch(), max_len)

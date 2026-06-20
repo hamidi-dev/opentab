@@ -3625,6 +3625,10 @@ def test_slash_enters_live_filter_mode():
             workflow("b", "2026-06-02 12:00:00", title="beta"),
         ]
     )
+    # "/" only filters where a session/project list is shown -- put it on a Sessions tab
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    assert app.can_filter_current_view()
     assert app.handle_key(None, ord("/")) and app.filter_active
     for ch in "bet":
         app.handle_key(None, ord(ch))
@@ -3647,6 +3651,26 @@ def test_slash_enters_live_filter_mode():
     # q is text here, not quit; Ctrl-C still quits
     assert app.handle_key(None, ord("q")) and app.query == "q"
     assert app.handle_key(None, 3) is False
+
+
+def test_slash_is_a_noop_where_no_list_is_filtered():
+    # The time-browse main view shows Months/Days, not a session/project list, so the
+    # query would filter nothing -- "/" must not enter filter mode there, and the
+    # footer must not advertise it (mirrors how "s/S sort" is gated).
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", title="alpha"),
+            workflow("b", "2026-06-02 12:00:00", title="beta"),
+        ]
+    )
+    assert app.view == "browse" and not app.can_filter_current_view()
+    assert app.handle_key(None, ord("/")) and not app.filter_active  # consumed, but no-op
+    assert "nothing to filter" in app.notice
+    # on a Sessions tab it works again
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    assert app.can_filter_current_view()
+    assert app.handle_key(None, ord("/")) and app.filter_active
 
 
 # --- Hermes Agent database helpers (~/.hermes/state.db) ----------------------
