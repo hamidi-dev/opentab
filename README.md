@@ -2,12 +2,26 @@
 
 <p align="center"><em>Your AI coding tools keep a tab. OpenTab opens it.</em></p>
 
+<p align="center"><sub>Anonymized demo data — click any clip for the full-quality video.</sub></p>
+
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/19ad1687-a18a-417d-a2c4-62e3fa765970">
-    <img src="https://github.com/user-attachments/assets/2d782465-e82c-4a98-b40f-f765eb5d28d2" alt="OpenTab — browse your AI coding spend" width="820">
-  </a>
-  <br>
-  <sub><a href="https://github.com/user-attachments/assets/19ad1687-a18a-417d-a2c4-62e3fa765970">▶ Watch the full-quality video</a></sub>
+  <a href="https://github.com/user-attachments/assets/fdfc2626-6ebb-4422-901c-6d2f67068160"><img src="https://github.com/user-attachments/assets/23c2e927-aa72-4bff-a972-e166166345a0" alt="Trends — daily/weekly/monthly charts and model/provider/source rankings" width="820"></a>
+  <br><sub><b>Trends</b> — daily / weekly / monthly spend, plus model-, provider- and source-spend rankings</sub>
+</p>
+
+<p align="center">
+  <a href="https://github.com/user-attachments/assets/674534af-3047-4b18-9031-2cf99f1f0cf9"><img src="https://github.com/user-attachments/assets/d2a81e36-34f7-46d2-af0b-eb31545b9a55" alt="Spend heatmap — Trends to Calendar, GitHub-style daily-spend map" width="820"></a>
+  <br><sub><b>Spend heatmap</b> — Trends → Calendar; <code>+</code>/<code>−</code> tune the shades, Enter drills a day</sub>
+</p>
+
+<p align="center">
+  <a href="https://github.com/user-attachments/assets/f11f3493-55fa-4722-b2f1-8cd96355bfab"><img src="https://github.com/user-attachments/assets/5c88abf8-1d44-4237-a527-f166082ab512" alt="Sessions ranked by cost, tagged by tool, drilled to a session breakdown" width="820"></a>
+  <br><sub><b>Sessions</b> — a day's sessions ranked by cost and tagged by tool; open the priciest for its cost split, model mix and subagent tree</sub>
+</p>
+
+<p align="center">
+  <a href="https://github.com/user-attachments/assets/aad33047-3345-40c5-8539-b36b533207d6"><img src="https://github.com/user-attachments/assets/5733178c-dd5b-4aa3-bce0-dfcd7c002d41" alt="Projects across tools, source cycling, fuzzy filter and live range" width="820"></a>
+  <br><sub><b>Projects &amp; sources</b> — group spend by repo across tools, isolate one with <code>c</code>, fuzzy-filter, and rescope the range live</sub>
 </p>
 
 A local, zero-dependency terminal UI for your AI coding spend. It reads the records
@@ -27,9 +41,10 @@ your data untouched. Just `curses` + `sqlite3` from the Python standard library 
 
 - Reads OpenCode, Claude Code, and Codex — one tool at a time, or merged into a single view
 - Cost by month, day, project, session, and model
-- Trends overlay: daily / weekly / monthly spend charts + model- and provider-spend ranking
+- Trends overlay: daily / weekly / monthly charts, a calendar spend heatmap, and model-, provider- and source-spend rankings
 - Cost-share percentages and inline spend bars
 - Per-session model mix and token breakdown
+- Per-turn cost over time, and token usage per tool call
 - Recursive subagent costs, on the sessions that delegated work
 - "What-if" pricing (`$`): re-price unpriced subscription/credit usage at
   models.dev API list rates; `P` shows the price table behind it
