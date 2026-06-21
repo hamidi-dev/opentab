@@ -720,6 +720,27 @@ def test_jk_scrolls_the_prices_overlay():
     assert not app.show_prices
 
 
+def test_f_filters_the_prices_overlay_by_model_name():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("claude-sonnet-4-5", 1.0, 10),
+            _model_row("gpt-5-codex", 2.0, 10),
+        ]
+    }
+    app.handle_key(None, ord("P"))
+    assert app.show_prices
+    app.handle_key(None, ord("f"))
+    assert app.filter_active and app.show_prices
+    for ch in "sonnet":
+        app.handle_key(None, ord(ch))
+    lines = app.renderer.price_table_lines(80)
+    assert any("claude-sonnet-4-5" in ln for ln in lines)
+    assert not any("gpt-5-codex" in ln for ln in lines)
+    app.handle_key(None, 10)
+    assert not app.filter_active and app.show_prices and app.query == "sonnet"
+
+
 def test_jk_scrolls_the_help_overlay():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app.handle_key(None, ord("?"))

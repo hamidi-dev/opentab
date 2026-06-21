@@ -6865,7 +6865,7 @@ class Renderer:
             "  s / S            cycle sort forward / backward on visible lists",
             "  i                ignore/unignore the selected project (project lists only)",
             "  I                show/hide ignored projects so they can be unignored",
-            "  f                live fuzzy filter over sessions (title/project/id), projects, and the Models tab (by name)",
+            "  f                live fuzzy filter over sessions (title/project/id), projects, Models, and Prices (by name)",
             "                   while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
             "  x                clear filter",
             "  e                export the current list to a CSV in the working directory",
@@ -6883,7 +6883,7 @@ class Renderer:
             "                   Calendar is a spend heat map: ↑↓←→ pick a day, Enter opens it,",
             "                   +/- adjusts the color granularity",
             "  P                model prices (the models.dev API rates used for $ what-if);",
-            "                   press r in that overlay to refresh them from models.dev",
+            "                   press f to filter or r to refresh them from models.dev",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
             "  q                quit",
@@ -6935,8 +6935,17 @@ class Renderer:
             "credit usage -- approximate list prices, not your invoice.",
             "",
         ]
+        if self.query:
+            scored = [
+                (score, n) for n in names if (score := fuzzy_score(self.query, n)) is not None
+            ]
+            names = [n for score, n in sorted(scored, key=lambda pair: -pair[0])]
         if not names:
-            lines.append("No model usage on record yet.")
+            lines.append(
+                f"No model prices match the filter: {self.query}"
+                if self.query
+                else "No model usage on record yet."
+            )
         else:
             namew = min(max(len(n) for n in names), max(12, width - 34))
             lines.append(
@@ -6962,7 +6971,7 @@ class Renderer:
             0,
             bottom - y,
             width,
-            "Model prices  ·  j/k scroll · r refresh · any other key closes",
+            "Model prices  ·  j/k scroll · f filter · r refresh · any other key closes",
             active=True,
         )
         inner_w = width - 4
@@ -9479,8 +9488,10 @@ class App:
                 self.help = False
             return True
         if self.show_prices:
-            # A pager: j/k/arrows and g/G scroll; r refreshes from models.dev; any
-            # other key closes it.
+            if self.filter_active:
+                return self.handle_filter_key(key)
+            # A pager: j/k/arrows and g/G scroll; f filters model names; r refreshes
+            # from models.dev; any other key closes it.
             if key in (ord("j"), curses.KEY_DOWN):
                 self.prices_scroll += 1
             elif key in (ord("k"), curses.KEY_UP):
@@ -9491,6 +9502,10 @@ class App:
                 self.prices_scroll = 10_000  # clamped to the last page on draw
             elif key in (ord("r"), ord("R")):
                 self.refresh_prices_action()  # keeps the overlay open
+            elif key == ord("f"):
+                self.filter_active = True
+                self._filter_before = self.query
+                self.prices_scroll = 0
             else:
                 self.show_prices = False
             return True
@@ -9689,7 +9704,11 @@ class App:
             self.query = ""
             self._filter_edited()
         elif key in (curses.KEY_UP, curses.KEY_DOWN):
-            self.move(1 if key == curses.KEY_DOWN else -1)
+            if self.show_prices:
+                self.prices_scroll += 1 if key == curses.KEY_DOWN else -1
+                self.prices_scroll = max(0, self.prices_scroll)
+            else:
+                self.move(1 if key == curses.KEY_DOWN else -1)
         elif 32 <= key <= 126:
             self.query += chr(key)
             self._filter_edited()
@@ -9699,6 +9718,7 @@ class App:
         # Selection snaps to the best-ranked match whenever the query changes.
         self.workflow_index = 0
         self.project_index = 0
+        self.prices_scroll = 0
 
     def handle_mouse(self) -> bool:
         # The screen's clickable regions were registered by the last draw(), so a
