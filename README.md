@@ -26,11 +26,12 @@
 
 A local, standard-library terminal UI for your AI coding spend. It reads the records
 your coding tools already keep on disk — [OpenCode](https://opencode.ai)'s SQLite
-database, [Claude Code](https://claude.com/claude-code)'s session transcripts, and
-[Codex](https://developers.openai.com/codex)'s CLI rollouts — and shows you where your
-tokens and money actually went: by month, day, project, session, and model, down to the
-subagent tree on the sessions that spawned one. Browse one tool at a time, or merge them
-into a single view.
+database, [Claude Code](https://claude.com/claude-code)'s and
+[Codex](https://developers.openai.com/codex)'s session transcripts, plus Hermes, the
+GitHub Copilot CLI, pi-agent, OpenClaw, and CSVs of logged API requests — and shows you
+where your tokens and money actually went: by month, day, project, session, and model,
+down to the subagent tree on the sessions that spawned one. Browse one tool at a time,
+or merge them all into a single view.
 
 Your tools already keep this ledger; OpenTab is just the reader for it. No backend, no
 telemetry, no accounts — it opens those files **read-only**, so it only reads and leaves
@@ -39,7 +40,7 @@ your data untouched. It's standard-library-only at runtime (`curses` + `sqlite3`
 
 ## Features
 
-- Reads OpenCode, Claude Code, and Codex — one tool at a time, or merged into a single view
+- Reads OpenCode, Claude Code, Codex, Hermes, the GitHub Copilot CLI, pi-agent, OpenClaw, and logged-request CSVs — one tool at a time, or merged into a single view
 - Cost by month, day, project, session, and model
 - Trends overlay: daily / weekly / monthly charts, a calendar spend heatmap, and model-, provider- and source-spend rankings
 - Cost-share percentages and inline spend bars
@@ -105,8 +106,11 @@ Local-only, no network, no telemetry, no accounts — it opens every source file
 touches, all on your own machine:
 
 - **Reads** your tools' own records, read-only: OpenCode's SQLite database, Claude
-  Code's JSONL transcripts under `~/.claude/projects`, and Codex's CLI rollouts under
-  `~/.codex/sessions`. To fold git worktrees into their main repo it also reads the
+  Code's JSONL transcripts (`~/.claude/projects`), Codex's CLI rollouts
+  (`~/.codex/sessions`), Hermes' SQLite DB (`~/.hermes/state.db`), the GitHub Copilot
+  CLI's OpenTelemetry export (`~/.copilot/otel`), pi-agent (`~/.pi/agent/sessions`),
+  OpenClaw (`~/.openclaw`), and a CSV of logged API requests (`--csv`). To fold git
+  worktrees into their main repo it also reads the
   `.git` file of project directories (no `git` process is spawned; disable with
   `--no-worktrees`).
 - **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
@@ -285,7 +289,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>` / `codex resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project); outside tmux (or with `y`) the `cd <project> && …` command is copied to the clipboard instead. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
-| `c` | Switch data source: OpenCode / Claude Code / Codex / all (when more than one is present) |
+| `c` | Switch data source — any present backend (OpenCode, Claude Code, Codex, Hermes, Copilot, pi, OpenClaw, CSV), or all merged |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 
