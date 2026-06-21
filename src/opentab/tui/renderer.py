@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import textwrap
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -1908,34 +1909,51 @@ class Renderer:
         "warn": (2, "▲", "Heads up"),
         "error": (5, "✕", "Error"),
     }
-    TOAST_WIDTH = 46  # max card width before the message is clipped
+    TOAST_WIDTH = 46  # card width the message wraps within
+    TOAST_MAX_LINES = 4  # cap wrapped message lines so a card can't fill the screen
 
     def draw_toasts(self, stdscr: curses.window, height: int, width: int) -> None:
-        # Floating two-line cards stacked in the top-right, just under the header
-        # separator, newest on top. Each is a filled (reverse) coloured block -- a
-        # header line (sigil + kind word) over the message -- that the run loop expires
-        # by time; the last fraction of a second renders dim.
+        # Floating cards stacked in the top-right, just under the header separator,
+        # newest on top. Each is a filled (reverse) coloured block: a header line
+        # (sigil + kind word) over the message, which WRAPS across as many lines as it
+        # needs (up to TOAST_MAX_LINES) instead of truncating, so nothing is hidden. The
+        # run loop expires cards by time; the last fraction of a second renders dim.
         toasts = self.active_toasts()
         if not toasts:
             return
         now = self.toast_now()
-        top = 3  # first body row, below the header hline (row 2)
         maxw = min(self.TOAST_WIDTH, max(16, width - 4))
-        for i, toast in enumerate(reversed(toasts)):
-            row = top + i * 3  # 2-line card + a 1-row gap so adjacent cards separate
-            if row + 1 >= height - 2:  # keep the second line clear of the footer hline
-                break
+        row = 3  # first body row, below the header hline (row 2)
+        for toast in reversed(toasts):
             pair, sigil, label = self.TOAST_STYLE.get(toast.kind, self.TOAST_STYLE["info"])
             head = f" {sigil} {label}"
-            body = f" {shorten(toast.text, maxw - 2)}"
-            cardw = min(max(len(head), len(body)) + 1, maxw)
+            wrapped = textwrap.wrap(toast.text, maxw - 1) or [""]
+            if len(wrapped) > self.TOAST_MAX_LINES:  # mark the overflow rather than hide it
+                wrapped = wrapped[: self.TOAST_MAX_LINES]
+                wrapped[-1] = shorten(wrapped[-1], maxw - 2) + "…"
+            body = [f" {line}" for line in wrapped]
+            if row + len(body) >= height - 2:  # the whole card must clear the footer hline
+                break
+            cardw = min(max([len(head)] + [len(line) for line in body]) + 1, maxw)
             x = max(0, width - cardw - 2)
             fading = toast.remaining(now) < self.TOAST_FADE
             base = curses.color_pair(pair) | curses.A_REVERSE
-            head_attr = base | (curses.A_DIM if fading else curses.A_BOLD)
-            body_attr = base | (curses.A_DIM if fading else 0)
-            self.write(stdscr, row, x, f"{head:<{cardw}}", head_attr)
-            self.write(stdscr, row + 1, x, f"{body:<{cardw}}", body_attr)
+            self.write(
+                stdscr,
+                row,
+                x,
+                f"{head:<{cardw}}",
+                base | (curses.A_DIM if fading else curses.A_BOLD),
+            )
+            for i, line in enumerate(body):
+                self.write(
+                    stdscr,
+                    row + 1 + i,
+                    x,
+                    f"{line:<{cardw}}",
+                    base | (curses.A_DIM if fading else 0),
+                )
+            row += len(body) + 2  # card (header + body lines) plus a 1-row gap
 
     def draw_modal(
         self, stdscr: curses.window, scr_h: int, scr_w: int, title: str, lines: list

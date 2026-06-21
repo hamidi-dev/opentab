@@ -1223,42 +1223,206 @@ class App:
         ]
         return "projects", header, rows
 
+    def _active_tab(self) -> str:
+        tabs = self.current_tabs()
+        return tabs[self.tab % len(tabs)] if tabs else ""
+
     def _export_dataset(self) -> tuple[str, list[str], list[list]]:
-        # Export whatever list is in front of the user, at full precision.
+        # Export whatever panel is active (the orange-bordered list/tab), at full
+        # precision and honouring the live $ price mode -- so `e` always saves exactly
+        # what you're looking at.
         if self.view == "session":
-            session = self.current_session()
-            nodes = (
-                self._priced_nodes(
-                    [r for r in self.store.workflow_nodes(session.id) if r["depth"] > 0]
-                )
-                if session
-                else []
-            )
-            header = ["depth", "agent", "model", "cost", "tokens", "title"]
-            rows = [
-                [r["depth"], r["agent"], r["model_name"], r["cost"], r["tokens_total"], r["title"]]
-                for r in self.sorted_subagent_rows(nodes)
-            ]
-            return "subagents", header, rows
-        if self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
-            return self._projects_dataset(self.zoom_projects())
+            return self._session_tab_dataset()
         if self.view == "zoom":
-            return self._sessions_dataset(self.current_sessions())
+            return self._zoom_tab_dataset()
         if self.browse_mode == "projects":
             return self._projects_dataset(self.projects)
+        # Time browse: the focused left list (years / months / days) is the active panel.
+        if self.focus == "years":
+            return self._periods_dataset("years", "year", self.years)
         if self.focus == "months":
-            header = ["month", "cost", "tokens", "sessions", "subagents", "unpriced_tokens"]
-            rows = [
-                [m.month, m.cost, m.tokens, m.workflows, m.subagents, m.unpriced_tokens]
-                for m in self.months
-            ]
-            return "months", header, rows
-        header = ["day", "cost", "tokens", "sessions", "subagents", "unpriced_tokens"]
+            return self._periods_dataset("months", "month", self.months)
+        return self._periods_dataset("days", "day", self.panel_days)
+
+    @staticmethod
+    def _periods_dataset(scope: str, label: str, items: list) -> tuple[str, list[str], list[list]]:
+        header = [label, "cost", "tokens", "sessions", "subagents", "unpriced_tokens"]
         rows = [
-            [d.day, d.cost, d.tokens, d.workflows, d.subagents, d.unpriced_tokens]
-            for d in self.panel_days
+            [getattr(it, label), it.cost, it.tokens, it.workflows, it.subagents, it.unpriced_tokens]
+            for it in items
         ]
-        return "days", header, rows
+        return scope, header, rows
+
+    def _zoom_tab_dataset(self) -> tuple[str, list[str], list[list]]:
+        tab = self._active_tab()
+        if tab == "Projects":
+            return self._projects_dataset(self.zoom_projects())
+        if tab == "Models":
+            return self._models_dataset(self.aggregate_models(self._active_scope_workflows()))
+        if tab == "Sources":
+            return self._sources_dataset(self._active_scope_workflows())
+        # Overview / Sessions both sit over the same scoped session list.
+        return self._sessions_dataset(self.current_sessions())
+
+    def _active_scope_workflows(self) -> list[Workflow]:
+        # The sessions the active zoom detail summarises (for a Models/Sources export).
+        if self.browse_mode == "projects":
+            project = self.selected_project_summary
+            return (
+                self.workflows_for_project(project.directory, include_ignored=True)
+                if project
+                else []
+            )
+        return self.zoom_scope_workflows()
+
+    @staticmethod
+    def _sources_dataset(workflows: list[Workflow]) -> tuple[str, list[str], list[list]]:
+        # Spend grouped by the tool it came from, mirroring the Sources tab's rollup.
+        by_source: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
+        )
+        for w in workflows:
+            item = by_source[w.source or "unknown"]
+            item["cost"] = float(item["cost"]) + w.total_cost
+            item["tokens"] = int(item["tokens"]) + w.total_tokens
+            item["sessions"] = int(item["sessions"]) + 1
+        rows = sorted(
+            by_source.items(),
+            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+            reverse=True,
+        )
+        header = ["source", "cost", "tokens", "sessions"]
+        return "sources", header, [[s, it["cost"], it["tokens"], it["sessions"]] for s, it in rows]
+
+    def _session_tab_dataset(self) -> tuple[str, list[str], list[list]]:
+        session = self.current_session()
+        if session is None:
+            return "subagents", ["depth", "agent", "model", "cost", "tokens", "title"], []
+        tab = self._active_tab()
+        if tab == "Subagents":
+            return self._subagents_dataset(session)
+        if tab == "Turns":
+            return self._turns_dataset(session)
+        if tab == "Tools":
+            return self._tools_dataset(session)
+        # Models tab, and the Overview fallback (whose main table is the model mix).
+        return self._models_dataset([(r["model_name"], r) for r in self.model_mix(session.id)])
+
+    @staticmethod
+    def _models_dataset(rows: list) -> tuple[str, list[str], list[list]]:
+        # rows: list of (name, item) where item carries runs/cost/tokens/cache/output --
+        # the shape both aggregate_models (scope) and model_mix (one session) produce.
+        header = ["model", "runs", "cost", "tokens", "cache_read", "cache_write", "output"]
+        out = []
+        for name, it in rows:
+            tokens_total = it["tokens"] if "tokens" in it else it["tokens_total"]
+            out.append(
+                [
+                    name,
+                    it["runs"],
+                    it["cost"],
+                    tokens_total,
+                    it["cache_read"],
+                    it["cache_write"],
+                    it["output"],
+                ]
+            )
+        return "models", header, out
+
+    def _subagents_dataset(self, session: Workflow) -> tuple[str, list[str], list[list]]:
+        nodes = self._priced_nodes(
+            [r for r in self.store.workflow_nodes(session.id) if r["depth"] > 0]
+        )
+        header = ["depth", "agent", "model", "cost", "tokens", "title"]
+        rows = [
+            [r["depth"], r["agent"], r["model_name"], r["cost"], r["tokens_total"], r["title"]]
+            for r in self.sorted_subagent_rows(nodes)
+        ]
+        return "subagents", header, rows
+
+    def _turns_dataset(self, session: Workflow) -> tuple[str, list[str], list[list]]:
+        api = self.show_api_prices and not self.store.demo
+        header = [
+            "time",
+            "agent",
+            "depth",
+            "model",
+            "cost",
+            "tokens",
+            "input",
+            "output",
+            "cache_read",
+            "cache_write",
+            "prompt",
+        ]
+        rows = []
+        for r in self.session_turn_rows(session.id):
+            cost = r["cost"]
+            if api and not cost:  # reprice a wholly-$0 turn at list price, like the tab
+                cost = api_equivalent_cost(
+                    r["model_name"],
+                    r["input"],
+                    r["output"],
+                    r["reasoning"],
+                    r["cache_read"],
+                    r["cache_write"],
+                )
+            rows.append(
+                [
+                    r["time"],
+                    r["agent"] if r["depth"] else "-",
+                    r["depth"],
+                    r["model_name"],
+                    cost,
+                    r["tokens_total"],
+                    r["input"],
+                    r["output"],
+                    r["cache_read"],
+                    r["cache_write"],
+                    (r.get("prompt_title") or "").strip(),
+                ]
+            )
+        return "turns", header, rows
+
+    def _tools_dataset(self, session: Workflow) -> tuple[str, list[str], list[list]]:
+        api = self.show_api_prices and not self.store.demo
+        header = [
+            "tool",
+            "model",
+            "calls",
+            "cost",
+            "tokens",
+            "input",
+            "output",
+            "cache_read",
+            "cache_write",
+        ]
+        rows = []
+        for r in self.session_tool_rows(session.id):
+            cost = r["cost"]
+            if api and not cost:
+                cost = api_equivalent_cost(
+                    r["model_name"],
+                    r["input"],
+                    r["output"],
+                    r["reasoning"],
+                    r["cache_read"],
+                    r["cache_write"],
+                )
+            rows.append(
+                [
+                    r["tool"],
+                    r["model_name"],
+                    r["calls"],
+                    cost,
+                    r["tokens_total"],
+                    r["input"],
+                    r["output"],
+                    r["cache_read"],
+                    r["cache_write"],
+                ]
+            )
+        return "tools", header, rows
 
     def export_current(self) -> None:
         if self.store.demo:
@@ -1278,7 +1442,10 @@ class App:
         except OSError as exc:
             self.notice = f"export failed: {exc}"
             return
-        self.notice = f"exported {len(rows)} rows → {short_path(path, 48)}"
+        # Show the full path home-abbreviated but NOT truncated -- the toast wraps long
+        # text now, so the directory and filename both stay readable (short_path with a
+        # generous width only does the ~ swap here, no clipping).
+        self.notice = f"exported {len(rows)} rows → {short_path(path, 999)}"
 
     def _current_copy_value(self) -> str | None:
         if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):

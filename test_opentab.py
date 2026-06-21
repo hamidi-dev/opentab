@@ -2593,6 +2593,133 @@ def test_export_dataset_follows_the_visible_view():
     assert {r[0] for r in rows} == {"/tmp/a"}
 
 
+def test_export_follows_the_active_panel():
+    app = app_with(
+        [
+            workflow("june", "2026-06-01 12:00:00", cost=2, directory="/tmp/a"),
+            workflow("may", "2026-05-01 12:00:00", cost=3, directory="/tmp/b"),
+        ]
+    )
+
+    # Browse, Years focused -> the years list (previously fell through to days).
+    app.view = "browse"
+    app.focus = "years"
+    scope, header, rows = app._export_dataset()
+    assert scope == "years" and header[0] == "year"
+    assert [r[0] for r in rows] == ["2026"]
+
+    # Zoom: the active tab decides, not a fixed "sessions".
+    app.view = "zoom"
+    app.focus = "months"
+    app.tab = app.month_tabs.index("Sessions")
+    assert app._export_dataset()[0] == "sessions"
+    app.tab = app.month_tabs.index("Models")
+    scope, header, _ = app._export_dataset()
+    assert scope == "models" and header[0] == "model"
+    app.tab = app.month_tabs.index("Overview")  # Overview falls back to the session list
+    assert app._export_dataset()[0] == "sessions"
+
+    # Session view: the active detail tab decides.
+    app.view = "session"
+    app.tab = app.workflow_tabs.index("Models")
+    scope, header, _ = app._export_dataset()
+    assert scope == "models" and header[0] == "model"
+
+
+def test_export_sources_tab_exports_the_source_breakdown():
+    a = workflow("a", "2026-06-01 12:00:00", cost=2)
+    b = workflow("b", "2026-06-02 12:00:00", cost=5)
+    a.source, b.source = "OpenCode", "Claude Code"
+    app = app_with([a, b])
+    app.store.combined = True  # the Sources tab only appears in the merged view
+    app.view = "zoom"
+    app.focus = "months"
+    app.tab = app.current_tabs().index("Sources")
+    scope, header, rows = app._export_dataset()
+    assert scope == "sources"
+    assert header == ["source", "cost", "tokens", "sessions"]
+    assert {r[0] for r in rows} == {"OpenCode", "Claude Code"}
+    assert rows[0][0] == "Claude Code" and rows[0][1] == 5  # cost-sorted, priciest first
+
+
+def test_export_session_tabs_dispatch_to_their_tables():
+    # A store rich enough to back the Subagents / Turns / Tools tabs.
+    class RichStore(FakeStore):
+        def workflow_nodes(self, wid):
+            return [
+                {
+                    "depth": 1,
+                    "agent": "build",
+                    "model_name": "anthropic/claude",
+                    "cost": 0.5,
+                    "tokens_total": 1234,
+                    "title": "do the thing",
+                    "tokens_input": 1000,
+                    "tokens_output": 200,
+                    "tokens_reasoning": 0,
+                    "tokens_cache_read": 34,
+                    "tokens_cache_write": 0,
+                }
+            ]
+
+        def supports_turns(self, wid):
+            return True
+
+        def supports_tools(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            return [
+                {
+                    "time": "2026-06-01 12:00:01",
+                    "agent": "main",
+                    "depth": 0,
+                    "model_name": "anthropic/claude",
+                    "cost": 0.25,
+                    "tokens_total": 800,
+                    "input": 600,
+                    "output": 200,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "prompt_id": "p1",
+                    "prompt_title": "first prompt",
+                }
+            ]
+
+        def tool_breakdown(self, wid):
+            return [
+                {
+                    "tool": "bash",
+                    "model_name": "anthropic/claude",
+                    "calls": 3,
+                    "cost": 0.1,
+                    "tokens_total": 500,
+                    "input": 400,
+                    "output": 100,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                }
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(RichStore([workflow("ses_1", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+
+    app.tab = app.current_tabs().index("Subagents")
+    scope, header, rows = app._export_dataset()
+    assert scope == "subagents" and header[0] == "depth" and rows[0][1] == "build"
+
+    app.tab = app.current_tabs().index("Turns")
+    scope, header, rows = app._export_dataset()
+    assert scope == "turns" and "prompt" in header and rows[0][-1] == "first prompt"
+
+    app.tab = app.current_tabs().index("Tools")
+    scope, header, rows = app._export_dataset()
+    assert scope == "tools" and header[0] == "tool" and rows[0][0] == "bash"
+
+
 def test_export_disabled_in_demo_mode():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.store.demo = True
@@ -3587,6 +3714,26 @@ def test_draw_toasts_paints_stacked_top_right_cards():
     assert rows == {3, 4, 6, 7}  # newest (error) at rows 3-4, older (success) at 6-7
     # right-aligned: every painted cell sits in the right half of an 80-wide screen
     assert min(x for (_y, x) in screen.cells) > 40
+
+
+def test_draw_toasts_wraps_a_long_message_instead_of_truncating():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    # A full export path -- longer than one toast line; it must wrap, not get clipped.
+    msg = "exported 9 rows → ~/SoftwareProjects/opentab/opentab-months-20260621-175102.csv"
+    app.notify(msg, kind="success")
+    app._mark_toasts_shown()
+    screen = FakeScreen(24, 80)
+    orig_cp = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: 0
+    try:
+        app.renderer.draw_toasts(screen, 24, 80)
+    finally:
+        ot.curses.color_pair = orig_cp
+    text = screen_text(screen)
+    rows = sorted({y for (y, _x) in screen.cells})
+    assert len(rows) >= 3  # header + at least two wrapped message lines
+    assert "exported" in text  # head of the message...
+    assert ".csv" in text  # ...and its tail both survive (nothing truncated away)
 
 
 def test_tmux_launch_argv_builds_window_split_popup():
