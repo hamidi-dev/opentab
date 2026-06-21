@@ -3494,7 +3494,7 @@ def test_tmux_launch_runs_the_hook_and_reports_its_stderr():
                 os.environ["OPENTAB_LAUNCHER"] = old_env
 
 
-def test_launch_menu_opens_in_tmux_and_copies_outside():
+def test_launch_menu_opens_in_tmux_and_hidden_outside():
     a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
     a.source = "Claude Code"
     app = app_with([a])
@@ -3520,11 +3520,15 @@ def test_launch_menu_opens_in_tmux_and_copies_outside():
         app.handle_key(None, ord("L"))
         app.handle_key(None, ord("y"))
         assert copies == ["cd /repo/a && claude --resume ses_1"]
-        # outside tmux, L skips the menu and copies directly
+        # outside tmux (and no launcher hook), L is hidden and a no-op with a hint:
+        # the footer drops it (can_launch_current is False) and it never copies.
         os.environ.pop("TMUX")
+        assert not app.can_launch_current()
+        copies_before = len(copies)
         app.handle_key(None, ord("L"))
         assert app.launch_menu is None
-        assert copies[-1] == "cd /repo/a && claude --resume ses_1" and len(copies) == 2
+        assert len(copies) == copies_before
+        assert "needs tmux" in app.notice
     finally:
         ot.util.tmux_launch = real_launch
         ot.util.copy_to_clipboard = real_copy

@@ -43,6 +43,7 @@ from opentab.tui.renderer import Renderer
 from opentab.util import (
     fuzzy_score,
     in_tmux,
+    launcher_hook,
     month_window_start,
     open_path,
     parse_range_text,
@@ -1308,11 +1309,17 @@ class App:
         directory, command = parts
         return f"cd {shlex.quote(directory)} && {command}"
 
+    def launch_available(self) -> bool:
+        # `L` can only spawn a session next to opentab from inside tmux (its
+        # window/split/popup commands) or through a user launcher hook (which can
+        # drive zellij/kitty/etc. anywhere). Outside both there's nowhere to launch
+        # into — opentab owns the whole terminal — so the key is hidden entirely.
+        return in_tmux() or launcher_hook() is not None
+
     def launch_current(self) -> None:
-        # `L`: inside tmux, open the launch menu (window/split/popup — handled
-        # by handle_launch_key on the next keystroke). Outside tmux opentab owns
-        # the terminal, so it hands a ready-to-paste resume command to the
-        # clipboard instead of spawning a TUI inside a TUI.
+        # `L`: open the launch menu (window/split/popup/copy — handled by
+        # handle_launch_key on the next keystroke). Only offered where a launch can
+        # actually land (see launch_available); the footer hides the key otherwise.
         if self.store.demo:
             self.notice = "launch disabled in demo mode"
             return
@@ -1323,8 +1330,8 @@ class App:
         if self.resume_parts(session) is None:
             self.notice = "no launch command for this session"
             return
-        if not in_tmux():
-            self.copy_resume_command(session)
+        if not self.launch_available():
+            self.notice = "launch needs tmux (or a launcher hook)"
             return
         self.launch_menu = session
         self.launch_menu_index = 0
@@ -1524,7 +1531,11 @@ class App:
         )
 
     def can_launch_current(self) -> bool:
-        return self.view == "session" or (self.view == "zoom" and self.on_sessions_tab)
+        # On a session context AND somewhere a launch can land (tmux / launcher hook);
+        # gates the footer's `L` hint so it never shows when pressing it would no-op.
+        return (
+            self.view == "session" or (self.view == "zoom" and self.on_sessions_tab)
+        ) and self.launch_available()
 
     def effective_sort_by(self) -> str | None:
         if self.in_project_sort_context():
