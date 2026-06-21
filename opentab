@@ -5605,7 +5605,7 @@ class Renderer:
             ("o open", False),
         ]
         if self.can_launch_current():
-            parts.append(("L launch", False))
+            parts.append(("L launch", self.launch_menu is not None))
         if self.source_key:
             parts.append(("D real" if self.store.demo else "D demo", False))
         if not self.store.demo:
@@ -6998,18 +6998,17 @@ class Renderer:
         # handle_launch_key); anything else cancels.
         session = self.launch_menu
         via = "launcher hook" if launcher_hook() else "tmux"
+        idx = self.launch_menu_index % len(self.LAUNCH_TARGETS)
         lines = [
             (shorten(session.title or "(untitled)", 52), curses.color_pair(4)),
             (f"open in {via}:", curses.A_NORMAL),
             ("", 0),
-            (" w    new window", curses.A_NORMAL),
-            (" s    split pane │", curses.A_NORMAL),
-            (" v    split pane ─", curses.A_NORMAL),
-            (" p    popup", curses.A_NORMAL),
-            (" y    copy resume command", curses.A_NORMAL),
-            (" Esc  cancel", curses.A_NORMAL),
         ]
-        self.draw_modal(stdscr, scr_h, scr_w, "Launch session", lines)
+        for offset, (kc, _kind, label) in enumerate(self.LAUNCH_TARGETS):
+            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
+            lines.append((f" {kc}  {label}", attr))
+        lines += [("", 0), (" Esc  cancel", curses.A_NORMAL)]
+        self.draw_modal(stdscr, scr_h, scr_w, "Launch session · j/k · Enter · Esc", lines)
 
     # --- Trends overlay -------------------------------------------------------
     def draw_trends(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
@@ -7570,6 +7569,15 @@ class App:
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
     trend_tabs = ("Daily", "Weekly", "Monthly", "Calendar", "Models", "Providers", "Sources")
+    # The `L` launch picker's targets: (shortcut key, kind, label). "copy" hands the
+    # resume command to the clipboard; the rest spawn a tmux window/split/popup.
+    LAUNCH_TARGETS = (
+        ("w", "window", "new window"),
+        ("s", "hsplit", "split pane │"),
+        ("v", "vsplit", "split pane ─"),
+        ("p", "popup", "popup"),
+        ("y", "copy", "copy resume command"),
+    )
 
     def __init__(self, store: Store, args: argparse.Namespace, source_key: str = ""):
         self.store = store
@@ -7613,6 +7621,7 @@ class App:
         self.filter_active = False  # live `f` filter mode: keys edit the query
         self._filter_before = ""  # the query as it was when `/` opened the mode (Esc restores)
         self.launch_menu: Workflow | None = None  # session awaiting an `L` launch-target key
+        self.launch_menu_index = 0  # highlighted row in that picker
         self.source_menu = False  # the `c` data-source picker overlay
         self.source_menu_index = 0  # highlighted row in that picker
         self.day_index = 0
@@ -8768,6 +8777,7 @@ class App:
             self.copy_resume_command(session)
             return
         self.launch_menu = session
+        self.launch_menu_index = 0
 
     def launch_session(self) -> Workflow | None:
         if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
@@ -8782,24 +8792,44 @@ class App:
             self.notice = "clipboard tool not found (pbcopy/wl-copy/xclip/xsel)"
 
     def handle_launch_key(self, key: int) -> bool:
-        # One keystroke picks the launch target; anything else cancels.
-        session, self.launch_menu = self.launch_menu, None
+        # The `L` launch picker: j/k move, Enter runs the highlighted target, the w/s/v/p/y
+        # shortcuts jump straight to one, Esc/q cancels. Mirrors handle_source_menu_key.
         if key == 3:  # Ctrl-C still quits
             return False
-        if key == ord("y"):
-            self.copy_resume_command(session)
+        targets = self.LAUNCH_TARGETS
+        n = len(targets)
+        if key in (ord("j"), curses.KEY_DOWN):
+            self.launch_menu_index = (self.launch_menu_index + 1) % n
             return True
-        kind = {ord("w"): "window", ord("s"): "hsplit", ord("v"): "vsplit", ord("p"): "popup"}.get(
-            key
-        )
-        parts = self.resume_parts(session)
-        if not kind or not parts:
+        if key in (ord("k"), curses.KEY_UP):
+            self.launch_menu_index = (self.launch_menu_index - 1) % n
+            return True
+        if key in (27, ord("q"), curses.KEY_BACKSPACE, 127):
+            self.launch_menu = None
             self.notice = "launch cancelled"
             return True
+        shortcuts = {ord(t[0]): i for i, t in enumerate(targets)}
+        if key in shortcuts:
+            index = shortcuts[key]
+        elif key in (10, 13, curses.KEY_ENTER):
+            index = self.launch_menu_index % n
+        else:
+            return True  # ignore unknown keys, keep the modal open
+        session, self.launch_menu = self.launch_menu, None
+        self._do_launch(session, targets[index][1])
+        return True
+
+    def _do_launch(self, session: Workflow, kind: str) -> None:
+        if kind == "copy":
+            self.copy_resume_command(session)
+            return
+        parts = self.resume_parts(session)
+        if not parts:
+            self.notice = "launch cancelled"
+            return
         directory, command = parts
         error = tmux_launch(kind, directory, command)
         self.notice = f"launch failed: {error}" if error else f"{kind}: {shorten(command, 50)}"
-        return True
 
     def handle_source_menu_key(self, key: int) -> bool:
         # The `c` data-source picker: j/k move, Enter switches, Esc/q cancels. `c` again

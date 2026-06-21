@@ -3502,6 +3502,39 @@ def test_launch_menu_opens_in_tmux_and_copies_outside():
             os.environ["TMUX"] = old_tmux
 
 
+def test_launch_menu_is_navigable_with_jk_and_enter():
+    a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
+    a.source = "Claude Code"
+    app = app_with([a])
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    old_tmux = os.environ.get("TMUX")
+    real_launch = ot.tmux_launch
+    launches = []
+    try:
+        ot.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
+        app.handle_key(None, ord("L"))
+        assert app.launch_menu is not None and app.launch_menu_index == 0  # starts at "window"
+        app.handle_key(None, ord("j"))  # -> hsplit
+        assert app.launch_menu_index == 1
+        app.handle_key(None, ord("k"))  # back to window
+        app.handle_key(None, ord("k"))  # wraps up to the last target (copy)
+        assert app.launch_menu_index == 4
+        app.handle_key(None, ord("j"))  # wraps back to window
+        assert app.launch_menu_index == 0
+        app.handle_key(None, ord("j"))  # -> hsplit
+        app.handle_key(None, 10)  # Enter runs the highlighted target
+        assert app.launch_menu is None
+        assert launches == [("hsplit", "/repo/a", "claude --resume ses_1")]
+    finally:
+        ot.tmux_launch = real_launch
+        if old_tmux is None:
+            os.environ.pop("TMUX", None)
+        else:
+            os.environ["TMUX"] = old_tmux
+
+
 def test_launch_only_works_on_session_contexts():
     a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
     a.source = "OpenCode"
