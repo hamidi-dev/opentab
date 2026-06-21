@@ -5214,6 +5214,83 @@ def test_openclaw_store_mixes_metered_and_subscription_in_one_session():
         assert rows_out["openai/gpt-5.3-codex"]["unpriced_input"] == 5000
 
 
+def _menu_app(current="opencode", cycle=("opencode", "claude", "all")):
+    # An app whose source cycle is fixed, with select_source stubbed so menu tests never
+    # touch the filesystem / make_store. Returns (app, chosen) where chosen records picks.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.source_key = current
+    chosen = {}
+    app._orig_cycle = ot.source_cycle
+    ot.source_cycle = lambda args, _c=list(cycle): list(_c)
+    app.select_source = lambda key: chosen.setdefault("key", key)
+    return app, chosen
+
+
+def test_source_menu_opens_at_current_and_navigates_then_selects():
+    app, chosen = _menu_app(current="opencode")
+    try:
+        app.handle_key(None, ord("c"))  # opens the picker
+        assert app.source_menu is True
+        assert app.source_menu_index == 0  # highlight starts on the active source
+        app.handle_source_menu_key(ord("j"))
+        assert app.source_menu_index == 1  # -> claude
+        app.handle_source_menu_key(ot.curses.KEY_DOWN)
+        assert app.source_menu_index == 2  # -> all
+        app.handle_source_menu_key(ord("j"))
+        assert app.source_menu_index == 0  # wraps
+        app.handle_source_menu_key(ord("k"))
+        assert app.source_menu_index == 2  # wraps back up
+        app.handle_source_menu_key(ord("k"))  # -> claude
+        app.handle_source_menu_key(10)  # Enter selects + closes
+        assert app.source_menu is False
+        assert chosen["key"] == "claude"
+    finally:
+        ot.source_cycle = app._orig_cycle
+
+
+def test_source_menu_c_advances_and_esc_cancels():
+    app, chosen = _menu_app(current="claude")
+    try:
+        app.open_source_menu()
+        assert app.source_menu_index == 1  # claude is current
+        app.handle_source_menu_key(ord("c"))  # c walks the list too
+        assert app.source_menu_index == 2
+        app.handle_source_menu_key(ord("c"))
+        assert app.source_menu_index == 0  # wraps
+        app.handle_source_menu_key(27)  # Esc cancels, source unchanged
+        assert app.source_menu is False
+        assert "key" not in chosen
+    finally:
+        ot.source_cycle = app._orig_cycle
+
+
+def test_source_menu_not_opened_with_single_source():
+    app, _ = _menu_app(current="opencode", cycle=("opencode",))
+    try:
+        app.open_source_menu()
+        assert app.source_menu is False
+        assert app.notice == "only one data source available"
+    finally:
+        ot.source_cycle = app._orig_cycle
+
+
+def test_source_menu_entries_label_all_and_mark_current():
+    app, _ = _menu_app(current="all", cycle=("opencode", "openclaw", "all"))
+    try:
+        entries = app.source_menu_entries()
+        assert [k for k, _, _ in entries] == ["opencode", "openclaw", "all"]
+        labels = {k: lbl for k, lbl, _ in entries}
+        assert labels["openclaw"] == "OpenClaw"
+        assert labels["all"] == "All sources (merged)"  # friendlier than the bare "all"
+        assert {k: cur for k, _, cur in entries} == {
+            "opencode": False,
+            "openclaw": False,
+            "all": True,
+        }
+    finally:
+        ot.source_cycle = app._orig_cycle
+
+
 def test_open_path_uses_startfile_on_windows():
     # On Windows there is no open/xdg-open; open_path reveals the folder via os.startfile.
     called = {}

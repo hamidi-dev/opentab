@@ -5227,7 +5227,9 @@ class Renderer:
         top = 3
         bottom = height - 2
         avail = bottom - top
-        if self.help:
+        if self.source_menu:
+            self.draw_source_menu(stdscr, top, bottom, width)
+        elif self.help:
             self.draw_help(stdscr, top, bottom, width)
         elif self.show_prices:
             self.draw_prices(stdscr, top, bottom, width)
@@ -5465,9 +5467,9 @@ class Renderer:
         if self.ignored_projects:
             parts.append(("I ignored", self.show_ignored_projects))
         if self.can_switch_source():
-            # Show the destination, not the current source (that's the header
-            # chip) — "c all" otherwise reads like "press c to get all".
-            parts.append((f"c → {self.next_source_name()}", False))
+            # `c` opens the source picker (lights up while it's open); the active source
+            # is the header chip, so the key just advertises the menu, not a destination.
+            parts.append(("c source", self.source_menu))
         # active/non-default modifiers light up too, matching the header chips: a
         # range that isn't "all time", a committed filter query. Range narrows every
         # view so it's always offered; "f" only filters session/project lists, so it
@@ -6745,7 +6747,8 @@ class Renderer:
             "                   inside tmux: w window · s split · v vsplit · p popup · y copy command",
             "                   outside tmux: copies `cd <project> && <tool> resume <id>` to the clipboard",
             "  D                toggle real/demo data on the fly (demo anonymizes titles/paths)",
-            "  c                switch data source: OpenCode / Claude Code / Codex / all (when present)",
+            "  c                open the data-source picker (j/k move · Enter switch · Esc cancel):",
+            "                   OpenCode / Claude Code / Codex / Copilot / pi / OpenClaw / all (when present)",
             "  T                Trends overlay: Daily / Weekly / Monthly / Calendar / Models / Providers / Sources",
             "                   (h/l tabs; j/k month/week/year; $ what-if prices)",
             "                   Calendar is a spend heat map: ↑↓←→ pick a day, Enter opens it,",
@@ -6837,6 +6840,29 @@ class Renderer:
             else:
                 attr = curses.A_NORMAL
             self.write(stdscr, y + 2 + offset, 2, shorten(line, inner_w), attr)
+
+    def draw_source_menu(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
+        # The `c` picker: a small modal list of every present source. j/k moves the
+        # highlight, Enter switches, Esc cancels (handled in handle_source_menu_key).
+        self.box(
+            stdscr,
+            y,
+            0,
+            bottom - y,
+            width,
+            "Switch data source  ·  j/k move · Enter select · Esc cancel",
+            active=True,
+        )
+        self.write(stdscr, y + 2, 2, "Browse spend recorded by which tool:", curses.color_pair(4))
+        entries = self.source_menu_entries()
+        idx = self.source_menu_index % len(entries) if entries else 0
+        field = min(max((len(lbl) for _, lbl, _ in entries), default=12) + 14, width - 4)
+        for offset, (_key, label, is_current) in enumerate(entries):
+            marker = "●" if is_current else "○"
+            suffix = "  (current)" if is_current else ""
+            text = f" {marker}  {label}{suffix}"
+            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
+            self.write(stdscr, y + 4 + offset, 2, f"{text:<{field}}", attr)
 
     # --- Trends overlay -------------------------------------------------------
     def draw_trends(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
@@ -7440,6 +7466,8 @@ class App:
         self.filter_active = False  # live `f` filter mode: keys edit the query
         self._filter_before = ""  # the query as it was when `/` opened the mode (Esc restores)
         self.launch_menu: Workflow | None = None  # session awaiting an `L` launch-target key
+        self.source_menu = False  # the `c` data-source picker overlay
+        self.source_menu_index = 0  # highlighted row in that picker
         self.day_index = 0
         self.month_index = 0
         self.year_index = 0
@@ -8272,13 +8300,41 @@ class App:
         nxt = order[(order.index(cur) + 1) % len(order)]
         return SOURCE_LABELS.get(nxt, nxt)
 
-    def cycle_source(self, step: int = 1) -> None:
+    def source_menu_entries(self) -> list[tuple[str, str, bool]]:
+        # (key, display label, is-active) per switchable source, in cycle order.
+        out = []
+        for skey in source_cycle(self.args):
+            label = "All sources (merged)" if skey == "all" else SOURCE_LABELS.get(skey, skey)
+            out.append((skey, label, skey == self.source_key))
+        return out
+
+    def open_source_menu(self) -> None:
+        # `c` no longer cycles blindly; it opens a small picker the user can j/k through
+        # and Enter to switch (Esc cancels). With a single source there's nothing to pick.
         order = source_cycle(self.args)
         if len(order) < 2:
             self.notice = "only one data source available"
             return
         cur = self.source_key if self.source_key in order else order[0]
-        key = order[(order.index(cur) + step) % len(order)]
+        self.source_menu_index = order.index(cur)
+        self.source_menu = True
+
+    def cycle_source(self, step: int = 1) -> None:
+        # Relative hop (kept for completeness); the menu uses select_source directly.
+        order = source_cycle(self.args)
+        if len(order) < 2:
+            self.notice = "only one data source available"
+            return
+        cur = self.source_key if self.source_key in order else order[0]
+        self.select_source(order[(order.index(cur) + step) % len(order)])
+
+    def select_source(self, key: str) -> None:
+        order = source_cycle(self.args)
+        if key not in order:
+            return
+        if key == self.source_key:
+            self.notice = f"already on {SOURCE_LABELS.get(key, key)}"
+            return
         cache_key = (key, bool(getattr(self.store, "demo", False)))
         if cache_key not in self._store_cache:
             try:
@@ -8291,6 +8347,7 @@ class App:
         self.source_key = key
         self.store = self._store_cache[cache_key]
         self._reload_for_source()
+        self.notice = f"source: {SOURCE_LABELS.get(key, key)}"
 
     def toggle_demo(self) -> None:
         if not self.source_key:
@@ -8579,6 +8636,31 @@ class App:
         directory, command = parts
         error = tmux_launch(kind, directory, command)
         self.notice = f"launch failed: {error}" if error else f"{kind}: {shorten(command, 50)}"
+        return True
+
+    def handle_source_menu_key(self, key: int) -> bool:
+        # The `c` data-source picker: j/k move, Enter switches, Esc/q cancels. `c` again
+        # advances the highlight so repeated taps still walk the list.
+        order = source_cycle(self.args)
+        if not order:
+            self.source_menu = False
+            return True
+        if key == 3:  # Ctrl-C still quits
+            return False
+        if key in (ord("j"), curses.KEY_DOWN, ord("c")):
+            self.source_menu_index = (self.source_menu_index + 1) % len(order)
+        elif key in (ord("k"), curses.KEY_UP):
+            self.source_menu_index = (self.source_menu_index - 1) % len(order)
+        elif key == ord("g"):
+            self.source_menu_index = 0
+        elif key == ord("G"):
+            self.source_menu_index = len(order) - 1
+        elif key in (10, 13, curses.KEY_ENTER):
+            self.source_menu = False
+            self.select_source(order[self.source_menu_index % len(order)])
+        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+            self.source_menu = False  # cancel, source unchanged
+        # any other key: ignore and keep the menu open
         return True
 
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
@@ -9146,6 +9228,8 @@ class App:
                 self.trends = False  # any other key closes the overlay
             return True
 
+        if self.source_menu:
+            return self.handle_source_menu_key(key)
         if self.filter_active:
             return self.handle_filter_key(key)
         if self.launch_menu is not None:
@@ -9172,7 +9256,7 @@ class App:
             self.reload()
             return True
         if key == ord("c"):
-            self.cycle_source(1)
+            self.open_source_menu()
             return True
         if key == ord("D"):
             self.toggle_demo()
@@ -9320,6 +9404,15 @@ class App:
         click = bool(bstate & curses.BUTTON1_CLICKED)
         double = bool(bstate & curses.BUTTON1_DOUBLE_CLICKED)
 
+        if self.source_menu:
+            order = source_cycle(self.args)
+            if order and up:
+                self.source_menu_index = (self.source_menu_index - 1) % len(order)
+            elif order and down:
+                self.source_menu_index = (self.source_menu_index + 1) % len(order)
+            elif click or double:
+                self.source_menu = False  # click cancels, source unchanged
+            return True
         if self.help:
             if up or down or click or double:
                 self.help = False
