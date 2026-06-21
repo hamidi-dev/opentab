@@ -305,6 +305,8 @@ class Renderer:
             self.draw_price_prompt(stdscr, height, width)
         elif self.source_menu:
             self.draw_source_menu(stdscr, height, width)
+        elif self.sort_menu:
+            self.draw_sort_menu(stdscr, height, width)
         elif self.launch_menu is not None:
             self.draw_launch_menu(stdscr, height, width)
 
@@ -489,7 +491,7 @@ class Renderer:
         if self.view != "session":
             parts.append(("p/t mode", False))
         if self.can_sort_current_view():
-            parts.append(("s/S sort", False))
+            parts.append(("s sort", self.sort_menu))
         if self.can_toggle_project_ignore():
             parts.append(("i ignore", False))
         if self.ignored_projects:
@@ -1768,7 +1770,7 @@ class Renderer:
             "  g/G              top / bottom",
             "  R                set range: all, 30d (or 30), 2m, 1y, 2026, 2026-05, start..end",
             "  a                show all time, keeping the current selection when possible",
-            "  s / S            cycle sort forward / backward on visible lists",
+            "  s                open the sort picker for the visible list (j/k move · Enter apply · Esc cancel)",
             "  i                ignore/unignore the selected project (project lists only)",
             "  I                show/hide ignored projects so they can be unignored",
             "  f                live fuzzy filter over sessions (title/project/id), projects, Models, and Prices (by name)",
@@ -1925,6 +1927,37 @@ class Renderer:
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {label}{suffix}", attr))
         self.draw_modal(stdscr, scr_h, scr_w, "Switch source · j/k · Enter · Esc", lines)
+
+    # Friendlier one-word names for the raw sort keys shown in the `s` picker.
+    SORT_LABELS = {
+        "cost": "Cost",
+        "tokens": "Tokens",
+        "date": "Date",
+        "recency": "Recency",
+        "subagents": "Subagents",
+        "sessions": "Sessions",
+        "title": "Title",
+        "project": "Project",
+        "model": "Model",
+        "agent": "Agent",
+        "depth": "Depth",
+    }
+
+    def draw_sort_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # The `s` picker: a small modal list of the sort keys valid for the current
+        # list. j/k moves the highlight, Enter applies, Esc cancels (handled in
+        # handle_sort_menu_key).
+        options = self.sort_menu_options()
+        idx = self.sort_menu_index % len(options) if options else 0
+        current = self.effective_sort_by()
+        lines = [("Order this list by:", curses.color_pair(4)), ("", 0)]
+        for offset, key in enumerate(options):
+            is_current = key == current
+            marker = "●" if is_current else "○"
+            suffix = "  (current)" if is_current else ""
+            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
+            lines.append((f" {marker}  {self.SORT_LABELS.get(key, key)}{suffix}", attr))
+        self.draw_modal(stdscr, scr_h, scr_w, "Sort by · j/k · Enter · Esc", lines)
 
     def draw_launch_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `L` picker: a small modal of launch targets. One keystroke picks (handled in

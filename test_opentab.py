@@ -2075,15 +2075,45 @@ def test_sort_only_changes_on_sessions_tab():
     app.tab = app.month_tabs.index("Models")
     app.sort_by = "cost"
 
+    # On a non-sortable tab the picker won't open and the sort is untouched.
     assert app.handle_key(None, ord("s"))
+    assert not app.sort_menu
     assert app.sort_by == "cost"
 
+    # On the Sessions tab `s` opens the picker; navigate + Enter applies the choice.
     app.tab = app.month_tabs.index("Sessions")
     assert app.handle_key(None, ord("s"))
+    assert app.sort_menu and app.sort_menu_index == 0  # starts on the current sort (cost)
+    app.handle_key(None, ord("j"))  # -> tokens
+    app.handle_key(None, 10)  # Enter applies
+    assert not app.sort_menu
     assert app.sort_by == "tokens"
 
 
-def test_shift_s_cycles_sort_backward():
+def test_sort_menu_is_navigable_with_jk_s_and_enter():
+    app = app_with([workflow("june", "2026-06-01 12:00:00")])
+    app.focus = "months"
+    app.view = "browse"
+    app.tab = app.month_tabs.index("Sessions")
+    app.sort_by = "cost"
+    n = len(app.sort_options)
+
+    app.handle_key(None, ord("s"))
+    assert app.sort_menu and app.sort_menu_index == 0
+    app.handle_key(None, ord("s"))  # `s` again advances the highlight
+    assert app.sort_menu_index == 1
+    app.handle_key(None, ord("k"))  # back to 0
+    app.handle_key(None, ord("k"))  # wraps up to the last option
+    assert app.sort_menu_index == n - 1
+    app.handle_key(None, ord("g"))  # jump to top
+    assert app.sort_menu_index == 0
+    app.handle_key(None, ord("G"))  # jump to bottom
+    assert app.sort_menu_index == n - 1
+    app.handle_key(None, 10)  # Enter applies the highlighted option
+    assert not app.sort_menu and app.sort_by == app.sort_options[-1]
+
+
+def test_shift_s_opens_the_sort_picker_too():
     app = app_with([workflow("june", "2026-06-01 12:00:00")])
     app.focus = "months"
     app.view = "browse"
@@ -2091,7 +2121,9 @@ def test_shift_s_cycles_sort_backward():
     app.sort_by = "tokens"
 
     assert app.handle_key(None, ord("S"))
-    assert app.sort_by == "cost"
+    assert app.sort_menu
+    app.handle_key(None, 27)  # Esc cancels, sort unchanged
+    assert not app.sort_menu and app.sort_by == "tokens"
 
 
 def test_subagents_tab_is_sortable_by_tokens():
@@ -2188,15 +2220,19 @@ def test_filter_applies_to_projects():
     assert {p.directory for p in app.zoom_projects()} == {"/tmp/auth-service", "/tmp/auth-ui"}
 
 
-def test_project_list_s_cycles_project_sort():
+def test_project_list_s_opens_project_sort_picker():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.set_browse_mode("projects")
 
     assert app.handle_key(None, ord("s"))
+    assert app.sort_menu
+    assert app.sort_menu_options() == app.project_sort_options
+    assert app.sort_menu_index == 0  # current project sort is cost
+    app.handle_key(None, ord("j"))  # -> tokens
+    app.handle_key(None, 10)  # Enter applies
+    assert not app.sort_menu
     assert app.project_sort_by == "tokens"
-    assert app.sort_by == "cost"
-    assert app.handle_key(None, ord("S"))
-    assert app.project_sort_by == "cost"
+    assert app.sort_by == "cost"  # session sort untouched
 
 
 def test_project_header_aligns_with_project_rows():
@@ -2242,7 +2278,10 @@ def test_project_sessions_s_keeps_session_sort():
     app.tab = app.project_tabs.index("Sessions")
     app.drill_in()
 
-    assert app.handle_key(None, ord("s"))
+    assert app.handle_key(None, ord("s"))  # opens the session-sort picker
+    assert app.sort_menu and app.sort_menu_options() == app.sort_options
+    app.handle_key(None, ord("j"))  # cost -> tokens
+    app.handle_key(None, 10)  # Enter applies
     assert app.sort_by == "tokens"
     assert app.project_sort_by == "cost"
 
@@ -2274,7 +2313,10 @@ def test_month_projects_are_scoped_and_sortable():
     assert "/tmp/a" in lines[2]
     assert "/tmp/b" in lines[3]
     assert all("/tmp/old" not in line for line in lines)
-    assert app.handle_key(None, ord("s"))
+    assert app.handle_key(None, ord("s"))  # opens the project-sort picker
+    assert app.sort_menu and app.sort_menu_index == 1  # current is tokens
+    app.handle_key(None, ord("j"))  # -> sessions
+    app.handle_key(None, 10)  # Enter applies
     assert app.project_sort_by == "sessions"
     assert app.sort_by == "cost"
 

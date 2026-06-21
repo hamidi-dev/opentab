@@ -122,6 +122,8 @@ class App:
         self.unknown_models: list[str] = []  # used models with no built-in price
         self.source_menu = False  # the `c` data-source picker overlay
         self.source_menu_index = 0  # highlighted row in that picker
+        self.sort_menu = False  # the `s` sort-order picker overlay
+        self.sort_menu_index = 0  # highlighted row in that picker
         self.day_index = 0
         self.month_index = 0
         self.year_index = 0
@@ -1549,28 +1551,61 @@ class App:
             return None
         return self.sort_by if self.sort_by in options else options[0]
 
-    def cycle_sort(self, step: int) -> None:
+    def sort_menu_options(self) -> tuple[str, ...]:
+        # The sort keys valid for the view the `s` picker was opened over: project
+        # lists use project_sort_options, session/subagent lists current_sort_options.
+        if self.in_project_sort_context():
+            return self.project_sort_options
+        return self.current_sort_options()
+
+    def open_sort_menu(self) -> None:
+        # `s` no longer cycles blindly; it opens a small picker the user can j/k
+        # through and Enter to apply (Esc cancels), mirroring the `c` source menu.
         if not self.can_sort_current_view():
             self.notice = "sort: only session, project, or subagent lists"
             return
-        if self.in_project_sort_context():
-            options = self.project_sort_options
-            current = options.index(self.project_sort_by) if self.project_sort_by in options else 0
-            self.project_sort_by = options[(current + step) % len(options)]
-            self.project_index = 0
-            self.scroll = 0
-            return
-
-        options = self.current_sort_options()
+        options = self.sort_menu_options()
         if not options:
+            self.notice = "sort: only session, project, or subagent lists"
             return
-        if self.sort_by not in options:
-            current = 0
+        current = self.effective_sort_by()
+        self.sort_menu_index = options.index(current) if current in options else 0
+        self.sort_menu = True
+
+    def apply_sort_choice(self, value: str) -> None:
+        if self.in_project_sort_context():
+            self.project_sort_by = value
+            self.project_index = 0
         else:
-            current = options.index(self.sort_by)
-        self.sort_by = options[(current + step) % len(options)]
-        self.workflow_index = 0
+            self.sort_by = value
+            self.workflow_index = 0
         self.scroll = 0
+
+    def handle_sort_menu_key(self, key: int) -> bool:
+        # The `s` sort picker: j/k move, Enter applies, Esc/q cancels. `s` again
+        # advances the highlight so repeated taps still walk the list. Mirrors
+        # handle_source_menu_key.
+        options = self.sort_menu_options()
+        if not options:
+            self.sort_menu = False
+            return True
+        if key == 3:  # Ctrl-C still quits
+            return False
+        if key in (ord("j"), curses.KEY_DOWN, ord("s")):
+            self.sort_menu_index = (self.sort_menu_index + 1) % len(options)
+        elif key in (ord("k"), curses.KEY_UP):
+            self.sort_menu_index = (self.sort_menu_index - 1) % len(options)
+        elif key == ord("g"):
+            self.sort_menu_index = 0
+        elif key == ord("G"):
+            self.sort_menu_index = len(options) - 1
+        elif key in (10, 13, curses.KEY_ENTER):
+            self.sort_menu = False
+            self.apply_sort_choice(options[self.sort_menu_index % len(options)])
+        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+            self.sort_menu = False  # cancel, order unchanged
+        # any other key: ignore and keep the menu open
+        return True
 
     FOCUS_CYCLE = ("years", "months", "days")
 
@@ -2006,6 +2041,8 @@ class App:
 
         if self.source_menu:
             return self.handle_source_menu_key(key)
+        if self.sort_menu:
+            return self.handle_sort_menu_key(key)
         if self.filter_active:
             return self.handle_filter_key(key)
         if self.launch_menu is not None:
@@ -2052,11 +2089,8 @@ class App:
         if key == ord("t"):
             self.set_browse_mode("time")
             return True
-        if key == ord("s"):
-            self.cycle_sort(1)
-            return True
-        if key == ord("S"):
-            self.cycle_sort(-1)
+        if key in (ord("s"), ord("S")):
+            self.open_sort_menu()
             return True
         if key == ord("i"):
             self.toggle_project_ignore()
@@ -2198,6 +2232,15 @@ class App:
                 self.source_menu_index = (self.source_menu_index + 1) % len(order)
             elif click or double:
                 self.source_menu = False  # click cancels, source unchanged
+            return True
+        if self.sort_menu:
+            options = self.sort_menu_options()
+            if options and up:
+                self.sort_menu_index = (self.sort_menu_index - 1) % len(options)
+            elif options and down:
+                self.sort_menu_index = (self.sort_menu_index + 1) % len(options)
+            elif click or double:
+                self.sort_menu = False  # click cancels, order unchanged
             return True
         if self.launch_menu is not None:
             if click or double:
