@@ -668,6 +668,23 @@ def copy_to_clipboard(text: str) -> bool:
 
 def open_path(path: str) -> bool:
     target = os.path.expanduser(path)
+    if sys.platform == "win32":
+        # Windows has no open/xdg-open; os.startfile (Windows-only) reveals the folder in
+        # Explorer, with explorer.exe as the fallback.
+        startfile = getattr(os, "startfile", None)
+        if startfile is not None:
+            try:
+                startfile(target)
+                return True
+            except OSError:
+                pass
+        if shutil.which("explorer"):
+            try:
+                subprocess.Popen(["explorer", target])
+                return True
+            except OSError:
+                return False
+        return False
     opener = "open" if sys.platform == "darwin" else "xdg-open"
     if not shutil.which(opener):
         return False
@@ -8492,7 +8509,8 @@ class App:
         if open_path(directory):
             self.notice = f"opened {short_path(directory, 40)}"
         else:
-            self.notice = "no opener found (open/xdg-open)"
+            opener = "explorer" if sys.platform == "win32" else "open/xdg-open"
+            self.notice = f"no opener found ({opener})"
 
     def resume_parts(self, workflow: Workflow) -> tuple[str, str] | None:
         # (project directory, bare resume command) for the selected session —

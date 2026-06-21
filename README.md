@@ -113,7 +113,7 @@ touches, all on your own machine:
   `opentab-*.csv` export in the current directory.
 - **Runs** external programs only on the key you press: your clipboard tool
   (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for `y`, your file opener
-  (`open`/`xdg-open`) for `o`, and for `L` either `tmux` or your own
+  (`open`/`xdg-open`, or Explorer on Windows) for `o`, and for `L` either `tmux` or your own
   [launcher hook](#custom-launchers) (`~/.config/opentab/launcher`). All are
   disabled in `--demo`.
 
@@ -334,7 +334,8 @@ That's the one exception to "no `pip install`": `windows-curses` is just an
 OS-level provider for the stdlib `curses` module, not a dependency of OpenTab's
 own code. Confirmed working against the **OpenCode** source; the Claude Code and
 Codex backends read plain JSON files and should behave the same, but are less
-exercised on native Windows.
+exercised on native Windows. The `o` key opens the selected directory in
+Explorer (via `os.startfile`), so reveal-in-folder works natively too.
 
 **WSL.** `curses` is already there, so a plain `opentab` works. OpenCode itself
 doesn't have to run inside WSL — even on native Windows it keeps its database

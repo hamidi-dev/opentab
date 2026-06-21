@@ -5214,6 +5214,25 @@ def test_openclaw_store_mixes_metered_and_subscription_in_one_session():
         assert rows_out["openai/gpt-5.3-codex"]["unpriced_input"] == 5000
 
 
+def test_open_path_uses_startfile_on_windows():
+    # On Windows there is no open/xdg-open; open_path reveals the folder via os.startfile.
+    called = {}
+    orig_platform = ot.sys.platform
+    had_startfile = hasattr(ot.os, "startfile")
+    orig_startfile = getattr(ot.os, "startfile", None)
+    try:
+        ot.sys.platform = "win32"
+        ot.os.startfile = lambda p: called.setdefault("path", p)
+        assert ot.open_path("C:/repo/proj") is True
+        assert called["path"] == "C:/repo/proj"
+    finally:
+        ot.sys.platform = orig_platform
+        if had_startfile:
+            ot.os.startfile = orig_startfile
+        else:
+            del ot.os.startfile
+
+
 if __name__ == "__main__":
     import sys
 
