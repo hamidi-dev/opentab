@@ -6304,6 +6304,16 @@ class Renderer:
             )
         return lines
 
+    def _models_tab(self, rows: list[tuple], title: str, width: int) -> list[str]:
+        # The Models tab body, with the live `f` filter applied to model names.
+        # Unlike sessions we keep the cost ranking rather than re-ranking by fuzzy
+        # score: model lists are short and the cost order is the useful one.
+        if self.query:
+            rows = [r for r in rows if fuzzy_score(self.query, str(r[0])) is not None]
+            if not rows:
+                return [title, f"No models match the filter: {self.query}"]
+        return self._model_table(rows, title, width)
+
     @staticmethod
     def _agg_rows(aggregate: list[tuple[str, dict]]) -> list[tuple]:
         return [
@@ -6363,7 +6373,7 @@ class Renderer:
 
     def month_models(self, month: MonthSummary, width: int) -> list[str]:
         agg = self.aggregate_models(self.workflows_for_month(month.month))
-        return self._model_table(self._agg_rows(agg), "# Monthly Model Spend", width)
+        return self._models_tab(self._agg_rows(agg), "# Monthly Model Spend", width)
 
     def month_sources(self, month: MonthSummary, width: int) -> list[str]:
         return self.source_table(self.workflows_for_month(month.month), width)
@@ -6432,7 +6442,7 @@ class Renderer:
 
     def year_models(self, year: YearSummary, width: int) -> list[str]:
         agg = self.aggregate_models(self.workflows_for_year(year.year))
-        return self._model_table(self._agg_rows(agg), "# Yearly Model Spend", width)
+        return self._models_tab(self._agg_rows(agg), "# Yearly Model Spend", width)
 
     def year_sources(self, year: YearSummary, width: int) -> list[str]:
         return self.source_table(self.workflows_for_year(year.year), width)
@@ -6549,7 +6559,7 @@ class Renderer:
         agg = self.aggregate_models(
             self.workflows_for_project(project.directory, include_ignored=project.ignored)
         )
-        return self._model_table(self._agg_rows(agg), "# Project Model Spend", width)
+        return self._models_tab(self._agg_rows(agg), "# Project Model Spend", width)
 
     def project_sources(self, project: ProjectSummary, width: int) -> list[str]:
         return self.source_table(
@@ -6626,8 +6636,14 @@ class Renderer:
 
     def detail_models(self, workflow: Workflow, width: int) -> list[str]:
         model_rows = self.model_mix(workflow.id)
-        lines = self._model_table(self._mix_rows(model_rows), "# Model Mix", width)
-        if any(row["model_name"].startswith("unknown") for row in model_rows):
+        lines = self._models_tab(self._mix_rows(model_rows), "# Model Mix", width)
+        # The note only makes sense alongside an unknown row that survived the filter.
+        shown = [
+            row
+            for row in model_rows
+            if not self.query or fuzzy_score(self.query, str(row["model_name"])) is not None
+        ]
+        if any(row["model_name"].startswith("unknown") for row in shown):
             lines.append(
                 "! $0.00 rows with tokens = no local per-token price; common on subscription/credit plans (Claude Code, Codex, Copilot)."
             )
@@ -6849,7 +6865,7 @@ class Renderer:
             "  s / S            cycle sort forward / backward on visible lists",
             "  i                ignore/unignore the selected project (project lists only)",
             "  I                show/hide ignored projects so they can be unignored",
-            "  f                live fuzzy filter over sessions (title/project/id) and projects; best match first",
+            "  f                live fuzzy filter over sessions (title/project/id), projects, and the Models tab (by name)",
             "                   while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
             "  x                clear filter",
             "  e                export the current list to a CSV in the working directory",
@@ -9019,6 +9035,11 @@ class App:
         return tabs[self.tab % len(tabs)] == "Sessions"
 
     @property
+    def on_models_tab(self) -> bool:
+        tabs = self.current_tabs()
+        return tabs[self.tab % len(tabs)] == "Models"
+
+    @property
     def on_subagents_tab(self) -> bool:
         tabs = self.current_tabs()
         return tabs[self.tab % len(tabs)] == "Subagents"
@@ -9041,11 +9062,16 @@ class App:
         )
 
     def can_filter_current_view(self) -> bool:
-        # The "f" query only fuzzy-filters the session list (a Sessions tab) and the
-        # project list (projects mode / a Projects tab). Months/Days, Overview/Models,
-        # and Subagents are not query-filtered, so "f" is a no-op there -- don't offer
-        # it. (Range, by contrast, narrows all_workflows everywhere, so it always is.)
-        return self.in_project_sort_context() or (self.view != "session" and self.on_sessions_tab)
+        # The "f" query fuzzy-filters the session list (a Sessions tab), the project
+        # list (projects mode / a Projects tab), and the Models tab (by model name).
+        # Months/Days, Overview, and Subagents are not query-filtered, so "f" is a
+        # no-op there -- don't offer it. (Range, by contrast, narrows all_workflows
+        # everywhere, so it always is.)
+        return (
+            self.in_project_sort_context()
+            or self.on_models_tab
+            or (self.view != "session" and self.on_sessions_tab)
+        )
 
     def can_launch_current(self) -> bool:
         return self.view == "session" or (self.view == "zoom" and self.on_sessions_tab)
@@ -9573,7 +9599,7 @@ class App:
             return True
         if key == ord("f"):
             if not self.can_filter_current_view():
-                self.notice = "nothing to filter here — open a sessions or projects list"
+                self.notice = "nothing to filter here — open a sessions, projects, or models list"
                 return True
             self.filter_active = True
             self._filter_before = self.query

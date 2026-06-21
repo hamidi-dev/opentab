@@ -3706,6 +3706,56 @@ def test_f_is_a_noop_where_no_list_is_filtered():
     assert app.handle_key(None, ord("f")) and app.filter_active
 
 
+def test_f_filters_the_models_tab_by_name():
+    # "f" also narrows the Models tab, matching the query against the model name
+    # (cost order preserved). Overview's Top Models stays unfiltered.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            {
+                "model_name": "anthropic/claude-opus-4-6",
+                "runs": 1,
+                "cost": 5.0,
+                "tokens_total": 10,
+                "cache_read": 0,
+                "cache_write": 0,
+                "output": 0,
+            },
+            {
+                "model_name": "openai/gpt-5.3",
+                "runs": 2,
+                "cost": 3.0,
+                "tokens_total": 20,
+                "cache_read": 0,
+                "cache_write": 0,
+                "output": 0,
+            },
+        ]
+    }
+    wf = app.all_workflows[0]
+    r = app.renderer
+
+    # The Models tab is now a filterable view.
+    app.view = "session"
+    app.tab = app.current_tabs().index("Models")
+    assert app.on_models_tab and app.can_filter_current_view()
+
+    # No query -> both models; a query keeps only the fuzzy matches.
+    app.query = ""
+    assert any("opus" in ln for ln in r.detail_models(wf, 120))
+    app.query = "opus"
+    lines = r.detail_models(wf, 120)
+    assert any("opus" in ln for ln in lines) and not any("gpt-5.3" in ln for ln in lines)
+
+    # A query that matches nothing gives a friendly empty message, not a bare header.
+    app.query = "zzz"
+    assert any("No models match" in ln for ln in r.detail_models(wf, 120))
+
+    # Overview's Top Models is a different tab and is never filtered.
+    app.query = "opus"
+    assert any("gpt-5.3" in ln for ln in r.detail_overview(wf, 120))
+
+
 # --- Hermes Agent database helpers (~/.hermes/state.db) ----------------------
 
 
