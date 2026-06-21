@@ -310,6 +310,9 @@ class Renderer:
         elif self.launch_menu is not None:
             self.draw_launch_menu(stdscr, height, width)
 
+        # Toasts float over everything, including modals -- they're the topmost layer.
+        self.draw_toasts(stdscr, height, width)
+
         stdscr.refresh()
 
     def draw_header(self, stdscr: curses.window, width: int) -> None:
@@ -360,8 +363,8 @@ class Renderer:
         # The header is persistent view state. A modifier that LIMITS what you see --
         # a non-default range, a committed filter, ignored projects -- is shown in the
         # orange accent so you can't forget your view is narrowed; everything else (the
-        # scope path, sort order, transient notice) stays quiet grey. Same single
-        # meaning for orange as everywhere else: active / non-default / notice this.
+        # scope path, sort order) stays quiet grey. Same single meaning for orange as
+        # everywhere else: active / non-default. Transient status pops up as a toast.
         # The live filter query is NOT echoed here -- it's in the bottom command line
         # while you type -- so the filter shows only once committed.
         x = 0
@@ -381,8 +384,7 @@ class Renderer:
             segs.append((f"  ·  filter: {self.query}", active))
         if self.ignored_projects:
             segs.append((f"  ·  ignored: {len(self.ignored_projects)}", active))
-        if self.notice:
-            segs.append((f"  ·  {self.notice}", base))
+        # Transient status lives in floating toasts now (draw_toasts), not the header.
         for text, attr in segs:
             x = self.write_seg(stdscr, 1, x, text, attr, width)
         self.hline(stdscr, 2, 0, width)
@@ -1895,6 +1897,45 @@ class Renderer:
             else:
                 attr = curses.A_NORMAL
             self.write(stdscr, y + 2 + offset, 2, shorten(line, inner_w), attr)
+
+    # Per-kind toast styling: (colour pair, sigil, header word). Reuses the one
+    # restrained palette -- slate info, green success, amber warn, red error -- so a
+    # toast reads the same as the cost/alert colours everywhere else; the sigil + word
+    # give a non-colour cue too.
+    TOAST_STYLE = {
+        "info": (4, "·", "Note"),
+        "success": (3, "✓", "Done"),
+        "warn": (2, "▲", "Heads up"),
+        "error": (5, "✕", "Error"),
+    }
+    TOAST_WIDTH = 46  # max card width before the message is clipped
+
+    def draw_toasts(self, stdscr: curses.window, height: int, width: int) -> None:
+        # Floating two-line cards stacked in the top-right, just under the header
+        # separator, newest on top. Each is a filled (reverse) coloured block -- a
+        # header line (sigil + kind word) over the message -- that the run loop expires
+        # by time; the last fraction of a second renders dim.
+        toasts = self.active_toasts()
+        if not toasts:
+            return
+        now = self.toast_now()
+        top = 3  # first body row, below the header hline (row 2)
+        maxw = min(self.TOAST_WIDTH, max(16, width - 4))
+        for i, toast in enumerate(reversed(toasts)):
+            row = top + i * 3  # 2-line card + a 1-row gap so adjacent cards separate
+            if row + 1 >= height - 2:  # keep the second line clear of the footer hline
+                break
+            pair, sigil, label = self.TOAST_STYLE.get(toast.kind, self.TOAST_STYLE["info"])
+            head = f" {sigil} {label}"
+            body = f" {shorten(toast.text, maxw - 2)}"
+            cardw = min(max(len(head), len(body)) + 1, maxw)
+            x = max(0, width - cardw - 2)
+            fading = toast.remaining(now) < self.TOAST_FADE
+            base = curses.color_pair(pair) | curses.A_REVERSE
+            head_attr = base | (curses.A_DIM if fading else curses.A_BOLD)
+            body_attr = base | (curses.A_DIM if fading else 0)
+            self.write(stdscr, row, x, f"{head:<{cardw}}", head_attr)
+            self.write(stdscr, row + 1, x, f"{body:<{cardw}}", body_attr)
 
     def draw_modal(
         self, stdscr: curses.window, scr_h: int, scr_w: int, title: str, lines: list

@@ -7,6 +7,7 @@ import csv
 import os
 import shlex
 import sys
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -52,6 +53,24 @@ from opentab.util import (
 )
 
 
+class Toast:
+    """One transient notification: text, a kind (info/success/warn/error that
+    picks its colour), and a monotonic birth time + time-to-live so the run loop
+    can fade it out on its own. Kept deliberately tiny -- it's pure UI state the
+    Renderer reads by duck typing (no import back into the renderer)."""
+
+    __slots__ = ("text", "kind", "born", "ttl")
+
+    def __init__(self, text: str, kind: str, born: float, ttl: float):
+        self.text = text
+        self.kind = kind
+        self.born = born
+        self.ttl = ttl
+
+    def remaining(self, now: float) -> float:
+        return self.ttl - (now - self.born)
+
+
 class App:
     workflow_tabs = ("Overview", "Models", "Subagents")
     day_tabs = ("Overview", "Projects", "Sessions")  # day models stay folded into Overview
@@ -71,6 +90,18 @@ class App:
         ("p", "popup", "popup"),
         ("y", "copy", "copy resume command"),
     )
+    # Toast notifications: how long one lingers, when it starts fading, and how many
+    # stack before the oldest is dropped. While any toast is alive the run loop polls
+    # (TOAST_POLL_MS) so they expire on time without a keystroke; otherwise it blocks.
+    TOAST_TTL = 4.0
+    TOAST_FADE = 0.9
+    TOAST_MAX = 3
+    TOAST_POLL_MS = 200
+    # Class-level defaults so App instances built via __new__ in tests (skipping
+    # __init__) still accept a notice. _toast_clock is injectable per instance for
+    # deterministic expiry tests; the live `toasts` list is lazily materialised below.
+    _toast_clock = staticmethod(time.monotonic)
+    _toast_shown = True  # has the newest toast been painted at least once?
 
     def __init__(self, store: Store, args: argparse.Namespace, source_key: str = ""):
         self.store = store
@@ -154,7 +185,6 @@ class App:
         self.project_sort_by = "cost"
         self.ignored_projects: set[str] = set()
         self.show_ignored_projects = False
-        self.notice = ""
         # When set (in a month/day zoom), the Sessions list is narrowed to this
         # project's sessions within the zoomed scope. Drilled into from the
         # Projects tab; cleared on step-out or any scope change.
@@ -1787,6 +1817,94 @@ class App:
             return
         self.scroll = self.renderer.max_scroll(stdscr)
 
+    # --- Toast notifications --------------------------------------------------
+    # `self.notice = "..."` stays the one-liner the whole codebase already uses; it
+    # now routes through notify() and surfaces as a floating, auto-dismissing toast
+    # instead of a header segment. Reading `self.notice` returns the latest message
+    # (kept for tests and any caller that peeks at it).
+    @property
+    def toasts(self) -> list[Toast]:
+        toasts = self.__dict__.get("_toasts")
+        if toasts is None:
+            toasts = self.__dict__["_toasts"] = []
+        return toasts
+
+    @property
+    def notice(self) -> str:
+        toasts = self.toasts
+        return toasts[-1].text if toasts else ""
+
+    @notice.setter
+    def notice(self, value: str) -> None:
+        if value:
+            self.notify(value)
+        else:
+            self.toasts.clear()  # `self.notice = ""` means "no message"
+
+    _TOAST_ERROR_MARKERS = (
+        "fail",
+        "not found",
+        "no opener",
+        "unavailable",
+        "disabled",
+        "needs tmux",
+        "only one",
+        "nothing to",
+        "no active",
+        "no directory",
+        "no launch",
+        "no sessions",
+        "no ignored",
+        "select a project",
+        "sort: only",
+        "works on sessions",
+        "can't",
+        "error",
+    )
+
+    def _toast_kind(self, text: str) -> str:
+        # A light heuristic so failures glow red and clear wins glow green; everything
+        # else is neutral info. Callers wanting a specific colour pass notify(text, kind).
+        low = text.lower()
+        if any(marker in low for marker in self._TOAST_ERROR_MARKERS):
+            return "error"
+        if low.startswith(("copied", "exported", "refreshed", "reloaded", "opened")):
+            return "success"
+        return "info"
+
+    def toast_now(self) -> float:
+        return self._toast_clock()
+
+    def notify(self, text: str, kind: str | None = None) -> None:
+        toasts = self.toasts
+        if not text:
+            toasts.clear()
+            return
+        toast = Toast(text, kind or self._toast_kind(text), self.toast_now(), self.TOAST_TTL)
+        # Several notices set within one input handler (e.g. "fetching…" → "refreshed")
+        # never get a frame between them, so collapse onto one toast; distinct user
+        # actions (a paint happened in between) stack instead.
+        if toasts and not self._toast_shown:
+            toasts[-1] = toast
+        else:
+            toasts.append(toast)
+            del toasts[: max(0, len(toasts) - self.TOAST_MAX)]
+        self._toast_shown = False
+
+    def active_toasts(self) -> list[Toast]:
+        # Drop expired toasts (in place) and return what's still on screen.
+        now = self.toast_now()
+        self.toasts[:] = [t for t in self.toasts if t.remaining(now) > 0]
+        return self.toasts
+
+    def _mark_toasts_shown(self) -> None:
+        self._toast_shown = True
+
+    def _input_timeout_ms(self) -> int:
+        # Block on input when nothing is showing; poll while a toast is fading so it
+        # can expire on time without a keystroke.
+        return self.TOAST_POLL_MS if self.toasts else -1
+
     def run(self, stdscr: curses.window) -> None:
         if hasattr(curses, "set_escdelay"):
             curses.set_escdelay(25)
@@ -1839,7 +1957,9 @@ class App:
 
         first = True
         while True:
+            self.active_toasts()  # expire faded toasts before painting
             self.renderer.draw(stdscr)
+            self._mark_toasts_shown()
             if first:
                 # First frame is up off the fast session rollup; now do the one
                 # heavy message scan, then repaint so model_count / Models tabs are
@@ -1848,15 +1968,13 @@ class App:
                 self._ensure_models()
                 self.maybe_prompt_prices()  # offer a models.dev fetch if prices are missing
                 self.renderer.draw(stdscr)
+                self._mark_toasts_shown()
+            stdscr.timeout(self._input_timeout_ms())
             key = stdscr.getch()
-            notice_before = self.notice
+            if key == -1:
+                continue  # idle wake while a toast fades: just re-expire and repaint
             if not self.handle_key(stdscr, key):
                 break
-            # A notice is a one-shot status line: it shows after the action that
-            # set it, then the next keystroke clears it (unless that keystroke set
-            # a new one). Keeps stale "range: ..." text from lingering forever.
-            if self.notice == notice_before:
-                self.notice = ""
 
     @staticmethod
     def _step_trend_index(index: int, count: int, older: bool) -> int:

@@ -3509,6 +3509,86 @@ def test_copy_to_clipboard_backends_per_platform():
         ot.util.subprocess.run = real_run
 
 
+def test_notice_pushes_a_classified_toast():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    clock = [100.0]
+    app._toast_clock = lambda: clock[0]
+
+    # `self.notice = "..."` still works and is classified by a heuristic.
+    app.notice = "range: all time"
+    assert app.notice == "range: all time"  # readable as a plain string (tests/callers)
+    assert app.toasts[-1].kind == "info"
+    app._mark_toasts_shown()
+
+    app.notice = "price refresh failed: boom"
+    assert app.toasts[-1].kind == "error"
+    app._mark_toasts_shown()
+
+    app.notify("copied: ses_42")  # affirmative prefixes glow green
+    assert app.toasts[-1].kind == "success"
+    assert len(app.toasts) == 3  # three distinct frames -> three stacked toasts
+
+    # an explicit kind overrides the heuristic
+    app._mark_toasts_shown()
+    app.notify("heads up", kind="warn")
+    assert app.toasts[-1].kind == "warn"
+
+
+def test_toasts_coalesce_within_a_frame_cap_and_expire():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    clock = [0.0]
+    app._toast_clock = lambda: clock[0]
+
+    # Two notices set without a paint between them collapse onto one toast
+    # ("fetching…" -> "refreshed"); the last one wins.
+    app.notify("fetching prices…")
+    app.notify("refreshed 10 model prices")
+    assert len(app.toasts) == 1
+    assert app.notice == "refreshed 10 model prices"
+
+    # Distinct frames stack, but only TOAST_MAX survive (oldest drops).
+    for i in range(app.TOAST_MAX + 2):
+        app._mark_toasts_shown()
+        app.notify(f"message {i}")
+    assert len(app.toasts) == app.TOAST_MAX
+    assert [t.text for t in app.toasts] == [f"message {i}" for i in range(2, app.TOAST_MAX + 2)]
+
+    # Time, not a keystroke, dismisses them: past the TTL they're gone.
+    clock[0] += app.TOAST_TTL + 0.01
+    assert app.active_toasts() == []
+    assert app.notice == ""
+
+    # `self.notice = ""` clears immediately.
+    app.notify("lingering")
+    app.notice = ""
+    assert app.toasts == []
+
+
+def test_draw_toasts_paints_stacked_top_right_cards():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.notify("copied: ses_42", kind="success")
+    app._mark_toasts_shown()
+    app.notify("disk on fire", kind="error")
+    app._mark_toasts_shown()
+    screen = FakeScreen(24, 80)
+    orig_cp = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: 0
+    try:
+        app.renderer.draw_toasts(screen, 24, 80)
+    finally:
+        ot.curses.color_pair = orig_cp
+    text = screen_text(screen)
+    assert "copied: ses_42" in text and "Done" in text  # success card: header + message
+    assert "disk on fire" in text and "Error" in text  # error card: header + message
+    assert "✓" in text and "✕" in text  # per-kind sigils
+    # two-line cards in the top-right (newest on top), below the header hline (row 2)
+    # and clear of the footer; a 1-row gap separates them.
+    rows = {y for (y, _x) in screen.cells}
+    assert rows == {3, 4, 6, 7}  # newest (error) at rows 3-4, older (success) at 6-7
+    # right-aligned: every painted cell sits in the right half of an 80-wide screen
+    assert min(x for (_y, x) in screen.cells) > 40
+
+
 def test_tmux_launch_argv_builds_window_split_popup():
     cmd = "claude --resume abc123"
     # directory rides on -c / -d flags
