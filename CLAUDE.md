@@ -15,17 +15,21 @@ second backend (`ClaudeStore`), **Codex CLI** rollouts
 (`~/.codex/sessions/**/rollout-*.jsonl`) via a third (`CodexStore`), **Hermes
 Agent** sessions (`~/.hermes/state.db`, SQLite) via a fourth (`HermesStore`), a
 **CSV of logged API requests** (e.g. GitHub Copilot in IntelliJ; `--csv`, default
-`~/.config/opentab/requests.csv`) via a fifth (`CsvStore`), and the **GitHub Copilot
+`~/.config/opentab/requests.csv`) via a fifth (`CsvStore`), the **GitHub Copilot
 CLI**'s OpenTelemetry export (`~/.copilot/otel/**/*.jsonl` plus
-`$COPILOT_OTEL_FILE_EXPORTER_PATH`) via a sixth (`CopilotStore`), and can merge any of
-them (`CombinedStore`). Pick with
-`--source {auto,opencode,claude,codex,hermes,csv,copilot,all}`, or switch live in the
+`$COPILOT_OTEL_FILE_EXPORTER_PATH`) via a sixth (`CopilotStore`), and **pi-agent**
+sessions (`~/.pi/agent/sessions/**/*.jsonl`, or `$PI_AGENT_DIR`) via a seventh
+(`PiStore`), and can merge any of them (`CombinedStore`). Pick with
+`--source {auto,opencode,claude,codex,hermes,csv,copilot,pi,all}`, or switch live in the
 TUI with **`c`**. Claude Code, Codex, and the Copilot CLI never record a per-message
 cost, so their sessions behave like an OpenCode *subscription* session: **$0 in normal
 mode** and an estimate (tokens × API list price) only under the **`$`** what-if view.
-Hermes and the CSV/Copilot-in-IntelliJ source are usually the same (subscription routes /
-no cost column record $0) but **can** be metered — see the
-`ClaudeStore`/`CodexStore`/`HermesStore`/`CsvStore`/`CopilotStore` notes under
+Hermes, the CSV/Copilot-in-IntelliJ source, and pi are mixed: Hermes/CSV are often $0
+(subscription routes / no cost column) but **can** record real cost, while **pi records a
+per-message cost for every route but only *metered* (non-subscription) routes are real
+spend** — its subscription/OAuth routes (e.g. openai-codex) carry a list-price estimate, not
+spend, so they stay unpriced like the token-only backends — see the
+`ClaudeStore`/`CodexStore`/`HermesStore`/`CsvStore`/`CopilotStore`/`PiStore` notes under
 Architecture.
 
 ## Commands
@@ -194,8 +198,30 @@ Three layers, all in `opentab`:
   session's directory/title is enriched **read-only, best effort** from the sibling
   `session-store.db` (`_load_meta`, keyed by session id; `cwd` → **git root**, `summary` →
   title). No subagent tree (one depth-0 node); sessions with no recorded usage are dropped.
+- **`PiStore`** — a seventh backend over **pi-agent** sessions
+  (`~/.pi/agent/sessions/<project>/*.jsonl`, dir from `$PI_AGENT_DIR`/`--pi-dir`),
+  implementing the same four methods. pi writes a per-message `usage.cost.total` — but a
+  **list-price figure for every provider**, including subscription/OAuth routes (e.g.
+  openai-codex on a ChatGPT plan) whose real marginal cost is $0. So only **metered**
+  routes (OpenRouter, a direct API key) are trusted as spend; a message is classed
+  **subscription** when its provider is an OAuth login (`auth.json` type `oauth`, read
+  read-only) or matches a plan marker (`_SUBSCRIPTION_MARKERS`) and its tokens are left
+  **unpriced** (the `$` view estimates them), mirroring `HermesStore`'s billing_mode split.
+  Metered + subscription accumulate independently per message, so a session (or model)
+  mixing both is split right. Cost is mixed, so — like `CsvStore`/`HermesStore` —
+  **`records_cost` is a per-instance attr** (True iff any *metered* message has a cost), set
+  by a cheap early-exit probe in `__init__`. Each session file is NDJSON: a `session` record carries the canonical
+  id + **cwd** (so dirs fold to the **git root** with no path-decoding of the project dir
+  name), `user` messages give the title (first text part), `assistant` messages carry
+  `usage`. Token accounting is **Anthropic-style** (`input` is already *uncached*;
+  `cacheRead`/`cacheWrite` are separate and never folded in; total =
+  input+output+cacheRead+cacheWrite; a `totalTokens`-only record back-fills output). Models
+  are recorded already provider-qualified (e.g. `moonshotai/kimi-k2.6`), used verbatim for
+  pricing and the Providers rollup. Assistant messages dedupe by their stable `id`
+  (resumed/forked files overlap). No subagent tree (one depth-0 node); sessions with no
+  recorded usage are dropped.
 - **`CombinedStore`** — wraps several backends and concatenates the same four methods, for
-  `--source all` (OpenCode + Claude Code + Codex + Hermes + CSV + Copilot CLI in one view).
+  `--source all` (OpenCode + Claude Code + Codex + Hermes + CSV + Copilot CLI + pi in one view).
   Workflow ids are
   globally unique across sources, so it routes `workflow_nodes` (and `tool_breakdown`)
   by an `id → backend` map built in `workflows()`; projects group by directory across all
@@ -204,17 +230,17 @@ Three layers, all in `opentab`:
   shows only on OpenCode sessions in the merged view, never empty on the others. `$` reprices
   every unpriced row across all backends. `records_cost` is the AND of its backends
   (False when any backend reports no recorded cost — Claude Code, Codex, the Copilot CLI, a
-  subscription-only Hermes DB, or a CSV with no cost column);
+  subscription-only Hermes DB, or a CSV with no cost column; a metered pi keeps it True);
   `combined = True` turns on the per-session origin markers — a `Src` column in the
-  session tables (`Renderer.src_col`) and `[oc]`/`[cc]`/`[cx]`/`[hm]`/`[csv]`/`[cp]` title tags
-  in the picker and Top Sessions lists (`Renderer.source_tag`, abbreviations in `_source_abbrev`).
+  session tables (`Renderer.src_col`) and `[oc]`/`[cc]`/`[cx]`/`[hm]`/`[csv]`/`[cp]`/`[pi]` title
+  tags in the picker and Top Sessions lists (`Renderer.source_tag`, abbreviations in `_source_abbrev`).
   Combined **demo** works: `CombinedStore.__init__` forces every sub-store to one shared
   `demo_scale` (each backend would otherwise draw its own random scale, distorting the
   cross-source ratio the Sources view shows); it's still private (a single hidden factor
   can't be inverted).
 - **Source selection** lives in `make_store()`/`resolve_source()`/`available_sources()`/
   `source_cycle()` (module level). `main` resolves the start source from
-  `--source {auto,opencode,claude,codex,hermes,csv,copilot,all}`; on `auto` it restores the last-used
+  `--source {auto,opencode,claude,codex,hermes,csv,copilot,pi,all}`; on `auto` it restores the last-used
   source from `state.json` (when still available); failing that, **auto merges every
   present source (`all`)** when ≥2 exist — demo and non-demo alike — so you never need
   `--source` to see them together (single source when only one is present). `c` narrows to

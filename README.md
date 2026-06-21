@@ -171,10 +171,10 @@ opentab --demo                   # safe for live demos / screenshots (see below)
 OpenTab reads the local records each AI coding tool keeps — **OpenCode** (its SQLite
 database), **Claude Code** (its session transcripts under
 `~/.claude/projects/**/*.jsonl`), **Codex** (its CLI rollouts under
-`~/.codex/sessions/**/rollout-*.jsonl`), and the **GitHub Copilot CLI** (its
-OpenTelemetry export under `~/.copilot/otel/`), plus a **Hermes** database and a generic
-**CSV** of logged API requests (e.g. GitHub Copilot in IntelliJ). Pick one with
-`--source`:
+`~/.codex/sessions/**/rollout-*.jsonl`), the **GitHub Copilot CLI** (its OpenTelemetry
+export under `~/.copilot/otel/`), and **pi-agent** (its sessions under
+`~/.pi/agent/sessions/`), plus a **Hermes** database and a generic **CSV** of logged API
+requests (e.g. GitHub Copilot in IntelliJ). Pick one with `--source`:
 
 ```sh
 opentab --source opencode                    # OpenCode only
@@ -183,6 +183,7 @@ opentab --source claude --claude-dir /path   # non-standard Claude Code location
 opentab --source codex                       # Codex only (default ~/.codex/sessions)
 opentab --source codex --codex-dir /path     # non-standard Codex sessions location
 opentab --source copilot                     # GitHub Copilot CLI (default ~/.copilot/otel)
+opentab --source pi                          # pi-agent (default ~/.pi/agent/sessions)
 opentab --source all                         # all present sources, merged
 ```
 
@@ -199,7 +200,7 @@ opentab --source all                         # all present sources, merged
 `--source auto` (the default) reads OpenCode when its database is present, otherwise
 falls back to the first present source (it never auto-merges). The active source shows
 as a chip in the header, and you can **switch live with `c`** (OpenCode → Claude Code →
-Codex → Copilot → all, for whichever are present). The whole TUI works the same — months,
+Codex → Copilot → pi → all, for whichever are present). The whole TUI works the same — months,
 days, projects, sessions, models, trends — with two differences, because **Claude Code,
 Codex, and the Copilot CLI record only tokens, no per-message cost**:
 
@@ -214,10 +215,11 @@ Codex, and the Copilot CLI record only tokens, no per-message cost**:
 
 `--source all` merges every present source into one view: the same repo worked in
 multiple tools rolls up into a single project row, every session row shows its origin (a
-`Src` column in the session tables, `[oc]` / `[cc]` / `[cx]` / `[cp]` tags elsewhere), and the
+`Src` column in the session tables, `[oc]` / `[cc]` / `[cx]` / `[cp]` / `[pi]` tags elsewhere), and the
 Trends overlay gains a **Sources** tab (spend by tool). `$` reprices the unpriced usage
 across all of them — OpenCode's subscription/credit messages plus all of Claude Code's,
-Codex's, and the Copilot CLI's. (When more than one source is present, `--demo` **defaults to this merged
+Codex's, and the Copilot CLI's (pi carries its own per-message cost on metered routes like
+OpenRouter; its subscription/OAuth routes such as openai-codex are estimated like the rest). (When more than one source is present, `--demo` **defaults to this merged
 view** — it shows off the most — and anonymizes every backend under a single shared
 scale so the cross-tool proportion stays truthful.)
 
