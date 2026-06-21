@@ -168,10 +168,13 @@ opentab --demo                   # safe for live demos / screenshots (see below)
 
 ### Data sources
 
-OpenTab reads the local records each AI coding tool keeps. There are three
-backends — **OpenCode** (its SQLite database), **Claude Code** (its session
-transcripts under `~/.claude/projects/**/*.jsonl`), and **Codex** (its CLI rollouts
-under `~/.codex/sessions/**/rollout-*.jsonl`) — picked with `--source`:
+OpenTab reads the local records each AI coding tool keeps — **OpenCode** (its SQLite
+database), **Claude Code** (its session transcripts under
+`~/.claude/projects/**/*.jsonl`), **Codex** (its CLI rollouts under
+`~/.codex/sessions/**/rollout-*.jsonl`), and the **GitHub Copilot CLI** (its
+OpenTelemetry export under `~/.copilot/otel/`), plus a **Hermes** database and a generic
+**CSV** of logged API requests (e.g. GitHub Copilot in IntelliJ). Pick one with
+`--source`:
 
 ```sh
 opentab --source opencode                    # OpenCode only
@@ -179,17 +182,28 @@ opentab --source claude                      # Claude Code only (default ~/.clau
 opentab --source claude --claude-dir /path   # non-standard Claude Code location
 opentab --source codex                       # Codex only (default ~/.codex/sessions)
 opentab --source codex --codex-dir /path     # non-standard Codex sessions location
+opentab --source copilot                     # GitHub Copilot CLI (default ~/.copilot/otel)
 opentab --source all                         # all present sources, merged
 ```
+
+> **GitHub Copilot CLI:** the CLI records usage **only** when its OpenTelemetry file
+> export is enabled — there is no token count in its session files otherwise. Turn it on
+> by setting `COPILOT_OTEL_FILE_EXPORTER_PATH` before you launch or resume a session:
+>
+> ```sh
+> export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl
+> ```
+>
+> Sessions you run after that show up under `--source copilot`. (This is the same data
 
 `--source auto` (the default) reads OpenCode when its database is present, otherwise
 falls back to the first present source (it never auto-merges). The active source shows
 as a chip in the header, and you can **switch live with `c`** (OpenCode → Claude Code →
-Codex → all, for whichever are present). The whole TUI works the same — months, days,
-projects, sessions, models, trends — with two differences, because **Claude Code and
-Codex record only tokens, no per-message cost**:
+Codex → Copilot → all, for whichever are present). The whole TUI works the same — months,
+days, projects, sessions, models, trends — with two differences, because **Claude Code,
+Codex, and the Copilot CLI record only tokens, no per-message cost**:
 
-- A Claude Code or Codex session works like an OpenCode subscription session: it shows
+- A Claude Code, Codex, or Copilot CLI session works like an OpenCode subscription session: it shows
   **$0 in normal mode** (nothing is recorded) and its **estimate** (tokens × API list
   price) under the **`$`** view. Since such a view would otherwise be a wall of `$0.00`,
   the estimate view **starts on by default** there (header tag:
@@ -200,10 +214,10 @@ Codex record only tokens, no per-message cost**:
 
 `--source all` merges every present source into one view: the same repo worked in
 multiple tools rolls up into a single project row, every session row shows its origin (a
-`Src` column in the session tables, `[oc]` / `[cc]` / `[cx]` tags elsewhere), and the
+`Src` column in the session tables, `[oc]` / `[cc]` / `[cx]` / `[cp]` tags elsewhere), and the
 Trends overlay gains a **Sources** tab (spend by tool). `$` reprices the unpriced usage
-across all of them — OpenCode's subscription/credit messages plus all of Claude Code's
-and Codex's. (When more than one source is present, `--demo` **defaults to this merged
+across all of them — OpenCode's subscription/credit messages plus all of Claude Code's,
+Codex's, and the Copilot CLI's. (When more than one source is present, `--demo` **defaults to this merged
 view** — it shows off the most — and anonymizes every backend under a single shared
 scale so the cross-tool proportion stays truthful.)
 
