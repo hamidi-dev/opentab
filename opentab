@@ -5395,7 +5395,9 @@ class Renderer:
 
         # Small centered modals float on top of the current view (so context stays
         # visible behind them), unlike the full-body help/prices/trends overlays.
-        if self.source_menu:
+        if self.price_prompt:
+            self.draw_price_prompt(stdscr, height, width)
+        elif self.source_menu:
             self.draw_source_menu(stdscr, height, width)
         elif self.launch_menu is not None:
             self.draw_launch_menu(stdscr, height, width)
@@ -7010,6 +7012,30 @@ class Renderer:
         lines += [("", 0), (" Esc  cancel", curses.A_NORMAL)]
         self.draw_modal(stdscr, scr_h, scr_w, "Launch session · j/k · Enter · Esc", lines)
 
+    def draw_price_prompt(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # Startup prompt when used models have no built-in price: offer a models.dev fetch.
+        names = self.unknown_models
+        shown = names[:5]
+        lines = [
+            (f"{len(names)} model(s) here have no built-in price:", curses.color_pair(4)),
+            ("", 0),
+        ]
+        lines += [(f"  • {n}", curses.A_NORMAL) for n in shown]
+        if len(names) > len(shown):
+            lines.append((f"  … and {len(names) - len(shown)} more", curses.A_NORMAL))
+        accent = curses.color_pair(6) | curses.A_BOLD
+        lines += [
+            ("", 0),
+            ("Fetch current list prices from models.dev?", curses.A_NORMAL),
+            ("", 0),
+            (" y   yes, fetch now", accent),
+            (" n   not now (ask again next run)", accent),
+            (" d   don't ask again", accent),
+            ("", 0),
+            ("anytime: --refresh-models, or r in the P prices view", curses.color_pair(1)),
+        ]
+        self.draw_modal(stdscr, scr_h, scr_w, "Unpriced models found", lines)
+
     # --- Trends overlay -------------------------------------------------------
     def draw_trends(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         h = bottom - y
@@ -7622,6 +7648,11 @@ class App:
         self._filter_before = ""  # the query as it was when `/` opened the mode (Esc restores)
         self.launch_menu: Workflow | None = None  # session awaiting an `L` launch-target key
         self.launch_menu_index = 0  # highlighted row in that picker
+        self.price_prompt = False  # the "unpriced models found" startup prompt
+        self._price_prompt_done = False  # offered at most once per run
+        self.prices_prompt_dismissed = False  # "don't ask again" pref (persisted in state)
+        self.allow_price_prompt = True  # off under --no-state/--demo (set in main)
+        self.unknown_models: list[str] = []  # used models with no built-in price
         self.source_menu = False  # the `c` data-source picker overlay
         self.source_menu_index = 0  # highlighted row in that picker
         self.day_index = 0
@@ -8442,6 +8473,59 @@ class App:
         self.prices_scroll = 0
         self.notice = f"refreshed {count} model prices from models.dev"
 
+    def unknown_priced_models(self) -> list[str]:
+        # Used, non-local models with no built-in price (resolve to the generic
+        # fallback) -- the ones whose $ estimate is a guess until --refresh-models.
+        out: list[str] = []
+        seen: set[str] = set()
+        for rows in self._model_by_root.values():
+            for m in rows:
+                name = m.get("model_name")
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                if is_local_provider(name):
+                    continue
+                if model_price(name) == FALLBACK_PRICE:
+                    out.append(name)
+        return sorted(out)
+
+    def maybe_prompt_prices(self) -> None:
+        # Once per run, after the model scan: if usage includes models we have no real
+        # price for (and there are unpriced tokens to estimate), offer to fetch from
+        # models.dev. Skipped in demo, under --no-state, once "don't ask again" is set,
+        # or once a cache has already been fetched (re-fetching wouldn't add them).
+        if self._price_prompt_done:
+            return
+        self._price_prompt_done = True
+        if not self.allow_price_prompt or self.store.demo or self.prices_prompt_dismissed:
+            return
+        if price_cache_meta() is not None:
+            return
+        if not self.store.summary(self.all_workflows).get("unpriced_tokens"):
+            return
+        unknown = self.unknown_priced_models()
+        if not unknown:
+            return
+        self.unknown_models = unknown
+        self.price_prompt = True
+
+    def handle_price_prompt_key(self, key: int) -> bool:
+        # y/Enter fetches now; d never asks again (persisted); n/Esc/other = not now.
+        if key == 3:  # Ctrl-C still quits
+            return False
+        if key in (ord("y"), ord("Y"), 10, 13, curses.KEY_ENTER):
+            self.price_prompt = False
+            self.refresh_prices_action()  # fetch + reprice in place
+        elif key in (ord("d"), ord("D")):
+            self.price_prompt = False
+            self.prices_prompt_dismissed = True  # save_state persists it on exit
+            self.notice = "won't ask again — fetch anytime with --refresh-models or r in P"
+        else:  # n, Esc, or anything else: not now, ask again next run
+            self.price_prompt = False
+            self.notice = "skipped — fetch anytime with --refresh-models or r in the P view"
+        return True
+
     def reload(self) -> None:
         self.loaded = self.store.workflows()
         self._snapshot_real_costs()
@@ -9240,6 +9324,7 @@ class App:
                 # populated before the user's first keystroke is handled.
                 first = False
                 self._ensure_models()
+                self.maybe_prompt_prices()  # offer a models.dev fetch if prices are missing
                 self.renderer.draw(stdscr)
             key = stdscr.getch()
             notice_before = self.notice
@@ -9351,6 +9436,8 @@ class App:
     def handle_key(self, stdscr: curses.window, key: int) -> bool:
         if key == curses.KEY_MOUSE:
             return self.handle_mouse()
+        if self.price_prompt:
+            return self.handle_price_prompt_key(key)
         if self.help:
             # A pager like the price overlay: j/k/arrows and g/G scroll;
             # any other key closes it.
@@ -9600,6 +9687,11 @@ class App:
         click = bool(bstate & curses.BUTTON1_CLICKED)
         double = bool(bstate & curses.BUTTON1_DOUBLE_CLICKED)
 
+        if self.price_prompt:
+            if click or double:
+                self.price_prompt = False  # click = not now
+                self.notice = "skipped — fetch anytime with --refresh-models or r in the P view"
+            return True
         if self.source_menu:
             order = source_cycle(self.args)
             if order and up:
@@ -10131,6 +10223,7 @@ def save_state(app: App) -> None:
         "show_api_prices": app.show_api_prices,
         "source": app.source_key,  # restore the last source (opencode/claude/all) next run
         "cal_levels": app.cal_levels,  # the Calendar heat-map granularity (+/-)
+        "prices_prompt_dismissed": app.prices_prompt_dismissed,  # "don't ask again" for prices
     }
     path = state_path()
     try:
@@ -10175,6 +10268,7 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     saved_levels = state.get("cal_levels")
     if isinstance(saved_levels, int):
         app.cal_levels = max(HEAT_MIN_LEVELS, min(HEAT_MAX_LEVELS, saved_levels))
+    app.prices_prompt_dismissed = bool(state.get("prices_prompt_dismissed", False))
     app.notice = ""
 
 
@@ -10395,6 +10489,7 @@ def main() -> int:
     sys.stderr.write(loading)
     sys.stderr.flush()
     app = App(store, args, source_key=source_key)
+    app.allow_price_prompt = use_state  # no startup prompt under --no-state/--demo
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()
     if use_state:

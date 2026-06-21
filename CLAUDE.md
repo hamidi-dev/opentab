@@ -385,6 +385,16 @@ in-process cache (`invalidate_price_cache`) and re-runs `_compute_api_costs`/`_a
 in place. With no cache (the default), nothing is fetched and the embedded table is used —
 opentab stays offline and stdlib-only by default.
 
+On startup (after the deferred model scan, `App.maybe_prompt_prices`), if usage includes
+models with no built-in price (`unknown_priced_models` — used, non-local, resolving to
+`FALLBACK_PRICE`) and there are unpriced tokens to estimate, opentab shows a one-time modal
+(`draw_price_prompt`/`handle_price_prompt_key`) offering the fetch: `y` fetches now, `n` not
+now, `d` never again (persisted as `prices_prompt_dismissed` in `state.json`). It's gated by
+`allow_price_prompt` (off under `--no-state`/`--demo`) and skipped once a cache already
+exists. The `c`/`L`/price-prompt pickers are all small centered modals via
+`Renderer.draw_modal` (drawn after the body so context shows behind), unlike the full-body
+help/prices/trends overlays.
+
 ### Demo mode (`--demo`)
 
 `Store` transforms rows in memory on load: `demo_title`/`demo_dir`/`demo_model` produce

@@ -417,6 +417,11 @@ used as before. You can also press **`r`** inside the `P` overlay to refresh in
 place. (To regenerate the _embedded_ snapshot that ships in the file, maintainers
 still run `python3 scripts/update_prices.py` and commit the changed `opentab`.)
 
+When OpenTab notices you're using models it has no built-in price for, it offers
+this fetch **once** on startup — answer `y` to fetch now, `n` for not now, or `d`
+to never ask again (remembered in `state.json`; suppressed under `--no-state` and
+`--demo`). You can always refresh later with the command or `r` above.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

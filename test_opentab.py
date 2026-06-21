@@ -5315,6 +5315,103 @@ def test_model_price_uses_embedded_table_without_cache():
                 os.environ["XDG_CONFIG_HOME"] = old_xdg
 
 
+def _price_prompt_app(model="openrouter/exotic-zzz-9", unpriced=500):
+    # An app whose model scan contains one model + an unpriced-token workflow, with an
+    # isolated empty config so price_cache_meta() is None. Caller restores via _restore_xdg.
+    w = workflow("w1", "2026-06-01 12:00:00")
+    w.unpriced_tokens = unpriced
+    app = app_with([w])
+    app._model_by_root = {"w1": [{"model_name": model}]}
+    return app
+
+
+def test_price_prompt_triggers_on_unknown_models():
+    with tempfile.TemporaryDirectory() as tmp:
+        old = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.invalidate_price_cache()
+            app = _price_prompt_app()
+            app.maybe_prompt_prices()
+            assert app.price_prompt is True
+            assert app.unknown_models == ["openrouter/exotic-zzz-9"]
+            # offered at most once per run
+            app.price_prompt = False
+            app.maybe_prompt_prices()
+            assert app.price_prompt is False
+        finally:
+            ot.invalidate_price_cache()
+            if old is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old
+
+
+def test_price_prompt_skipped_when_known_dismissed_or_no_unpriced():
+    with tempfile.TemporaryDirectory() as tmp:
+        old = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.invalidate_price_cache()
+            # a hardcoded model -> no prompt
+            known = _price_prompt_app(model="anthropic/claude-opus-4-8")
+            known.maybe_prompt_prices()
+            assert known.price_prompt is False
+            # unknown model but no unpriced tokens -> nothing to estimate -> no prompt
+            metered = _price_prompt_app(unpriced=0)
+            metered.maybe_prompt_prices()
+            assert metered.price_prompt is False
+            # unknown + unpriced but "don't ask again" set -> no prompt
+            dismissed = _price_prompt_app()
+            dismissed.prices_prompt_dismissed = True
+            dismissed.maybe_prompt_prices()
+            assert dismissed.price_prompt is False
+            # --no-state / demo path (allow_price_prompt False) -> no prompt
+            blocked = _price_prompt_app()
+            blocked.allow_price_prompt = False
+            blocked.maybe_prompt_prices()
+            assert blocked.price_prompt is False
+        finally:
+            ot.invalidate_price_cache()
+            if old is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old
+
+
+def test_price_prompt_keys_fetch_dismiss_and_skip():
+    with tempfile.TemporaryDirectory() as tmp:
+        old = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.invalidate_price_cache()
+            # y fetches (stubbed) and closes
+            app = _price_prompt_app()
+            app.price_prompt = True
+            fetched = []
+            app.refresh_prices_action = lambda: fetched.append(True)
+            app.handle_price_prompt_key(ord("y"))
+            assert app.price_prompt is False and fetched == [True]
+            # n closes without dismissing
+            app.price_prompt = True
+            app.handle_price_prompt_key(ord("n"))
+            assert app.price_prompt is False and app.prices_prompt_dismissed is False
+            # d dismisses and persists through save_state -> a fresh app restores it
+            app.price_prompt = True
+            app.handle_price_prompt_key(ord("d"))
+            assert app.price_prompt is False and app.prices_prompt_dismissed is True
+            ot.save_state(app)
+            restored = app_with([workflow("w1", "2026-06-01 12:00:00")])
+            ot.apply_state(restored, restored.args, ot.load_state())
+            assert restored.prices_prompt_dismissed is True
+        finally:
+            ot.invalidate_price_cache()
+            if old is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old
+
+
 def _menu_app(current="opencode", cycle=("opencode", "claude", "all")):
     # An app whose source cycle is fixed, with select_source stubbed so menu tests never
     # touch the filesystem / make_store. Returns (app, chosen) where chosen records picks.
