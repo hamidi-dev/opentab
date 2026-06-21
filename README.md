@@ -109,8 +109,10 @@ touches, all on your own machine:
   `.git` file of project directories (no `git` process is spawned; disable with
   `--no-worktrees`).
 - **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
-  source, range, and sort; disable with `--no-state`), and — only when you press `e` — an
-  `opentab-*.csv` export in the current directory.
+  source, range, and sort; disable with `--no-state`), an optional model-price cache at
+  `~/.config/opentab/prices.json` (only when you run `--refresh-models` or press `r` in the
+  `P` overlay), and — only when you press `e` — an `opentab-*.csv` export in the current
+  directory.
 - **Runs** external programs only on the key you press: your clipboard tool
   (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for `y`, your file opener
   (`open`/`xdg-open`, or Explorer on Windows) for `o`, and for `L` either `tmux` or your own
@@ -274,7 +276,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `f` | Live fuzzy filter: the lists narrow and re-rank (best match first) as you type, fzf-style subsequence matching over title/project/id; `↑`/`↓` select while typing, `Enter` keeps the filter, `Esc` cancels, `Ctrl-U` clears the input, `x` clears it later |
 | `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model, Provider, and Source spend ranking (`h`/`l` tabs, `j`/`k` month/week, `$` toggles what-if) |
 | `$` | What-if pricing: re-price unpriced subscription/credit usage at models.dev API list prices |
-| `P` | Show the models.dev API price table OpenTab uses for `$` |
+| `P` | Show the models.dev API price table OpenTab uses for `$` (press `r` inside to refresh it from models.dev) |
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
@@ -397,9 +399,23 @@ prices. Press `P` to see the exact per-model rates behind that estimate. The
 estimate uses an embedded table generated from models.dev for Anthropic, OpenAI,
 and Google, with hand-kept family fallbacks for version or suffix churn and a
 mid-range fallback for unknown models. Nothing is fetched at runtime, so the TUI
-stays single-file, offline, and standard-library only. To refresh the embedded
-table, run `python3 scripts/update_prices.py` and commit the changed `opentab`
-file.
+stays single-file, offline, and standard-library only.
+
+The embedded table only covers Anthropic/OpenAI/Google, so **open models served
+by paid routes** (Kimi, DeepSeek, Qwen, … on OpenRouter/Together/etc.) have no
+embedded price and show as unpriced. To price them, refresh from models.dev:
+
+```sh
+opentab --refresh-models     # fetch every provider's list prices into a local cache
+```
+
+This writes `~/.config/opentab/prices.json` (the one time runtime OpenTab touches
+the network, and only on this explicit command — still standard-library `urllib`,
+no dependency). The cache **overlays** the embedded table, so refreshed models win
+and the long tail gets real prices; with no cache, the offline embedded table is
+used as before. You can also press **`r`** inside the `P` overlay to refresh in
+place. (To regenerate the _embedded_ snapshot that ships in the file, maintainers
+still run `python3 scripts/update_prices.py` and commit the changed `opentab`.)
 
 ## License
 

@@ -5214,6 +5214,74 @@ def test_openclaw_store_mixes_metered_and_subscription_in_one_session():
         assert rows_out["openai/gpt-5.3-codex"]["unpriced_input"] == 5000
 
 
+def test_refresh_model_prices_writes_cache_and_overlays_table():
+    models_dev = {
+        "anthropic": {
+            "models": {"claude-opus-4-8": {"cost": {"input": 99.0, "output": 88.0}}}
+        },  # overrides the embedded snapshot for this model
+        "openrouter": {
+            "models": {
+                "moonshotai/kimi-k2.6": {"cost": {"input": 0.6, "output": 2.5, "cache_read": 0.1}}
+            }
+        },
+        "junk": "not a dict",  # tolerated, skipped
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp  # so price_cache_path() lands in the temp dir
+        src = os.path.join(tmp, "api.json")
+        with open(src, "w") as fh:
+            json.dump(models_dev, fh)
+        try:
+            ot.invalidate_price_cache()
+            count, path = ot.refresh_model_prices(url="file://" + src)
+            assert count == 2
+            assert path == ot.price_cache_path()
+            # a refreshed price overlays the embedded table
+            assert ot.model_price("anthropic/claude-opus-4-8") == (99.0, 88.0, 0.0, 0.0)
+            # a resold open model (vendor/model id) now prices off the cache, by bare id
+            assert ot.model_price("moonshotai/kimi-k2.6") == (0.6, 2.5, 0.1, 0.0)
+            meta = ot.price_cache_meta()
+            assert meta and meta["count"] == 2 and meta["fetched_at"]
+        finally:
+            ot.invalidate_price_cache()
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
+def test_refresh_model_prices_rejects_empty_response():
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "api.json")
+        with open(src, "w") as fh:
+            json.dump({"anthropic": {"models": {}}}, fh)  # no priced models
+        raised = False
+        try:
+            ot.refresh_model_prices(url="file://" + src, dest=os.path.join(tmp, "p.json"))
+        except ValueError:
+            raised = True
+        assert raised
+        assert not os.path.exists(os.path.join(tmp, "p.json"))  # nothing written on failure
+
+
+def test_model_price_uses_embedded_table_without_cache():
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp  # empty dir -> no prices.json
+        try:
+            ot.invalidate_price_cache()
+            assert ot.price_cache_meta() is None
+            ir, orr, _cr, _cw = ot.model_price("anthropic/claude-opus-4-8")
+            assert ir > 0 and orr > 0  # from the embedded table, not the (absent) cache
+        finally:
+            ot.invalidate_price_cache()
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
 def _menu_app(current="opencode", cycle=("opencode", "claude", "all")):
     # An app whose source cycle is fixed, with select_source stubbed so menu tests never
     # touch the filesystem / make_store. Returns (app, chosen) where chosen records picks.

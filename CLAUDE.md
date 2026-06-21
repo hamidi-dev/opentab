@@ -62,8 +62,9 @@ TUI columns, so do **not** wrap them to satisfy line length.
   third-party import to `opentab`. ruff is dev-only tooling.
 - **Single file.** All program logic lives in `opentab`. Keep it that way.
 - **Read-only on the OpenCode DB.** The tool opens the database read-only and must
-  not write to it. The only files it writes are `~/.config/opentab/state.json` (prefs)
-  and `opentab-*.csv` exports (on `e`).
+  not write to it. The only files it writes are `~/.config/opentab/state.json` (prefs),
+  `~/.config/opentab/prices.json` (the optional models.dev price cache, only on
+  `--refresh-models` / `r` in the `P` overlay), and `opentab-*.csv` exports (on `e`).
 - **Python 3.9+.** `MIN_PYTHON = (3, 9)`; `target-version = py39`. Don't use newer syntax.
 
 ## Architecture
@@ -369,7 +370,20 @@ Every `Workflow` carries two cost snapshots: real recorded cost and an API-equiv
 `MODEL_PRICE_TABLE`, a **generated** block between the `BEGIN/END GENERATED PRICES`
 markers — regenerate with `python3 scripts/update_prices.py` and commit the changed
 `opentab`; never hand-edit that block. `model_price()` adds family fallbacks for
-version/suffix churn. `P` shows this table; nothing is fetched at runtime.
+version/suffix churn. `P` shows this table.
+
+`model_price()` first consults an **optional local cache** that *overlays* the embedded
+table: `_load_price_cache()` lazily reads `~/.config/opentab/prices.json` (a
+`{fetched_at, source, models:{bare_id:[in,out,cr,cw]}}` map), keyed by the bare model id
+(last path segment, matching the lookup). The cache is written **only** on the explicit
+`--refresh-models` CLI command (`refresh_models_command`) or `r` in the `P` overlay
+(`App.refresh_prices_action`), both calling `refresh_model_prices()` — the **one place
+runtime opentab touches the network** (stdlib `urllib`, `MODELS_DEV_URL`), fetching *every*
+models.dev provider so open models on paid routes (Kimi/DeepSeek/Qwen via OpenRouter/…),
+absent from the big-three embedded table, get real prices. A refresh in the TUI clears the
+in-process cache (`invalidate_price_cache`) and re-runs `_compute_api_costs`/`_apply_price_mode`
+in place. With no cache (the default), nothing is fetched and the embedded table is used —
+opentab stays offline and stdlib-only by default.
 
 ### Demo mode (`--demo`)
 

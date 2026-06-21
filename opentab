@@ -196,8 +196,9 @@ DEMO_MODEL_POOL = (
     "anthropic/claude-haiku-4.5",
 )
 # Per-1M-token list prices (input, output, cache_read, cache_write) powering the
-# "$" API-equivalent toggle. Prices are *embedded*, not fetched or read from a
-# sidecar file, so opentab stays a single offline stdlib-only script.
+# "$" API-equivalent toggle. Prices are *embedded* (fetched only on the explicit
+# --refresh-models opt-in, see the price-cache block below), so opentab stays a
+# single offline stdlib-only script by default.
 #
 # MODEL_PRICE_TABLE is generated from models.dev by scripts/update_prices.py -- run
 # that to refresh; do NOT hand-edit the block between the markers. Lookup is
@@ -339,11 +340,131 @@ def is_local_provider(name: str) -> bool:
     return str(name).split("/", 1)[0].lower() in LOCAL_PROVIDERS
 
 
+# --- optional models.dev price cache (overlays the embedded table) -----------
+# opentab ships an offline price snapshot (the generated MODEL_PRICE_TABLE, only
+# anthropic/openai/google), so open models served by paid routes (kimi/deepseek/qwen on
+# OpenRouter, Together, ...) have no embedded price and show as unpriced. `--refresh-models`
+# (and `r` in the P overlay) fetches *every* models.dev provider into a local JSON cache;
+# model_price() reads that cache first, so a refresh prices the long tail and freshens the
+# big three -- with the embedded table as the offline fallback for anyone who never refreshes.
+# Normal runs fetch nothing (the cache is just a local file); this keeps opentab offline and
+# stdlib-only by default.
+MODELS_DEV_URL = "https://models.dev/api.json"
+_PRICE_CACHE: dict[str, tuple[float, float, float, float]] | None = None
+_PRICE_CACHE_META: dict | None = None
+
+
+def price_cache_path() -> str:
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "opentab", "prices.json")
+
+
+def _load_price_cache() -> dict[str, tuple[float, float, float, float]]:
+    # Read the cache once, lazily; a missing/garbled file just means "no overlay".
+    global _PRICE_CACHE, _PRICE_CACHE_META
+    if _PRICE_CACHE is not None:
+        return _PRICE_CACHE
+    out: dict[str, tuple[float, float, float, float]] = {}
+    try:
+        with open(price_cache_path()) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        _PRICE_CACHE, _PRICE_CACHE_META = out, None
+        return out
+    models = data.get("models") if isinstance(data, dict) else None
+    if isinstance(models, dict):
+        for mid, row in models.items():
+            if isinstance(row, (list, tuple)) and len(row) == 4:
+                try:
+                    out[str(mid).lower()] = tuple(float(x) for x in row)
+                except (TypeError, ValueError):
+                    continue
+    _PRICE_CACHE = out
+    _PRICE_CACHE_META = (
+        {
+            "fetched_at": data.get("fetched_at"),
+            "source": data.get("source"),
+            "count": len(out),
+        }
+        if out
+        else None
+    )
+    return out
+
+
+def price_cache_meta() -> dict | None:
+    _load_price_cache()
+    return _PRICE_CACHE_META
+
+
+def invalidate_price_cache() -> None:
+    global _PRICE_CACHE, _PRICE_CACHE_META
+    _PRICE_CACHE = _PRICE_CACHE_META = None
+
+
+def refresh_model_prices(url: str = MODELS_DEV_URL, dest: str | None = None) -> tuple[int, str]:
+    # Fetch every provider's list prices from models.dev and write the local cache.
+    # Returns (model_count, path); raises OSError/ValueError on network or parse failure.
+    # The one place runtime opentab touches the network -- only on explicit refresh.
+    from urllib.request import Request, urlopen
+
+    req = Request(url, headers={"User-Agent": f"opentab/{__version__}"})
+    with urlopen(req, timeout=30) as resp:
+        data = json.load(resp)
+    if not isinstance(data, dict):
+        raise ValueError("unexpected models.dev response")
+    models: dict[str, list[float]] = {}
+    for provider_data in data.values():
+        if not isinstance(provider_data, dict):
+            continue
+        provider_models = provider_data.get("models")
+        if not isinstance(provider_models, dict):
+            continue
+        for mid, model in provider_models.items():
+            if not isinstance(model, dict):
+                continue
+            cost = model.get("cost")
+            if not isinstance(cost, dict):
+                continue
+            inp, out = cost.get("input"), cost.get("output")
+            if not isinstance(inp, (int, float)) or not isinstance(out, (int, float)):
+                continue
+            cr = cost.get("cache_read")
+            cw = cost.get("cache_write")
+            # Key by the bare model id (last path segment), matching model_price()'s
+            # lookup -- models.dev ids for resold open models look like "vendor/model".
+            key = str(mid).rsplit("/", 1)[-1].lower()
+            models[key] = [
+                float(inp),
+                float(out),
+                float(cr) if isinstance(cr, (int, float)) else 0.0,
+                float(cw) if isinstance(cw, (int, float)) else 0.0,
+            ]
+    if not models:
+        raise ValueError("no priced models found in the models.dev response")
+    path = dest or price_cache_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {
+        "source": url,
+        "fetched_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "models": models,
+    }
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(payload, fh)
+    os.replace(tmp, path)
+    invalidate_price_cache()
+    return len(models), path
+
+
 def model_price(name: str) -> tuple[float, float, float, float]:
     # (input, output, cache_read, cache_write) per 1M tokens for the model.
     if is_local_provider(name):
         return (0.0, 0.0, 0.0, 0.0)  # runs on your hardware -- no per-token API bill
     mid = str(name).rsplit("/", 1)[-1].lower()
+    cache = _load_price_cache()
+    if mid in cache:  # a refreshed models.dev price wins over the embedded snapshot
+        return cache[mid]
     if mid in MODEL_PRICE_TABLE:
         return MODEL_PRICE_TABLE[mid]
     return next((tuple(p) for needle, *p in MODEL_PRICE_FALLBACKS if needle in mid), FALLBACK_PRICE)
@@ -6753,7 +6874,8 @@ class Renderer:
             "                   (h/l tabs; j/k month/week/year; $ what-if prices)",
             "                   Calendar is a spend heat map: ↑↓←→ pick a day, Enter opens it,",
             "                   +/- adjusts the color granularity",
-            "  P                model prices (the models.dev API rates used for $ what-if)",
+            "  P                model prices (the models.dev API rates used for $ what-if);",
+            "                   press r in that overlay to refresh them from models.dev",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
             "  q                quit",
@@ -6791,10 +6913,18 @@ class Renderer:
             for m in rows:
                 totals[m["model_name"]] += float(m.get("cost", 0) or 0)
         names = sorted(totals, key=lambda n: totals[n], reverse=True)
+        meta = price_cache_meta()
+        if meta:
+            when = (meta.get("fetched_at") or "?")[:10]
+            source = f"models.dev cache · {meta.get('count', 0)} models · fetched {when}"
+        else:
+            source = "embedded offline snapshot (anthropic/openai/google)"
         lines = [
+            f"Source: {source}.  Press r to refresh from models.dev.",
+            "",
             "API list prices from models.dev, per 1M tokens. These are the rates",
             "OpenTab uses to estimate the $ what-if cost of unpriced subscription or",
-            "credit usage -- approximate list prices, embedded offline, not your invoice.",
+            "credit usage -- approximate list prices, not your invoice.",
             "",
         ]
         if not names:
@@ -6824,7 +6954,7 @@ class Renderer:
             0,
             bottom - y,
             width,
-            "Model prices  ·  j/k scroll · any other key closes",
+            "Model prices  ·  j/k scroll · r refresh · any other key closes",
             active=True,
         )
         inner_w = width - 4
@@ -8270,6 +8400,22 @@ class App:
             else "actual cost"
         )
 
+    def refresh_prices_action(self) -> None:
+        # Pull the latest models.dev prices into the local cache, then re-price every
+        # unpriced row in place so the P overlay and the $ view reflect the new rates.
+        self.notice = "fetching prices from models.dev…"
+        try:
+            count, _ = refresh_model_prices()
+        except (OSError, ValueError) as exc:
+            self.notice = f"price refresh failed: {exc}"
+            return
+        invalidate_price_cache()  # drop the in-process overlay so the new file is read
+        self._ensure_models()
+        self._compute_api_costs()
+        self._apply_price_mode()
+        self.prices_scroll = 0
+        self.notice = f"refreshed {count} model prices from models.dev"
+
     def reload(self) -> None:
         self.loaded = self.store.workflows()
         self._snapshot_real_costs()
@@ -9173,7 +9319,8 @@ class App:
                 self.help = False
             return True
         if self.show_prices:
-            # A pager: j/k/arrows and g/G scroll; any other key closes it.
+            # A pager: j/k/arrows and g/G scroll; r refreshes from models.dev; any
+            # other key closes it.
             if key in (ord("j"), curses.KEY_DOWN):
                 self.prices_scroll += 1
             elif key in (ord("k"), curses.KEY_UP):
@@ -9182,6 +9329,8 @@ class App:
                 self.prices_scroll = 0
             elif key == ord("G"):
                 self.prices_scroll = 10_000  # clamped to the last page on draw
+            elif key in (ord("r"), ord("R")):
+                self.refresh_prices_action()  # keeps the overlay open
             else:
                 self.show_prices = False
             return True
@@ -9895,6 +10044,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="do not fold git worktrees into their main repo (keep each path separate)",
     )
+    parser.add_argument(
+        "--refresh-models",
+        action="store_true",
+        help="fetch the latest model list prices from models.dev into a local cache "
+        f"({price_cache_path()}) and exit; the cache overlays the embedded table for the "
+        "$ what-if estimate (also available with 'r' in the P prices overlay)",
+    )
     args = parser.parse_args()
     _route_path_arg(parser, args)
     return args
@@ -10148,6 +10304,17 @@ def enable_unicode_locale() -> None:
             continue
 
 
+def refresh_models_command() -> int:
+    print(f"Fetching model list prices from {MODELS_DEV_URL} …")
+    try:
+        count, path = refresh_model_prices()
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"price refresh failed: {exc}") from exc
+    print(f"Cached {count} model prices to {path}.")
+    print("These overlay the embedded table for the $ what-if estimate; rerun to update.")
+    return 0
+
+
 def main() -> int:
     if sys.version_info < MIN_PYTHON:
         raise SystemExit(
@@ -10156,6 +10323,8 @@ def main() -> int:
         )
     enable_unicode_locale()
     args = parse_args()  # handles --help first, so it works even without curses
+    if getattr(args, "refresh_models", False):
+        return refresh_models_command()  # fetch prices and exit; no curses needed
     if curses is None:
         raise SystemExit(
             "OpenTab needs Python's curses module, which native Windows Python doesn't bundle.\n"
