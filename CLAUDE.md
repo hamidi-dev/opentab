@@ -17,19 +17,21 @@ Agent** sessions (`~/.hermes/state.db`, SQLite) via a fourth (`HermesStore`), a
 **CSV of logged API requests** (e.g. GitHub Copilot in IntelliJ; `--csv`, default
 `~/.config/opentab/requests.csv`) via a fifth (`CsvStore`), the **GitHub Copilot
 CLI**'s OpenTelemetry export (`~/.copilot/otel/**/*.jsonl` plus
-`$COPILOT_OTEL_FILE_EXPORTER_PATH`) via a sixth (`CopilotStore`), and **pi-agent**
+`$COPILOT_OTEL_FILE_EXPORTER_PATH`) via a sixth (`CopilotStore`), **pi-agent**
 sessions (`~/.pi/agent/sessions/**/*.jsonl`, or `$PI_AGENT_DIR`) via a seventh
-(`PiStore`), and can merge any of them (`CombinedStore`). Pick with
-`--source {auto,opencode,claude,codex,hermes,csv,copilot,pi,all}`, or switch live in the
+(`PiStore`), and **OpenClaw** gateway sessions
+(`~/.openclaw/agents/**/sessions/*.jsonl`, or `$OPENCLAW_DIR`) via an eighth
+(`OpenClawStore`), and can merge any of them (`CombinedStore`). Pick with
+`--source {auto,opencode,claude,codex,hermes,csv,copilot,pi,openclaw,all}`, or switch live in the
 TUI with **`c`**. Claude Code, Codex, and the Copilot CLI never record a per-message
 cost, so their sessions behave like an OpenCode *subscription* session: **$0 in normal
 mode** and an estimate (tokens × API list price) only under the **`$`** what-if view.
-Hermes, the CSV/Copilot-in-IntelliJ source, and pi are mixed: Hermes/CSV are often $0
-(subscription routes / no cost column) but **can** record real cost, while **pi records a
+Hermes, the CSV/Copilot-in-IntelliJ source, pi, and OpenClaw are mixed: Hermes/CSV are often $0
+(subscription routes / no cost column) but **can** record real cost, while **pi and OpenClaw record a
 per-message cost for every route but only *metered* (non-subscription) routes are real
-spend** — its subscription/OAuth routes (e.g. openai-codex) carry a list-price estimate, not
+spend** — their subscription/OAuth routes (e.g. openai-codex, github-copilot) carry a list-price estimate, not
 spend, so they stay unpriced like the token-only backends — see the
-`ClaudeStore`/`CodexStore`/`HermesStore`/`CsvStore`/`CopilotStore`/`PiStore` notes under
+`ClaudeStore`/`CodexStore`/`HermesStore`/`CsvStore`/`CopilotStore`/`PiStore`/`OpenClawStore` notes under
 Architecture.
 
 ## Commands
@@ -141,10 +143,12 @@ Three layers, all in `opentab`:
   (cache_read / cache_write are tracked separately, never folded in) and `output_tokens`
   already *includes* reasoning as a subset (priced once via output). Total = input +
   output + cache_read + cache_write — matching Hermes' own `total_tokens` **exactly**
+  (do not double-count reasoning, which would inflate the total). **Cost
   is mixed**, unlike Claude/Codex: subscription routes (`billing_mode =
   'subscription_included'`, e.g. openai-codex) record $0 → their tokens are unpriced and
   `$` estimates them; **metered** routes (OpenRouter, Nous, direct API keys) record a real
-  per-session cost in `actual_cost_usd` / `estimated_cost_usd` (actual preferred, mirroring
+  per-session cost in `actual_cost_usd` / `estimated_cost_usd` (actual
+  preferred) → those price as real spend in normal mode with `unpriced_*` zeroed. Because
   cost is mixed, **`records_cost` is a per-DB instance attr** (True iff any live session
   has a recorded cost), computed by a cheap probe in `__init__` so `CombinedStore` can read
   it before `workflows()`. Sessions with a `parent_session_id` form a subagent tree rolled
@@ -180,7 +184,8 @@ Three layers, all in `opentab`:
   CLI records **no token usage** in its transcripts or its `session-store.db`; tokens land
   **only** in the OTEL export, which is **opt-in** (set `COPILOT_OTEL_FILE_EXPORTER_PATH`
   before launching/resuming a session, or point `--copilot-dir` at it). With export off
-  copilot adapter uses. The export carries tokens but **no cost**; since June 2026 Copilot
+  there's nothing to read and the source never appears — the OTEL export is the only place
+  these tokens are recorded. The export carries tokens but **no cost**; since June 2026 Copilot
   bills **usage-based** (tokens × list API rates → AI credits at 1¢ each), so the `$`
   list-price estimate ≈ the real bill. With no recorded cost it's a token-only backend:
   **`records_cost = False`** (class attr), every token unpriced, `$` estimates at list
@@ -190,6 +195,7 @@ Three layers, all in `opentab`:
   log, an `invoke_agent` summary span), so `_parse_file` **dedups per file**: keep the
   highest-fidelity record per call (chat span > inference log > agent-turn log >
   agent-summary span) and drop the rest by matching **trace id / response id**
+  (`_classify`/`_emit`). Token accounting is **OpenAI-style**
   (`gen_ai.usage.input_tokens` **includes** the cached read → split into uncached +
   `cache_read`; `cache_write` from `cache_creation`; reasoning **folded into output**, never
   priced twice; a record carrying only `total_tokens` back-fills the gap). Models are
@@ -220,8 +226,37 @@ Three layers, all in `opentab`:
   pricing and the Providers rollup. Assistant messages dedupe by their stable `id`
   (resumed/forked files overlap). No subagent tree (one depth-0 node); sessions with no
   recorded usage are dropped.
+- **`OpenClawStore`** — an eighth backend over **OpenClaw** gateway sessions
+  (`~/.openclaw/agents/<agent>/sessions/<id>.jsonl`, root from `$OPENCLAW_DIR`/`--openclaw-dir`),
+  implementing the same four methods. OpenClaw is a self-hosted multi-provider agent gateway;
+  like pi it writes a per-message `usage.cost` (an **object** — only `.total` is read) that
+  is a **list-price figure for every provider**, including subscription/OAuth
+  routes (openai-codex on a ChatGPT plan, github-copilot) whose marginal cost is $0. So the
+  **same billing split as `PiStore`/`HermesStore`**: only **metered** routes (a direct
+  Anthropic key, OpenRouter) are real spend; a message is **subscription** when its provider's
+  auth profile is an OAuth login (`openclaw.json` → `auth.profiles[*].mode == "oauth"`, read
+  read-only — note github-copilot uses a static `token`, so it's caught by the `"copilot"`
+  marker instead) or matches `_SUBSCRIPTION_MARKERS`, and its tokens stay **unpriced** (the
+  `$` view estimates them). Metered + subscription accumulate independently per message, so a
+  session (even one model) mixing both routes is split right; **`records_cost` is a per-instance
+  attr** (True iff any *metered* message has a cost), set by a cheap early-exit probe in
+  `__init__`. Parsing: each session file is NDJSON, and
+  only `type:"message"` records with `message.role == "assistant"` + a `message.usage` object
+  carry usage; `type:"model_change"` (and `type:"custom"` + customType `"model-snapshot"`)
+  records set the current model/provider for following messages that omit their own. OpenClaw
+  also writes a parallel **trace** schema (`session.started`/`model.completed`/…) in *separate*
+  files that hold no `type:"message"` record, so reading only assistant messages never
+  double-counts. Token accounting is **Anthropic-style** (`input` already *uncached*;
+  `cacheRead`/`cacheWrite` separate, never folded; total = input+output+cacheRead+cacheWrite; a
+  `totalTokens`-only record back-fills output). Models are recorded **bare** (gpt-5.3-codex,
+  claude-opus-4-6), so they're provider-prefixed by inferred family (the `CsvStore` pattern)
+  for pricing and the Providers rollup. The **project is the agent** (finance-os, homelab, …) —
+  the directory under `agents/`, far more useful than OpenClaw's generic gateway cwd. Assistant
+  messages dedupe by their stable record `id` across a session's live + archived
+  (`.jsonl.reset.`/`.jsonl.deleted.`) files. No subagent tree (one depth-0 node); sessions with
+  no recorded usage are dropped.
 - **`CombinedStore`** — wraps several backends and concatenates the same four methods, for
-  `--source all` (OpenCode + Claude Code + Codex + Hermes + CSV + Copilot CLI + pi in one view).
+  `--source all` (OpenCode + Claude Code + Codex + Hermes + CSV + Copilot CLI + pi + OpenClaw in one view).
   Workflow ids are
   globally unique across sources, so it routes `workflow_nodes` (and `tool_breakdown`)
   by an `id → backend` map built in `workflows()`; projects group by directory across all
@@ -230,9 +265,9 @@ Three layers, all in `opentab`:
   shows only on OpenCode sessions in the merged view, never empty on the others. `$` reprices
   every unpriced row across all backends. `records_cost` is the AND of its backends
   (False when any backend reports no recorded cost — Claude Code, Codex, the Copilot CLI, a
-  subscription-only Hermes DB, or a CSV with no cost column; a metered pi keeps it True);
+  subscription-only Hermes DB, or a CSV with no cost column; a metered pi or OpenClaw keeps it True);
   `combined = True` turns on the per-session origin markers — a `Src` column in the
-  session tables (`Renderer.src_col`) and `[oc]`/`[cc]`/`[cx]`/`[hm]`/`[csv]`/`[cp]`/`[pi]` title
+  session tables (`Renderer.src_col`) and `[oc]`/`[cc]`/`[cx]`/`[hm]`/`[csv]`/`[cp]`/`[pi]`/`[ocl]` title
   tags in the picker and Top Sessions lists (`Renderer.source_tag`, abbreviations in `_source_abbrev`).
   Combined **demo** works: `CombinedStore.__init__` forces every sub-store to one shared
   `demo_scale` (each backend would otherwise draw its own random scale, distorting the
@@ -240,7 +275,7 @@ Three layers, all in `opentab`:
   can't be inverted).
 - **Source selection** lives in `make_store()`/`resolve_source()`/`available_sources()`/
   `source_cycle()` (module level). `main` resolves the start source from
-  `--source {auto,opencode,claude,codex,hermes,csv,copilot,pi,all}`; on `auto` it restores the last-used
+  `--source {auto,opencode,claude,codex,hermes,csv,copilot,pi,openclaw,all}`; on `auto` it restores the last-used
   source from `state.json` (when still available); failing that, **auto merges every
   present source (`all`)** when ≥2 exist — demo and non-demo alike — so you never need
   `--source` to see them together (single source when only one is present). `c` narrows to

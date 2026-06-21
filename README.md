@@ -172,8 +172,9 @@ OpenTab reads the local records each AI coding tool keeps — **OpenCode** (its 
 database), **Claude Code** (its session transcripts under
 `~/.claude/projects/**/*.jsonl`), **Codex** (its CLI rollouts under
 `~/.codex/sessions/**/rollout-*.jsonl`), the **GitHub Copilot CLI** (its OpenTelemetry
-export under `~/.copilot/otel/`), and **pi-agent** (its sessions under
-`~/.pi/agent/sessions/`), plus a **Hermes** database and a generic **CSV** of logged API
+export under `~/.copilot/otel/`), **pi-agent** (its sessions under
+`~/.pi/agent/sessions/`), and **OpenClaw** (its gateway sessions under
+`~/.openclaw/agents/**/sessions/`), plus a **Hermes** database and a generic **CSV** of logged API
 requests (e.g. GitHub Copilot in IntelliJ). Pick one with `--source`:
 
 ```sh
@@ -184,6 +185,7 @@ opentab --source codex                       # Codex only (default ~/.codex/sess
 opentab --source codex --codex-dir /path     # non-standard Codex sessions location
 opentab --source copilot                     # GitHub Copilot CLI (default ~/.copilot/otel)
 opentab --source pi                          # pi-agent (default ~/.pi/agent/sessions)
+opentab --source openclaw                    # OpenClaw gateway (default ~/.openclaw; honors $OPENCLAW_DIR)
 opentab --source all                         # all present sources, merged
 ```
 
@@ -195,12 +197,20 @@ opentab --source all                         # all present sources, merged
 > export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl
 > ```
 >
-> Sessions you run after that show up under `--source copilot`. (This is the same data
+> Sessions you run after that show up under `--source copilot`.
+
+> **OpenClaw:** the gateway keeps its sessions under `~/.openclaw/agents/<agent>/sessions/`
+> (one project per agent). If you run it on a server, point opentab at a mounted/synced
+> copy with `--openclaw-dir /path` or `OPENCLAW_DIR=/path`. OpenClaw records a per-message
+> cost for **every** provider, but that figure is a list-price estimate on plan routes
+> (openai-codex, github-copilot) whose real cost is $0 — opentab counts only **metered**
+> routes (a direct Anthropic/OpenRouter key) as spend and estimates the rest under `$`,
+> reading `openclaw.json` (read-only) to tell which auth profiles are plan logins.
 
 `--source auto` (the default) reads OpenCode when its database is present, otherwise
 falls back to the first present source (it never auto-merges). The active source shows
 as a chip in the header, and you can **switch live with `c`** (OpenCode → Claude Code →
-Codex → Copilot → pi → all, for whichever are present). The whole TUI works the same — months,
+Codex → Copilot → pi → OpenClaw → all, for whichever are present). The whole TUI works the same — months,
 days, projects, sessions, models, trends — with two differences, because **Claude Code,
 Codex, and the Copilot CLI record only tokens, no per-message cost**:
 
@@ -215,11 +225,11 @@ Codex, and the Copilot CLI record only tokens, no per-message cost**:
 
 `--source all` merges every present source into one view: the same repo worked in
 multiple tools rolls up into a single project row, every session row shows its origin (a
-`Src` column in the session tables, `[oc]` / `[cc]` / `[cx]` / `[cp]` / `[pi]` tags elsewhere), and the
+`Src` column in the session tables, `[oc]` / `[cc]` / `[cx]` / `[cp]` / `[pi]` / `[ocl]` tags elsewhere), and the
 Trends overlay gains a **Sources** tab (spend by tool). `$` reprices the unpriced usage
 across all of them — OpenCode's subscription/credit messages plus all of Claude Code's,
-Codex's, and the Copilot CLI's (pi carries its own per-message cost on metered routes like
-OpenRouter; its subscription/OAuth routes such as openai-codex are estimated like the rest). (When more than one source is present, `--demo` **defaults to this merged
+Codex's, and the Copilot CLI's (pi and OpenClaw carry their own per-message cost on metered routes like
+OpenRouter or a direct API key; their subscription/OAuth routes such as openai-codex are estimated like the rest). (When more than one source is present, `--demo` **defaults to this merged
 view** — it shows off the most — and anonymizes every backend under a single shared
 scale so the cross-tool proportion stays truthful.)
 
