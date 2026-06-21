@@ -4,3 +4,13 @@ __pycache__/
 dev/
 demo.mov
 opentab-*.csv
+
+# Python packaging build artifacts
+dist/
+build/
+*.egg-info/
+.venv/
+
+# Generated README previews
+/README.html
+/README.single.html

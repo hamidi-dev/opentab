@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-set -- opentab test_opentab.py
+set -- src/opentab test_opentab.py
 
 if command -v python3 >/dev/null 2>&1; then
   python_cmd=python3
@@ -23,8 +23,8 @@ ruff check "$@"
 printf '%s\n' "pre-push: ruff format --check"
 ruff format --check "$@"
 
-printf '%s\n' "pre-push: py_compile"
-"$python_cmd" -m py_compile opentab
+printf '%s\n' "pre-push: compile"
+"$python_cmd" -m compileall -q src/opentab
 
 printf '%s\n' "pre-push: unit tests"
 "$python_cmd" test_opentab.py

@@ -1,0 +1,1 @@
+"""opentab.tui subpackage."""

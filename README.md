@@ -24,7 +24,7 @@
   <br><sub><b>Projects &amp; sources</b> — group spend by repo across tools, isolate one with <code>c</code>, fuzzy-filter, and rescope the range live</sub>
 </p>
 
-A local, zero-dependency terminal UI for your AI coding spend. It reads the records
+A local, standard-library terminal UI for your AI coding spend. It reads the records
 your coding tools already keep on disk — [OpenCode](https://opencode.ai)'s SQLite
 database, [Claude Code](https://claude.com/claude-code)'s session transcripts, and
 [Codex](https://developers.openai.com/codex)'s CLI rollouts — and shows you where your
@@ -34,8 +34,8 @@ into a single view.
 
 Your tools already keep this ledger; OpenTab is just the reader for it. No backend, no
 telemetry, no accounts — it opens those files **read-only**, so it only reads and leaves
-your data untouched. Just `curses` + `sqlite3` from the Python standard library — no
-`pip install` needed.
+your data untouched. It's standard-library-only at runtime (`curses` + `sqlite3`) —
+`pipx install opentab-ai` and there's nothing else to pull in.
 
 ## Features
 
@@ -53,7 +53,7 @@ your data untouched. Just `curses` + `sqlite3` from the Python standard library 
 - CSV export of any view
 - Keyboard- and mouse-driven (scroll, click to select, double-click to drill)
 - Remembers your range, sort, ignored projects, and the `$` view between runs
-- Read-only, local-only, zero dependencies
+- Read-only, local-only, standard-library runtime (nothing extra to pull in)
 - Demo mode for screenshots and live demos
 
 ## Why this exists
@@ -87,9 +87,10 @@ Plenty of tools will print your token totals. OpenTab is built to *explore* them
 - **Subagent cost trees.** When a session delegated work, OpenTab attributes the cost
   across its whole recursive subagent subtree — so you see *where* the spend went, not
   just the session total.
-- **One file, zero dependencies.** Just `curses` + `sqlite3` from the standard library:
-  no `pip install`, no Node, no `npx`, no build step. Copy one script and run it
-  anywhere Python 3.9+ exists, including a locked-down box.
+- **Standard-library runtime.** Just `curses` + `sqlite3` from the standard library:
+  no Node, no `npx`, no service to run. `pipx install opentab-ai` and it runs anywhere
+  Python 3.9+ exists, including a locked-down box (the sole dependency, `windows-curses`,
+  is pulled in only on native Windows).
 - **Honest cost for subscription usage.** Subscription/credit sessions show a truthful
   `$0` recorded, and the **`$`** view reprices their tokens at API list rates — a clear
   "what this would have cost metered" estimate you can toggle on and off.
@@ -122,10 +123,20 @@ touches, all on your own machine:
 ## Requirements
 
 Python **3.9+** and a terminal with `curses` — already present on macOS, Linux,
-and WSL (standard library only, no `pip install`). Native Windows works too with
-a one-time `pip install windows-curses` (see [Windows](#windows)).
+and WSL. Native Windows works too: installing `opentab-ai` pulls in `windows-curses`
+automatically (see [Windows](#windows)).
 
 ## Install
+
+### pipx (recommended)
+
+```sh
+pipx install opentab-ai
+```
+
+Upgrade later with `pipx upgrade opentab-ai`. (Plain `pip install --user opentab-ai`
+works too.) The PyPI distribution is **`opentab-ai`**; the command it installs is
+**`opentab`**.
 
 ### Homebrew (macOS / Linux)
 
@@ -137,25 +148,18 @@ Upgrade later with `brew upgrade opentab`.
 
 ### Install script
 
-One line (installs `opentab` into `~/.local/bin`; re-run to update):
+One line (installs the `opentab` command via pipx; re-run to update):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/install.sh | bash
 ```
 
-Prefer not to pipe a script into your shell? OpenTab is a single
-self-contained file, so any of these work and are easy to audit first:
+### From source
 
 ```sh
-# clone (symlink install; `git pull` then auto-updates)
-git clone https://github.com/hamidi-dev/opentab && cd opentab && ./install.sh
-
-# or just drop the one file on your PATH
-curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/opentab \
-  -o ~/.local/bin/opentab && chmod +x ~/.local/bin/opentab
+git clone https://github.com/hamidi-dev/opentab && cd opentab
+pipx install .        # or `pip install -e .` for a live-editable checkout
 ```
-
-`BIN_DIR=~/bin` overrides the install target.
 
 ## Usage
 
@@ -324,17 +328,16 @@ esac
 OpenTab uses Python's `curses`, which native Windows Python doesn't bundle. Two
 ways to run it:
 
-**Native Windows (cmd / PowerShell).** Install the curses shim once, then run
-OpenTab normally:
+**Native Windows (cmd / PowerShell).** Just install and run — `opentab-ai` declares
+`windows-curses` as a Windows-only dependency, so pipx pulls in the curses shim for you:
 
 ```sh
-pip install windows-curses
+pipx install opentab-ai
 opentab
 ```
 
-That's the one exception to "no `pip install`": `windows-curses` is just an
-OS-level provider for the stdlib `curses` module, not a dependency of OpenTab's
-own code. Confirmed working against the **OpenCode** source; the Claude Code and
+`windows-curses` is just an OS-level provider for the stdlib `curses` module — the lone
+runtime dependency, and only on Windows. Confirmed working against the **OpenCode** source; the Claude Code and
 Codex backends read plain JSON files and should behave the same, but are less
 exercised on native Windows. The `o` key opens the selected directory in
 Explorer (via `os.startfile`), so reveal-in-folder works natively too.
@@ -368,9 +371,9 @@ git config core.hooksPath hooks
 Before pushing, the hook runs:
 
 ```sh
-ruff check opentab test_opentab.py
-ruff format --check opentab test_opentab.py
-python3 -m py_compile opentab
+ruff check src/opentab test_opentab.py
+ruff format --check src/opentab test_opentab.py
+python3 -m compileall -q src/opentab
 python3 test_opentab.py
 shellcheck install.sh hooks/pre-push  # when shellcheck is installed
 ```
@@ -378,7 +381,7 @@ shellcheck install.sh hooks/pre-push  # when shellcheck is installed
 To fix formatting manually:
 
 ```sh
-ruff format opentab test_opentab.py
+ruff format src/opentab test_opentab.py
 ```
 
 ## A note on cost accuracy
@@ -399,7 +402,7 @@ prices. Press `P` to see the exact per-model rates behind that estimate. The
 estimate uses an embedded table generated from models.dev for Anthropic, OpenAI,
 and Google, with hand-kept family fallbacks for version or suffix churn and a
 mid-range fallback for unknown models. Nothing is fetched at runtime, so the TUI
-stays single-file, offline, and standard-library only.
+stays offline and standard-library-only.
 
 The embedded table only covers Anthropic/OpenAI/Google, so **open models served
 by paid routes** (Kimi, DeepSeek, Qwen, … on OpenRouter/Together/etc.) have no

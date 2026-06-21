@@ -1,19 +1,20 @@
 """Unit tests for opentab's pure helpers and demo-mode logic.
 
 Runs under pytest *or* standalone (`python test_opentab.py`) so CI needs no
-third-party test runner -- in keeping with opentab's stdlib-only spirit.
-The module under test has no .py extension, so we load it by path.
+third-party test runner. opentab is a src-layout package; we add src/ to
+sys.path so the suite imports it without needing an editable install.
 """
 
 import json
 import os
 import re
 import sqlite3
+import sys
 import tempfile
-from importlib.machinery import SourceFileLoader
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ot = SourceFileLoader("opentab", os.path.join(HERE, "opentab")).load_module()
+sys.path.insert(0, os.path.join(HERE, "src"))
+import opentab as ot  # noqa: E402  (must follow the sys.path shim above)
 
 # Isolate the whole suite from the developer's real ~/.config: point XDG at an
 # empty temp dir so model_price() reads the *embedded* price table (not a local
@@ -1104,7 +1105,7 @@ def test_source_is_persisted_and_restored():
             assert ot.resolve_source(args, {"source": "bogus"}) == "all"
             # demo merges too, and `c` can reach the merged view in demo
             args.demo = True
-            assert "all" in ot.source_cycle(args)
+            assert "all" in ot.sources.source_cycle(args)
             assert ot.resolve_source(args, {}) == "all"
             args.demo = False
         finally:
@@ -3244,7 +3245,7 @@ def test_codex_joins_the_source_cycle_and_builds_a_resume_command():
         )()
         # all three present -> the cycle is opencode / claude / codex / all
         assert ot.available_sources(args) == ["opencode", "claude", "codex"]
-        assert ot.source_cycle(args) == ["opencode", "claude", "codex", "all"]
+        assert ot.sources.source_cycle(args) == ["opencode", "claude", "codex", "all"]
         # the c key walks through Codex on the way to the merged view
         app = ot.App(FakeStore([workflow("a", "2026-06-01 12:00:00")]), args)
         app.source_key = "claude"
@@ -3479,13 +3480,13 @@ def test_tmux_launch_runs_the_hook_and_reports_its_stderr():
         os.chmod(hook, 0o755)
         try:
             os.environ["OPENTAB_LAUNCHER"] = hook
-            assert ot.tmux_launch("window", "/repo/a", "claude --resume x1") is None
+            assert ot.util.tmux_launch("window", "/repo/a", "claude --resume x1") is None
             with open(log) as fh:
                 assert fh.read() == "window|/repo/a|claude --resume x1"
             # a failing hook surfaces its stderr as the launch error
             with open(hook, "w") as fh:
                 fh.write('#!/bin/sh\necho "no such kind" >&2\nexit 1\n')
-            assert ot.tmux_launch("vsplit", "/repo/a", "claude --resume x1") == "no such kind"
+            assert ot.util.tmux_launch("vsplit", "/repo/a", "claude --resume x1") == "no such kind"
         finally:
             if old_env is None:
                 os.environ.pop("OPENTAB_LAUNCHER", None)
@@ -3500,11 +3501,11 @@ def test_launch_menu_opens_in_tmux_and_copies_outside():
     app.view = "zoom"
     app.tab = app.current_tabs().index("Sessions")
     old_tmux = os.environ.get("TMUX")
-    real_launch, real_copy = ot.tmux_launch, ot.copy_to_clipboard
+    real_launch, real_copy = ot.util.tmux_launch, ot.util.copy_to_clipboard
     launches, copies = [], []
     try:
-        ot.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
-        ot.copy_to_clipboard = lambda v: copies.append(v) or True
+        ot.util.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        ot.util.copy_to_clipboard = lambda v: copies.append(v) or True
         os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
         app.handle_key(None, ord("L"))
         assert app.launch_menu is not None and not launches  # menu open, nothing run
@@ -3525,8 +3526,8 @@ def test_launch_menu_opens_in_tmux_and_copies_outside():
         assert app.launch_menu is None
         assert copies[-1] == "cd /repo/a && claude --resume ses_1" and len(copies) == 2
     finally:
-        ot.tmux_launch = real_launch
-        ot.copy_to_clipboard = real_copy
+        ot.util.tmux_launch = real_launch
+        ot.util.copy_to_clipboard = real_copy
         if old_tmux is None:
             os.environ.pop("TMUX", None)
         else:
@@ -3540,10 +3541,10 @@ def test_launch_menu_is_navigable_with_jk_and_enter():
     app.view = "zoom"
     app.tab = app.current_tabs().index("Sessions")
     old_tmux = os.environ.get("TMUX")
-    real_launch = ot.tmux_launch
+    real_launch = ot.util.tmux_launch
     launches = []
     try:
-        ot.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        ot.util.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
         os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
         app.handle_key(None, ord("L"))
         assert app.launch_menu is not None and app.launch_menu_index == 0  # starts at "window"
@@ -3559,7 +3560,7 @@ def test_launch_menu_is_navigable_with_jk_and_enter():
         assert app.launch_menu is None
         assert launches == [("hsplit", "/repo/a", "claude --resume ses_1")]
     finally:
-        ot.tmux_launch = real_launch
+        ot.util.tmux_launch = real_launch
         if old_tmux is None:
             os.environ.pop("TMUX", None)
         else:
@@ -3630,10 +3631,13 @@ def test_capital_d_toggles_real_and_demo_store():
     app.view = "zoom"
     app.focus = "months"
     app.tab = app.current_tabs().index("Models")
-    real_make_store = ot.make_store
+    real_make_store = ot.sources.make_store
     calls = []
     try:
-        ot.make_store = lambda a, key: calls.append((a.demo, key)) or (demo if a.demo else real, "")
+        ot.sources.make_store = lambda a, key: calls.append((a.demo, key)) or (
+            demo if a.demo else real,
+            "",
+        )
 
         app.handle_key(None, ord("D"))
         assert app.store is demo
@@ -3653,7 +3657,7 @@ def test_capital_d_toggles_real_and_demo_store():
         assert app.notice == "real data"
         assert calls == [(True, "opencode")]  # real store was already cached
     finally:
-        ot.make_store = real_make_store
+        ot.sources.make_store = real_make_store
 
 
 def test_fuzzy_score_matches_subsequences():
@@ -4379,7 +4383,7 @@ def test_hermes_joins_the_source_cycle_and_builds_a_resume_command():
         )()
 
         assert ot.available_sources(args) == ["opencode", "hermes"]
-        assert ot.source_cycle(args) == ["opencode", "hermes", "all"]
+        assert ot.sources.source_cycle(args) == ["opencode", "hermes", "all"]
 
         app = ot.App(FakeStore([workflow("a", "2026-06-01 12:00:00")]), args)
         app.source_key = "opencode"
@@ -4559,10 +4563,10 @@ def test_csv_joins_the_source_cycle_and_has_no_resume_command():
             },
         )()
         assert ot.available_sources(args) == ["opencode", "csv"]
-        assert ot.source_cycle(args) == ["opencode", "csv", "all"]
+        assert ot.sources.source_cycle(args) == ["opencode", "csv", "all"]
         # no saved pref and >=2 sources present -> auto merges them (no --source needed)
         assert ot.resolve_source(args, {}) == "all"
-        store, _ = ot.make_store(args, "csv")
+        store, _ = ot.sources.make_store(args, "csv")
         assert isinstance(store, ot.CsvStore)
 
         app = ot.App(FakeStore([workflow("a", "2026-06-01 12:00:00")]), args)
@@ -5499,8 +5503,8 @@ def _menu_app(current="opencode", cycle=("opencode", "claude", "all")):
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.source_key = current
     chosen = {}
-    app._orig_cycle = ot.source_cycle
-    ot.source_cycle = lambda args, _c=list(cycle): list(_c)
+    app._orig_cycle = ot.sources.source_cycle
+    ot.sources.source_cycle = lambda args, _c=list(cycle): list(_c)
     app.select_source = lambda key: chosen.setdefault("key", key)
     return app, chosen
 
@@ -5524,7 +5528,7 @@ def test_source_menu_opens_at_current_and_navigates_then_selects():
         assert app.source_menu is False
         assert chosen["key"] == "claude"
     finally:
-        ot.source_cycle = app._orig_cycle
+        ot.sources.source_cycle = app._orig_cycle
 
 
 def test_source_menu_c_advances_and_esc_cancels():
@@ -5540,7 +5544,7 @@ def test_source_menu_c_advances_and_esc_cancels():
         assert app.source_menu is False
         assert "key" not in chosen
     finally:
-        ot.source_cycle = app._orig_cycle
+        ot.sources.source_cycle = app._orig_cycle
 
 
 def test_source_menu_not_opened_with_single_source():
@@ -5550,7 +5554,7 @@ def test_source_menu_not_opened_with_single_source():
         assert app.source_menu is False
         assert app.notice == "only one data source available"
     finally:
-        ot.source_cycle = app._orig_cycle
+        ot.sources.source_cycle = app._orig_cycle
 
 
 def test_source_menu_entries_label_all_and_mark_current():
@@ -5567,7 +5571,7 @@ def test_source_menu_entries_label_all_and_mark_current():
             "all": True,
         }
     finally:
-        ot.source_cycle = app._orig_cycle
+        ot.sources.source_cycle = app._orig_cycle
 
 
 def test_open_path_uses_startfile_on_windows():

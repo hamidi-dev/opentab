@@ -1,0 +1,47 @@
+name: Publish to PyPI
+
+# Builds the sdist + wheel and publishes opentab-ai to PyPI when a GitHub
+# release is published. Uses PyPI Trusted Publishing (OIDC) — no API token
+# secret. One-time setup on PyPI: add a "pending publisher" for project
+# opentab-ai, owner hamidi-dev, repo opentab, workflow publish.yml,
+# environment pypi. (Prefer a token instead? Drop the `permissions`/OIDC and
+# pass `password: ${{ secrets.PYPI_API_TOKEN }}` to the publish action.)
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sdist + wheel
+        run: |
+          pip install build
+          python -m build
+      - name: Check metadata
+        run: |
+          pip install twine
+          twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write  # OIDC token for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

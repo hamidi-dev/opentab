@@ -6,3 +6,8 @@ line-length = 100
 select = ["E", "F", "W", "I", "UP", "B"]
 # Long f-strings build fixed-width TUI columns; wrapping them would hurt, not help.
 ignore = ["E501"]
+
+[lint.per-file-ignores]
+# The package __init__ deliberately re-exports the public API (and a few stdlib
+# modules) for callers and the test suite; those imports are "unused" here.
+"src/opentab/__init__.py" = ["F401"]

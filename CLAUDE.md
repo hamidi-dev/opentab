@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-OpenTab is a single-file, zero-dependency terminal UI (curses) that reads OpenCode's
-SQLite database **read-only** and browses your AI spend by month / day / project /
-session / model, including the recursive subagent tree. Standard library only — no
-`pip install` at runtime. The entire program is the executable `opentab` (a Python
-script, no `.py` extension).
+OpenTab is a terminal UI (curses) that reads OpenCode's SQLite database **read-only**
+and browses your AI spend by month / day / project / session / model, including the
+recursive subagent tree. It's a **src-layout Python package** (`src/opentab/`) that
+installs the `opentab` command; runtime is **standard-library only**, the single
+dependency being `windows-curses`, pulled in only on native Windows (which ships no
+stdlib `curses`). Distributed on PyPI as **`opentab-ai`** (`pipx install opentab-ai`),
+but the import package and the command both stay `opentab`.
 
 It also reads **Claude Code** transcripts (`~/.claude/projects/**/*.jsonl`) via a
 second backend (`ClaudeStore`), **Codex CLI** rollouts
@@ -37,30 +39,41 @@ Architecture.
 ## Commands
 
 ```sh
-python3 test_opentab.py                 # run the whole unit suite (custom runner, not pytest)
+pip install -e .                              # editable install (provides the `opentab` command)
+python3 test_opentab.py                       # run the whole unit suite (custom runner, not pytest)
 python3 -c "import test_opentab as t; t.test_trend_daily_shows_one_navigable_month()"  # run one test
-ruff check opentab test_opentab.py      # lint (matches CI)
-ruff format opentab test_opentab.py     # autoformat
-ruff format --check opentab test_opentab.py   # format check (matches CI)
-python3 -m py_compile opentab           # byte-compile smoke check
-python3 opentab --demo                  # run the TUI with anonymized/synthetic data
+ruff check src/opentab test_opentab.py        # lint (matches CI)
+ruff format src/opentab test_opentab.py       # autoformat
+ruff format --check src/opentab test_opentab.py   # format check (matches CI)
+python3 -m compileall -q src/opentab          # byte-compile smoke check
+python3 -m opentab --demo                     # run the TUI with anonymized/synthetic data
 ```
 
 `test_opentab.py` is **not** pytest — it has its own runner at the bottom that just runs
-every `test_*` function in sorted order (no name filtering, no argv). To run a single
-test, import it and call it directly (as above), or use the locally-installed `pytest`
-(`pytest test_opentab.py -k NAME`) which also discovers these functions. CI runs ruff,
-`python3 test_opentab.py`, and shellcheck on `install.sh`. Install dev hooks with
-`git config core.hooksPath hooks` (the pre-push hook runs the same checks).
+every `test_*` function in sorted order (no name filtering, no argv). It prepends `src/`
+to `sys.path` itself, so `python3 test_opentab.py` works **without** an install. To run a
+single test, import it and call it directly (as above), or use the locally-installed
+`pytest` (`pytest test_opentab.py -k NAME`) which also discovers these functions. CI
+installs the package (`pip install -e .`), runs ruff + `python3 test_opentab.py` +
+`opentab --help` (with a native-Windows import smoke job), and shellchecks `install.sh`.
+Install dev hooks with `git config core.hooksPath hooks` (the pre-push hook runs the same
+checks).
 
 `ruff.toml` deliberately ignores `E501` (long lines): the f-strings build fixed-width
 TUI columns, so do **not** wrap them to satisfy line length.
 
 ## Hard constraints
 
-- **Standard library only at runtime.** `curses` + `sqlite3` + stdlib. Never add a
-  third-party import to `opentab`. ruff is dev-only tooling.
-- **Single file.** All program logic lives in `opentab`. Keep it that way.
+- **Standard library only at runtime.** `curses` + `sqlite3` + stdlib. The **only**
+  third-party runtime dependency is `windows-curses` (Windows-only, declared in
+  `pyproject.toml`); never add another. ruff/hatchling are dev/build-only tooling.
+- **Modular `src/` package, acyclic layering.** Program logic lives across `src/opentab/`
+  (layout below). Keep the import graph acyclic: leaves (`models`, `formatting`, `heatmap`,
+  `pricing`, `demo`, `util`) → `stores/*` → `tui/*` → `sources`/`state` → `cli`. Stores
+  never import the TUI; annotation-only back-references (e.g. `App` inside
+  `tui/renderer.py` and `state.py`) go under `if TYPE_CHECKING:` so they don't create an
+  import cycle. The top-level `__init__.py` re-exports the public API (and `os`/`sys`/`csv`/
+  `curses`/`datetime`) so callers and tests reach everything as `opentab.<name>`.
 - **Read-only on the OpenCode DB.** The tool opens the database read-only and must
   not write to it. The only files it writes are `~/.config/opentab/state.json` (prefs),
   `~/.config/opentab/prices.json` (the optional models.dev price cache, only on
@@ -69,7 +82,27 @@ TUI columns, so do **not** wrap them to satisfy line length.
 
 ## Architecture
 
-Three layers, all in `opentab`:
+The package is laid out under `src/opentab/`:
+
+```
+src/opentab/
+  __init__.py        re-exports the public API (and a few stdlib modules) as opentab.*
+  __main__.py        python -m opentab
+  cli.py             parse_args + main (entry point: opentab = opentab.cli:main)
+  models.py          Workflow / DaySummary / MonthSummary / YearSummary / ProjectSummary
+  formatting.py      money/pct/tokens/cost_bar/short_path/iso_to_local + paint regexes
+  heatmap.py         heat_* / calendar_cells / week_key / month_range + HEAT_*/BAR_* consts
+  pricing.py         MODEL_PRICE_TABLE (the GENERATED block) + model_price/cache/$ costing
+  demo.py            demo_* anonymisation
+  util.py            clipboard/launchers/git_root/fuzzy/parse_range/tool_namespace
+  sources.py         make_store/resolve_source/available_sources/source_cycle + path routing
+  state.py           load_state/save_state/apply_state
+  stores/            opencode, claude, codex, hermes, csv_source, copilot, pi, openclaw, combined
+  tui/               renderer (Renderer), app (App)
+```
+
+Three logical layers (the class names below live in the files above — `Store` in
+`stores/opencode.py`, `Renderer`/`App` in `tui/`, etc.):
 
 - **`Store`** — owns the sqlite connection and every SQL query; returns plain
   `Workflow`/`sqlite3.Row` data. It is **schema-adaptive**: OpenCode's schema varies by
@@ -369,7 +402,7 @@ Every `Workflow` carries two cost snapshots: real recorded cost and an API-equiv
 `_snapshot_real_costs` and `_compute_api_costs` build the two sets. Prices come from
 `MODEL_PRICE_TABLE`, a **generated** block between the `BEGIN/END GENERATED PRICES`
 markers — regenerate with `python3 scripts/update_prices.py` and commit the changed
-`opentab`; never hand-edit that block. `model_price()` adds family fallbacks for
+`src/opentab/pricing.py`; never hand-edit that block. `model_price()` adds family fallbacks for
 version/suffix churn. `P` shows this table.
 
 `model_price()` first consults an **optional local cache** that *overlays* the embedded
@@ -413,5 +446,6 @@ Demo never persists state and disables clipboard/file-opener side effects. The d
 - The "Models" detail tab and the Overview "Top Models" section now share `_model_table`
   (same columns: Model · Msgs · Cost · Share · Tokens · CacheR · CacheW · Output), fed by
   `_agg_rows`/`_mix_rows`. Keep them rendering through that one helper.
-- Versioning is a manual constant: `__version__` in `opentab` (surfaced by `--version`).
-  It is not derived from the git tag, so bump it when cutting a release.
+- Versioning is a manual constant: `__version__` in `src/opentab/__init__.py` (surfaced by
+  `--version`, and read by hatchling at build time via `[tool.hatch.version]`). It is not
+  derived from the git tag, so bump it when cutting a release.

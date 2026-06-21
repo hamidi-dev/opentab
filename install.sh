@@ -1,63 +1,43 @@
 #!/usr/bin/env bash
-# Install opentab.
+# Install opentab (the `opentab` command).
 #
 #   From a checkout:    ./install.sh
 #   Remote one-liner:   curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/install.sh | bash
-#   Custom target dir:  BIN_DIR=~/bin ./install.sh
 #
-# Checkout mode symlinks the local script, so a later `git pull` updates the
-# tool instantly. Remote mode downloads the single script into BIN_DIR; re-run
-# the one-liner to update. opentab itself is stdlib-only Python 3.9+.
+# opentab is a Python package (PyPI: opentab-ai) that installs the `opentab`
+# command. It needs Python 3.9+ and is stdlib-only at runtime; on native Windows
+# it also pulls in windows-curses automatically. We install with pipx (isolated
+# venv, easy upgrades) and fall back to `pip install --user`.
 set -euo pipefail
 
-# Source of truth for remote installs (override via OPENTAB_REPO / OPENTAB_REF).
-REPO="${OPENTAB_REPO:-hamidi-dev/opentab}"
-REF="${OPENTAB_REF:-main}"
-RAW="https://raw.githubusercontent.com/$REPO/$REF/opentab"
-
-BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
-DEST="$BIN_DIR/opentab"
+# Published distribution name on PyPI (the import package + command stay `opentab`).
+PYPI_NAME="${OPENTAB_PYPI_NAME:-opentab-ai}"
 
 command -v python3 >/dev/null 2>&1 \
-  || echo "warning: python3 not found; opentab needs Python 3.9+." >&2
+  || { echo "error: python3 not found; opentab needs Python 3.9+." >&2; exit 1; }
 
-mkdir -p "$BIN_DIR"
-
-# Prefer a local checkout copy (only when run as a real file, not piped via stdin).
-SRC=""
+# Install from the local checkout when run as a real file inside the repo (so an
+# in-tree build is used); otherwise install the published package from PyPI.
+TARGET="$PYPI_NAME"
 if [ -n "${BASH_SOURCE:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   SRC_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-  [ -f "$SRC_DIR/opentab" ] && SRC="$SRC_DIR/opentab"
+  [ -f "$SRC_DIR/pyproject.toml" ] && TARGET="$SRC_DIR"
 fi
 
-if [ -n "$SRC" ]; then
-  ln -sf "$SRC" "$DEST"
-  chmod +x "$SRC"
-  echo "linked $DEST -> $SRC"
-  echo "(git pull in $SRC_DIR to update)"
+if command -v pipx >/dev/null 2>&1; then
+  echo "installing opentab with pipx ($TARGET)"
+  pipx install --force "$TARGET"
+  pipx ensurepath >/dev/null 2>&1 || true
 else
-  echo "downloading opentab from $RAW"
-  tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' EXIT
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$RAW" -o "$tmp"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$tmp" "$RAW"
-  else
-    echo "error: need curl or wget to download opentab." >&2
-    exit 1
-  fi
-  head -n1 "$tmp" | grep -q python \
-    || { echo "error: downloaded file does not look like opentab." >&2; exit 1; }
-  install -m 0755 "$tmp" "$DEST"
-  echo "installed $DEST"
-  echo "(re-run the install command to update)"
+  echo "pipx not found — using 'pip install --user' instead."
+  echo "  (recommended: install pipx, then re-run — https://pipx.pypa.io)"
+  python3 -m pip install --user --upgrade "$TARGET"
+  BIN_DIR="$(python3 -m site --user-base)/bin"
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) echo "note: $BIN_DIR may not be on your PATH. Add to your shell rc:"
+       echo "      export PATH=\"$BIN_DIR:\$PATH\"" ;;
+  esac
 fi
-
-case ":$PATH:" in
-  *":$BIN_DIR:"*) ;;
-  *) echo "note: $BIN_DIR is not on your PATH. Add to your shell rc:"
-     echo "      export PATH=\"$BIN_DIR:\$PATH\"" ;;
-esac
 
 echo "done. try: opentab --help"

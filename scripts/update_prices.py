@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Refresh OpenTab's embedded API list-price table from models.dev.
 
-Runtime OpenTab stays a single offline stdlib-only script. This dev helper is
-the one place that touches the network, then rewrites the generated block in
-../opentab.
+Runtime OpenTab stays offline and stdlib-only. This dev helper is the one place
+that touches the network, then rewrites the generated block in
+../src/opentab/pricing.py.
 """
 
 from __future__ import annotations
@@ -104,7 +104,9 @@ def main() -> int:
         help="provider to embed; repeatable (default: anthropic, openai, google)",
     )
     parser.add_argument(
-        "--target", type=Path, default=Path(__file__).resolve().parents[1] / "opentab"
+        "--target",
+        type=Path,
+        default=Path(__file__).resolve().parents[1] / "src" / "opentab" / "pricing.py",
     )
     args = parser.parse_args()
 
