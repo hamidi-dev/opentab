@@ -5348,9 +5348,7 @@ class Renderer:
         top = 3
         bottom = height - 2
         avail = bottom - top
-        if self.source_menu:
-            self.draw_source_menu(stdscr, top, bottom, width)
-        elif self.help:
+        if self.help:
             self.draw_help(stdscr, top, bottom, width)
         elif self.show_prices:
             self.draw_prices(stdscr, top, bottom, width)
@@ -5367,13 +5365,12 @@ class Renderer:
                 self.draw_month_detail(stdscr, top, 0, avail, width)
             else:
                 self.draw_day_detail(stdscr, top, 0, avail, width)
+        elif self.browse_mode == "projects":
+            left = self.browse_left_width(width)
+            self.draw_project_list(stdscr, top, 0, avail, left)
+            self.draw_project_detail(stdscr, top, left, avail, width - left, active=False)
         else:
             left = self.browse_left_width(width)
-            if self.browse_mode == "projects":
-                self.draw_project_list(stdscr, top, 0, avail, left)
-                self.draw_project_detail(stdscr, top, left, avail, width - left, active=False)
-                stdscr.refresh()
-                return
             # Three stacked time panels. Years is short (few rows), so size it to
             # show every year (panels render h-3 rows, hence +3), capped so a long
             # history can't starve Months/Days; those split the rest as before.
@@ -5395,6 +5392,13 @@ class Renderer:
                 self.draw_month_detail(stdscr, top, rx, avail, rw, active=False)
             else:
                 self.draw_day_detail(stdscr, top, rx, avail, rw, active=False)
+
+        # Small centered modals float on top of the current view (so context stays
+        # visible behind them), unlike the full-body help/prices/trends overlays.
+        if self.source_menu:
+            self.draw_source_menu(stdscr, height, width)
+        elif self.launch_menu is not None:
+            self.draw_launch_menu(stdscr, height, width)
 
         stdscr.refresh()
 
@@ -5565,11 +5569,6 @@ class Renderer:
                 width,
             )
             return
-        if self.launch_menu is not None:
-            via = "via launcher hook" if launcher_hook() else "in tmux"
-            keys = f"launch {via}: w window  s split │  v split ─  p popup  y copy cmd  Esc cancel"
-            self.draw_prompt_bar(stdscr, height, width, keys)
-            return
         # Each entry is (label, active). An active toggle -- its overlay or mode is
         # currently ON -- renders in the orange accent so the footer reflects state at
         # a glance (e.g. hitting T highlights "T trends" while the overlay is open).
@@ -5614,15 +5613,6 @@ class Renderer:
         parts += [("? help", self.help), ("q quit", False)]
         self.hline(stdscr, height - 2, 0, width)
         self.draw_keybar(stdscr, height - 1, width, parts)
-
-    def draw_prompt_bar(self, stdscr: curses.window, height: int, width: int, text: str) -> None:
-        # The `L` launch menu's key strip. It's a discrete-key menu (no text field), so
-        # like the normal keybar it stays plain slate -- orange is reserved for the one
-        # live element (an on-toggle, or an input cursor), never a whole bar.
-        self.hline(stdscr, height - 2, 0, width)
-        self.write(
-            stdscr, height - 1, 0, shorten(" " + text + " ", width - 1), curses.color_pair(4)
-        )
 
     def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts) -> None:
         # Render the footer key strip segment by segment so active toggles can stand
@@ -6971,28 +6961,55 @@ class Renderer:
                 attr = curses.A_NORMAL
             self.write(stdscr, y + 2 + offset, 2, shorten(line, inner_w), attr)
 
-    def draw_source_menu(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
+    def draw_modal(
+        self, stdscr: curses.window, scr_h: int, scr_w: int, title: str, lines: list
+    ) -> None:
+        # A small centered popup box floating over the current view (cleared interior so
+        # the view doesn't bleed through). `lines` is a list of (text, attr); the caller
+        # styles each row (header tint, A_REVERSE for a selected entry). Sized to content.
+        content = [(str(t), a) for t, a in lines]
+        inner_w = max([len(title) + 2] + [len(t) for t, _ in content] + [16])
+        w = min(inner_w + 4, max(24, scr_w - 4))
+        h = min(len(content) + 4, max(6, scr_h - 4))
+        y = max(1, (scr_h - h) // 2)
+        x = max(1, (scr_w - w) // 2)
+        for row in range(y, y + h):  # clear the footprint first
+            self.write(stdscr, row, x, " " * w)
+        self.box(stdscr, y, x, h, w, title, active=True)
+        field = w - 4
+        for offset, (text, attr) in enumerate(content[: h - 4]):
+            self.write(stdscr, y + 2 + offset, x + 2, f"{shorten(text, field):<{field}}", attr)
+
+    def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `c` picker: a small modal list of every present source. j/k moves the
         # highlight, Enter switches, Esc cancels (handled in handle_source_menu_key).
-        self.box(
-            stdscr,
-            y,
-            0,
-            bottom - y,
-            width,
-            "Switch data source  ·  j/k move · Enter select · Esc cancel",
-            active=True,
-        )
-        self.write(stdscr, y + 2, 2, "Browse spend recorded by which tool:", curses.color_pair(4))
         entries = self.source_menu_entries()
         idx = self.source_menu_index % len(entries) if entries else 0
-        field = min(max((len(lbl) for _, lbl, _ in entries), default=12) + 14, width - 4)
+        lines = [("Browse spend recorded by which tool:", curses.color_pair(4)), ("", 0)]
         for offset, (_key, label, is_current) in enumerate(entries):
             marker = "●" if is_current else "○"
             suffix = "  (current)" if is_current else ""
-            text = f" {marker}  {label}{suffix}"
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
-            self.write(stdscr, y + 4 + offset, 2, f"{text:<{field}}", attr)
+            lines.append((f" {marker}  {label}{suffix}", attr))
+        self.draw_modal(stdscr, scr_h, scr_w, "Switch source · j/k · Enter · Esc", lines)
+
+    def draw_launch_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # The `L` picker: a small modal of launch targets. One keystroke picks (handled in
+        # handle_launch_key); anything else cancels.
+        session = self.launch_menu
+        via = "launcher hook" if launcher_hook() else "tmux"
+        lines = [
+            (shorten(session.title or "(untitled)", 52), curses.color_pair(4)),
+            (f"open in {via}:", curses.A_NORMAL),
+            ("", 0),
+            (" w    new window", curses.A_NORMAL),
+            (" s    split pane │", curses.A_NORMAL),
+            (" v    split pane ─", curses.A_NORMAL),
+            (" p    popup", curses.A_NORMAL),
+            (" y    copy resume command", curses.A_NORMAL),
+            (" Esc  cancel", curses.A_NORMAL),
+        ]
+        self.draw_modal(stdscr, scr_h, scr_w, "Launch session", lines)
 
     # --- Trends overlay -------------------------------------------------------
     def draw_trends(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
@@ -9561,6 +9578,10 @@ class App:
                 self.source_menu_index = (self.source_menu_index + 1) % len(order)
             elif click or double:
                 self.source_menu = False  # click cancels, source unchanged
+            return True
+        if self.launch_menu is not None:
+            if click or double:
+                self.launch_menu = None  # click cancels the launch picker
             return True
         if self.help:
             if up or down or click or double:
