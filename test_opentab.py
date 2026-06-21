@@ -15,6 +15,16 @@ from importlib.machinery import SourceFileLoader
 HERE = os.path.dirname(os.path.abspath(__file__))
 ot = SourceFileLoader("opentab", os.path.join(HERE, "opentab")).load_module()
 
+# Isolate the whole suite from the developer's real ~/.config: point XDG at an
+# empty temp dir so model_price() reads the *embedded* price table (not a local
+# models.dev cache a `r`/--refresh-models run may have written) and no test reads
+# or writes the real prefs/cache. Without this, the price assertions below pass on
+# CI (no cache) but fail on a machine that has refreshed prices. The dir lives for
+# the process; the held TemporaryDirectory cleans it up at exit.
+_ISOLATED_CONFIG = tempfile.TemporaryDirectory(prefix="opentab-test-config-")
+os.environ["XDG_CONFIG_HOME"] = _ISOLATED_CONFIG.name
+ot.invalidate_price_cache()
+
 
 def workflow(id, created_at, title=None, cost=1.0, tokens=100, directory="/tmp/project"):
     return ot.Workflow(
