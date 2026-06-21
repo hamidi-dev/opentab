@@ -3418,6 +3418,55 @@ def test_resume_command_cds_to_the_project_first():
     assert app.resume_command(a) is None
 
 
+def test_copy_to_clipboard_backends_per_platform():
+    real_which = ot.util.shutil.which
+    real_run = ot.util.subprocess.run
+    real_platform = sys.platform
+    calls = []
+
+    class _Proc:
+        returncode = 0
+
+    def fake_run(cmd, input=None, check=False, **kw):
+        calls.append((cmd, input))
+        return _Proc()
+
+    try:
+        ot.util.subprocess.run = fake_run
+
+        # Windows: clip.exe is preferred (utf-8 bytes), label names clip/powershell.
+        sys.platform = "win32"
+        assert ot.util.clipboard_tools_label() == "clip/powershell"
+        ot.util.shutil.which = lambda name: f"C:\\{name}.exe" if name == "clip" else None
+        calls.clear()
+        assert ot.util.copy_to_clipboard("ses_42") is True
+        assert calls == [(["clip"], b"ses_42")]
+
+        # clip missing -> PowerShell Set-Clipboard fallback.
+        ot.util.shutil.which = lambda name: "pwsh" if name == "powershell" else None
+        calls.clear()
+        assert ot.util.copy_to_clipboard("hi") is True
+        assert calls[0][0][0] == "powershell" and calls[0][1] == b"hi"
+
+        # No Windows clipboard tool at all -> False, nothing run.
+        ot.util.shutil.which = lambda name: None
+        calls.clear()
+        assert ot.util.copy_to_clipboard("x") is False
+        assert calls == []
+
+        # POSIX still uses pbcopy/xclip/... and reports them in the label.
+        sys.platform = "darwin"
+        assert ot.util.clipboard_tools_label() == "pbcopy/wl-copy/xclip/xsel"
+        ot.util.shutil.which = lambda name: "/usr/bin/pbcopy" if name == "pbcopy" else None
+        calls.clear()
+        assert ot.util.copy_to_clipboard("ok") is True
+        assert calls == [(["pbcopy"], b"ok")]
+    finally:
+        sys.platform = real_platform
+        ot.util.shutil.which = real_which
+        ot.util.subprocess.run = real_run
+
+
 def test_tmux_launch_argv_builds_window_split_popup():
     cmd = "claude --resume abc123"
     # directory rides on -c / -d flags

@@ -56,18 +56,44 @@ MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 YEAR_PATTERN = re.compile(r"^\d{4}$")
 
 
+# The clipboard CLIs we try, per platform, each paired with how to encode the
+# payload for it. Windows ships none of the POSIX tools but always has clip.exe
+# (OEM/ANSI -- fine for the ASCII ids/paths/commands opentab copies) with
+# PowerShell's Set-Clipboard as a Unicode-safe fallback.
+_WINDOWS_CLIPBOARD = (
+    (["clip"], "utf-8"),
+    (
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "[Console]::InputEncoding=[Text.Encoding]::UTF8;"
+            "Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+        ],
+        "utf-8",
+    ),
+)
+_POSIX_CLIPBOARD = (
+    (["pbcopy"], "utf-8"),
+    (["wl-copy"], "utf-8"),
+    (["xclip", "-selection", "clipboard"], "utf-8"),
+    (["xsel", "--clipboard", "--input"], "utf-8"),
+)
+
+
+def clipboard_tools_label() -> str:
+    # The tool names to name in a "no clipboard tool" notice, per platform.
+    return "clip/powershell" if sys.platform == "win32" else "pbcopy/wl-copy/xclip/xsel"
+
+
 def copy_to_clipboard(text: str) -> bool:
-    for cmd in (
-        ["pbcopy"],
-        ["wl-copy"],
-        ["xclip", "-selection", "clipboard"],
-        ["xsel", "--clipboard", "--input"],
-    ):
+    commands = _WINDOWS_CLIPBOARD if sys.platform == "win32" else _POSIX_CLIPBOARD
+    for cmd, encoding in commands:
         if shutil.which(cmd[0]):
             try:
                 subprocess.run(
                     cmd,
-                    input=text.encode(),
+                    input=text.encode(encoding),
                     check=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

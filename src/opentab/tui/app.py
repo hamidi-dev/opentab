@@ -1276,7 +1276,7 @@ class App:
         if util.copy_to_clipboard(value):
             self.notice = f"copied: {shorten(value, 40)}"
         else:
-            self.notice = "clipboard tool not found (pbcopy/wl-copy/xclip/xsel)"
+            self.notice = f"clipboard tool not found ({util.clipboard_tools_label()})"
 
     def open_current(self) -> None:
         if self.store.demo:
@@ -1346,7 +1346,7 @@ class App:
         if command and util.copy_to_clipboard(command):
             self.notice = f"copied: {shorten(command, 60)}"
         else:
-            self.notice = "clipboard tool not found (pbcopy/wl-copy/xclip/xsel)"
+            self.notice = f"clipboard tool not found ({util.clipboard_tools_label()})"
 
     def handle_launch_key(self, key: int) -> bool:
         # The `L` launch picker: j/k move, Enter runs the highlighted target, the w/s/v/p/y
