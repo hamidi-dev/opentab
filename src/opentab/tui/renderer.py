@@ -1794,7 +1794,7 @@ class Renderer:
             "                   Calendar is a spend heat map: ↑↓←→ pick a day, Enter opens it,",
             "                   +/- adjusts the color granularity",
             "  P                model prices (the models.dev API rates used for $ what-if);",
-            "                   press f to filter or r to refresh them from models.dev",
+            "                   press f to filter, r to refresh from models.dev, or e to export them",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
             "  q                quit",
@@ -1826,12 +1826,9 @@ class Renderer:
     def price_table_lines(self, width: int) -> list[str]:
         # The models you have used (most spend first) and the models.dev API list
         # prices OpenTab applies for the "$" what-if estimate. Pure text so it can
-        # be tested without a screen; draw_prices just paints these.
-        totals: dict[str, float] = defaultdict(float)
-        for rows in self._model_by_root.values():
-            for m in rows:
-                totals[m["model_name"]] += float(m.get("cost", 0) or 0)
-        names = sorted(totals, key=lambda n: totals[n], reverse=True)
+        # be tested without a screen; draw_prices just paints these. The model set
+        # (and the active filter) is shared with the `e` export via priced_model_names.
+        names = self.priced_model_names()
         meta = price_cache_meta()
         if meta:
             when = (meta.get("fetched_at") or "?")[:10]
@@ -1846,11 +1843,6 @@ class Renderer:
             "credit usage -- approximate list prices, not your invoice.",
             "",
         ]
-        if self.query:
-            scored = [
-                (score, n) for n in names if (score := fuzzy_score(self.query, n)) is not None
-            ]
-            names = [n for score, n in sorted(scored, key=lambda pair: -pair[0])]
         if not names:
             lines.append(
                 f"No model prices match the filter: {self.query}"
@@ -1882,7 +1874,7 @@ class Renderer:
             0,
             bottom - y,
             width,
-            "Model prices  ·  j/k scroll · f filter · r refresh · any other key closes",
+            "Model prices  ·  j/k scroll · f filter · r refresh · e export · any other key closes",
             active=True,
         )
         inner_w = width - 4

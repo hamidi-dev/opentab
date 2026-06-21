@@ -2626,6 +2626,45 @@ def test_export_follows_the_active_panel():
     assert scope == "models" and header[0] == "model"
 
 
+def test_export_prices_overlay_exports_the_price_table():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    # Seed two used models so the P table has rows (it lists models you've used).
+    app._model_by_root = {
+        "a": [
+            {"model_name": "anthropic/claude-opus-4-8", "cost": 5.0},
+            {"model_name": "openai/gpt-5.3", "cost": 1.0},
+        ]
+    }
+    app.show_prices = True  # the P overlay is open; `e` exports its table
+
+    scope, header, rows = app._export_dataset()
+    assert scope == "prices"
+    assert header == ["model", "input", "output", "cache_read", "cache_write"]
+    names = [r[0] for r in rows]
+    assert "anthropic/claude-opus-4-8" in names and "openai/gpt-5.3" in names
+    assert names[0] == "anthropic/claude-opus-4-8"  # most spend first
+    # every priced row carries four numeric rates
+    assert all(len(r) == 5 and all(isinstance(v, (int, float)) for v in r[1:]) for r in rows)
+
+    # the active P filter narrows the export too (shared priced_model_names)
+    app.query = "gpt"
+    assert [r[0] for r in app._export_dataset()[2]] == ["openai/gpt-5.3"]
+
+    # `e` while the overlay is open routes through export_current (overlay stays open)
+    import os
+    import tempfile
+
+    cwd = os.getcwd()
+    os.chdir(tempfile.mkdtemp(prefix="ot-prices-"))
+    try:
+        app.handle_key(None, ord("e"))
+        assert app.show_prices  # still open
+        assert "exported" in app.notice
+        assert [f for f in os.listdir(".") if f.startswith("opentab-prices-")]
+    finally:
+        os.chdir(cwd)
+
+
 def test_export_sources_tab_exports_the_source_breakdown():
     a = workflow("a", "2026-06-01 12:00:00", cost=2)
     b = workflow("b", "2026-06-02 12:00:00", cost=5)

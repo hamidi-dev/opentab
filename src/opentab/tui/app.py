@@ -1231,6 +1231,8 @@ class App:
         # Export whatever panel is active (the orange-bordered list/tab), at full
         # precision and honouring the live $ price mode -- so `e` always saves exactly
         # what you're looking at.
+        if self.show_prices:  # the P overlay sits on top of any view -- export its table
+            return self._prices_dataset()
         if self.view == "session":
             return self._session_tab_dataset()
         if self.view == "zoom":
@@ -1252,6 +1254,31 @@ class App:
             for it in items
         ]
         return scope, header, rows
+
+    def priced_model_names(self) -> list[str]:
+        # Models you've used, most-spend first, narrowed by the active P-overlay filter.
+        # Shared by the P table renderer and its `e` export so both show the same rows.
+        totals: dict[str, float] = defaultdict(float)
+        for rows in self._model_by_root.values():
+            for m in rows:
+                totals[m["model_name"]] += float(m.get("cost", 0) or 0)
+        names = sorted(totals, key=lambda n: totals[n], reverse=True)
+        if self.query:
+            scored = [(s, n) for n in names if (s := fuzzy_score(self.query, n)) is not None]
+            names = [n for _s, n in sorted(scored, key=lambda pair: -pair[0])]
+        return names
+
+    def _prices_dataset(self) -> tuple[str, list[str], list[list]]:
+        # The P overlay's model price table (per 1M tokens), filter included. Local
+        # providers have no API cost, so their rate columns are 0 (as the overlay notes).
+        header = ["model", "input", "output", "cache_read", "cache_write"]
+        rows = []
+        for name in self.priced_model_names():
+            if is_local_provider(name):
+                rows.append([name, 0.0, 0.0, 0.0, 0.0])
+            else:
+                rows.append([name, *model_price(name)])
+        return "prices", header, rows
 
     def _zoom_tab_dataset(self) -> tuple[str, list[str], list[list]]:
         tab = self._active_tab()
@@ -2263,7 +2290,7 @@ class App:
             if self.filter_active:
                 return self.handle_filter_key(key)
             # A pager: j/k/arrows and g/G scroll; f filters model names; r refreshes
-            # from models.dev; any other key closes it.
+            # from models.dev; e exports the table; any other key closes it.
             if key in (ord("j"), curses.KEY_DOWN):
                 self.prices_scroll += 1
             elif key in (ord("k"), curses.KEY_UP):
@@ -2278,6 +2305,8 @@ class App:
                 self.filter_active = True
                 self._filter_before = self.query
                 self.prices_scroll = 0
+            elif key == ord("e"):
+                self.export_current()  # _export_dataset sees show_prices; overlay stays open
             else:
                 self.show_prices = False
             return True
