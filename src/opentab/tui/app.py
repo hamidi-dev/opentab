@@ -181,6 +181,8 @@ class App:
         self._cal_return: str | None = None  # day drilled in from the heat map; Esc returns there
         self.show_prices = False  # the "P" model-prices reference overlay
         self.prices_scroll = 0  # pager offset within that overlay
+        self.prices_index = 0  # selected model row in the P overlay's list
+        self.prices_model: str | None = None  # drilled into this model's sessions (P overlay)
         self.sort_by = "cost"
         self.project_sort_by = "cost"
         self.ignored_projects: set[str] = set()
@@ -1258,15 +1260,36 @@ class App:
     def priced_model_names(self) -> list[str]:
         # Models you've used, most-spend first, narrowed by the active P-overlay filter.
         # Shared by the P table renderer and its `e` export so both show the same rows.
+        # The P filter is a plain case-insensitive substring match (not the fuzzy
+        # subsequence used for sessions): the model list is short and a literal
+        # "gpt" / "sonnet" should not also drag in unrelated scattered-letter hits.
         totals: dict[str, float] = defaultdict(float)
         for rows in self._model_by_root.values():
             for m in rows:
                 totals[m["model_name"]] += float(m.get("cost", 0) or 0)
         names = sorted(totals, key=lambda n: totals[n], reverse=True)
         if self.query:
-            scored = [(s, n) for n in names if (s := fuzzy_score(self.query, n)) is not None]
-            names = [n for _s, n in sorted(scored, key=lambda pair: -pair[0])]
+            q = self.query.lower()
+            names = [n for n in names if q in n.lower()]
         return names
+
+    def price_model_sessions(self, model_name: str) -> list[tuple[Workflow, float, int]]:
+        # Root sessions that used `model_name`, each with that model's cost/tokens
+        # within the session (cost already reflects the active $ mode, since
+        # _apply_price_mode swaps it on the same rows). Most spend first. Backs the
+        # P overlay's per-model drill-in (Enter on a model row).
+        by_id = {w.id: w for w in self.loaded}
+        out: list[tuple[Workflow, float, int]] = []
+        for root_id, models in self._model_by_root.items():
+            w = by_id.get(root_id)
+            if w is None:
+                continue
+            for m in models:
+                if m.get("model_name") != model_name:
+                    continue
+                out.append((w, float(m.get("cost", 0) or 0), int(m.get("tokens_total", 0) or 0)))
+        out.sort(key=lambda r: (r[1], r[2]), reverse=True)
+        return out
 
     def _prices_dataset(self) -> tuple[str, list[str], list[list]]:
         # The P overlay's model price table (per 1M tokens), filter included. Local
@@ -2289,27 +2312,9 @@ class App:
         if self.show_prices:
             if self.filter_active:
                 return self.handle_filter_key(key)
-            # A pager: j/k/arrows and g/G scroll; f filters model names; r refreshes
-            # from models.dev; e exports the table; any other key closes it.
-            if key in (ord("j"), curses.KEY_DOWN):
-                self.prices_scroll += 1
-            elif key in (ord("k"), curses.KEY_UP):
-                self.prices_scroll = max(0, self.prices_scroll - 1)
-            elif key == ord("g"):
-                self.prices_scroll = 0
-            elif key == ord("G"):
-                self.prices_scroll = 10_000  # clamped to the last page on draw
-            elif key in (ord("r"), ord("R")):
-                self.refresh_prices_action()  # keeps the overlay open
-            elif key == ord("f"):
-                self.filter_active = True
-                self._filter_before = self.query
-                self.prices_scroll = 0
-            elif key == ord("e"):
-                self.export_current()  # _export_dataset sees show_prices; overlay stays open
-            else:
-                self.show_prices = False
-            return True
+            if self.prices_model is not None:
+                return self._handle_price_sessions_key(key)
+            return self._handle_price_models_key(key)
         if self.trends:
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
             if current == "Calendar" and key in (
@@ -2378,6 +2383,8 @@ class App:
         if key == ord("P"):
             self.show_prices = True
             self.prices_scroll = 0
+            self.prices_index = 0
+            self.prices_model = None
             return True
         if key == ord("r"):
             self.reload()
@@ -2480,6 +2487,55 @@ class App:
             return True
         return True
 
+    def _handle_price_models_key(self, key: int) -> bool:
+        # The P overlay's model list: j/k/arrows move a cursor, g/G jump to ends,
+        # Enter drills into the selected model's sessions, f filters, r refreshes,
+        # e exports the table; any other key closes the overlay.
+        n = len(self.priced_model_names())
+        if key in (ord("j"), curses.KEY_DOWN):
+            self.prices_index = min(self.prices_index + 1, max(0, n - 1))
+        elif key in (ord("k"), curses.KEY_UP):
+            self.prices_index = max(0, self.prices_index - 1)
+        elif key == ord("g"):
+            self.prices_index = 0
+        elif key == ord("G"):
+            self.prices_index = max(0, n - 1)
+        elif key in (10, 13, curses.KEY_ENTER):
+            names = self.priced_model_names()
+            if names:
+                self.prices_model = names[max(0, min(self.prices_index, len(names) - 1))]
+                self.prices_scroll = 0
+        elif key in (ord("r"), ord("R")):
+            self.refresh_prices_action()  # keeps the overlay open
+        elif key == ord("f"):
+            self.filter_active = True
+            self._filter_before = self.query
+            self.prices_scroll = 0
+        elif key == ord("e"):
+            self.export_current()  # _export_dataset sees show_prices; overlay stays open
+        else:
+            self.show_prices = False
+        return True
+
+    def _handle_price_sessions_key(self, key: int) -> bool:
+        # The P overlay's per-model drill-in: j/k/arrows and g/G scroll the session
+        # list; Esc/left/backspace backs out to the model list; any other key closes.
+        if key in (ord("j"), curses.KEY_DOWN):
+            self.prices_scroll += 1
+        elif key in (ord("k"), curses.KEY_UP):
+            self.prices_scroll = max(0, self.prices_scroll - 1)
+        elif key == ord("g"):
+            self.prices_scroll = 0
+        elif key == ord("G"):
+            self.prices_scroll = 10_000  # clamped to the last page on draw
+        elif key in (27, curses.KEY_LEFT, curses.KEY_BACKSPACE, 127, 8):
+            self.prices_model = None  # back to the model list
+            self.prices_scroll = 0
+        else:
+            self.show_prices = False
+            self.prices_model = None
+        return True
+
     def handle_filter_key(self, key: int) -> bool:
         # Live fuzzy filter mode (`/`): printable keys edit the query and every
         # list re-ranks on the very next paint. Arrows still move the selection,
@@ -2505,8 +2561,9 @@ class App:
             self._filter_edited()
         elif key in (curses.KEY_UP, curses.KEY_DOWN):
             if self.show_prices:
-                self.prices_scroll += 1 if key == curses.KEY_DOWN else -1
-                self.prices_scroll = max(0, self.prices_scroll)
+                # Arrows move the P model cursor so you can land on a filter match.
+                self.prices_index += 1 if key == curses.KEY_DOWN else -1
+                self.prices_index = max(0, self.prices_index)
             else:
                 self.move(1 if key == curses.KEY_DOWN else -1)
         elif 32 <= key <= 126:
@@ -2519,6 +2576,7 @@ class App:
         self.workflow_index = 0
         self.project_index = 0
         self.prices_scroll = 0
+        self.prices_index = 0
 
     def handle_mouse(self) -> bool:
         # The screen's clickable regions were registered by the last draw(), so a
@@ -2565,12 +2623,21 @@ class App:
                 self.help = False
             return True
         if self.show_prices:
-            if up:
-                self.prices_scroll = max(0, self.prices_scroll - 3)
-            elif down:
-                self.prices_scroll += 3
-            elif click or double:
-                self.show_prices = False
+            if self.prices_model is None:
+                if up:
+                    self.prices_index = max(0, self.prices_index - 1)
+                elif down:
+                    self.prices_index += 1  # clamped on draw
+                elif click or double:
+                    self.show_prices = False
+            else:
+                if up:
+                    self.prices_scroll = max(0, self.prices_scroll - 3)
+                elif down:
+                    self.prices_scroll += 3
+                elif click or double:
+                    self.prices_model = None  # back to the model list
+                    self.prices_scroll = 0
             return True
         if self.trends:
             return self._mouse_trends(my, mx, up, down, click, double)

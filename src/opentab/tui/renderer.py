@@ -1776,7 +1776,7 @@ class Renderer:
             "  s                open the sort picker for the visible list (j/k move · Enter apply · Esc cancel)",
             "  i                ignore/unignore the selected project (project lists only)",
             "  I                show/hide ignored projects so they can be unignored",
-            "  f                live fuzzy filter over sessions (title/project/id), projects, Models, and Prices (by name)",
+            "  f                live filter: fuzzy over sessions (title/project/id), projects, Models; substring over Prices",
             "                   while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
             "  x                clear filter",
             "  e                export the current list to a CSV in the working directory",
@@ -1794,6 +1794,7 @@ class Renderer:
             "                   Calendar is a spend heat map: ↑↓←→ pick a day, Enter opens it,",
             "                   +/- adjusts the color granularity",
             "  P                model prices (the models.dev API rates used for $ what-if);",
+            "                   j/k select a model, Enter lists the sessions that used it;",
             "                   press f to filter, r to refresh from models.dev, or e to export them",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
@@ -1823,19 +1824,17 @@ class Renderer:
                 curses.color_pair(4) if line.endswith(":") else curses.A_NORMAL,
             )
 
-    def price_table_lines(self, width: int) -> list[str]:
-        # The models you have used (most spend first) and the models.dev API list
-        # prices OpenTab applies for the "$" what-if estimate. Pure text so it can
-        # be tested without a screen; draw_prices just paints these. The model set
-        # (and the active filter) is shared with the `e` export via priced_model_names.
-        names = self.priced_model_names()
+    def price_intro_lines(self) -> list[str]:
+        # The fixed header block above the P overlay's price table: where the rates
+        # came from and what they mean. Pulled out so both the flat price_table_lines
+        # (export/tests) and the navigable draw_prices share one source of truth.
         meta = price_cache_meta()
         if meta:
             when = (meta.get("fetched_at") or "?")[:10]
             source = f"models.dev cache · {meta.get('count', 0)} models · fetched {when}"
         else:
             source = "embedded offline snapshot (anthropic/openai/google)"
-        lines = [
+        return [
             f"Source: {source}.  Press r to refresh from models.dev.",
             "",
             "API list prices from models.dev, per 1M tokens. These are the rates",
@@ -1843,53 +1842,140 @@ class Renderer:
             "credit usage -- approximate list prices, not your invoice.",
             "",
         ]
+
+    def _price_row_text(self, name: str, namew: int) -> str:
+        # One model's formatted price row (or the "local — no API cost" note).
+        if is_local_provider(name):
+            return f"{shorten(name, namew):{namew}}  {'local — no API cost':>31}"
+        ir, orr, crr, cwr = model_price(name)
+        return f"{shorten(name, namew):{namew}}  {ir:>7.2f} {orr:>7.2f} {crr:>7.2f} {cwr:>7.2f}"
+
+    def _price_namew(self, names: list[str], width: int) -> int:
+        return min(max(len(n) for n in names), max(12, width - 34))
+
+    def price_table_lines(self, width: int) -> list[str]:
+        # The models you have used (most spend first) and the models.dev API list
+        # prices OpenTab applies for the "$" what-if estimate. Pure text so it can
+        # be tested without a screen; draw_prices paints the same rows with a cursor.
+        # The model set (and the active filter) is shared with the `e` export via
+        # priced_model_names.
+        names = self.priced_model_names()
+        lines = self.price_intro_lines()
         if not names:
             lines.append(
                 f"No model prices match the filter: {self.query}"
                 if self.query
                 else "No model usage on record yet."
             )
-        else:
-            namew = min(max(len(n) for n in names), max(12, width - 34))
-            lines.append(
-                f"{'model':{namew}}  {'input':>7} {'output':>7} {'cache-r':>7} {'cache-w':>7}"
-            )
-            for name in names:
-                if is_local_provider(name):
-                    lines.append(f"{shorten(name, namew):{namew}}  {'local — no API cost':>31}")
-                    continue
-                ir, orr, crr, cwr = model_price(name)
-                lines.append(
-                    f"{shorten(name, namew):{namew}}  "
-                    f"{ir:>7.2f} {orr:>7.2f} {crr:>7.2f} {cwr:>7.2f}"
-                )
+            return lines
+        namew = self._price_namew(names, width)
+        lines.append(f"{'model':{namew}}  {'input':>7} {'output':>7} {'cache-r':>7} {'cache-w':>7}")
+        lines.extend(self._price_row_text(name, namew) for name in names)
         return lines
 
     def draw_prices(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         # Reference overlay (toggled with P) so the rates behind the "$" what-if
-        # number are visible. A pager: j/k scroll, any other key closes it.
+        # number are visible. The model list is navigable (j/k moves a cursor);
+        # Enter on a model drills into the sessions that used it.
+        if self.app.prices_model is not None:
+            self.draw_price_sessions(stdscr, y, bottom, width)
+            return
         self.box(
             stdscr,
             y,
             0,
             bottom - y,
             width,
-            "Model prices  ·  j/k scroll · f filter · r refresh · e export · any other key closes",
+            "Model prices  ·  j/k select · Enter sessions · f filter · r refresh · e export · q closes",
             active=True,
         )
         inner_w = width - 4
-        lines = self.price_table_lines(inner_w)
-        visible = max(1, bottom - y - 3)
-        scroll = max(0, min(self.app.prices_scroll, max(0, len(lines) - visible)))
+        intro = self.price_intro_lines()
+        top = y + 2
+        for offset, line in enumerate(intro):
+            attr = curses.color_pair(4) if "models.dev" in line else curses.A_NORMAL
+            self.write(stdscr, top + offset, 2, shorten(line, inner_w), attr)
+        names = self.priced_model_names()
+        head_y = top + len(intro)
+        if not names:
+            msg = (
+                f"No model prices match the filter: {self.query}"
+                if self.query
+                else "No model usage on record yet."
+            )
+            self.write(stdscr, head_y, 2, shorten(msg, inner_w))
+            return
+        namew = self._price_namew(names, inner_w)
+        header = f"{'model':{namew}}  {'input':>7} {'output':>7} {'cache-r':>7} {'cache-w':>7}"
+        self.write(
+            stdscr, head_y, 2, shorten(header, inner_w), curses.color_pair(4) | curses.A_BOLD
+        )
+        list_top = head_y + 1
+        visible = max(1, bottom - list_top - 1)
+        idx = max(0, min(self.app.prices_index, len(names) - 1))
+        self.app.prices_index = idx
+        scroll = max(0, min(self.app.prices_scroll, max(0, len(names) - visible)))
+        if idx < scroll:  # keep the cursor inside the window
+            scroll = idx
+        elif idx >= scroll + visible:
+            scroll = idx - visible + 1
         self.app.prices_scroll = scroll
-        for offset, line in enumerate(lines[scroll : scroll + visible]):
-            if line.startswith("model "):
-                attr = curses.color_pair(4) | curses.A_BOLD
-            elif "models.dev" in line:
-                attr = curses.color_pair(4)
-            else:
-                attr = curses.A_NORMAL
-            self.write(stdscr, y + 2 + offset, 2, shorten(line, inner_w), attr)
+        for offset, name in enumerate(names[scroll : scroll + visible]):
+            text = self._price_row_text(name, namew)
+            selected = scroll + offset == idx
+            attr = curses.A_REVERSE | curses.A_BOLD if selected else curses.A_NORMAL
+            self.write(stdscr, list_top + offset, 2, f"{shorten(text, inner_w):<{inner_w}}", attr)
+
+    def price_session_lines(self, model: str, width: int) -> list[str]:
+        # Pure-text body for the P overlay's per-model drill-in: every root session
+        # that used `model`, with that model's cost/tokens within the session. Line 0
+        # is the subtotal, line 1 the column header, the rest are the sessions.
+        rows = self.price_model_sessions(model)
+        if not rows:
+            return [f"No sessions used {model}."]
+        subtotal = sum(cost for _w, cost, _t in rows)
+        lines = [
+            f"{len(rows)} session(s) · {money(subtotal)} on this model",
+            f"{'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}",
+        ]
+        for w, cost, tok in rows:
+            lines.append(
+                f"{w.created_at[:10]:<10} {money(cost):>9} {human_tokens(tok):>8}  "
+                f"{self.src_col(w)}{w.title}"
+            )
+        return lines
+
+    def draw_price_sessions(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
+        # The P overlay's per-model drill-in (Enter on a model). The subtotal +
+        # column header stay pinned; only the session rows scroll. Esc backs out to
+        # the model list; a close key shuts the overlay.
+        model = self.app.prices_model
+        self.box(
+            stdscr,
+            y,
+            0,
+            bottom - y,
+            width,
+            f"Sessions using {shorten(model, max(8, width - 48))}  ·  j/k scroll · Esc back · q closes",
+            active=True,
+        )
+        inner_w = width - 4
+        lines = self.price_session_lines(model, inner_w)
+        top = y + 2
+        if len(lines) == 1:  # the "No sessions used …" case
+            self.write(stdscr, top, 2, shorten(lines[0], inner_w))
+            return
+        self.write(stdscr, top, 2, shorten(lines[0], inner_w), curses.color_pair(4))
+        self.write(
+            stdscr, top + 1, 2, shorten(lines[1], inner_w), curses.color_pair(4) | curses.A_BOLD
+        )
+        body = lines[2:]
+        list_top = top + 2
+        visible = max(1, bottom - list_top - 1)
+        scroll = max(0, min(self.app.prices_scroll, max(0, len(body) - visible)))
+        self.app.prices_scroll = scroll
+        for offset, line in enumerate(body[scroll : scroll + visible]):
+            self.write_rich(stdscr, list_top + offset, 2, shorten(line, inner_w))
 
     # Per-kind toast styling: (colour pair, sigil, header word). Reuses the one
     # restrained palette -- slate info, green success, amber warn, red error -- so a

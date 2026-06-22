@@ -703,21 +703,80 @@ def test_capital_p_opens_model_prices_overlay():
     assert not app.show_prices
 
 
-def test_jk_scrolls_the_prices_overlay():
+def test_jk_navigates_the_prices_overlay():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("claude-opus-4-8", 5.0, 10),
+            _model_row("gpt-5-codex", 2.0, 10),
+            _model_row("claude-haiku-4-5", 1.0, 10),
+        ]
+    }
     app.handle_key(None, ord("P"))
-    assert app.show_prices and app.prices_scroll == 0
+    assert app.show_prices and app.prices_index == 0
     app.handle_key(None, ord("j"))
-    assert app.prices_scroll == 1 and app.show_prices  # scrolls, stays open
+    assert app.prices_index == 1 and app.show_prices  # moves the cursor, stays open
     app.handle_key(None, ord("k"))
-    assert app.prices_scroll == 0
+    assert app.prices_index == 0
     app.handle_key(None, ord("k"))  # floored at the top
-    assert app.prices_scroll == 0
+    assert app.prices_index == 0
     app.handle_key(None, ord("G"))
-    assert app.prices_scroll > 0  # jumps toward the bottom (clamped on draw)
+    assert app.prices_index == 2  # last model (3 rows)
+    app.handle_key(None, ord("j"))  # clamped at the last row
+    assert app.prices_index == 2
     app.handle_key(None, ord("g"))
-    assert app.prices_scroll == 0
+    assert app.prices_index == 0
     app.handle_key(None, ord("x"))  # any other key closes
+    assert not app.show_prices
+
+
+def test_prices_filter_is_substring_not_fuzzy():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("claude-sonnet-4-5", 1.0, 10),
+            _model_row("gpt-5-codex", 2.0, 10),
+        ]
+    }
+    # A scattered-letter query ("gtex") subsequence-matches "gpt-5-codex" but is not a
+    # substring, so the P filter (unlike the fuzzy session filter) must reject it.
+    app.query = "gtex"
+    assert app.priced_model_names() == []
+    # A literal substring still matches.
+    app.query = "codex"
+    assert app.priced_model_names() == ["gpt-5-codex"]
+
+
+def test_prices_enter_lists_sessions_that_used_the_model():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", title="alpha", directory="/x"),
+            workflow("b", "2026-06-02 09:00:00", title="beta", directory="/y"),
+            workflow("c", "2026-06-03 09:00:00", title="gamma", directory="/z"),
+        ]
+    )
+    app._model_by_root = {
+        "a": [_model_row("claude-opus-4-8", 5.0, 100)],
+        "b": [_model_row("claude-opus-4-8", 3.0, 60), _model_row("gpt-5-codex", 1.0, 20)],
+        "c": [_model_row("gpt-5-codex", 2.0, 40)],
+    }
+    app.handle_key(None, ord("P"))
+    # opus outspends codex (5+3 vs 1+2), so it's the first/selected model row.
+    assert app.priced_model_names()[0] == "claude-opus-4-8"
+    app.handle_key(None, 10)  # Enter drills into that model's sessions
+    assert app.prices_model == "claude-opus-4-8"
+    sessions = app.price_model_sessions("claude-opus-4-8")
+    assert [w.id for w, _c, _t in sessions] == ["a", "b"]  # both used opus, most spend first
+    assert "c" not in [w.id for w, _c, _t in sessions]  # c only used codex
+    # The drill-in body lists those session titles (a's $5 ahead of b's $3), not gamma.
+    body = app.renderer.price_session_lines("claude-opus-4-8", 80)
+    assert "2 session(s)" in body[0] and "$8.00" in body[0]
+    assert any("alpha" in ln for ln in body) and any("beta" in ln for ln in body)
+    assert not any("gamma" in ln for ln in body)
+    # Esc backs out to the model list; another key closes the overlay.
+    app.handle_key(None, 27)
+    assert app.prices_model is None and app.show_prices
+    app.handle_key(None, ord("x"))
     assert not app.show_prices
 
 
