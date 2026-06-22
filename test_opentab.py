@@ -780,6 +780,26 @@ def test_prices_enter_lists_sessions_that_used_the_model():
     assert not app.show_prices
 
 
+def test_terminal_resize_does_not_close_overlays():
+    # A SIGWINCH (font/terminal resize) arrives as a KEY_RESIZE keystroke; it must not
+    # be read as the "any other key closes" key that shuts an open overlay.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {"a": [_model_row("claude-opus-4-8", 5.0, 100)]}
+    app.handle_key(None, ord("P"))
+    app.handle_key(None, ot.curses.KEY_RESIZE)
+    assert app.show_prices  # model list survives the resize
+    app.handle_key(None, 10)  # drill into the model's sessions
+    assert app.prices_model == "claude-opus-4-8"
+    app.handle_key(None, ot.curses.KEY_RESIZE)
+    assert app.show_prices and app.prices_model == "claude-opus-4-8"  # drill-in survives too
+    # The help overlay (same close contract) is likewise immune.
+    app.handle_key(None, 27)
+    app.handle_key(None, ord("x"))
+    app.handle_key(None, ord("?"))
+    app.handle_key(None, ot.curses.KEY_RESIZE)
+    assert app.help
+
+
 def test_f_filters_the_prices_overlay_by_model_name():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {

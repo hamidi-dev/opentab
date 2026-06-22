@@ -2293,6 +2293,11 @@ class App:
     def handle_key(self, stdscr: curses.window, key: int) -> bool:
         if key == curses.KEY_MOUSE:
             return self.handle_mouse()
+        if key == curses.KEY_RESIZE:
+            # A SIGWINCH (terminal/font resize) surfaces as a keystroke; it is not one.
+            # The next paint reads getmaxyx() fresh, so just swallow it -- otherwise it
+            # falls through to an overlay's "any other key closes" path and shuts it.
+            return True
         if self.price_prompt:
             return self.handle_price_prompt_key(key)
         if self.help:
