@@ -24,23 +24,20 @@
   <br><sub><b>Projects &amp; sources</b> — group spend by repo across tools, isolate one with <code>c</code>, fuzzy-filter, and rescope the range live</sub>
 </p>
 
-A local, standard-library terminal UI for your AI coding spend. It reads the records
-your coding tools already keep on disk — [OpenCode](https://opencode.ai)'s SQLite
-database, [Claude Code](https://claude.com/claude-code)'s and
-[Codex](https://developers.openai.com/codex)'s session transcripts, plus Hermes, the
-GitHub Copilot CLI, pi-agent, OpenClaw, and CSVs of logged API requests — and shows you
-where your tokens and money actually went: by month, day, project, session, and model,
-down to the subagent tree on the sessions that spawned one. Browse one tool at a time,
-or merge them all into a single view.
+A local, standard-library terminal UI for your AI coding spend. It reads the records your
+coding tools already keep on disk — [OpenCode](https://opencode.ai)'s SQLite database,
+[Claude Code](https://claude.com/claude-code)'s and [Codex](https://developers.openai.com/codex)'s
+session transcripts, plus Hermes, the GitHub Copilot CLI, pi-agent, OpenClaw, and CSV/JSONL
+logs of API requests — and shows where your tokens and money went: by month, day, project,
+session, and model, down to the subagent tree. Browse one tool at a time, or merge them all.
 
-Your tools already keep this ledger; OpenTab is just the reader for it. No backend, no
-telemetry, no accounts — it opens those files **read-only**, so it only reads and leaves
-your data untouched. It's standard-library-only at runtime (`curses` + `sqlite3`) —
-`pipx install opentab-ai` and there's nothing else to pull in.
+Your tools already keep this ledger; OpenTab is just the reader. No backend, no telemetry,
+no accounts — it opens those files **read-only**. Standard-library-only at runtime (`curses`
++ `sqlite3`): `pipx install opentab-ai` and there's nothing else to pull in.
 
 ## Features
 
-- Reads OpenCode, Claude Code, Codex, Hermes, the GitHub Copilot CLI, pi-agent, OpenClaw, and logged-request CSVs — one tool at a time, or merged into a single view
+- Reads OpenCode, Claude Code, Codex, Hermes, the GitHub Copilot CLI, pi-agent, OpenClaw, and logged-request CSV/JSONL files — one tool at a time, or merged into a single view
 - Cost by month, day, project, session, and model
 - Trends overlay: daily / weekly / monthly charts, a calendar spend heatmap, and model-, provider- and source-spend rankings
 - Cost-share percentages and inline spend bars
@@ -56,26 +53,6 @@ your data untouched. It's standard-library-only at runtime (`curses` + `sqlite3`
 - Remembers your range, sort, ignored projects, and the `$` view between runs
 - Read-only, local-only, standard-library runtime (nothing extra to pull in)
 - Demo mode for screenshots and live demos
-
-## Why this exists
-
-Your coding tools already log every session — cost, token breakdown, model, and the
-full parent/child subagent tree — into plain local files. OpenCode keeps a real SQLite
-database:
-
-```
-~/.local/share/opencode/opencode.db
-```
-
-Claude Code and Codex keep newline-delimited JSON transcripts:
-
-```
-~/.claude/projects/**/*.jsonl       # Claude Code
-~/.codex/sessions/**/rollout-*.jsonl  # Codex CLI
-```
-
-That's the whole pitch: the data is already sitting on your disk, so you can *see your
-own AI usage* without sending it anywhere. OpenTab is what that looks like when you do.
 
 ## Why a browser, not just a usage CLI
 
@@ -105,14 +82,11 @@ Local-only, no network, no telemetry, no accounts — it opens every source file
 **read-only**, so it doesn't modify any of them. For full transparency, everything it
 touches, all on your own machine:
 
-- **Reads** your tools' own records, read-only: OpenCode's SQLite database, Claude
-  Code's JSONL transcripts (`~/.claude/projects`), Codex's CLI rollouts
-  (`~/.codex/sessions`), Hermes' SQLite DB (`~/.hermes/state.db`), the GitHub Copilot
-  CLI's OpenTelemetry export (`~/.copilot/otel`), pi-agent (`~/.pi/agent/sessions`),
-  OpenClaw (`~/.openclaw`), and a CSV of logged API requests (`--csv`). To fold git
-  worktrees into their main repo it also reads the
-  `.git` file of project directories (no `git` process is spawned; disable with
-  `--no-worktrees`).
+- **Reads** your tools' own records, read-only: OpenCode's SQLite DB, the JSONL
+  transcripts of Claude Code / Codex / pi-agent / OpenClaw, Hermes' SQLite DB, the Copilot
+  CLI's OpenTelemetry export, and a CSV/JSONL of logged API requests (`--csv`/`--jsonl`).
+  To fold git worktrees into their main repo it also reads project `.git` files (no `git`
+  process is spawned; disable with `--no-worktrees`).
 - **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
   source, range, and sort; disable with `--no-state`), an optional model-price cache at
   `~/.config/opentab/prices.json` (only when you run `--refresh-models` or press `r` in the
@@ -178,70 +152,55 @@ opentab --demo                   # safe for live demos / screenshots (see below)
 
 ### Data sources
 
-OpenTab reads the local records each AI coding tool keeps — **OpenCode** (its SQLite
-database), **Claude Code** (its session transcripts under
-`~/.claude/projects/**/*.jsonl`), **Codex** (its CLI rollouts under
-`~/.codex/sessions/**/rollout-*.jsonl`), the **GitHub Copilot CLI** (its OpenTelemetry
-export under `~/.copilot/otel/`), **pi-agent** (its sessions under
-`~/.pi/agent/sessions/`), and **OpenClaw** (its gateway sessions under
-`~/.openclaw/agents/**/sessions/`), plus a **Hermes** database and a generic **CSV** of logged API
-requests (e.g. GitHub Copilot in IntelliJ). Pick one with `--source`:
+OpenTab reads the local records each AI coding tool keeps — **OpenCode** (SQLite),
+**Claude Code** (`~/.claude/projects/**/*.jsonl`), **Codex**
+(`~/.codex/sessions/**/rollout-*.jsonl`), the **GitHub Copilot CLI** (its OpenTelemetry
+export under `~/.copilot/otel/`), **pi-agent** (`~/.pi/agent/sessions/`), and **OpenClaw**
+(`~/.openclaw/agents/**/sessions/`), plus a **Hermes** database and a generic **CSV** or
+**JSONL** of logged API requests. Pick one with `--source`:
 
 ```sh
 opentab --source opencode                    # OpenCode only
-opentab --source claude                      # Claude Code only (default ~/.claude/projects)
-opentab --source claude --claude-dir /path   # non-standard Claude Code location
-opentab --source codex                       # Codex only (default ~/.codex/sessions)
-opentab --source codex --codex-dir /path     # non-standard Codex sessions location
+opentab --source claude --claude-dir /path   # Claude Code (default ~/.claude/projects)
+opentab --source codex --codex-dir /path     # Codex (default ~/.codex/sessions)
 opentab --source copilot                     # GitHub Copilot CLI (default ~/.copilot/otel)
 opentab --source pi                          # pi-agent (default ~/.pi/agent/sessions)
 opentab --source openclaw                    # OpenClaw gateway (default ~/.openclaw; honors $OPENCLAW_DIR)
+opentab --csv requests.csv                   # a CSV of logged API requests (or --jsonl requests.jsonl)
 opentab --source all                         # all present sources, merged
 ```
 
-> **GitHub Copilot CLI:** the CLI records usage **only** when its OpenTelemetry file
-> export is enabled — there is no token count in its session files otherwise. Turn it on
-> by setting `COPILOT_OTEL_FILE_EXPORTER_PATH` before you launch or resume a session:
->
-> ```sh
-> export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl
-> ```
->
-> Sessions you run after that show up under `--source copilot`.
+> **GitHub Copilot CLI:** it records usage **only** when its OpenTelemetry export is
+> enabled. Set `COPILOT_OTEL_FILE_EXPORTER_PATH` before launching/resuming a session
+> (`export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl`); sessions after
+> that show up under `--source copilot`.
 
-> **OpenClaw:** the gateway keeps its sessions under `~/.openclaw/agents/<agent>/sessions/`
-> (one project per agent). If you run it on a server, point opentab at a mounted/synced
-> copy with `--openclaw-dir /path` or `OPENCLAW_DIR=/path`. OpenClaw records a per-message
-> cost for **every** provider, but that figure is a list-price estimate on plan routes
-> (openai-codex, github-copilot) whose real cost is $0 — opentab counts only **metered**
-> routes (a direct Anthropic/OpenRouter key) as spend and estimates the rest under `$`,
-> reading `openclaw.json` (read-only) to tell which auth profiles are plan logins.
+> **OpenClaw:** sessions live under `~/.openclaw/agents/<agent>/sessions/` (one project per
+> agent); point `--openclaw-dir`/`$OPENCLAW_DIR` at a mounted copy if it runs on a server.
+> It records a per-message cost for every provider, but only **metered** routes (a direct
+> Anthropic/OpenRouter key) are real spend — plan routes (openai-codex, github-copilot) are
+> estimated under `$`, read from `openclaw.json` (read-only).
 
-`--source auto` (the default) reads OpenCode when its database is present, otherwise
-falls back to the first present source (it never auto-merges). The active source shows
-as a chip in the header, and you can **switch live with `c`** (OpenCode → Claude Code →
-Codex → Copilot → pi → OpenClaw → all, for whichever are present). The whole TUI works the same — months,
-days, projects, sessions, models, trends — with two differences, because **Claude Code,
-Codex, and the Copilot CLI record only tokens, no per-message cost**:
+`--source auto` (the default) restores your last-used source, else **merges every present
+source** when more than one exists (a single source when only one is). The active source
+shows as a header chip; **switch live with `c`** (cycles whichever sources are present,
+plus `all`). The whole TUI works the same — months, days, projects, sessions, models,
+trends — with two differences, because **Claude Code, Codex, and the Copilot CLI record
+only tokens, no per-message cost**:
 
-- A Claude Code, Codex, or Copilot CLI session works like an OpenCode subscription session: it shows
-  **$0 in normal mode** (nothing is recorded) and its **estimate** (tokens × API list
-  price) under the **`$`** view. Since such a view would otherwise be a wall of `$0.00`,
-  the estimate view **starts on by default** there (header tag:
-  `ESTIMATED — tokens × API list prices`); press `$` to see the recorded numbers, and
-  your choice is remembered.
-- Projects roll up to their **git root**, so sessions started in subdirectories
-  (`frontend/`, `src/`, …) group under the repo instead of bare folder names.
+- Such a session works like an OpenCode subscription session: **$0 in normal mode** and an
+  **estimate** (tokens × API list price) under the **`$`** view. Since that view would
+  otherwise be a wall of `$0.00`, the estimate **starts on by default** there (header tag:
+  `ESTIMATED`); press `$` for the recorded numbers, and your choice is remembered.
+- Projects roll up to their **git root**, so sessions started in subdirectories group under
+  the repo instead of bare folder names.
 
-`--source all` merges every present source into one view: the same repo worked in
-multiple tools rolls up into a single project row, every session row shows its origin (a
-`Src` column in the session tables, `[oc]` / `[cc]` / `[cx]` / `[cp]` / `[pi]` / `[ocl]` tags elsewhere), and the
-Trends overlay gains a **Sources** tab (spend by tool). `$` reprices the unpriced usage
-across all of them — OpenCode's subscription/credit messages plus all of Claude Code's,
-Codex's, and the Copilot CLI's (pi and OpenClaw carry their own per-message cost on metered routes like
-OpenRouter or a direct API key; their subscription/OAuth routes such as openai-codex are estimated like the rest). (When more than one source is present, `--demo` **defaults to this merged
-view** — it shows off the most — and anonymizes every backend under a single shared
-scale so the cross-tool proportion stays truthful.)
+`--source all` merges every present source: the same repo across tools rolls up into one
+project row, every session row shows its origin (a `Src` column, `[oc]`/`[cc]`/`[cx]`/`[cp]`/`[pi]`/`[ocl]`/`[csv]`/`[jl]`
+tags elsewhere), and Trends gains a **Sources** tab. `$` reprices the unpriced usage across
+all of them. (With more than one source present, `--demo` **defaults to this merged view**
+and anonymizes every backend under one shared scale so the cross-tool proportion stays
+truthful.)
 
 ### Demo mode
 
@@ -289,7 +248,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>` / `codex resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project); outside tmux (or with `y`) the `cd <project> && …` command is copied to the clipboard instead. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
-| `c` | Switch data source — any present backend (OpenCode, Claude Code, Codex, Hermes, Copilot, pi, OpenClaw, CSV), or all merged |
+| `c` | Switch data source — any present backend (OpenCode, Claude Code, Codex, Hermes, Copilot, pi, OpenClaw, CSV, JSONL), or all merged |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 
@@ -390,44 +349,33 @@ ruff format src/opentab test_opentab.py
 
 ## A note on cost accuracy
 
-The numbers come straight from each tool's own data (cost/tokens per message,
-rolled up per session). They are *local attribution* of what your tools recorded.
-Some sessions show tokens with a `$0.00` local cost — the tool recorded the usage
-but no per-token price. That's normal whenever billing isn't per token:
-subscription plans (Claude Code, Codex) and credit/token plans (GitHub Copilot)
-both leave the per-message cost empty. Those tokens aren't missing money so much
-as billed elsewhere — by your subscription or account credits — so the real total
-lives with your provider, not this tool. OpenTab surfaces them as "unpriced
-tokens" so you know where local attribution is incomplete.
+The numbers come straight from each tool's own data (cost/tokens per message, rolled up
+per session) — *local attribution* of what your tools recorded. Some sessions show tokens
+with a `$0.00` local cost: the usage was recorded but no per-token price, normal whenever
+billing isn't per token (subscription plans, credit/token plans). That money isn't
+missing, it's billed elsewhere — by your subscription or account credits — so OpenTab
+surfaces it as "unpriced tokens" rather than guessing.
 
-Press `$` in non-demo mode for the **what-if** view: real recorded spend plus
-what `$0.00` subscription/credit usage _would have cost_ at published API list
-prices. Press `P` to see the exact per-model rates behind that estimate. The
-estimate uses an embedded table generated from models.dev for Anthropic, OpenAI,
-and Google, with hand-kept family fallbacks for version or suffix churn and a
-mid-range fallback for unknown models. Nothing is fetched at runtime, so the TUI
-stays offline and standard-library-only.
+Press `$` (non-demo) for the **what-if** view: real recorded spend plus what `$0.00`
+subscription/credit usage _would have cost_ at published API list prices (`P` shows the
+exact per-model rates). The estimate uses an embedded table generated from models.dev for
+Anthropic/OpenAI/Google, with family fallbacks for version churn and a mid-range fallback
+for unknown models. Nothing is fetched at runtime, so the TUI stays offline.
 
-The embedded table only covers Anthropic/OpenAI/Google, so **open models served
-by paid routes** (Kimi, DeepSeek, Qwen, … on OpenRouter/Together/etc.) have no
-embedded price and show as unpriced. To price them, refresh from models.dev:
+That embedded table only covers the big three, so **open models on paid routes** (Kimi,
+DeepSeek, Qwen, … via OpenRouter/Together/etc.) show as unpriced. Refresh from models.dev
+to price them:
 
 ```sh
 opentab --refresh-models     # fetch every provider's list prices into a local cache
 ```
 
-This writes `~/.config/opentab/prices.json` (the one time runtime OpenTab touches
-the network, and only on this explicit command — still standard-library `urllib`,
-no dependency). The cache **overlays** the embedded table, so refreshed models win
-and the long tail gets real prices; with no cache, the offline embedded table is
-used as before. You can also press **`r`** inside the `P` overlay to refresh in
-place. (To regenerate the _embedded_ snapshot that ships in the file, maintainers
-still run `python3 scripts/update_prices.py` and commit the changed `opentab`.)
-
-When OpenTab notices you're using models it has no built-in price for, it offers
-this fetch **once** on startup — answer `y` to fetch now, `n` for not now, or `d`
-to never ask again (remembered in `state.json`; suppressed under `--no-state` and
-`--demo`). You can always refresh later with the command or `r` above.
+This writes `~/.config/opentab/prices.json` (the one time runtime OpenTab touches the
+network, and only on this explicit command — stdlib `urllib`, no dependency). The cache
+**overlays** the embedded table; you can also press **`r`** inside `P` to refresh in place.
+When OpenTab notices models it has no built-in price for, it offers this fetch **once** on
+startup (`y` now, `n` not now, `d` never — remembered in `state.json`, suppressed under
+`--no-state`/`--demo`).
 
 ## License
 

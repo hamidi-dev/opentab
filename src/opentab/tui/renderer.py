@@ -576,6 +576,7 @@ class Renderer:
             "Codex": "cx",
             "Hermes": "hm",
             "CSV": "csv",
+            "JSONL": "jl",
             "Copilot": "cp",
             "Pi": "pi",
             "OpenClaw": "ocl",

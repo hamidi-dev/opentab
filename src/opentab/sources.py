@@ -11,11 +11,13 @@ from opentab.stores.combined import CombinedStore
 from opentab.stores.copilot import CopilotStore
 from opentab.stores.csv_source import CsvStore
 from opentab.stores.hermes import HermesStore
+from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import Store
 from opentab.stores.pi import PiStore
 
 DEFAULT_CSV_PATH = os.path.expanduser("~/.config/opentab/requests.csv")
+DEFAULT_JSONL_PATH = os.path.expanduser("~/.config/opentab/requests.jsonl")
 
 
 def _default_pi_dir() -> str:
@@ -36,6 +38,7 @@ def _default_openclaw_dir() -> str:
 # positional path into the right slot).
 _PATH_SLOT = {
     "csv": "csv",
+    "jsonl": "jsonl",
     "opencode": "db",
     "claude": "claude_dir",
     "codex": "codex_dir",
@@ -53,6 +56,9 @@ def _infer_source_from_path(path: str) -> str | None:
     low = path.lower()
     if low.endswith(".csv"):
         return "csv"
+    if low.endswith((".jsonl", ".ndjson")):
+        return "jsonl"  # a single .jsonl FILE is the logged-request source (the dir-
+        # based JSONL backends -- claude/codex/pi/openclaw/copilot -- want --source)
     if low.endswith((".db", ".sqlite", ".sqlite3")):
         return "opencode"
     return None
@@ -68,6 +74,7 @@ def _route_path_arg(parser: argparse.ArgumentParser, args: argparse.Namespace) -
     # --source the source is inferred from the path (.csv -> csv, .db -> opencode) and
     # opentab opens it on its own. A bare `opentab` is unchanged (auto-merge).
     csv_explicit = args.csv is not None
+    jsonl_explicit = args.jsonl is not None
     path = args.path
     if path is not None:
         if not os.path.exists(path):
@@ -86,11 +93,17 @@ def _route_path_arg(parser: argparse.ArgumentParser, args: argparse.Namespace) -
         setattr(args, slot, path)
         if target == "csv":
             csv_explicit = True
-    # An explicit --csv (with no --source) also means "just show that CSV".
+        elif target == "jsonl":
+            jsonl_explicit = True
+    # An explicit --csv/--jsonl (with no --source) also means "just show that file".
     if csv_explicit and args.source == "auto":
         args.source = "csv"
+    if jsonl_explicit and args.source == "auto":
+        args.source = "jsonl"
     if args.csv is None:
         args.csv = DEFAULT_CSV_PATH
+    if args.jsonl is None:
+        args.jsonl = DEFAULT_JSONL_PATH
 
 
 def _jsonl_dir_available(directory: str) -> bool:
@@ -123,6 +136,7 @@ SOURCE_LABELS = {
     "codex": "Codex",
     "hermes": "Hermes",
     "csv": "CSV",
+    "jsonl": "JSONL",
     "copilot": "Copilot",
     "pi": "Pi",
     "openclaw": "OpenClaw",
@@ -154,6 +168,8 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("hermes")
     if os.path.exists(getattr(args, "csv", "")):
         keys.append("csv")
+    if os.path.exists(getattr(args, "jsonl", "")):
+        keys.append("jsonl")
     if _copilot_otel_available(args):
         keys.append("copilot")
     if _jsonl_dir_available(getattr(args, "pi_dir", "")):
@@ -216,6 +232,11 @@ def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
         if not os.path.exists(path):
             raise SystemExit(f"CSV file not found: {path}")
         return CsvStore(path, args), "OpenTab: loading API-request CSV…\r"
+    if key == "jsonl":
+        path = getattr(args, "jsonl", "")
+        if not os.path.exists(path):
+            raise SystemExit(f"JSONL file not found: {path}")
+        return JsonlStore(path, args), "OpenTab: loading API-request JSONL…\r"
     if key == "copilot":
         if not _copilot_otel_available(args):
             raise SystemExit(

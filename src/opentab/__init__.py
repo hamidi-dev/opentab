@@ -105,6 +105,7 @@ from opentab.pricing import (
 )
 from opentab.sources import (
     DEFAULT_CSV_PATH,
+    DEFAULT_JSONL_PATH,
     RESUME_COMMANDS,
     SOURCE_LABELS,
     available_sources,
@@ -119,6 +120,7 @@ from opentab.stores.combined import CombinedStore
 from opentab.stores.copilot import CopilotStore
 from opentab.stores.csv_source import CsvStore
 from opentab.stores.hermes import HermesStore
+from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import MODEL_EXPR, MSG_MODEL_EXPR, MSG_TOKEN_TOTAL_EXPR, Store
 from opentab.stores.pi import PiStore

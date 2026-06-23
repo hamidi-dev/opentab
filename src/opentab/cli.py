@@ -15,6 +15,7 @@ from opentab import __version__, sources
 from opentab.pricing import MODELS_DEV_URL, price_cache_path, refresh_model_prices
 from opentab.sources import (
     DEFAULT_CSV_PATH,
+    DEFAULT_JSONL_PATH,
     _default_openclaw_dir,
     _default_pi_dir,
     _route_path_arg,
@@ -36,6 +37,7 @@ def parse_args() -> argparse.Namespace:
             "codex",
             "hermes",
             "csv",
+            "jsonl",
             "copilot",
             "pi",
             "openclaw",
@@ -44,10 +46,10 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="data source: opencode (SQLite), claude (Claude Code transcripts), codex "
         "(Codex CLI rollouts), hermes (Hermes Agent DB), csv (a CSV of logged API "
-        "requests, e.g. GitHub Copilot), copilot (GitHub Copilot CLI via its OTEL "
-        "export), pi (pi-agent sessions), openclaw (OpenClaw gateway sessions), or all "
-        "(merged); auto merges every present source (default: auto). Or just pass a file "
-        "path -- e.g. `opentab requests.csv`",
+        "requests, e.g. GitHub Copilot), jsonl (an NDJSON of logged API requests), "
+        "copilot (GitHub Copilot CLI via its OTEL export), pi (pi-agent sessions), "
+        "openclaw (OpenClaw gateway sessions), or all (merged); auto merges every present "
+        "source (default: auto). Or just pass a file path -- e.g. `opentab requests.csv`",
     )
     parser.add_argument(
         "path",
@@ -97,6 +99,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="path to a CSV of logged API requests, e.g. GitHub Copilot; selects the "
         f"csv source. Auto-discovered at {DEFAULT_CSV_PATH} if present",
+    )
+    parser.add_argument(
+        "--jsonl",
+        default=None,
+        help="path to an NDJSON file of logged API requests (one JSON object per line); "
+        f"selects the jsonl source. Auto-discovered at {DEFAULT_JSONL_PATH} if present",
     )
     parser.add_argument(
         "--days",

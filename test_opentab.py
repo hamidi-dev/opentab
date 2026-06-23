@@ -5019,6 +5019,272 @@ def test_csv_joins_the_source_cycle_and_has_no_resume_command():
         assert app.resume_command(wf) is None
 
 
+def _jsonl_args():
+    return type("Args", (), {"demo": False})()
+
+
+def test_jsonl_store_splits_cache_prefixes_providers_and_supports_turns():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.jsonl")
+        _write_jsonl(
+            path,
+            [
+                # s1: two requests on one prompt, then a third on a new prompt
+                {
+                    "timestamp": "2026-06-18T10:00:00Z",
+                    "session_id": "s1",
+                    "request_id": "r1",
+                    "model": "claude-sonnet-4",
+                    "prompt": "refactor auth",
+                    "input_tokens": 12000,
+                    "cached_tokens": 4000,
+                    "output_tokens": 800,
+                },
+                {
+                    "timestamp": "2026-06-18T10:00:30Z",
+                    "session_id": "s1",
+                    "request_id": "r2",
+                    "model": "claude-sonnet-4",
+                    "prompt": "refactor auth",
+                    "input_tokens": 9000,
+                    "cached_tokens": 8000,
+                    "output_tokens": 600,
+                },
+                {
+                    "timestamp": "2026-06-18T10:05:00Z",
+                    "session_id": "s1",
+                    "request_id": "r3",
+                    "model": "gpt-4o",
+                    "prompt": "add tests",
+                    "input_tokens": 5000,
+                    "output_tokens": 300,
+                },
+                {
+                    "timestamp": "2026-06-17T09:00:00Z",
+                    "session_id": "s2",
+                    "request_id": "r4",
+                    "model": "gemini-2.5-pro",
+                    "input_tokens": 2000,
+                    "output_tokens": 150,
+                },
+            ],
+        )
+        store = ot.JsonlStore(path, _jsonl_args())
+        assert store.records_cost is False  # no cost -> subscription-style
+        workflows = store.workflows()
+        assert {w.id for w in workflows} == {"s1", "s2"}
+        s1 = next(w for w in workflows if w.id == "s1")
+        assert s1.source == "JSONL"
+        assert s1.subagents == 0  # no subagent tree
+        assert s1.total_cost == 0.0
+        # uncached+cached+output per request: 12800 + 9600 + 5300
+        assert s1.total_tokens == s1.unpriced_tokens == 27700
+        assert s1.title == "refactor auth"  # title seeds from the first prompt
+
+        rows = {r["model_name"]: r for r in store.model_breakdown() if r["root_id"] == "s1"}
+        assert set(rows) == {"anthropic/claude-sonnet-4", "openai/gpt-4o"}
+        cl = rows["anthropic/claude-sonnet-4"]
+        assert cl["input"] == 9000 and cl["cache_read"] == 12000  # cached split out of input
+
+        # Turns: chronological, grouped by the owning prompt (consecutive same text)
+        assert store.supports_turns("s1") is True
+        turns = store.message_timeline("s1")
+        assert [t["tokens_total"] for t in turns] == [12800, 9600, 5300]
+        assert [t["prompt_title"] for t in turns] == ["refactor auth", "refactor auth", "add tests"]
+        assert turns[0]["prompt_id"] == turns[1]["prompt_id"] != turns[2]["prompt_id"]
+        assert all(t["depth"] == 0 and t["agent"] == "-" for t in turns)
+        # time is the canonical local "YYYY-MM-DD HH:MM:SS" the renderer slices
+        assert re.match(r"2026-06-18 \d\d:\d\d:\d\d$", turns[0]["time"])
+
+
+def test_jsonl_cost_and_credits_price_as_real_spend():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.jsonl")
+        _write_jsonl(
+            path,
+            [
+                {
+                    "timestamp": "2026-06-18T10:00:00Z",
+                    "session_id": "m1",
+                    "model": "claude-opus-4-5",
+                    "input_tokens": 10000,
+                    "output_tokens": 2000,
+                    "credits": 150,
+                },
+                {
+                    "timestamp": "2026-06-18T10:10:00Z",
+                    "session_id": "m1",
+                    "model": "claude-opus-4-5",
+                    "input_tokens": 3000,
+                    "output_tokens": 500,
+                    "cost_usd": 0.40,
+                },
+            ],
+        )
+        store = ot.JsonlStore(path, _jsonl_args())
+        assert store.records_cost is True
+        w = store.workflows()[0]
+        assert w.total_cost == round(150 * 0.01 + 0.40, 6)  # credits x $0.01 + USD = $1.90
+        assert w.unpriced_tokens == 0  # metered rows aren't re-estimated under "$"
+        row = store.model_breakdown()[0]
+        assert row["unpriced_input"] == 0 and row["unpriced_output"] == 0
+
+
+def test_jsonl_dedupes_request_id_and_synthesizes_sessions():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.jsonl")
+        # r1 appears twice (regenerated file) -> counted once; a junk line is skipped;
+        # rows with no session_id group into one synthetic session per (date, project).
+        with open(path, "w") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-18T10:00:00Z",
+                        "session_id": "s1",
+                        "request_id": "r1",
+                        "model": "gpt-4o",
+                        "input_tokens": 100,
+                        "output_tokens": 10,
+                    }
+                )
+                + "\n"
+            )
+            fh.write(
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-18T10:00:30Z",
+                        "session_id": "s1",
+                        "request_id": "r1",
+                        "model": "gpt-4o",
+                        "input_tokens": 100,
+                        "output_tokens": 10,
+                    }
+                )
+                + "\n"
+            )
+            fh.write("this is not json\n")
+            fh.write(
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-18T11:00:00Z",
+                        "project": "alpha",
+                        "model": "gpt-4o",
+                        "input_tokens": 50,
+                        "output_tokens": 5,
+                    }
+                )
+                + "\n"
+            )
+            fh.write(
+                json.dumps(
+                    {
+                        "timestamp": "2026-06-19T09:00:00Z",
+                        "project": "alpha",
+                        "model": "gpt-4o",
+                        "input_tokens": 70,
+                        "output_tokens": 7,
+                    }
+                )
+                + "\n"
+            )
+        store = ot.JsonlStore(path, _jsonl_args())
+        workflows = store.workflows()
+        s1 = next(w for w in workflows if w.id == "s1")
+        assert s1.total_tokens == 110  # r1 counted once, not 220
+        synthetic = [w for w in workflows if w.id.startswith("jsonl:")]
+        assert len(synthetic) == 2  # (06-18, alpha) and (06-19, alpha)
+
+
+def test_jsonl_detail_turns_groups_and_reprices_under_dollar():
+    args = type("Args", (), {"since": None, "until": None, "days": None})
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.jsonl")
+        _write_jsonl(
+            path,
+            [
+                {
+                    "timestamp": "2026-06-18T10:00:00Z",
+                    "session_id": "s1",
+                    "request_id": "r1",
+                    "model": "claude-sonnet-4",
+                    "prompt": "refactor auth",
+                    "input_tokens": 8000,
+                    "output_tokens": 800,
+                },
+                {
+                    "timestamp": "2026-06-18T10:05:00Z",
+                    "session_id": "s1",
+                    "request_id": "r2",
+                    "model": "claude-sonnet-4",
+                    "prompt": "add tests",
+                    "input_tokens": 5000,
+                    "output_tokens": 300,
+                },
+            ],
+        )
+        app = ot.App(ot.JsonlStore(path, _jsonl_args()), args())
+        rnd = ot.Renderer(app)
+        wf = app.loaded[0]
+        # A token-only source defaults the "$" estimate ON, so the two $0 turns are
+        # repriced at list price -> non-zero total, grouped under their prompts.
+        assert app.show_api_prices is True
+        priced = rnd.detail_turns(wf, 96)
+        joined = "\n".join(priced)
+        assert priced[0].startswith("# Turns — 2 turns, $") and "$0.00 total" not in priced[0]
+        assert "▸ refactor auth" in joined and "▸ add tests" in joined
+        # Toggle the estimate off -> only recorded cost ($0) counts.
+        app.show_api_prices = False
+        assert rnd.detail_turns(wf, 96)[0] == "# Turns — 2 turns, $0.00 total"
+
+
+def test_jsonl_path_routing_and_source_cycle():
+    with tempfile.TemporaryDirectory() as tmp:
+        jl_path = os.path.join(tmp, "requests.jsonl")
+        _write_jsonl(
+            jl_path,
+            [
+                {
+                    "timestamp": "2026-06-18T10:00:00Z",
+                    "model": "gpt-4o",
+                    "input_tokens": 100,
+                    "output_tokens": 10,
+                }
+            ],
+        )
+        # All three forms select the jsonl source and fill --jsonl.
+        for argv in ([jl_path], ["--jsonl", jl_path], ["--source", "jsonl", jl_path]):
+            a = _parse(argv)
+            assert a.source == "jsonl", argv
+            assert a.jsonl == jl_path, argv
+        # Bare `opentab` is unchanged: auto, jsonl auto-discovered at the default path.
+        bare = _parse([])
+        assert bare.source == "auto"
+        assert bare.jsonl == ot.DEFAULT_JSONL_PATH
+
+        oc_db = os.path.join(tmp, "opencode.db")
+        open(oc_db, "w").close()
+        args = type(
+            "Args",
+            (),
+            {
+                "since": None,
+                "until": None,
+                "days": None,
+                "source": "auto",
+                "db": oc_db,
+                "claude_dir": os.path.join(tmp, "no-claude"),
+                "codex_dir": os.path.join(tmp, "no-codex"),
+                "hermes_db": os.path.join(tmp, "no-hermes.db"),
+                "csv": os.path.join(tmp, "no.csv"),
+                "jsonl": jl_path,
+                "demo": False,
+            },
+        )()
+        assert "jsonl" in ot.available_sources(args)
+        store, _ = ot.sources.make_store(args, "jsonl")
+        assert isinstance(store, ot.JsonlStore)
+
+
 def _parse(argv):
     import sys as _sys
 
