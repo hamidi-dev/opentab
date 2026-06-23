@@ -175,6 +175,7 @@ class App:
         self.trend_week_index = 0  # which week the Weekly tab shows (0 = newest)
         self.trend_year_index = 0  # which year the Calendar tab shows (0 = newest)
         self.cal_cursor: str | None = None  # highlighted day on the Calendar tab (None = peak)
+        self.cal_focus = False  # Calendar day-grid focused (Enter focuses, Esc steps back out)
         self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
         self.has256 = False  # set in run() once curses knows the terminal's color depth
         self._cal_geom: tuple | None = None  # last calendar grid geometry, for mouse hit-testing
@@ -1955,6 +1956,7 @@ class App:
         self.trend_tab = self.trend_tabs.index("Calendar")
         self.trend_year_index = yi
         self.cal_cursor = date
+        self.cal_focus = True  # we drilled in from a focused grid; resume there
 
     def move(self, delta: int) -> None:
         if self.view == "session":
@@ -2322,26 +2324,36 @@ class App:
             return self._handle_price_models_key(key)
         if self.trends:
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
-            if current == "Calendar" and key in (
-                curses.KEY_LEFT,
-                curses.KEY_RIGHT,
-                curses.KEY_UP,
-                curses.KEY_DOWN,
-                10,
-                13,
-                curses.KEY_ENTER,
-                ord("+"),
-                ord("="),
-                ord("-"),
-                ord("_"),
-            ):
-                # On the Calendar tab the arrows drive the day cursor, +/- tune the heat
-                # granularity, and Enter drills in; tab/year nav stays on the letter keys.
-                return self._calendar_key(key)
+            if current == "Calendar":
+                # The Calendar tab is modal so the arrows aren't trapped: until you
+                # focus the grid, arrows move between tabs like every other tab. Enter
+                # focuses it (arrows then walk the day cursor, Enter drills in), and Esc
+                # steps back out to tab navigation instead of closing the whole overlay.
+                if self.cal_focus:
+                    if key == 27:  # Esc -> leave focus, back to tab navigation
+                        self.cal_focus = False
+                        return True
+                    if key in (
+                        curses.KEY_LEFT,
+                        curses.KEY_RIGHT,
+                        curses.KEY_UP,
+                        curses.KEY_DOWN,
+                        10,
+                        13,
+                        curses.KEY_ENTER,
+                    ):
+                        return self._calendar_key(key)
+                elif key in (10, 13, curses.KEY_ENTER):
+                    self.cal_focus = True  # focus the grid; arrows now pick days
+                    return True
+                if key in (ord("+"), ord("="), ord("-"), ord("_")):
+                    return self._calendar_key(key)  # +/- tune shades in either mode
             if key in (ord("h"), curses.KEY_LEFT):
                 self.trend_tab = (self.trend_tab - 1) % len(self.trend_tabs)
+                self.cal_focus = False
             elif key in (ord("l"), curses.KEY_RIGHT):
                 self.trend_tab = (self.trend_tab + 1) % len(self.trend_tabs)
+                self.cal_focus = False
             elif key in (ord("j"), curses.KEY_DOWN, ord("["), ord("k"), curses.KEY_UP, ord("]")):
                 # Page the Daily tab's month / the Weekly tab's week / the Calendar's year.
                 older = key in (ord("j"), curses.KEY_DOWN, ord("["))
@@ -2384,6 +2396,7 @@ class App:
             self.trend_week_index = 0  # and the most recent week
             self.trend_year_index = 0  # and the most recent year
             self.cal_cursor = None  # Calendar cursor defaults to that year's peak day
+            self.cal_focus = False  # land on the Calendar tab unfocused (arrows pick tabs)
             return True
         if key == ord("P"):
             self.show_prices = True
@@ -2674,9 +2687,15 @@ class App:
                 self.cal_cursor = None  # re-anchor the cursor on the new year's peak
             return True
         if current == "Calendar" and (click or double):
-            # A click moves the day cursor onto that cell; a double-click drills in.
             date = self._calendar_date_at(my, mx)
             if date:
+                if not self.cal_focus:
+                    # The grid is modal: a click on the sleeping calendar only wakes it
+                    # (like Enter). You can't pick or open a day until it's focused, so a
+                    # stray click never jumps into a day -- the next click does that.
+                    self.cal_focus = True
+                    return True
+                # Focused: a click moves the day cursor onto that cell, a double-click drills.
                 self.cal_cursor = date
                 if double:
                     if self.drill_into_date(date):
@@ -2688,6 +2707,8 @@ class App:
         if click or double:
             target = self.renderer.hit(my, mx)
             if target and target[0] == "trend":
+                if self.trend_tab != target[1]:
+                    self.cal_focus = False  # switching tabs leaves the calendar grid
                 self.trend_tab = target[1]
         return True
 

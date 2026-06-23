@@ -87,6 +87,19 @@ class FakeScreen:
             self.cells[(y, x + i)] = ch
 
 
+class AttrScreen(FakeScreen):
+    # FakeScreen that also remembers the attribute each glyph was painted with, so a
+    # test can assert on color/bold/dim rather than just the text.
+    def __init__(self, height=24, width=80):
+        super().__init__(height, width)
+        self.attrs = {}
+
+    def addstr(self, y, x, text, attr=0):
+        super().addstr(y, x, text, attr)
+        for i in range(len(text)):
+            self.attrs[(y, x + i)] = attr
+
+
 def screen_text(screen):
     # Flatten the painted cells back into newline-joined rows (gaps become spaces).
     rows = {}
@@ -100,10 +113,17 @@ def screen_text(screen):
 
 
 def open_calendar(app):
-    # Open the Trends overlay and tab across to the Calendar heat map.
+    # Open the Trends overlay and tab across to the Calendar heat map (unfocused).
     app.handle_key(None, ord("T"))
     while app.trend_tabs[app.trend_tab] != "Calendar":
         app.handle_key(None, ord("l"))
+    return app
+
+
+def focus_calendar(app):
+    # Open the Calendar tab and focus its day grid (Enter) so arrows walk days.
+    open_calendar(app)
+    app.handle_key(None, 10)  # Enter focuses the grid
     return app
 
 
@@ -449,6 +469,65 @@ def test_draw_calendar_paints_heat_grid():
     assert any(g in text for g in "·░▒▓")  # cooler tiers (empty + light days) render too
 
 
+def test_calendar_heat_grid_dims_until_focused():
+    # The visual affordance for the modal tab: the grid is dimmed (and unbolded) while
+    # unfocused, so arriving on Calendar reads as "asleep -- press Enter"; focusing lights
+    # it back up. We probe the busiest day's own cell, away from the bright cursor marker.
+    from datetime import datetime
+
+    app = app_with([workflow("big", "2026-06-15 12:00:00", cost=50)])
+    app.trend_year_index = 0
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        unfocused = AttrScreen(24, 130)
+        app.cal_focus = False
+        app.renderer.draw_calendar(unfocused, 0, 0, 24, 130)
+        gy0, row_pitch, gx, pitch, start_col, shown, year, grid_start = app._cal_geom
+        cd = datetime.strptime("2026-06-15", "%Y-%m-%d")
+        col = (cd - grid_start).days // 7 - start_col
+        cy, cx = gy0 + cd.weekday() * row_pitch, gx + col * pitch
+        dim_attr = unfocused.attrs[(cy, cx)]
+        focused = AttrScreen(24, 130)
+        app.cal_focus = True
+        app.renderer.draw_calendar(focused, 0, 0, 24, 130)
+        bright_attr = focused.attrs[(cy, cx)]
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    assert dim_attr & ot.curses.A_DIM and not dim_attr & ot.curses.A_BOLD  # asleep
+    assert bright_attr & ot.curses.A_BOLD and not bright_attr & ot.curses.A_DIM  # awake
+
+
+def test_calendar_shows_orange_enter_prompt_until_focused():
+    # The call-to-action below the grid: an orange (accent pair 6) bold line only while
+    # the grid is asleep; once focused it gives way to the live per-day detail.
+    app = app_with([workflow("big", "2026-06-15 12:00:00", cost=50)])
+    app.trend_year_index = 0
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: n  # identity so we can read the pair off the attr
+    ot.curses.init_pair = lambda *a: None
+    try:
+        unfocused = AttrScreen(24, 130)
+        app.cal_focus = False
+        app.renderer.draw_calendar(unfocused, 0, 0, 24, 130)
+        focused = AttrScreen(24, 130)
+        app.cal_focus = True
+        app.renderer.draw_calendar(focused, 0, 0, 24, 130)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    prompt = "Press Enter to navigate the calendar"
+    assert prompt in screen_text(unfocused)  # shown while asleep
+    assert prompt not in screen_text(focused)  # gone once the grid is live
+    # Its first glyph is painted in the orange accent (pair 6) + bold.
+    loc = next(
+        (y, x)
+        for (y, x), ch in unfocused.cells.items()
+        if ch == "P" and unfocused.cells.get((y, x + 1)) == "r"
+    )
+    assert unfocused.attrs[loc] == 6 | ot.curses.A_BOLD
+
+
 def test_calendar_cursor_defaults_to_the_busiest_day():
     app = app_with(
         [
@@ -463,7 +542,7 @@ def test_calendar_cursor_defaults_to_the_busiest_day():
 
 def test_calendar_arrow_keys_walk_the_day_cursor():
     app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
-    open_calendar(app)
+    focus_calendar(app)  # arrows only walk days once the grid is focused
     app.handle_key(None, ot.curses.KEY_UP)  # -1 day
     assert app.cal_cursor == "2026-07-08"
     app.handle_key(None, ot.curses.KEY_LEFT)  # -7 days
@@ -502,9 +581,9 @@ def test_calendar_enter_drills_into_the_day():
             workflow("c", "2026-02-01 12:00:00", cost=5),
         ]
     )
-    open_calendar(app)
+    focus_calendar(app)
     app.cal_cursor = "2026-07-09"
-    app.handle_key(None, 10)  # Enter
+    app.handle_key(None, 10)  # Enter -> drills the focused day
     assert not app.trends  # overlay closed
     assert app.view == "zoom" and app.focus == "days"
     assert app.active_day == "2026-07-09"
@@ -513,7 +592,7 @@ def test_calendar_enter_drills_into_the_day():
 
 def test_calendar_enter_on_empty_day_nudges_and_stays():
     app = app_with([workflow("a", "2026-07-09 09:00:00", cost=40)])
-    open_calendar(app)
+    focus_calendar(app)
     app.cal_cursor = "2026-07-10"  # an in-year day with no sessions
     app.handle_key(None, 10)  # Enter
     assert app.trends and app.view == "browse"  # stayed in the calendar, no drill
@@ -539,7 +618,7 @@ def test_calendar_mouse_click_resolves_and_double_click_drills():
     from datetime import datetime
 
     app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
-    open_calendar(app)
+    focus_calendar(app)  # picking days with the mouse only works once focused
     screen = FakeScreen(24, 130)
     orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
     ot.curses.color_pair = lambda n: 0
@@ -561,6 +640,32 @@ def test_calendar_mouse_click_resolves_and_double_click_drills():
     assert not app.trends and app.view == "zoom" and app.active_day == "2026-07-09"
 
 
+def test_calendar_mouse_is_gated_until_focused():
+    # The grid is modal for the mouse too: while unfocused a click only wakes it (it
+    # can't pick or drill a day), and a double-click likewise just focuses. Once focused,
+    # clicks resolve to days as usual (covered by the test above).
+    from datetime import datetime
+
+    app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
+    open_calendar(app)  # unfocused
+    screen = FakeScreen(24, 130)
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        app.renderer.draw_calendar(screen, 0, 0, 24, 130)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    gy0, row_pitch, gx, pitch, start_col, shown, year, grid_start = app._cal_geom
+    cd = datetime.strptime("2026-07-09", "%Y-%m-%d")
+    col = (cd - grid_start).days // 7 - start_col
+    my, mx = gy0 + cd.weekday() * row_pitch, gx + col * pitch
+    # A double-click on the sleeping grid focuses it but does not drill into the day.
+    app._mouse_trends(my, mx, up=False, down=False, click=False, double=True)
+    assert app.cal_focus and app.trends and app.view == "browse"
+    assert app.cal_cursor is None  # no day was picked
+
+
 def test_calendar_escape_returns_to_the_heat_map():
     app = app_with(
         [
@@ -568,7 +673,7 @@ def test_calendar_escape_returns_to_the_heat_map():
             workflow("b", "2025-05-01 12:00:00", cost=8),
         ]
     )
-    open_calendar(app)
+    focus_calendar(app)
     app.cal_cursor = "2026-07-09"
     app.handle_key(None, 10)  # Enter -> drill into that day
     assert not app.trends and app.view == "zoom"
@@ -577,12 +682,44 @@ def test_calendar_escape_returns_to_the_heat_map():
     assert app.view == "browse"
     assert app.trend_year_index == app.calendar_years().index("2026")
     assert app.cal_cursor == "2026-07-09"  # cursor restored to the day we came from
+    assert app.cal_focus  # and the grid is focused again, so arrows resume
+
+
+def test_calendar_unfocused_arrows_switch_tabs():
+    # The reported bug: on the Calendar tab the arrows used to be trapped by the day
+    # cursor, with no way to reach the other tabs. Until the grid is focused, ←/→ must
+    # move between tabs like everywhere else and leave the day cursor alone.
+    app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
+    open_calendar(app)
+    assert not app.cal_focus and app.cal_cursor is None
+    app.handle_key(None, ot.curses.KEY_RIGHT)  # -> next tab, not a day move
+    assert app.trend_tabs[app.trend_tab] != "Calendar"
+    assert app.cal_cursor is None  # the day cursor never moved
+    app.handle_key(None, ot.curses.KEY_LEFT)  # <- back onto Calendar
+    assert app.trend_tabs[app.trend_tab] == "Calendar" and not app.cal_focus
+
+
+def test_calendar_enter_focuses_and_escape_steps_back_out():
+    # Enter focuses the grid (arrows then pick days); Esc leaves focus without closing
+    # the overlay, and a second Esc closes it -- the mode the issue asked for.
+    app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
+    open_calendar(app)
+    assert not app.cal_focus
+    app.handle_key(None, 10)  # Enter -> focus the grid
+    assert app.cal_focus and app.trends
+    app.handle_key(None, ot.curses.KEY_UP)  # now arrows walk days
+    assert app.cal_cursor == "2026-07-08"
+    app.handle_key(None, 27)  # Esc -> leave focus, overlay stays open
+    assert app.trends and not app.cal_focus
+    assert app.trend_tabs[app.trend_tab] == "Calendar"
+    app.handle_key(None, 27)  # Esc again -> close the overlay
+    assert not app.trends
 
 
 def test_normal_day_drill_does_not_bounce_back_to_the_calendar():
     # Only a heat-map drill arms the Esc-return; an ordinary panel drill must clear it.
     app = app_with([workflow("a", "2026-07-09 12:00:00", cost=40)])
-    open_calendar(app)
+    focus_calendar(app)
     app.cal_cursor = "2026-07-09"
     app.handle_key(None, 10)  # heat-map drill arms the return
     assert app._cal_return == "2026-07-09"

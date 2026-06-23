@@ -1792,7 +1792,8 @@ class Renderer:
             "                   OpenCode / Claude Code / Codex / Copilot / pi / OpenClaw / all (when present)",
             "  T                Trends overlay: Daily / Weekly / Monthly / Calendar / Models / Providers / Sources",
             "                   (h/l tabs; j/k month/week/year; $ what-if prices)",
-            "                   Calendar is a spend heat map: ↑↓←→ pick a day, Enter opens it,",
+            "                   Calendar is a spend heat map: Enter focuses the grid, then ↑↓←→",
+            "                   pick a day and Enter opens it (Esc steps back to the tabs);",
             "                   +/- adjusts the color granularity",
             "  P                model prices (the models.dev API rates used for $ what-if);",
             "                   j/k select a model, Enter lists the sessions that used it;",
@@ -2146,7 +2147,10 @@ class Renderer:
         current = tabs[self.trend_tab % len(tabs)]
         unit = {"Daily": "month", "Weekly": "week"}.get(current)
         if current == "Calendar":
-            hint = "↑↓←→ pick · +/- shades · Enter open · esc"
+            if self.cal_focus:
+                hint = "↑↓←→ day · +/- shades · Enter open · esc back"
+            else:
+                hint = "h/l tabs · Enter pick days · esc closes"
         elif unit:
             hint = f"h/l tabs · j/k {unit} · esc closes"
         else:
@@ -2427,6 +2431,9 @@ class Renderer:
                 next_free_x = mx + len(abbr) + 1
 
         # Every weekday gets its own labeled row; the heat grid sits to the right.
+        # Until the grid is focused it reads as "asleep": every cell is dimmed and only
+        # the cursor marker stays lit, so the bright [ ] on the muted field invites the
+        # Enter that wakes the whole map up — the affordance without spelling it out.
         weekday_labels = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
         for r in range(7):
             ry = top + 3 + r * row_pitch
@@ -2435,15 +2442,15 @@ class Renderer:
                 cell = grid[r][start_col + c]
                 if cell is None:
                     continue  # a padding day outside the year: leave it blank
-                self.write(
-                    stdscr,
-                    ry,
-                    gx + c * pitch,
-                    *self._heat_cell(heat_level(cell, peak, levels), levels),
-                )
+                glyph, attr = self._heat_cell(heat_level(cell, peak, levels), levels)
+                if not self.cal_focus:
+                    attr = (attr & ~curses.A_BOLD) | curses.A_DIM  # dim the sleeping grid
+                self.write(stdscr, ry, gx + c * pitch, glyph, attr)
 
         # Frame the highlighted day in the gap columns around its cell, so the brackets
-        # never overwrite a neighbouring glyph.
+        # never overwrite a neighbouring glyph. The marker stays bright in both states:
+        # against the dimmed unfocused grid it's the lone focal point ("start here"),
+        # and on the lit focused grid it's the cursor the arrows walk.
         if cursor and cursor[:4] == year:
             cd = datetime.strptime(cursor, "%Y-%m-%d")
             ccol = (cd - grid_start).days // 7 - start_col
@@ -2457,26 +2464,28 @@ class Renderer:
         # log scale as the cells, so the colors read as numbers (· is a day with no
         # spend; each shade is "up to" its bound, the hottest = the peak day). The bounds
         # bunch up toward the low end — that's the log scale spreading the common days.
+        # Built as (text, attr) segments first so the whole strip can be centered under
+        # the grid; legend cells stay bright (a reference key) even while the grid sleeps.
         ly = top + 3 + 6 * row_pitch + 2  # one blank line below the last weekday row
-        lx = left + xoff
         sep = "  " if levels <= 6 else " "  # tighten the bands so a finer ramp still fits
+        legend: list[tuple[str, int]] = []
         if peak > 0:
-            self.write(stdscr, ly, lx, "per day  ", curses.color_pair(1))
-            lx += 9
+            legend.append(("per day  ", curses.color_pair(1)))
             bounds = [math.expm1(math.log1p(peak) * i / levels) for i in range(levels + 1)]
             for level in range(levels + 1):
-                self.write(stdscr, ly, lx, *self._heat_cell(level, levels))
-                lx += 1
+                legend.append(self._heat_cell(level, levels))
                 label = f" $0{sep}" if level == 0 else f" ≤{heat_band_label(bounds[level])}{sep}"
-                self.write(stdscr, ly, lx, label, curses.color_pair(1))
-                lx += len(label)
+                legend.append((label, curses.color_pair(1)))
         else:
-            self.write(stdscr, ly, lx, "Less ", curses.color_pair(1))
-            lx += 5
+            legend.append(("Less ", curses.color_pair(1)))
             for level in range(levels + 1):
-                self.write(stdscr, ly, lx, *self._heat_cell(level, levels))
-                lx += 1
-            self.write(stdscr, ly, lx, " More", curses.color_pair(1))
+                legend.append(self._heat_cell(level, levels))
+            legend.append((" More", curses.color_pair(1)))
+        lx = left + max(0, (width - sum(len(t) for t, _ in legend)) // 2)  # center the strip
+        for text, seg_attr in legend:
+            self.write(stdscr, ly, lx, text, seg_attr)
+            lx += len(text)
+
         if total > 0:
             peak_date = max(by_date, key=by_date.__getitem__)
             summary = (
@@ -2486,26 +2495,38 @@ class Renderer:
             summary = f"{sessions} sessions, no recorded spend this year"
         else:
             summary = "no spend this year"
-        # The year summary, then the highlighted day, then (for $0 years) the $ nudge —
-        # painted top-down and clipped to whatever rows are left in the panel.
-        info = [summary]
-        if cursor:
-            cd = datetime.strptime(cursor, "%Y-%m-%d")
-            day_cost = by_date.get(cursor, 0.0)
-            day_sessions = sum(1 for w in self.all_workflows if w.created_at[:10] == cursor)
-            label = f"▸ {weekday_labels[cd.weekday()]} {cursor}   "
-            if day_sessions:
-                noun = "session" if day_sessions == 1 else "sessions"
-                info.append(f"{label}{money(day_cost)}   {day_sessions} {noun}   Enter opens")
-            else:
-                info.append(f"{label}no sessions   move with ←↑↓→")
+        # Below the legend, all centered: the year summary, then either the focused-day
+        # detail (when the grid is live) or an orange "press Enter" call-to-action (when
+        # it's asleep), then the $ nudge for $0 years. Painted top-down, clipped to fit.
+        info: list[tuple[str, int]] = [(summary, curses.A_NORMAL)]
+        if self.cal_focus:
+            if cursor:
+                cd = datetime.strptime(cursor, "%Y-%m-%d")
+                day_cost = by_date.get(cursor, 0.0)
+                day_sessions = sum(1 for w in self.all_workflows if w.created_at[:10] == cursor)
+                label = f"▸ {weekday_labels[cd.weekday()]} {cursor}   "
+                if day_sessions:
+                    noun = "session" if day_sessions == 1 else "sessions"
+                    info.append(
+                        (f"{label}{money(day_cost)}   {day_sessions} {noun}   Enter opens", 0)
+                    )
+                else:
+                    info.append((f"{label}no sessions   move with ←↑↓→", 0))
+        else:
+            info.append(("", 0))  # a couple of blank lines set the call-to-action apart
+            info.append(("", 0))
+            info.append(
+                ("Press Enter to navigate the calendar", curses.color_pair(6) | curses.A_BOLD)
+            )
         if total == 0 and sessions and not self.show_api_prices:
-            info.append("$ prices subscription/credit usage at API list rates")
-        for i, line in enumerate(info):
+            info.append(("$ prices subscription/credit usage at API list rates", 0))
+        for i, (line, line_attr) in enumerate(info):
             row_y = ly + 1 + i
             if row_y >= top + height:
                 break
-            self.write_rich(stdscr, row_y, left + xoff, shorten(line, width), curses.A_NORMAL)
+            text = shorten(line, width)
+            cx = left + max(0, (width - len(text)) // 2)  # center each line under the grid
+            self.write_rich(stdscr, row_y, cx, text, line_attr)
 
     def _sync_heat_palette(self) -> None:
         # Re-init the heat color pairs (8..) to the current granularity so +/- restyles
