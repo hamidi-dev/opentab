@@ -89,19 +89,19 @@ class Renderer:
     def year_row_text(self, year: YearSummary, marker: str) -> str:
         return (
             f"{marker} {year_label(year.year):<9} {money(year.cost):>9} "
-            f"{human_tokens(year.tokens):>7} {year.workflows:>3} ses {year.subagents:>3} subs"
+            f"{human_tokens(year.tokens):>7} {year.workflows:>3} ses"
         )
 
     def month_row_text(self, month: MonthSummary, marker: str) -> str:
         return (
             f"{marker} {month.month} {money(month.cost):>9} "
-            f"{human_tokens(month.tokens):>7} {month.workflows:>3} ses {month.subagents:>3} subs"
+            f"{human_tokens(month.tokens):>7} {month.workflows:>3} ses"
         )
 
     def day_row_text(self, day: DaySummary, marker: str) -> str:
         return (
             f"{marker} {day.day} {money(day.cost):>9} "
-            f"{human_tokens(day.tokens):>7} {day.workflows:>3} ses {day.subagents:>3} subs"
+            f"{human_tokens(day.tokens):>7} {day.workflows:>3} ses"
         )
 
     @staticmethod

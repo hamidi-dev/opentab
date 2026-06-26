@@ -32,8 +32,8 @@ logs of API requests — and shows where your tokens and money went: by month, d
 session, and model, down to the subagent tree. Browse one tool at a time, or merge them all.
 
 Your tools already keep this ledger; OpenTab is just the reader. No backend, no telemetry,
-no accounts — it opens those files **read-only**. Standard-library-only at runtime (`curses`
-+ `sqlite3`): `pipx install opentab-ai` and there's nothing else to pull in.
+no accounts — it opens those files **read-only**. Standard-library-only at runtime
+(`curses` + `sqlite3`): `pipx install opentab-ai` and there's nothing else to pull in.
 
 ## Features
 
