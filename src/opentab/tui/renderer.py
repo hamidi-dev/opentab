@@ -2310,7 +2310,9 @@ class Renderer:
     def trend_daily(self, width: int, height: int) -> list[str]:
         # One calendar month at a time (navigate with j/k); the x-axis is the day
         # of the month, so it stays readable instead of cramming the whole range.
-        months = sorted({w.created_at[:7] for w in self.all_workflows}, reverse=True)
+        months = sorted(
+            {w.created_at[:7] for w in self.all_workflows if week_key(w.created_at)}, reverse=True
+        )
         if not months:
             return ["# Daily spend", "", "No spend in the active range."]
         idx = max(0, min(self.trend_month_index, len(months) - 1))
@@ -2329,7 +2331,9 @@ class Renderer:
     def trend_weekly(self, width: int, height: int) -> list[str]:
         # One ISO week at a time (navigate with j/k), x-axis is Mon..Sun of that week.
         # Like trend_daily, but a week instead of a month -- finer-grained browsing.
-        weeks = sorted({week_key(w.created_at) for w in self.all_workflows}, reverse=True)
+        weeks = sorted(
+            {k for w in self.all_workflows if (k := week_key(w.created_at))}, reverse=True
+        )
         if not weeks:
             return ["# Weekly spend", "", "No spend in the active range."]
         idx = max(0, min(self.trend_week_index, len(weeks) - 1))
@@ -2353,7 +2357,8 @@ class Renderer:
     def trend_monthly(self, width: int, height: int) -> list[str]:
         by_month: dict[str, float] = defaultdict(float)
         for w in self.all_workflows:
-            by_month[w.created_at[:7]] += w.total_cost
+            if week_key(w.created_at):  # skip undated rows so month_range never sees ""
+                by_month[w.created_at[:7]] += w.total_cost
         if not by_month:
             return ["# Monthly spend", "", "No spend in the active range."]
         keys = sorted(by_month)

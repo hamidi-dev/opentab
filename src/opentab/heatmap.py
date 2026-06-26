@@ -28,7 +28,13 @@ def month_range(first: str, last: str) -> list[str]:
 def week_key(date_str: str) -> str:
     # The Monday ("YYYY-MM-DD") of the ISO week a date falls in. Sorts chronologically
     # as a plain string (so year boundaries are handled) and reads as "week of <date>".
-    d = datetime.strptime(date_str[:10], "%Y-%m-%d")
+    # Returns "" for a missing or unparseable date: some backends emit a workflow with
+    # no usable timestamp (e.g. a metadata-only session), and such a row simply can't
+    # sit on a timeline -- so callers treat a "" key as off-timeline rather than crash.
+    try:
+        d = datetime.strptime((date_str or "")[:10], "%Y-%m-%d")
+    except ValueError:
+        return ""
     return (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
 
 

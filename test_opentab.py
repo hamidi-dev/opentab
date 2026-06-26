@@ -192,6 +192,32 @@ def test_week_key_buckets_monday_to_sunday():
     assert ot.week_key("2026-01-01 12:00:00") == "2025-12-29"  # folds into prior year's week
 
 
+def test_week_key_tolerates_missing_or_garbage_date():
+    # Some backends emit a workflow with no usable timestamp (e.g. a Claude metadata-only
+    # session: just an ai-title, no messages, no timestamps). week_key returns "" instead
+    # of raising so such a row is treated as off-timeline, never crashing a trend view.
+    assert ot.week_key("") == ""
+    assert ot.week_key("not-a-date") == ""
+    assert ot.week_key("2026-13-99 12:00:00") == ""  # parseable shape, impossible date
+
+
+def test_trends_survive_an_undated_workflow():
+    # Regression: an undated ($0, dateless) workflow mixed in must not crash any
+    # time-bucketed trend view -- it is simply excluded from each timeline.
+    app = app_with(
+        [
+            workflow("dated", "2026-06-03 12:00:00", cost=5),
+            workflow("undated", "", cost=0, tokens=0),  # the metadata-only sidecar
+        ]
+    )
+    # Weekly was the reported crash (week_key strptime on ""); Monthly/Daily/Calendar
+    # are the latent siblings (month_range/month_bounds/int(year) on "").
+    assert "2026-06-01" in app.renderer.trend_weekly(80, 16)[0]
+    assert any("2026-06" in ln for ln in app.renderer.trend_monthly(80, 16))
+    assert app.renderer.trend_daily(80, 16)[0].startswith("# Daily spend · 2026-06")
+    assert app.calendar_years() == ["2026"]  # the undated row contributes no year bucket
+
+
 def test_bar_chart_labels_bars_and_summarizes():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     lines = app.renderer._bar_chart([("d1", 0.0), ("d2", 1.0), ("d3", 2.0)], 80, 12)

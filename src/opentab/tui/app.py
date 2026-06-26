@@ -2205,7 +2205,10 @@ class App:
     def calendar_years(self) -> list[str]:
         # Years with spend in the active range, newest first -- the Calendar tab's
         # navigable buckets (index 0 == newest), shared by the key/mouse handlers.
-        return sorted({w.created_at[:4] for w in self.all_workflows}, reverse=True)
+        # week_key gates out undated rows so a "" year never reaches int(year).
+        return sorted(
+            {w.created_at[:4] for w in self.all_workflows if week_key(w.created_at)}, reverse=True
+        )
 
     def _calendar_by_date(self, year: str) -> dict[str, float]:
         by_date: dict[str, float] = defaultdict(float)
@@ -2358,12 +2361,14 @@ class App:
                 # Page the Daily tab's month / the Weekly tab's week / the Calendar's year.
                 older = key in (ord("j"), curses.KEY_DOWN, ord("["))
                 if current == "Daily":
-                    n = len({w.created_at[:7] for w in self.all_workflows})
+                    n = len(
+                        {w.created_at[:7] for w in self.all_workflows if week_key(w.created_at)}
+                    )
                     self.trend_month_index = self._step_trend_index(
                         self.trend_month_index, n, older
                     )
                 elif current == "Weekly":
-                    n = len({week_key(w.created_at) for w in self.all_workflows})
+                    n = len({k for w in self.all_workflows if (k := week_key(w.created_at))})
                     self.trend_week_index = self._step_trend_index(self.trend_week_index, n, older)
                 elif current == "Calendar":
                     n = len(self.calendar_years())
@@ -2676,10 +2681,10 @@ class App:
         if up or down:
             older = down  # wheel down pages to older buckets, mirroring j/k
             if current == "Daily":
-                n = len({w.created_at[:7] for w in self.all_workflows})
+                n = len({w.created_at[:7] for w in self.all_workflows if week_key(w.created_at)})
                 self.trend_month_index = self._step_trend_index(self.trend_month_index, n, older)
             elif current == "Weekly":
-                n = len({week_key(w.created_at) for w in self.all_workflows})
+                n = len({k for w in self.all_workflows if (k := week_key(w.created_at))})
                 self.trend_week_index = self._step_trend_index(self.trend_week_index, n, older)
             elif current == "Calendar":
                 n = len(self.calendar_years())
