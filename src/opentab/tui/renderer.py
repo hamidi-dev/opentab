@@ -53,6 +53,23 @@ class Renderer:
     pure controller (state + input + data) with no curses/rendering code.
     """
 
+    # Ordered (sort_key, label) for the clickable headers of the sortable picker
+    # lists, matching the labels the *_header builders emit. The session picker
+    # prepends a varying date column (Started/Time), so it isn't listed here.
+    SESSION_SORT_COLUMNS = (
+        ("cost", "Cost"),
+        ("tokens", "Tokens"),
+        ("subagents", "Subs"),
+        ("title", "Title"),
+    )
+    PROJECT_SORT_COLUMNS = (
+        ("project", "Project"),
+        ("cost", "Cost"),
+        ("tokens", "Tokens"),
+        ("sessions", "Ses"),
+        ("subagents", "Subs"),
+    )
+
     def __init__(self, app: App) -> None:
         self.app = app
         # Clickable hit regions, rebuilt every draw() so they always match what is
@@ -60,6 +77,9 @@ class Renderer:
         # (click row y selects index start + (y - y0)) or (kind, y, x0, x1, index)
         # for a tab label where kind is "tab"/"trend". hit() resolves a click.
         self.regions: list[tuple] = []
+        # Clickable column-header zones for sortable lists: (y, x0, x1, key, target).
+        # Rebuilt every draw() alongside regions; sort_hit() resolves a click.
+        self.sort_regions: list[tuple] = []
 
     def __getattr__(self, name: str):
         # Misses are App state/logic; read them from the App. (Renderer's own
@@ -84,6 +104,30 @@ class Renderer:
                 kind, y, x0, x1, index = region  # ("tab"|"trend", y, x0, x1, index)
                 if my == y and x0 <= mx <= x1:
                     return kind, index
+        return None
+
+    def _register_sort_header(
+        self, y: int, x_base: int, header: str, columns, target: str, max_w: int
+    ) -> None:
+        # Make each column label in a sortable list header clickable so a click on
+        # the name sorts the list by that column. `columns` is the ordered
+        # (key, label) list exactly as the labels appear in `header`; we locate each
+        # in the text actually drawn (post-shorten) so every zone lines up with what
+        # is on screen even when the active-sort arrow has shifted columns right.
+        drawn = shorten(header, max_w)
+        pos = 0
+        for key, label in columns:
+            i = drawn.find(label, pos)
+            if i < 0:
+                continue
+            self.sort_regions.append((y, x_base + i, x_base + i + len(label) - 1, key, target))
+            pos = i + len(label)
+
+    def sort_hit(self, my: int, mx: int) -> tuple[str, str] | None:
+        # Resolve a click over a column header to (sort_key, target), or None.
+        for y, x0, x1, key, target in self.sort_regions:
+            if my == y and x0 <= mx <= x1:
+                return key, target
         return None
 
     def year_row_text(self, year: YearSummary, marker: str) -> str:
@@ -241,6 +285,7 @@ class Renderer:
     def draw(self, stdscr: curses.window) -> None:
         stdscr.erase()
         self.regions = []  # rebuilt below as panels draw, for this frame's clicks
+        self.sort_regions = []  # column-header sort zones, same lifecycle as regions
         height, width = stdscr.getmaxyx()
         if height < 20 or width < 80:
             self.write(
@@ -548,12 +593,14 @@ class Renderer:
     def sort_heading(self, key: str, label: str) -> str:
         if self.effective_sort_by() != key:
             return label
-        return f"{label} {'^' if key in ('title', 'project', 'model', 'agent') else 'v'}"
+        desc = self.sort_descending(key, self.sort_reverse)
+        return f"{label} {'v' if desc else '^'}"
 
     def project_sort_heading(self, key: str, label: str) -> str:
         if self.effective_sort_by() != key:
             return label
-        return f"{label} {'^' if key == 'project' else 'v'}"
+        desc = self.sort_descending(key, self.project_sort_reverse)
+        return f"{label} {'v' if desc else '^'}"
 
     def session_started(self, workflow: Workflow) -> str:
         return (
@@ -661,6 +708,14 @@ class Renderer:
             shorten(header, w - 4),
             curses.color_pair(4) | curses.A_BOLD,
         )
+        self._register_sort_header(
+            cy,
+            x + 2,
+            header,
+            (("date", date_label), *self.SESSION_SORT_COLUMNS),
+            "session",
+            w - 4,
+        )
         if not sessions:
             self.write(stdscr, cy + 1, x + 2, "No sessions.", curses.color_pair(1))
             return
@@ -699,6 +754,7 @@ class Renderer:
         cy = y + 3
         header = self.project_header_text(w - 4)
         self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
+        self._register_sort_header(cy, x + 2, header, self.PROJECT_SORT_COLUMNS, "project", w - 4)
         if not projects:
             self.write(stdscr, cy + 1, x + 2, "No projects.", curses.color_pair(1))
             return
@@ -870,6 +926,9 @@ class Renderer:
         header = self.project_header_text(w - 2)
         self.write(
             stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD
+        )
+        self._register_sort_header(
+            y + 1, x + 1, header, self.PROJECT_SORT_COLUMNS, "project", w - 2
         )
 
         visible = h - 4
@@ -1771,6 +1830,8 @@ class Renderer:
             "                   a Sources tab joins after Overview in the merged 'all' view)",
             "  j/k or Up/Down   move in the current list (or scroll detail)",
             "  mouse            wheel scrolls; click selects; double-click drills; click a tab",
+            "                   or a column header (Cost/Tokens/Title/…) to sort by it,",
+            "                   clicking it again to reverse the order",
             "  g/G              top / bottom",
             "  R                set range: all, 30d (or 30), 2m, 1y, 2026, 2026-05, start..end",
             "  a                show all time, keeping the current selection when possible",

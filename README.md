@@ -233,7 +233,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `Shift-Tab` | Flip Months/Days focus while browsing; otherwise step back out |
 | `j`/`k` or arrows | Move in the current list / scroll detail |
 | `h`/`l` | Switch detail tabs |
-| Mouse | Wheel scrolls; click a row or tab to select; double-click to drill in |
+| Mouse | Wheel scrolls; click a row or tab to select; double-click to drill in; click a column header (Cost / Tokens / Title / …) to sort by it, again to reverse |
 | `g` / `G` | Top / bottom |
 | `R` | Set range (`all`, `30d` or `30`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`); `2m`/`1y` are whole calendar months |
 | `a` | Show all time |

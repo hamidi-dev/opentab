@@ -2494,6 +2494,88 @@ def test_project_header_aligns_with_project_rows():
     assert len(row) <= 80
 
 
+def test_clicking_a_column_header_sorts_by_that_column():
+    app = app_with(
+        [workflow("a", "2026-06-01 12:00:00", cost=12.34, tokens=1500, directory="/tmp/project")]
+    )
+    app.set_browse_mode("projects")
+    rnd = app.renderer
+    header = rnd.project_header_text(80)
+    rnd.sort_regions = []
+    rnd._register_sort_header(2, 1, header, rnd.PROJECT_SORT_COLUMNS, "project", 80)
+    # Each label word resolves to its sort key (x_base=1, so screen x = 1 + offset).
+    assert rnd.sort_hit(2, 1 + header.index("Tokens")) == ("tokens", "project")
+    assert rnd.sort_hit(2, 1 + header.index("Cost")) == ("cost", "project")
+    assert rnd.sort_hit(2, 1 + header.index("Subs")) == ("subagents", "project")
+    # A different row, or the leading marker gutter, is not a column label.
+    assert rnd.sort_hit(3, 1 + header.index("Cost")) is None
+    assert rnd.sort_hit(2, 1) is None
+
+
+def test_apply_header_sort_targets_the_clicked_list():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, directory="/tmp/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=5, directory="/tmp/a"),
+        ]
+    )
+    app.workflow_index = 1
+    app.apply_header_sort("tokens", "session")  # a session-header click
+    assert app.sort_by == "tokens" and app.workflow_index == 0
+
+    app.project_index = 2
+    app.apply_header_sort("project", "project")  # a project-header click
+    assert app.project_sort_by == "project" and app.project_index == 0
+
+    # An unknown key for the target is ignored rather than corrupting the sort.
+    app.apply_header_sort("bogus", "session")
+    assert app.sort_by == "tokens"
+
+
+def test_mouse_click_on_column_header_applies_the_sort():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    # Stand in for what a draw() registered: a "Tokens" header zone above the rows.
+    app.renderer.sort_regions = [(4, 10, 15, "tokens", "session")]
+    app.renderer.regions = [("rows", "session", 5, 9, 0, 30, 0)]
+    orig = ot.curses.getmouse
+    try:
+        ot.curses.getmouse = lambda: (0, 12, 4, 0, ot.curses.BUTTON1_CLICKED)
+        assert app.handle_mouse()
+        assert app.sort_by == "tokens"  # the header click sorted, didn't select a row
+        assert app.workflow_index == 0
+    finally:
+        ot.curses.getmouse = orig
+
+
+def test_clicking_active_column_header_toggles_direction():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1.0, tokens=50),
+            workflow("b", "2026-06-02 12:00:00", cost=5.0, tokens=10),
+        ]
+    )
+    # Click a column that isn't the current sort -> its natural order (tokens high->low).
+    app.apply_header_sort("tokens", "session")
+    assert app.sort_by == "tokens" and app.sort_reverse is False
+    assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["a", "b"]
+    # Re-clicking the active column flips it to ascending.
+    app.apply_header_sort("tokens", "session")
+    assert app.sort_reverse is True
+    assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["b", "a"]
+    # Clicking a different column resets to that column's natural order.
+    app.apply_header_sort("title", "session")
+    assert app.sort_by == "title" and app.sort_reverse is False
+
+
+def test_header_arrow_reflects_sort_direction():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/a")])
+    app.set_browse_mode("projects")
+    rnd = app.renderer
+    assert "Cost v" in rnd.project_header_text(80)  # default cost sort, descending
+    app.apply_header_sort("cost", "project")  # active column -> flip to ascending
+    assert "Cost ^" in rnd.project_header_text(80)
+
+
 def test_project_mode_sessions_use_selected_project():
     app = app_with(
         [

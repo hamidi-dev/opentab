@@ -80,6 +80,9 @@ class App:
     sort_options = ("cost", "tokens", "date", "subagents", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
+    # Columns whose natural order is ascending (a->z / shallow-first); every other
+    # column sorts high->low by default. Clicking a column header again flips it.
+    ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth"})
     trend_tabs = ("Daily", "Weekly", "Monthly", "Calendar", "Models", "Providers", "Sources")
     # The `L` launch picker's targets: (shortcut key, kind, label). "copy" hands the
     # resume command to the clipboard; the rest spawn a tmux window/split/popup.
@@ -186,6 +189,11 @@ class App:
         self.prices_model: str | None = None  # drilled into this model's sessions (P overlay)
         self.sort_by = "cost"
         self.project_sort_by = "cost"
+        # Per-context "flipped off the natural order" flags, toggled by re-clicking a
+        # column header. sort_reverse covers the session and subagent lists (which
+        # share sort_by); project lists have their own.
+        self.sort_reverse = False
+        self.project_sort_reverse = False
         self.ignored_projects: set[str] = set()
         self.show_ignored_projects = False
         # When set (in a month/day zoom), the Sessions list is narrowed to this
@@ -475,17 +483,18 @@ class App:
             if self.project_sort_by in self.project_sort_options
             else self.project_sort_options[0]
         )
+        desc = self.sort_descending(sort_by, self.project_sort_reverse)
         if sort_by == "tokens":
-            return sorted(rows, key=lambda p: (p.tokens, p.cost), reverse=True)
+            return sorted(rows, key=lambda p: (p.tokens, p.cost), reverse=desc)
         if sort_by == "sessions":
-            return sorted(rows, key=lambda p: (p.workflows, p.cost), reverse=True)
+            return sorted(rows, key=lambda p: (p.workflows, p.cost), reverse=desc)
         if sort_by == "subagents":
-            return sorted(rows, key=lambda p: (p.subagents, p.cost), reverse=True)
+            return sorted(rows, key=lambda p: (p.subagents, p.cost), reverse=desc)
         if sort_by == "project":
-            return sorted(rows, key=lambda p: p.directory.lower())
+            return sorted(rows, key=lambda p: p.directory.lower(), reverse=desc)
         if sort_by == "recency":
-            return sorted(rows, key=lambda p: p.last_active, reverse=True)
-        return sorted(rows, key=lambda p: (p.cost, p.tokens), reverse=True)
+            return sorted(rows, key=lambda p: p.last_active, reverse=desc)
+        return sorted(rows, key=lambda p: (p.cost, p.tokens), reverse=desc)
 
     @property
     def focused_year(self) -> str | None:
@@ -1665,15 +1674,16 @@ class App:
 
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
         sort_by = self.sort_by if self.sort_by in self.sort_options else self.sort_options[0]
+        desc = self.sort_descending(sort_by, self.sort_reverse)
         if sort_by == "cost":
-            return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
+            return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=desc)
         if sort_by == "tokens":
-            return sorted(rows, key=lambda item: (item.total_tokens, item.total_cost), reverse=True)
+            return sorted(rows, key=lambda item: (item.total_tokens, item.total_cost), reverse=desc)
         if sort_by == "subagents":
-            return sorted(rows, key=lambda item: (item.subagents, item.total_tokens), reverse=True)
+            return sorted(rows, key=lambda item: (item.subagents, item.total_tokens), reverse=desc)
         if sort_by == "title":
-            return sorted(rows, key=lambda item: item.title.lower())
-        return sorted(rows, key=lambda item: item.created_at, reverse=True)
+            return sorted(rows, key=lambda item: item.title.lower(), reverse=desc)
+        return sorted(rows, key=lambda item: item.created_at, reverse=desc)
 
     def zoom_scope_workflows(self, include_ignored: bool = False) -> list[Workflow]:
         # The sessions in the currently zoomed year, month, or day (time mode).
@@ -1799,6 +1809,12 @@ class App:
             return None
         return self.sort_by if self.sort_by in options else options[0]
 
+    def sort_descending(self, key: str, reverse: bool) -> bool:
+        # The on-screen order for a column: its natural direction (numbers and dates
+        # high->low, text and depth a->z), flipped when the user has toggled this
+        # column by clicking its header again. Drives both the sort and the ^/v arrow.
+        return (key not in self.ascending_sort_keys) != reverse
+
     def sort_menu_options(self) -> tuple[str, ...]:
         # The sort keys valid for the view the `s` picker was opened over: project
         # lists use project_sort_options, session/subagent lists current_sort_options.
@@ -1821,11 +1837,41 @@ class App:
         self.sort_menu = True
 
     def apply_sort_choice(self, value: str) -> None:
+        # The `s` picker always lands on a column's natural order; header re-clicks
+        # are where direction gets flipped.
         if self.in_project_sort_context():
             self.project_sort_by = value
+            self.project_sort_reverse = False
             self.project_index = 0
         else:
             self.sort_by = value
+            self.sort_reverse = False
+            self.workflow_index = 0
+        self.scroll = 0
+
+    def apply_header_sort(self, key: str, target: str) -> None:
+        # A click on a column header sorts that list by the column; clicking the
+        # already-active column again flips its direction (asc <-> desc). The click's
+        # target ("project"/"session") says which list was clicked, so it works even
+        # when a project list and a session list show sortable headers on screen at
+        # once. The choice persists on exit via save_state, like the `s` picker.
+        if target == "project":
+            if key not in self.project_sort_options:
+                return
+            if self.project_sort_by == key:
+                self.project_sort_reverse = not self.project_sort_reverse
+            else:
+                self.project_sort_by = key
+                self.project_sort_reverse = False
+            self.project_index = 0
+        else:
+            if key not in self.sort_options:
+                return
+            if self.sort_by == key:
+                self.sort_reverse = not self.sort_reverse
+            else:
+                self.sort_by = key
+                self.sort_reverse = False
             self.workflow_index = 0
         self.scroll = 0
 
@@ -2669,6 +2715,10 @@ class App:
             return True
         if not (click or double):
             return True
+        sort = self.renderer.sort_hit(my, mx)
+        if sort is not None:
+            self.apply_header_sort(*sort)
+            return True
         target = self.renderer.hit(my, mx)
         if target:
             self._apply_click(target, drill=double)
@@ -2936,17 +2986,18 @@ class App:
             if self.sort_by in self.subagent_sort_options
             else self.subagent_sort_options[0]
         )
+        desc = self.sort_descending(sort_by, self.sort_reverse)
         if sort_by == "tokens":
-            return sorted(rows, key=lambda row: (row["tokens_total"], row["cost"]), reverse=True)
+            return sorted(rows, key=lambda row: (row["tokens_total"], row["cost"]), reverse=desc)
         if sort_by == "title":
-            return sorted(rows, key=lambda row: str(row["title"]).lower())
+            return sorted(rows, key=lambda row: str(row["title"]).lower(), reverse=desc)
         if sort_by == "model":
-            return sorted(rows, key=lambda row: str(row["model_name"]).lower())
+            return sorted(rows, key=lambda row: str(row["model_name"]).lower(), reverse=desc)
         if sort_by == "agent":
-            return sorted(rows, key=lambda row: str(row["agent"]).lower())
+            return sorted(rows, key=lambda row: str(row["agent"]).lower(), reverse=desc)
         if sort_by == "depth":
-            return sorted(rows, key=lambda row: (row["depth"], row["tokens_total"]))
-        return sorted(rows, key=lambda row: (row["cost"], row["tokens_total"]), reverse=True)
+            return sorted(rows, key=lambda row: (row["depth"], row["tokens_total"]), reverse=desc)
+        return sorted(rows, key=lambda row: (row["cost"], row["tokens_total"]), reverse=desc)
 
     def range_label(self) -> str:
         if self.custom_since or self.custom_until:
