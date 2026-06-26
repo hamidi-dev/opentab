@@ -324,28 +324,8 @@ instead of crashing.
 
 ## Development
 
-CI runs Ruff, unit tests, and ShellCheck. To use the same pre-push checks locally:
-
-```sh
-pip install ruff==0.1.15
-git config core.hooksPath hooks
-```
-
-Before pushing, the hook runs:
-
-```sh
-ruff check src/opentab test_opentab.py
-ruff format --check src/opentab test_opentab.py
-python3 -m compileall -q src/opentab
-python3 test_opentab.py
-shellcheck install.sh hooks/pre-push  # when shellcheck is installed
-```
-
-To fix formatting manually:
-
-```sh
-ruff format src/opentab test_opentab.py
-```
+CI runs Ruff, unit tests, and ShellCheck. See [CONTRIBUTING.md](CONTRIBUTING.md) for local
+setup, the test/lint commands, the pre-push hooks, and commit conventions.
 
 ## A note on cost accuracy
 

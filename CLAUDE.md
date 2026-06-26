@@ -58,6 +58,20 @@ checks).
 `ruff.toml` deliberately ignores `E501` (long lines): the f-strings build fixed-width
 TUI columns, so do **not** wrap them to satisfy line length.
 
+## Commit conventions
+
+Follow [Conventional Commits](https://www.conventionalcommits.org) — `type(scope): subject`.
+**The full rules and the scope vocabulary table are canonical in
+[`CONTRIBUTING.md`](CONTRIBUTING.md)**; the essentials:
+
+- Types: `feat` `fix` `perf` `refactor` `docs` `test` `chore` (breaking → `type!:` and/or a
+  `BREAKING CHANGE:` footer); releases use `chore(release): vX.Y.Z`.
+- Subject: imperative mood, lowercase first word (`add`, never `adds`/`added`), no trailing
+  period, ≤72 chars.
+- Exactly **one** lowercase scope from the CONTRIBUTING vocabulary — don't coin a synonym
+  for an existing one (`tui` not `ui`, `pricing` not `prices`, `sources` not `source`).
+- **No AI attribution** — no `Co-Authored-By`, no "Generated with …", no 🤖.
+
 ## Hard constraints
 
 - **Standard library only at runtime.** `curses` + `sqlite3` + stdlib. The **only**
