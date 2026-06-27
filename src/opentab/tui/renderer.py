@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from opentab import __version__
 from opentab.models import DaySummary, MonthSummary, ProjectSummary, Workflow, YearSummary
 
 if TYPE_CHECKING:
@@ -570,7 +571,15 @@ class Renderer:
             parts.append(("$ what-if", self.show_api_prices))
         parts += [("? help", self.help), ("q quit", False)]
         self.hline(stdscr, height - 2, 0, width)
-        self.draw_keybar(stdscr, height - 1, width, parts)
+        # Version in the bottom-right corner, lazygit-style: a quiet chrome label.
+        # Reserve its slot so the key strip truncates before it instead of colliding;
+        # paint it last so it always wins those right-edge cells.
+        ver = f" v{__version__} "
+        if len(ver) + 4 < width:
+            self.draw_keybar(stdscr, height - 1, width - len(ver), parts)
+            self.write(stdscr, height - 1, width - len(ver), ver, curses.color_pair(1))
+        else:
+            self.draw_keybar(stdscr, height - 1, width, parts)
 
     def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts) -> None:
         # Render the footer key strip segment by segment so active toggles can stand
@@ -582,7 +591,10 @@ class Renderer:
         self.write(stdscr, y, x, " ", base)
         x += 1
         for i, (text, on) in enumerate(parts):
-            if x >= width - 1:
+            # Stop before a hint (plus its leading separator) that won't fully fit -- a
+            # clean gap at the right edge, and ahead of the version label, instead of a
+            # clipped half-word.
+            if x + (2 if i else 0) + len(text) > width - 1:
                 break
             if i:
                 self.write(stdscr, y, x, "  ", base)

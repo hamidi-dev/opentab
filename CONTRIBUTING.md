@@ -60,8 +60,6 @@ the history scannable and feeds the release-notes pass.
   change appends `!` after the scope (`refactor!: …`) and/or a `BREAKING CHANGE:` footer.
 - **Subject:** imperative mood, lowercase first word (`add`, not `adds`/`added`), no
   trailing period, ≤72 chars. Body is optional; wrap ~72 and explain *why*, not *what*.
-- **No AI attribution** — no `Co-Authored-By`, no "Generated with …", no 🤖 — in commits,
-  tags, PRs, or releases.
 - **Releases** use `chore(release): vX.Y.Z` (and bump `__version__` in
   `src/opentab/__init__.py`).
 - **Scope** is optional but preferred: exactly one, lowercase, from the vocabulary below.
