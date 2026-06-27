@@ -165,7 +165,7 @@ class App:
         self.workflow_index = 0  # selected session in a zoomed Sessions tab
         # Tab cycles focus across the three stacked left panels. Enter drills:
         # browse -> zoom (year/month/day detail) -> session (one session's detail).
-        self.focus = "months"  # "years" | "months" | "days"
+        self.focus = "days"  # "years" | "months" | "days"
         self.browse_mode = "time"  # "time" | "projects"
         self.view = "browse"  # "browse" | "zoom" | "session"
         self.tab = 0
@@ -207,11 +207,12 @@ class App:
 
     def _anchor_default_selection(self) -> None:
         # Open on "All years" (so the Months panel lists the whole history) with the
-        # Months focus sitting on the current calendar month -- falling back to the
-        # newest month when this month has no data yet. Called at startup, after
-        # restoring saved prefs, and on a source switch -- any time the dataset
-        # (and so the years/months) changes under us. The year must be set before
-        # reading self.months, which is scoped to the focused year.
+        # Months selection sitting on the current calendar month -- falling back to the
+        # newest month when this month has no data yet. The Days panel is the default
+        # active focus (set in __init__), so this anchor decides which month's days it
+        # lists. Called at startup, after restoring saved prefs, and on a source switch
+        # -- any time the dataset (and so the years/months) changes under us. The year
+        # must be set before reading self.months, which is scoped to the focused year.
         years = self.years
         # Prefer the synthetic "All years" row; with a single year it isn't shown,
         # so fall back to that lone year (index 0).
@@ -1187,7 +1188,7 @@ class App:
         self.zoom_project = None
         self.query = ""
         self.view = "browse"
-        self.focus = "months"
+        self.focus = "days"
         self.tab = self.scroll = 0
         self.workflow_index = self.month_index = self.day_index = self.project_index = 0
         self._anchor_default_selection()

@@ -3630,22 +3630,23 @@ def test_cycle_focus_keeps_the_active_tab_by_name():
     assert app.current_tabs()[app.tab] == "Overview"  # graceful fallback
 
 
-def test_default_opens_on_all_years_focused_on_current_month():
+def test_default_opens_on_all_years_with_the_days_panel_focused():
     from datetime import datetime
 
     now = datetime.now()
     cm = now.strftime("%Y-%m")
-    # Multiple years -> open on "All years" (focused_year None) with the Months panel
-    # focused, sitting on the current month.
+    # Multiple years -> open on "All years" (focused_year None) with the Days panel
+    # focused, while the Months selection is still anchored to the current month (so the
+    # Days panel lists this month's days).
     app = app_with(
         [
             workflow("a", f"{cm}-01 12:00:00"),  # this month
             workflow("b", f"{now.year - 1}-03-01 12:00:00"),  # a prior year
         ]
     )
-    assert app.focus == "months"
+    assert app.focus == "days"
     assert app.focused_year is None  # "All years"
-    assert app.months[app.month_index].month == cm  # current month is the selection
+    assert app.months[app.month_index].month == cm  # current month anchors the Days panel
 
 
 def test_default_month_falls_back_to_newest_when_current_absent():
@@ -4364,6 +4365,7 @@ def test_live_filter_ranks_best_fuzzy_match_first():
     b = workflow("b", "2026-06-02 12:00:00", title="travel reimbursement node", cost=50.0)
     c = workflow("c", "2026-06-03 12:00:00", title="unrelated", cost=99.0)
     app = app_with([a, b, c])
+    app.focus = "months"  # one scope holds all three (they sit on different days)
     app.query = "trend"
     rows = app.current_sessions()
     assert [w.id for w in rows] == ["a", "b"]  # both match; tight one first, c dropped
