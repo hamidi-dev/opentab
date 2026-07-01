@@ -34,6 +34,8 @@ from opentab.formatting import (
 from opentab.heatmap import (
     BLOCKS_UP,
     HEAT_EMPTY_GLYPH,
+    PRICE_HEAT_BASE_PAIR,
+    PRICE_HEAT_LEVELS,
     calendar_cells,
     heat_band_label,
     heat_glyph,
@@ -1926,6 +1928,7 @@ class Renderer:
             "API list prices from models.dev, per 1M tokens. These are the rates",
             "OpenTab uses to estimate the $ what-if cost of unpriced subscription or",
             "credit usage -- approximate list prices, not your invoice.",
+            "Each column shades green (cheaper) → red (pricier) across your models.",
             "",
         ]
 
@@ -1966,6 +1969,46 @@ class Renderer:
 
     def _price_namew(self, names: list[str], width: int) -> int:
         return min(max(len(n) for n in names), max(12, width - self._PRICE_BLOCK_W - 3))
+
+    def _price_column_ranges(self, names: list[str]) -> list[tuple[float, float] | None]:
+        # For each of the four price columns, the (min, max) over the *positive* list
+        # prices among `names` -- the span the green→red heat normalizes against.
+        # Local models (no API price) and zero cells are excluded, so a column of
+        # {0, 0, 5.0} still spans by its one paying member; a column with fewer than
+        # two distinct positive rates is degenerate (None) and stays neutral.
+        cols: list[list[float]] = [[], [], [], []]
+        for name in names:
+            if is_local_provider(name):
+                continue
+            for i, value in enumerate(model_price(name)):
+                if value > 0:
+                    cols[i].append(value)
+        ranges: list[tuple[float, float] | None] = []
+        for vals in cols:
+            lo, hi = (min(vals), max(vals)) if vals else (0.0, 0.0)
+            ranges.append((lo, hi) if hi > lo else None)
+        return ranges
+
+    def _price_heat_level(self, value: float, rng: tuple[float, float] | None) -> int | None:
+        # The 0..PRICE_HEAT_LEVELS-1 heat bucket for one price cell, by its
+        # *logarithmic* position in the column's [min, max] -- list prices span orders
+        # of magnitude, so a linear ramp would flatten the low end (same reasoning as
+        # heat_level). None means neutral: a degenerate column or a non-positive rate,
+        # which must never read as falsely hot. Pure (no curses) so it's unit-testable.
+        if rng is None:
+            return None
+        lo, hi = rng
+        if value <= lo:
+            return 0
+        frac = (math.log(value) - math.log(lo)) / (math.log(hi) - math.log(lo))
+        return max(0, min(PRICE_HEAT_LEVELS - 1, round(frac * (PRICE_HEAT_LEVELS - 1))))
+
+    def _price_heat_attr(self, value: float, rng: tuple[float, float] | None) -> int:
+        # The green(cheap)→red(pricy) curses attribute for one price cell.
+        level = self._price_heat_level(value, rng)
+        if level is None:
+            return curses.A_NORMAL
+        return curses.color_pair(PRICE_HEAT_BASE_PAIR + level) | curses.A_BOLD
 
     def price_table_lines(self, width: int) -> list[str]:
         # The models you have used (most spend first) and the models.dev API list
@@ -2037,11 +2080,30 @@ class Renderer:
         elif idx >= scroll + visible:
             scroll = idx - visible + 1
         self.app.prices_scroll = scroll
+        ranges = self._price_column_ranges(names)
+        w = self._PRICE_COL_W
         for offset, name in enumerate(names[scroll : scroll + visible]):
+            row_y = list_top + offset
             text = self._price_row_text(name, namew)
             selected = scroll + offset == idx
             attr = curses.A_REVERSE | curses.A_BOLD if selected else curses.A_NORMAL
-            self.write(stdscr, list_top + offset, 2, f"{shorten(text, inner_w):<{inner_w}}", attr)
+            self.write(stdscr, row_y, 2, f"{shorten(text, inner_w):<{inner_w}}", attr)
+            # Repaint each price cell in its green→red heat shade. The selected row
+            # keeps its plain reverse bar (a clearer cursor); local models have no
+            # API price, so their "local — no API cost" note stays neutral too.
+            if selected or is_local_provider(name):
+                continue
+            for i, value in enumerate(model_price(name)):
+                cell_x = 2 + namew + 2 + i * (w + 1)
+                if cell_x + w > 2 + inner_w:
+                    break  # cell would spill past the shortened row; leave it plain
+                self.write(
+                    stdscr,
+                    row_y,
+                    cell_x,
+                    f"{value:>{w}.2f}",
+                    self._price_heat_attr(value, ranges[i]),
+                )
 
     def price_session_lines(self, model: str, width: int) -> list[str]:
         # Pure-text body for the P overlay's per-model drill-in: every root session

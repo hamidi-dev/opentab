@@ -71,6 +71,8 @@ from opentab.heatmap import (
     HEAT_MIN_LEVELS,
     HEAT_RAMP,
     MONTH_ABBR,
+    PRICE_HEAT_BASE_PAIR,
+    PRICE_HEAT_LEVELS,
     calendar_cells,
     heat_band_label,
     heat_glyph,

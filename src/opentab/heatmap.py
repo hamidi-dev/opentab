@@ -48,6 +48,13 @@ HEAT_DEFAULT_LEVELS = 6
 HEAT_EMPTY_GLYPH = "·"  # a tracked-but-empty day (level 0)
 HEAT_RAMP = "░▒▓█"  # density glyphs; on 256-color the *color* carries the fine steps
 
+# The P overlay's per-column price heat reuses the same green(cheap)→red(pricy)
+# ramp but on a fixed, dedicated color-pair block above the calendar's dynamic
+# 8..(8+HEAT_MAX_LEVELS-1) range, so the two never collide and price colors never
+# shift when the calendar granularity (+/-) rescales its own pairs.
+PRICE_HEAT_LEVELS = 5
+PRICE_HEAT_BASE_PAIR = 20  # pairs 20..24; clear of the calendar's 8..18
+
 # 256-color: the high-contrast green→red edge of the xterm color cube — eleven
 # maximally-distinct steps (pure green, lime, yellow, orange, pure red). We sample N
 # of these so each level is a clearly different hue even at the finest granularity;

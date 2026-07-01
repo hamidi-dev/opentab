@@ -26,6 +26,8 @@ from opentab.heatmap import (
     HEAT_DEFAULT_LEVELS,
     HEAT_MAX_LEVELS,
     HEAT_MIN_LEVELS,
+    PRICE_HEAT_BASE_PAIR,
+    PRICE_HEAT_LEVELS,
     heat_palette,
     week_key,
 )
@@ -2259,6 +2261,10 @@ class App:
         # self.cal_levels; seed the current count here so the pairs exist beforehand.
         for i, col in enumerate(heat_palette(self.cal_levels, has256)):
             curses.init_pair(8 + i, col, -1)
+        # The P overlay's price-heat ramp: same green→red palette on its own fixed
+        # pair block (never rescaled by +/-), so cheap/expensive rates read at a glance.
+        for i, col in enumerate(heat_palette(PRICE_HEAT_LEVELS, has256)):
+            curses.init_pair(PRICE_HEAT_BASE_PAIR + i, col, -1)
         stdscr.keypad(True)
         # Wheel-down is BUTTON5, but some curses builds (notably macOS system
         # ncurses) don't expose BUTTON5_PRESSED; on them the wheel-down bit is the

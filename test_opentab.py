@@ -979,6 +979,32 @@ def test_prices_sort_is_persisted_in_state():
     assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
 
 
+def test_prices_heat_scales_each_column_cheap_to_expensive():
+    app = _price_sort_app()
+    app.handle_key(None, ord("P"))
+    r = app.renderer
+    names = app.priced_model_names()
+    ranges = r._price_column_ranges(names)
+    # Each column normalizes over its own positive rates: input spans mini..opus.
+    assert ranges[0] == (0.25, 5.0)
+    levels = {n.split("/")[-1]: r._price_heat_level(ot.model_price(n)[0], ranges[0]) for n in names}
+    # Cheapest input -> coolest bucket (0), priciest -> hottest (top level).
+    assert levels["gpt-5-mini"] == 0
+    assert levels["claude-opus-4-8"] == ot.PRICE_HEAT_LEVELS - 1
+    assert levels["gpt-5-mini"] < levels["claude-haiku-4-5"] < levels["claude-opus-4-8"]
+
+
+def test_prices_heat_is_neutral_when_a_column_has_no_spread():
+    # One model (or all-equal rates) -> no range to shade, so cells stay neutral.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {"a": [_model_row("anthropic/claude-opus-4-8", 5.0, 10)]}
+    app.handle_key(None, ord("P"))
+    r = app.renderer
+    ranges = r._price_column_ranges(app.priced_model_names())
+    assert ranges == [None, None, None, None]
+    assert r._price_heat_level(5.0, ranges[0]) is None
+
+
 def test_prices_filter_is_substring_not_fuzzy():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {
