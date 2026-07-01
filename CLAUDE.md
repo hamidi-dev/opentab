@@ -323,7 +323,19 @@ Every `Workflow` carries two cost snapshots: real recorded cost and an API-equiv
 `MODEL_PRICE_TABLE`, a **generated** block between the `BEGIN/END GENERATED PRICES`
 markers — regenerate with `python3 scripts/update_prices.py` and commit the changed
 `src/opentab/pricing.py`; never hand-edit that block. `model_price()` adds family fallbacks for
-version/suffix churn. `P` shows this table.
+version/suffix churn. `P` shows this table for the models **you've used**
+(`priced_model_entries`), in one of three **layouts `p` cycles** (`prices_view`, a
+saved pref): **by vendor** — models **deduped to the bare id** (list price is
+route-independent) under `▸ Anthropic/OpenAI/…` headers (`model_family`/`family_label`
+infer the vendor from the model *name*, not the access route), each row tagged with
+its route(s); **by provider** — one row per `(route, model)` under `▸ anthropic/
+github-copilot/…` headers, so a gateway that carries many vendors shows them together,
+each row tagged with its vendor (the mirror image of the vendor view); and **flat** —
+one ungrouped list. All three are **sortable** by model/price column (`s` picker or a
+header click; `prices_sort`) and **heat-shaded** green→red per column
+(`_price_heat_level`, pairs `PRICE_HEAT_BASE_PAIR..`). Local models are excluded (no
+API rate). `Enter` drills into the sessions that used a model (aggregated across
+routes by bare id).
 
 `model_price()` first consults an **optional local cache** that *overlays* the embedded
 table: `_load_price_cache()` lazily reads `~/.config/opentab/prices.json` (a

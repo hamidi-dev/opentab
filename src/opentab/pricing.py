@@ -160,6 +160,44 @@ def is_local_provider(name: str) -> bool:
     return str(name).split("/", 1)[0].lower() in LOCAL_PROVIDERS
 
 
+# The vendor/family behind a model, inferred from the *bare* model name -- (family,
+# label, name-prefixes). Order matters only for display grouping, not matching (the
+# prefixes are disjoint). The route in a "route/model" id is how you *access* the
+# model (a gateway like github-copilot or openrouter carries many vendors), so the
+# actual vendor must come from the model name, never the prefix.
+_MODEL_FAMILIES = (
+    ("anthropic", "Anthropic", ("claude",)),
+    ("openai", "OpenAI", ("gpt", "chatgpt", "o1", "o3", "o4", "codex", "davinci", "dall-e")),
+    ("google", "Google", ("gemini", "gemma", "palm")),
+    ("meta", "Meta", ("llama",)),
+    ("mistral", "Mistral", ("mistral", "mixtral", "codestral", "ministral", "magistral", "devstral", "pixtral")),
+    ("deepseek", "DeepSeek", ("deepseek",)),
+    ("qwen", "Qwen", ("qwen", "qwq")),
+    ("moonshot", "Moonshot", ("kimi", "moonshot")),
+    ("xai", "xAI", ("grok",)),
+    ("zhipu", "Zhipu", ("glm",)),
+    ("cohere", "Cohere", ("command",)),
+    ("microsoft", "Microsoft", ("phi",)),
+)  # fmt: skip
+_FAMILY_LABELS = {fam: label for fam, label, _p in _MODEL_FAMILIES}
+
+
+def model_family(name: str) -> str:
+    # The vendor family for a model id (e.g. "anthropic" for github-copilot/claude-*),
+    # inferred from the bare model name, or "" (Other) when unrecognized. See
+    # _MODEL_FAMILIES for why the route prefix is deliberately ignored.
+    bare = str(name).rsplit("/", 1)[-1].lower()
+    for fam, _label, prefixes in _MODEL_FAMILIES:
+        if bare.startswith(prefixes):
+            return fam
+    return ""
+
+
+def family_label(family: str) -> str:
+    # Human label for a family key ("anthropic" -> "Anthropic"); "" -> "Other".
+    return _FAMILY_LABELS.get(family, "Other")
+
+
 # --- optional models.dev price cache (overlays the embedded table) -----------
 # opentab ships an offline price snapshot (the generated MODEL_PRICE_TABLE, only
 # anthropic/openai/google), so open models served by paid routes (kimi/deepseek/qwen on

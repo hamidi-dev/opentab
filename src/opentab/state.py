@@ -32,6 +32,7 @@ def save_state(app: App) -> None:
         "sort_by": app.sort_by,
         "project_sort_by": app.project_sort_by,
         "prices_sort": app.prices_sort,
+        "prices_view": app.prices_view,
         "sort_reverse": app.sort_reverse,
         "project_sort_reverse": app.project_sort_reverse,
         "prices_sort_reverse": app.prices_sort_reverse,
@@ -70,6 +71,8 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.project_sort_by = state["project_sort_by"]
     if state.get("prices_sort") in app.prices_sort_options:
         app.prices_sort = state["prices_sort"]
+    if state.get("prices_view") in {k for k, _label in app.prices_views}:
+        app.prices_view = state["prices_view"]
     if isinstance(state.get("sort_reverse"), bool):
         app.sort_reverse = state["sort_reverse"]
     if isinstance(state.get("project_sort_reverse"), bool):

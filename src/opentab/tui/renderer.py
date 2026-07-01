@@ -45,7 +45,7 @@ from opentab.heatmap import (
     week_key,
 )
 from opentab.models import ALL_YEARS, year_label
-from opentab.pricing import api_equivalent_cost, is_local_provider, model_price, price_cache_meta
+from opentab.pricing import api_equivalent_cost, family_label, model_price, price_cache_meta
 from opentab.util import fuzzy_score, launcher_hook, month_bounds, tool_namespace
 
 
@@ -1882,8 +1882,8 @@ class Renderer:
             "                   pick a day and Enter opens it (Esc steps back to the tabs);",
             "                   +/- adjusts the color granularity",
             "  P                model prices (the models.dev API rates used for $ what-if);",
-            "                   j/k select a model, Enter lists the sessions that used it, s sorts",
-            "                   by a column (or click a header); f filters, r refreshes, e exports",
+            "                   p cycles the layout — by vendor / by provider / flat; j/k select,",
+            "                   Enter its sessions, s sorts a column (or click a header), f/r/e as usual",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
             "  q                quit",
@@ -1938,13 +1938,23 @@ class Renderer:
     _PRICE_COL_W = 8
     _PRICE_BLOCK_W = _PRICE_COL_W * 4 + 3  # four columns + three single-space gaps
 
-    def _price_row_text(self, name: str, namew: int) -> str:
-        # One model's formatted price row (or the "local — no API cost" note).
+    # A few access routes are long; abbreviate the worst offenders for the route tag.
+    _ROUTE_ABBR = {"github-copilot": "copilot"}
+
+    def _route_tag(self, routes) -> str:
+        # The trailing "how you reach this model" annotation, e.g. "anthropic·copilot".
+        return "·".join(self._ROUTE_ABBR.get(r, r) for r in routes)
+
+    def _price_core_text(self, entry, namew: int) -> str:
+        # One model's name + four price cells (no route tag -- that's overlaid dim, and
+        # appended by the text path). Every entry here has a real rate (local models
+        # are dropped upstream), and its price is the bare id's, route-independent.
         w = self._PRICE_COL_W
-        if is_local_provider(name):
-            return f"{shorten(name, namew):{namew}}  {'local — no API cost':>{self._PRICE_BLOCK_W}}"
-        ir, orr, crr, cwr = model_price(name)
-        return f"{shorten(name, namew):{namew}}  {ir:>{w}.2f} {orr:>{w}.2f} {crr:>{w}.2f} {cwr:>{w}.2f}"
+        ir, orr, crr, cwr = model_price(entry.bare)
+        return (
+            f"{shorten(entry.bare, namew):{namew}}  "
+            f"{ir:>{w}.2f} {orr:>{w}.2f} {crr:>{w}.2f} {cwr:>{w}.2f}"
+        )
 
     def _price_col_head(self, key: str, label: str) -> str:
         # One right-aligned _PRICE_COL_W-wide header cell, with a v/^ arrow appended
@@ -1967,20 +1977,18 @@ class Renderer:
         )
         return f"{model:{namew}}  {cells}"
 
-    def _price_namew(self, names: list[str], width: int) -> int:
-        return min(max(len(n) for n in names), max(12, width - self._PRICE_BLOCK_W - 3))
+    def _price_namew(self, entries, width: int) -> int:
+        return min(max(len(e.bare) for e in entries), max(12, width - self._PRICE_BLOCK_W - 3))
 
-    def _price_column_ranges(self, names: list[str]) -> list[tuple[float, float] | None]:
+    def _price_column_ranges(self, entries) -> list[tuple[float, float] | None]:
         # For each of the four price columns, the (min, max) over the *positive* list
-        # prices among `names` -- the span the green→red heat normalizes against.
-        # Local models (no API price) and zero cells are excluded, so a column of
-        # {0, 0, 5.0} still spans by its one paying member; a column with fewer than
-        # two distinct positive rates is degenerate (None) and stays neutral.
+        # prices among `entries` -- the span the green→red heat normalizes against.
+        # Zero cells are excluded, so a column of {0, 0, 5.0} still spans by its paying
+        # member; a column with fewer than two distinct positive rates is degenerate
+        # (None) and stays neutral. (entries are already local-free.)
         cols: list[list[float]] = [[], [], [], []]
-        for name in names:
-            if is_local_provider(name):
-                continue
-            for i, value in enumerate(model_price(name)):
+        for entry in entries:
+            for i, value in enumerate(model_price(entry.bare)):
                 if value > 0:
                     cols[i].append(value)
         ranges: list[tuple[float, float] | None] = []
@@ -2010,30 +2018,67 @@ class Renderer:
             return curses.A_NORMAL
         return curses.color_pair(PRICE_HEAT_BASE_PAIR + level) | curses.A_BOLD
 
+    def _price_group_label(self, group: str) -> str:
+        # The header label for a group in the active view: the vendor name in the
+        # "family" view, the route (or "(direct)" for a route-less id) in "provider".
+        if self.app.prices_view == "family":
+            return family_label(group)
+        return group or "(direct)"
+
+    def _price_entry_tag(self, entry) -> str:
+        # The trailing annotation per row: in the "provider" view the group is already
+        # the route, so show the vendor family instead; otherwise show the route(s).
+        if self.app.prices_view == "provider":
+            return family_label(entry.family)
+        return self._route_tag(entry.routes)
+
+    def _price_render_rows(self, entries) -> list[tuple]:
+        # Flatten the ordered entries into drawable rows: ("header", label) before each
+        # new group (unless the view is flat), then ("model", entry_index, entry) for
+        # each model. The entry_index is the position in `entries`, so the cursor
+        # (prices_index) and this list stay in lock-step.
+        rows: list[tuple] = []
+        grouped = self.app.prices_view != "flat"
+        for i, entry in enumerate(entries):
+            if grouped and (i == 0 or entry.group != entries[i - 1].group):
+                rows.append(("header", self._price_group_label(entry.group)))
+            rows.append(("model", i, entry))
+        return rows
+
+    def _price_empty_msg(self) -> str:
+        return (
+            f"No model prices match the filter: {self.query}"
+            if self.query
+            else "No model usage on record yet."
+        )
+
     def price_table_lines(self, width: int) -> list[str]:
-        # The models you have used (most spend first) and the models.dev API list
-        # prices OpenTab applies for the "$" what-if estimate. Pure text so it can
-        # be tested without a screen; draw_prices paints the same rows with a cursor.
-        # The model set (and the active filter) is shared with the `e` export via
-        # priced_model_names.
-        names = self.priced_model_names()
+        # The models you have used and the models.dev API list prices OpenTab applies
+        # for the "$" what-if estimate, laid out by the active view (grouped under
+        # ▸ headers unless flat). Pure text so it can be tested without a screen;
+        # draw_prices paints the same rows with a cursor + heat colors. The entry set
+        # (and the active filter) is shared with the `e` export via priced_model_entries.
+        entries = self.priced_model_entries()
         lines = self.price_intro_lines()
-        if not names:
-            lines.append(
-                f"No model prices match the filter: {self.query}"
-                if self.query
-                else "No model usage on record yet."
-            )
+        if not entries:
+            lines.append(self._price_empty_msg())
             return lines
-        namew = self._price_namew(names, width)
+        namew = self._price_namew(entries, width)
         lines.append(self._price_header(namew))
-        lines.extend(self._price_row_text(name, namew) for name in names)
+        for row in self._price_render_rows(entries):
+            if row[0] == "header":
+                lines.append(f"▸ {row[1]}")
+            else:
+                _, _i, entry = row
+                core = self._price_core_text(entry, namew)
+                tag = self._price_entry_tag(entry)
+                lines.append(f"{core}  {tag}" if tag else core)
         return lines
 
     def draw_prices(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         # Reference overlay (toggled with P) so the rates behind the "$" what-if
-        # number are visible. The model list is navigable (j/k moves a cursor);
-        # Enter on a model drills into the sessions that used it.
+        # number are visible. Laid out by the active view (p cycles by vendor / by
+        # provider / flat); j/k moves a cursor over models, Enter drills into sessions.
         if self.app.prices_model is not None:
             self.draw_price_sessions(stdscr, y, bottom, width)
             return
@@ -2043,7 +2088,7 @@ class Renderer:
             0,
             bottom - y,
             width,
-            "Model prices  ·  j/k select · Enter sessions · s sort · f filter · r refresh · e export · q closes",
+            f"Model prices ({self.prices_view_label()})  ·  j/k select · Enter sessions · s sort · p view · f filter · r refresh · e export · q closes",
             active=True,
         )
         inner_w = width - 4
@@ -2052,17 +2097,12 @@ class Renderer:
         for offset, line in enumerate(intro):
             attr = curses.color_pair(4) if "models.dev" in line else curses.A_NORMAL
             self.write(stdscr, top + offset, 2, shorten(line, inner_w), attr)
-        names = self.priced_model_names()
+        entries = self.priced_model_entries()
         head_y = top + len(intro)
-        if not names:
-            msg = (
-                f"No model prices match the filter: {self.query}"
-                if self.query
-                else "No model usage on record yet."
-            )
-            self.write(stdscr, head_y, 2, shorten(msg, inner_w))
+        if not entries:
+            self.write(stdscr, head_y, 2, shorten(self._price_empty_msg(), inner_w))
             return
-        namew = self._price_namew(names, inner_w)
+        namew = self._price_namew(entries, inner_w)
         header = self._price_header(namew)
         self.write(
             stdscr, head_y, 2, shorten(header, inner_w), curses.color_pair(4) | curses.A_BOLD
@@ -2072,29 +2112,53 @@ class Renderer:
         self._register_sort_header(head_y, 2, header, self.PRICE_SORT_COLUMNS, "prices", inner_w)
         list_top = head_y + 1
         visible = max(1, bottom - list_top - 1)
-        idx = max(0, min(self.app.prices_index, len(names) - 1))
+        idx = max(0, min(self.app.prices_index, len(entries) - 1))
         self.app.prices_index = idx
-        scroll = max(0, min(self.app.prices_scroll, max(0, len(names) - visible)))
-        if idx < scroll:  # keep the cursor inside the window
-            scroll = idx
-        elif idx >= scroll + visible:
-            scroll = idx - visible + 1
+        render = self._price_render_rows(entries)
+        # Scroll over the flattened rows (headers included) while keeping the selected
+        # model row -- and, when it exists, the group header just above it -- in view.
+        sel_row = next(r for r, item in enumerate(render) if item[0] == "model" and item[1] == idx)
+        anchor = sel_row - 1 if sel_row > 0 and render[sel_row - 1][0] == "header" else sel_row
+        scroll = max(0, min(self.app.prices_scroll, max(0, len(render) - visible)))
+        if anchor < scroll:
+            scroll = anchor
+        elif sel_row >= scroll + visible:
+            scroll = sel_row - visible + 1
         self.app.prices_scroll = scroll
-        ranges = self._price_column_ranges(names)
+        ranges = self._price_column_ranges(entries)
         w = self._PRICE_COL_W
-        for offset, name in enumerate(names[scroll : scroll + visible]):
+        tag_x = 2 + namew + 2 + self._PRICE_BLOCK_W + 2  # after the four price cells
+        for offset, item in enumerate(render[scroll : scroll + visible]):
             row_y = list_top + offset
-            text = self._price_row_text(name, namew)
-            selected = scroll + offset == idx
-            attr = curses.A_REVERSE | curses.A_BOLD if selected else curses.A_NORMAL
-            self.write(stdscr, row_y, 2, f"{shorten(text, inner_w):<{inner_w}}", attr)
-            # Repaint each price cell in its green→red heat shade. The selected row
-            # keeps its plain reverse bar (a clearer cursor); local models have no
-            # API price, so their "local — no API cost" note stays neutral too.
-            if selected or is_local_provider(name):
+            if item[0] == "header":
+                self.write(
+                    stdscr,
+                    row_y,
+                    2,
+                    shorten(f"▸ {item[1]}", inner_w),
+                    curses.color_pair(6) | curses.A_BOLD,
+                )
                 continue
-            for i, value in enumerate(model_price(name)):
-                cell_x = 2 + namew + 2 + i * (w + 1)
+            _, i, entry = item
+            core = self._price_core_text(entry, namew)
+            selected = i == idx
+            attr = curses.A_REVERSE | curses.A_BOLD if selected else curses.A_NORMAL
+            self.write(stdscr, row_y, 2, f"{shorten(core, inner_w):<{inner_w}}", attr)
+            tag = self._price_entry_tag(entry)
+            if tag and tag_x < 2 + inner_w and not selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    tag_x,
+                    shorten(tag, 2 + inner_w - tag_x),
+                    curses.color_pair(1) | curses.A_DIM,
+                )
+            elif tag and tag_x < 2 + inner_w:  # selected row: keep the tag in the reverse bar
+                self.write(stdscr, row_y, tag_x, shorten(tag, 2 + inner_w - tag_x), attr)
+            if selected:
+                continue  # the reverse cursor bar reads clearer without heat
+            for j, value in enumerate(model_price(entry.bare)):
+                cell_x = 2 + namew + 2 + j * (w + 1)
                 if cell_x + w > 2 + inner_w:
                     break  # cell would spill past the shortened row; leave it plain
                 self.write(
@@ -2102,7 +2166,7 @@ class Renderer:
                     row_y,
                     cell_x,
                     f"{value:>{w}.2f}",
-                    self._price_heat_attr(value, ranges[i]),
+                    self._price_heat_attr(value, ranges[j]),
                 )
 
     def price_session_lines(self, model: str, width: int) -> list[str]:

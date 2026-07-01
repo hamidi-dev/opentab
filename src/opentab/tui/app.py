@@ -10,6 +10,7 @@ import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from opentab.models import Workflow
 from opentab.stores.opencode import Store
@@ -35,8 +36,10 @@ from opentab.models import ALL_YEARS, DaySummary, MonthSummary, ProjectSummary, 
 from opentab.pricing import (
     FALLBACK_PRICE,
     api_equivalent_cost,
+    family_label,
     invalidate_price_cache,
     is_local_provider,
+    model_family,
     model_price,
     price_cache_meta,
     refresh_model_prices,
@@ -73,6 +76,22 @@ class Toast:
         return self.ttl - (now - self.born)
 
 
+class PriceEntry(NamedTuple):
+    """One row of the P overlay's price table: a model, its vendor `family`, the
+    `routes` you reach it through (e.g. {"anthropic", "github-copilot"}), its `spend`,
+    and the `group` key for the active view. In the vendor and flat views a row is a
+    distinct model deduped to its bare id (the list price is route-independent --
+    model_price ignores the prefix), so `routes` may hold several; in the provider
+    view a row is one (route, model) pair, so `routes` is a single route and the row
+    can repeat a model across gateways. The Renderer reads it by duck typing."""
+
+    bare: str  # bare model id, e.g. "claude-haiku-4-5"
+    family: str  # vendor family key from model_family(), "" == Other
+    routes: tuple[str, ...]  # access routes, sorted; () when the id had no prefix
+    spend: float  # summed cost across the routes this row covers
+    group: str  # grouping key for the active view ("" == no group / flat)
+
+
 class App:
     workflow_tabs = ("Overview", "Models", "Subagents")
     day_tabs = ("Overview", "Projects", "Sessions")  # day models stay folded into Overview
@@ -87,6 +106,11 @@ class App:
     # the price columns sort high->low by default (they're numbers, not in
     # ascending_sort_keys), so the priciest models surface first.
     prices_sort_options = ("model", "input", "output", "cache_read", "cache_write")
+    # The P overlay's layout modes, cycled by `p`: "family" groups deduped models
+    # under their vendor (Anthropic/OpenAI/…), "provider" groups one row per access
+    # route (anthropic/github-copilot/…, a model can repeat across gateways), "flat"
+    # is one ungrouped list. (key, label) -- the label shows in the header + toast.
+    prices_views = (("family", "by vendor"), ("provider", "by provider"), ("flat", "flat list"))
     # Columns whose natural order is ascending (a->z / shallow-first); every other
     # column sorts high->low by default. Clicking a column header again flips it.
     ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth"})
@@ -199,6 +223,7 @@ class App:
         # click to override, re-clicking a header flips direction (prices_sort_reverse).
         self.prices_sort: str | None = None
         self.prices_sort_reverse = False
+        self.prices_view = "family"  # P overlay layout: one of prices_views (p cycles)
         self.sort_by = "cost"
         self.project_sort_by = "cost"
         # Per-context "flipped off the natural order" flags, toggled by re-clicking a
@@ -1280,69 +1305,135 @@ class App:
         ]
         return scope, header, rows
 
-    def priced_model_names(self) -> list[str]:
-        # Models you've used, most-spend first, narrowed by the active P-overlay filter.
-        # Shared by the P table renderer and its `e` export so both show the same rows.
-        # The P filter is a plain case-insensitive substring match (not the fuzzy
-        # subsequence used for sessions): the model list is short and a literal
-        # "gpt" / "sonnet" should not also drag in unrelated scattered-letter hits.
-        totals: dict[str, float] = defaultdict(float)
-        for rows in self._model_by_root.values():
-            for m in rows:
-                totals[m["model_name"]] += float(m.get("cost", 0) or 0)
-        names = list(totals)
-        if self.query:
-            q = self.query.lower()
-            names = [n for n in names if q in n.lower()]
-        return self._sort_price_names(names, totals)
-
     _PRICE_COLUMN_INDEX = {"input": 0, "output": 1, "cache_read": 2, "cache_write": 3}
 
-    def _sort_price_names(self, names: list[str], totals: dict[str, float]) -> list[str]:
-        # Order the P overlay's model list. The default (prices_sort None) is
-        # most-spend-first -- the same order the overlay has always used. A column
-        # sort overrides it; spend stays the stable tiebreak so models with equal
-        # prices keep a sensible order. Local providers have no API price, so their
-        # rate columns count as 0 (matching the "local — no API cost" row).
+    def priced_model_entries(self) -> list[PriceEntry]:
+        # The P overlay's rows for the active view (prices_view). Every model you've
+        # used, local excluded (no API rate; the P overlay is the list-price reference
+        # behind "$", and local usage still shows in Models/Trends). In the "family"
+        # and "flat" views a row is a distinct model deduped to its bare id (the list
+        # price is route-independent), carrying the route(s) it was reached through; in
+        # the "provider" view a row is one (route, model) pair grouped by route, so a
+        # model can appear under more than one gateway. Narrowed by the active filter
+        # (a plain case-insensitive substring over the bare id, family, or route), then
+        # ordered by _order_price_entries. Shared by the renderer and the `e` export.
+        raw: dict[tuple[str, str], float] = defaultdict(float)
+        for rows in self._model_by_root.values():
+            for m in rows:
+                name = str(m["model_name"])
+                if is_local_provider(name):
+                    continue
+                bare = name.rsplit("/", 1)[-1]
+                route = name.rsplit("/", 1)[0] if "/" in name else ""
+                raw[(route, bare)] += float(m.get("cost", 0) or 0)
+        if self.prices_view == "provider":
+            entries = [
+                PriceEntry(
+                    bare=bare,
+                    family=model_family(bare),
+                    routes=((route,) if route else ()),
+                    spend=spend,
+                    group=route,  # header per access route
+                )
+                for (route, bare), spend in raw.items()
+            ]
+        else:  # family / flat: dedupe by bare across routes
+            agg: dict[str, dict] = {}
+            for (route, bare), spend in raw.items():
+                d = agg.setdefault(bare, {"routes": set(), "spend": 0.0})
+                if route:
+                    d["routes"].add(route)
+                d["spend"] += spend
+            entries = [
+                PriceEntry(
+                    bare=b,
+                    family=model_family(b),
+                    routes=tuple(sorted(d["routes"])),
+                    spend=d["spend"],
+                    group=(model_family(b) if self.prices_view == "family" else ""),
+                )
+                for b, d in agg.items()
+            ]
+        if self.query:
+            q = self.query.lower()
+            entries = [
+                e
+                for e in entries
+                if q in e.bare.lower()
+                or q in family_label(e.family).lower()
+                or any(q in r.lower() for r in e.routes)
+            ]
+        return self._order_price_entries(entries)
+
+    def _order_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
+        # Order the entries for the active view. "flat" is one globally-sorted list;
+        # the grouped views order groups most-spend-first (the empty group -- Other, or
+        # a route-less id -- always last) and apply the active column sort *within*
+        # each. Either way the default (prices_sort None) is most-spend-first.
+        if self.prices_view == "flat":
+            return self._sort_price_entries(entries)
+        group_spend: dict[str, float] = defaultdict(float)
+        for e in entries:
+            group_spend[e.group] += e.spend
+        groups = sorted(
+            {e.group for e in entries},
+            key=lambda g: (g == "", -group_spend[g]),  # empty group last, else most spend
+        )
+        out: list[PriceEntry] = []
+        for g in groups:
+            out.extend(self._sort_price_entries([e for e in entries if e.group == g]))
+        return out
+
+    def _sort_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
+        # Order price entries by the active prices_sort; spend-descending is the
+        # default and the stable tiebreak under every column so equal prices keep a
+        # sensible order. (entries are already local-free, so each has a real rate.)
         key = self.prices_sort
-        by_spend = sorted(names, key=lambda n: totals[n], reverse=True)
+        by_spend = sorted(entries, key=lambda e: e.spend, reverse=True)
         if key not in self.prices_sort_options:
             return by_spend
         desc = self.sort_descending(key, self.prices_sort_reverse)
         if key == "model":
-            return sorted(by_spend, key=lambda n: n.lower(), reverse=desc)
+            return sorted(by_spend, key=lambda e: e.bare.lower(), reverse=desc)
         col = self._PRICE_COLUMN_INDEX[key]
-        rate = lambda n: 0.0 if is_local_provider(n) else model_price(n)[col]  # noqa: E731
-        return sorted(by_spend, key=rate, reverse=desc)
+        return sorted(by_spend, key=lambda e: model_price(e.bare)[col], reverse=desc)
 
-    def price_model_sessions(self, model_name: str) -> list[tuple[Workflow, float, int]]:
-        # Root sessions that used `model_name`, each with that model's cost/tokens
-        # within the session (cost already reflects the active $ mode, since
-        # _apply_price_mode swaps it on the same rows). Most spend first. Backs the
-        # P overlay's per-model drill-in (Enter on a model row).
+    def priced_model_names(self) -> list[str]:
+        # The bare model ids in display order -- parallel to priced_model_entries (so
+        # prices_index selects the same row). Kept for the row count, the Enter
+        # drill-in (which then aggregates that bare model's sessions), and the export.
+        return [e.bare for e in self.priced_model_entries()]
+
+    def price_model_sessions(self, bare_model: str) -> list[tuple[Workflow, float, int]]:
+        # Root sessions that used the model `bare_model`, matched by bare id so every
+        # access route (anthropic, github-copilot, …) is aggregated -- one row per
+        # session with that model's cost/tokens within it (cost already reflects the
+        # active $ mode). Most spend first. Backs the P overlay's per-model drill-in.
         by_id = {w.id: w for w in self.loaded}
-        out: list[tuple[Workflow, float, int]] = []
+        per_root: dict[str, list] = {}
         for root_id, models in self._model_by_root.items():
             w = by_id.get(root_id)
             if w is None:
                 continue
             for m in models:
-                if m.get("model_name") != model_name:
+                if str(m.get("model_name")).rsplit("/", 1)[-1] != bare_model:
                     continue
-                out.append((w, float(m.get("cost", 0) or 0), int(m.get("tokens_total", 0) or 0)))
+                acc = per_root.setdefault(root_id, [w, 0.0, 0])
+                acc[1] += float(m.get("cost", 0) or 0)
+                acc[2] += int(m.get("tokens_total", 0) or 0)
+        out = [(w, cost, tok) for w, cost, tok in per_root.values()]
         out.sort(key=lambda r: (r[1], r[2]), reverse=True)
         return out
 
     def _prices_dataset(self) -> tuple[str, list[str], list[list]]:
-        # The P overlay's model price table (per 1M tokens), filter included. Local
-        # providers have no API cost, so their rate columns are 0 (as the overlay notes).
-        header = ["model", "input", "output", "cache_read", "cache_write"]
-        rows = []
-        for name in self.priced_model_names():
-            if is_local_provider(name):
-                rows.append([name, 0.0, 0.0, 0.0, 0.0])
-            else:
-                rows.append([name, *model_price(name)])
+        # The P overlay's model price table (per 1M tokens), filter included. One row
+        # per distinct model (deduped to the bare id), with its vendor family and the
+        # access routes; every row has a real API rate (local models are excluded).
+        header = ["model", "family", "routes", "input", "output", "cache_read", "cache_write"]
+        rows = [
+            [e.bare, family_label(e.family), " ".join(e.routes), *model_price(e.bare)]
+            for e in self.priced_model_entries()
+        ]
         return "prices", header, rows
 
     def _zoom_tab_dataset(self) -> tuple[str, list[str], list[list]]:
@@ -2624,13 +2715,31 @@ class App:
             return True
         return True
 
+    def prices_view_label(self, view: str | None = None) -> str:
+        # The human label for a P-overlay view mode (defaults to the active one).
+        view = view or self.prices_view
+        return dict(self.prices_views).get(view, view)
+
+    def cycle_prices_view(self) -> None:
+        # `p` walks the P overlay's layout modes (by vendor -> by provider -> flat).
+        keys = [k for k, _label in self.prices_views]
+        i = keys.index(self.prices_view) if self.prices_view in keys else 0
+        self.prices_view = keys[(i + 1) % len(keys)]
+        self.prices_index = 0  # the row order (and count) changed under the cursor
+        self.prices_scroll = 0
+        self.notice = f"view: {self.prices_view_label()}"
+
     def _handle_price_models_key(self, key: int) -> bool:
         # The P overlay's model list: j/k/arrows move a cursor, g/G jump to ends,
-        # Enter drills into the selected model's sessions, s sorts by a column, f
-        # filters, r refreshes, e exports the table; any other key closes the overlay.
+        # Enter drills into the selected model's sessions, s sorts by a column, p
+        # cycles the layout (by vendor / by provider / flat), f filters, r refreshes,
+        # e exports the table; any other key closes the overlay.
         n = len(self.priced_model_names())
         if key in (ord("s"), ord("S")):
             self.open_sort_menu()
+            return True
+        if key == ord("p"):
+            self.cycle_prices_view()
             return True
         if key in (ord("j"), curses.KEY_DOWN):
             self.prices_index = min(self.prices_index + 1, max(0, n - 1))

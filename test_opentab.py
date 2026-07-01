@@ -907,20 +907,23 @@ def _price_sort_app():
     return app
 
 
-def test_prices_default_order_is_still_most_spend_first():
+def test_prices_default_view_groups_by_family_most_spend_first():
     app = _price_sort_app()
     app.handle_key(None, ord("P"))
-    assert app.prices_sort is None
+    assert app.prices_sort is None and app.prices_view == "family"
+    # Deduped to bare ids, grouped by vendor family (families most-spend-first:
+    # openai's $9 beats anthropic's $6), sorted by spend within each family.
     assert app.priced_model_names() == [
-        "openai/gpt-5-mini",
-        "anthropic/claude-haiku-4-5",
-        "anthropic/claude-opus-4-8",
+        "gpt-5-mini",
+        "claude-haiku-4-5",
+        "claude-opus-4-8",
     ]
 
 
 def test_prices_sort_picker_reorders_by_a_column():
     app = _price_sort_app()
     app.handle_key(None, ord("P"))
+    app.prices_view = "flat"  # so the column sort orders globally
     app.handle_key(None, ord("s"))  # opens the sort picker over the overlay
     assert app.sort_menu and app.sort_menu_options() == app.prices_sort_options
     app.sort_menu_index = app.prices_sort_options.index("input")
@@ -928,7 +931,7 @@ def test_prices_sort_picker_reorders_by_a_column():
     assert not app.sort_menu and app.prices_sort == "input"
     names = app.priced_model_names()
     # Priciest input first (the default numeric direction), spend no longer decides.
-    assert names[0] == "anthropic/claude-opus-4-8"
+    assert names[0] == "claude-opus-4-8"
     assert [ot.model_price(n)[0] for n in names] == sorted(
         (ot.model_price(n)[0] for n in names), reverse=True
     )
@@ -937,6 +940,7 @@ def test_prices_sort_picker_reorders_by_a_column():
 def test_prices_header_click_sorts_then_flips_direction():
     app = _price_sort_app()
     app.handle_key(None, ord("P"))
+    app.prices_view = "flat"  # so the column sort orders globally
     app.apply_header_sort("output", "prices")  # first click sorts by output, high->low
     assert app.prices_sort == "output" and not app.prices_sort_reverse
     desc = [ot.model_price(n)[1] for n in app.priced_model_names()]
@@ -983,11 +987,11 @@ def test_prices_heat_scales_each_column_cheap_to_expensive():
     app = _price_sort_app()
     app.handle_key(None, ord("P"))
     r = app.renderer
-    names = app.priced_model_names()
-    ranges = r._price_column_ranges(names)
+    entries = app.priced_model_entries()
+    ranges = r._price_column_ranges(entries)
     # Each column normalizes over its own positive rates: input spans mini..opus.
     assert ranges[0] == (0.25, 5.0)
-    levels = {n.split("/")[-1]: r._price_heat_level(ot.model_price(n)[0], ranges[0]) for n in names}
+    levels = {e.bare: r._price_heat_level(ot.model_price(e.bare)[0], ranges[0]) for e in entries}
     # Cheapest input -> coolest bucket (0), priciest -> hottest (top level).
     assert levels["gpt-5-mini"] == 0
     assert levels["claude-opus-4-8"] == ot.PRICE_HEAT_LEVELS - 1
@@ -1000,9 +1004,70 @@ def test_prices_heat_is_neutral_when_a_column_has_no_spread():
     app._model_by_root = {"a": [_model_row("anthropic/claude-opus-4-8", 5.0, 10)]}
     app.handle_key(None, ord("P"))
     r = app.renderer
-    ranges = r._price_column_ranges(app.priced_model_names())
+    ranges = r._price_column_ranges(app.priced_model_entries())
     assert ranges == [None, None, None, None]
     assert r._price_heat_level(5.0, ranges[0]) is None
+
+
+def test_prices_group_by_family_dedupes_routes_and_tags_them():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("anthropic/claude-opus-4-8", 5.0, 100),
+            _model_row("github-copilot/claude-haiku-4.5", 0.0, 100),  # copilot-routed Claude
+            _model_row("anthropic/claude-haiku-4.5", 2.0, 100),  # the same model, direct
+            _model_row("openai/gpt-5-mini", 1.0, 100),
+        ]
+    }
+    app.handle_key(None, ord("P"))
+    entries = app.priced_model_entries()
+    # The two routes to claude-haiku-4.5 collapse to one deduped entry...
+    assert [e.bare for e in entries].count("claude-haiku-4.5") == 1
+    haiku = next(e for e in entries if e.bare == "claude-haiku-4.5")
+    assert haiku.family == "anthropic"  # inferred from the name, not the route
+    assert set(haiku.routes) == {"anthropic", "github-copilot"}
+    # ...and a copilot-routed Claude groups under Anthropic, not its own route.
+    assert {e.family for e in entries} == {"anthropic", "openai"}
+    lines = app.renderer.price_table_lines(120)
+    assert any(ln.startswith("▸ Anthropic") for ln in lines)
+    assert any("copilot" in ln for ln in lines)  # github-copilot abbreviated in the tag
+
+
+def test_prices_p_cycles_view_modes():
+    app = _price_sort_app()
+    app.handle_key(None, ord("P"))
+    assert app.prices_view == "family"  # opens grouped by vendor
+    assert any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(120))
+    app.handle_key(None, ord("p"))  # -> by provider (still grouped, by route)
+    assert app.prices_view == "provider" and app.prices_index == 0
+    assert any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(120))
+    app.handle_key(None, ord("p"))  # -> flat (no headers)
+    assert app.prices_view == "flat"
+    assert not any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(120))
+    app.handle_key(None, ord("p"))  # wraps back to by vendor
+    assert app.prices_view == "family"
+
+
+def test_prices_provider_view_groups_by_route_and_tags_vendor():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("anthropic/claude-opus-4-8", 5.0, 100),
+            _model_row("github-copilot/claude-haiku-4.5", 3.0, 100),  # Claude via a gateway
+            _model_row("github-copilot/gpt-5-mini", 1.0, 100),  # GPT via the same gateway
+        ]
+    }
+    app.handle_key(None, ord("P"))
+    app.prices_view = "provider"
+    lines = app.renderer.price_table_lines(120)
+    # One header per access route; github-copilot carries models from >1 vendor.
+    assert any(ln.startswith("▸ github-copilot") for ln in lines)
+    assert any(ln.startswith("▸ anthropic") for ln in lines)
+    # A gateway-routed GPT stays under github-copilot here (route, not vendor),
+    # tagged with its vendor family instead of the route.
+    copilot_rows = [e for e in app.priced_model_entries() if e.group == "github-copilot"]
+    assert {e.bare for e in copilot_rows} == {"claude-haiku-4.5", "gpt-5-mini"}
+    assert any("OpenAI" in ln or "Anthropic" in ln for ln in lines)  # vendor shown as the tag
 
 
 def test_prices_filter_is_substring_not_fuzzy():
@@ -2070,11 +2135,25 @@ def test_local_usage_stays_zero_in_what_if_view():
     assert "$0.00" in ollama
 
 
-def test_price_table_marks_local_models():
+def test_price_table_omits_local_models():
+    # The P overlay is a reference for API list prices behind the "$" what-if. Local
+    # models (ollama/mlx/…) have no rate, so they're dropped here -- their usage still
+    # shows in the Models/Trends views. A mixed set keeps only the priced models.
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("ollama/llama3.1", 0.0, 1000),
+            _model_row("anthropic/claude-opus-4-8", 5.0, 1000),
+        ]
+    }
+    assert app.priced_model_names() == ["claude-opus-4-8"]  # deduped to the bare id
+    lines = app.renderer.price_table_lines(80)
+    assert any("claude-opus-4-8" in ln for ln in lines)
+    assert not any("ollama" in ln for ln in lines)
+    # Local-only usage leaves nothing to price.
     app._model_by_root = {"a": [_model_row("ollama/llama3.1", 0.0, 1000)]}
-    row = next(ln for ln in app.renderer.price_table_lines(80) if ln.startswith("ollama/llama3.1"))
-    assert "local" in row and "0.00" not in row  # labelled local, no fake price
+    assert app.priced_model_names() == []
+    assert any("No model usage" in ln for ln in app.renderer.price_table_lines(80))
 
 
 def test_api_price_toggle_prices_unpriced_usage():
@@ -3075,16 +3154,18 @@ def test_export_prices_overlay_exports_the_price_table():
 
     scope, header, rows = app._export_dataset()
     assert scope == "prices"
-    assert header == ["model", "input", "output", "cache_read", "cache_write"]
+    # Rows are deduped to the bare id, tagged with vendor family + access route(s).
+    assert header == ["model", "family", "routes", "input", "output", "cache_read", "cache_write"]
     names = [r[0] for r in rows]
-    assert "anthropic/claude-opus-4-8" in names and "openai/gpt-5.3" in names
-    assert names[0] == "anthropic/claude-opus-4-8"  # most spend first
-    # every priced row carries four numeric rates
-    assert all(len(r) == 5 and all(isinstance(v, (int, float)) for v in r[1:]) for r in rows)
+    assert "claude-opus-4-8" in names and "gpt-5.3" in names
+    assert names[0] == "claude-opus-4-8"  # most spend first (its Anthropic family too)
+    assert rows[0][1] == "Anthropic" and rows[0][2] == "anthropic"  # family + route columns
+    # every priced row carries four numeric rates after model/family/routes
+    assert all(len(r) == 7 and all(isinstance(v, (int, float)) for v in r[3:]) for r in rows)
 
-    # the active P filter narrows the export too (shared priced_model_names)
+    # the active P filter narrows the export too (shared priced_model_entries)
     app.query = "gpt"
-    assert [r[0] for r in app._export_dataset()[2]] == ["openai/gpt-5.3"]
+    assert [r[0] for r in app._export_dataset()[2]] == ["gpt-5.3"]
 
     # `e` while the overlay is open routes through export_current (overlay stays open)
     import os
