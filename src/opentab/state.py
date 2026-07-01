@@ -31,8 +31,10 @@ def save_state(app: App) -> None:
         "range": app.range_input_value(),
         "sort_by": app.sort_by,
         "project_sort_by": app.project_sort_by,
+        "prices_sort": app.prices_sort,
         "sort_reverse": app.sort_reverse,
         "project_sort_reverse": app.project_sort_reverse,
+        "prices_sort_reverse": app.prices_sort_reverse,
         "browse_mode": app.browse_mode,
         "ignored_projects": sorted(app.ignored_projects),
         "show_api_prices": app.show_api_prices,
@@ -66,10 +68,14 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.sort_by = state["sort_by"]
     if state.get("project_sort_by") in app.project_sort_options:
         app.project_sort_by = state["project_sort_by"]
+    if state.get("prices_sort") in app.prices_sort_options:
+        app.prices_sort = state["prices_sort"]
     if isinstance(state.get("sort_reverse"), bool):
         app.sort_reverse = state["sort_reverse"]
     if isinstance(state.get("project_sort_reverse"), bool):
         app.project_sort_reverse = state["project_sort_reverse"]
+    if isinstance(state.get("prices_sort_reverse"), bool):
+        app.prices_sort_reverse = state["prices_sort_reverse"]
     if state.get("browse_mode") in ("time", "projects"):
         app.browse_mode = state["browse_mode"]
     ignored = state.get("ignored_projects")

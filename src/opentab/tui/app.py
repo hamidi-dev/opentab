@@ -80,6 +80,11 @@ class App:
     sort_options = ("cost", "tokens", "date", "subagents", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
+    # The P overlay's price table sorts by model name or any of the four list-price
+    # columns (spend stays the hidden default, so it isn't here). model sorts a->z;
+    # the price columns sort high->low by default (they're numbers, not in
+    # ascending_sort_keys), so the priciest models surface first.
+    prices_sort_options = ("model", "input", "output", "cache_read", "cache_write")
     # Columns whose natural order is ascending (a->z / shallow-first); every other
     # column sorts high->low by default. Clicking a column header again flips it.
     ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth"})
@@ -187,6 +192,11 @@ class App:
         self.prices_scroll = 0  # pager offset within that overlay
         self.prices_index = 0  # selected model row in the P overlay's list
         self.prices_model: str | None = None  # drilled into this model's sessions (P overlay)
+        # The P overlay's column sort. None keeps the natural most-spend-first order
+        # (spend isn't a shown column); pick a column via the `s` picker or a header
+        # click to override, re-clicking a header flips direction (prices_sort_reverse).
+        self.prices_sort: str | None = None
+        self.prices_sort_reverse = False
         self.sort_by = "cost"
         self.project_sort_by = "cost"
         # Per-context "flipped off the natural order" flags, toggled by re-clicking a
@@ -1278,11 +1288,30 @@ class App:
         for rows in self._model_by_root.values():
             for m in rows:
                 totals[m["model_name"]] += float(m.get("cost", 0) or 0)
-        names = sorted(totals, key=lambda n: totals[n], reverse=True)
+        names = list(totals)
         if self.query:
             q = self.query.lower()
             names = [n for n in names if q in n.lower()]
-        return names
+        return self._sort_price_names(names, totals)
+
+    _PRICE_COLUMN_INDEX = {"input": 0, "output": 1, "cache_read": 2, "cache_write": 3}
+
+    def _sort_price_names(self, names: list[str], totals: dict[str, float]) -> list[str]:
+        # Order the P overlay's model list. The default (prices_sort None) is
+        # most-spend-first -- the same order the overlay has always used. A column
+        # sort overrides it; spend stays the stable tiebreak so models with equal
+        # prices keep a sensible order. Local providers have no API price, so their
+        # rate columns count as 0 (matching the "local — no API cost" row).
+        key = self.prices_sort
+        by_spend = sorted(names, key=lambda n: totals[n], reverse=True)
+        if key not in self.prices_sort_options:
+            return by_spend
+        desc = self.sort_descending(key, self.prices_sort_reverse)
+        if key == "model":
+            return sorted(by_spend, key=lambda n: n.lower(), reverse=desc)
+        col = self._PRICE_COLUMN_INDEX[key]
+        rate = lambda n: 0.0 if is_local_provider(n) else model_price(n)[col]  # noqa: E731
+        return sorted(by_spend, key=rate, reverse=desc)
 
     def price_model_sessions(self, model_name: str) -> list[tuple[Workflow, float, int]]:
         # Root sessions that used `model_name`, each with that model's cost/tokens
@@ -1772,9 +1801,15 @@ class App:
             self.view != "session" and self.on_projects_tab
         )
 
+    def in_prices_sort_context(self) -> bool:
+        # The P overlay's model list (not its per-model session drill-in) is sortable
+        # by column, so it gets its own sort state (prices_sort/prices_sort_reverse).
+        return self.show_prices and self.prices_model is None
+
     def can_sort_current_view(self) -> bool:
         return (
-            self.in_project_sort_context()
+            self.in_prices_sort_context()
+            or self.in_project_sort_context()
             or (self.view != "session" and self.on_sessions_tab)
             or (self.view == "session" and self.on_subagents_tab)
         )
@@ -1799,6 +1834,10 @@ class App:
         ) and self.launch_available()
 
     def effective_sort_by(self) -> str | None:
+        if self.in_prices_sort_context():
+            # None until a column is chosen -- the default order is by spend, which
+            # isn't a column, so no header arrow (and no header "sort:" chip) shows.
+            return self.prices_sort
         if self.in_project_sort_context():
             return (
                 self.project_sort_by
@@ -1817,8 +1856,11 @@ class App:
         return (key not in self.ascending_sort_keys) != reverse
 
     def sort_menu_options(self) -> tuple[str, ...]:
-        # The sort keys valid for the view the `s` picker was opened over: project
-        # lists use project_sort_options, session/subagent lists current_sort_options.
+        # The sort keys valid for the view the `s` picker was opened over: the P
+        # overlay uses prices_sort_options, project lists project_sort_options,
+        # session/subagent lists current_sort_options.
+        if self.in_prices_sort_context():
+            return self.prices_sort_options
         if self.in_project_sort_context():
             return self.project_sort_options
         return self.current_sort_options()
@@ -1840,6 +1882,12 @@ class App:
     def apply_sort_choice(self, value: str) -> None:
         # The `s` picker always lands on a column's natural order; header re-clicks
         # are where direction gets flipped.
+        if self.in_prices_sort_context():
+            self.prices_sort = value
+            self.prices_sort_reverse = False
+            self.prices_index = 0
+            self.prices_scroll = 0
+            return
         if self.in_project_sort_context():
             self.project_sort_by = value
             self.project_sort_reverse = False
@@ -1853,9 +1901,20 @@ class App:
     def apply_header_sort(self, key: str, target: str) -> None:
         # A click on a column header sorts that list by the column; clicking the
         # already-active column again flips its direction (asc <-> desc). The click's
-        # target ("project"/"session") says which list was clicked, so it works even
-        # when a project list and a session list show sortable headers on screen at
-        # once. The choice persists on exit via save_state, like the `s` picker.
+        # target ("prices"/"project"/"session") says which list was clicked, so it
+        # works even when a project list and a session list show sortable headers on
+        # screen at once. The choice persists on exit via save_state, like the `s` picker.
+        if target == "prices":
+            if key not in self.prices_sort_options:
+                return
+            if self.prices_sort == key:
+                self.prices_sort_reverse = not self.prices_sort_reverse
+            else:
+                self.prices_sort = key
+                self.prices_sort_reverse = False
+            self.prices_index = 0
+            self.prices_scroll = 0
+            return
         if target == "project":
             if key not in self.project_sort_options:
                 return
@@ -2367,6 +2426,8 @@ class App:
                 self.help = False
             return True
         if self.show_prices:
+            if self.sort_menu:  # the `s` picker floats over the price table
+                return self.handle_sort_menu_key(key)
             if self.filter_active:
                 return self.handle_filter_key(key)
             if self.prices_model is not None:
@@ -2559,9 +2620,12 @@ class App:
 
     def _handle_price_models_key(self, key: int) -> bool:
         # The P overlay's model list: j/k/arrows move a cursor, g/G jump to ends,
-        # Enter drills into the selected model's sessions, f filters, r refreshes,
-        # e exports the table; any other key closes the overlay.
+        # Enter drills into the selected model's sessions, s sorts by a column, f
+        # filters, r refreshes, e exports the table; any other key closes the overlay.
         n = len(self.priced_model_names())
+        if key in (ord("s"), ord("S")):
+            self.open_sort_menu()
+            return True
         if key in (ord("j"), curses.KEY_DOWN):
             self.prices_index = min(self.prices_index + 1, max(0, n - 1))
         elif key in (ord("k"), curses.KEY_UP):
@@ -2699,7 +2763,13 @@ class App:
                 elif down:
                     self.prices_index += 1  # clamped on draw
                 elif click or double:
-                    self.show_prices = False
+                    # A click on a column header sorts by it (re-click flips); any
+                    # other click closes, as before.
+                    sort = self.renderer.sort_hit(my, mx)
+                    if sort is not None:
+                        self.apply_header_sort(*sort)
+                    else:
+                        self.show_prices = False
             else:
                 if up:
                     self.prices_scroll = max(0, self.prices_scroll - 3)

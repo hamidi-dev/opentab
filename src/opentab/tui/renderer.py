@@ -70,6 +70,17 @@ class Renderer:
         ("sessions", "Ses"),
         ("subagents", "Subs"),
     )
+    # The P overlay's clickable price-table headers: (sort_key, label) in column
+    # order, matching what _price_header draws. The active column carries a v/^
+    # direction arrow; _register_sort_header locates each base label in the drawn
+    # text (arrow included) so the click zones line up.
+    PRICE_SORT_COLUMNS = (
+        ("model", "model"),
+        ("input", "input"),
+        ("output", "output"),
+        ("cache_read", "cacheR"),
+        ("cache_write", "cacheW"),
+    )
 
     def __init__(self, app: App) -> None:
         self.app = app
@@ -1869,8 +1880,8 @@ class Renderer:
             "                   pick a day and Enter opens it (Esc steps back to the tabs);",
             "                   +/- adjusts the color granularity",
             "  P                model prices (the models.dev API rates used for $ what-if);",
-            "                   j/k select a model, Enter lists the sessions that used it;",
-            "                   press f to filter, r to refresh from models.dev, or e to export them",
+            "                   j/k select a model, Enter lists the sessions that used it, s sorts",
+            "                   by a column (or click a header); f filters, r refreshes, e exports",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
             "  q                quit",
@@ -1918,15 +1929,43 @@ class Renderer:
             "",
         ]
 
+    # Price columns are 8 wide (not 7) so the active-sort header can carry a " v"/
+    # " ^" arrow -- "output v"/"cacheR v" need the eighth cell -- and still line up
+    # with the numeric rows below.
+    _PRICE_COL_W = 8
+    _PRICE_BLOCK_W = _PRICE_COL_W * 4 + 3  # four columns + three single-space gaps
+
     def _price_row_text(self, name: str, namew: int) -> str:
         # One model's formatted price row (or the "local — no API cost" note).
+        w = self._PRICE_COL_W
         if is_local_provider(name):
-            return f"{shorten(name, namew):{namew}}  {'local — no API cost':>31}"
+            return f"{shorten(name, namew):{namew}}  {'local — no API cost':>{self._PRICE_BLOCK_W}}"
         ir, orr, crr, cwr = model_price(name)
-        return f"{shorten(name, namew):{namew}}  {ir:>7.2f} {orr:>7.2f} {crr:>7.2f} {cwr:>7.2f}"
+        return f"{shorten(name, namew):{namew}}  {ir:>{w}.2f} {orr:>{w}.2f} {crr:>{w}.2f} {cwr:>{w}.2f}"
+
+    def _price_col_head(self, key: str, label: str) -> str:
+        # One right-aligned _PRICE_COL_W-wide header cell, with a v/^ arrow appended
+        # when this is the active sort column (direction from prices_sort_reverse).
+        if self.app.prices_sort == key:
+            desc = self.sort_descending(key, self.app.prices_sort_reverse)
+            label = f"{label} {'v' if desc else '^'}"
+        return f"{label:>{self._PRICE_COL_W}}"
+
+    def _price_header(self, namew: int) -> str:
+        # The price table's column header, shared by the flat price_table_lines and
+        # the navigable draw_prices so both show the same sort arrows. model is
+        # left-aligned in the name column; the four price cells align with the rows.
+        model = "model"
+        if self.app.prices_sort == "model":
+            desc = self.sort_descending("model", self.app.prices_sort_reverse)
+            model = f"model {'v' if desc else '^'}"
+        cells = " ".join(
+            self._price_col_head(key, label) for key, label in self.PRICE_SORT_COLUMNS[1:]
+        )
+        return f"{model:{namew}}  {cells}"
 
     def _price_namew(self, names: list[str], width: int) -> int:
-        return min(max(len(n) for n in names), max(12, width - 34))
+        return min(max(len(n) for n in names), max(12, width - self._PRICE_BLOCK_W - 3))
 
     def price_table_lines(self, width: int) -> list[str]:
         # The models you have used (most spend first) and the models.dev API list
@@ -1944,7 +1983,7 @@ class Renderer:
             )
             return lines
         namew = self._price_namew(names, width)
-        lines.append(f"{'model':{namew}}  {'input':>7} {'output':>7} {'cache-r':>7} {'cache-w':>7}")
+        lines.append(self._price_header(namew))
         lines.extend(self._price_row_text(name, namew) for name in names)
         return lines
 
@@ -1961,7 +2000,7 @@ class Renderer:
             0,
             bottom - y,
             width,
-            "Model prices  ·  j/k select · Enter sessions · f filter · r refresh · e export · q closes",
+            "Model prices  ·  j/k select · Enter sessions · s sort · f filter · r refresh · e export · q closes",
             active=True,
         )
         inner_w = width - 4
@@ -1981,10 +2020,13 @@ class Renderer:
             self.write(stdscr, head_y, 2, shorten(msg, inner_w))
             return
         namew = self._price_namew(names, inner_w)
-        header = f"{'model':{namew}}  {'input':>7} {'output':>7} {'cache-r':>7} {'cache-w':>7}"
+        header = self._price_header(namew)
         self.write(
             stdscr, head_y, 2, shorten(header, inner_w), curses.color_pair(4) | curses.A_BOLD
         )
+        # Clicking a column header sorts by it (re-click flips); zones match the
+        # drawn text, arrows included, via the base labels in PRICE_SORT_COLUMNS.
+        self._register_sort_header(head_y, 2, header, self.PRICE_SORT_COLUMNS, "prices", inner_w)
         list_top = head_y + 1
         visible = max(1, bottom - list_top - 1)
         idx = max(0, min(self.app.prices_index, len(names) - 1))
@@ -2153,6 +2195,10 @@ class Renderer:
         "model": "Model",
         "agent": "Agent",
         "depth": "Depth",
+        "input": "Input price",
+        "output": "Output price",
+        "cache_read": "Cache-read price",
+        "cache_write": "Cache-write price",
     }
 
     def draw_sort_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:

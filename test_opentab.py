@@ -893,6 +893,92 @@ def test_jk_navigates_the_prices_overlay():
     assert not app.show_prices
 
 
+def _price_sort_app():
+    # Spend order (gpt-5-mini > haiku > opus) is deliberately the reverse of the
+    # list-price order (opus > haiku > gpt-5-mini) so a column sort visibly reorders.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("anthropic/claude-opus-4-8", 1.0, 10),  # priciest, least spend
+            _model_row("openai/gpt-5-mini", 9.0, 10),  # cheapest, most spend
+            _model_row("anthropic/claude-haiku-4-5", 5.0, 10),
+        ]
+    }
+    return app
+
+
+def test_prices_default_order_is_still_most_spend_first():
+    app = _price_sort_app()
+    app.handle_key(None, ord("P"))
+    assert app.prices_sort is None
+    assert app.priced_model_names() == [
+        "openai/gpt-5-mini",
+        "anthropic/claude-haiku-4-5",
+        "anthropic/claude-opus-4-8",
+    ]
+
+
+def test_prices_sort_picker_reorders_by_a_column():
+    app = _price_sort_app()
+    app.handle_key(None, ord("P"))
+    app.handle_key(None, ord("s"))  # opens the sort picker over the overlay
+    assert app.sort_menu and app.sort_menu_options() == app.prices_sort_options
+    app.sort_menu_index = app.prices_sort_options.index("input")
+    app.handle_key(None, 10)  # Enter applies
+    assert not app.sort_menu and app.prices_sort == "input"
+    names = app.priced_model_names()
+    # Priciest input first (the default numeric direction), spend no longer decides.
+    assert names[0] == "anthropic/claude-opus-4-8"
+    assert [ot.model_price(n)[0] for n in names] == sorted(
+        (ot.model_price(n)[0] for n in names), reverse=True
+    )
+
+
+def test_prices_header_click_sorts_then_flips_direction():
+    app = _price_sort_app()
+    app.handle_key(None, ord("P"))
+    app.apply_header_sort("output", "prices")  # first click sorts by output, high->low
+    assert app.prices_sort == "output" and not app.prices_sort_reverse
+    desc = [ot.model_price(n)[1] for n in app.priced_model_names()]
+    assert desc == sorted(desc, reverse=True)
+    app.apply_header_sort("output", "prices")  # re-click flips to low->high
+    assert app.prices_sort == "output" and app.prices_sort_reverse
+    asc = [ot.model_price(n)[1] for n in app.priced_model_names()]
+    assert asc == sorted(asc)
+
+
+def test_prices_header_marks_the_active_sort_column():
+    app = _price_sort_app()
+    app.handle_key(None, ord("P"))
+    # A price column sorts high->low by default, so its arrow points down.
+    app.prices_sort, app.prices_sort_reverse = "output", False
+    assert "output v" in app.renderer._price_header(28)
+    app.prices_sort_reverse = True
+    assert "output ^" in app.renderer._price_header(28)
+    # model sorts a->z by default, so its arrow points up.
+    app.prices_sort, app.prices_sort_reverse = "model", False
+    assert "model ^" in app.renderer._price_header(28)
+
+
+def test_prices_sort_is_persisted_in_state():
+    app = _price_sort_app()
+    app.prices_sort, app.prices_sort_reverse = "cache_write", True
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = _price_sort_app()
+            assert restored.prices_sort is None  # fresh app starts on the spend default
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+    assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
+
+
 def test_prices_filter_is_substring_not_fuzzy():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {
