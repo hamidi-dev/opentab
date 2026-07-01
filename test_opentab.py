@@ -907,17 +907,33 @@ def _price_sort_app():
     return app
 
 
-def test_prices_default_view_groups_by_family_most_spend_first():
+def test_prices_default_is_flat_cheapest_mix_first():
     app = _price_sort_app()
     app.handle_key(None, ord("P"))
-    assert app.prices_sort is None and app.prices_view == "family"
-    # Deduped to bare ids, grouped by vendor family (families most-spend-first:
-    # openai's $9 beats anthropic's $6), sorted by spend within each family.
+    assert app.prices_sort == "eff" and app.prices_view == "flat"
+    # One ungrouped list, cheapest-for-your-mix first (the mix here is all input,
+    # so eff equals the input rate): mini 0.25 < haiku 1.00 < opus 5.00.
     assert app.priced_model_names() == [
         "gpt-5-mini",
         "claude-haiku-4-5",
         "claude-opus-4-8",
     ]
+    effs = [e.eff for e in app.priced_model_entries()]
+    assert effs == sorted(effs)
+
+
+def test_prices_family_view_groups_most_spend_first_eff_within():
+    app = _price_sort_app()
+    app.handle_key(None, ord("P"))
+    app.prices_view = "family"
+    # Grouped by vendor family, families most-spend-first (openai's $9 beats
+    # anthropic's $6), the default eff sort applying *within* each group.
+    assert app.priced_model_names() == [
+        "gpt-5-mini",
+        "claude-haiku-4-5",
+        "claude-opus-4-8",
+    ]
+    assert [e.group for e in app.priced_model_entries()] == ["openai", "anthropic", "anthropic"]
 
 
 def test_prices_sort_picker_reorders_by_a_column():
@@ -973,7 +989,7 @@ def test_prices_sort_is_persisted_in_state():
         try:
             ot.save_state(app)
             restored = _price_sort_app()
-            assert restored.prices_sort is None  # fresh app starts on the spend default
+            assert restored.prices_sort == "eff"  # fresh app starts on the eff default
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
@@ -989,9 +1005,11 @@ def test_prices_heat_scales_each_column_cheap_to_expensive():
     r = app.renderer
     entries = app.priced_model_entries()
     ranges = r._price_column_ranges(entries)
-    # Each column normalizes over its own positive rates: input spans mini..opus.
-    assert ranges[0] == (0.25, 5.0)
-    levels = {e.bare: r._price_heat_level(ot.model_price(e.bare)[0], ranges[0]) for e in entries}
+    # ranges[0] is the eff column; the raw columns follow. Each normalizes over its
+    # own positive rates: input (ranges[1]) spans mini..opus. The all-input mix here
+    # makes eff equal the input rate, so its span matches.
+    assert ranges[0] == (0.25, 5.0) and ranges[1] == (0.25, 5.0)
+    levels = {e.bare: r._price_heat_level(e.price[0], ranges[1]) for e in entries}
     # Cheapest input -> coolest bucket (0), priciest -> hottest (top level).
     assert levels["gpt-5-mini"] == 0
     assert levels["claude-opus-4-8"] == ot.PRICE_HEAT_LEVELS - 1
@@ -1005,8 +1023,143 @@ def test_prices_heat_is_neutral_when_a_column_has_no_spread():
     app.handle_key(None, ord("P"))
     r = app.renderer
     ranges = r._price_column_ranges(app.priced_model_entries())
-    assert ranges == [None, None, None, None]
-    assert r._price_heat_level(5.0, ranges[0]) is None
+    assert ranges == [None, None, None, None, None]
+    assert r._price_heat_level(5.0, ranges[1]) is None
+
+
+def test_canonical_model_folds_alias_spellings():
+    # Route prefix ignored, dots == dashes, date pins and effort suffixes stripped.
+    assert ot.canonical_model("anthropic/claude-sonnet-4.5") == "claude-sonnet-4-5"
+    assert ot.canonical_model("claude-sonnet-4-5-20250929") == "claude-sonnet-4-5"
+    assert ot.canonical_model("gpt-4o-2024-08-06") == "gpt-4o"
+    assert ot.canonical_model("gpt-5.2-xhigh") == ot.canonical_model("gpt-5.2")
+    assert ot.canonical_model("gpt-5.1-codex-max-medium") == "gpt-5-1-codex-max"
+    # Genuinely different models stay distinct.
+    assert ot.canonical_model("gpt-5.2-codex") != ot.canonical_model("gpt-5.2")
+    assert ot.canonical_model("gpt-5.2-pro") != ot.canonical_model("gpt-5.2")
+    assert ot.canonical_model("claude-opus-4-6") != ot.canonical_model("claude-opus-4-5")
+    # display_model keeps the id's own separator style, drops only the pins.
+    assert ot.display_model("claude-sonnet-4.5") == "claude-sonnet-4.5"
+    assert ot.display_model("claude-opus-4-5-20251101") == "claude-opus-4-5"
+    assert ot.display_model("gpt-5.1-codex-max-xhigh") == "gpt-5.1-codex-max"
+
+
+def test_effective_price_blends_mix_and_flags_missing_cache_read():
+    # eff = the mix's shares priced at the model's rates, per 1M tokens.
+    eff, approx = ot.effective_price((2.0, 10.0, 0.2, 0.4), (0.5, 0.5, 0.0, 0.0))
+    assert eff == 6.0 and not approx
+    # A cache-heavy mix is dominated by the cache-read rate.
+    eff, approx = ot.effective_price((2.0, 10.0, 0.2, 0.4), (0.1, 0.0, 0.9, 0.0))
+    assert abs(eff - 0.38) < 1e-9 and not approx
+    # No cache-read rate on record: reads bill at the input rate, flagged approximate.
+    eff, approx = ot.effective_price((2.0, 10.0, 0.0, 0.0), (0.1, 0.0, 0.9, 0.0))
+    assert approx and abs(eff - 2.0) < 1e-9
+    # An all-zero (genuinely free) rate is not approximate -- there is no gap to fill.
+    eff, approx = ot.effective_price((0.0, 0.0, 0.0, 0.0), (0.5, 0.5, 0.0, 0.0))
+    assert eff == 0.0 and not approx
+
+
+def test_prices_dedupe_folds_alias_spellings_across_routes():
+    # The same model reached as a dated id on one route and a dotted alias on
+    # another is one row: routes and spend merge, the display name is the
+    # most-used spelling with its date pin stripped.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("anthropic/claude-sonnet-4-5-20250929", 2.0, 100),
+            _model_row("github-copilot/claude-sonnet-4.5", 1.0, 50),
+        ]
+    }
+    entries = app.priced_model_entries()
+    assert len(entries) == 1
+    e = entries[0]
+    assert e.canon == "claude-sonnet-4-5" and e.bare == "claude-sonnet-4-5"
+    assert set(e.routes) == {"anthropic", "github-copilot"}
+    assert e.spend == 3.0 and e.share == 1.0
+    assert e.price == ot.model_price("claude-sonnet-4-5")
+
+
+def test_price_token_mix_folds_reasoning_into_output():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            {
+                "model_name": "anthropic/claude-opus-4-8",
+                "cost": 0.0,
+                "tokens_total": 100,
+                "input": 10,
+                "reasoning": 5,
+                "cache_read": 80,
+                "cache_write": 0,
+                "output": 5,
+            },
+            _model_row("ollama/llama3.1", 0.0, 1000),  # local usage never skews the mix
+        ]
+    }
+    mix = app.price_token_mix()
+    assert mix is not None
+    shares, total = mix
+    assert total == 100
+    assert shares == (0.10, 0.10, 0.80, 0.0)  # reasoning bills as output
+    # The intro block states the mix the eff column prices at.
+    assert any("80.0% cacheR" in ln for ln in app.renderer.price_intro_lines())
+    # No usage at all -> no mix to price.
+    app._model_by_root = {}
+    assert app.price_token_mix() is None
+
+
+def test_prices_eff_and_missing_cache_cells_render():
+    # Pure-text cell rendering over a stub entry: ~ marks the missing-cache-read
+    # upper bound, the raw cache-read cell shows "—" (never a free-looking 0.00),
+    # and the use column is a share bar + percent.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    entry = type(
+        "E",
+        (),
+        {
+            "bare": "x-model",
+            "eff": 1.234,
+            "approx": True,
+            "share": 0.5,
+            "price": (2.0, 10.0, 0.0, 0.0),
+        },
+    )()
+    cells = app.renderer._price_raw_cells(entry)
+    assert cells == ["2.00", "10.00", "—", "0.00"]
+    assert app.renderer._price_eff_cell(entry) == "~1.23"
+    core = app.renderer._price_core_text(entry, 12, 0.5)
+    assert "~1.23" in core and "—" in core and "50%" in core
+    entry.approx, entry.price = False, (2.0, 10.0, 0.2, 0.0)
+    assert app.renderer._price_eff_cell(entry) == "1.23"
+    assert app.renderer._price_raw_cells(entry)[2] == "0.20"
+
+
+def test_prices_use_column_sorts_by_usage_share():
+    app = _price_sort_app()
+    app.handle_key(None, ord("P"))
+    app.apply_header_sort("use", "prices")
+    assert app.prices_sort == "use" and not app.prices_sort_reverse
+    # Equal token shares here, so the spend-descending tiebreak decides.
+    assert app.priced_model_names() == ["gpt-5-mini", "claude-haiku-4-5", "claude-opus-4-8"]
+    shares = [e.share for e in app.priced_model_entries()]
+    assert shares == sorted(shares, reverse=True)
+
+
+def test_price_model_sessions_aggregates_alias_spellings():
+    # The Enter drill-in matches canonically, so a session that used the dotted
+    # copilot spelling lists beside one that used the dashed direct id.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", title="alpha", directory="/x"),
+            workflow("b", "2026-06-02 09:00:00", title="beta", directory="/y"),
+        ]
+    )
+    app._model_by_root = {
+        "a": [_model_row("anthropic/claude-sonnet-4-5", 3.0, 50)],
+        "b": [_model_row("github-copilot/claude-sonnet-4.5", 1.0, 20)],
+    }
+    rows = app.price_model_sessions("claude-sonnet-4-5")
+    assert [w.id for w, _c, _t in rows] == ["a", "b"]  # both spellings, most spend first
 
 
 def test_prices_group_by_family_dedupes_routes_and_tags_them():
@@ -1020,6 +1173,7 @@ def test_prices_group_by_family_dedupes_routes_and_tags_them():
         ]
     }
     app.handle_key(None, ord("P"))
+    app.prices_view = "family"  # the grouped-by-vendor layout (default is flat)
     entries = app.priced_model_entries()
     # The two routes to claude-haiku-4.5 collapse to one deduped entry...
     assert [e.bare for e in entries].count("claude-haiku-4.5") == 1
@@ -1036,16 +1190,16 @@ def test_prices_group_by_family_dedupes_routes_and_tags_them():
 def test_prices_p_cycles_view_modes():
     app = _price_sort_app()
     app.handle_key(None, ord("P"))
-    assert app.prices_view == "family"  # opens grouped by vendor
+    assert app.prices_view == "flat"  # opens flat (no headers)
+    assert not any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(120))
+    app.handle_key(None, ord("p"))  # -> by vendor (grouped)
+    assert app.prices_view == "family" and app.prices_index == 0
     assert any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(120))
     app.handle_key(None, ord("p"))  # -> by provider (still grouped, by route)
-    assert app.prices_view == "provider" and app.prices_index == 0
+    assert app.prices_view == "provider"
     assert any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(120))
-    app.handle_key(None, ord("p"))  # -> flat (no headers)
+    app.handle_key(None, ord("p"))  # wraps back to flat
     assert app.prices_view == "flat"
-    assert not any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(120))
-    app.handle_key(None, ord("p"))  # wraps back to by vendor
-    assert app.prices_view == "family"
 
 
 def test_prices_provider_view_groups_by_route_and_tags_vendor():
@@ -1101,8 +1255,9 @@ def test_prices_enter_lists_sessions_that_used_the_model():
         "c": [_model_row("gpt-5-codex", 2.0, 40)],
     }
     app.handle_key(None, ord("P"))
-    # opus outspends codex (5+3 vs 1+2), so it's the first/selected model row.
-    assert app.priced_model_names()[0] == "claude-opus-4-8"
+    # Cheapest mix first: codex (fallback gpt-5 rate, 1.25 in) ahead of opus (5.00).
+    assert app.priced_model_names() == ["gpt-5-codex", "claude-opus-4-8"]
+    app.handle_key(None, ord("j"))  # select opus
     app.handle_key(None, 10)  # Enter drills into that model's sessions
     assert app.prices_model == "claude-opus-4-8"
     sessions = app.price_model_sessions("claude-opus-4-8")
@@ -3154,14 +3309,28 @@ def test_export_prices_overlay_exports_the_price_table():
 
     scope, header, rows = app._export_dataset()
     assert scope == "prices"
-    # Rows are deduped to the bare id, tagged with vendor family + access route(s).
-    assert header == ["model", "family", "routes", "input", "output", "cache_read", "cache_write"]
+    # Rows are deduped to the canonical id, tagged with vendor family + access
+    # route(s), and carry the usage share + eff blend beside the four raw rates.
+    assert header == [
+        "model",
+        "family",
+        "routes",
+        "share",
+        "eff_usd_per_mtok",
+        "eff_approx",
+        "input",
+        "output",
+        "cache_read",
+        "cache_write",
+    ]
     names = [r[0] for r in rows]
     assert "claude-opus-4-8" in names and "gpt-5.3" in names
-    assert names[0] == "claude-opus-4-8"  # most spend first (its Anthropic family too)
-    assert rows[0][1] == "Anthropic" and rows[0][2] == "anthropic"  # family + route columns
-    # every priced row carries four numeric rates after model/family/routes
-    assert all(len(r) == 7 and all(isinstance(v, (int, float)) for v in r[3:]) for r in rows)
+    assert names[0] == "gpt-5.3"  # cheapest for the mix first (the eff default sort)
+    opus = next(r for r in rows if r[0] == "claude-opus-4-8")
+    assert opus[1] == "Anthropic" and opus[2] == "anthropic"  # family + route columns
+    # every priced row carries share/eff/approx and four numeric rates
+    assert all(len(r) == 10 and all(isinstance(v, (int, float)) for v in r[6:]) for r in rows)
+    assert all(isinstance(r[5], bool) for r in rows)
 
     # the active P filter narrows the export too (shared priced_model_entries)
     app.query = "gpt"

@@ -324,18 +324,26 @@ Every `Workflow` carries two cost snapshots: real recorded cost and an API-equiv
 markers — regenerate with `python3 scripts/update_prices.py` and commit the changed
 `src/opentab/pricing.py`; never hand-edit that block. `model_price()` adds family fallbacks for
 version/suffix churn. `P` shows this table for the models **you've used**
-(`priced_model_entries`), in one of three **layouts `p` cycles** (`prices_view`, a
-saved pref): **by vendor** — models **deduped to the bare id** (list price is
-route-independent) under `▸ Anthropic/OpenAI/…` headers (`model_family`/`family_label`
-infer the vendor from the model *name*, not the access route), each row tagged with
-its route(s); **by provider** — one row per `(route, model)` under `▸ anthropic/
-github-copilot/…` headers, so a gateway that carries many vendors shows them together,
-each row tagged with its vendor (the mirror image of the vendor view); and **flat** —
-one ungrouped list. All three are **sortable** by model/price column (`s` picker or a
-header click; `prices_sort`) and **heat-shaded** green→red per column
+(`priced_model_entries`), one row per model **deduped to the canonical id**
+(`canonical_model` folds alias spellings: dots==dashes, date pins and reasoning-effort
+suffixes stripped — the row displays its most-used alias via `display_model` and takes
+the most completely-priced alias's rates, `_best_alias_price`). The decision column is
+**eff $/M** (`effective_price`): each model's list rates priced at **your app-wide
+token mix** (`price_token_mix`, cache-read-heavy in practice), cheapest-first by
+default; a missing cache-read rate is never a free lunch — those reads bill at the
+input rate, the eff value gets a `~` and the raw cell a `—`. Beside it sits **use**,
+your token share as a bar (revealed preference — the closest offline proxy for "which
+models do I actually rely on"). Three **layouts `p` cycles** (`prices_view`, a saved
+pref, default flat): **flat** — one ungrouped list (cheapest-for-the-mix is a
+cross-vendor question); **by vendor** — grouped under `▸ Anthropic/OpenAI/…` headers
+(`model_family`/`family_label` infer the vendor from the model *name*, not the access
+route), rows tagged with their route(s); **by provider** — one row per `(route, model)`
+under `▸ anthropic/github-copilot/…` headers, rows tagged with their vendor. All three
+are **sortable** by model/eff/use/price column (`s` picker or a header click;
+`prices_sort`, default `eff`) and **heat-shaded** green→red per column, eff included
 (`_price_heat_level`, pairs `PRICE_HEAT_BASE_PAIR..`). Local models are excluded (no
 API rate). `Enter` drills into the sessions that used a model (aggregated across
-routes by bare id).
+routes and alias spellings by canonical id).
 
 `model_price()` first consults an **optional local cache** that *overlays* the embedded
 table: `_load_price_cache()` lazily reads `~/.config/opentab/prices.json` (a

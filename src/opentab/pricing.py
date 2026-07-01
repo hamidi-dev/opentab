@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 from opentab import __version__
@@ -196,6 +197,42 @@ def model_family(name: str) -> str:
 def family_label(family: str) -> str:
     # Human label for a family key ("anthropic" -> "Anthropic"); "" -> "Other".
     return _FAMILY_LABELS.get(family, "Other")
+
+
+# One model, many spellings: routes disagree on separators ("claude-sonnet-4.5" vs
+# "claude-sonnet-4-5"), pin releases with a date ("-20250929", "-2024-08-06"), and
+# Codex appends the reasoning effort ("gpt-5.2-xhigh") -- all the same billed model
+# at the same list price. canonical_model() folds them to one grouping key so the P
+# overlay shows one row per model instead of one per spelling.
+_MODEL_DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
+_MODEL_EFFORT_SUFFIX = re.compile(r"-(?:minimal|low|medium|high|xhigh)$")
+
+
+def display_model(bare: str) -> str:
+    # The human spelling of a bare model id: release-date and reasoning-effort
+    # suffixes stripped, the id's own separator style kept.
+    return _MODEL_EFFORT_SUFFIX.sub("", _MODEL_DATE_SUFFIX.sub("", str(bare)))
+
+
+def canonical_model(name: str) -> str:
+    # The alias-folding key for a model id (route prefix ignored): the display
+    # spelling, lowercased, with version dots normalized to dashes ("4.5" == "4-5").
+    bare = display_model(str(name).rsplit("/", 1)[-1].lower())
+    return re.sub(r"(?<=\d)\.(?=\d)", "-", bare)
+
+
+def effective_price(
+    price: tuple[float, float, float, float], mix: tuple[float, float, float, float]
+) -> tuple[float, bool]:
+    # What 1M tokens of `mix` (input/output/cache-read/cache-write shares) cost at
+    # `price` -- the P overlay's single comparable "eff $/M" figure. No provider
+    # reads cache for free, so a 0 cache-read rate is a missing datum, not a
+    # discount: bill those reads at the full input rate (an upper bound) and flag
+    # the result as approximate so the UI can mark it.
+    ir, orr, crr, cwr = price
+    approx = crr <= 0 < ir
+    cr = ir if approx else crr
+    return mix[0] * ir + mix[1] * orr + mix[2] * cr + mix[3] * cwr, approx
 
 
 # --- optional models.dev price cache (overlays the embedded table) -----------

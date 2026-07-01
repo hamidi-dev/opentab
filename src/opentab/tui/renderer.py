@@ -45,7 +45,7 @@ from opentab.heatmap import (
     week_key,
 )
 from opentab.models import ALL_YEARS, year_label
-from opentab.pricing import api_equivalent_cost, family_label, model_price, price_cache_meta
+from opentab.pricing import api_equivalent_cost, family_label, price_cache_meta
 from opentab.util import fuzzy_score, launcher_hook, month_bounds, tool_namespace
 
 
@@ -78,6 +78,8 @@ class Renderer:
     # text (arrow included) so the click zones line up.
     PRICE_SORT_COLUMNS = (
         ("model", "model"),
+        ("eff", "eff $/M"),
+        ("use", "use"),
         ("input", "input"),
         ("output", "output"),
         ("cache_read", "cacheR"),
@@ -1881,8 +1883,9 @@ class Renderer:
             "                   Calendar is a spend heat map: Enter focuses the grid, then ↑↓←→",
             "                   pick a day and Enter opens it (Esc steps back to the tabs);",
             "                   +/- adjusts the color granularity",
-            "  P                model prices (the models.dev API rates used for $ what-if);",
-            "                   p cycles the layout — by vendor / by provider / flat; j/k select,",
+            "  P                model prices: eff $/M blends each model's list rates at your",
+            "                   token mix (cheapest first) beside your usage share and raw rates;",
+            "                   p cycles the layout — flat / by vendor / by provider; j/k select,",
             "                   Enter its sessions, s sorts a column (or click a header), f/r/e as usual",
             "  $                toggle what-if prices (what unpriced usage would cost at API list)",
             "  r                reload database",
@@ -1914,83 +1917,125 @@ class Renderer:
 
     def price_intro_lines(self) -> list[str]:
         # The fixed header block above the P overlay's price table: where the rates
-        # came from and what they mean. Pulled out so both the flat price_table_lines
-        # (export/tests) and the navigable draw_prices share one source of truth.
+        # came from and what the eff blend means. Pulled out so both the flat
+        # price_table_lines (export/tests) and the navigable draw_prices share one
+        # source of truth.
         meta = price_cache_meta()
         if meta:
             when = (meta.get("fetched_at") or "?")[:10]
             source = f"models.dev cache · {meta.get('count', 0)} models · fetched {when}"
         else:
             source = "embedded offline snapshot (anthropic/openai/google)"
-        return [
-            f"Source: {source}.  Press r to refresh from models.dev.",
-            "",
-            "API list prices from models.dev, per 1M tokens. These are the rates",
-            "OpenTab uses to estimate the $ what-if cost of unpriced subscription or",
-            "credit usage -- approximate list prices, not your invoice.",
-            "Each column shades green (cheaper) → red (pricier) across your models.",
-            "",
-        ]
+        lines = [f"Source: {source}.  API list prices per 1M tokens; r refreshes from models.dev."]
+        mix = self.app.price_token_mix()
+        if mix:
+            (inp, out, cr, cw), total = mix
+            lines.append(
+                f"eff $/M prices each model's list rates at YOUR token mix: {inp:.1%} input · {out:.1%} output · {cr:.1%} cacheR · {cw:.1%} cacheW ({human_tokens(total)} tokens)."
+            )
+            lines.append(
+                "~ = no cache-read rate on record; those reads are billed at the input rate (an upper bound)."
+            )
+        lines.append("")
+        return lines
 
     # Price columns are 8 wide (not 7) so the active-sort header can carry a " v"/
     # " ^" arrow -- "output v"/"cacheR v" need the eighth cell -- and still line up
-    # with the numeric rows below.
+    # with the numeric rows below. The eff column is 9 so "eff $/M ^" fits; the use
+    # column is a 5-cell share bar + a 4-wide percentage.
     _PRICE_COL_W = 8
-    _PRICE_BLOCK_W = _PRICE_COL_W * 4 + 3  # four columns + three single-space gaps
+    _PRICE_EFF_W = 9
+    _PRICE_USE_BAR = 5
+    _PRICE_USE_W = _PRICE_USE_BAR + 4
+    # name gap -> eff, gap, use, gap, four raw columns + three single-space gaps
+    _PRICE_BLOCK_W = _PRICE_EFF_W + 2 + _PRICE_USE_W + 2 + _PRICE_COL_W * 4 + 3
 
     # A few access routes are long; abbreviate the worst offenders for the route tag.
     _ROUTE_ABBR = {"github-copilot": "copilot"}
 
     def _route_tag(self, routes) -> str:
         # The trailing "how you reach this model" annotation, e.g. "anthropic·copilot".
-        return "·".join(self._ROUTE_ABBR.get(r, r) for r in routes)
+        # A slashed gateway route ("openrouter/anthropic") collapses to the gateway --
+        # the vendor half is already the row's family -- deduped after collapsing.
+        seen: list[str] = []
+        for r in routes:
+            tag = self._ROUTE_ABBR.get(r, r.split("/", 1)[0])
+            if tag not in seen:
+                seen.append(tag)
+        return "·".join(seen)
 
-    def _price_core_text(self, entry, namew: int) -> str:
-        # One model's name + four price cells (no route tag -- that's overlaid dim, and
-        # appended by the text path). Every entry here has a real rate (local models
-        # are dropped upstream), and its price is the bare id's, route-independent.
+    def _price_eff_cell(self, entry) -> str:
+        # The blended eff $/M figure; ~ marks the missing-cache-read upper bound.
+        return f"~{entry.eff:.2f}" if entry.approx else f"{entry.eff:.2f}"
+
+    def _price_use_cell(self, entry, peak: float) -> str:
+        # Your usage share of this model: a bar scaled to the biggest row + percent.
+        bar = cost_bar(entry.share, peak, self._PRICE_USE_BAR)
+        return f"{bar}{entry.share:>4.0%}"
+
+    def _price_raw_cells(self, entry) -> list[str]:
+        # The four raw list-price cells. A 0 cache-read rate is missing data, never
+        # a free lunch, so it renders as "—" (the eff blend bills it at the input
+        # rate); a 0 cache-write is genuine (OpenAI/Gemini don't charge writes).
+        ir, orr, crr, cwr = entry.price
+        cr = "—" if crr <= 0 < ir else f"{crr:.2f}"
+        return [f"{ir:.2f}", f"{orr:.2f}", cr, f"{cwr:.2f}"]
+
+    def _price_core_text(self, entry, namew: int, peak: float) -> str:
+        # One model's name + eff/use/raw-price cells (no route tag -- that's overlaid
+        # dim, and appended by the text path). Every entry carries its resolved price
+        # (from the most completely-priced alias; local models are dropped upstream).
         w = self._PRICE_COL_W
-        ir, orr, crr, cwr = model_price(entry.bare)
+        cells = " ".join(f"{c:>{w}}" for c in self._price_raw_cells(entry))
         return (
             f"{shorten(entry.bare, namew):{namew}}  "
-            f"{ir:>{w}.2f} {orr:>{w}.2f} {crr:>{w}.2f} {cwr:>{w}.2f}"
+            f"{self._price_eff_cell(entry):>{self._PRICE_EFF_W}}  "
+            f"{self._price_use_cell(entry, peak):<{self._PRICE_USE_W}}  {cells}"
         )
 
-    def _price_col_head(self, key: str, label: str) -> str:
-        # One right-aligned _PRICE_COL_W-wide header cell, with a v/^ arrow appended
-        # when this is the active sort column (direction from prices_sort_reverse).
+    def _price_col_head(self, key: str, label: str, width: int, left: bool = False) -> str:
+        # One `width`-wide header cell, with a v/^ arrow appended when this is the
+        # active sort column (direction from prices_sort_reverse).
         if self.app.prices_sort == key:
             desc = self.sort_descending(key, self.app.prices_sort_reverse)
             label = f"{label} {'v' if desc else '^'}"
-        return f"{label:>{self._PRICE_COL_W}}"
+        return f"{label:<{width}}" if left else f"{label:>{width}}"
 
     def _price_header(self, namew: int) -> str:
         # The price table's column header, shared by the flat price_table_lines and
         # the navigable draw_prices so both show the same sort arrows. model is
-        # left-aligned in the name column; the four price cells align with the rows.
+        # left-aligned in the name column; every other cell aligns with the rows.
         model = "model"
         if self.app.prices_sort == "model":
             desc = self.sort_descending("model", self.app.prices_sort_reverse)
             model = f"model {'v' if desc else '^'}"
+        eff = self._price_col_head("eff", "eff $/M", self._PRICE_EFF_W)
+        use = self._price_col_head("use", "use", self._PRICE_USE_W, left=True)
         cells = " ".join(
-            self._price_col_head(key, label) for key, label in self.PRICE_SORT_COLUMNS[1:]
+            self._price_col_head(key, label, self._PRICE_COL_W)
+            for key, label in self.PRICE_SORT_COLUMNS[3:]
         )
-        return f"{model:{namew}}  {cells}"
+        return f"{model:{namew}}  {eff}  {use}  {cells}"
 
     def _price_namew(self, entries, width: int) -> int:
         return min(max(len(e.bare) for e in entries), max(12, width - self._PRICE_BLOCK_W - 3))
 
+    @staticmethod
+    def _price_use_peak(entries) -> float:
+        # The biggest usage share among the rows -- what the use bars scale against.
+        return max((e.share for e in entries), default=0.0)
+
     def _price_column_ranges(self, entries) -> list[tuple[float, float] | None]:
-        # For each of the four price columns, the (min, max) over the *positive* list
-        # prices among `entries` -- the span the green→red heat normalizes against.
-        # Zero cells are excluded, so a column of {0, 0, 5.0} still spans by its paying
-        # member; a column with fewer than two distinct positive rates is degenerate
-        # (None) and stays neutral. (entries are already local-free.)
-        cols: list[list[float]] = [[], [], [], []]
+        # For the eff column and each of the four price columns, the (min, max) over
+        # the *positive* values among `entries` -- the span the green→red heat
+        # normalizes against. Zero cells are excluded, so a column of {0, 0, 5.0}
+        # still spans by its paying member; a column with fewer than two distinct
+        # positive rates is degenerate (None) and stays neutral.
+        cols: list[list[float]] = [[e.eff for e in entries if e.eff > 0], [], [], [], []]
         for entry in entries:
-            for i, value in enumerate(model_price(entry.bare)):
+            for i, value in enumerate(entry.price):
                 if value > 0:
-                    cols[i].append(value)
+                    cols[i + 1].append(value)
         ranges: list[tuple[float, float] | None] = []
         for vals in cols:
             lo, hi = (min(vals), max(vals)) if vals else (0.0, 0.0)
@@ -2064,13 +2109,14 @@ class Renderer:
             lines.append(self._price_empty_msg())
             return lines
         namew = self._price_namew(entries, width)
+        peak = self._price_use_peak(entries)
         lines.append(self._price_header(namew))
         for row in self._price_render_rows(entries):
             if row[0] == "header":
                 lines.append(f"▸ {row[1]}")
             else:
                 _, _i, entry = row
-                core = self._price_core_text(entry, namew)
+                core = self._price_core_text(entry, namew, peak)
                 tag = self._price_entry_tag(entry)
                 lines.append(f"{core}  {tag}" if tag else core)
         return lines
@@ -2126,8 +2172,11 @@ class Renderer:
             scroll = sel_row - visible + 1
         self.app.prices_scroll = scroll
         ranges = self._price_column_ranges(entries)
+        peak = self._price_use_peak(entries)
         w = self._PRICE_COL_W
-        tag_x = 2 + namew + 2 + self._PRICE_BLOCK_W + 2  # after the four price cells
+        x_eff = 2 + namew + 2
+        x_raw = x_eff + self._PRICE_EFF_W + 2 + self._PRICE_USE_W + 2
+        tag_x = 2 + namew + 2 + self._PRICE_BLOCK_W + 2  # after the price cells
         for offset, item in enumerate(render[scroll : scroll + visible]):
             row_y = list_top + offset
             if item[0] == "header":
@@ -2140,7 +2189,7 @@ class Renderer:
                 )
                 continue
             _, i, entry = item
-            core = self._price_core_text(entry, namew)
+            core = self._price_core_text(entry, namew, peak)
             selected = i == idx
             attr = curses.A_REVERSE | curses.A_BOLD if selected else curses.A_NORMAL
             self.write(stdscr, row_y, 2, f"{shorten(core, inner_w):<{inner_w}}", attr)
@@ -2157,16 +2206,24 @@ class Renderer:
                 self.write(stdscr, row_y, tag_x, shorten(tag, 2 + inner_w - tag_x), attr)
             if selected:
                 continue  # the reverse cursor bar reads clearer without heat
-            for j, value in enumerate(model_price(entry.bare)):
-                cell_x = 2 + namew + 2 + j * (w + 1)
+            if x_eff + self._PRICE_EFF_W <= 2 + inner_w:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x_eff,
+                    f"{self._price_eff_cell(entry):>{self._PRICE_EFF_W}}",
+                    self._price_heat_attr(entry.eff, ranges[0]),
+                )
+            for j, cell in enumerate(self._price_raw_cells(entry)):
+                cell_x = x_raw + j * (w + 1)
                 if cell_x + w > 2 + inner_w:
                     break  # cell would spill past the shortened row; leave it plain
                 self.write(
                     stdscr,
                     row_y,
                     cell_x,
-                    f"{value:>{w}.2f}",
-                    self._price_heat_attr(value, ranges[j]),
+                    f"{cell:>{w}}",
+                    self._price_heat_attr(entry.price[j], ranges[j + 1]),
                 )
 
     def price_session_lines(self, model: str, width: int) -> list[str]:
