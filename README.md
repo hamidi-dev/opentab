@@ -27,7 +27,7 @@
 A local, standard-library terminal UI for your AI coding spend. It reads the records your
 coding tools already keep on disk — [OpenCode](https://opencode.ai)'s SQLite database,
 [Claude Code](https://claude.com/claude-code)'s and [Codex](https://developers.openai.com/codex)'s
-session transcripts, plus Hermes, the GitHub Copilot CLI, pi-agent, OpenClaw, and CSV/JSONL
+session transcripts, plus Hermes, GitHub Copilot (CLI and VS Code), pi-agent, OpenClaw, and CSV/JSONL
 logs of API requests — and shows where your tokens and money went: by month, day, project,
 session, and model, down to the subagent tree. Browse one tool at a time, or merge them all.
 
@@ -37,7 +37,7 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
 
 ## Features
 
-- Reads OpenCode, Claude Code, Codex, Hermes, the GitHub Copilot CLI, pi-agent, OpenClaw, and logged-request CSV/JSONL files — one tool at a time, or merged into a single view
+- Reads OpenCode, Claude Code, Codex, Hermes, GitHub Copilot (its CLI and Copilot Chat in VS Code), pi-agent, OpenClaw, and logged-request CSV/JSONL files — one tool at a time, or merged into a single view
 - Cost by month, day, project, session, and model
 - Trends overlay: daily / weekly / monthly charts, a calendar spend heatmap, and model-, provider- and source-spend rankings
 - Cost-share percentages and inline spend bars
@@ -84,7 +84,8 @@ touches, all on your own machine:
 
 - **Reads** your tools' own records, read-only: OpenCode's SQLite DB, the JSONL
   transcripts of Claude Code / Codex / pi-agent / OpenClaw, Hermes' SQLite DB, the Copilot
-  CLI's OpenTelemetry export, and a CSV/JSONL of logged API requests (`--csv`/`--jsonl`).
+  CLI's OpenTelemetry export, VS Code's Copilot Chat session store, and a CSV/JSONL of
+  logged API requests (`--csv`/`--jsonl`).
   To fold git worktrees into their main repo it also reads project `.git` files (no `git`
   process is spawned; disable with `--no-worktrees`).
 - **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
@@ -155,7 +156,8 @@ opentab --demo                   # safe for live demos / screenshots (see below)
 OpenTab reads the local records each AI coding tool keeps — **OpenCode** (SQLite),
 **Claude Code** (`~/.claude/projects/**/*.jsonl`), **Codex**
 (`~/.codex/sessions/**/rollout-*.jsonl`), the **GitHub Copilot CLI** (its OpenTelemetry
-export under `~/.copilot/otel/`), **pi-agent** (`~/.pi/agent/sessions/`), and **OpenClaw**
+export under `~/.copilot/otel/`), **Copilot Chat in VS Code** (VS Code's own
+`chatSessions` store), **pi-agent** (`~/.pi/agent/sessions/`), and **OpenClaw**
 (`~/.openclaw/agents/**/sessions/`), plus a **Hermes** database and a generic **CSV** or
 **JSONL** of logged API requests. Pick one with `--source`:
 
@@ -164,6 +166,7 @@ opentab --source opencode                    # OpenCode only
 opentab --source claude --claude-dir /path   # Claude Code (default ~/.claude/projects)
 opentab --source codex --codex-dir /path     # Codex (default ~/.codex/sessions)
 opentab --source copilot                     # GitHub Copilot CLI (default ~/.copilot/otel)
+opentab --source vscode                      # Copilot Chat in VS Code (every installed variant)
 opentab --source pi                          # pi-agent (default ~/.pi/agent/sessions)
 opentab --source openclaw                    # OpenClaw gateway (default ~/.openclaw; honors $OPENCLAW_DIR)
 opentab --csv requests.csv                   # a CSV of logged API requests (or --jsonl requests.jsonl)
@@ -175,6 +178,12 @@ opentab --source all                         # all present sources, merged
 > (`export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl`); sessions after
 > that show up under `--source copilot`.
 
+> **Copilot Chat in VS Code:** read from VS Code's own chat-session store
+> (`<User>/workspaceStorage/*/chatSessions`, plus empty-window sessions), across Code,
+> Code&nbsp;-&nbsp;Insiders, and VSCodium — nothing to enable. Projects come from each
+> workspace's folder; sessions the panel merely opened (no tokens) are ignored. Point
+> `--vscode-dir` at a User directory for a portable/remote copy.
+
 > **OpenClaw:** sessions live under `~/.openclaw/agents/<agent>/sessions/` (one project per
 > agent); point `--openclaw-dir`/`$OPENCLAW_DIR` at a mounted copy if it runs on a server.
 > It records a per-message cost for every provider, but only **metered** routes (a direct
@@ -185,10 +194,10 @@ opentab --source all                         # all present sources, merged
 source** when more than one exists (a single source when only one is). The active source
 shows as a header chip; **switch live with `c`** (cycles whichever sources are present,
 plus `all`). The whole TUI works the same — months, days, projects, sessions, models,
-trends — with two differences, because **Claude Code, Codex, and the Copilot CLI record
-only tokens, no per-message cost**:
+trends — with two differences, because **Claude Code, Codex, and Copilot (CLI and VS
+Code) record only tokens, no per-message cost**:
 
-- Such a session works like an OpenCode subscription session: **$0 in normal mode** and an
+- Such a session works like an OpenCode subscription session: **\$0 in normal mode** and an
   **estimate** (tokens × API list price) under the **`$`** view. Since that view would
   otherwise be a wall of `$0.00`, the estimate **starts on by default** there (header tag:
   `ESTIMATED`); press `$` for the recorded numbers, and your choice is remembered.
@@ -196,7 +205,7 @@ only tokens, no per-message cost**:
   the repo instead of bare folder names.
 
 `--source all` merges every present source: the same repo across tools rolls up into one
-project row, every session row shows its origin (a `Src` column, `[oc]`/`[cc]`/`[cx]`/`[cp]`/`[pi]`/`[ocl]`/`[csv]`/`[jl]`
+project row, every session row shows its origin (a `Src` column, `[oc]`/`[cc]`/`[cx]`/`[cp]`/`[vs]`/`[pi]`/`[ocl]`/`[csv]`/`[jl]`
 tags elsewhere), and Trends gains a **Sources** tab. `$` reprices the unpriced usage across
 all of them. (With more than one source present, `--demo` **defaults to this merged view**
 and anonymizes every backend under one shared scale so the cross-tool proportion stays
@@ -248,7 +257,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>` / `codex resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project); outside tmux (or with `y`) the `cd <project> && …` command is copied to the clipboard instead. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
-| `c` | Switch data source — any present backend (OpenCode, Claude Code, Codex, Hermes, Copilot, pi, OpenClaw, CSV, JSONL), or all merged |
+| `c` | Switch data source — any present backend (OpenCode, Claude Code, Codex, Hermes, Copilot CLI, VS Code, pi, OpenClaw, CSV, JSONL), or all merged |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 

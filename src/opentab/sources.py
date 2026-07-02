@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import sys
 
 from opentab.stores.claude import ClaudeStore
 from opentab.stores.codex import CodexStore
@@ -15,6 +16,7 @@ from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import Store
 from opentab.stores.pi import PiStore
+from opentab.stores.vscode import VscodeStore
 
 DEFAULT_CSV_PATH = os.path.expanduser("~/.config/opentab/requests.csv")
 DEFAULT_JSONL_PATH = os.path.expanduser("~/.config/opentab/requests.jsonl")
@@ -25,6 +27,32 @@ def _default_pi_dir() -> str:
     # otherwise its sessions live under ~/.pi/agent/sessions.
     env = (os.environ.get("PI_AGENT_DIR") or "").split(",")[0].strip()
     return env or os.path.expanduser("~/.pi/agent/sessions")
+
+
+def _default_vscode_user_dirs() -> list[str]:
+    # VS Code's per-user storage root ("User"), per variant. Chat sessions live under
+    # <User>/workspaceStorage/<hash>/chatSessions and
+    # <User>/globalStorage/emptyWindowChatSessions.
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        base = os.path.join(home, "Library", "Application Support")
+    elif os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    return [
+        os.path.join(base, variant, "User") for variant in ("Code", "Code - Insiders", "VSCodium")
+    ]
+
+
+def _vscode_dirs(args: argparse.Namespace) -> list[str]:
+    # --vscode-dir narrows the scan to one directory. argparse always sets the
+    # attribute (None = "scan every installed variant"); a namespace *without* it (bare
+    # test stubs) means the source is simply not wired up -- never scan the real home.
+    explicit = getattr(args, "vscode_dir", "")
+    if explicit:
+        return [explicit]
+    return _default_vscode_user_dirs() if explicit is None else []
 
 
 def _default_openclaw_dir() -> str:
@@ -44,6 +72,7 @@ _PATH_SLOT = {
     "codex": "codex_dir",
     "hermes": "hermes_db",
     "copilot": "copilot_dir",
+    "vscode": "vscode_dir",
     "pi": "pi_dir",
     "openclaw": "openclaw_dir",
 }
@@ -129,6 +158,31 @@ def _copilot_otel_available(args: argparse.Namespace) -> bool:
     return bool(extra) and os.path.isfile(extra)
 
 
+def _vscode_available(args: argparse.Namespace) -> bool:
+    # Merely opening VS Code's chat panel leaves empty session files behind, so file
+    # presence alone would surface a "vscode" source for every VS Code user. Require a
+    # session that actually recorded tokens: scan the (small) session files for the
+    # token markers and stop at the first hit.
+    for user_dir in _vscode_dirs(args):
+        patterns = (
+            os.path.join(user_dir, "workspaceStorage", "*", "chatSessions", "*.json*"),
+            os.path.join(user_dir, "globalStorage", "emptyWindowChatSessions", "*.json*"),
+            os.path.join(user_dir, "*.json*"),  # pointed straight at a chatSessions dir
+        )
+        for pattern in patterns:
+            for path in glob.glob(pattern):
+                if not path.endswith((".json", ".jsonl")):
+                    continue
+                try:
+                    with open(path, errors="replace") as fh:
+                        for line in fh:
+                            if '"promptTokens"' in line or '"completionTokens"' in line:
+                                return True
+                except OSError:
+                    continue
+    return False
+
+
 # Display names for the source keys, matching each backend's source_name.
 SOURCE_LABELS = {
     "opencode": "OpenCode",
@@ -138,6 +192,7 @@ SOURCE_LABELS = {
     "csv": "CSV",
     "jsonl": "JSONL",
     "copilot": "Copilot",
+    "vscode": "VS Code",
     "pi": "Pi",
     "openclaw": "OpenClaw",
     "all": "all",
@@ -172,6 +227,8 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("jsonl")
     if _copilot_otel_available(args):
         keys.append("copilot")
+    if _vscode_available(args):
+        keys.append("vscode")
     if _jsonl_dir_available(getattr(args, "pi_dir", "")):
         keys.append("pi")
     if _openclaw_available(getattr(args, "openclaw_dir", "")):
@@ -245,6 +302,17 @@ def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
                 "--copilot-dir at the export) -- see the README."
             )
         return CopilotStore(args.copilot_dir, args), "OpenTab: loading Copilot CLI sessions…\r"
+    if key == "vscode":
+        if not _vscode_available(args):
+            raise SystemExit(
+                "No VS Code Copilot Chat usage found. Sessions with recorded tokens live "
+                "under <User>/workspaceStorage/*/chatSessions; point --vscode-dir at a VS "
+                "Code User directory (or a chatSessions directory) if yours is elsewhere."
+            )
+        return (
+            VscodeStore(_vscode_dirs(args), args),
+            "OpenTab: loading VS Code Copilot Chat sessions…\r",
+        )
     if key == "pi":
         if not os.path.isdir(args.pi_dir):
             raise SystemExit(f"pi-agent sessions directory not found: {args.pi_dir}")

@@ -18,19 +18,21 @@ transcripts (`~/.claude/projects/**/*.jsonl`, `ClaudeStore`), **Codex CLI** roll
 (`~/.hermes/state.db`, `HermesStore`), a **CSV of logged API requests** (`--csv`, default
 `~/.config/opentab/requests.csv`, `CsvStore`), the **GitHub Copilot CLI** OpenTelemetry
 export (`~/.copilot/otel/**/*.jsonl` + `$COPILOT_OTEL_FILE_EXPORTER_PATH`, `CopilotStore`),
+**Copilot Chat in VS Code** (`<User>/workspaceStorage/*/chatSessions/*.json[l]` across the
+Code/Insiders/VSCodium variants, or `--vscode-dir`, `VscodeStore`),
 **pi-agent** sessions (`~/.pi/agent/sessions/**/*.jsonl` or `$PI_AGENT_DIR`, `PiStore`),
 **OpenClaw** gateway sessions (`~/.openclaw/agents/**/sessions/*.jsonl` or `$OPENCLAW_DIR`,
 `OpenClawStore`), and a **JSONL/NDJSON of logged API requests** (the per-line twin of the
 CSV source; `--jsonl`, default `~/.config/opentab/requests.jsonl`, `JsonlStore`).
 `CombinedStore` merges them. Pick with
-`--source {auto,opencode,claude,codex,hermes,csv,jsonl,copilot,pi,openclaw,all}` or switch
-live with **`c`**.
+`--source {auto,opencode,claude,codex,hermes,csv,jsonl,copilot,vscode,pi,openclaw,all}` or
+switch live with **`c`**.
 
-Cost model: Claude Code, Codex, and the Copilot CLI record **no per-message cost**, so they
-behave like an OpenCode *subscription* session — **$0 in normal mode**, a list-price
-estimate (tokens × API price) only under **`$`**. Hermes, CSV/JSONL, pi, and OpenClaw are
-**mixed**: subscription/OAuth routes stay $0/estimated, metered routes record real spend.
-See each backend's note under Architecture.
+Cost model: Claude Code, Codex, and Copilot (CLI and VS Code) record **no per-message
+cost**, so they behave like an OpenCode *subscription* session — **$0 in normal mode**, a
+list-price estimate (tokens × API price) only under **`$`**. Hermes, CSV/JSONL, pi, and
+OpenClaw are **mixed**: subscription/OAuth routes stay $0/estimated, metered routes record
+real spend. See each backend's note under Architecture.
 
 ## Commands
 
@@ -107,7 +109,7 @@ src/opentab/
   util.py            clipboard/launchers/git_root/fuzzy/parse_range/tool_namespace
   sources.py         make_store/resolve_source/available_sources/source_cycle + path routing
   state.py           load_state/save_state/apply_state
-  stores/            opencode, claude, codex, hermes, csv_source, jsonl_source, copilot, pi, openclaw, combined
+  stores/            opencode, claude, codex, hermes, csv_source, jsonl_source, copilot, vscode, pi, openclaw, combined
   tui/               renderer (Renderer), app (App)
 ```
 
@@ -189,6 +191,29 @@ Three logical layers (the class names below live in the files above — `Store` 
   Models provider-prefixed (as `CsvStore`). OTEL has **no cwd**, so each session's dir/title
   is enriched **read-only, best effort** from the sibling `session-store.db` (`_load_meta`).
   No subagent tree; usage-less sessions dropped.
+- **`VscodeStore`** — backend over **Copilot Chat in VS Code**, read from VS Code core's
+  own chat-session store (`<User>/workspaceStorage/<hash>/chatSessions/*` +
+  `globalStorage/emptyWindowChatSessions/*`, across the Code / Code - Insiders / VSCodium
+  variants; `--vscode-dir` narrows to one User or chatSessions dir), same methods + the
+  **Turns** opt-in (each chat request = one prompt = one turn). Two on-disk shapes, both
+  read: the current **journal `.jsonl`** (NDJSON patches replayed into the session object:
+  kind 0 snapshot, 1 set-at-path, 2 append, default path `["requests"]`) and the older
+  plain `.json`; a migrated session in both dedupes by `(sessionId, requestId)`, journal
+  first. Token fields per request (serialized by VS Code's `chatModel.ts`): output =
+  **max(`completionTokens`, `metadata.outputTokens`)** — the top-level one *accumulates
+  across the turn's tool-call rounds* (setUsage sums), the metadata one is a single round
+  and undercounts agentic turns; input = max(`metadata.promptTokens`, `promptTokens`), the
+  final round's context (per-round prompts are not recorded, so input under-counts
+  many-round turns; no cache split exists). No dollar cost recorded (`copilotCredits` is a
+  premium-request quota unit, not USD) → token-only backend (**`records_cost=False`**, same
+  $0/`$`-estimate nudges). `metadata.resolvedModel` (covers the "auto" router) →
+  `modelId` minus the `copilot/` prefix, then provider-prefixed (the `CsvStore` pattern).
+  Project = the workspace's `workspace.json` folder/workspace URI → git root;
+  empty-window sessions group under "(no workspace)". **Availability requires recorded
+  tokens** (`_vscode_available` scans for the token markers): merely opening the chat
+  panel writes empty session files, and file presence alone would surface the source for
+  every VS Code install. Title: `customTitle` → `computedTitle` → first prompt. No
+  subagent tree; usage-less sessions dropped.
 - **`PiStore`** — seventh backend over **pi-agent** NDJSON
   (`~/.pi/agent/sessions/<project>/*.jsonl`, `$PI_AGENT_DIR`/`--pi-dir`), same methods. pi
   writes a per-message `usage.cost.total`, but a **list-price figure for every provider**

@@ -68,7 +68,7 @@ the history scannable and feeds the release-notes pass.
 
   | Group | Scopes |
   |-------|--------|
-  | Backends (one store each) | `opencode` `claude` `codex` `hermes` `copilot` `pi` `openclaw` `csv` `jsonl` `combined` |
+  | Backends (one store each) | `opencode` `claude` `codex` `hermes` `copilot` `vscode` `pi` `openclaw` `csv` `jsonl` `combined` |
   | Core modules | `tui` `pricing` `heatmap` `sources` `state` `cli` `models` `formatting` `util` `demo` |
   | UI features (prefer over bare `tui` when one fits) | `trends` `filter` `sort` `range` `export` `launch` `turns` `tools` |
   | Meta | `release` `deps` `ci` `dev` |

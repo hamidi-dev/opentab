@@ -661,6 +661,7 @@ class Renderer:
             "CSV": "csv",
             "JSONL": "jl",
             "Copilot": "cp",
+            "VS Code": "vs",
             "Pi": "pi",
             "OpenClaw": "ocl",
         }.get(workflow.source, (workflow.source or "??")[:2].lower())

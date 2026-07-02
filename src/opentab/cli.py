@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
             "csv",
             "jsonl",
             "copilot",
+            "vscode",
             "pi",
             "openclaw",
             "all",
@@ -47,8 +48,9 @@ def parse_args() -> argparse.Namespace:
         help="data source: opencode (SQLite), claude (Claude Code transcripts), codex "
         "(Codex CLI rollouts), hermes (Hermes Agent DB), csv (a CSV of logged API "
         "requests, e.g. GitHub Copilot), jsonl (an NDJSON of logged API requests), "
-        "copilot (GitHub Copilot CLI via its OTEL export), pi (pi-agent sessions), "
-        "openclaw (OpenClaw gateway sessions), or all (merged); auto merges every present "
+        "copilot (GitHub Copilot CLI via its OTEL export), vscode (Copilot Chat sessions "
+        "in VS Code), pi (pi-agent sessions), openclaw (OpenClaw gateway sessions), or "
+        "all (merged); auto merges every present "
         "source (default: auto). Or just pass a file path -- e.g. `opentab requests.csv`",
     )
     parser.add_argument(
@@ -81,6 +83,13 @@ def parse_args() -> argparse.Namespace:
         default=os.path.expanduser("~/.copilot/otel"),
         help="GitHub Copilot CLI OpenTelemetry export directory (for --source copilot); "
         "the file named by $COPILOT_OTEL_FILE_EXPORTER_PATH is also read",
+    )
+    parser.add_argument(
+        "--vscode-dir",
+        default=None,
+        help="a VS Code User directory (or chatSessions directory) holding Copilot Chat "
+        "sessions (for --source vscode); by default every installed variant (Code, "
+        "Code - Insiders, VSCodium) is scanned",
     )
     parser.add_argument(
         "--pi-dir",

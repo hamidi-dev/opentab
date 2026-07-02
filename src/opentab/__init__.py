@@ -131,6 +131,7 @@ from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import MODEL_EXPR, MSG_MODEL_EXPR, MSG_TOKEN_TOTAL_EXPR, Store
 from opentab.stores.pi import PiStore
+from opentab.stores.vscode import VscodeStore
 from opentab.tui.app import App
 from opentab.tui.renderer import Renderer
 from opentab.util import (
