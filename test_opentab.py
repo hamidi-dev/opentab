@@ -2510,6 +2510,75 @@ def test_api_price_toggle_splits_root_and_subagent_unpriced_usage():
     assert round(app.loaded[0].total_cost - app.loaded[0].root_cost, 2) == 0.5
 
 
+def test_price_refresh_while_api_view_applied_does_not_compound_estimate():
+    # Repro for the P->r doubling: refresh_prices_action recomputes the API costs
+    # while _apply_price_mode has already swapped the estimate into the live cost
+    # fields ($ starts on for cost-less backends). The recompute must build from
+    # the real snapshots, not add a fresh estimate on top of the previous one.
+    app = ot.App.__new__(ot.App)
+
+    class _Store:
+        demo = False
+
+    app.store = _Store()
+    app.show_api_prices = False
+    app._models_loaded = True
+    app.loaded = [
+        ot.Workflow(
+            id="r",
+            title="t",
+            directory="d",
+            created_at="2026-01-01",
+            root_cost=10.0,
+            total_cost=10.0,
+            subagents=0,
+            model_count=2,
+            total_tokens=0,
+            unpriced_tokens=0,
+        )
+    ]
+    app._snapshot_real_costs()
+
+    def row(name, cost, inp):
+        return {
+            "model_name": name,
+            "runs": 1,
+            "cost": cost,
+            "tokens_total": inp,
+            "input": inp,
+            "output": 0,
+            "reasoning": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+        }
+
+    app._model_by_root = {
+        "r": [
+            row("anthropic/claude-opus-4-6", 10.0, 0),
+            row("github-copilot/claude-haiku-4.5", 0.0, 1_000_000),
+        ]
+    }
+    app._compute_api_costs()
+    app.toggle_api_prices()
+    assert round(app.loaded[0].total_cost, 2) == 11.0  # $10 real + $1 estimate
+
+    # What refresh_prices_action does after the fetch, $ view still applied.
+    for _ in range(3):
+        app._compute_api_costs()
+        app._apply_price_mode()
+
+    assert round(app.loaded[0].total_cost, 2) == 11.0  # unchanged, not 12/13/14
+    assert round(app.loaded[0].root_cost, 2) == 11.0
+    costs = {m["model_name"]: m["cost"] for m in app.model_mix("r")}
+    assert costs["github-copilot/claude-haiku-4.5"] == 1.0
+    assert costs["anthropic/claude-opus-4-6"] == 10.0
+    app.toggle_api_prices()  # $ off still restores the true real cost
+    assert app.loaded[0].total_cost == 10.0
+    assert {m["model_name"]: m["cost"] for m in app.model_mix("r")}[
+        "github-copilot/claude-haiku-4.5"
+    ] == 0.0
+
+
 def test_api_price_split_uses_store_root_unpriced_columns_for_same_model():
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")

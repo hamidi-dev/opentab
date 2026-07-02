@@ -954,16 +954,19 @@ class App:
         # plus only the messages in that row that OpenCode recorded as $0.
         # model_breakdown groups by model, so priced and unpriced messages can be
         # mixed in one row; the unpriced_* fields preserve that split.
+        # Re-run on price refresh while the $ view may already be applied, so build
+        # from the real_* snapshots only -- the live cost fields can hold the
+        # previous estimate, and adding to them compounds it on every refresh.
         by_id = {w.id: w for w in self.loaded}
         for root_id, rows in self._model_by_root.items():
             has_root_split = any("root_unpriced_input" in m for m in rows)
             root_delta = 0.0
             for m in rows:
-                m["real_cost"] = m["cost"]
+                real = m["real_cost"] = m.get("real_cost", m["cost"])
                 # Tests and older in-memory callers may not carry unpriced_*;
                 # pure-$0 rows can still price from their aggregate token fields.
-                all_unpriced = m["cost"] == 0 and "unpriced_input" not in m
-                m["api_cost"] = m["cost"] + api_equivalent_cost(
+                all_unpriced = real == 0 and "unpriced_input" not in m
+                m["api_cost"] = real + api_equivalent_cost(
                     m["model_name"],
                     m.get("input", 0) if all_unpriced else m.get("unpriced_input", 0),
                     m.get("output", 0) if all_unpriced else m.get("unpriced_output", 0),
@@ -984,14 +987,14 @@ class App:
             if not wf:
                 continue
             delta = sum(m["api_cost"] - m["real_cost"] for m in rows)  # only $0 rows differ
-            wf.api_total_cost = wf.total_cost + delta
+            wf.api_total_cost = wf.real_total_cost + delta
             if has_root_split:
-                wf.api_root_cost = wf.root_cost + root_delta
+                wf.api_root_cost = wf.real_root_cost + root_delta
             else:
                 # Older in-memory test rows lack root-vs-subagent token splits.
                 # Fall back to the old approximation only when exact data is absent.
-                frac = wf.root_cost / wf.total_cost if wf.total_cost else 1.0
-                wf.api_root_cost = wf.root_cost + delta * frac
+                frac = wf.real_root_cost / wf.real_total_cost if wf.real_total_cost else 1.0
+                wf.api_root_cost = wf.real_root_cost + delta * frac
 
     def _apply_price_mode(self) -> None:
         # Point every panel's cost at either the real or the API-equivalent figure.
