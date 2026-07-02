@@ -654,10 +654,10 @@ class App:
         directory = project.directory
         if directory in self.ignored_projects:
             self.ignored_projects.remove(directory)
-            self.notice = f"unignored {short_path(directory, 40)}"
+            self.notify(f"unignored {short_path(directory, 40)}", "info")
         else:
             self.ignored_projects.add(directory)
-            self.notice = f"ignored {short_path(directory, 40)}"
+            self.notify(f"ignored {short_path(directory, 40)}", "info")
         self._invalidate_workflow_cache()
         if self.zoom_project in self.ignored_projects and not self.show_ignored_projects:
             self.zoom_project = None
@@ -691,10 +691,10 @@ class App:
             return
         if session.id in self.bookmarks:
             self.bookmarks.discard(session.id)
-            self.notice = f"unbookmarked {shorten(session.title, 40)}"
+            self.notify(f"unbookmarked {shorten(session.title, 40)}", "info")
         else:
             self.bookmarks.add(session.id)
-            self.notice = f"bookmarked {shorten(session.title, 40)}"
+            self.notify(f"bookmarked {shorten(session.title, 40)}", "info")
         if self.show_bookmarks_only and session.id not in self.bookmarks:
             # Unstarring under the B filter drops the row from every list.
             if not self.bookmarks:
@@ -1786,7 +1786,7 @@ class App:
         # Show the full path home-abbreviated but NOT truncated -- the toast wraps long
         # text now, so the directory and filename both stay readable (short_path with a
         # generous width only does the ~ swap here, no clipping).
-        self.notice = f"exported {len(rows)} rows → {short_path(path, 999)}"
+        self.notify(f"exported {len(rows)} rows → {short_path(path, 999)}", "success")
 
     def _current_copy_value(self) -> str | None:
         if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
@@ -1814,7 +1814,7 @@ class App:
             self.notice = "nothing to copy here"
             return
         if util.copy_to_clipboard(value):
-            self.notice = f"copied: {shorten(value, 40)}"
+            self.notify(f"copied: {shorten(value, 40)}", "success")
         else:
             self.notice = f"clipboard tool not found ({util.clipboard_tools_label()})"
 
@@ -1827,7 +1827,7 @@ class App:
             self.notice = "no directory to open"
             return
         if open_path(directory):
-            self.notice = f"opened {short_path(directory, 40)}"
+            self.notify(f"opened {short_path(directory, 40)}", "success")
         else:
             opener = "explorer" if sys.platform == "win32" else "open/xdg-open"
             self.notice = f"no opener found ({opener})"
@@ -1884,7 +1884,7 @@ class App:
     def copy_resume_command(self, session: Workflow) -> None:
         command = self.resume_command(session)
         if command and util.copy_to_clipboard(command):
-            self.notice = f"copied: {shorten(command, 60)}"
+            self.notify(f"copied: {shorten(command, 60)}", "success")
         else:
             self.notice = f"clipboard tool not found ({util.clipboard_tools_label()})"
 
@@ -1926,7 +1926,10 @@ class App:
             return
         directory, command = parts
         error = util.tmux_launch(kind, directory, command)
-        self.notice = f"launch failed: {error}" if error else f"{kind}: {shorten(command, 50)}"
+        if error:
+            self.notify(f"launch failed: {error}", "error")
+        else:
+            self.notify(f"{kind}: {shorten(command, 50)}", "info")
 
     def handle_source_menu_key(self, key: int) -> bool:
         # The `c` data-source picker: j/k move, Enter switches, Esc/q cancels. `c` again
@@ -2438,7 +2441,9 @@ class App:
 
     def _toast_kind(self, text: str) -> str:
         # A light heuristic so failures glow red and clear wins glow green; everything
-        # else is neutral info. Callers wanting a specific colour pass notify(text, kind).
+        # else is neutral info. Callers wanting a specific colour pass notify(text, kind) --
+        # MANDATORY for any message interpolating user data (session titles, paths,
+        # commands): a title like "backup failure analysis" matches an error marker.
         low = text.lower()
         if any(marker in low for marker in self._TOAST_ERROR_MARKERS):
             return "error"

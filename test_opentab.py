@@ -1685,6 +1685,26 @@ def test_bookmark_toggles_on_selected_session():
     assert app.bookmarks == set()
 
 
+def test_bookmark_toast_ignores_error_words_in_the_title():
+    # The toast kind must never be inferred from user data: a session titled
+    # "… backup failure analysis" used to paint the bookmark confirmation as
+    # a red "✕ Error" card because the title matched the "fail" marker.
+    app = app_with(
+        [workflow("a", "2026-06-01 12:00:00", title="Vzdump snapshot backup failure analysis")]
+    )
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Sessions")
+    app.workflow_index = 0
+    assert app.handle_key(None, ord("b"))
+    assert app.notice.startswith("bookmarked ")
+    assert app.toasts[-1].kind == "info"
+    app._mark_toasts_shown()
+    assert app.handle_key(None, ord("b"))
+    assert app.notice.startswith("unbookmarked ")
+    assert app.toasts[-1].kind == "info"
+
+
 def test_bookmarks_view_narrows_every_list_to_starred_sessions():
     app = app_with(
         [

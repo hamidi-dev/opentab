@@ -107,6 +107,16 @@ automatically (see [Windows](#windows)).
 
 ## Install
 
+### Try it first (no install)
+
+```sh
+uvx --from opentab-ai opentab --demo     # or: pipx run --spec opentab-ai opentab --demo
+```
+
+One command, nothing installed: `--demo` runs the full TUI on anonymized synthetic
+data, so it works even on a machine with no AI-tool history to read. Drop `--demo` to
+point it at your real usage.
+
 ### pipx (recommended)
 
 ```sh
