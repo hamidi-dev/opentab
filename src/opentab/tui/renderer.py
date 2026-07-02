@@ -45,7 +45,7 @@ from opentab.heatmap import (
     week_key,
 )
 from opentab.models import ALL_YEARS, year_label
-from opentab.pricing import api_equivalent_cost, family_label, price_cache_meta
+from opentab.pricing import api_equivalent_cost, family_label, model_price, price_cache_meta
 from opentab.util import fuzzy_score, launcher_hook, month_bounds, tool_namespace
 
 
@@ -1292,24 +1292,48 @@ class Renderer:
         width: int,
         name_label: str = "Model",
         count_label: str = "Msgs",
+        price_split: bool = True,
     ) -> list[str]:
         # rows: (name, count, cost, tokens, cache_read, cache_write, output). The
         # name column fits the longest entry (so the numbers sit right after it),
         # capped by the available width so long names aren't cut when there's room.
-        # name_label/count_label let the Tools tab reuse this as Tool/Calls.
+        # name_label/count_label let the Tools tab reuse this as Tool/Calls (which
+        # also turns price_split off -- tool names don't resolve to model rates).
         cw_ = max(4, len(count_label))
         longest = max([len(str(r[0])) for r in rows] + [len(name_label)])
-        mw = min(longest, max(20, width - 57 - cw_))
+        # In wide panes the CacheR/CacheW/Output cells carry the tokens' attributed
+        # share of the Cost column too -- "811.6k($10)" -- because counts alone hide
+        # how skewed the money is (cache writes bill at 12.5x the cache-read rate on
+        # current Anthropic models). Costs 13 more columns than the plain layout, so
+        # it only kicks in when the name column still gets its 20-char floor; with
+        # no dollars anywhere ($0.00 unpriced rows) there is nothing to attribute.
+        split = price_split and any(float(r[2]) > 0 for r in rows) and width - 70 - cw_ >= 20
+        block = 70 if split else 57
+        mw = min(longest, max(20, width - block - cw_))
         total_cost = sum(float(r[2]) for r in rows)
+        if split:
+            # Each split cell is two fixed sub-columns -- tokens right-aligned in 6,
+            # dollars right-aligned in 5 inside the parens -- so the numbers line up
+            # row to row and the label sits exactly over the token half.
+            tail_head = f"{'CacheR':>6}{'':7} {'CacheW':>6}{'':7} {'Output':>6}{'':7}"
+        else:
+            tail_head = f"{'CacheR':>9} {'CacheW':>9} {'Output':>8}"
         lines = [
             title,
-            f"{name_label:{mw}} {count_label:>{cw_}} {'Cost':>10} {'Share':>5} {'Tokens':>9} {'CacheR':>9} {'CacheW':>9} {'Output':>8}",
+            f"{name_label:{mw}} {count_label:>{cw_}} {'Cost':>10} {'Share':>5} {'Tokens':>9} {tail_head}",
         ]
         for name, runs, cost, tok, cr, cw, out in rows:
+            if split:
+                c1, c2, c3 = self._price_split_cells(
+                    str(name), float(cost), int(tok), int(cr), int(cw), int(out)
+                )
+                tail = f"{c1} {c2} {c3}"
+            else:
+                tail = f"{human_tokens(int(cr)):>9} {human_tokens(int(cw)):>9} {human_tokens(int(out)):>8}"
             lines.append(
                 f"{shorten(name, mw):{mw}} {int(runs):>{cw_}} {money(float(cost)):>10} "
                 f"{pct(float(cost), total_cost):>5} "
-                f"{human_tokens(int(tok)):>9} {human_tokens(int(cr)):>9} {human_tokens(int(cw)):>9} {human_tokens(int(out)):>8}"
+                f"{human_tokens(int(tok)):>9} {tail}"
             )
         if any(str(name).startswith("unknown") for name, *_ in rows):
             lines.extend(
@@ -1319,6 +1343,31 @@ class Renderer:
                 ]
             )
         return lines
+
+    @staticmethod
+    def _price_split_cells(
+        name: str, cost: float, tok: int, cr: int, cw: int, out: int
+    ) -> tuple[str, str, str]:
+        # "tokens(dollars)" cells: each category's attributed share of the row's
+        # Cost. The split weighs tokens by the same list rates api_equivalent_cost
+        # bills them at, then scales so the three cells plus the implicit input
+        # remainder sum to the Cost column -- exact for $-estimated rows (same
+        # math), honest attribution for recorded costs that predate today's rates.
+        # A row with no dollars, or a model with no rates at all, stays bare.
+        # Every cell is 13 wide with fixed sub-columns -- tokens right-aligned in
+        # 6, then the whole "($13)" group right-aligned in 7 so the parens hug the
+        # amount (no inner gap) while the amounts stay flush right row to row.
+        ir, orr, crr, cwr = model_price(name)
+        inp = max(0, tok - cr - cw - out)
+        raw = (inp * ir, cr * crr, cw * cwr, out * orr)
+        total = sum(raw)
+        scale = cost / total if cost > 0 and total > 0 else 0.0
+        cells = []
+        for tokens_n, share in ((cr, raw[1]), (cw, raw[2]), (out, raw[3])):
+            dollars = share * scale
+            label = f"({money_label(dollars)})" if dollars > 0 else ""
+            cells.append(f"{human_tokens(tokens_n):>6}{label:>7}")
+        return (cells[0], cells[1], cells[2])
 
     def _models_tab(self, rows: list[tuple], title: str, width: int) -> list[str]:
         # The Models tab body, with the live `f` filter applied to model names.
@@ -1761,12 +1810,17 @@ class Renderer:
             ]
 
         lines = self._model_table(
-            table_rows(by_tool), "# Tools — this session", width, "Tool", "Calls"
+            table_rows(by_tool), "# Tools — this session", width, "Tool", "Calls", price_split=False
         )
         lines.append("")
         lines.extend(
             self._model_table(
-                table_rows(by_server), "# By server / namespace", width, "Server", "Calls"
+                table_rows(by_server),
+                "# By server / namespace",
+                width,
+                "Server",
+                "Calls",
+                price_split=False,
             )
         )
         lines += [

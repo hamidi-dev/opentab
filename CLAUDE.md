@@ -385,7 +385,12 @@ Demo never persists state and disables clipboard/file-opener side effects. The d
   this distinction when touching cost formatting.
 - The "Models" detail tab and the Overview "Top Models" section now share `_model_table`
   (same columns: Model · Msgs · Cost · Share · Tokens · CacheR · CacheW · Output), fed by
-  `_agg_rows`/`_mix_rows`. Keep them rendering through that one helper.
+  `_agg_rows`/`_mix_rows`. Keep them rendering through that one helper. In wide panes the
+  CacheR/CacheW/Output cells also carry their attributed share of the row's Cost —
+  `811.6k($10)` — split by list rates and scaled so the cells (plus the implicit input
+  remainder) sum to the Cost column (`_price_split_cells`); unpriced $0.00 rows and narrow
+  panes stay plain counts, and the Tools-tab reuse passes `price_split=False` (tool names
+  aren't models).
 - Versioning is a manual constant: `__version__` in `src/opentab/__init__.py` (surfaced by
   `--version`, and read by hatchling at build time via `[tool.hatch.version]`). It is not
   derived from the git tag, so bump it when cutting a release.

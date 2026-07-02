@@ -292,6 +292,70 @@ def test_top_models_has_full_model_columns():
     assert "3648" in lines[2]
 
 
+def test_model_table_splits_cost_across_token_categories_in_wide_panes():
+    # The cacheR/cacheW/Output cells carry their attributed share of the Cost
+    # column: fable lists at $10/M in, $50/M out, $1/M cacheR, $12.50/M cacheW,
+    # so 100k cache-write tokens cost more than 800k cache reads -- the skew the
+    # plain token counts hide.
+    app = app_with([])
+    rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
+    lines = app.renderer._model_table(rows, "# Top Models", 120)
+    assert "800.0k($0.80)" in lines[2]
+    assert "100.0k($1.25)" in lines[2]
+    assert "50.0k($2.50)" in lines[2]
+
+
+def test_model_table_split_scales_to_the_recorded_cost():
+    # A recorded cost that differs from today's list-price total is attributed
+    # proportionally, so the split (with the implicit input remainder) always
+    # sums to the Cost column.
+    app = app_with([])
+    rows = [("anthropic/claude-fable-5", 10, 10.10, 1_000_000, 800_000, 100_000, 50_000)]
+    lines = app.renderer._model_table(rows, "# Top Models", 120)
+    assert "800.0k($1.60)" in lines[2]
+    assert "100.0k($2.50)" in lines[2]
+    assert "50.0k($5.00)" in lines[2]
+
+
+def test_model_table_split_cells_align_under_their_labels():
+    # Fixed sub-columns: the token count right-aligns under the header label and
+    # the "($13)" groups end flush at the same column on every row, the parens
+    # hugging the amount (no inner gap), whatever the magnitudes.
+    app = app_with([])
+    rows = [
+        ("anthropic/claude-fable-5", 92, 20.60, 13_400_000, 13_100_000, 194_700, 99_200),
+        ("anthropic/claude-opus-4-8", 1, 0.05, 23_500, 15_000, 1_900, 57),
+    ]
+    lines = app.renderer._model_table(rows, "# Model Mix", 120)
+    header, first, second = lines[1], lines[2], lines[3]
+    for label in ("CacheR", "CacheW", "Output"):
+        i = header.index(label)
+        assert first[i + 5] != " " and second[i + 5] != " "  # tokens end under the label
+        assert first[i + 12] == ")" and second[i + 12] == ")"
+    assert "( " not in first and "( " not in second  # parens hug the amount
+
+
+def test_model_table_split_needs_width_dollars_and_models():
+    app = app_with([])
+    rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
+    # Narrow pane: plain token counts, exactly the classic layout.
+    narrow = app.renderer._model_table(rows, "# Top Models", 80)
+    assert not any("(" in ln for ln in narrow[1:])
+    assert "800.0k" in narrow[2]
+    # Unpriced rows ($0.00): nothing to attribute even in a wide pane.
+    unpriced = app.renderer._model_table(
+        [("anthropic/claude-fable-5", 10, 0.0, 1_000_000, 800_000, 100_000, 50_000)],
+        "# Top Models",
+        120,
+    )
+    assert not any("(" in ln for ln in unpriced[1:])
+    # The Tools tab reuse: tool names aren't models, so no split there either.
+    tools = app.renderer._model_table(
+        rows, "# Tools — this session", 120, "Tool", "Calls", price_split=False
+    )
+    assert not any("(" in ln for ln in tools[1:])
+
+
 def test_trend_daily_shows_one_navigable_month():
     app = app_with(
         [
