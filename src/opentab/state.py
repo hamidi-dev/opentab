@@ -38,6 +38,7 @@ def save_state(app: App) -> None:
         "prices_sort_reverse": app.prices_sort_reverse,
         "browse_mode": app.browse_mode,
         "ignored_projects": sorted(app.ignored_projects),
+        "bookmarks": sorted(app.bookmarks),  # sessions starred with `b`
         "show_api_prices": app.show_api_prices,
         "source": app.source_key,  # restore the last source (opencode/claude/all) next run
         "cal_levels": app.cal_levels,  # the Calendar heat-map granularity (+/-)
@@ -85,6 +86,12 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     if isinstance(ignored, list):
         app.ignored_projects = {p for p in ignored if isinstance(p, str) and p}
         app._invalidate_workflow_cache()
+    # Bookmarked session ids survive restarts; ids of sessions that have since
+    # vanished (or live in another source) are kept — harmless, and they light up
+    # again if that source returns. The B view flag itself always starts off.
+    marks = state.get("bookmarks")
+    if isinstance(marks, list):
+        app.bookmarks = {m for m in marks if isinstance(m, str) and m}
     # Restore the what-if ($) view. Only the flag is set here; the actual reprice
     # rides on the deferred model scan in run() (via _load_model_cache ->
     # _apply_price_mode), so the first paint still comes up off the fast rollup.

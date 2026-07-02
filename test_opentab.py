@@ -1599,6 +1599,139 @@ def test_ignored_projects_are_persisted_in_state():
     assert restored.all_workflows == []
 
 
+def test_bookmark_toggles_on_selected_session():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1),
+            workflow("b", "2026-06-01 13:00:00", cost=5),
+        ]
+    )
+    # No session is selected while browsing the time panels, so `b` explains itself.
+    assert app.handle_key(None, ord("b"))
+    assert app.bookmarks == set()
+    assert "select a session" in app.notice
+
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Sessions")
+    app.workflow_index = next(i for i, w in enumerate(app.current_sessions()) if w.id == "b")
+    assert app.handle_key(None, ord("b"))
+    assert app.bookmarks == {"b"}
+    assert app.handle_key(None, ord("b"))  # same key unstars
+    assert app.bookmarks == set()
+
+
+def test_bookmarks_view_narrows_every_list_to_starred_sessions():
+    app = app_with(
+        [
+            workflow("a", "2026-05-01 12:00:00", cost=1, directory="/repo/a"),
+            workflow("b", "2026-06-02 12:00:00", cost=5, directory="/repo/b"),
+        ]
+    )
+    assert app.handle_key(None, ord("B"))  # nothing starred yet: a no-op with a hint
+    assert not app.show_bookmarks_only
+    assert "no bookmarks" in app.notice
+
+    app.bookmarks = {"b"}
+    assert app.handle_key(None, ord("B"))
+    assert app.show_bookmarks_only
+    assert [w.id for w in app.all_workflows] == ["b"]
+    assert [m.month for m in app.months] == ["2026-06"]
+    assert [p.directory for p in app.projects] == ["/repo/b"]
+
+    assert app.handle_key(None, ord("B"))  # back to everything
+    assert not app.show_bookmarks_only
+    assert {w.id for w in app.all_workflows} == {"a", "b"}
+
+
+def test_removing_last_bookmark_exits_the_bookmarks_view():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1),
+            workflow("b", "2026-06-01 13:00:00", cost=5),
+        ]
+    )
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Sessions")
+    app.bookmarks = {"b"}
+    app.show_bookmarks_only = True
+    assert [w.id for w in app.current_sessions()] == ["b"]
+
+    assert app.handle_key(None, ord("b"))  # unstar the only bookmark
+
+    assert app.bookmarks == set()
+    assert not app.show_bookmarks_only
+    assert "showing all sessions" in app.notice
+    assert {w.id for w in app.current_sessions()} == {"a", "b"}
+
+
+def test_unstarring_last_bookmark_keeps_the_open_session_selected():
+    # Dropping the B filter widens the list back out; the cursor (and an open
+    # session detail) must stay on the just-unstarred session, not jump to
+    # whatever now sorts first.
+    app = app_with(
+        [
+            workflow("expensive", "2026-06-01 12:00:00", cost=50),
+            workflow("cheap", "2026-06-01 13:00:00", cost=1),
+        ]
+    )
+    app.focus = "months"
+    app.view = "session"  # drilled into the only (starred) session
+    app.bookmarks = {"cheap"}
+    app.show_bookmarks_only = True
+    assert app.current_session().id == "cheap"
+
+    assert app.handle_key(None, ord("b"))  # unstar the last bookmark
+
+    assert not app.show_bookmarks_only
+    assert app.current_session().id == "cheap"
+
+
+def test_bookmarks_are_persisted_in_state():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.bookmarks = {"a", "gone-session"}  # a stale id survives too (source may return)
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+    assert restored.bookmarks == {"a", "gone-session"}
+    assert not restored.show_bookmarks_only  # the B view itself always starts off
+
+
+def test_bookmarked_rows_wear_a_star_in_the_sessions_picker():
+    app = app_with(
+        [
+            workflow("plain", "2026-06-01 12:00:00", cost=5),
+            workflow("starred", "2026-06-01 13:00:00", cost=1),
+        ]
+    )
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Sessions")
+    app.bookmarks = {"starred"}
+    screen = FakeScreen(24, 100)
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        app.renderer.draw_sessions_picker(screen, 0, 0, 24, 100)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    lines = screen_text(screen).splitlines()
+    assert any("★ starred" in ln for ln in lines)  # the starred row wears the marker
+    assert not any("★" in ln and "plain" in ln for ln in lines)  # the other doesn't
+
+
 def test_what_if_price_view_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.show_api_prices = True

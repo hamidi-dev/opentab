@@ -243,6 +243,11 @@ class App:
         self.project_sort_reverse = False
         self.ignored_projects: set[str] = set()
         self.show_ignored_projects = False
+        # Sessions starred with `b` (ids, persisted in state.json). `B` flips
+        # show_bookmarks_only, the session-level cousin of the ignored projects' I:
+        # every view narrows to just the starred sessions.
+        self.bookmarks: set[str] = set()
+        self.show_bookmarks_only = False
         # When set (in a month/day zoom), the Sessions list is narrowed to this
         # project's sessions within the zoomed scope. Drilled into from the
         # Projects tab; cleared on step-out or any scope change.
@@ -281,10 +286,16 @@ class App:
             self.custom_until,
             self.range_days,
             self.range_months,
+            # Bookmarks-only (B) narrows at the source so every downstream view --
+            # summaries, projects, trends, exports, even shown-ignored paths -- agrees.
+            # The fingerprint keys the cache, so toggling b/B rebuilds it by itself.
+            tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
         )
         if getattr(self, "_rw_key", None) == key:
             return self._rw_cache
         rows = self.loaded
+        if self.show_bookmarks_only:
+            rows = [w for w in rows if w.id in self.bookmarks]
         if self.custom_since or self.custom_until:
             if self.custom_since:
                 rows = [w for w in rows if w.created_at[:10] >= self.custom_since]
@@ -311,6 +322,9 @@ class App:
             self.range_days,
             self.range_months,
             tuple(sorted(self.ignored_projects)),
+            # ranged_workflows narrows to bookmarks under B; mirror its fingerprint
+            # so this cache follows along.
+            tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
         )
         if getattr(self, "_aw_key", None) == key:
             return self._aw_cache
@@ -662,6 +676,57 @@ class App:
             )
         else:
             self.project_index = min(self.project_index, max(0, len(rows) - 1))
+
+    def bookmark_target(self) -> Workflow | None:
+        # `b` works wherever one session is selected: a zoom's Sessions tab or the
+        # drilled-in session detail — the same contexts as `L` (launch_session).
+        if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
+            return self.current_session()
+        return None
+
+    def toggle_bookmark(self) -> None:
+        session = self.bookmark_target()
+        if session is None:
+            self.notice = "bookmark: select a session first"
+            return
+        if session.id in self.bookmarks:
+            self.bookmarks.discard(session.id)
+            self.notice = f"unbookmarked {shorten(session.title, 40)}"
+        else:
+            self.bookmarks.add(session.id)
+            self.notice = f"bookmarked {shorten(session.title, 40)}"
+        if self.show_bookmarks_only and session.id not in self.bookmarks:
+            # Unstarring under the B filter drops the row from every list.
+            if not self.bookmarks:
+                self.show_bookmarks_only = False
+                self.notice = "last bookmark removed — showing all sessions"
+                # The list just widened back out; keep the cursor (and an open
+                # session detail) on the session that was unstarred.
+                rows = self.current_sessions()
+                self.workflow_index = next(
+                    (i for i, w in enumerate(rows) if w.id == session.id),
+                    min(self.workflow_index, max(0, len(rows) - 1)),
+                )
+            elif self.view == "session" and self.current_session() is not session:
+                self.drill_out()  # the open session just left the narrowed list
+
+    def toggle_bookmarks_view(self) -> None:
+        # `B` flips the bookmarks-only view: every list narrows to the sessions
+        # starred with `b` (within the active range), mirroring I for ignored
+        # projects. ranged_workflows applies the filter (keyed into its cache).
+        if not self.show_bookmarks_only and not self.bookmarks:
+            self.notice = "no bookmarks — press b on a session"
+            return
+        anchor = self.selection_anchor()
+        self.show_bookmarks_only = not self.show_bookmarks_only
+        self.restore_selection(anchor)
+        if self.view == "session" and self.current_session() is None:
+            self.drill_out()  # the open session isn't bookmarked; back to the list
+        self.notice = (
+            "showing bookmarked sessions only"
+            if self.show_bookmarks_only
+            else "showing all sessions"
+        )
 
     def selection_anchor(
         self,
@@ -2737,6 +2802,12 @@ class App:
             return True
         if key == ord("I"):
             self.toggle_ignored_projects_view()
+            return True
+        if key == ord("b"):
+            self.toggle_bookmark()
+            return True
+        if key == ord("B"):
+            self.toggle_bookmarks_view()
             return True
         if key == ord("f"):
             if not self.can_filter_current_view():

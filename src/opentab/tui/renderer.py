@@ -446,6 +446,8 @@ class Renderer:
             segs.append((f"  ·  filter: {self.query}", active))
         if self.ignored_projects:
             segs.append((f"  ·  ignored: {len(self.ignored_projects)}", active))
+        if self.show_bookmarks_only:
+            segs.append(("  ·  ★ bookmarks only", active))
         # Transient status lives in floating toasts now (draw_toasts), not the header.
         for text, attr in segs:
             x = self.write_seg(stdscr, 1, x, text, attr, width)
@@ -560,6 +562,13 @@ class Renderer:
             parts.append(("i ignore", False))
         if self.ignored_projects:
             parts.append(("I ignored", self.show_ignored_projects))
+        # `b` lights up while the selected session is starred; `B` while the
+        # bookmarks-only view is on (and is offered only once something is starred).
+        target = self.bookmark_target()
+        if target is not None:
+            parts.append(("b mark", target.id in self.bookmarks))
+        if self.bookmarks or self.show_bookmarks_only:
+            parts.append(("B marked", self.show_bookmarks_only))
         if self.can_switch_source():
             # `c` opens the source picker (lights up while it's open); the active source
             # is the header chip, so the key just advertises the menu, not a destination.
@@ -665,6 +674,11 @@ class Renderer:
             return ""
         return f"[{self._source_abbrev(workflow)}] "
 
+    def bookmark_tag(self, workflow: Workflow) -> str:
+        # "★ " before the title of a session starred with `b`, in every list that
+        # shows session titles, so bookmarks are spottable wherever they surface.
+        return "★ " if workflow.id in self.bookmarks else ""
+
     def src_col(self, workflow: Workflow | None = None) -> str:
         # The "Src" column in the session tables (None = the header cell), only
         # when sources are merged — the one view where a row's origin isn't implied.
@@ -760,7 +774,7 @@ class Renderer:
             tok = human_tokens(wf.total_tokens)
             text = (
                 f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  "
-                f"{self.source_tag(wf)}{wf.title}"
+                f"{self.source_tag(wf)}{self.bookmark_tag(wf)}{wf.title}"
             )
             if start + off == idx:
                 self.write(
@@ -1219,7 +1233,7 @@ class Renderer:
                 f"{marker} {cost:>9} "
                 f"{tok:>7} "
                 f"{workflow.subagents:>3} subs "
-                f"{shorten(workflow.title, max(12, w - 25))}"
+                f"{shorten(self.bookmark_tag(workflow) + workflow.title, max(12, w - 25))}"
             )
             if selected:
                 self.write(
@@ -1234,7 +1248,11 @@ class Renderer:
 
     def draw_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         workflow = self.current_session()
-        title = "Detail" if workflow is None else shorten(workflow.title, max(10, w - 12))
+        title = (
+            "Detail"
+            if workflow is None
+            else shorten(self.bookmark_tag(workflow) + workflow.title, max(10, w - 12))
+        )
         self.box(stdscr, y, x, h, w, title, active=True)
         if workflow is None:
             self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(1))
@@ -1365,7 +1383,7 @@ class Renderer:
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, month.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"agents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + workflow.title, max(20, width - 37))}"
+                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 37))}"
             )
         return lines
 
@@ -1392,7 +1410,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>4} "
                 f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{workflow.title}"
+                f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
             )
         return lines
 
@@ -1434,7 +1452,7 @@ class Renderer:
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, year.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"agents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + workflow.title, max(20, width - 37))}"
+                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 37))}"
             )
         return lines
 
@@ -1465,7 +1483,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>4} "
                 f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{workflow.title}"
+                f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
             )
         return lines
 
@@ -1493,7 +1511,7 @@ class Renderer:
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, day.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"agents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + workflow.title, max(20, width - 37))}"
+                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 37))}"
             )
         return lines
 
@@ -1516,7 +1534,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>4} "
                 f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{workflow.title}"
+                f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
             )
         return lines
 
@@ -1549,7 +1567,7 @@ class Renderer:
                 f"{workflow.created_at[:10]:<10} {money(workflow.total_cost):>10} "
                 f"{pct(workflow.total_cost, project.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} agents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + workflow.title, max(20, width - 50))}"
+                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 50))}"
             )
         return lines
 
@@ -1597,7 +1615,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>4} "
                 f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{workflow.title}"
+                f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
             )
         return lines
 
@@ -1865,6 +1883,11 @@ class Renderer:
             "  s                open the sort picker for the visible list (j/k move · Enter apply · Esc cancel)",
             "  i                ignore/unignore the selected project (project lists only)",
             "  I                show/hide ignored projects so they can be unignored",
+            "  b                bookmark/unbookmark the selected session for later inspection",
+            "                   (Sessions tab/session detail only); bookmarked rows wear a ★",
+            "                   and the set is remembered between runs",
+            "  B                show only bookmarked sessions everywhere, within the active",
+            "                   range (press again to show all)",
             "  f                live filter: fuzzy over sessions (title/project/id), projects, Models; substring over Prices",
             "                   while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
             "  x                clear filter",
