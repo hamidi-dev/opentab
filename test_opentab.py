@@ -4648,26 +4648,28 @@ def test_copy_to_clipboard_backends_per_platform():
         ot.util.subprocess.run = real_run
 
 
-def test_notice_pushes_a_classified_toast():
+def test_notice_is_info_and_colours_are_explicit():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     clock = [100.0]
     app._toast_clock = lambda: clock[0]
 
-    # `self.notice = "..."` still works and is classified by a heuristic.
-    app.notice = "range: all time"
-    assert app.notice == "range: all time"  # readable as a plain string (tests/callers)
+    # `self.notice = "..."` stays the one-liner and is neutral info BY DEFINITION:
+    # the kind is never inferred from the text, so error-sounding words (a session
+    # title saying "failed", a reworded message) can never change the colour.
+    app.notice = "price refresh failed: boom"
+    assert app.notice == "price refresh failed: boom"  # readable back (tests/callers)
     assert app.toasts[-1].kind == "info"
     app._mark_toasts_shown()
 
-    app.notice = "price refresh failed: boom"
+    # A coloured toast names its kind at the call site.
+    app.notify("export failed: disk full", "error")
     assert app.toasts[-1].kind == "error"
     app._mark_toasts_shown()
 
-    app.notify("copied: ses_42")  # affirmative prefixes glow green
+    app.notify("copied: ses_42", "success")
     assert app.toasts[-1].kind == "success"
     assert len(app.toasts) == 3  # three distinct frames -> three stacked toasts
 
-    # an explicit kind overrides the heuristic
     app._mark_toasts_shown()
     app.notify("heads up", kind="warn")
     assert app.toasts[-1].kind == "warn"

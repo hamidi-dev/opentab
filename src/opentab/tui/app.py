@@ -628,7 +628,7 @@ class App:
 
     def toggle_ignored_projects_view(self) -> None:
         if not self.ignored_projects:
-            self.notice = "no ignored projects"
+            self.notify("no ignored projects", "error")
             return
         project = self.active_project_for_toggle()
         project_dir = project.directory if project else None
@@ -649,15 +649,15 @@ class App:
     def toggle_project_ignore(self) -> None:
         project = self.active_project_for_toggle()
         if project is None:
-            self.notice = "ignore: select a project first"
+            self.notify("ignore: select a project first", "error")
             return
         directory = project.directory
         if directory in self.ignored_projects:
             self.ignored_projects.remove(directory)
-            self.notify(f"unignored {short_path(directory, 40)}", "info")
+            self.notice = f"unignored {short_path(directory, 40)}"
         else:
             self.ignored_projects.add(directory)
-            self.notify(f"ignored {short_path(directory, 40)}", "info")
+            self.notice = f"ignored {short_path(directory, 40)}"
         self._invalidate_workflow_cache()
         if self.zoom_project in self.ignored_projects and not self.show_ignored_projects:
             self.zoom_project = None
@@ -687,14 +687,14 @@ class App:
     def toggle_bookmark(self) -> None:
         session = self.bookmark_target()
         if session is None:
-            self.notice = "bookmark: select a session first"
+            self.notify("bookmark: select a session first", "error")
             return
         if session.id in self.bookmarks:
             self.bookmarks.discard(session.id)
-            self.notify(f"unbookmarked {shorten(session.title, 40)}", "info")
+            self.notice = f"unbookmarked {shorten(session.title, 40)}"
         else:
             self.bookmarks.add(session.id)
-            self.notify(f"bookmarked {shorten(session.title, 40)}", "info")
+            self.notice = f"bookmarked {shorten(session.title, 40)}"
         if self.show_bookmarks_only and session.id not in self.bookmarks:
             # Unstarring under the B filter drops the row from every list.
             if not self.bookmarks:
@@ -715,7 +715,7 @@ class App:
         # starred with `b` (within the active range), mirroring I for ignored
         # projects. ranged_workflows applies the filter (keyed into its cache).
         if not self.show_bookmarks_only and not self.bookmarks:
-            self.notice = "no bookmarks — press b on a session"
+            self.notify("no bookmarks — press b on a session", "error")
             return
         anchor = self.selection_anchor()
         self.show_bookmarks_only = not self.show_bookmarks_only
@@ -1073,7 +1073,7 @@ class App:
 
     def toggle_api_prices(self) -> None:
         if self.store.demo:
-            self.notice = "API-price view is for real data, not the demo"
+            self.notify("API-price view is for real data, not the demo", "error")
             return
         self._ensure_models()  # needs the per-model token breakdown
         self.show_api_prices = not self.show_api_prices
@@ -1091,14 +1091,14 @@ class App:
         try:
             count, _ = refresh_model_prices()
         except (OSError, ValueError) as exc:
-            self.notice = f"price refresh failed: {exc}"
+            self.notify(f"price refresh failed: {exc}", "error")
             return
         invalidate_price_cache()  # drop the in-process overlay so the new file is read
         self._ensure_models()
         self._compute_api_costs()
         self._apply_price_mode()
         self.prices_scroll = 0
-        self.notice = f"refreshed {count} model prices from models.dev"
+        self.notify(f"refreshed {count} model prices from models.dev", "success")
 
     def unknown_priced_models(self) -> list[str]:
         # Used, non-local models with no built-in price (resolve to the generic
@@ -1165,7 +1165,7 @@ class App:
         self.day_index = min(self.day_index, max(0, len(self.days) - 1))
         self.month_index = min(self.month_index, max(0, len(self.months) - 1))
         self.project_index = min(self.project_index, max(0, len(self.projects) - 1))
-        self.notice = "reloaded"
+        self.notify("reloaded", "success")
 
     # --- Live source switching (the `c` key) ---------------------------------
     def can_switch_source(self) -> bool:
@@ -1196,7 +1196,7 @@ class App:
         # and Enter to switch (Esc cancels). With a single source there's nothing to pick.
         order = sources.source_cycle(self.args)
         if len(order) < 2:
-            self.notice = "only one data source available"
+            self.notify("only one data source available", "error")
             return
         cur = self.source_key if self.source_key in order else order[0]
         self.source_menu_index = order.index(cur)
@@ -1206,7 +1206,7 @@ class App:
         # Relative hop (kept for completeness); the menu uses select_source directly.
         order = sources.source_cycle(self.args)
         if len(order) < 2:
-            self.notice = "only one data source available"
+            self.notify("only one data source available", "error")
             return
         cur = self.source_key if self.source_key in order else order[0]
         self.select_source(order[(order.index(cur) + step) % len(order)])
@@ -1225,7 +1225,7 @@ class App:
                     self._args_with_demo(cache_key[1]), key
                 )[0]
             except SystemExit as exc:
-                self.notice = str(exc)
+                self.notify(str(exc), "error")
                 return
         self.source_key = key
         self.store = self._store_cache[cache_key]
@@ -1234,7 +1234,7 @@ class App:
 
     def toggle_demo(self) -> None:
         if not self.source_key:
-            self.notice = "demo toggle unavailable"
+            self.notify("demo toggle unavailable", "error")
             return
         snapshot = self.ui_snapshot()
         demo = not bool(getattr(self.store, "demo", False))
@@ -1245,7 +1245,7 @@ class App:
                     self._args_with_demo(demo), self.source_key
                 )[0]
             except SystemExit as exc:
-                self.notice = str(exc)
+                self.notify(str(exc), "error")
                 return
         self.store = self._store_cache[cache_key]
         self._reload_for_source(snapshot)
@@ -1767,11 +1767,11 @@ class App:
 
     def export_current(self) -> None:
         if self.store.demo:
-            self.notice = "export disabled in demo mode"
+            self.notify("export disabled in demo mode", "error")
             return
         scope, header, rows = self._export_dataset()
         if not rows:
-            self.notice = "nothing to export here"
+            self.notify("nothing to export here", "error")
             return
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = os.path.abspath(f"opentab-{scope}-{stamp}.csv")
@@ -1781,7 +1781,7 @@ class App:
                 writer.writerow(header)
                 writer.writerows(rows)
         except OSError as exc:
-            self.notice = f"export failed: {exc}"
+            self.notify(f"export failed: {exc}", "error")
             return
         # Show the full path home-abbreviated but NOT truncated -- the toast wraps long
         # text now, so the directory and filename both stay readable (short_path with a
@@ -1807,30 +1807,30 @@ class App:
 
     def copy_current(self) -> None:
         if self.store.demo:
-            self.notice = "copy disabled in demo mode"
+            self.notify("copy disabled in demo mode", "error")
             return
         value = self._current_copy_value()
         if not value:
-            self.notice = "nothing to copy here"
+            self.notify("nothing to copy here", "error")
             return
         if util.copy_to_clipboard(value):
             self.notify(f"copied: {shorten(value, 40)}", "success")
         else:
-            self.notice = f"clipboard tool not found ({util.clipboard_tools_label()})"
+            self.notify(f"clipboard tool not found ({util.clipboard_tools_label()})", "error")
 
     def open_current(self) -> None:
         if self.store.demo:
-            self.notice = "open disabled in demo mode"
+            self.notify("open disabled in demo mode", "error")
             return
         directory = self._current_directory()
         if not directory or directory in ("(unknown)", ""):
-            self.notice = "no directory to open"
+            self.notify("no directory to open", "error")
             return
         if open_path(directory):
             self.notify(f"opened {short_path(directory, 40)}", "success")
         else:
             opener = "explorer" if sys.platform == "win32" else "open/xdg-open"
-            self.notice = f"no opener found ({opener})"
+            self.notify(f"no opener found ({opener})", "error")
 
     def resume_parts(self, workflow: Workflow) -> tuple[str, str] | None:
         # (project directory, bare resume command) for the selected session —
@@ -1861,17 +1861,17 @@ class App:
         # handle_launch_key on the next keystroke). Only offered where a launch can
         # actually land (see launch_available); the footer hides the key otherwise.
         if self.store.demo:
-            self.notice = "launch disabled in demo mode"
+            self.notify("launch disabled in demo mode", "error")
             return
         session = self.launch_session()
         if not session:
-            self.notice = "launch works on sessions only"
+            self.notify("launch works on sessions only", "error")
             return
         if self.resume_parts(session) is None:
-            self.notice = "no launch command for this session"
+            self.notify("no launch command for this session", "error")
             return
         if not self.launch_available():
-            self.notice = "launch needs tmux (or a launcher hook)"
+            self.notify("launch needs tmux (or a launcher hook)", "error")
             return
         self.launch_menu = session
         self.launch_menu_index = 0
@@ -1886,7 +1886,7 @@ class App:
         if command and util.copy_to_clipboard(command):
             self.notify(f"copied: {shorten(command, 60)}", "success")
         else:
-            self.notice = f"clipboard tool not found ({util.clipboard_tools_label()})"
+            self.notify(f"clipboard tool not found ({util.clipboard_tools_label()})", "error")
 
     def handle_launch_key(self, key: int) -> bool:
         # The `L` launch picker: j/k move, Enter runs the highlighted target, the w/s/v/p/y
@@ -1929,7 +1929,7 @@ class App:
         if error:
             self.notify(f"launch failed: {error}", "error")
         else:
-            self.notify(f"{kind}: {shorten(command, 50)}", "info")
+            self.notice = f"{kind}: {shorten(command, 50)}"
 
     def handle_source_menu_key(self, key: int) -> bool:
         # The `c` data-source picker: j/k move, Enter switches, Esc/q cancels. `c` again
@@ -2121,11 +2121,11 @@ class App:
         # `s` no longer cycles blindly; it opens a small picker the user can j/k
         # through and Enter to apply (Esc cancels), mirroring the `c` source menu.
         if not self.can_sort_current_view():
-            self.notice = "sort: only session, project, or subagent lists"
+            self.notify("sort: only session, project, or subagent lists", "error")
             return
         options = self.sort_menu_options()
         if not options:
-            self.notice = "sort: only session, project, or subagent lists"
+            self.notify("sort: only session, project, or subagent lists", "error")
             return
         current = self.effective_sort_by()
         self.sort_menu_index = options.index(current) if current in options else 0
@@ -2398,7 +2398,11 @@ class App:
     # `self.notice = "..."` stays the one-liner the whole codebase already uses; it
     # now routes through notify() and surfaces as a floating, auto-dismissing toast
     # instead of a header segment. Reading `self.notice` returns the latest message
-    # (kept for tests and any caller that peeks at it).
+    # (kept for tests and any caller that peeks at it). Assignment means neutral
+    # info BY DEFINITION; a coloured toast passes notify(text, kind) at the call
+    # site. The kind is never inferred from the message text -- wording changes
+    # must not change colour, and user data interpolated into a message (session
+    # titles, paths, commands) must never leak into the classification.
     @property
     def toasts(self) -> list[Toast]:
         toasts = self.__dict__.get("_toasts")
@@ -2418,48 +2422,15 @@ class App:
         else:
             self.toasts.clear()  # `self.notice = ""` means "no message"
 
-    _TOAST_ERROR_MARKERS = (
-        "fail",
-        "not found",
-        "no opener",
-        "unavailable",
-        "disabled",
-        "needs tmux",
-        "only one",
-        "nothing to",
-        "no active",
-        "no directory",
-        "no launch",
-        "no sessions",
-        "no ignored",
-        "select a project",
-        "sort: only",
-        "works on sessions",
-        "can't",
-        "error",
-    )
-
-    def _toast_kind(self, text: str) -> str:
-        # A light heuristic so failures glow red and clear wins glow green; everything
-        # else is neutral info. Callers wanting a specific colour pass notify(text, kind) --
-        # MANDATORY for any message interpolating user data (session titles, paths,
-        # commands): a title like "backup failure analysis" matches an error marker.
-        low = text.lower()
-        if any(marker in low for marker in self._TOAST_ERROR_MARKERS):
-            return "error"
-        if low.startswith(("copied", "exported", "refreshed", "reloaded", "opened")):
-            return "success"
-        return "info"
-
     def toast_now(self) -> float:
         return self._toast_clock()
 
-    def notify(self, text: str, kind: str | None = None) -> None:
+    def notify(self, text: str, kind: str = "info") -> None:
         toasts = self.toasts
         if not text:
             toasts.clear()
             return
-        toast = Toast(text, kind or self._toast_kind(text), self.toast_now(), self.TOAST_TTL)
+        toast = Toast(text, kind, self.toast_now(), self.TOAST_TTL)
         # Several notices set within one input handler (e.g. "fetching…" → "refreshed")
         # never get a frame between them, so collapse onto one toast; distinct user
         # actions (a paint happened in between) stack instead.
@@ -2636,7 +2607,7 @@ class App:
                 self._cal_return = cursor  # Esc out of the day returns to the heat map
                 self.trends = False
             else:
-                self.notice = f"no sessions on {cursor}"
+                self.notify(f"no sessions on {cursor}", "error")
             return True
         delta = {curses.KEY_LEFT: -7, curses.KEY_RIGHT: 7, curses.KEY_UP: -1, curses.KEY_DOWN: 1}
         nxt = datetime.strptime(cursor, "%Y-%m-%d") + timedelta(days=delta[key])
@@ -2816,7 +2787,9 @@ class App:
             return True
         if key == ord("f"):
             if not self.can_filter_current_view():
-                self.notice = "nothing to filter here — open a sessions, projects, or models list"
+                self.notify(
+                    "nothing to filter here — open a sessions, projects, or models list", "error"
+                )
                 return True
             self.filter_active = True
             self._filter_before = self.query
@@ -2828,7 +2801,7 @@ class App:
                 self.project_index = 0
                 self.notice = "filter cleared"
             else:
-                self.notice = "no active filter"
+                self.notify("no active filter", "error")
             return True
         if key == ord("e"):
             self.export_current()
@@ -3110,7 +3083,7 @@ class App:
                         self._cal_return = date  # Esc out of the day returns to the heat map
                         self.trends = False
                     else:
-                        self.notice = f"no sessions on {date}"
+                        self.notify(f"no sessions on {date}", "error")
                 return True
         if click or double:
             target = self.renderer.hit(my, mx)
@@ -3175,7 +3148,7 @@ class App:
         try:
             self.set_range_from_text(value)
         except ValueError as exc:
-            self.notice = f"range error: {exc}"
+            self.notify(f"range error: {exc}", "error")
 
     def prompt_text(
         self, stdscr: curses.window, label: str, hint: str = "", initial: str = ""
