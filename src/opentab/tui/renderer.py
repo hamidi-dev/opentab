@@ -584,7 +584,6 @@ class Renderer:
             ("T trends", self.trends),
             ("P prices", self.show_prices),
             ("e export", False),
-            ("y copy", False),
             ("o open", False),
         ]
         if self.can_launch_current():
@@ -1947,12 +1946,11 @@ class Renderer:
             "                   while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
             "  x                clear filter",
             "  e                export the current list to a CSV in the working directory",
-            "  y                copy the selected session id (or project path)",
             "  o                open the selected session's / project's directory",
             "  L                launch the selected session in its tool (Sessions tab/session detail only)",
             "                   opencode --session / claude --resume / codex resume",
             "                   w window · s split · v vsplit · p popup · y copy command",
-            "                   needs tmux (or a launcher hook); hidden otherwise",
+            "                   w/s/v/p need tmux (or a launcher hook); y copy works anywhere",
             "  D                toggle real/demo data on the fly (demo anonymizes titles/paths)",
             "  c                open the data-source picker (j/k move · Enter switch · Esc cancel):",
             "                   OpenCode / Claude Code / Codex / Copilot / pi / OpenClaw / all (when present)",
@@ -2482,14 +2480,19 @@ class Renderer:
         # The `L` picker: a small modal of launch targets. One keystroke picks (handled in
         # handle_launch_key); anything else cancels.
         session = self.launch_menu
-        via = "launcher hook" if launcher_hook() else "tmux"
-        idx = self.launch_menu_index % len(self.LAUNCH_TARGETS)
+        targets = self.launch_targets()
+        if self.launch_available():
+            via = "launcher hook" if launcher_hook() else "tmux"
+            headline = f"open in {via}:"
+        else:
+            headline = "no tmux / launcher hook — copy instead:"
+        idx = self.launch_menu_index % len(targets)
         lines = [
             (shorten(session.title or "(untitled)", 52), curses.color_pair(4)),
-            (f"open in {via}:", curses.A_NORMAL),
+            (headline, curses.A_NORMAL),
             ("", 0),
         ]
-        for offset, (kc, _kind, label) in enumerate(self.LAUNCH_TARGETS):
+        for offset, (kc, _kind, label) in enumerate(targets):
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {kc}  {label}", attr))
         lines += [("", 0), (" Esc  cancel", curses.A_NORMAL)]

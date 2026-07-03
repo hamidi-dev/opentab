@@ -126,7 +126,8 @@ class App:
     ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth", "eff"})
     trend_tabs = ("Daily", "Weekly", "Monthly", "Calendar", "Models", "Providers", "Sources")
     # The `L` launch picker's targets: (shortcut key, kind, label). "copy" hands the
-    # resume command to the clipboard; the rest spawn a tmux window/split/popup.
+    # resume command to the clipboard and is always offered; the tmux window/split/
+    # popup spawns need tmux or a launcher hook (launch_targets filters them out).
     LAUNCH_TARGETS = (
         ("w", "window", "new window"),
         ("s", "hsplit", "split pane │"),
@@ -1788,35 +1789,12 @@ class App:
         # generous width only does the ~ swap here, no clipping).
         self.notify(f"exported {len(rows)} rows → {short_path(path, 999)}", "success")
 
-    def _current_copy_value(self) -> str | None:
-        if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
-            session = self.current_session()
-            return session.id if session else None
-        if self.browse_mode == "projects":
-            project = self.selected_project_summary
-            return project.directory if project else None
-        session = self.current_session()
-        return session.id if session else None
-
     def _current_directory(self) -> str | None:
         if self.browse_mode == "projects":
             project = self.selected_project_summary
             return project.directory if project else None
         session = self.current_session()
         return session.directory if session else None
-
-    def copy_current(self) -> None:
-        if self.store.demo:
-            self.notify("copy disabled in demo mode", "error")
-            return
-        value = self._current_copy_value()
-        if not value:
-            self.notify("nothing to copy here", "error")
-            return
-        if util.copy_to_clipboard(value):
-            self.notify(f"copied: {shorten(value, 40)}", "success")
-        else:
-            self.notify(f"clipboard tool not found ({util.clipboard_tools_label()})", "error")
 
     def open_current(self) -> None:
         if self.store.demo:
@@ -1850,16 +1828,23 @@ class App:
         return f"cd {shlex.quote(directory)} && {command}"
 
     def launch_available(self) -> bool:
-        # `L` can only spawn a session next to opentab from inside tmux (its
+        # The spawn targets can only land next to opentab from inside tmux (its
         # window/split/popup commands) or through a user launcher hook (which can
-        # drive zellij/kitty/etc. anywhere). Outside both there's nowhere to launch
-        # into — opentab owns the whole terminal — so the key is hidden entirely.
+        # drive zellij/kitty/etc. anywhere). Outside both the `L` menu still opens,
+        # but only offers copying the resume command (see launch_targets).
         return in_tmux() or launcher_hook() is not None
+
+    def launch_targets(self) -> tuple[tuple[str, str, str], ...]:
+        # The picker rows actually offered here: everything inside tmux (or with a
+        # launcher hook); only the clipboard copy outside — copying needs neither.
+        if self.launch_available():
+            return self.LAUNCH_TARGETS
+        return tuple(t for t in self.LAUNCH_TARGETS if t[1] == "copy")
 
     def launch_current(self) -> None:
         # `L`: open the launch menu (window/split/popup/copy — handled by
-        # handle_launch_key on the next keystroke). Only offered where a launch can
-        # actually land (see launch_available); the footer hides the key otherwise.
+        # handle_launch_key on the next keystroke). Outside tmux/hook the menu
+        # narrows to the copy target instead of disappearing (launch_targets).
         if self.store.demo:
             self.notify("launch disabled in demo mode", "error")
             return
@@ -1869,9 +1854,6 @@ class App:
             return
         if self.resume_parts(session) is None:
             self.notify("no launch command for this session", "error")
-            return
-        if not self.launch_available():
-            self.notify("launch needs tmux (or a launcher hook)", "error")
             return
         self.launch_menu = session
         self.launch_menu_index = 0
@@ -1893,7 +1875,7 @@ class App:
         # shortcuts jump straight to one, Esc/q cancels. Mirrors handle_source_menu_key.
         if key == 3:  # Ctrl-C still quits
             return False
-        targets = self.LAUNCH_TARGETS
+        targets = self.launch_targets()
         n = len(targets)
         if key in (ord("j"), curses.KEY_DOWN):
             self.launch_menu_index = (self.launch_menu_index + 1) % n
@@ -2081,11 +2063,9 @@ class App:
         )
 
     def can_launch_current(self) -> bool:
-        # On a session context AND somewhere a launch can land (tmux / launcher hook);
-        # gates the footer's `L` hint so it never shows when pressing it would no-op.
-        return (
-            self.view == "session" or (self.view == "zoom" and self.on_sessions_tab)
-        ) and self.launch_available()
+        # On a session context; gates the footer's `L` hint so it never shows where
+        # pressing it would no-op. No tmux requirement: the copy target works anywhere.
+        return self.view == "session" or (self.view == "zoom" and self.on_sessions_tab)
 
     def effective_sort_by(self) -> str | None:
         if self.in_prices_sort_context():
@@ -2805,9 +2785,6 @@ class App:
             return True
         if key == ord("e"):
             self.export_current()
-            return True
-        if key == ord("y"):
-            self.copy_current()
             return True
         if key == ord("o"):
             self.open_current()

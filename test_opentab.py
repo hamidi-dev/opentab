@@ -4826,7 +4826,7 @@ def test_tmux_launch_runs_the_hook_and_reports_its_stderr():
                 os.environ["OPENTAB_LAUNCHER"] = old_env
 
 
-def test_launch_menu_opens_in_tmux_and_hidden_outside():
+def test_launch_menu_opens_in_tmux_and_copy_only_outside():
     a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
     a.source = "Claude Code"
     app = app_with([a])
@@ -4852,15 +4852,18 @@ def test_launch_menu_opens_in_tmux_and_hidden_outside():
         app.handle_key(None, ord("L"))
         app.handle_key(None, ord("y"))
         assert copies == ["cd /repo/a && claude --resume ses_1"]
-        # outside tmux (and no launcher hook), L is hidden and a no-op with a hint:
-        # the footer drops it (can_launch_current is False) and it never copies.
+        # outside tmux (and no launcher hook), the menu still opens but narrows to
+        # the copy target: spawn shortcuts are ignored, Enter picks the only row.
         os.environ.pop("TMUX")
-        assert not app.can_launch_current()
-        copies_before = len(copies)
+        assert app.can_launch_current()  # footer keeps L: copy needs no tmux
         app.handle_key(None, ord("L"))
+        assert app.launch_menu is not None
+        assert [kind for _k, kind, _l in app.launch_targets()] == ["copy"]
+        app.handle_key(None, ord("w"))  # not offered -> ignored, menu stays open
+        assert app.launch_menu is not None and len(launches) == 1
+        app.handle_key(None, 10)  # Enter runs the only target: copy
         assert app.launch_menu is None
-        assert len(copies) == copies_before
-        assert "needs tmux" in app.notice
+        assert copies[-1] == "cd /repo/a && claude --resume ses_1"
     finally:
         ot.util.tmux_launch = real_launch
         ot.util.copy_to_clipboard = real_copy

@@ -93,10 +93,10 @@ touches, all on your own machine:
   `~/.config/opentab/prices.json` (only when you run `--refresh-models` or press `r` in the
   `P` overlay), and — only when you press `e` — an `opentab-*.csv` export in the current
   directory.
-- **Runs** external programs only on the key you press: your clipboard tool
-  (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for `y`, your file opener
-  (`open`/`xdg-open`, or Explorer on Windows) for `o`, and for `L` either `tmux` or your own
-  [launcher hook](#custom-launchers) (`~/.config/opentab/launcher`). All are
+- **Runs** external programs only on the key you press: your file opener
+  (`open`/`xdg-open`, or Explorer on Windows) for `o`, and for `L` either `tmux`, your own
+  [launcher hook](#custom-launchers) (`~/.config/opentab/launcher`), or your clipboard tool
+  (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for its copy target. All are
   disabled in `--demo`.
 
 ## Requirements
@@ -265,9 +265,8 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `$` | What-if pricing: re-price unpriced subscription/credit usage at models.dev API list prices |
 | `P` | Show the models.dev API price table OpenTab uses for `$` (press `r` inside to refresh it from models.dev) |
 | `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
-| `y` | Copy the selected session id (or project path) to the clipboard |
 | `o` | Open the selected session's / project's directory |
-| `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>` / `codex resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project); outside tmux (or with `y`) the `cd <project> && …` command is copied to the clipboard instead. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
+| `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>` / `codex resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project), with **y** copying the `cd <project> && …` command to the clipboard; outside tmux the menu offers only the copy. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
 | `c` | Switch data source — any present backend (OpenCode, Claude Code, Codex, Hermes, Copilot CLI, VS Code, pi, OpenClaw, CSV, JSONL), or all merged |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
