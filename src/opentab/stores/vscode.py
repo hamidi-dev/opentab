@@ -13,7 +13,7 @@ from urllib.parse import unquote
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt
 from opentab.models import Workflow
-from opentab.util import git_root
+from opentab.util import git_root, windows_to_wsl_path
 
 
 class VscodeStore:
@@ -51,9 +51,11 @@ class VscodeStore:
     and the "$" what-if reprices at API list rates. Models are mixed-provider
     (gpt-4.1, claude-sonnet, gemini -- resolvedModel covers the "auto" router), so ids
     are provider-prefixed for pricing (the CsvStore pattern). The project comes from the
-    workspace's workspace.json folder/workspace URI folded to its git root;
-    empty-window sessions group under "(no workspace)". Title precedence: customTitle ->
-    computedTitle -> first real user prompt -> "(untitled)". No subagent tree.
+    workspace's workspace.json folder/workspace URI folded to its git root (file:// and
+    vscode-remote:// both handled; under WSL a Windows drive path folds onto its /mnt
+    mount first so the walk can reach it); empty-window sessions group under
+    "(no workspace)". Title precedence: customTitle -> computedTitle -> first real user
+    prompt -> "(untitled)". No subagent tree.
     """
 
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
@@ -183,16 +185,37 @@ class VscodeStore:
             return "(unknown)"
         for key in ("folder", "workspace"):
             uri = meta.get(key)
-            if isinstance(uri, str) and uri.startswith("file://"):
-                path = unquote(uri[len("file://") :]).rstrip("/")
-                # A file URI on Windows is /C:/Users/... -- drop the leading slash.
-                if re.match(r"^/[A-Za-z]:[/\\]", path):
-                    path = path[1:]
-                if key == "workspace":  # a .code-workspace file -> its parent dir
-                    path = os.path.dirname(path)
-                if path:
-                    return self._git_root(path)
+            if not isinstance(uri, str):
+                continue
+            path = self._uri_to_path(uri)
+            if key == "workspace":  # a .code-workspace file -> its parent dir
+                path = os.path.dirname(path)
+            if path:
+                return self._git_root(path)
         return "(unknown)"
+
+    @staticmethod
+    def _uri_to_path(uri: str) -> str:
+        # A local workspace is a file:// URI; a Remote workspace (WSL / SSH / dev
+        # container) is vscode-remote://<authority>/<path>. For wsl+<distro> that
+        # path is directly usable when opentab runs inside the distro (the common
+        # read-Windows-from-WSL case); for other authorities it still beats
+        # "(unknown)" as a label -- the git-root walk falls back to it unchanged.
+        if uri.startswith("file://"):
+            path = unquote(uri[len("file://") :]).rstrip("/")
+        elif uri.startswith("vscode-remote://"):
+            _, sep, rest = uri[len("vscode-remote://") :].partition("/")
+            if not sep:
+                return ""
+            path = "/" + unquote(rest).rstrip("/")
+        else:
+            return ""
+        # A file URI on Windows is /C:/Users/... -- drop the leading slash, then
+        # under WSL fold the drive path onto its mount (/mnt/c/...) so the git-root
+        # walk can reach Windows-side workspaces.
+        if re.match(r"^/[A-Za-z]:[/\\]", path):
+            path = path[1:]
+        return windows_to_wsl_path(path) or path
 
     # --- journal replay ----------------------------------------------------------
     @classmethod

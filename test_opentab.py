@@ -6729,6 +6729,58 @@ def test_vscode_store_turns_empty_window_and_source_cycle():
         assert ot.available_sources(args) == []
 
 
+def test_wsl_mount_root_and_windows_path_mapping():
+    with tempfile.TemporaryDirectory() as tmp:
+        # wsl.conf parsing: [automount] root= wins, comments stripped, missing -> /mnt.
+        conf = os.path.join(tmp, "wsl.conf")
+        with open(conf, "w") as fh:
+            fh.write("[boot]\nsystemd=true\n[automount]\n# comment\nroot = /win ; inline\n")
+        assert ot.util.wsl_mount_root(conf) == "/win"
+        assert ot.util.wsl_mount_root(os.path.join(tmp, "absent.conf")) == "/mnt"
+
+        # Drive-path folding: C:\... and C:/... land on <mount>/c/... when it exists.
+        proj = os.path.join(tmp, "c", "Users", "mo", "proj")
+        os.makedirs(proj)
+        assert ot.util.windows_to_wsl_path(r"C:\Users\mo\proj", mount_root=tmp) == proj
+        assert ot.util.windows_to_wsl_path("c:/Users/mo/proj", mount_root=tmp) == proj
+        assert ot.util.windows_to_wsl_path("C:/Users/mo/gone", mount_root=tmp) == ""  # not mounted
+        assert (
+            ot.util.windows_to_wsl_path("/home/mo/proj", mount_root=tmp) == ""
+        )  # not a drive path
+
+
+def test_vscode_resolves_remote_and_windows_workspace_uris():
+    # vscode-remote:// URIs (Remote-WSL / SSH / container workspaces) yield their path
+    # segment; Windows file URIs keep the drive-path label when no WSL mount matches.
+    to_path = ot.VscodeStore._uri_to_path
+    assert to_path("vscode-remote://wsl%2BUbuntu/home/mo/proj") == "/home/mo/proj"
+    assert to_path("vscode-remote://ssh-remote%2Bbox/srv/app") == "/srv/app"
+    assert to_path("vscode-remote://wsl%2BUbuntu") == ""  # authority only, no path
+    assert to_path("file:///c%3A/Users/nosuch-opentab/proj") == "c:/Users/nosuch-opentab/proj"
+    assert to_path("untitled:Untitled-1") == ""
+
+    # End to end: a Windows-side session store whose workspace.json points into this
+    # distro via Remote-WSL resolves to the local (reachable) directory.
+    with tempfile.TemporaryDirectory() as tmp:
+        user = os.path.join(tmp, "Code", "User")
+        hash_dir = os.path.join(user, "workspaceStorage", "hwsl")
+        chat = os.path.join(hash_dir, "chatSessions")
+        os.makedirs(chat)
+        folder = os.path.join(tmp, "wslrepo")
+        os.makedirs(folder)
+        with open(os.path.join(hash_dir, "workspace.json"), "w") as fh:
+            json.dump({"folder": "vscode-remote://wsl%2BUbuntu" + folder}, fh)
+        _write_jsonl(
+            os.path.join(chat, f"{VSCODE_SID}.jsonl"),
+            [
+                {"kind": 0, "v": {"version": 3, "sessionId": VSCODE_SID, "requests": []}},
+                {"kind": 2, "k": ["requests"], "v": [_vscode_request()]},
+            ],
+        )
+        store = ot.VscodeStore([user], _vscode_args(user))
+        assert store.workflows()[0].directory == folder
+
+
 PI_SID = "019e2a8c-dfcc-77f3-a956-c3ee1862aca3"
 
 

@@ -19,7 +19,8 @@ transcripts (`~/.claude/projects/**/*.jsonl`, `ClaudeStore`), **Codex CLI** roll
 `~/.config/opentab/requests.csv`, `CsvStore`), the **GitHub Copilot CLI** OpenTelemetry
 export (`~/.copilot/otel/**/*.jsonl` + `$COPILOT_OTEL_FILE_EXPORTER_PATH`, `CopilotStore`),
 **Copilot Chat in VS Code** (`<User>/workspaceStorage/*/chatSessions/*.json[l]` across the
-Code/Insiders/VSCodium variants, or `--vscode-dir`, `VscodeStore`),
+Code/Insiders/VSCodium variants, or `--vscode-dir` — from WSL, pointed at the Windows-side
+store — `VscodeStore`),
 **pi-agent** sessions (`~/.pi/agent/sessions/**/*.jsonl` or `$PI_AGENT_DIR`, `PiStore`),
 **OpenClaw** gateway sessions (`~/.openclaw/agents/**/sessions/*.jsonl` or `$OPENCLAW_DIR`,
 `OpenClawStore`), and a **JSONL/NDJSON of logged API requests** (the per-line twin of the
@@ -208,8 +209,15 @@ Three logical layers (the class names below live in the files above — `Store` 
   premium-request quota unit, not USD) → token-only backend (**`records_cost=False`**, same
   $0/`$`-estimate nudges). `metadata.resolvedModel` (covers the "auto" router) →
   `modelId` minus the `copilot/` prefix, then provider-prefixed (the `CsvStore` pattern).
-  Project = the workspace's `workspace.json` folder/workspace URI → git root;
-  empty-window sessions group under "(no workspace)". **Availability requires recorded
+  Project = the workspace's `workspace.json` folder/workspace URI → git root
+  (`_uri_to_path`: `file://` and `vscode-remote://` both handled — a Remote-WSL URI's path
+  is directly local inside the distro, and a Windows drive path folds onto its WSL mount
+  via `util.windows_to_wsl_path` so the git-root walk can reach it); empty-window sessions
+  group under "(no workspace)". **The Windows-side store is deliberately NOT auto-scanned
+  from WSL** (parsing every session over the drvfs/9p mount would slow every startup —
+  don't re-add it): WSL users opt in with `--vscode-dir /mnt/c/Users/<you>/AppData/Roaming/
+  Code/User` (example in its `--help`), which the `_uri_to_path` handling then makes
+  useful. **Availability requires recorded
   tokens** (`_vscode_available` scans for the token markers): merely opening the chat
   panel writes empty session files, and file presence alone would surface the source for
   every VS Code install. Title: `customTitle` → `computedTitle` → first prompt. No

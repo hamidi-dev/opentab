@@ -33,6 +33,12 @@ def _default_vscode_user_dirs() -> list[str]:
     # VS Code's per-user storage root ("User"), per variant. Chat sessions live under
     # <User>/workspaceStorage/<hash>/chatSessions and
     # <User>/globalStorage/emptyWindowChatSessions.
+    #
+    # Deliberately NOT scanned: the Windows-side profiles from inside WSL
+    # (/mnt/c/Users/*/AppData/Roaming/...). Surfacing that source would parse every
+    # session file over the drvfs/9p mount on startup -- slow enough to break the
+    # fast-first-frame rule. WSL users opt in explicitly (--vscode-dir, see its --help
+    # example); VscodeStore._uri_to_path handles the Windows/Remote-WSL URIs then.
     home = os.path.expanduser("~")
     if sys.platform == "darwin":
         base = os.path.join(home, "Library", "Application Support")

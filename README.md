@@ -192,7 +192,8 @@ opentab --source all                         # all present sources, merged
 > (`<User>/workspaceStorage/*/chatSessions`, plus empty-window sessions), across Code,
 > Code&nbsp;-&nbsp;Insiders, and VSCodium — nothing to enable. Projects come from each
 > workspace's folder; sessions the panel merely opened (no tokens) are ignored. Point
-> `--vscode-dir` at a User directory for a portable/remote copy.
+> `--vscode-dir` at a User directory for a portable/remote copy — from WSL, at the
+> Windows-side store (see [Windows](#windows)).
 
 > **OpenClaw:** sessions live under `~/.openclaw/agents/<agent>/sessions/` (one project per
 > agent); point `--openclaw-dir`/`$OPENCLAW_DIR` at a mounted copy if it runs on a server.
@@ -337,6 +338,19 @@ opentab --db /mnt/c/Users/<you>/.local/share/opencode/opencode.db
 If OpenCode runs inside WSL, the default path
 (`~/.local/share/opencode/opencode.db`) just works. Either way, `--db` points
 OpenTab at any non-standard location.
+
+Copilot Chat in VS Code works the same way from WSL: chat sessions are stored by
+the Windows-side VS Code (also for Remote-WSL windows), under the Windows profile.
+That store is *not* scanned by default — reading through `/mnt/c` is slow enough
+to drag down every startup — so opt in by pointing `--vscode-dir` at it, e.g. via
+an alias:
+
+```sh
+alias opentab='opentab --vscode-dir "/mnt/c/Users/<you>/AppData/Roaming/Code/User"'
+```
+
+Remote-WSL workspaces then resolve back to their in-distro project directories,
+and native Windows workspaces to their `/mnt/c/...` paths.
 
 If `curses` is missing, OpenTab prints a short hint (install `windows-curses`)
 instead of crashing.

@@ -244,6 +244,66 @@ def git_root(directory: str) -> str:
         cur = parent
 
 
+_IS_WSL: bool | None = None
+
+
+def is_wsl() -> bool:
+    # WSL masquerades as plain Linux; the interop env vars (set in every WSL session)
+    # or the kernel string give it away. Memoized -- probed per store build.
+    global _IS_WSL
+    if _IS_WSL is None:
+        _IS_WSL = False
+        if sys.platform == "linux":
+            if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+                _IS_WSL = True
+            else:
+                try:
+                    with open("/proc/version", errors="replace") as fh:
+                        _IS_WSL = "microsoft" in fh.read().lower()
+                except OSError:
+                    _IS_WSL = False
+    return _IS_WSL
+
+
+def wsl_mount_root(conf_path: str = "/etc/wsl.conf") -> str:
+    # Where WSL mounts the Windows drives: [automount] root= in /etc/wsl.conf,
+    # default /mnt (so C: appears at /mnt/c).
+    try:
+        section = ""
+        with open(conf_path, errors="replace") as fh:
+            for line in fh:
+                for comment in ("#", ";"):
+                    line = line.split(comment, 1)[0]
+                line = line.strip()
+                if line.startswith("[") and line.endswith("]"):
+                    section = line[1:-1].strip().lower()
+                elif section == "automount" and "=" in line:
+                    key, _, value = line.partition("=")
+                    value = value.strip().strip("\"'")
+                    if key.strip().lower() == "root" and value:
+                        return value
+    except OSError:
+        pass
+    return "/mnt"
+
+
+def windows_to_wsl_path(path: str, mount_root: str | None = None) -> str:
+    # Fold a Windows drive path (C:\Users\... or C:/Users/...) onto its WSL mount
+    # (/mnt/c/Users/...) so filesystem probes like the git-root walk can reach it.
+    # "" when not applicable: not under WSL, not a drive path, or the drive isn't
+    # mounted -- callers keep the original path as a label then.
+    if mount_root is None:
+        if not is_wsl():
+            return ""
+        mount_root = wsl_mount_root()
+    m = re.match(r"^([A-Za-z]):[/\\](.*)$", path)
+    if not m:
+        return ""
+    rest = m.group(2).replace("\\", "/")
+    mapped = os.path.join(mount_root.rstrip("/") or "/", m.group(1).lower(), rest)
+    return mapped if os.path.exists(mapped) else ""
+
+
 def fuzzy_score(query: str, text: str) -> int | None:
     """fzf-style subsequence match (case-insensitive): every query character
     must appear in `text` in order. Returns None on no match, else a score —

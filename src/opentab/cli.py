@@ -89,7 +89,9 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="a VS Code User directory (or chatSessions directory) holding Copilot Chat "
         "sessions (for --source vscode); by default every installed variant (Code, "
-        "Code - Insiders, VSCodium) is scanned",
+        "Code - Insiders, VSCodium) is scanned. From WSL, point it at the Windows-side "
+        "store (not scanned by default -- reading through /mnt/c slows startup), e.g. "
+        "alias opentab='opentab --vscode-dir \"/mnt/c/Users/<you>/AppData/Roaming/Code/User\"'",
     )
     parser.add_argument(
         "--pi-dir",
