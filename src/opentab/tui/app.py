@@ -243,6 +243,7 @@ class App:
         self.sort_reverse = False
         self.project_sort_reverse = False
         self.ignored_projects: set[str] = set()
+        self.ignored_sessions: set[str] = set()
         self.show_ignored_projects = False
         # Sessions starred with `b` (ids, persisted in state.json). `B` flips
         # show_bookmarks_only, the session-level cousin of the ignored projects' I:
@@ -323,6 +324,7 @@ class App:
             self.range_days,
             self.range_months,
             tuple(sorted(self.ignored_projects)),
+            tuple(sorted(self.ignored_sessions)),
             # ranged_workflows narrows to bookmarks under B; mirror its fingerprint
             # so this cache follows along.
             tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
@@ -333,6 +335,7 @@ class App:
             w
             for w in self.ranged_workflows
             if self.project_root(w.directory) not in self.ignored_projects
+            and w.id not in self.ignored_sessions
         ]
         self._aw_key = key
         self._aw_cache = list(rows)
@@ -540,6 +543,9 @@ class App:
             projects = [p for _, p in ranked]
         return projects
 
+    def include_ignored_for_project(self, project: ProjectSummary) -> bool:
+        return project.ignored or self.show_ignored_projects
+
     def sorted_projects(self, rows: list[ProjectSummary]) -> list[ProjectSummary]:
         sort_by = (
             self.project_sort_by
@@ -627,12 +633,17 @@ class App:
     def can_toggle_project_ignore(self) -> bool:
         return self.active_project_for_toggle() is not None
 
+    def can_toggle_ignore(self) -> bool:
+        return self.can_toggle_project_ignore() or self.session_ignore_target() is not None
+
     def toggle_ignored_projects_view(self) -> None:
-        if not self.ignored_projects:
-            self.notify("no ignored projects", "error")
+        if not (self.ignored_projects or self.ignored_sessions):
+            self.notify("no ignored items", "error")
             return
         project = self.active_project_for_toggle()
         project_dir = project.directory if project else None
+        session = self.session_ignore_target()
+        session_id = session.id if session else None
         self.show_ignored_projects = not self.show_ignored_projects
         if not self.show_ignored_projects and self.zoom_project in self.ignored_projects:
             self.zoom_project = None
@@ -642,10 +653,22 @@ class App:
                 and "Projects" in self.current_tabs()
             ):
                 self.tab = self.current_tabs().index("Projects")
+        if not self.show_ignored_projects and session_id in self.ignored_sessions:
+            if self.view == "session":
+                self.drill_out()
         self.restore_project_selection(project_dir)
         self.notice = (
-            "showing ignored projects" if self.show_ignored_projects else "hiding ignored projects"
+            "showing ignored items" if self.show_ignored_projects else "hiding ignored items"
         )
+
+    def toggle_ignore(self) -> None:
+        if self.active_project_for_toggle() is not None:
+            self.toggle_project_ignore()
+            return
+        if self.session_ignore_target() is not None:
+            self.toggle_session_ignore()
+            return
+        self.notify("ignore: select a project or session first", "error")
 
     def toggle_project_ignore(self) -> None:
         project = self.active_project_for_toggle()
@@ -663,6 +686,30 @@ class App:
         if self.zoom_project in self.ignored_projects and not self.show_ignored_projects:
             self.zoom_project = None
         self.restore_project_selection(directory)
+
+    def session_ignore_target(self) -> Workflow | None:
+        if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
+            return self.current_session()
+        return None
+
+    def toggle_session_ignore(self) -> None:
+        session = self.session_ignore_target()
+        if session is None:
+            self.notify("ignore: select a session first", "error")
+            return
+        if session.id in self.ignored_sessions:
+            self.ignored_sessions.remove(session.id)
+            self.notice = f"unignored {shorten(session.title, 40)}"
+        else:
+            self.ignored_sessions.add(session.id)
+            self.notice = f"ignored {shorten(session.title, 40)}"
+        self._invalidate_workflow_cache()
+        if (
+            session.id in self.ignored_sessions
+            and not self.show_ignored_projects
+            and self.view == "session"
+        ):
+            self.drill_out()
 
     def restore_project_selection(self, directory: str | None) -> None:
         rows = (
@@ -1611,7 +1658,10 @@ class App:
         if self.browse_mode == "projects":
             project = self.selected_project_summary
             return (
-                self.workflows_for_project(project.directory, include_ignored=True)
+                self.workflows_for_project(
+                    project.directory,
+                    include_ignored=self.include_ignored_for_project(project),
+                )
                 if project
                 else []
             )
@@ -1980,18 +2030,25 @@ class App:
     def current_sessions(self) -> list[Workflow]:
         if self.browse_mode == "projects":
             item = self.selected_project_summary
-            rows = self.workflows_for_project(item.directory, include_ignored=True) if item else []
+            rows = (
+                self.workflows_for_project(
+                    item.directory,
+                    include_ignored=self.include_ignored_for_project(item),
+                )
+                if item
+                else []
+            )
         elif self.focus == "years":
             item = self.selected_year_summary
-            source = self.ranged_workflows if self._zooming_ignored_project() else None
+            source = self.ranged_workflows if self._showing_ignored_workflows() else None
             rows = self.workflows_for_year(item.year, source) if item else []
         elif self.focus == "months":
             item = self.selected_month_summary
-            source = self.ranged_workflows if self._zooming_ignored_project() else None
+            source = self.ranged_workflows if self._showing_ignored_workflows() else None
             rows = self.workflows_for_month(item.month, source) if item else []
         else:
             item = self.selected_day_summary
-            source = self.ranged_workflows if self._zooming_ignored_project() else None
+            source = self.ranged_workflows if self._showing_ignored_workflows() else None
             rows = self.workflows_for_day(item.day, source) if item else []
         if self.zoom_project and self.browse_mode != "projects":
             rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
@@ -2003,6 +2060,11 @@ class App:
             and self.zoom_project
             and self.zoom_project in self.ignored_projects
             and self.browse_mode != "projects"
+        )
+
+    def _showing_ignored_workflows(self) -> bool:
+        return self.show_ignored_projects and bool(
+            self.ignored_sessions or self._zooming_ignored_project()
         )
 
     def current_session(self) -> Workflow | None:
@@ -2754,7 +2816,7 @@ class App:
             self.open_sort_menu()
             return True
         if key == ord("i"):
-            self.toggle_project_ignore()
+            self.toggle_ignore()
             return True
         if key == ord("I"):
             self.toggle_ignored_projects_view()

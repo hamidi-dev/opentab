@@ -1663,6 +1663,90 @@ def test_ignored_projects_are_persisted_in_state():
     assert restored.all_workflows == []
 
 
+def test_ignored_sessions_are_filtered_but_can_be_shown_and_unignored():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1),
+            workflow("b", "2026-06-01 13:00:00", cost=5),
+        ]
+    )
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Sessions")
+    app.workflow_index = next(i for i, w in enumerate(app.current_sessions()) if w.id == "b")
+
+    assert app.handle_key(None, ord("i"))
+
+    assert app.ignored_sessions == {"b"}
+    assert [w.id for w in app.all_workflows] == ["a"]
+    assert app.months[0].cost == 1
+    assert [w.id for w in app.current_sessions()] == ["a"]
+
+    assert app.handle_key(None, ord("I"))
+    assert {w.id for w in app.current_sessions()} == {"a", "b"}
+
+    app.workflow_index = next(i for i, w in enumerate(app.current_sessions()) if w.id == "b")
+    assert app.handle_key(None, ord("i"))
+    assert app.ignored_sessions == set()
+    assert sum(w.total_cost for w in app.all_workflows) == 6
+
+
+def test_ignored_sessions_stay_hidden_in_project_mode_until_shown():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, directory="/repo/app"),
+            workflow("b", "2026-06-01 13:00:00", cost=5, directory="/repo/app"),
+        ]
+    )
+    app.ignored_sessions = {"b"}
+    app._invalidate_workflow_cache()
+    app.browse_mode = "projects"
+
+    assert [w.id for w in app.current_sessions()] == ["a"]
+
+    app.handle_key(None, ord("I"))
+
+    assert {w.id for w in app.current_sessions()} == {"a", "b"}
+
+
+def test_ignored_session_detail_drills_out_when_hidden():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1),
+            workflow("b", "2026-06-01 13:00:00", cost=5),
+        ]
+    )
+    app.focus = "months"
+    app.view = "session"
+    app.workflow_index = next(i for i, w in enumerate(app.current_sessions()) if w.id == "b")
+
+    assert app.handle_key(None, ord("i"))
+
+    assert app.ignored_sessions == {"b"}
+    assert app.view == "zoom"
+    assert [w.id for w in app.current_sessions()] == ["a"]
+
+
+def test_ignored_sessions_are_persisted_in_state():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.ignored_sessions = {"a", "missing"}
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+    assert restored.ignored_sessions == {"a", "missing"}
+    assert restored.all_workflows == []
+
+
 def test_bookmark_toggles_on_selected_session():
     app = app_with(
         [

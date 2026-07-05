@@ -38,6 +38,7 @@ def save_state(app: App) -> None:
         "prices_sort_reverse": app.prices_sort_reverse,
         "browse_mode": app.browse_mode,
         "ignored_projects": sorted(app.ignored_projects),
+        "ignored_sessions": sorted(app.ignored_sessions),
         "bookmarks": sorted(app.bookmarks),  # sessions starred with `b`
         "show_api_prices": app.show_api_prices,
         "source": app.source_key,  # restore the last source (opencode/claude/all) next run
@@ -85,6 +86,10 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     ignored = state.get("ignored_projects")
     if isinstance(ignored, list):
         app.ignored_projects = {p for p in ignored if isinstance(p, str) and p}
+        app._invalidate_workflow_cache()
+    ignored_sessions = state.get("ignored_sessions")
+    if isinstance(ignored_sessions, list):
+        app.ignored_sessions = {s for s in ignored_sessions if isinstance(s, str) and s}
         app._invalidate_workflow_cache()
     # Bookmarked session ids survive restarts; ids of sessions that have since
     # vanished (or live in another source) are kept — harmless, and they light up

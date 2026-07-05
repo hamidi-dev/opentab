@@ -444,8 +444,9 @@ class Renderer:
             segs.append((f"  ·  sort: {sort_by}", base))
         if self.query and not self.filter_active:
             segs.append((f"  ·  filter: {self.query}", active))
-        if self.ignored_projects:
-            segs.append((f"  ·  ignored: {len(self.ignored_projects)}", active))
+        ignored_count = len(self.ignored_projects) + len(self.ignored_sessions)
+        if ignored_count:
+            segs.append((f"  ·  ignored: {ignored_count}", active))
         if self.show_bookmarks_only:
             segs.append(("  ·  ★ bookmarks only", active))
         # Transient status lives in floating toasts now (draw_toasts), not the header.
@@ -558,9 +559,9 @@ class Renderer:
             parts.append(("p/t mode", False))
         if self.can_sort_current_view():
             parts.append(("s sort", self.sort_menu))
-        if self.can_toggle_project_ignore():
+        if self.can_toggle_ignore():
             parts.append(("i ignore", False))
-        if self.ignored_projects:
+        if self.ignored_projects or self.ignored_sessions:
             parts.append(("I ignored", self.show_ignored_projects))
         # `b` lights up while the selected session is starred; `B` while the
         # bookmarks-only view is on (and is offered only once something is starred).
@@ -679,6 +680,9 @@ class Renderer:
         # shows session titles, so bookmarks are spottable wherever they surface.
         return "★ " if workflow.id in self.bookmarks else ""
 
+    def ignored_session_tag(self, workflow: Workflow) -> str:
+        return "ignored: " if workflow.id in self.ignored_sessions else ""
+
     def src_col(self, workflow: Workflow | None = None) -> str:
         # The "Src" column in the session tables (None = the header cell), only
         # when sources are merged — the one view where a row's origin isn't implied.
@@ -774,7 +778,7 @@ class Renderer:
             tok = human_tokens(wf.total_tokens)
             text = (
                 f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  "
-                f"{self.source_tag(wf)}{self.bookmark_tag(wf)}{wf.title}"
+                f"{self.source_tag(wf)}{self.bookmark_tag(wf)}{self.ignored_session_tag(wf)}{wf.title}"
             )
             if start + off == idx:
                 self.write(
@@ -1588,10 +1592,11 @@ class Renderer:
         return lines
 
     def project_overview(self, project: ProjectSummary, width: int) -> list[str]:
-        workflows = self.workflows_for_project(project.directory, include_ignored=project.ignored)
+        include_ignored = self.include_ignored_for_project(project)
+        workflows = self.workflows_for_project(project.directory, include_ignored=include_ignored)
         share_total = (
             sum(w.total_cost for w in self.ranged_workflows)
-            if project.ignored
+            if include_ignored
             else self.range_cost_total()
         )
         lines = [
@@ -1622,13 +1627,20 @@ class Renderer:
 
     def project_models(self, project: ProjectSummary, width: int) -> list[str]:
         agg = self.aggregate_models(
-            self.workflows_for_project(project.directory, include_ignored=project.ignored)
+            self.workflows_for_project(
+                project.directory,
+                include_ignored=self.include_ignored_for_project(project),
+            )
         )
         return self._models_tab(self._agg_rows(agg), "# Project Model Spend", width)
 
     def project_sources(self, project: ProjectSummary, width: int) -> list[str]:
         return self.source_table(
-            self.workflows_for_project(project.directory, include_ignored=project.ignored), width
+            self.workflows_for_project(
+                project.directory,
+                include_ignored=self.include_ignored_for_project(project),
+            ),
+            width,
         )
 
     def project_table(self, rows: list[ProjectSummary], title: str, width: int) -> list[str]:
@@ -1656,7 +1668,10 @@ class Renderer:
             f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
             f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
-        workflows = self.workflows_for_project(project.directory, include_ignored=project.ignored)
+        workflows = self.workflows_for_project(
+            project.directory,
+            include_ignored=self.include_ignored_for_project(project),
+        )
         for workflow in self.filtered_sessions(workflows):
             lines.append(
                 f"{workflow.created_at[:10]:<10} "
@@ -1935,8 +1950,8 @@ class Renderer:
             "  R                set range: all, 30d (or 30), 2m, 1y, 2026, 2026-05, start..end",
             "  a                show all time, keeping the current selection when possible",
             "  s                open the sort picker for the visible list (j/k move · Enter apply · Esc cancel)",
-            "  i                ignore/unignore the selected project (project lists only)",
-            "  I                show/hide ignored projects so they can be unignored",
+            "  i                ignore/unignore the selected project or session",
+            "  I                show/hide ignored projects/sessions so they can be unignored",
             "  b                bookmark/unbookmark the selected session for later inspection",
             "                   (Sessions tab/session detail only); bookmarked rows wear a ★",
             "                   and the set is remembered between runs",
