@@ -37,6 +37,7 @@ from opentab.cli import (
     refresh_models_command,
     status_command,
     status_line,
+    web_command,
 )
 from opentab.demo import (
     DEMO_MODEL_POOL,
@@ -157,3 +158,5 @@ from opentab.util import (
     validate_date,
     workflow_fuzzy_score,
 )
+from opentab.web import build_payload, html_command, serve_command, session_extras
+from opentab.webpage import render_html

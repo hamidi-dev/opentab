@@ -4,6 +4,7 @@ __pycache__/
 dev/
 demo.mov
 opentab-*.csv
+opentab-report.html
 
 # Python packaging build artifacts
 dist/

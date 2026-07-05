@@ -49,6 +49,8 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
 - Git worktrees folded into their main repo
 - Live fuzzy filter (fzf-style, title / project / id) and live date-range scoping
 - CSV export of any view
+- A self-contained **HTML report** (`--html`) — same drill-in, calendar heatmap, and
+  `$` toggle in one shareable file — and a local live server for it (`--serve`)
 - Keyboard- and mouse-driven (scroll, click to select, double-click to drill)
 - Remembers your range, sort, ignored projects, and the `$` view between runs
 - Read-only, local-only, standard-library runtime (nothing extra to pull in)
@@ -91,8 +93,8 @@ touches, all on your own machine:
 - **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
   source, range, and sort; disable with `--no-state`), an optional model-price cache at
   `~/.config/opentab/prices.json` (only when you run `--refresh-models` or press `r` in the
-  `P` overlay), and — only when you press `e` — an `opentab-*.csv` export in the current
-  directory.
+  `P` overlay), and — only when you press `e` or run `--html` — an `opentab-*.csv`
+  export or the HTML report file in the current directory.
 - **Runs** external programs only on the key you press: your file opener
   (`open`/`xdg-open`, or Explorer on Windows) for `o`, and for `L` either `tmux`, your own
   [launcher hook](#custom-launchers) (`~/.config/opentab/launcher`), or your clipboard tool
@@ -159,6 +161,8 @@ opentab --since 2026-05-01 --until 2026-05-31
 opentab --db /path/to/opencode.db  # default: ~/.local/share/opencode/opencode.db
 opentab --source claude          # browse Claude Code spend instead (see below)
 opentab --demo                   # safe for live demos / screenshots (see below)
+opentab --html                   # write opentab-report.html and exit (see below)
+opentab --serve                  # same report on http://localhost:8321, live
 ```
 
 ### Data sources
@@ -236,6 +240,30 @@ The *shape* of your data stays real — the relative proportions between session
 and months, and the model mix (which models, in what ratio) — but the absolute
 numbers do not. A `DEMO — synthetic` tag shows in the header so synthetic figures
 are never mistaken for real ones.
+
+### Web report (`--html` / `--serve`)
+
+`opentab --html` writes the whole browser as **one self-contained HTML file** —
+no server, no dependencies, works from disk or any static host. It's the TUI in
+the browser: the same lazygit-style Years / Months / Days (or Projects) sidebar,
+the same detail tabs (Overview / Models / Projects / Sessions / Subagents), the
+calendar spend heatmap, and the `$` what-if toggle — driven by the same keys
+(`j`/`k`, `Tab`, `h`/`l`, `Esc`, `$`, `p`/`t`) or the mouse. Drill in by year /
+month / day / project / session (the browser's back button steps out, and every
+view is a shareable deep link), and every table sorts on a header click. Press
+`T` (or the **trends** button) for the full Trends overlay — Daily / Weekly /
+Monthly cost charts, the calendar heatmap, and Model / Provider / Source
+rankings, with `h`/`l` for tabs and `j`/`k` to page; `P` opens the models.dev
+price table (`eff $/M` at your token mix, heat-shaded, three layouts); and `R`
+(or the range chip) rescopes everything to a window (last 7/30/90 days, N months,
+this year, or a custom span). Combine with `--demo` for a page you can publish.
+
+`opentab --serve` serves the same report on `http://localhost:8321` (`--port`)
+and adds what a static file can't have: the per-session **Turns** timeline and
+**Tools** attribution fetched live on drill-in, plus a refresh button that
+re-reads your data. It binds to localhost only — the report shows prompt titles,
+project paths, and spend, so if you want it on another machine put it behind
+something like Tailscale (`--bind`), never a public interface.
 
 OpenTab opens on a stacked **Months / Days** sidebar (lazygit-style). `Tab` flips
 focus between the two panels. `Enter` **zooms** the focused month's or day's

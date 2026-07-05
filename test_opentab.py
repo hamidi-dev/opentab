@@ -7763,6 +7763,197 @@ def test_status_line_prices_an_exact_session_id():
         assert ot.status_line(store, "ses_gone") == ""
 
 
+# --- The web report (--html / --serve) --------------------------------------
+
+
+class NodesFakeStore(FakeStore):
+    # FakeStore + a two-node subagent tree, to exercise the payload's nodes embed.
+    def workflow_nodes(self, workflow_id):
+        return [
+            {
+                "id": workflow_id,
+                "depth": 0,
+                "agent": "-",
+                "title": "root",
+                "created_at": "2026-05-01 10:00:00",
+                "cost": 2.0,
+                "tokens_input": 1000,
+                "tokens_output": 500,
+                "tokens_reasoning": 0,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+                "tokens_total": 1500,
+                "model_name": "anthropic/claude-fable-5",
+            },
+            {
+                "id": "ses_sub",
+                "depth": 1,
+                "agent": "explore",
+                "title": "scout the codebase",
+                "created_at": "2026-05-01 10:01:00",
+                "cost": 0.0,  # a subscription node: $0 recorded, tokens present
+                "tokens_input": 1_000_000,
+                "tokens_output": 100_000,
+                "tokens_reasoning": 0,
+                "tokens_cache_read": 0,
+                "tokens_cache_write": 0,
+                "tokens_total": 1_100_000,
+                "model_name": "anthropic/claude-fable-5",
+            },
+        ]
+
+
+class TurnsFakeStore(FakeStore):
+    # FakeStore + a message timeline, to exercise the --serve session extras.
+    def supports_turns(self, workflow_id):
+        return True
+
+    def message_timeline(self, workflow_id):
+        base = {
+            "depth": 0,
+            "agent": "-",
+            "model_name": "anthropic/claude-fable-5",
+            "reasoning": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "prompt_id": "p1",
+            "prompt_title": "do the thing",
+        }
+        return [
+            dict(
+                base,
+                time="2026-05-01 10:00:05",
+                cost=0.0,
+                input=1000,
+                output=200,
+                tokens_total=1200,
+            ),
+            dict(
+                base, time="2026-05-01 10:00:31", cost=0.5, input=400, output=100, tokens_total=500
+            ),
+        ]
+
+
+def test_web_payload_carries_both_cost_snapshots():
+    app = app_with(
+        [
+            workflow("w1", "2026-05-01 10:00:00", cost=3.0, tokens=1000, directory="/tmp/alpha"),
+            workflow("w2", "2026-05-02 11:00:00", cost=1.0, tokens=500, directory="/tmp/beta"),
+        ]
+    )
+    payload = ot.build_payload(app)
+    meta = payload["meta"]
+    assert meta["version"] == ot.__version__
+    assert meta["recordsCost"] is True
+    assert meta["range"] == "all time"
+    assert meta["startApi"] is False
+    assert meta["serve"] is False
+    by_id = {w["id"]: w for w in payload["workflows"]}
+    assert set(by_id) == {"w1", "w2"}
+    w1 = by_id["w1"]
+    # Fully priced usage: the real and the API-equivalent snapshot agree, and both
+    # travel in the payload so the page's $ toggle is a client-side field swap.
+    assert w1["real"] == 3.0 and w1["api"] == 3.0
+    assert w1["project"] == "/tmp/alpha"
+    assert w1["date"].startswith("2026-05-01")
+    assert payload["nodes"] == {}  # no subagents -> no per-session tree queries
+
+
+def test_web_payload_embeds_nodes_and_reprices_unpriced_ones():
+    w = workflow("w1", "2026-05-01 10:00:00", cost=2.0, directory="/tmp/alpha")
+    w.subagents = 1
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(NodesFakeStore([w]), args)
+    payload = ot.build_payload(app)
+    nodes = payload["nodes"]["w1"]
+    assert [n["depth"] for n in nodes] == [0, 1]
+    root, sub = nodes
+    assert root["real"] == 2.0 and root["api"] == 2.0  # priced node: api == real
+    assert sub["real"] == 0.0 and sub["api"] > 0  # $0 node repriced at list rates
+    assert sub["agent"] == "explore" and sub["tokens"] == 1_100_000
+
+
+def test_web_session_extras_reports_turns_with_both_costs():
+    w = workflow("w1", "2026-05-01 10:00:00", cost=0.5)
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(TurnsFakeStore([w]), args)
+    extras = ot.session_extras(app, "w1")
+    assert extras["tools"] == []  # no supports_tools -> hidden, never shown empty
+    first, second = extras["turns"]
+    assert first["real"] == 0.0 and first["api"] > 0  # $0 turn gets a list-price figure
+    assert second["real"] == 0.5 and second["api"] == 0.5  # priced turn stays as recorded
+    assert first["promptTitle"] == "do the thing"
+
+
+def test_web_render_html_defuses_embedded_script_tags():
+    w = workflow("w1", "2026-05-01 10:00:00")
+    w.title = "evil</script><script>alert(1)</script>"
+    page = ot.render_html(ot.build_payload(app_with([w])))
+    # Exactly the shell's two script blocks survive; the title's closing tags are
+    # escaped inside the JSON blob so they can't break out of the data block.
+    assert page.count("</script>") == 2
+    assert "<\\/script>" in page
+    assert 'id="opentab-data"' in page
+
+
+def test_web_html_command_writes_the_report_file():
+    app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "report.html")
+        args = type("Args", (), {"html": path})()
+        assert ot.html_command(app, args) == 0
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    assert 'id="opentab-data"' in text
+    assert "opentab — AI spend report" in text
+    # The page mirrors the TUI: sidebar host + keymap-driven detail pane + the
+    # Trends overlay. Lock in the load-bearing hooks so a refactor can't silently
+    # drop the TUI feel.
+    assert 'id="side"' in text and 'id="tabbar"' in text
+    assert 'id="trends"' in text  # the T Trends overlay host
+    assert "TREND_TABS" in text and "Providers" in text  # the 7-tab Trends
+    assert 'id="prices"' in text and 'id="rangepick"' in text  # P prices + R range overlays
+    assert "keydown" in text  # the j/k/Tab/h/l/Esc/$/T/P/R handler
+
+
+def test_web_payload_embeds_the_price_reference():
+    # The P overlay's data: priced models you've used, with the eff $/M blend. The
+    # FakeStore has no model_breakdown, so a store with model rows is needed -- reuse
+    # NodesFakeStore, which returns a fable-5 node but no model_breakdown either;
+    # so assert the structural shape (present, both row sets, mix optional).
+    app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+    prices = ot.build_payload(app)["prices"]
+    assert set(prices) >= {"byModel", "byRoute"}
+    assert isinstance(prices["byModel"], list) and isinstance(prices["byRoute"], list)
+
+
+def test_web_report_server_serves_page_extras_and_404():
+    import threading
+    import urllib.error
+    import urllib.request
+
+    app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+    server = ot.web.ReportServer(("127.0.0.1", 0), app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        page = urllib.request.urlopen(base + "/").read().decode("utf-8")
+        assert 'id="opentab-data"' in page
+        assert '"serve":true' in page  # the served page knows the extras exist
+        extras = json.loads(urllib.request.urlopen(base + "/api/session/w1").read().decode("utf-8"))
+        assert extras == {"turns": [], "tools": []}  # FakeStore: no turns/tools support
+        try:
+            urllib.request.urlopen(base + "/nope")
+            raise AssertionError("expected a 404")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+    thread.join(timeout=5)
+
+
 if __name__ == "__main__":
     import sys
 

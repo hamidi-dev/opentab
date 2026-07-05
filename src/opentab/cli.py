@@ -164,6 +164,32 @@ def parse_args() -> argparse.Namespace:
         "list-price estimate for usage recorded at $0 (subscription models)",
     )
     parser.add_argument(
+        "--html",
+        nargs="?",
+        const="opentab-report.html",
+        default=None,
+        metavar="FILE",
+        help="write a self-contained HTML report and exit: drill-in by month/day/"
+        "project/session, calendar heat map, sortable tables, the $ what-if toggle "
+        "-- all client-side in one file (default FILE: opentab-report.html). "
+        "Pairs with --demo for a shareable page",
+    )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="serve the HTML report from a local web server; adds the per-session "
+        "Turns/Tools drill-in as live endpoints and a data-refresh button "
+        "(Ctrl-C stops it)",
+    )
+    parser.add_argument("--port", type=int, default=8321, help="port for --serve (default: 8321)")
+    parser.add_argument(
+        "--bind",
+        default="127.0.0.1",
+        help="address for --serve (default: 127.0.0.1). The report exposes prompt "
+        "titles, project paths, and spend -- bind beyond localhost only on a "
+        "trusted/VPN (e.g. Tailscale) interface, never a public one",
+    )
+    parser.add_argument(
         "--refresh-models",
         action="store_true",
         help="fetch the latest model list prices from models.dev into a local cache "
@@ -278,6 +304,31 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def web_command(args: argparse.Namespace) -> int:
+    # --html / --serve: the web frontend, one-shot and curses-free. Builds the same
+    # headless App the TUI drives -- rollups, worktree folding, saved prefs (ignored
+    # projects, the restored range/$ view), and the real/API cost snapshots -- and
+    # hands it to opentab.web. Import deferred so TUI startup doesn't pay for it.
+    from opentab import web
+
+    use_state = not args.demo and not args.no_state
+    state = load_state() if use_state else {}
+    source_key = resolve_source(args, state)
+    store, loading = sources.make_store(args, source_key)
+    sys.stderr.write(loading)
+    sys.stderr.flush()
+    app = App(store, args, source_key=source_key)
+    app.allow_price_prompt = False
+    if use_state:
+        apply_state(app, args, state)
+    app._ensure_models()  # the $ what-if snapshots ride on the per-model breakdown
+    sys.stderr.write(" " * 40 + "\r")
+    sys.stderr.flush()
+    if args.serve:
+        return web.serve_command(app, args)
+    return web.html_command(app, args)
+
+
 def main() -> int:
     if sys.version_info < MIN_PYTHON:
         raise SystemExit(
@@ -290,6 +341,8 @@ def main() -> int:
         return refresh_models_command()  # fetch prices and exit; no curses needed
     if getattr(args, "status", None) is not None:
         return status_command(args)  # one-shot for the tmux status line; no curses
+    if getattr(args, "html", None) is not None or getattr(args, "serve", False):
+        return web_command(args)  # HTML report / local report server; no curses
     if curses is None:
         raise SystemExit(
             "OpenTab needs Python's curses module, which native Windows Python doesn't bundle.\n"

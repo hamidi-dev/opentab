@@ -47,6 +47,8 @@ ruff format --check src/opentab test_opentab.py   # format check (matches CI)
 python3 -m compileall -q src/opentab          # byte-compile smoke check
 python3 -m opentab --demo                     # run the TUI with anonymized/synthetic data
 opentab --status "$PWD"                       # one-shot: current session's cost incl. subagents (tmux status line; OpenCode only)
+opentab --demo --html demo.html               # one-shot: write the self-contained HTML report
+opentab --serve                               # same report served on http://localhost:8321 (+ live Turns/Tools)
 ```
 
 `test_opentab.py` is **not** pytest — it has its own runner at the bottom that just runs
@@ -83,15 +85,16 @@ Follow [Conventional Commits](https://www.conventionalcommits.org) — `type(sco
   `pyproject.toml`); never add another. ruff/hatchling are dev/build-only tooling.
 - **Modular `src/` package, acyclic layering.** Program logic lives across `src/opentab/`
   (layout below). Keep the import graph acyclic: leaves (`models`, `formatting`, `heatmap`,
-  `pricing`, `demo`, `util`) → `stores/*` → `tui/*` → `sources`/`state` → `cli`. Stores
-  never import the TUI; annotation-only back-references (e.g. `App` inside
-  `tui/renderer.py` and `state.py`) go under `if TYPE_CHECKING:` so they don't create an
-  import cycle. The top-level `__init__.py` re-exports the public API (and `os`/`sys`/`csv`/
+  `pricing`, `demo`, `util`, `webpage`) → `stores/*` → `tui/*` → `sources`/`state`/`web` →
+  `cli`. Stores never import the TUI; annotation-only back-references (e.g. `App` inside
+  `tui/renderer.py`, `state.py`, and `web.py`) go under `if TYPE_CHECKING:` so they don't
+  create an import cycle. The top-level `__init__.py` re-exports the public API (and `os`/`sys`/`csv`/
   `curses`/`datetime`) so callers and tests reach everything as `opentab.<name>`.
 - **Read-only on the OpenCode DB.** The tool opens the database read-only and must
   not write to it. The only files it writes are `~/.config/opentab/state.json` (prefs),
   `~/.config/opentab/prices.json` (the optional models.dev price cache, only on
-  `--refresh-models` / `r` in the `P` overlay), and `opentab-*.csv` exports (on `e`).
+  `--refresh-models` / `r` in the `P` overlay), `opentab-*.csv` exports (on `e`), and
+  the HTML report (only on `--html`, default `opentab-report.html`).
 - **Python 3.9+.** `MIN_PYTHON = (3, 9)`; `target-version = py39`. Don't use newer syntax.
 
 ## Architecture
@@ -113,6 +116,8 @@ src/opentab/
   state.py           load_state/save_state/apply_state
   stores/            opencode, claude, codex, hermes, csv_source, jsonl_source, copilot, vscode, pi, openclaw, combined
   tui/               renderer (Renderer), app (App)
+  web.py             build_payload/session_extras + html_command/serve_command (ReportServer)
+  webpage.py         render_html: the self-contained report page (inline CSS/JS strings)
 ```
 
 Three logical layers (the class names below live in the files above — `Store` in
@@ -406,6 +411,52 @@ now, `d` never again (persisted as `prices_prompt_dismissed` in `state.json`). I
 exists. The `c`/`L`/price-prompt pickers are all small centered modals via
 `Renderer.draw_modal` (drawn after the body so context shows behind), unlike the full-body
 help/prices/trends overlays.
+
+### The web report (`--html` / `--serve`)
+
+A second frontend over the same data, stdlib-only (`http.server`), curses-free (works on
+native Windows). `cli.web_command` builds the usual **headless App** — rollups, worktree
+folding, saved prefs via `apply_state`, the real/API cost snapshots — and hands it to
+`web.build_payload()`, which serializes the visible dataset (`all_workflows`, per-root
+model rows, and subagent `workflow_nodes` for sessions that have any) to plain JSON.
+**Every cost travels twice (`real`/`api`)** so the page's `$` toggle is a client-side
+field swap, never a reprice; `webpage.render_html()` wraps the blob in one self-contained
+page (drill-in = deep links, browser back = step out; token replacement with `__PAYLOAD__`
+substituted **last** and `</` escaped so a session title can't break out of the data
+block). **The page deliberately mirrors the TUI**: a lazygit-style Years/Months/Days (or
+Projects) sidebar with the same eighth-block cost bars (`formatting.cost_bar` reimplemented
+in JS) — the Years panel appears only with >1 year (like `App.years`) and its "∑ all
+years" row unscopes Months to the whole history — a tabbed detail pane whose per-scope tabs
+are the App's own tab tuples (`year_tabs`/`month_tabs`/`day_tabs`/`project_tabs`/
+`workflow_tabs`, Sources injected in the merged view), box borders with the title in the
+border line, and the TUI keymap (`j`/`k`, `Tab` cycles Years→Months→Days, `h`/`l`, `Esc`,
+`$`, `p`/`t`, `T`). Scopes are hash-routed (`#/y/2026` · `#/m/2026-06` · `#/d/…` · `#/p/…`
+· `#/s/…`); the active tab is transient state (preserved across sibling navigation when the
+new scope still has it). The `p`/`t` mode switch renders in place when already at the root
+(a hash-unchanged `go()` wouldn't fire `hashchange`). **`T` (or the header button) opens the
+Trends overlay** — a modal mirroring the TUI's 7-tab Trends over the whole range
+(`App.trend_tabs`): Daily/Weekly/Monthly bar charts (each with a `◀ ▶`/`j`/`k` pager over
+months/weeks, bars drill through to that scope and close), the Calendar heatmap (year
+pager), and Model/Provider/Source ranked bars (`providerAgg` rolls model ids to their route
+prefix, exactly like `trend_providers`). It reads the whole `W`, reacts to `$` live, and is
+transient (not hash-routed), matching the TUI overlay. **`P` opens the prices overlay** —
+the models.dev list-price reference behind `$` (`build_payload` serializes
+`App.priced_model_entries` for the flat/provider row sets + `price_token_mix`), with the
+`eff $/M` blend, per-column green→red heat (log position in the column's [min,max], the
+`_price_heat_level` rule), the `use` share bar, `~`/`—` markers, three layouts, and
+header-click sort; it is **app-wide, never range-scoped** (like the TUI). **`R` (or the
+range chip) rescopes client-side**: `ALL_W` is the full embedded set and `W = filterRange(
+ALL_W)` is the active window (presets: last N days/months, this year, custom `since..until`;
+`a` resets). Range narrows the main views and Trends but not Prices; a session deep-link
+still resolves against `ALL_W` so it opens regardless of the active window. The two lazy
+per-session extras keep their TUI trade-off: the static
+export **omits Turns/Tools** (embedding them would be a startup-wide scan), while
+`--serve` (`web.ReportServer`) exposes them as `/api/session/<id>` fetched on drill-in,
+plus `/api/reload`. The server is **deliberately single-threaded** — the stores' sqlite
+connections are bound to their creating thread — and binds 127.0.0.1 by default (the
+report leaks prompt titles/paths/spend; `--bind` warns beyond localhost). `--demo` works
+unchanged (stores transform before serialization), which is the shareable-page story:
+`opentab --demo --html demo.html`.
 
 ### Demo mode (`--demo`)
 
