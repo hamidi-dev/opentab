@@ -1953,88 +1953,188 @@ class Renderer:
         ]
         return lines
 
+    # The help overlay's keymap, grouped into sections. Each row is
+    # (key, one-line summary[, note, note, ...]); notes render as dim sub-lines under
+    # the description. draw_help wraps and colours these; kept as data so the content
+    # is one flat list to edit and is unit-testable without a screen.
+    def help_sections(self) -> list[tuple[str, list[tuple]]]:
+        return [
+            (
+                "Move around",
+                [
+                    ("p / t", "switch to the Projects / Time browse mode"),
+                    ("Tab", "cycle focus Years → Months → Days (Time mode)"),
+                    ("Shift-Tab", "cycle focus backward; at the top level, step back out"),
+                    (
+                        "Enter / +",
+                        "zoom into the selected year / month / day / project; on a "
+                        "Sessions or Projects tab, open that session / project",
+                    ),
+                    ("Esc", "step back out — session → zoom → browse"),
+                    (
+                        "h / l",
+                        "switch detail tabs",
+                        "years/months: Overview · Models · Projects · Sessions; days drop Models",
+                        "a session adds Turns (per-turn cost, OpenCode + Claude) and Tools "
+                        "(per-tool / MCP spend, OpenCode); Sources joins in the merged 'all' view",
+                    ),
+                    ("j / k", "move in the list (↑/↓ too), or scroll the detail pane"),
+                    ("g / G", "jump to the top / bottom"),
+                    (
+                        "mouse",
+                        "wheel scrolls · click selects · double-click drills · click a tab "
+                        "or a column header to sort by it (again to reverse)",
+                    ),
+                ],
+            ),
+            (
+                "Scope & filter",
+                [
+                    (
+                        "R",
+                        "set the range — all · 30d (or 30) · 2m · 1y · 2026 · 2026-05 · start..end",
+                    ),
+                    ("a", "show all time, keeping the current selection where possible"),
+                    ("s", "open the sort picker for the visible list (j/k move · Enter · Esc)"),
+                    (
+                        "f",
+                        "live filter — fuzzy over sessions (title/project/id), projects and "
+                        "Models; substring over Prices",
+                        "while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
+                    ),
+                    ("x", "clear the filter"),
+                ],
+            ),
+            (
+                "Sessions & projects",
+                [
+                    (
+                        "i / I",
+                        "ignore / unignore the selection; I reveals hidden rows so they can "
+                        "be unignored",
+                    ),
+                    (
+                        "b / B",
+                        "bookmark ★ the selected session (remembered between runs); B shows "
+                        "only bookmarks, within the active range",
+                    ),
+                    ("o", "open the selected session's / project's directory"),
+                    (
+                        "L",
+                        "launch the session in its tool — opencode --session / claude "
+                        "--resume / codex resume",
+                        "w window · s split · v vsplit · p popup · y copy command",
+                        "w/s/v/p need tmux (or a launcher hook); y copies anywhere",
+                    ),
+                    ("e", "export the current list to a CSV in the working directory"),
+                ],
+            ),
+            (
+                "Views & overlays",
+                [
+                    (
+                        "T",
+                        "Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Sources",
+                        "h/l tabs · j/k page months / weeks / years · $ what-if prices",
+                        "Calendar is a spend heat map: Enter focuses the grid, ↑↓←→ pick a "
+                        "day, Enter opens it, Esc back; +/- adjusts colour granularity",
+                    ),
+                    (
+                        "P",
+                        "model prices — eff $/M blends each model's list rates at your token "
+                        "mix (cheapest first), beside your usage share and raw rates",
+                        "p cycles the layout — flat / by vendor / by provider",
+                        "j/k select · Enter its sessions · s sort a column (or click a header) · f/r/e as usual",
+                    ),
+                    ("$", "toggle what-if prices — what unpriced usage would cost at API list"),
+                    (
+                        "c",
+                        "data-source picker (j/k move · Enter switch · Esc cancel) — OpenCode "
+                        "/ Claude / Codex / Copilot / pi / OpenClaw / all when present",
+                    ),
+                    (
+                        "C",
+                        "colour-theme picker — j/k live-preview · Enter keep · Esc revert "
+                        "(also the web report's)",
+                    ),
+                    ("D", "toggle real / demo data (demo anonymizes titles and paths)"),
+                ],
+            ),
+            (
+                "Reload & quit",
+                [
+                    ("r", "reload the database"),
+                    ("q", "quit"),
+                ],
+            ),
+        ]
+
+    _HELP_CAVEAT = (
+        "Cost is each tool's own local attribution. Subscription or credit plans "
+        "(Claude Code, Codex, Copilot) aren't priced per token, so their usage shows as "
+        "unpriced $0.00 — check your provider for the real total.",
+        "Press $ for the what-if view: that usage priced at models.dev API list — an "
+        "estimate of what you'd have paid without the subscription.",
+        "Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price). "
+        "Range, sort and the $ view persist between runs (unless --no-state). Git "
+        "worktrees fold into their main repo (--no-worktrees to keep them split).",
+    )
+
     def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         self.box(stdscr, y, 0, bottom - y, width, "Help · j/k scroll · any other key closes")
-        lines = [
-            "OpenTab is a session browser, not a fuzzy-search toy.",
-            "",
-            "Navigation:",
-            "  p / t            switch to Projects / Time browse mode",
-            "  Tab              cycle focus Years -> Months -> Days in Time mode",
-            "  Enter / +        zoom year/month/day/project detail; on the Sessions tab open the",
-            "                   selected session; on a zoom's Projects tab open that",
-            "                   project's sessions within the year/month/day",
-            "  Esc              step back out (session -> zoom -> browse)",
-            "  Shift-Tab        cycle focus backward while browsing; else step back out",
-            "  h/l              switch detail tabs (years/months: Overview/Models/Projects/",
-            "                   Sessions; days: Overview/Projects/Sessions; a session adds a",
-            "                   Turns tab -- per-turn cost over time (OpenCode + Claude) -- and",
-            "                   a Tools tab -- per-tool/MCP-server token spend, OpenCode only;",
-            "                   a Sources tab joins after Overview in the merged 'all' view)",
-            "  j/k or Up/Down   move in the current list (or scroll detail)",
-            "  mouse            wheel scrolls; click selects; double-click drills; click a tab",
-            "                   or a column header (Cost/Tokens/Title/…) to sort by it,",
-            "                   clicking it again to reverse the order",
-            "  g/G              top / bottom",
-            "  R                set range: all, 30d (or 30), 2m, 1y, 2026, 2026-05, start..end",
-            "  a                show all time, keeping the current selection when possible",
-            "  s                open the sort picker for the visible list (j/k move · Enter apply · Esc cancel)",
-            "  i                ignore/unignore the selected project or session",
-            "  I                show/hide ignored projects/sessions so they can be unignored",
-            "  b                bookmark/unbookmark the selected session for later inspection",
-            "                   (Sessions tab/session detail only); bookmarked rows wear a ★",
-            "                   and the set is remembered between runs",
-            "  B                show only bookmarked sessions everywhere, within the active",
-            "                   range (press again to show all)",
-            "  f                live filter: fuzzy over sessions (title/project/id), projects, Models; substring over Prices",
-            "                   while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
-            "  x                clear filter",
-            "  e                export the current list to a CSV in the working directory",
-            "  o                open the selected session's / project's directory",
-            "  L                launch the selected session in its tool (Sessions tab/session detail only)",
-            "                   opencode --session / claude --resume / codex resume",
-            "                   w window · s split · v vsplit · p popup · y copy command",
-            "                   w/s/v/p need tmux (or a launcher hook); y copy works anywhere",
-            "  D                toggle real/demo data on the fly (demo anonymizes titles/paths)",
-            "  c                open the data-source picker (j/k move · Enter switch · Esc cancel):",
-            "                   OpenCode / Claude Code / Codex / Copilot / pi / OpenClaw / all (when present)",
-            "  C                open the colour-theme picker (j/k live-preview · Enter keep · Esc revert; also the web report's)",
-            "  T                Trends overlay: Daily / Weekly / Monthly / Calendar / Models / Providers / Sources",
-            "                   (h/l tabs; j/k month/week/year; $ what-if prices)",
-            "                   Calendar is a spend heat map: Enter focuses the grid, then ↑↓←→",
-            "                   pick a day and Enter opens it (Esc steps back to the tabs);",
-            "                   +/- adjusts the color granularity",
-            "  P                model prices: eff $/M blends each model's list rates at your",
-            "                   token mix (cheapest first) beside your usage share and raw rates;",
-            "                   p cycles the layout — flat / by vendor / by provider; j/k select,",
-            "                   Enter its sessions, s sorts a column (or click a header), f/r/e as usual",
-            "  $                toggle what-if prices (what unpriced usage would cost at API list)",
-            "  r                reload database",
-            "  q                quit",
-            "",
-            "Cost caveat:",
-            "  Cost is OpenCode's local attribution. Subscription or credit plans",
-            "  (Claude Code, Codex, Copilot) aren't priced per token, so their usage",
-            "  shows as unpriced $0.00 -- check your provider/subscription for the total.",
-            "  Press $ for the what-if view: that usage priced at API list prices",
-            "  (models.dev) -- an estimate of what you'd have paid without the subscription.",
-            "  Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price).",
-            "  Range, sort, and the $ what-if view are remembered between runs (--no-state off).",
-            "  Git worktrees fold into their main repo (--no-worktrees to keep them split).",
-            "",
-            "Press any other key to close help.",
-        ]
+        key_x = 2
+        key_w = 11
+        desc_x = key_x + key_w + 1
+        desc_w = max(12, width - desc_x - 2)
+        rule_end = width - 3
+
+        head = curses.color_pair(6) | curses.A_BOLD
+        rule = curses.color_pair(4)
+        key_attr = curses.color_pair(2) | curses.A_BOLD
+        dim = curses.color_pair(1)
+
+        # Flatten the sections into per-line segment lists ([(x, text, attr), …]); a
+        # blank line is []. Scrolling then just slices this list.
+        render: list[list[tuple[int, str, int]]] = []
+
+        def header(title: str) -> None:
+            seg = [(key_x, title, head)]
+            rule_x = key_x + len(title) + 1
+            if rule_end > rule_x:
+                seg.append((rule_x, "─" * (rule_end - rule_x), rule))
+            render.append(seg)
+
+        def dim_wrapped(text: str) -> None:
+            for piece in textwrap.wrap(text, desc_w) or [""]:
+                render.append([(desc_x, piece, dim)])
+
+        render.append(
+            [(key_x, "OpenTab — browse AI-coding spend by month / day / project / session.", 0)]
+        )
+        render.append([])
+        for title, rows in self.help_sections():
+            header(title)
+            for row in rows:
+                key, desc, notes = row[0], row[1], row[2:]
+                wrapped = textwrap.wrap(desc, desc_w) or [""]
+                render.append([(key_x, key, key_attr), (desc_x, wrapped[0], 0)])
+                for cont in wrapped[1:]:
+                    render.append([(desc_x, cont, dim)])
+                for note in notes:
+                    dim_wrapped("· " + note)
+            render.append([])
+        header("Reading the numbers")
+        for para in self._HELP_CAVEAT:
+            for piece in textwrap.wrap(para, width - key_x - 3) or [""]:
+                render.append([(key_x, piece, dim)])
+
         visible = max(1, bottom - y - 3)
-        scroll = max(0, min(self.app.help_scroll, max(0, len(lines) - visible)))
+        scroll = max(0, min(self.app.help_scroll, max(0, len(render) - visible)))
         self.app.help_scroll = scroll
-        for offset, line in enumerate(lines[scroll : scroll + visible]):
-            self.write(
-                stdscr,
-                y + 2 + offset,
-                2,
-                shorten(line, width - 4),
-                curses.color_pair(4) if line.endswith(":") else curses.A_NORMAL,
-            )
+        for offset, segments in enumerate(render[scroll : scroll + visible]):
+            row_y = y + 2 + offset
+            for sx, text, attr in segments:
+                self.write(stdscr, row_y, sx, text, attr)
 
     def price_intro_lines(self) -> list[str]:
         # The fixed header block above the P overlay's price table: where the rates

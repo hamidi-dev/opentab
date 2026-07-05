@@ -1396,6 +1396,29 @@ def test_jk_scrolls_the_help_overlay():
     assert not app.help
 
 
+def test_help_sections_group_and_cover_the_keymap():
+    # The help overlay is grouped; help_sections() is the content source of truth
+    # (draw_help only wraps/colours it). Lock the sections and that the load-bearing
+    # bindings are documented.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    sections = ot.Renderer(app).help_sections()
+    assert [t for t, _ in sections] == [
+        "Move around",
+        "Scope & filter",
+        "Sessions & projects",
+        "Views & overlays",
+        "Reload & quit",
+    ]
+    keys = set()
+    for _title, rows in sections:
+        for row in rows:
+            assert len(row) >= 2 and row[0] and row[1]  # (key, summary, *notes)
+            assert all(isinstance(note, str) and note for note in row[2:])
+            keys.add(row[0])
+    for binding in ("p / t", "Enter / +", "R", "f", "b / B", "L", "T", "P", "$", "c", "C", "q"):
+        assert binding in keys, f"missing help entry for {binding}"
+
+
 def test_trends_overlay_toggles_and_switches_tabs():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     assert not app.trends

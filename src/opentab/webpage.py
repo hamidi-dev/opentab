@@ -43,7 +43,7 @@ _SHELL = """<!DOCTYPE html>
 </head>
 <body>
 <header id="hdr">
-  <div class="brand"><a href="#/">opentab</a><span class="cur">▊</span><span class="sub">spend report</span></div>
+  <div class="brand"><a href="#/">opentab</a><span class="sub">spend report</span></div>
   <div id="hchips" class="chips"></div>
   <div id="hright"></div>
 </header>
@@ -96,9 +96,7 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
 .brand{font-size:19px;font-weight:700;letter-spacing:.5px;white-space:nowrap}
 .brand a{color:var(--ink)}
 .brand a:hover{color:var(--accent-bright);text-decoration:none}
-.brand .cur{color:var(--accent);animation:blink 1.2s steps(2,start) infinite;margin-left:1px}
 .brand .sub{color:var(--mut);font-size:12px;font-weight:400;margin-left:10px}
-@keyframes blink{to{visibility:hidden}}
 .chips{display:flex;gap:6px;flex-wrap:wrap;flex:1}
 .chip{border:1px solid var(--line);border-radius:20px;padding:1px 10px;font-size:11px;color:var(--ink2);background:var(--panel)}
 .chip b{color:var(--ink);font-weight:600}
