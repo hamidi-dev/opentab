@@ -1900,6 +1900,78 @@ def test_bookmarked_rows_wear_a_star_in_the_sessions_picker():
     assert not any("★" in ln and "plain" in ln for ln in lines)  # the other doesn't
 
 
+def _paint_sessions_picker(app, width=100):
+    screen = FakeScreen(24, width)
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        app.renderer.draw_sessions_picker(screen, 0, 0, 24, width)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    return screen_text(screen).splitlines()
+
+
+def test_sessions_picker_shows_a_project_column_in_time_mode():
+    app = app_with(
+        [
+            workflow("s1", "2026-06-01 12:00:00", title="first", directory="/tmp/alpha"),
+            workflow("s2", "2026-06-02 12:00:00", title="second", directory="/tmp/beta"),
+        ]
+    )
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Sessions")
+    lines = _paint_sessions_picker(app)
+    header = next(ln for ln in lines if "Title" in ln)
+    assert "Project" in header  # the column header sits between Subs and Title
+    assert header.index("Subs") < header.index("Project") < header.index("Title")
+    assert any("alpha" in ln and "first" in ln for ln in lines)  # each row names its project
+    assert any("beta" in ln and "second" in ln for ln in lines)
+
+
+def test_sessions_picker_hides_the_project_column_when_project_scoped():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", directory="/tmp/alpha"),
+            workflow("b", "2026-06-02 12:00:00", directory="/tmp/alpha"),
+        ]
+    )
+    # A zoomed project in projects mode: every session is that project's already.
+    app.browse_mode = "projects"
+    app.view = "zoom"
+    app.tab = app.project_tabs.index("Sessions")
+    lines = _paint_sessions_picker(app)
+    header = next(ln for ln in lines if "Title" in ln)
+    assert "Project" not in header
+    # Same for a Projects-tab drill-in on a zoomed month (time mode + zoom_project).
+    app2 = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/alpha")])
+    app2.focus = "months"
+    app2.view = "zoom"
+    app2.tab = app2.month_tabs.index("Sessions")
+    app2.zoom_project = "/tmp/alpha"
+    lines2 = _paint_sessions_picker(app2)
+    header2 = next(ln for ln in lines2 if "Title" in ln)
+    assert "Project" not in header2
+
+
+def test_sessions_sort_by_project_groups_sessions_by_root():
+    app = app_with(
+        [
+            workflow("b-cheap", "2026-06-01 12:00:00", cost=1, directory="/tmp/beta"),
+            workflow("a", "2026-06-02 12:00:00", cost=2, directory="/tmp/alpha"),
+            workflow("b-costly", "2026-06-03 12:00:00", cost=9, directory="/tmp/beta"),
+        ]
+    )
+    app.sort_by = "project"
+    rows = app.sorted_workflows(app.loaded)
+    # a->z by project, costliest session first within each project.
+    assert [w.id for w in rows] == ["a", "b-costly", "b-cheap"]
+    app.sort_reverse = True  # a header re-click flips to z->a
+    rows = app.sorted_workflows(app.loaded)
+    assert [w.id for w in rows] == ["b-cheap", "b-costly", "a"]
+
+
 def test_what_if_price_view_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.show_api_prices = True

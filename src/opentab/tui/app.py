@@ -107,7 +107,7 @@ class App:
     month_tabs = ("Overview", "Models", "Projects", "Sessions")
     year_tabs = ("Overview", "Models", "Projects", "Sessions")
     project_tabs = ("Overview", "Models", "Sessions")
-    sort_options = ("cost", "tokens", "date", "subagents", "title")
+    sort_options = ("cost", "tokens", "date", "subagents", "project", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
     # The P overlay's price table sorts by model name, the blended eff column, your
@@ -1999,6 +1999,14 @@ class App:
             return sorted(rows, key=lambda item: (item.subagents, item.total_tokens), reverse=desc)
         if sort_by == "title":
             return sorted(rows, key=lambda item: item.title.lower(), reverse=desc)
+        if sort_by == "project":
+            # Groups a mixed session list by project (costliest session first within
+            # each) -- the sessions-tab way to eyeball one project's sessions together.
+            return sorted(
+                rows,
+                key=lambda item: (self.project_root(item.directory).lower(), -item.total_cost),
+                reverse=desc,
+            )
         return sorted(rows, key=lambda item: item.created_at, reverse=desc)
 
     def zoom_scope_workflows(self, include_ignored: bool = False) -> list[Workflow]:

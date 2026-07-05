@@ -58,7 +58,8 @@ class Renderer:
 
     # Ordered (sort_key, label) for the clickable headers of the sortable picker
     # lists, matching the labels the *_header builders emit. The session picker
-    # prepends a varying date column (Started/Time), so it isn't listed here.
+    # prepends a varying date column (Started/Time) and, in multi-project views,
+    # inserts a Project column before Title, so neither is listed here.
     SESSION_SORT_COLUMNS = (
         ("cost", "Cost"),
         ("tokens", "Tokens"),
@@ -683,6 +684,18 @@ class Renderer:
     def ignored_session_tag(self, workflow: Workflow) -> str:
         return "ignored: " if workflow.id in self.ignored_sessions else ""
 
+    def session_project(self, workflow: Workflow) -> str:
+        # A session's project as its root directory's last path segment -- compact
+        # enough for a fixed column (worktrees already fold into their parent repo).
+        root = self.project_root(workflow.directory)
+        return root.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or root
+
+    def sessions_span_projects(self) -> bool:
+        # Whether the sessions picker can mix projects: true in time mode without a
+        # Projects-tab drill-in. Gates the Project column, which would otherwise
+        # repeat the one project the view is already scoped to.
+        return self.browse_mode != "projects" and not self.zoom_project
+
     def src_col(self, workflow: Workflow | None = None) -> str:
         # The "Src" column in the session tables (None = the header cell), only
         # when sources are merged — the one view where a row's origin isn't implied.
@@ -739,13 +752,22 @@ class Renderer:
         sessions = self.current_sessions()
         cy = y + 3
         date_label = self.session_date_label()
+        # The Project column only where the list can mix projects; sized to the
+        # longest name on show (the _model_table pattern), capped so titles keep room.
+        proj_w = 0
+        if self.sessions_span_projects():
+            proj_head = self.sort_heading("project", "Project")
+            longest = max((len(self.session_project(wf)) for wf in sessions), default=0)
+            proj_w = max(len(proj_head), min(20, longest))
         header = (
             f"  {self.sort_heading('date', date_label):<10} "
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
             f"{self.sort_heading('subagents', 'Subs'):>6}  "
-            f"{self.sort_heading('title', 'Title')}"
         )
+        if proj_w:
+            header += f"{self.sort_heading('project', 'Project'):<{proj_w}}  "
+        header += self.sort_heading("title", "Title")
         self.write(
             stdscr,
             cy,
@@ -753,11 +775,14 @@ class Renderer:
             shorten(header, w - 4),
             curses.color_pair(4) | curses.A_BOLD,
         )
+        sort_columns = [("date", date_label), *self.SESSION_SORT_COLUMNS]
+        if proj_w:
+            sort_columns.insert(-1, ("project", "Project"))  # between Subs and Title
         self._register_sort_header(
             cy,
             x + 2,
             header,
-            (("date", date_label), *self.SESSION_SORT_COLUMNS),
+            sort_columns,
             "session",
             w - 4,
         )
@@ -776,10 +801,10 @@ class Renderer:
             started = self.session_started(wf)
             cost = money(wf.total_cost)
             tok = human_tokens(wf.total_tokens)
-            text = (
-                f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  "
-                f"{self.source_tag(wf)}{self.bookmark_tag(wf)}{self.ignored_session_tag(wf)}{wf.title}"
-            )
+            text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  "
+            if proj_w:
+                text += f"{shorten(self.session_project(wf), proj_w):<{proj_w}}  "
+            text += f"{self.source_tag(wf)}{self.bookmark_tag(wf)}{self.ignored_session_tag(wf)}{wf.title}"
             if start + off == idx:
                 self.write(
                     stdscr,
