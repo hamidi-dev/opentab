@@ -22,6 +22,8 @@ from __future__ import annotations
 import html
 import json
 
+from opentab import themes
+
 _FAVICON = (
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E"
     "%3Crect width='16' height='16' rx='3' fill='%23e0a458'/%3E"
@@ -34,7 +36,7 @@ _SHELL = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <title>__TITLE__</title>
 <link rel="icon" href="__FAVICON__">
 <style>__CSS__</style>
@@ -57,6 +59,7 @@ _SHELL = """<!DOCTYPE html>
 <div id="trends" hidden></div>
 <div id="prices" hidden></div>
 <div id="rangepick" hidden></div>
+<div id="themepick" hidden></div>
 <div id="tip" hidden></div>
 <script type="application/json" id="opentab-data">__PAYLOAD__</script>
 <script>__JS__</script>
@@ -65,46 +68,51 @@ _SHELL = """<!DOCTYPE html>
 """
 
 _CSS = r"""
+/* Role tokens (not hues): a theme fills these slots. The values here are the
+   default "opentab" theme so the page renders before the theme JS runs; applyTheme
+   overrides them on :root at load. See the THEMES map in the script. */
 :root{
-  --bg:#0b0c0f; --panel:#12141a; --panel2:#181b23; --line:#242836; --line2:#1b1e28;
+  --bg:#0b0c0f; --bg-glow:#151823; --panel:#12141a; --panel2:#181b23;
+  --line:#242836; --line2:#1b1e28; --axis:#383c48;
   --ink:#dcdad2; --ink2:#9b998f; --mut:#6a695f;
-  --amber:#e0a458; --amber-hi:#ffc06e; --green:#62d391; --red:#e07070;
+  --accent:#e0a458; --accent-bright:#ffc06e; --good:#62d391; --bad:#e07070;
+  --scan:rgba(255,255,255,.014); --scrim:rgba(6,7,9,.72);
   --mono:ui-monospace,"SF Mono",Menlo,"Cascadia Code","JetBrains Mono",Consolas,"DejaVu Sans Mono",monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html{scrollbar-color:#333845 var(--bg)}
+html{scrollbar-color:var(--line) var(--bg)}
 body{
   font-family:var(--mono);font-size:13px;line-height:1.5;color:var(--ink);
-  background:radial-gradient(1100px 480px at 50% -120px,#151823 0%,var(--bg) 62%) fixed var(--bg);
+  background:radial-gradient(1100px 480px at 50% -120px,var(--bg-glow) 0%,var(--bg) 62%) fixed var(--bg);
   max-width:1560px;margin:0 auto;padding:16px 24px 30px;
 }
 body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;
-  background:repeating-linear-gradient(0deg,rgba(255,255,255,.014) 0 1px,transparent 1px 3px)}
-a{color:var(--amber);text-decoration:none}
-a:hover{color:var(--amber-hi);text-decoration:underline}
+  background:repeating-linear-gradient(0deg,var(--scan) 0 1px,transparent 1px 3px)}
+a{color:var(--accent);text-decoration:none}
+a:hover{color:var(--accent-bright);text-decoration:underline}
 
 /* header */
 #hdr{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:4px 0 14px}
 .brand{font-size:19px;font-weight:700;letter-spacing:.5px;white-space:nowrap}
 .brand a{color:var(--ink)}
-.brand a:hover{color:var(--amber-hi);text-decoration:none}
-.brand .cur{color:var(--amber);animation:blink 1.2s steps(2,start) infinite;margin-left:1px}
+.brand a:hover{color:var(--accent-bright);text-decoration:none}
+.brand .cur{color:var(--accent);animation:blink 1.2s steps(2,start) infinite;margin-left:1px}
 .brand .sub{color:var(--mut);font-size:12px;font-weight:400;margin-left:10px}
 @keyframes blink{to{visibility:hidden}}
 .chips{display:flex;gap:6px;flex-wrap:wrap;flex:1}
 .chip{border:1px solid var(--line);border-radius:20px;padding:1px 10px;font-size:11px;color:var(--ink2);background:var(--panel)}
 .chip b{color:var(--ink);font-weight:600}
-.chip.demo{color:var(--amber);border-color:var(--amber)}
+.chip.demo{color:var(--accent);border-color:var(--accent)}
 #hright{display:flex;align-items:center;gap:8px;margin-left:auto}
 .badge{font-size:10px;letter-spacing:.12em;text-transform:uppercase;border:1px solid;border-radius:3px;padding:2px 8px}
-.badge.est{color:var(--amber);border-color:rgba(224,164,88,.55);background:rgba(224,164,88,.08)}
-.badge.sub{color:var(--red);border-color:rgba(224,112,112,.5);background:rgba(224,112,112,.07)}
+.badge.est{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 55%,transparent);background:color-mix(in srgb,var(--accent) 9%,transparent)}
+.badge.sub{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 50%,transparent);background:color-mix(in srgb,var(--bad) 8%,transparent)}
 .seg{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
 .seg button{font:inherit;font-size:11px;padding:3px 10px;border:0;background:var(--panel);color:var(--ink2);cursor:pointer}
-.seg button.on{background:var(--amber);color:#141009;font-weight:700}
+.seg button.on{background:var(--accent);color:#141009;font-weight:700}
 .seg button:not(.on):hover{color:var(--ink)}
 .hbtn{font:inherit;font-size:11px;padding:3px 10px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink2);cursor:pointer}
-.hbtn:hover{color:var(--amber);border-color:var(--amber)}
+.hbtn:hover{color:var(--accent);border-color:var(--accent)}
 
 /* app layout: lazygit-style sidebar + detail pane */
 #app{display:grid;grid-template-columns:302px minmax(0,1fr);gap:16px;align-items:start}
@@ -121,9 +129,9 @@ a:hover{color:var(--amber-hi);text-decoration:underline}
   padding:14px 14px 10px;margin:10px 0 16px}
 .pane>h3{position:absolute;top:-9px;left:10px;background:var(--bg);padding:0 7px;
   font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--ink2);font-weight:600}
-.pane>h3::before{content:"\258d";color:var(--amber);margin-right:6px}
-.pane.focus{border-color:rgba(224,164,88,.6)}
-.pane.focus>h3{color:var(--amber)}
+.pane>h3::before{content:"\258d";color:var(--accent);margin-right:6px}
+.pane.focus{border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
+.pane.focus>h3{color:var(--accent)}
 .hint{color:var(--mut);font-size:12px}
 
 /* sidebar lists */
@@ -131,26 +139,26 @@ a:hover{color:var(--amber-hi);text-decoration:underline}
 .row{display:flex;align-items:baseline;gap:8px;padding:2px 8px;border-radius:3px;cursor:pointer;
   font-size:12.5px;white-space:nowrap}
 .row:hover{background:var(--panel2)}
-.row.sel{background:rgba(224,164,88,.13);box-shadow:inset 2px 0 var(--amber)}
+.row.sel{background:color-mix(in srgb,var(--accent) 14%,transparent);box-shadow:inset 2px 0 var(--accent)}
 .row .lab{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
-.row.sel .lab{color:var(--amber-hi)}
+.row.sel .lab{color:var(--accent-bright)}
 .row .n{color:var(--mut);font-size:11px}
-.row .cost{color:var(--green)}
+.row .cost{color:var(--good)}
 .row .cost.zero{color:var(--mut)}
-.row .tb{color:var(--amber);opacity:.9;white-space:pre;font-size:11px}
+.row .tb{color:var(--accent);opacity:.9;white-space:pre;font-size:11px}
 .mode{display:flex;gap:2px;margin:0 0 12px}
 .mode button{flex:1;font:inherit;font-size:11px;padding:3px 0;border:1px solid var(--line);
   background:var(--panel);color:var(--ink2);cursor:pointer}
 .mode button:first-child{border-radius:4px 0 0 4px}
 .mode button:last-child{border-radius:0 4px 4px 0}
-.mode button.on{border-color:var(--amber);color:var(--amber)}
+.mode button.on{border-color:var(--accent);color:var(--accent)}
 
 /* detail tab bar -- the TUI's Overview │ Models │ Projects │ Sessions */
 #tabbar{display:flex;gap:2px;flex-wrap:wrap;align-items:center;border:1px solid var(--line);
   border-radius:6px;background:var(--panel);padding:4px;margin:10px 0 12px}
 #tabbar button{font:inherit;font-size:12px;padding:4px 14px;border:0;border-radius:4px;
   background:none;color:var(--ink2);cursor:pointer}
-#tabbar button.on{background:var(--amber);color:#141009;font-weight:700}
+#tabbar button.on{background:var(--accent);color:#141009;font-weight:700}
 #tabbar button:not(.on):hover{color:var(--ink)}
 #tabbar .note{margin-left:auto;color:var(--mut);font-size:11px;padding:0 8px}
 
@@ -170,14 +178,14 @@ a:hover{color:var(--amber-hi);text-decoration:underline}
 button.showall{display:block;width:100%;font:inherit;font-size:11px;margin-top:6px;
   padding:5px;border:1px dashed var(--line);border-radius:4px;background:none;
   color:var(--mut);cursor:pointer}
-button.showall:hover{color:var(--amber);border-color:var(--amber)}
+button.showall:hover{color:var(--accent);border-color:var(--accent)}
 
 /* stat tiles */
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:10px 0 16px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 14px}
 .tile .k{font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:var(--mut)}
 .tile .v{font-size:22px;font-weight:700;margin-top:2px;color:var(--ink)}
-.tile .v.money{color:var(--green)}
+.tile .v.money{color:var(--good)}
 .tile .n{font-size:11px;color:var(--mut)}
 
 /* tables */
@@ -186,41 +194,41 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}
 th{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);font-weight:600;
   text-align:left;padding:4px 10px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
 th:hover{color:var(--ink2)}
-th.sorted{color:var(--amber)}
+th.sorted{color:var(--accent)}
 td{padding:4.5px 10px;border-bottom:1px solid var(--line2);white-space:nowrap;vertical-align:baseline}
 tr:last-child td{border-bottom:0}
 th.r,td.r{text-align:right}
 td.grow{white-space:normal;overflow-wrap:anywhere;min-width:160px}
 tbody tr.rowlink{cursor:pointer}
 tbody tr.rowlink:hover{background:var(--panel2)}
-tbody tr.rowlink:hover td:first-child{box-shadow:inset 2px 0 var(--amber)}
-.m{color:var(--green)}
-.m-zero{color:var(--red)}
+tbody tr.rowlink:hover td:first-child{box-shadow:inset 2px 0 var(--accent)}
+.m{color:var(--good)}
+.m-zero{color:var(--bad)}
 .mut{color:var(--mut)}
 .dim{color:var(--ink2)}
 .bar{display:inline-block;width:86px;height:7px;border-radius:2px;background:var(--line2);
   vertical-align:baseline;margin-left:8px;position:relative;overflow:hidden}
-.bar i{position:absolute;inset:0;right:auto;width:var(--w);background:var(--amber);border-radius:2px}
+.bar i{position:absolute;inset:0;right:auto;width:var(--w);background:var(--accent);border-radius:2px}
 input.filter{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);
   border-radius:4px;padding:4px 10px;width:260px;max-width:100%;margin-bottom:10px}
-input.filter:focus{outline:none;border-color:var(--amber)}
+input.filter:focus{outline:none;border-color:var(--accent)}
 .ychips{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
 .ychips button{font:inherit;font-size:11px;padding:2px 10px;border:1px solid var(--line);
   border-radius:4px;background:var(--panel);color:var(--ink2);cursor:pointer}
-.ychips button.on{border-color:var(--amber);color:var(--amber)}
+.ychips button.on{border-color:var(--accent);color:var(--accent)}
 
 /* charts */
 .chart{width:100%;height:auto;display:block}
 .chart text{font-family:var(--mono)}
 .bargroup{cursor:pointer}
 .bargroup rect.hit{fill:transparent}
-.bargroup:hover path{fill:var(--amber-hi)}
+.bargroup:hover path{fill:var(--accent-bright)}
 .cal-wrap{overflow-x:auto}
 .cal-legend{display:flex;align-items:center;gap:4px;color:var(--mut);font-size:11px;margin-top:8px}
 .cal-legend span{width:11px;height:11px;border-radius:2px;display:inline-block}
 
 /* turns */
-tr.prompt-row td{color:var(--amber);padding-top:9px;font-weight:600}
+tr.prompt-row td{color:var(--accent);padding-top:9px;font-weight:600}
 tr.prompt-row td:first-child{white-space:normal;overflow-wrap:anywhere}
 td.indent{color:var(--ink2)}
 
@@ -230,7 +238,7 @@ td.indent{color:var(--ink2)}
   box-shadow:0 4px 16px rgba(0,0,0,.5);max-width:320px}
 
 /* Trends overlay (T) -- the TUI's full-screen Trends, as a modal */
-#trends{position:fixed;inset:0;z-index:200;background:rgba(6,7,9,.72);
+#trends{position:fixed;inset:0;z-index:200;background:var(--scrim);
   display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
 #trends[hidden]{display:none}
 .tr-panel{position:relative;width:100%;max-width:1180px;background:var(--panel);
@@ -239,18 +247,18 @@ td.indent{color:var(--ink2)}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 .tr-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
 .tr-head h3{font-size:12px;text-transform:uppercase;letter-spacing:.14em;color:var(--ink)}
-.tr-head h3::before{content:"\258d";color:var(--amber);margin-right:7px}
+.tr-head h3::before{content:"\258d";color:var(--accent);margin-right:7px}
 .tr-tabs{display:flex;gap:2px;flex-wrap:wrap;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:3px}
 .tr-tabs button{font:inherit;font-size:12px;padding:3px 12px;border:0;border-radius:4px;background:none;color:var(--ink2);cursor:pointer}
-.tr-tabs button.on{background:var(--amber);color:#141009;font-weight:700}
+.tr-tabs button.on{background:var(--accent);color:#141009;font-weight:700}
 .tr-tabs button:not(.on):hover{color:var(--ink)}
 .tr-close{margin-left:auto;font:inherit;font-size:12px;padding:3px 11px;border:1px solid var(--line);border-radius:4px;
   background:var(--bg);color:var(--ink2);cursor:pointer}
-.tr-close:hover{color:var(--amber);border-color:var(--amber)}
+.tr-close:hover{color:var(--accent);border-color:var(--accent)}
 .tr-nav{display:flex;align-items:center;gap:10px;margin-bottom:8px;color:var(--ink2);font-size:12.5px}
 .tr-nav button{font:inherit;font-size:13px;line-height:1;padding:2px 9px;border:1px solid var(--line);border-radius:4px;
   background:var(--panel2);color:var(--ink2);cursor:pointer}
-.tr-nav button:hover:not(:disabled){color:var(--amber);border-color:var(--amber)}
+.tr-nav button:hover:not(:disabled){color:var(--accent);border-color:var(--accent)}
 .tr-nav button:disabled{opacity:.35;cursor:default}
 .tr-nav .lbl{color:var(--ink);font-weight:600}
 .tr-nav .pos{color:var(--mut);font-size:11px}
@@ -258,7 +266,7 @@ td.indent{color:var(--ink2)}
 .tr-chart text{font-family:var(--mono)}
 .tr-chart .bg{cursor:pointer}
 .tr-chart .bg rect.hit{fill:transparent}
-.tr-chart .bg:hover path{fill:var(--amber-hi)}
+.tr-chart .bg:hover path{fill:var(--accent-bright)}
 .tr-summary{display:flex;gap:22px;flex-wrap:wrap;color:var(--ink2);font-size:12px;margin-top:6px}
 .tr-summary b{color:var(--ink)}
 .tr-note{color:var(--mut);font-size:11px;margin-top:4px}
@@ -270,44 +278,56 @@ td.indent{color:var(--ink2)}
 .rank td.l{text-align:left;white-space:normal;overflow-wrap:anywhere}
 .rank tr:last-child td{border-bottom:0}
 .rank .hb{position:relative;width:100%;min-width:120px;height:14px;background:var(--line2);border-radius:2px;overflow:hidden}
-.rank .hb i{position:absolute;inset:0;right:auto;width:var(--w);background:var(--amber);border-radius:2px}
+.rank .hb i{position:absolute;inset:0;right:auto;width:var(--w);background:var(--accent);border-radius:2px}
 .rank td.bar{width:38%}
 
 /* Prices overlay (P) -- the models.dev list-price reference behind $ */
-#prices,#rangepick{position:fixed;inset:0;z-index:200;background:rgba(6,7,9,.72);
+#prices,#rangepick{position:fixed;inset:0;z-index:200;background:var(--scrim);
   display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
 #prices[hidden],#rangepick[hidden]{display:none}
 .pr-intro{color:var(--ink2);font-size:12px;margin:2px 0 12px;line-height:1.5}
 .pr-views{display:flex;gap:2px;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:3px}
 .pr-views button{font:inherit;font-size:12px;padding:3px 12px;border:0;border-radius:4px;background:none;color:var(--ink2);cursor:pointer}
-.pr-views button.on{background:var(--amber);color:#141009;font-weight:700}
+.pr-views button.on{background:var(--accent);color:#141009;font-weight:700}
 .pr-views button:not(.on):hover{color:var(--ink)}
 table.prices{width:100%;border-collapse:collapse;font-size:12.5px}
 table.prices th{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);font-weight:600;
   text-align:right;padding:4px 9px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
 table.prices th.l{text-align:left}
 table.prices th:hover{color:var(--ink2)}
-table.prices th.sorted{color:var(--amber)}
+table.prices th.sorted{color:var(--accent)}
 table.prices td{padding:4px 9px;text-align:right;white-space:nowrap;border-bottom:1px solid var(--line2);font-variant-numeric:tabular-nums}
 table.prices td.l{text-align:left;white-space:normal;overflow-wrap:anywhere}
 table.prices tr:last-child td{border-bottom:0}
-table.prices tr.grp td{color:var(--amber);font-weight:600;padding-top:9px;border-bottom:0}
+table.prices tr.grp td{color:var(--accent);font-weight:600;padding-top:9px;border-bottom:0}
 table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .pr-use{display:inline-flex;align-items:center;gap:6px;justify-content:flex-end}
 .pr-use .hb{position:relative;width:64px;height:8px;background:var(--line2);border-radius:2px;overflow:hidden;display:inline-block}
-.pr-use .hb i{position:absolute;inset:0;right:auto;width:var(--w);background:var(--amber);border-radius:2px}
+.pr-use .hb i{position:absolute;inset:0;right:auto;width:var(--w);background:var(--accent);border-radius:2px}
 /* range picker */
 .rp-panel{max-width:520px}
 .rp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin:6px 0 14px}
 .rp-grid button{font:inherit;font-size:12px;padding:7px 6px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--ink);cursor:pointer}
-.rp-grid button.on{border-color:var(--amber);color:var(--amber)}
-.rp-grid button:hover{border-color:var(--amber)}
+.rp-grid button.on{border-color:var(--accent);color:var(--accent)}
+.rp-grid button:hover{border-color:var(--accent)}
 .rp-custom{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--line2);padding-top:12px;color:var(--ink2);font-size:12px}
 .rp-custom input{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:4px;padding:4px 8px}
-.rp-custom input:focus{outline:none;border-color:var(--amber)}
-.rp-custom button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--amber);border-radius:4px;background:var(--amber);color:#141009;font-weight:700;cursor:pointer}
+.rp-custom input:focus{outline:none;border-color:var(--accent)}
+.rp-custom button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--accent);border-radius:4px;background:var(--accent);color:#141009;font-weight:700;cursor:pointer}
 .chip.click{cursor:pointer}
-.chip.click:hover{border-color:var(--amber);color:var(--ink)}
+.chip.click:hover{border-color:var(--accent);color:var(--ink)}
+/* theme picker */
+#themepick{position:fixed;inset:0;z-index:200;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
+#themepick[hidden]{display:none}
+.th-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+@media (max-width:520px){.th-grid{grid-template-columns:1fr}}
+.th-row{display:flex;align-items:center;gap:10px;font:inherit;font-size:12.5px;padding:8px 11px;border:1px solid var(--line);border-radius:6px;background:var(--panel2);color:var(--ink);cursor:pointer;text-align:left}
+.th-row:hover{border-color:var(--accent)}
+.th-row.on{border-color:var(--accent);color:var(--accent)}
+.th-sw{display:inline-flex;gap:3px;flex:none}
+.th-sw i{width:13px;height:13px;border-radius:3px;display:inline-block;box-shadow:inset 0 0 0 1px rgba(128,128,128,.25)}
+.th-name{flex:1;overflow:hidden;text-overflow:ellipsis}
+.th-mode{color:var(--mut);font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;flex:none}
 
 /* session meta */
 .meta{display:grid;grid-template-columns:auto 1fr;gap:2px 16px;font-size:12px;margin-bottom:2px}
@@ -324,6 +344,46 @@ const ALL_W = DATA.workflows;      // every embedded session
 let W = ALL_W;                     // the active, range-filtered set (R rescopes it)
 let RANGE = { kind: 'all', label: META.range };  // client-side date scope
 let MODE = META.startApi ? 'api' : 'real';
+
+/* ---------- themes ---------- */
+// The palettes are the single source of truth in opentab/themes.py, injected here
+// as JSON (so the web report and the curses TUI never drift). Each entry: `css`
+// fills the :root role slots (applyTheme writes them live, so all HTML re-themes
+// via CSS vars), `heat`/`priceHeat` are the ramps the SVG charts read through TH,
+// and `dark` drives the scanline/scrim/color-scheme.
+const THEMES = __THEMES__;
+let TH = THEMES.opentab;             // the active theme object (charts read it)
+const thc = k => TH.css[k];          // theme color for an SVG chart slot
+const CUR = { theme: 'opentab' };
+function applyTheme(id) {
+  const t = THEMES[id] ? id : 'opentab';
+  TH = THEMES[t]; CUR.theme = t;
+  const r = document.documentElement, st = r.style;
+  for (const k in TH.css) st.setProperty('--' + k, TH.css[k]);
+  st.setProperty('--scan', TH.dark ? 'rgba(255,255,255,.014)' : 'rgba(0,0,0,.022)');
+  st.setProperty('--scrim', TH.dark ? 'rgba(6,7,9,.72)' : 'rgba(60,62,74,.4)');
+  st.colorScheme = TH.dark ? 'dark' : 'light';
+  r.setAttribute('data-theme', t);
+  try { localStorage.setItem('opentab-theme', t); } catch (e) { /* file:// may block storage */ }
+}
+let THEMEPICK = false;
+function openTheme() { THEMEPICK = true; renderTheme(); }
+function closeTheme() { THEMEPICK = false; renderTheme(); }
+function renderTheme() {
+  const host = document.getElementById('themepick');
+  if (!THEMEPICK) { host.hidden = true; host.textContent = ''; return; }
+  host.hidden = false; host.textContent = '';
+  const rows = Object.entries(THEMES).map(([id, t]) => h('button', {
+    class: 'th-row' + (id === CUR.theme ? ' on' : ''), onclick: () => { applyTheme(id); render(false); },
+  }, h('span', { class: 'th-sw' }, ['bg', 'panel', 'accent', 'good', 'bad'].map(k => h('i', { style: 'background:' + t.css[k] }))),
+    h('span', { class: 'th-name' }, t.name), h('span', { class: 'th-mode' }, t.dark ? 'dark' : 'light')));
+  const panel = h('div', { class: 'tr-panel rp-panel' },
+    h('div', { class: 'tr-head' }, h('h3', null, 'Theme'), h('button', { class: 'tr-close', style: 'margin-left:auto', onclick: closeTheme }, 'esc ✕')),
+    h('div', { class: 'th-grid' }, rows));
+  panel.addEventListener('click', e => e.stopPropagation());
+  host.appendChild(panel);
+}
+
 let TAB = 'Overview';       // active detail tab (transient, resets on scope change)
 let BROWSE = 'time';        // sidebar mode: 'time' (Months/Days) | 'projects', like the TUI
 let FOCUS = 'months';       // which sidebar list j/k drives
@@ -540,11 +600,11 @@ function barChart(rows) {
     'aria-label': 'spend by month' });
   for (const f of [0.5, 1]) {
     const y = padT + (1 - f) * plotH;
-    svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: '#242836', 'stroke-width': 1 }));
+    svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: thc('line'), 'stroke-width': 1 }));
     // the peak bar carries its own direct label, so only the midline gets an axis label
-    if (f !== 1) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 10, fill: '#6a695f', text: moneyLabel(peak * f) }));
+    if (f !== 1) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: moneyLabel(peak * f) }));
   }
-  svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: '#383c48', 'stroke-width': 1 }));
+  svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
   const peakIdx = rows.findIndex(r => r.cost === Math.max(...rows.map(q => q.cost)));
   const labelEvery = Math.max(1, Math.ceil(n / 14));
   rows.forEach((r, i) => {
@@ -554,22 +614,21 @@ function barChart(rows) {
     const g = s('g', { class: 'bargroup', tip: () => monthLabel(r.month) + '\n' + money(r.cost) + ' · ' + r.sessions + ' session' + (r.sessions === 1 ? '' : 's'),
       onclick: () => { go('m', r.month); } });
     g.appendChild(s('rect', { class: 'hit', x, y: padT, width: step, height: VH - padT - padB }));
-    if (hgt > 0) g.appendChild(s('path', { d: roundTop(x, y, bw, hgt, 3), fill: '#e0a458' }));
+    if (hgt > 0) g.appendChild(s('path', { d: roundTop(x, y, bw, hgt, 3), fill: thc('accent') }));
     if (i === peakIdx && r.cost > 0)
-      g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 10, fill: '#9b998f', text: moneyLabel(r.cost) }));
+      g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 10, fill: thc('ink2'), text: moneyLabel(r.cost) }));
     if (i % labelEvery === 0)
-      g.appendChild(s('text', { x: x + bw / 2, y: VH - 7, 'text-anchor': 'middle', 'font-size': 9.5, fill: '#6a695f', text: monthLabel(r.month) }));
+      g.appendChild(s('text', { x: x + bw / 2, y: VH - 7, 'text-anchor': 'middle', 'font-size': 9.5, fill: thc('mut'), text: monthLabel(r.month) }));
     svg.appendChild(g);
   });
   return svg;
 }
 
-const HEAT = ['#1a1d24', '#3d301b', '#5e4620', '#8a6425', '#bd8a2e', '#f2b13f'];
 function heatLevel(v, thresholds) {
   if (v <= 0) return 0;
   let lvl = 1;
   for (const t of thresholds) if (v >= t) lvl++;
-  return Math.min(lvl, HEAT.length - 1);
+  return Math.min(lvl, TH.heat.length - 1);
 }
 function calendar(year, byDate, onDay) {
   onDay = onDay || (date => go('d', date));
@@ -586,7 +645,7 @@ function calendar(year, byDate, onDay) {
   const VW = padL + weeks * STEP, VH = padT + 7 * STEP + 2;
   const svg = s('svg', { class: 'cal', width: VW, height: VH, viewBox: '0 0 ' + VW + ' ' + VH, role: 'img', 'aria-label': 'daily spend calendar ' + year });
   [['Mon', 0], ['Wed', 2], ['Fri', 4]].forEach(([lbl, row]) =>
-    svg.appendChild(s('text', { x: padL - 6, y: padT + row * STEP + CELL - 2, 'text-anchor': 'end', 'font-size': 9, fill: '#6a695f', text: lbl })));
+    svg.appendChild(s('text', { x: padL - 6, y: padT + row * STEP + CELL - 2, 'text-anchor': 'end', 'font-size': 9, fill: thc('mut'), text: lbl })));
   let col = 0, lastMonth = -1;
   for (let d = new Date(start); d <= last; d.setDate(d.getDate() + 1)) {
     const row = (d.getDay() + 6) % 7;
@@ -595,18 +654,18 @@ function calendar(year, byDate, onDay) {
     const date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
     if (d.getMonth() !== lastMonth) {
       lastMonth = d.getMonth();
-      svg.appendChild(s('text', { x: padL + col * STEP, y: padT - 6, 'font-size': 9, fill: '#6a695f', text: MN[lastMonth] }));
+      svg.appendChild(s('text', { x: padL + col * STEP, y: padT - 6, 'font-size': 9, fill: thc('mut'), text: MN[lastMonth] }));
     }
     const info = byDate.get(date);
     const v = info ? info.cost : 0;
     const attrs = { x: padL + col * STEP, y: padT + row * STEP, width: CELL, height: CELL, rx: 2,
-      fill: HEAT[heatLevel(v, thresholds)],
+      fill: TH.heat[heatLevel(v, thresholds)],
       tip: () => date + '\n' + (info ? money(v) + ' · ' + info.sessions + ' session' + (info.sessions === 1 ? '' : 's') : 'no usage') };
     if (info) { attrs.onclick = () => { onDay(date); }; attrs.style = 'cursor:pointer'; }
     svg.appendChild(s('rect', attrs));
   }
   const legend = h('div', { class: 'cal-legend' }, 'less',
-    HEAT.map(c => h('span', { style: 'background:' + c })), 'more');
+    TH.heat.map(c => h('span', { style: 'background:' + c })), 'more');
   return h('div', null, h('div', { class: 'cal-wrap' }, svg), legend);
 }
 
@@ -1024,6 +1083,7 @@ function chrome() {
   else if (!META.recordsCost) right.appendChild(h('span', { class: 'badge sub' }, '$0 recorded · subscription'));
   right.appendChild(h('button', { class: 'hbtn', title: 'Trends (T)', onclick: openTrends }, '▚ trends'));
   right.appendChild(h('button', { class: 'hbtn', title: 'Model prices (P)', onclick: openPrices }, '$/M prices'));
+  right.appendChild(h('button', { class: 'hbtn', title: 'Theme', onclick: openTheme }, '◑ theme'));
   if (META.serve) right.appendChild(h('button', { class: 'hbtn', title: 're-read the data sources',
     onclick: () => fetch('/api/reload').then(() => location.reload()) }, '↻ refresh'));
   const hints = document.getElementById('hints');
@@ -1081,21 +1141,21 @@ function trendChart(pairs, opts = {}) {
   const svg = s('svg', { viewBox: '0 0 ' + VW + ' ' + VH, class: 'tr-chart', role: 'img', 'aria-label': opts.aria || 'trend chart' });
   for (const f of [0.5, 1]) {
     const y = padT + (1 - f) * plotH;
-    svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: '#242836', 'stroke-width': 1 }));
-    if (f !== 1) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 11, fill: '#6a695f', text: moneyLabel(peak * f) }));
+    svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: thc('line'), 'stroke-width': 1 }));
+    if (f !== 1) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 11, fill: thc('mut'), text: moneyLabel(peak * f) }));
   }
-  svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: '#383c48', 'stroke-width': 1 }));
+  svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
   const peakVal = Math.max(...vals), peakIdx = vals.indexOf(peakVal), tickEvery = Math.max(1, Math.ceil(n / 18));
   pairs.forEach((p, i) => {
     const x = x0 + i * step;
     const hgt = Math.max(p.value > 0 ? 2 : 0, plotH * p.value / peak), y = VH - padB - hgt;
     const g = s('g', { class: 'bg', tip: () => (p.tip || (p.label + '\n' + money(p.value))), onclick: p.nav || null });
     g.appendChild(s('rect', { class: 'hit', x, y: padT, width: step, height: VH - padT - padB }));
-    if (hgt > 0) g.appendChild(s('path', { d: roundTop(x, y, bw, hgt, Math.min(3, bw / 2)), fill: '#e0a458' }));
+    if (hgt > 0) g.appendChild(s('path', { d: roundTop(x, y, bw, hgt, Math.min(3, bw / 2)), fill: thc('accent') }));
     if (i === peakIdx && p.value > 0)
-      g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 11, fill: '#9b998f', text: moneyLabel(p.value) }));
+      g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 11, fill: thc('ink2'), text: moneyLabel(p.value) }));
     if (i % tickEvery === 0 || i === n - 1)
-      g.appendChild(s('text', { x: x + bw / 2, y: VH - 8, 'text-anchor': 'middle', 'font-size': 10, fill: '#6a695f', text: p.label }));
+      g.appendChild(s('text', { x: x + bw / 2, y: VH - 8, 'text-anchor': 'middle', 'font-size': 10, fill: thc('mut'), text: p.label }));
     svg.appendChild(g);
   });
   const summary = h('div', { class: 'tr-summary' });
@@ -1224,14 +1284,13 @@ function renderTrends() {
 }
 
 /* ---------- Prices overlay (P): models.dev list prices behind $ ---------- */
-const PRICE_HEAT = ['#62d391', '#a6cf5a', '#e0a458', '#e08453', '#e07070']; // cheap→pricey (5 levels)
 // log position of a value in a column's [lo,hi] of positive rates -> heat level (matches _price_heat_level)
 function priceHeatColor(v, rng) {
   if (!rng || v <= 0) return null;
   const [lo, hi] = rng;
-  if (v <= lo) return PRICE_HEAT[0];
+  if (v <= lo) return TH.priceHeat[0];
   const frac = (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo));
-  return PRICE_HEAT[Math.max(0, Math.min(4, Math.round(frac * 4)))];
+  return TH.priceHeat[Math.max(0, Math.min(4, Math.round(frac * 4)))];
 }
 // (min,max) of positive values per heat column: eff + the 4 raw price rates; null == degenerate
 function priceRanges(rows) {
@@ -1405,6 +1464,7 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); return;
   }
   if (RANGE.pick) { if (e.key === 'Escape') closeRange(); e.preventDefault(); return; }
+  if (THEMEPICK) { if (e.key === 'Escape') closeTheme(); e.preventDefault(); return; }
   const sc = curScope();
   const tabs = tabsFor(sc);
   if (e.key === 'T') {
@@ -1467,18 +1527,23 @@ function render(scrollTop = true) {
   renderTabs(sc, tabs);
   renderCrumbs(sc);
   renderDetail(sc, ws);
-  renderTrends();  // keep the overlays in sync with a live $/range/data change
+  renderTrends();  // keep the overlays in sync with a live $/range/theme/data change
   renderPrices();
   renderRange();
+  renderTheme();
   if (scrollTop) window.scrollTo(0, 0);
 }
 document.getElementById('trends').addEventListener('click', closeTrends);  // click the backdrop to close
 document.getElementById('prices').addEventListener('click', closePrices);
 document.getElementById('rangepick').addEventListener('click', closeRange);
+document.getElementById('themepick').addEventListener('click', closeTheme);
 // Navigation resets the scoped table state, but keeps the active tab when it
 // still exists in the new scope (render() falls back to Overview otherwise) --
 // so month->month on the Sessions tab stays on Sessions.
 window.addEventListener('hashchange', () => { FILTER = ''; EXPANDED.clear(); render(); });
+// Theme precedence: the viewer's saved choice, else the page's baked-in default
+// (--theme / meta), else opentab. Applied before the first paint so charts pick it up.
+applyTheme((function () { try { return localStorage.getItem('opentab-theme'); } catch (e) { return null; } })() || META.theme || 'opentab');
 render();
 """
 
@@ -1488,10 +1553,11 @@ def render_html(payload: dict) -> str:
     meta = payload.get("meta", {})
     title = "opentab — AI spend report" + (" (demo)" if meta.get("demo") else "")
     blob = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
+    js = _JS.replace("__THEMES__", json.dumps(themes.web_payload(), separators=(",", ":")))
     page = _SHELL.replace("__TITLE__", html.escape(title))
     page = page.replace("__FAVICON__", _FAVICON)
     page = page.replace("__CSS__", _CSS)
-    page = page.replace("__JS__", _JS)
+    page = page.replace("__JS__", js)
     # Payload last: session titles are user text and could contain any of the
     # tokens above; nothing is substituted after this.
     return page.replace("__PAYLOAD__", blob)

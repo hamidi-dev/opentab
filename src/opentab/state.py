@@ -6,6 +6,7 @@ import json
 import os
 from typing import TYPE_CHECKING
 
+from opentab import themes
 from opentab.heatmap import HEAT_MAX_LEVELS, HEAT_MIN_LEVELS
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ def save_state(app: App) -> None:
         "bookmarks": sorted(app.bookmarks),  # sessions starred with `b`
         "show_api_prices": app.show_api_prices,
         "source": app.source_key,  # restore the last source (opencode/claude/all) next run
+        "theme": app.theme_id,  # the colour theme (shared with the web report)
         "cal_levels": app.cal_levels,  # the Calendar heat-map granularity (+/-)
         "prices_prompt_dismissed": app.prices_prompt_dismissed,  # "don't ask again" for prices
     }
@@ -105,6 +107,13 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     saved_api = state.get("show_api_prices")
     if saved_api is not None and not app.store.demo:
         app.show_api_prices = bool(saved_api)
+    # Restore the last theme, unless an explicit non-default --theme was passed
+    # (which App.__init__ already applied and should win, like the range flags).
+    if getattr(args, "theme", themes.DEFAULT_THEME) in (None, themes.DEFAULT_THEME):
+        saved_theme = state.get("theme")
+        if saved_theme in themes.THEMES:
+            app.theme_id = saved_theme
+            app.theme = themes.resolve_theme(saved_theme)
     saved_levels = state.get("cal_levels")
     if isinstance(saved_levels, int):
         app.cal_levels = max(HEAT_MIN_LEVELS, min(HEAT_MAX_LEVELS, saved_levels))

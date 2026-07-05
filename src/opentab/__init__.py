@@ -135,6 +135,15 @@ from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import MODEL_EXPR, MSG_MODEL_EXPR, MSG_TOKEN_TOTAL_EXPR, Store
 from opentab.stores.pi import PiStore
 from opentab.stores.vscode import VscodeStore
+from opentab.themes import (
+    DEFAULT_THEME,
+    THEME_IDS,
+    THEMES,
+    nearest_256,
+    ramp,
+    resolve_theme,
+    web_payload,
+)
 from opentab.tui.app import App
 from opentab.tui.renderer import Renderer
 from opentab.util import (

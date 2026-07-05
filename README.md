@@ -53,6 +53,8 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
   `$` toggle in one shareable file — and a local live server for it (`--serve`)
 - Keyboard- and mouse-driven (scroll, click to select, double-click to drill)
 - Remembers your range, sort, ignored projects, and the `$` view between runs
+- Colour themes (opentab, Catppuccin, Tokyo Night, Gruvbox, Nord, Dracula, Rosé Pine —
+  light and dark) shared by the TUI (`C`) and the web report, set with `--theme`
 - Read-only, local-only, standard-library runtime (nothing extra to pull in)
 - Demo mode for screenshots and live demos
 
@@ -256,7 +258,10 @@ Monthly cost charts, the calendar heatmap, and Model / Provider / Source
 rankings, with `h`/`l` for tabs and `j`/`k` to page; `P` opens the models.dev
 price table (`eff $/M` at your token mix, heat-shaded, three layouts); and `R`
 (or the range chip) rescopes everything to a window (last 7/30/90 days, N months,
-this year, or a custom span). Combine with `--demo` for a page you can publish.
+this year, or a custom span). The **theme** button switches the palette live
+(opentab, Catppuccin Mocha/Latte, Tokyo Night/Day, Gruvbox, Nord, Dracula, Rosé
+Pine — light and dark) and remembers your pick; `--theme <name>` bakes the
+default. Combine with `--demo` for a page you can publish.
 
 `opentab --serve` serves the same report on `http://localhost:8321` (`--port`)
 and adds what a static file can't have: the per-session **Turns** timeline and
@@ -296,6 +301,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>` / `codex resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project), with **y** copying the `cd <project> && …` command to the clipboard; outside tmux the menu offers only the copy. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
 | `c` | Switch data source — any present backend (OpenCode, Claude Code, Codex, Hermes, Copilot CLI, VS Code, pi, OpenClaw, CSV, JSONL), or all merged |
+| `C` | Colours — pick a theme (opentab, Catppuccin Mocha/Latte, Tokyo Night/Day, Gruvbox, Nord, Dracula, Rosé Pine — the same set as the web report). `j`/`k` live-preview, `Enter` keeps, `Esc` reverts; light themes light up the whole screen. `--theme` sets it at launch |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 

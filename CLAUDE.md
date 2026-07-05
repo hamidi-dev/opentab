@@ -114,6 +114,7 @@ src/opentab/
   util.py            clipboard/launchers/git_root/fuzzy/parse_range/tool_namespace
   sources.py         make_store/resolve_source/available_sources/source_cycle + path routing
   state.py           load_state/save_state/apply_state
+  themes.py          THEMES palettes (single source for the web report + the TUI) + hex math
   stores/            opencode, claude, codex, hermes, csv_source, jsonl_source, copilot, vscode, pi, openclaw, combined
   tui/               renderer (Renderer), app (App)
   web.py             build_payload/session_extras + html_command/serve_command (ReportServer)
@@ -448,7 +449,35 @@ header-click sort; it is **app-wide, never range-scoped** (like the TUI). **`R` 
 range chip) rescopes client-side**: `ALL_W` is the full embedded set and `W = filterRange(
 ALL_W)` is the active window (presets: last N days/months, this year, custom `since..until`;
 `a` resets). Range narrows the main views and Trends but not Prices; a session deep-link
-still resolves against `ALL_W` so it opens regardless of the active window. The two lazy
+still resolves against `ALL_W` so it opens regardless of the active window.
+**Themes are one source, two frontends.** The palettes live in `opentab/themes.py`
+(`THEMES`: one entry per theme = a role-token palette + calendar/price heat ramps + a
+`dark` flag, plus the hex→terminal-color math). Neither frontend hard-codes them:
+- **Web** — `render_html` injects `themes.web_payload()` (roles reshaped to CSS-var names)
+  as the JS `THEMES`. The CSS uses **semantic role tokens** (`--accent`/`--good`/`--bad`/
+  `--bg`/… — not hues); `applyTheme(id)` writes them onto `:root` so all HTML re-themes via
+  the CSS-var cascade while the SVG charts read the same entry through `TH`/`thc()`;
+  translucent accents are `color-mix()` so they follow. Precedence: `localStorage` →
+  `--theme` (`meta.theme`) → `opentab`; the picker persists the viewer's choice.
+- **TUI** — `Renderer.init_theme_colors()` maps the active theme's role hexes onto the
+  fixed curses color-pair layout (pairs 1–7 + the two heat ramps): exact via `init_color`
+  on true-color terminals (custom indices from `_THEME_COLOR_BASE`; the heat ramps get
+  fixed reusable slots so per-frame re-inits don't leak indices), nearest-256 otherwise,
+  and the generated ANSI ramp on 8-color. Every pair paints an **explicit theme
+  background** (not `-1`/terminal default), and `draw()` sets the window background to
+  `_BASE_PAIR` (ink-on-bg) before each `erase()` — so the theme's bg fills every cell the
+  way neovim's `Normal` group does, and a **light theme actually renders a light screen**
+  instead of coloured text on the terminal's own dark background. (`assume_default_colors`
+  is *not* enough: it only changes what `-1` *means*; ncurses still erases to the terminal
+  default, so the screen stayed dark — hence colouring every cell.) `C` (Colours) opens the
+  picker; `j`/`k` **live-preview** each theme
+  (`select_theme(announce=False)` re-inits pairs in place — the whole UI is the swatch),
+  `Enter` keeps it, `Esc` reverts to the theme active on open. The choice persists to
+  `state.json`, and `--theme` seeds both (state wins unless a non-default `--theme` is
+  passed, like the range flags). Bundled: opentab, Catppuccin Mocha/Latte, Tokyo Night/Day,
+  Gruvbox, Nord, Dracula, Rosé Pine. **Adding a theme is one `THEMES` entry** — the
+  `--theme` choices come from `themes.THEME_IDS`, the web injection and both pickers
+  enumerate `THEMES`. The two lazy
 per-session extras keep their TUI trade-off: the static
 export **omits Turns/Tools** (embedding them would be a startup-wide scan), while
 `--serve` (`web.ReportServer`) exposes them as `/api/session/<id>` fetched on drill-in,

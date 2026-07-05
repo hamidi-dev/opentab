@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from opentab import __version__
 from opentab.models import DaySummary, MonthSummary, ProjectSummary, Workflow, YearSummary
+from opentab.themes import hex_rgb1000, nearest_256, ramp
 
 if TYPE_CHECKING:
     from opentab.tui.app import App
@@ -300,6 +301,7 @@ class Renderer:
         return []
 
     def draw(self, stdscr: curses.window) -> None:
+        self.apply_background(stdscr)  # theme bg fills the screen (before erase reads it)
         stdscr.erase()
         self.regions = []  # rebuilt below as panels draw, for this frame's clicks
         self.sort_regions = []  # column-header sort zones, same lifecycle as regions
@@ -366,6 +368,8 @@ class Renderer:
         # visible behind them), unlike the full-body help/prices/trends overlays.
         if self.price_prompt:
             self.draw_price_prompt(stdscr, height, width)
+        elif self.theme_menu:
+            self.draw_theme_menu(stdscr, height, width)
         elif self.source_menu:
             self.draw_source_menu(stdscr, height, width)
         elif self.sort_menu:
@@ -1994,6 +1998,7 @@ class Renderer:
             "  D                toggle real/demo data on the fly (demo anonymizes titles/paths)",
             "  c                open the data-source picker (j/k move · Enter switch · Esc cancel):",
             "                   OpenCode / Claude Code / Codex / Copilot / pi / OpenClaw / all (when present)",
+            "  C                open the colour-theme picker (j/k live-preview · Enter keep · Esc revert; also the web report's)",
             "  T                Trends overlay: Daily / Weekly / Monthly / Calendar / Models / Providers / Sources",
             "                   (h/l tabs; j/k month/week/year; $ what-if prices)",
             "                   Calendar is a spend heat map: Enter focuses the grid, then ↑↓←→",
@@ -2481,6 +2486,22 @@ class Renderer:
             lines.append((f" {marker}  {label}{suffix}", attr))
         self.draw_modal(stdscr, scr_h, scr_w, "Switch source · j/k · Enter · Esc", lines)
 
+    def draw_theme_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # The `C` (Colours) picker: a modal list of the themes (shared with the web
+        # report). j/k live-previews each (the whole UI is the swatch), Enter keeps it,
+        # Esc reverts to the theme active on open. Colours re-map via init_theme_colors.
+        entries = self.theme_menu_entries()
+        idx = self.theme_menu_index % len(entries) if entries else 0
+        lines = [("Colour theme (also the web report's):", curses.color_pair(4)), ("", 0)]
+        for offset, (_tid, name, is_current) in enumerate(entries):
+            marker = "●" if is_current else "○"
+            suffix = "  (current)" if is_current else ""
+            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
+            lines.append((f" {marker}  {name}{suffix}", attr))
+        self.draw_modal(
+            stdscr, scr_h, scr_w, "Theme · j/k preview · Enter keep · Esc revert", lines
+        )
+
     # Friendlier one-word names for the raw sort keys shown in the `s` picker.
     SORT_LABELS = {
         "cost": "Cost",
@@ -2956,11 +2977,117 @@ class Renderer:
             cx = left + max(0, (width - len(text)) // 2)  # center each line under the grid
             self.write_rich(stdscr, row_y, cx, text, line_attr)
 
+    # Custom-color index blocks (only touched when the terminal can redefine colors):
+    # roles allocate up from _THEME_COLOR_BASE, the two heat ramps get fixed slots so
+    # they can be re-init_color'd every frame without exhausting the palette.
+    _THEME_COLOR_BASE = 16
+    _HEAT_COLOR_BASE = 40  # calendar heat colours (up to HEAT_MAX_LEVELS)
+    _PRICE_COLOR_BASE = 56  # price-heat colours (PRICE_HEAT_LEVELS)
+    _BASE_PAIR = 32  # the window background pair (ink on theme bg); clear of heat/price
+    _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
+
+    def _color_index(self, hexcolor: str) -> int:
+        # A curses color index for a hex: a fresh init_color slot on truecolor
+        # terminals (cached per hex), else the nearest xterm-256. Falls back to the
+        # nearest-256 if init_color is refused, so a partial terminal never crashes.
+        cache = self._theme_color_cache
+        if hexcolor in cache:
+            return cache[hexcolor]
+        idx = nearest_256(hexcolor)
+        if self._can_change and self._next_color < curses.COLORS:
+            try:
+                curses.init_color(self._next_color, *hex_rgb1000(hexcolor))
+                idx = self._next_color
+                self._next_color += 1
+            except curses.error:
+                pass
+        cache[hexcolor] = idx
+        return idx
+
+    def init_theme_colors(self) -> None:
+        # Map the active theme's role hexes onto the fixed color-pair layout the whole
+        # renderer draws against (pairs 1..7 + the two heat ramps). Re-run on a live
+        # theme switch. 8-colour terminals map roles to the nearest of the 8.
+        #
+        # Every pair paints an *explicit* theme background (not "-1"/terminal default),
+        # and draw() sets the window background to _BASE_PAIR (ink on bg) before each
+        # erase -- so the theme's bg fills every cell the way neovim's Normal group does,
+        # and a light theme actually shows a light screen instead of coloured text on the
+        # terminal's own dark background. (assume_default_colors only changes what "-1"
+        # *means*; ncurses still erases to the terminal default, which is why it stayed
+        # dark -- so we colour every cell instead.)
+        self._theme_color_cache = {}
+        self._next_color = self._THEME_COLOR_BASE
+        self._can_change = bool(
+            self.has256 and getattr(curses, "can_change_color", lambda: False)()
+        )
+        roles = self.app.theme["roles"]
+        r = self._color_index
+        bg = self._bg_index = r(roles["bg"])
+        self._themed_bg = False
+        try:  # the window-background pair; if the terminal is too small for it, skip the fill
+            curses.init_pair(self._BASE_PAIR, r(roles["ink"]), bg)
+            self._themed_bg = True
+        except curses.error:
+            self._bg_index = bg = -1  # no themed fill -> role pairs fall back to terminal bg
+        curses.init_pair(1, r(roles["ink2"]), bg)  # secondary text
+        curses.init_pair(2, r(roles["accent"]), bg)  # warm accent / title / M-tokens
+        curses.init_pair(3, r(roles["good"]), bg)  # money
+        curses.init_pair(4, r(roles["mut"]), bg)  # structural: headers, keybar, '#'
+        curses.init_pair(5, r(roles["bad"]), bg)  # alerts
+        curses.init_pair(6, r(roles["accent_bright"]), bg)  # focus / active border
+        curses.init_pair(7, bg, r(roles["accent"]))  # active tab (inverse: bg on accent)
+        self._init_price_heat()
+        self._sync_heat_palette()
+
+    def apply_background(self, stdscr) -> None:
+        # Point the window background at the theme's base pair (ink on bg) so erase()
+        # fills every cell with the theme bg and A_NORMAL text reads as theme ink. Called
+        # each frame before erase, so a live theme switch repaints the whole screen.
+        if not getattr(self, "_themed_bg", False):
+            return
+        try:
+            stdscr.bkgd(" ", curses.color_pair(self._BASE_PAIR))
+        except curses.error:
+            pass
+
+    def _init_price_heat(self) -> None:
+        # The P overlay's cheap→pricey ramp, fixed granularity (PRICE_HEAT_LEVELS).
+        hexes = self.app.theme["price_heat"]
+        if self._can_change or self.has256:
+            for i, hx in enumerate(hexes):
+                curses.init_pair(
+                    PRICE_HEAT_BASE_PAIR + i,
+                    self._heat_index(self._PRICE_COLOR_BASE + i, hx),
+                    self._bg_index,
+                )
+        else:
+            for i, col in enumerate(heat_palette(PRICE_HEAT_LEVELS, False)):
+                curses.init_pair(PRICE_HEAT_BASE_PAIR + i, col, self._bg_index)
+
+    def _heat_index(self, slot: int, hexcolor: str) -> int:
+        # A reusable fixed-slot heat colour: re-init_color the slot on truecolor
+        # terminals (so per-frame ramps don't leak indices), else nearest-256.
+        if self._can_change:
+            try:
+                curses.init_color(slot, *hex_rgb1000(hexcolor))
+                return slot
+            except curses.error:
+                pass
+        return nearest_256(hexcolor)
+
     def _sync_heat_palette(self) -> None:
-        # Re-init the heat color pairs (8..) to the current granularity so +/- restyles
-        # the map live. App stays curses-free, so this init_pair lives in the renderer.
-        for i, col in enumerate(heat_palette(self.cal_levels, self.has256)):
-            curses.init_pair(8 + i, col, -1)
+        # Re-init the calendar heat pairs (8..) for the current granularity so +/-
+        # restyles live. Colours come from the active theme's ramp, resampled to
+        # cal_levels; 8-colour terminals keep the generated ANSI ramp + glyphs.
+        if self.has256:
+            for i, hx in enumerate(ramp(self.app.theme["heat"], self.cal_levels)):
+                curses.init_pair(
+                    8 + i, self._heat_index(self._HEAT_COLOR_BASE + i, hx), self._bg_index
+                )
+        else:
+            for i, col in enumerate(heat_palette(self.cal_levels, False)):
+                curses.init_pair(8 + i, col, self._bg_index)
 
     def _heat_cell(self, level: int, levels: int) -> tuple[str, int]:
         # (glyph, attr) for one heat level: a distinct color per level, plus a glyph that

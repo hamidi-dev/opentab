@@ -186,6 +186,7 @@ def build_payload(app: App) -> dict:
         "recordsCost": bool(getattr(store, "records_cost", True)),
         "demo": bool(store.demo),
         "range": app.range_label(),
+        "theme": getattr(app.args, "theme", "opentab") or "opentab",
         "startApi": bool(app.show_api_prices and not store.demo),
         "home": os.path.expanduser("~"),
         "serve": False,  # flipped by ReportServer so the page knows extras exist

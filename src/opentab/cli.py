@@ -12,7 +12,7 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-from opentab import __version__, sources
+from opentab import __version__, sources, themes
 from opentab.formatting import money
 from opentab.pricing import (
     MODELS_DEV_URL,
@@ -180,6 +180,15 @@ def parse_args() -> argparse.Namespace:
         help="serve the HTML report from a local web server; adds the per-session "
         "Turns/Tools drill-in as live endpoints and a data-refresh button "
         "(Ctrl-C stops it)",
+    )
+    parser.add_argument(
+        "--theme",
+        choices=themes.THEME_IDS,
+        default=themes.DEFAULT_THEME,
+        help="colour theme for the TUI and the --html/--serve report (opentab, "
+        "catppuccin-mocha/latte, tokyo-night/-day, gruvbox, nord, dracula, rose-pine); "
+        "switch live in the TUI with Y or the report's theme button, and your choice is "
+        f"remembered. Default: {themes.DEFAULT_THEME}",
     )
     parser.add_argument("--port", type=int, default=8321, help="port for --serve (default: 8321)")
     parser.add_argument(

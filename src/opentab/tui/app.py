@@ -20,16 +20,13 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-from opentab import sources, util
+from opentab import sources, themes, util
 from opentab.demo import demo_cost, demo_model, demo_title
 from opentab.formatting import short_path, shorten
 from opentab.heatmap import (
     HEAT_DEFAULT_LEVELS,
     HEAT_MAX_LEVELS,
     HEAT_MIN_LEVELS,
-    PRICE_HEAT_BASE_PAIR,
-    PRICE_HEAT_LEVELS,
-    heat_palette,
     week_key,
 )
 from opentab.models import ALL_YEARS, DaySummary, MonthSummary, ProjectSummary, YearSummary
@@ -200,6 +197,15 @@ class App:
         self.source_menu_index = 0  # highlighted row in that picker
         self.sort_menu = False  # the `s` sort-order picker overlay
         self.sort_menu_index = 0  # highlighted row in that picker
+        # Active colour theme (shared source with the web report). Seeded from
+        # --theme; a valid saved theme (apply_state) or the `Y` picker takes over.
+        self.theme_id = getattr(args, "theme", None) or themes.DEFAULT_THEME
+        if self.theme_id not in themes.THEMES:
+            self.theme_id = themes.DEFAULT_THEME
+        self.theme = themes.resolve_theme(self.theme_id)
+        self.theme_menu = False  # the `C` (Colours) theme picker overlay
+        self.theme_menu_index = 0  # highlighted row in that picker
+        self._theme_before = self.theme_id  # theme active when the picker opened (Esc reverts)
         self.day_index = 0
         self.month_index = 0
         self.year_index = 0
@@ -1249,6 +1255,56 @@ class App:
         cur = self.source_key if self.source_key in order else order[0]
         self.source_menu_index = order.index(cur)
         self.source_menu = True
+
+    # --- Colour theme (the `C` "Colours" picker; palettes shared with the web) ---
+    def theme_menu_entries(self) -> list[tuple[str, str, bool]]:
+        # (id, display name, is-active) per theme, in definition order.
+        return [(tid, t["name"], tid == self.theme_id) for tid, t in themes.THEMES.items()]
+
+    def open_theme_menu(self) -> None:
+        ids = list(themes.THEMES)
+        self.theme_menu_index = ids.index(self.theme_id) if self.theme_id in ids else 0
+        self._theme_before = self.theme_id  # restored if the picker is cancelled (Esc)
+        self.theme_menu = True
+
+    def select_theme(self, theme_id: str, announce: bool = True) -> None:
+        # Switch the active theme and re-map the curses colour pairs in place. announce
+        # is off for live-preview steps (j/k) so the toast doesn't flood while browsing.
+        if theme_id not in themes.THEMES:
+            return
+        self.theme_id = theme_id
+        self.theme = themes.resolve_theme(theme_id)
+        # Re-map the colour pairs in place (only reached interactively, so curses is up).
+        try:
+            self.renderer.init_theme_colors()
+        except Exception:  # noqa: BLE001 -- a hostile terminal must never crash a switch
+            pass
+        if announce:
+            self.notice = f"theme: {self.theme['name']}"
+
+    def _preview_theme_at(self, index: int) -> None:
+        # Live-apply the highlighted theme as you move (no toast), so the whole UI is
+        # the swatch. Enter keeps it; Esc reverts to what was active on open.
+        ids = list(themes.THEMES)
+        self.theme_menu_index = index % len(ids)
+        self.select_theme(ids[self.theme_menu_index], announce=False)
+
+    def handle_theme_menu_key(self, key: int) -> bool:
+        # j/k live-preview the highlighted theme, Enter keeps it + closes, Esc/q reverts
+        # to the theme active when the picker opened, `C` again advances the highlight.
+        if key in (27, ord("q")):
+            self.select_theme(self._theme_before, announce=False)  # cancel -> revert
+            self.theme_menu = False
+        elif key in (ord("j"), curses.KEY_DOWN):
+            self._preview_theme_at(self.theme_menu_index + 1)
+        elif key in (ord("k"), curses.KEY_UP):
+            self._preview_theme_at(self.theme_menu_index - 1)
+        elif key == ord("C"):
+            self._preview_theme_at(self.theme_menu_index + 1)
+        elif key in (10, 13, curses.KEY_ENTER):
+            self.select_theme(list(themes.THEMES)[self.theme_menu_index])
+            self.theme_menu = False
+        return True
 
     def cycle_source(self, step: int = 1) -> None:
         # Relative hop (kept for completeness); the menu uses select_source directly.
@@ -2510,34 +2566,13 @@ class App:
             curses.set_escdelay(25)
         curses.curs_set(0)
         curses.use_default_colors()
-        # One restrained palette instead of a full ANSI rainbow: a grey baseline,
-        # warm amber + orange accents for focus/brand, green for money, soft red
-        # reserved for genuine alerts. 256-color where available, 8-color fallback.
-        has256 = curses.COLORS >= 256
-        self.has256 = has256  # draw_calendar regenerates its ramp against this
-        grey = 245 if has256 else curses.COLOR_WHITE
-        amber = 214 if has256 else curses.COLOR_YELLOW
-        slate = 67 if has256 else curses.COLOR_BLUE
-        green = 35 if has256 else curses.COLOR_GREEN
-        soft_red = 203 if has256 else curses.COLOR_RED
-        accent = 208 if has256 else curses.COLOR_YELLOW
-        curses.init_pair(1, grey, -1)  # secondary: hints, breadcrumb, bars, small tokens
-        curses.init_pair(2, amber, -1)  # warm accent: title, drilldown chip, M-tokens
-        curses.init_pair(3, green, -1)  # money
-        curses.init_pair(4, slate, -1)  # structural: headers, keybar, markdown '#'
-        curses.init_pair(5, soft_red, -1)  # alerts only: errors, billions of tokens
-        curses.init_pair(6, accent, -1)  # active panel border / focus
-        curses.init_pair(7, curses.COLOR_BLACK, accent)  # active tab
-        # Heat-map ramp (pairs 8..8+HEAT_MAX_LEVELS-1) for the Calendar tab: a green→red
-        # gradient where a hotter shade means a heavier spend day. The granularity is
-        # live (+/- on the tab), so draw_calendar re-inits these per frame to match
-        # self.cal_levels; seed the current count here so the pairs exist beforehand.
-        for i, col in enumerate(heat_palette(self.cal_levels, has256)):
-            curses.init_pair(8 + i, col, -1)
-        # The P overlay's price-heat ramp: same green→red palette on its own fixed
-        # pair block (never rescaled by +/-), so cheap/expensive rates read at a glance.
-        for i, col in enumerate(heat_palette(PRICE_HEAT_LEVELS, has256)):
-            curses.init_pair(PRICE_HEAT_BASE_PAIR + i, col, -1)
+        # Colours come from the active theme (opentab/themes.py, shared with the web
+        # report). The renderer maps its role hexes onto the fixed color-pair layout --
+        # exact via init_color on true-colour terminals, nearest-256 otherwise, and the
+        # generated ANSI ramp on 8-colour. Foreground-only: a TUI paints over the
+        # terminal's own background. Live theme switches re-run init_theme_colors().
+        self.has256 = curses.COLORS >= 256  # draw_calendar regenerates its ramp against this
+        self.renderer.init_theme_colors()
         stdscr.keypad(True)
         # Wheel-down is BUTTON5, but some curses builds (notably macOS system
         # ncurses) don't expose BUTTON5_PRESSED; on them the wheel-down bit is the
@@ -2767,6 +2802,8 @@ class App:
                 self.trends = False  # any other key closes the overlay
             return True
 
+        if self.theme_menu:
+            return self.handle_theme_menu_key(key)
         if self.source_menu:
             return self.handle_source_menu_key(key)
         if self.sort_menu:
@@ -2801,6 +2838,9 @@ class App:
             return True
         if key == ord("c"):
             self.open_source_menu()
+            return True
+        if key == ord("C"):
+            self.open_theme_menu()
             return True
         if key == ord("D"):
             self.toggle_demo()

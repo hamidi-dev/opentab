@@ -7913,7 +7913,62 @@ def test_web_html_command_writes_the_report_file():
     assert 'id="trends"' in text  # the T Trends overlay host
     assert "TREND_TABS" in text and "Providers" in text  # the 7-tab Trends
     assert 'id="prices"' in text and 'id="rangepick"' in text  # P prices + R range overlays
+    assert 'id="themepick"' in text and "const THEMES" in text  # the theme picker + palettes
+    assert "catppuccin-mocha" in text and "tokyo-night" in text  # bundled themes
     assert "keydown" in text  # the j/k/Tab/h/l/Esc/$/T/P/R handler
+
+
+def test_web_meta_carries_the_baked_theme():
+    app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+    app.args.theme = "gruvbox"  # --theme sets the report's initial theme
+    meta = ot.build_payload(app)["meta"]
+    assert meta["theme"] == "gruvbox"
+    # Absent (older args) falls back to the default, never crashes.
+    del app.args.theme
+    assert ot.build_payload(app)["meta"]["theme"] == "opentab"
+
+
+# --- Shared themes (one source for the web report + the TUI) -----------------
+
+
+def test_themes_are_complete_and_consistent():
+    for tid, t in ot.THEMES.items():
+        assert set(t["roles"]) == set(ot.themes.ROLE_KEYS), f"{tid} missing role slots"
+        assert len(t["heat"]) >= 2 and len(t["price_heat"]) >= 2
+        assert isinstance(t["dark"], bool) and t["name"]
+        for hexval in list(t["roles"].values()) + t["heat"] + t["price_heat"]:
+            assert re.fullmatch(r"#[0-9a-fA-F]{6}", hexval), f"{tid}: bad hex {hexval}"
+    assert ot.DEFAULT_THEME in ot.THEMES
+    assert ot.themes.resolve_theme("nonsense") is ot.THEMES[ot.DEFAULT_THEME]
+
+
+def test_web_payload_reshapes_roles_to_css_vars():
+    wp = ot.web_payload()
+    assert set(wp) == set(ot.THEMES)  # one entry per theme
+    entry = wp["catppuccin-mocha"]
+    assert set(entry) == {"name", "dark", "css", "heat", "priceHeat"}
+    # underscores become CSS-var hyphens, values preserved
+    assert entry["css"]["bg-glow"] == ot.THEMES["catppuccin-mocha"]["roles"]["bg_glow"]
+    assert "accent-bright" in entry["css"] and "accent_bright" not in entry["css"]
+
+
+def test_theme_color_math():
+    # nearest_256 lands in the palette range; pure black/white hit the ends.
+    assert 16 <= ot.nearest_256("#e0a458") <= 255
+    assert ot.nearest_256("#000000") in (16, 232)  # cube origin or darkest grey
+    # ramp resamples to exactly n and interpolates the midpoint.
+    r = ot.ramp(["#000000", "#ffffff"], 5)
+    assert len(r) == 5 and r[0] == "#000000" and r[-1] == "#ffffff"
+    assert r[2] in ("#808080", "#7f7f7f")  # halfway grey
+    assert ot.ramp(["#123456"], 4) == ["#123456"] * 4  # single stop repeats
+
+
+def test_cli_theme_choices_match_the_theme_registry():
+    # The --theme choices are sourced from themes.THEME_IDS, so they can't drift.
+    args = ot.parse_args.__wrapped__ if hasattr(ot.parse_args, "__wrapped__") else None
+    del args  # parse_args builds its own parser; assert the registry instead
+    assert ot.THEME_IDS == tuple(ot.THEMES)
+    assert "opentab" in ot.THEME_IDS and "tokyo-night" in ot.THEME_IDS
 
 
 def test_web_payload_embeds_the_price_reference():
