@@ -35,6 +35,8 @@ from opentab.cli import (
     main,
     parse_args,
     refresh_models_command,
+    status_command,
+    status_line,
 )
 from opentab.demo import (
     DEMO_MODEL_POOL,

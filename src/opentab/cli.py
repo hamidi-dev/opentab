@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import locale
 import os
+import sqlite3
 import sys
 
 try:
@@ -12,7 +13,13 @@ except ImportError:  # native Windows has no stdlib curses
     curses = None
 
 from opentab import __version__, sources
-from opentab.pricing import MODELS_DEV_URL, price_cache_path, refresh_model_prices
+from opentab.formatting import money
+from opentab.pricing import (
+    MODELS_DEV_URL,
+    api_equivalent_cost,
+    price_cache_path,
+    refresh_model_prices,
+)
 from opentab.sources import (
     DEFAULT_CSV_PATH,
     DEFAULT_JSONL_PATH,
@@ -22,7 +29,9 @@ from opentab.sources import (
     resolve_source,
 )
 from opentab.state import apply_state, load_state, save_state
+from opentab.stores.opencode import Store
 from opentab.tui.app import App
+from opentab.util import git_root, resolve_project_root
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,6 +151,19 @@ def parse_args() -> argparse.Namespace:
         help="do not fold git worktrees into their main repo (keep each path separate)",
     )
     parser.add_argument(
+        "--status",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="DIR|SESSION",
+        help="print the cost of the most recently active OpenCode session (subagent "
+        "subtree included) and exit; with DIR only sessions of that project count, "
+        "with a session id (ses_...) exactly that session is priced. Made for a tmux "
+        "status line: set -g status-right "
+        "'#(opentab --status \"#{pane_current_path}\")'. A leading ~ marks a "
+        "list-price estimate for usage recorded at $0 (subscription models)",
+    )
+    parser.add_argument(
         "--refresh-models",
         action="store_true",
         help="fetch the latest model list prices from models.dev into a local cache "
@@ -194,6 +216,68 @@ def refresh_models_command() -> int:
     return 0
 
 
+def _project_key(directory: str) -> str:
+    # Fold a session's recorded cwd (or the pane path tmux hands us) onto the
+    # project it belongs to, the same way the TUI groups projects: up to the git
+    # root, then worktrees onto their main repo.
+    return os.path.normpath(resolve_project_root(git_root(os.path.expanduser(directory))))
+
+
+def status_line(store: Store, target: str | None = None) -> str:
+    # The figure for the tmux segment: recorded cost of the most recently active
+    # session's whole subtree, plus a list-price estimate for any $0 (subscription)
+    # node -- prefixed "~" so a real dollar amount is never conflated with an
+    # estimate (the one-shot sibling of the TUI's $ view / _priced_nodes). Empty
+    # when nothing matches, so the segment simply disappears.
+    #
+    # `target` is a directory (price that project's most recent session) or an
+    # OpenCode session id (price exactly that session -- the disambiguator when
+    # several sessions run in one project, e.g. stamped per-pane by a tmux
+    # plugin); a subagent id resolves to its root.
+    workflow_id = None
+    if target and target.startswith("ses_") and os.sep not in target:
+        workflow_id = store.root_of(target)
+    else:
+        directory = target
+        project = _project_key(directory) if directory else None
+        for row in store.recent_roots():
+            if project is None or _project_key(row["directory"]) == project:
+                workflow_id = row["id"]
+                break
+    if workflow_id is None:
+        return ""
+    total = estimated = 0.0
+    for node in store.workflow_nodes(workflow_id):
+        total += node["cost"]
+        if not node["cost"] and node["tokens_total"]:
+            estimated += api_equivalent_cost(
+                node["model_name"],
+                node["tokens_input"],
+                node["tokens_output"],
+                node["tokens_reasoning"],
+                node["tokens_cache_read"],
+                node["tokens_cache_write"],
+            )
+    text = money(total + estimated)
+    return "~" + text if estimated > 0 else text
+
+
+def status_command(args: argparse.Namespace) -> int:
+    # One-shot, curses-free sibling of --refresh-models, polled from a tmux status
+    # line -- so every failure mode prints nothing (an empty segment) instead of
+    # erroring the whole status bar.
+    db = os.path.expanduser(args.db)
+    if not os.path.exists(db):
+        return 0
+    try:
+        line = status_line(Store(db, args), args.status or None)
+    except sqlite3.Error:
+        return 0
+    if line:
+        print(line)
+    return 0
+
+
 def main() -> int:
     if sys.version_info < MIN_PYTHON:
         raise SystemExit(
@@ -204,6 +288,8 @@ def main() -> int:
     args = parse_args()  # handles --help first, so it works even without curses
     if getattr(args, "refresh_models", False):
         return refresh_models_command()  # fetch prices and exit; no curses needed
+    if getattr(args, "status", None) is not None:
+        return status_command(args)  # one-shot for the tmux status line; no curses
     if curses is None:
         raise SystemExit(
             "OpenTab needs Python's curses module, which native Windows Python doesn't bundle.\n"

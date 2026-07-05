@@ -46,6 +46,7 @@ ruff format src/opentab test_opentab.py       # autoformat
 ruff format --check src/opentab test_opentab.py   # format check (matches CI)
 python3 -m compileall -q src/opentab          # byte-compile smoke check
 python3 -m opentab --demo                     # run the TUI with anonymized/synthetic data
+opentab --status "$PWD"                       # one-shot: current session's cost incl. subagents (tmux status line; OpenCode only)
 ```
 
 `test_opentab.py` is **not** pytest — it has its own runner at the bottom that just runs
@@ -127,7 +128,12 @@ Three logical layers (the class names below live in the files above — `Store` 
   opt-ins**, both fetched **lazily on drill-in** (never startup scans, unlike
   `model_breakdown`) and filtered to the session subtree: `tool_breakdown` (Tools tab,
   gated by `supports_tools`) and `message_timeline` (Turns tab — assistant messages ordered
-  by `$.time.created`, subagent turns interleaved, gated by `supports_turns`).
+  by `$.time.created`, subagent turns interleaved, gated by `supports_turns`). A third
+  extra, `recent_roots` (roots newest-subtree-activity-first), feeds the curses-free
+  `--status` one-shot (`cli.status_line`/`status_command`): the current session's cost for
+  a tmux status line, `~`-prefixed when it contains a list-price estimate for $0 rows. Its
+  target is a directory (project's latest session) or a `ses_…` id (exactly that session;
+  `root_of` walks a subagent id up to its root).
 - **`ClaudeStore`** — second backend over Claude Code JSONL, same four methods
   (`workflows`/`summary`/`workflow_nodes`/`model_breakdown`) + `demo`/`demo_scale`. **That
   four-method surface is the whole `App`↔store contract — keep `App`/`Renderer`

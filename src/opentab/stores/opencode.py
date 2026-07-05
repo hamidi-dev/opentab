@@ -276,6 +276,51 @@ class Store:
             "paid_workflows": sum(1 for w in workflows if w.total_cost > 0),
         }
 
+    def recent_roots(self) -> list[sqlite3.Row]:
+        # Root sessions newest-activity-first, where activity is the latest update
+        # anywhere in the subtree (a subagent still streaming bumps its root).
+        # Feeds the one-shot `--status` command, which wants "the current session"
+        # without the full workflows() rollup; directories are returned raw -- the
+        # caller folds them to git roots.
+        directory_expr = self._session_text_expr("root", ["directory", "path"], "'(unknown)'")
+        if "time_updated" in self.session_columns:
+            ts_expr = "coalesce(s.time_updated, s.time_created)"
+        else:
+            ts_expr = "s.time_created"
+        sql = f"""
+        with recursive tree(root_id, id) as (
+          select id, id from session where parent_id is null
+          union all
+          select tree.root_id, child.id
+          from session child join tree on child.parent_id = tree.id
+        )
+        select
+          tree.root_id as id,
+          {directory_expr} as directory,
+          max({ts_expr}) as last_active
+        from tree
+        join session s on s.id = tree.id
+        join session root on root.id = tree.root_id
+        group by tree.root_id
+        order by last_active desc
+        """
+        return list(self.conn.execute(sql))
+
+    def root_of(self, session_id: str) -> str | None:
+        # Resolve any session id to its root by walking parent_id upward -- so a
+        # caller holding a subagent's id (e.g. a tmux plugin that saw a subagent's
+        # busy event) still prices the whole workflow. None when the id is unknown.
+        sql = """
+        with recursive up(id, parent_id) as (
+          select id, parent_id from session where id = ?
+          union all
+          select s.id, s.parent_id from session s join up on s.id = up.parent_id
+        )
+        select id from up where parent_id is null limit 1
+        """
+        row = self.conn.execute(sql, [session_id]).fetchone()
+        return row["id"] if row else None
+
     def workflow_nodes(self, workflow_id: str) -> list[sqlite3.Row]:
         token_exprs = self._token_exprs()
         cost_expr = self._cost_expr()

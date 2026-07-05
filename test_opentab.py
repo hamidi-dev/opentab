@@ -7591,6 +7591,106 @@ def test_open_path_uses_startfile_on_windows():
             del ot.os.startfile
 
 
+def _write_status_db(db, sessions, messages=()):
+    # Minimal OpenCode-shaped DB for the --status one-shot: session rows carry
+    # (id, parent_id, directory, time_created, time_updated, cost, tokens_input),
+    # messages only feed workflow_nodes' per-session model attribution.
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        create table session (
+          id text primary key, parent_id text, title text, directory text,
+          time_created integer, time_updated integer, cost real default 0 not null,
+          tokens_input integer default 0 not null, tokens_output integer default 0 not null,
+          tokens_reasoning integer default 0 not null, tokens_cache_read integer default 0 not null,
+          tokens_cache_write integer default 0 not null
+        );
+        create table message (id text primary key, session_id text, data text);
+        """
+    )
+    conn.executemany(
+        "insert into session values (?,?,?,?,?,?,?,?,0,0,0,0)",
+        [(id, parent, id, d, tc, tu, cost, tok) for id, parent, d, tc, tu, cost, tok in sessions],
+    )
+    conn.executemany("insert into message values (?,?,?)", messages)
+    conn.commit()
+    conn.close()
+
+
+def test_status_line_follows_subagent_activity_and_sums_subtree():
+    # "Current session" = the root whose *subtree* saw the latest update: a session
+    # whose subagent is still streaming must beat a root created later but idle
+    # since. The printed figure is the whole subtree's recorded cost.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_status_db(
+            db,
+            [
+                # old root, but its subagent has the newest time_updated in the DB
+                ("r1", None, "/work/repo", 1760000000000, None, 1.0, 10),
+                ("r1c", "r1", "/work/repo", 1760000001000, 1760099999000, 0.5, 5),
+                # created after r1, idle since
+                ("r2", None, "/work/repo", 1760005000000, 1760005000000, 9.0, 10),
+            ],
+        )
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        assert [r["id"] for r in store.recent_roots()] == ["r1", "r2"]
+        assert ot.status_line(store) == "$1.50"
+
+
+def test_status_line_scopes_to_project_and_estimates_unpriced():
+    # DIR narrows to that project's sessions; a $0 subscription session shows the
+    # list-price estimate with the "~" marker instead of a useless $0.00; a project
+    # with no sessions yields an empty segment (never an error).
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_status_db(
+            db,
+            [
+                ("a", None, "/work/alpha", 1760000000000, 1760000900000, 2.0, 100),
+                ("b", None, "/work/beta", 1760000000000, 1760000500000, 0.0, 1_000_000),
+            ],
+            messages=[
+                (
+                    "m1",
+                    "b",
+                    '{"role":"assistant","providerID":"anthropic","modelID":"claude-opus-4.5",'
+                    '"cost":0,"tokens":{"input":1000000,"output":0}}',
+                ),
+            ],
+        )
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        assert ot.status_line(store) == "$2.00"  # newest activity overall wins
+        expected = ot.money(
+            ot.api_equivalent_cost("anthropic/claude-opus-4.5", 1_000_000, 0, 0, 0, 0)
+        )
+        assert ot.status_line(store, "/work/beta") == "~" + expected
+        assert ot.status_line(store, "/work/nowhere") == ""
+
+
+def test_status_line_prices_an_exact_session_id():
+    # Two sessions in ONE project can't be told apart by directory (a dir target
+    # picks the project's most recent one) -- a session id target prices exactly
+    # that session, and a subagent's id resolves up to its root so the whole
+    # workflow is priced. Unknown ids yield an empty segment.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_status_db(
+            db,
+            [
+                ("ses_old", None, "/work/repo", 1760000000000, 1760000100000, 5.0, 10),
+                ("ses_oldchild", "ses_old", "/work/repo", 1760000001000, 1760000090000, 0.5, 5),
+                ("ses_new", None, "/work/repo", 1760000200000, 1760000900000, 2.0, 10),
+            ],
+        )
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        assert ot.status_line(store, "/work/repo") == "$2.00"  # dir -> project's latest
+        assert ot.status_line(store, "ses_new") == "$2.00"
+        assert ot.status_line(store, "ses_old") == "$5.50"  # exact session, subtree included
+        assert ot.status_line(store, "ses_oldchild") == "$5.50"  # subagent id -> its root
+        assert ot.status_line(store, "ses_gone") == ""
+
+
 if __name__ == "__main__":
     import sys
 
