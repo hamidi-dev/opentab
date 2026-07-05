@@ -49,6 +49,7 @@ python3 -m opentab --demo                     # run the TUI with anonymized/synt
 opentab --status "$PWD"                       # one-shot: current session's cost incl. subagents (tmux status line; OpenCode only)
 opentab --demo --html demo.html               # one-shot: write the self-contained HTML report
 opentab --serve                               # same report served on http://localhost:8321 (+ live Turns/Tools)
+opentab --web                                 # --serve, and open the report in the default browser
 ```
 
 `test_opentab.py` is **not** pytest — it has its own runner at the bottom that just runs
@@ -483,7 +484,12 @@ export **omits Turns/Tools** (embedding them would be a startup-wide scan), whil
 `--serve` (`web.ReportServer`) exposes them as `/api/session/<id>` fetched on drill-in,
 plus `/api/reload`. The server is **deliberately single-threaded** — the stores' sqlite
 connections are bound to their creating thread — and binds 127.0.0.1 by default (the
-report leaks prompt titles/paths/spend; `--bind` warns beyond localhost). `--demo` works
+report leaks prompt titles/paths/spend; `--bind` warns beyond localhost). **`--web` is
+`--serve` plus opening the report in the default browser** (`web.open_report`, stdlib
+`webbrowser` → `open`/`xdg-open`/Windows shell-association, so it's cross-platform),
+launched from a daemon thread once the socket is listening (a console-browser fallback
+can't block `serve_forever`, and it never touches the sqlite-bound store); a headless box
+with no browser is a no-op, never a crash. `--demo` works
 unchanged (stores transform before serialization), which is the shareable-page story:
 `opentab --demo --html demo.html`.
 

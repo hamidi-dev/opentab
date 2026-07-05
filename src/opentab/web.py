@@ -9,12 +9,13 @@ Drill-in/out, sorting, and the $ toggle all run client-side off the embedded JSO
 (every row carries both the real and the API-equivalent cost, so the toggle is a
 field swap, not a reprice).
 
-`--serve` wraps the same page in a stdlib ThreadingHTTPServer and adds the lazy
+`--serve` wraps the same page in a stdlib HTTP server and adds the lazy
 per-session extras (Turns/Tools) as JSON endpoints — the exact per-session
 drill-in trade-off the TUI makes, which is why the static export omits those two
 tabs: embedding them would mean the startup-wide scan the TUI deliberately avoids.
 Subagent trees are cheap per-session queries and *are* embedded (only for sessions
-that have subagents).
+that have subagents). `--web` is `--serve` plus popping the report open in the
+user's default browser (stdlib `webbrowser`, so cross-platform).
 
 Everything here is read-only on the data sources; the one file written is the
 --html report the user asked for.
@@ -326,6 +327,19 @@ class ReportServer(HTTPServer):
         self._page = None
 
 
+def open_report(url: str) -> bool:
+    """Open the report in the user's default browser -- stdlib `webbrowser`, so it's
+    cross-platform out of the box (`open` on macOS, `xdg-open` on Linux, the shell
+    association on Windows). Best effort: a headless box with no browser returns
+    False instead of raising, so `--web` never crashes serving over it."""
+    import webbrowser
+
+    try:
+        return webbrowser.open(url, new=2)  # new=2 -> a new tab where the browser can
+    except Exception:  # noqa: BLE001 -- any browser-launch failure is non-fatal
+        return False
+
+
 def serve_command(app: App, args: argparse.Namespace) -> int:
     bind = getattr(args, "bind", DEFAULT_BIND) or DEFAULT_BIND
     port = getattr(args, "port", DEFAULT_PORT) or DEFAULT_PORT
@@ -341,7 +355,17 @@ def serve_command(app: App, args: argparse.Namespace) -> int:
         raise SystemExit(f"cannot bind {bind}:{port}: {exc}") from exc
     server.page()  # build eagerly so the first request is instant and errors surface here
     host = "localhost" if bind in ("127.0.0.1", "::1") else bind
-    print(f"opentab report at http://{host}:{server.server_address[1]}/  (Ctrl-C to stop)")
+    url = f"http://{host}:{server.server_address[1]}/"
+    print(f"opentab report at {url}  (Ctrl-C to stop)")
+    if getattr(args, "web", False):
+        # --web: pop the browser now the socket is listening (bound in __init__, so a
+        # request racing serve_forever just queues in the backlog). In a daemon thread
+        # so a console-browser fallback that runs in the foreground can't block
+        # serve_forever; it only calls webbrowser, never the sqlite-bound store, so
+        # the single-threaded-request design still holds.
+        import threading
+
+        threading.Thread(target=open_report, args=(url,), daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

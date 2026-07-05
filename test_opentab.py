@@ -8009,6 +8009,45 @@ def test_web_report_server_serves_page_extras_and_404():
     thread.join(timeout=5)
 
 
+def test_cli_web_flag_is_recognized_and_is_distinct_from_serve():
+    # --web is its own flag; web_command/main route it through the serve path.
+    import sys as _sys
+
+    argv = _sys.argv
+    _sys.argv = ["opentab", "--web"]
+    try:
+        args = ot.parse_args()
+    finally:
+        _sys.argv = argv
+    assert args.web is True and args.serve is False
+    assert args.port == 8321 and args.bind == "127.0.0.1"  # shared with --serve
+
+
+def test_web_open_report_opens_a_browser_and_survives_a_headless_box():
+    # --web pops the report open cross-platform via stdlib webbrowser; a box with no
+    # browser must return False, never raise, so serving keeps running.
+    import webbrowser
+
+    calls = []
+    real_open = webbrowser.open
+
+    def fake_open(url, new=0, autoraise=True):
+        calls.append((url, new))
+        return True
+
+    def boom(*a, **k):
+        raise webbrowser.Error("no browser found")
+
+    webbrowser.open = fake_open
+    try:
+        assert ot.web.open_report("http://localhost:8321/") is True
+        assert calls == [("http://localhost:8321/", 2)]  # new=2 -> a new tab
+        webbrowser.open = boom
+        assert ot.web.open_report("http://localhost:8321/") is False
+    finally:
+        webbrowser.open = real_open
+
+
 if __name__ == "__main__":
     import sys
 

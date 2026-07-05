@@ -50,7 +50,8 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
 - Live fuzzy filter (fzf-style, title / project / id) and live date-range scoping
 - CSV export of any view
 - A self-contained **HTML report** (`--html`) — same drill-in, calendar heatmap, and
-  `$` toggle in one shareable file — and a local live server for it (`--serve`)
+  `$` toggle in one shareable file — and a local live server for it (`--serve`, or
+  `--web` to also pop it open in your browser)
 - Keyboard- and mouse-driven (scroll, click to select, double-click to drill)
 - Remembers your range, sort, ignored projects, and the `$` view between runs
 - Colour themes (opentab, Catppuccin, Tokyo Night, Gruvbox, Nord, Dracula, Rosé Pine —
@@ -165,6 +166,7 @@ opentab --source claude          # browse Claude Code spend instead (see below)
 opentab --demo                   # safe for live demos / screenshots (see below)
 opentab --html                   # write opentab-report.html and exit (see below)
 opentab --serve                  # same report on http://localhost:8321, live
+opentab --web                    # --serve, and open it in your browser
 ```
 
 ### Data sources
@@ -243,7 +245,7 @@ and months, and the model mix (which models, in what ratio) — but the absolute
 numbers do not. A `DEMO — synthetic` tag shows in the header so synthetic figures
 are never mistaken for real ones.
 
-### Web report (`--html` / `--serve`)
+### Web report (`--html` / `--serve` / `--web`)
 
 `opentab --html` writes the whole browser as **one self-contained HTML file** —
 no server, no dependencies, works from disk or any static host. It's the TUI in
@@ -266,8 +268,10 @@ default. Combine with `--demo` for a page you can publish.
 `opentab --serve` serves the same report on `http://localhost:8321` (`--port`)
 and adds what a static file can't have: the per-session **Turns** timeline and
 **Tools** attribution fetched live on drill-in, plus a refresh button that
-re-reads your data. It binds to localhost only — the report shows prompt titles,
-project paths, and spend, so if you want it on another machine put it behind
+re-reads your data. `opentab --web` is the same thing but also opens the report in
+your default browser (cross-platform — `open` on macOS, `xdg-open` on Linux, the
+shell association on Windows). It binds to localhost only — the report shows prompt
+titles, project paths, and spend, so if you want it on another machine put it behind
 something like Tailscale (`--bind`), never a public interface.
 
 OpenTab opens on a stacked **Months / Days** sidebar (lazygit-style). `Tab` flips

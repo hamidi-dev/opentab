@@ -182,6 +182,13 @@ def parse_args() -> argparse.Namespace:
         "(Ctrl-C stops it)",
     )
     parser.add_argument(
+        "--web",
+        action="store_true",
+        help="like --serve, but also open the report in your default browser "
+        "(cross-platform via the stdlib webbrowser: `open` on macOS, `xdg-open` on "
+        "Linux, the shell association on Windows); honors --port/--bind",
+    )
+    parser.add_argument(
         "--theme",
         choices=themes.THEME_IDS,
         default=themes.DEFAULT_THEME,
@@ -190,11 +197,13 @@ def parse_args() -> argparse.Namespace:
         "switch live in the TUI with Y or the report's theme button, and your choice is "
         f"remembered. Default: {themes.DEFAULT_THEME}",
     )
-    parser.add_argument("--port", type=int, default=8321, help="port for --serve (default: 8321)")
+    parser.add_argument(
+        "--port", type=int, default=8321, help="port for --serve/--web (default: 8321)"
+    )
     parser.add_argument(
         "--bind",
         default="127.0.0.1",
-        help="address for --serve (default: 127.0.0.1). The report exposes prompt "
+        help="address for --serve/--web (default: 127.0.0.1). The report exposes prompt "
         "titles, project paths, and spend -- bind beyond localhost only on a "
         "trusted/VPN (e.g. Tailscale) interface, never a public one",
     )
@@ -333,7 +342,7 @@ def web_command(args: argparse.Namespace) -> int:
     app._ensure_models()  # the $ what-if snapshots ride on the per-model breakdown
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()
-    if args.serve:
+    if args.serve or args.web:  # --web serves too, then pops the browser
         return web.serve_command(app, args)
     return web.html_command(app, args)
 
@@ -350,7 +359,11 @@ def main() -> int:
         return refresh_models_command()  # fetch prices and exit; no curses needed
     if getattr(args, "status", None) is not None:
         return status_command(args)  # one-shot for the tmux status line; no curses
-    if getattr(args, "html", None) is not None or getattr(args, "serve", False):
+    if (
+        getattr(args, "html", None) is not None
+        or getattr(args, "serve", False)
+        or getattr(args, "web", False)
+    ):
         return web_command(args)  # HTML report / local report server; no curses
     if curses is None:
         raise SystemExit(
