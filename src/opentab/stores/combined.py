@@ -1,7 +1,24 @@
 """CombinedStore: merge several backends into one view."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from opentab.models import Workflow
+
+
+def _gather(calls: list) -> list:
+    # Run each 0-arg callable in its own thread and return the results IN ORDER. The
+    # backends hold disjoint state (each its own files / sqlite connection), so their
+    # workflows()/model_breakdown() -- the bulk of startup -- run independently; only the
+    # merge that consumes these results touches shared state, back on the caller's
+    # thread. Overlapping them collapses --source all from the sum of the backends toward
+    # the slowest single one. sqlite/read() release the GIL, so even the DB scan overlaps
+    # the file parses. Exceptions propagate on iteration, matching the old serial loop.
+    calls = list(calls)
+    if len(calls) <= 1:
+        return [c() for c in calls]
+    with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="opentab-store") as ex:
+        return list(ex.map(lambda c: c(), calls))
 
 
 class CombinedStore:
@@ -50,10 +67,12 @@ class CombinedStore:
         self._owner: dict[str, object] = {}
 
     def workflows(self) -> list[Workflow]:
+        # Roll up every backend in parallel, then build the id->owner map and merge on
+        # this thread (deterministic, order-preserving) -- see _gather.
         out: list[Workflow] = []
         owner: dict[str, object] = {}
-        for store in self.stores:
-            for w in store.workflows():
+        for store, workflows in zip(self.stores, _gather([s.workflows for s in self.stores])):
+            for w in workflows:
                 owner[w.id] = store
                 out.append(w)
         self._owner = owner
@@ -66,8 +85,8 @@ class CombinedStore:
 
     def model_breakdown(self) -> list:
         out: list = []
-        for store in self.stores:
-            out.extend(store.model_breakdown())
+        for rows in _gather([s.model_breakdown for s in self.stores]):
+            out.extend(rows)
         return out
 
     def workflow_nodes(self, workflow_id: str) -> list:

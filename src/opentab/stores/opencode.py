@@ -65,7 +65,11 @@ class Store:
         # Open read-only (URI mode) so opentab physically cannot modify the
         # OpenCode database it reads -- the "never writes" promise, enforced.
         uri = "file:" + quote(os.path.abspath(db)) + "?mode=ro"
-        self.conn = sqlite3.connect(uri, uri=True)
+        # check_same_thread=False lets CombinedStore run workflows()/model_breakdown() on
+        # a worker thread (parse the backends in parallel). Each Store owns its own
+        # connection and it is only ever touched by ONE thread at a time -- never
+        # concurrently -- so no cross-thread locking is needed. Read-only regardless.
+        self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._tune(self.conn)
         self.session_columns = self._table_columns("session")
