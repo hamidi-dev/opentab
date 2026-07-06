@@ -6,6 +6,7 @@ import locale
 import os
 import sqlite3
 import sys
+import time
 
 try:
     import curses
@@ -214,6 +215,13 @@ def parse_args() -> argparse.Namespace:
         f"({price_cache_path()}) and exit; the cache overlays the embedded table for the "
         "$ what-if estimate (also available with 'r' in the P prices overlay)",
     )
+    parser.add_argument(
+        "--timings",
+        action="store_true",
+        help="profile startup: print how long source detection, store build, and each "
+        "backend's parse/scan take, then exit (no curses -- works on native Windows). "
+        "Handy for measuring the file-heavy backends on a slow filesystem",
+    )
     args = parser.parse_args()
     _route_path_arg(parser, args)
     return args
@@ -257,6 +265,55 @@ def refresh_models_command() -> int:
         raise SystemExit(f"price refresh failed: {exc}") from exc
     print(f"Cached {count} model prices to {path}.")
     print("These overlay the embedded table for the $ what-if estimate; rerun to update.")
+    return 0
+
+
+def timings_command(args: argparse.Namespace) -> int:
+    # Startup profiler: walk the same load path the TUI takes (detect sources, build
+    # the store, roll up each backend, run the model scan) with a stopwatch on every
+    # phase, print a table, and exit. Curses-free, so it also runs on native Windows
+    # -- the platform where the file-heavy backends hurt most. State is skipped so the
+    # numbers reflect a cold, reproducible run rather than a restored source.
+    def timed(fn):
+        t0 = time.perf_counter()
+        result = fn()
+        return result, (time.perf_counter() - t0) * 1000.0
+
+    rows: list[tuple[str, float, str]] = []
+    t_start = time.perf_counter()
+
+    present, ms = timed(lambda: sources.available_sources(args))
+    rows.append(("detect sources", ms, ", ".join(present) or "(none)"))
+
+    source_key = resolve_source(args, {})  # no saved state -> measure a clean start
+    (store, _loading), ms = timed(lambda: sources.make_store(args, source_key))
+    rows.append(("build store", ms, f"source={source_key}"))
+
+    for sub in getattr(store, "stores", None) or [store]:
+        label = getattr(sub, "source_name", type(sub).__name__)
+        note = ""
+        files_fn = getattr(sub, "_files", None)
+        if callable(files_fn):
+            try:
+                note = f"{len(files_fn())} files"
+            except OSError:
+                note = ""
+        _wf, ms = timed(sub.workflows)
+        rows.append((f"workflows [{label}]", ms, note))
+        _mb, ms = timed(sub.model_breakdown)
+        rows.append((f"model_breakdown [{label}]", ms, ""))
+
+    total_ms = (time.perf_counter() - t_start) * 1000.0
+    py = f"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}"
+    print(f"opentab --timings   source={source_key}   python={py}   platform={sys.platform}")
+    width = max((len(name) for name, _, _ in rows), default=0)
+    rule = "  " + "─" * (width + 22)
+    print(rule)
+    for name, ms, note in rows:
+        suffix = f"   {note}" if note else ""
+        print(f"  {name.ljust(width)}  {ms:9.1f} ms{suffix}")
+    print(rule)
+    print(f"  {'total'.ljust(width)}  {total_ms:9.1f} ms")
     return 0
 
 
@@ -359,6 +416,8 @@ def main() -> int:
         return refresh_models_command()  # fetch prices and exit; no curses needed
     if getattr(args, "status", None) is not None:
         return status_command(args)  # one-shot for the tmux status line; no curses
+    if getattr(args, "timings", False):
+        return timings_command(args)  # startup profiler; no curses
     if (
         getattr(args, "html", None) is not None
         or getattr(args, "serve", False)
