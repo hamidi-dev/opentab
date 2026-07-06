@@ -14,7 +14,7 @@ from __future__ import annotations
 # Single source of truth for the version (also read by hatchling at build time,
 # and imported by opentab.pricing / opentab.cli). Must be set before the
 # re-exports below import those modules.
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 # Stdlib modules re-exposed as attributes of the package. Modules are singletons,
 # so patching e.g. ``opentab.os.startfile`` is visible to every submodule that
