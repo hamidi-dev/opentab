@@ -14,7 +14,7 @@ except ImportError:  # native Windows has no stdlib curses
     curses = None
 
 from opentab import __version__, sources, themes
-from opentab.formatting import money
+from opentab.formatting import cost_bar, money
 from opentab.pricing import (
     MODELS_DEV_URL,
     api_equivalent_cost,
@@ -286,41 +286,57 @@ def timings_command(args: argparse.Namespace) -> int:
         result = fn()
         return result, (time.perf_counter() - t0) * 1000.0
 
-    rows: list[tuple[str, float, str]] = []
     t_start = time.perf_counter()
-
-    present, ms = timed(lambda: sources.available_sources(args))
-    rows.append(("detect sources", ms, ", ".join(present) or "(none)"))
-
+    present, detect_ms = timed(lambda: sources.available_sources(args))
     source_key = resolve_source(args, {})  # no saved state -> measure a clean start
-    (store, _loading), ms = timed(lambda: sources.make_store(args, source_key))
-    rows.append(("build store", ms, f"source={source_key}"))
+    (store, _loading), build_ms = timed(lambda: sources.make_store(args, source_key))
 
+    # One row per backend: its whole parse+scan cost and whether it came from the cache.
+    backends: list[list] = []  # [label, files, ms, cached]
     for sub in getattr(store, "stores", None) or [store]:
         label = getattr(sub, "source_name", type(sub).__name__)
-        note = ""
-        files_fn = getattr(sub, "_files", None)
+        files = None
+        files_fn = getattr(sub, "_files", None)  # only the file-based backends have it
         if callable(files_fn):
             try:
-                note = f"{len(files_fn())} files"
+                files = len(files_fn())
             except OSError:
-                note = ""
-        _wf, ms = timed(sub.workflows)
-        rows.append((f"workflows [{label}]", ms, note))
-        _mb, ms = timed(sub.model_breakdown)
-        rows.append((f"model_breakdown [{label}]", ms, ""))
-
+                files = None
+        _wf, wf_ms = timed(sub.workflows)
+        _mb, mb_ms = timed(sub.model_breakdown)
+        backends.append([label, files, wf_ms + mb_ms, getattr(sub, "served_from_cache", None)])
     total_ms = (time.perf_counter() - t_start) * 1000.0
+    backends.sort(key=lambda b: b[2], reverse=True)  # slowest backend first
+
+    flags = [c for _, _, _, c in backends if c is not None]
+    if flags and all(flags):
+        warmth = "warm start · all cached"
+    elif flags and any(flags):
+        warmth = "partial cache"
+    else:
+        warmth = "cold start"
     py = f"{sys.version_info[0]}.{sys.version_info[1]}.{sys.version_info[2]}"
-    print(f"opentab --timings   source={source_key}   python={py}   platform={sys.platform}")
-    width = max((len(name) for name, _, _ in rows), default=0)
-    rule = "  " + "─" * (width + 22)
-    print(rule)
-    for name, ms, note in rows:
-        suffix = f"   {note}" if note else ""
-        print(f"  {name.ljust(width)}  {ms:9.1f} ms{suffix}")
-    print(rule)
-    print(f"  {'total'.ljust(width)}  {total_ms:9.1f} ms")
+
+    lbl = max([len(b[0]) for b in backends] + [len("backend"), len("total")])
+    peak = max([b[2] for b in backends], default=0.0)
+
+    def fmt_ms(ms: float) -> str:
+        return f"{ms:7.1f} ms"
+
+    print(f"opentab --timings · {total_ms:.0f} ms total · {warmth}")
+    print(f"source={source_key} · python {py} · {sys.platform}")
+    print()
+    print(f"  detect sources  {fmt_ms(detect_ms)}   {', '.join(present) or '(none)'}")
+    print(f"  build store     {fmt_ms(build_ms)}")
+    print()
+    print(f"  {'backend'.ljust(lbl)}  {'files':>5}  {'time':>10}")
+    for label, files, ms, cached in backends:
+        fcell = str(files) if files is not None else "—"
+        status = {True: "cached", False: "parsed"}.get(cached, "")
+        bar = cost_bar(ms, peak, 12)
+        print(f"  {label.ljust(lbl)}  {fcell:>5}  {fmt_ms(ms)}  {bar} {status}".rstrip())
+    print()
+    print(f"  {'total'.ljust(lbl)}  {'':>5}  {fmt_ms(total_ms)}")
     return 0
 
 

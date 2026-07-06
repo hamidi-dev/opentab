@@ -46,6 +46,7 @@ class CachedStore:
         self._disk = self._read()  # the on-disk cache, or None
         self._live_fp: list | None = None  # fingerprint of the current workflows() call
         self._fresh_wf: list | None = None  # asdict rows from the last parse (for the write)
+        self.served_from_cache: bool | None = None  # set by workflows(); read by --timings
 
     # Anything not intercepted below is the wrapped store's -- workflow_nodes, the Turns/
     # Tools extras, supports_*, records_cost, demo, source_name, summary, and so on.
@@ -108,9 +109,11 @@ class CachedStore:
         self._live_fp = self._fingerprint()
         if self._disk is not None and self._disk.get("fingerprint") == self._live_fp:
             self._fresh_wf = None  # a hit: nothing new to write
+            self.served_from_cache = True
             return [Workflow(**row) for row in self._disk["workflows"]]
         workflows = self._store.workflows()  # miss: real parse
         self._fresh_wf = [asdict(w) for w in workflows]
+        self.served_from_cache = False
         return workflows
 
     def model_breakdown(self) -> list:
