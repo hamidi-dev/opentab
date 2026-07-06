@@ -142,8 +142,13 @@ def _route_path_arg(parser: argparse.ArgumentParser, args: argparse.Namespace) -
 
 
 def _jsonl_dir_available(directory: str) -> bool:
-    return os.path.isdir(directory) and bool(
-        glob.glob(os.path.join(directory, "**", "*.jsonl"), recursive=True)
+    # Only "is there at least one *.jsonl?" -- iglob + next stops the recursive walk at
+    # the first hit instead of enumerating the whole tree just to test a boolean, which
+    # matters on a directory with many sessions (and on a slow/scanned filesystem).
+    if not os.path.isdir(directory):
+        return False
+    return (
+        next(glob.iglob(os.path.join(directory, "**", "*.jsonl"), recursive=True), None) is not None
     )
 
 
@@ -152,7 +157,10 @@ def _openclaw_available(root_dir: str) -> bool:
     # check that precise shape so an unrelated ~/.openclaw/**/*.jsonl never trips detection.
     if not root_dir or not os.path.isdir(root_dir):
         return False
-    return bool(glob.glob(os.path.join(root_dir, "agents", "*", "sessions", "*.jsonl")))
+    return (
+        next(glob.iglob(os.path.join(root_dir, "agents", "*", "sessions", "*.jsonl")), None)
+        is not None
+    )
 
 
 def _copilot_otel_available(args: argparse.Namespace) -> bool:
@@ -176,7 +184,7 @@ def _vscode_available(args: argparse.Namespace) -> bool:
             os.path.join(user_dir, "*.json*"),  # pointed straight at a chatSessions dir
         )
         for pattern in patterns:
-            for path in glob.glob(pattern):
+            for path in glob.iglob(pattern):  # lazy: stop at the first token-bearing file
                 if not path.endswith((".json", ".jsonl")):
                     continue
                 try:
@@ -216,8 +224,37 @@ RESUME_COMMANDS = {
 }
 
 
+def _detect_fingerprint(args: argparse.Namespace) -> tuple:
+    # Everything available_sources() inspects, so the memo below invalidates the moment
+    # any source path changes (a source added between runs, or a test that re-points a
+    # --dir on the same namespace) rather than serving a stale detection.
+    return tuple(
+        getattr(args, name, "")
+        for name in (
+            "db",
+            "claude_dir",
+            "codex_dir",
+            "hermes_db",
+            "csv",
+            "jsonl",
+            "copilot_dir",
+            "vscode_dir",
+            "pi_dir",
+            "openclaw_dir",
+        )
+    ) + (os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH", ""),)
+
+
 def available_sources(args: argparse.Namespace) -> list[str]:
     # The single-source backends actually present on this machine, in priority order.
+    # Memoized on the namespace: resolve_source() calls this up to three times and
+    # make_store("all") once more, each otherwise re-walking every backend's tree --
+    # a real cost on Windows/WSL where the per-open tax dominates. Keyed on the paths
+    # it reads (see _detect_fingerprint) so it re-scans if any of them change.
+    fp = _detect_fingerprint(args)
+    cached = getattr(args, "_available_sources", None)
+    if cached is not None and cached[0] == fp:
+        return list(cached[1])  # a copy -- source_cycle() appends "all" to its result
     keys = []
     if os.path.exists(args.db):
         keys.append("opencode")
@@ -239,7 +276,8 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("pi")
     if _openclaw_available(getattr(args, "openclaw_dir", "")):
         keys.append("openclaw")
-    return keys
+    args._available_sources = (fp, keys)
+    return list(keys)
 
 
 def source_cycle(args: argparse.Namespace) -> list[str]:
