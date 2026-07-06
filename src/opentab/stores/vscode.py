@@ -145,6 +145,10 @@ class VscodeStore:
             return ""
 
     # --- discovery -------------------------------------------------------------
+    def cache_inputs(self) -> list[str]:
+        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
+        return [path for path, _ in self._session_files()]
+
     def _session_files(self) -> list[tuple[str, str | None]]:
         # (path, workspaceStorage hash dir or None for empty-window sessions), journal
         # .jsonl before plain .json within each directory so the fresher shape wins the

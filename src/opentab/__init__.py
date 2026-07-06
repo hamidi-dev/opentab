@@ -124,6 +124,7 @@ from opentab.sources import (
     source_cycle,
 )
 from opentab.state import apply_state, load_state, save_state, state_path
+from opentab.stores.cached import CachedStore
 from opentab.stores.claude import ClaudeStore
 from opentab.stores.codex import CodexStore
 from opentab.stores.combined import CombinedStore
@@ -161,6 +162,7 @@ from opentab.util import (
     normalize_project_path,
     open_path,
     parse_range_text,
+    read_files_parallel,
     resolve_project_root,
     tmux_launch,
     tmux_launch_argv,

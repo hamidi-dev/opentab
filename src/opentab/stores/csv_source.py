@@ -378,6 +378,10 @@ class CsvStore:
         }
 
     # --- Store interface -----------------------------------------------------
+    def cache_inputs(self) -> list[str]:
+        # The single CSV file whose (size, mtime) fingerprints the warm-start cache.
+        return [self.csv_path]
+
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         sessions = self._parse()

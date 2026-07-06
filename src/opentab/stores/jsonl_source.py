@@ -83,6 +83,10 @@ class JsonlStore(CsvStore):
         self._git_root_cache: dict[str, str] = {}
         self.records_cost = self._probe_records_cost()
 
+    def cache_inputs(self) -> list[str]:
+        # The single JSONL file whose (size, mtime) fingerprints the warm-start cache.
+        return [self.path]
+
     # --- value access --------------------------------------------------------
     @classmethod
     def _get(cls, obj: dict, field: str):

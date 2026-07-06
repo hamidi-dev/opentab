@@ -6120,7 +6120,7 @@ def test_csv_joins_the_source_cycle_and_has_no_resume_command():
         # no saved pref and >=2 sources present -> auto merges them (no --source needed)
         assert ot.resolve_source(args, {}) == "all"
         store, _ = ot.sources.make_store(args, "csv")
-        assert isinstance(store, ot.CsvStore)
+        assert isinstance(getattr(store, "_store", store), ot.CsvStore)  # unwrap CachedStore
 
         app = ot.App(FakeStore([workflow("a", "2026-06-01 12:00:00")]), args)
         app.source_key = "opencode"
@@ -6395,7 +6395,7 @@ def test_jsonl_path_routing_and_source_cycle():
         )()
         assert "jsonl" in ot.available_sources(args)
         store, _ = ot.sources.make_store(args, "jsonl")
-        assert isinstance(store, ot.JsonlStore)
+        assert isinstance(getattr(store, "_store", store), ot.JsonlStore)  # unwrap CachedStore
 
 
 def _parse(argv):
@@ -6930,7 +6930,7 @@ def test_vscode_store_turns_empty_window_and_source_cycle():
         )()
         assert ot.available_sources(args) == ["vscode"]
         built, _ = ot.sources.make_store(args, "vscode")
-        assert isinstance(built, ot.VscodeStore)
+        assert isinstance(getattr(built, "_store", built), ot.VscodeStore)  # unwrap CachedStore
 
         # An opened-but-never-used chat panel (no tokens anywhere) must NOT surface
         # the source -- that is every VS Code install on earth.
@@ -6943,6 +6943,76 @@ def test_vscode_store_turns_empty_window_and_source_cycle():
         )
         args.vscode_dir = bare
         assert ot.available_sources(args) == []
+
+
+def test_cached_store_warm_start_and_invalidation():
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
+        data = os.path.join(tmp, "data.jsonl")
+        with open(data, "w") as fh:
+            fh.write("one\n")
+
+        class Backend:
+            combined = False
+            records_cost = False
+            demo = False
+            source_name = "Fake"
+
+            def __init__(self):
+                self.workflow_calls = 0
+                self.breakdown_calls = 0
+
+            def cache_inputs(self):
+                return [data]
+
+            def workflows(self):
+                self.workflow_calls += 1
+                return [workflow("s1", "2026-06-01 12:00:00", cost=0.0, tokens=100)]
+
+            def model_breakdown(self):
+                self.breakdown_calls += 1
+                return [
+                    {"root_id": "s1", "model_name": "anthropic/x", "runs": 1, "tokens_total": 100}
+                ]
+
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        cid = "fake|" + data
+        try:
+            # Cold: the first wrapper parses (once each) and writes the cache.
+            b1 = Backend()
+            c1 = ot.CachedStore(b1, cid, args)
+            wf1 = c1.workflows()
+            mb1 = c1.model_breakdown()
+            assert b1.workflow_calls == 1 and b1.breakdown_calls == 1
+            assert [w.id for w in wf1] == ["s1"] and mb1[0]["root_id"] == "s1"
+
+            # Warm: a fresh wrapper over the UNCHANGED file serves the cached rollup and
+            # never touches the backend -- the whole point of the warm start.
+            b2 = Backend()
+            c2 = ot.CachedStore(b2, cid, args)
+            wf2 = c2.workflows()
+            mb2 = c2.model_breakdown()
+            assert b2.workflow_calls == 0 and b2.breakdown_calls == 0
+            assert [w.id for w in wf2] == ["s1"] and mb2 == mb1  # identical, round-tripped
+
+            # Invalidate: editing the file changes size+mtime -> miss -> real re-parse.
+            with open(data, "a") as fh:
+                fh.write("two\n")
+            b3 = Backend()
+            c3 = ot.CachedStore(b3, cid, args)
+            c3.workflows()
+            c3.model_breakdown()
+            assert b3.workflow_calls == 1 and b3.breakdown_calls == 1
+
+            # --no-cache passes the raw backend straight through (no wrapper).
+            raw = ot.sources._wrap_cache(Backend(), "fake", type("A", (), {"no_cache": True})())
+            assert isinstance(raw, Backend)
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
 
 
 def test_wsl_mount_root_and_windows_path_mapping():

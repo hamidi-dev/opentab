@@ -301,6 +301,10 @@ class CopilotStore:
         return meta
 
     # --- parsing -------------------------------------------------------------
+    def cache_inputs(self) -> list[str]:
+        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
+        return self._files()
+
     def _files(self) -> list[str]:
         files = glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
         # Add the env-var export file, but only if it isn't already one of the globbed

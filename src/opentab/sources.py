@@ -6,6 +6,7 @@ import glob
 import os
 import sys
 
+from opentab.stores.cached import CachedStore
 from opentab.stores.claude import ClaudeStore
 from opentab.stores.codex import CodexStore
 from opentab.stores.combined import CombinedStore
@@ -305,9 +306,29 @@ def resolve_source(args: argparse.Namespace, state: dict | None = None) -> str:
     return present[0] if present else "opencode"
 
 
+def _wrap_cache(store, key: str, args: argparse.Namespace):
+    # Wrap a leaf backend in the warm-start cache. The merged view itself isn't wrapped
+    # -- its sub-stores are cached individually, so a change in one backend doesn't
+    # cold-start the others. Off under --demo (never persists; per-process scale) and
+    # --no-cache; a backend that hasn't opted in (no cache_inputs) is passed through.
+    if key == "all" or getattr(store, "combined", False):
+        return store
+    if getattr(args, "demo", False) or getattr(args, "no_cache", False):
+        return store
+    if not callable(getattr(store, "cache_inputs", None)):
+        return store
+    root = getattr(args, _PATH_SLOT.get(key, ""), "") or ""
+    return CachedStore(store, f"{key}|{root}", args)
+
+
 def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
-    # Build the backend for a concrete source key. Returns (store, loading-hint);
-    # exits with a clear message when the chosen source isn't present.
+    # Build the backend for a concrete source key, then wrap it in the warm-start cache.
+    # Returns (store, loading-hint); exits with a clear message when the source isn't present.
+    store, hint = _build_store(args, key)
+    return _wrap_cache(store, key, args), hint
+
+
+def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
     if key == "all":
         subs = [make_store(args, k)[0] for k in available_sources(args)]
         if not subs:

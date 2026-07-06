@@ -222,6 +222,13 @@ def parse_args() -> argparse.Namespace:
         "backend's parse/scan take, then exit (no curses -- works on native Windows). "
         "Handy for measuring the file-heavy backends on a slow filesystem",
     )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="skip the warm-start rollup cache and always re-parse from scratch. The "
+        "cache (under ~/.config/opentab/cache) reuses the previous parse when a backend's "
+        "files are unchanged; use this to force a cold read or to measure it",
+    )
     args = parser.parse_args()
     _route_path_arg(parser, args)
     return args

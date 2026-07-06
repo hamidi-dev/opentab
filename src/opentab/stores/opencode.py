@@ -186,6 +186,10 @@ class Store:
             return fallback
         return f"coalesce({', '.join(parts)}, {fallback})"
 
+    def cache_inputs(self) -> list[str]:
+        # The single DB file whose (size, mtime) fingerprints the warm-start cache.
+        return [os.path.abspath(self.db)]
+
     def workflows(self) -> list[Workflow]:
         # Load every root session; the App filters by the active range in memory
         # so the range can be changed live without re-querying.

@@ -94,8 +94,10 @@ Follow [Conventional Commits](https://www.conventionalcommits.org) — `type(sco
 - **Read-only on the OpenCode DB.** The tool opens the database read-only and must
   not write to it. The only files it writes are `~/.config/opentab/state.json` (prefs),
   `~/.config/opentab/prices.json` (the optional models.dev price cache, only on
-  `--refresh-models` / `r` in the `P` overlay), `opentab-*.csv` exports (on `e`), and
-  the HTML report (only on `--html`, default `opentab-report.html`).
+  `--refresh-models` / `r` in the `P` overlay), the warm-start rollup cache under
+  `~/.config/opentab/cache/` (one JSON per backend, rewritten after a parse when that
+  backend's files change; off under `--demo` / `--no-cache`), `opentab-*.csv` exports
+  (on `e`), and the HTML report (only on `--html`, default `opentab-report.html`).
 - **Python 3.9+.** `MIN_PYTHON = (3, 9)`; `target-version = py39`. Don't use newer syntax.
 
 ## Architecture
@@ -116,7 +118,7 @@ src/opentab/
   sources.py         make_store/resolve_source/available_sources/source_cycle + path routing
   state.py           load_state/save_state/apply_state
   themes.py          THEMES palettes (single source for the web report + the TUI) + hex math
-  stores/            opencode, claude, codex, hermes, csv_source, jsonl_source, copilot, vscode, pi, openclaw, combined
+  stores/            opencode, claude, codex, hermes, csv_source, jsonl_source, copilot, vscode, pi, openclaw, combined, cached
   tui/               renderer (Renderer), app (App)
   web.py             build_payload/session_extras + html_command/serve_command (ReportServer)
   webpage.py         render_html: the self-contained report page (inline CSS/JS strings)
@@ -283,6 +285,23 @@ Three logical layers (the class names below live in the files above — `Store` 
   (`Renderer.src_col`) and `[oc]`/`[cc]`/… title tags (`source_tag`/`_source_abbrev`).
   Combined **demo** forces every sub-store to one shared `demo_scale` (else each draws its
   own, distorting the Sources ratio); still private.
+- **`CachedStore`** (`stores/cached.py`) — the **warm-start cache**, a transparent wrapper
+  `make_store()` puts around every *leaf* backend (not the merged view — its sub-stores are
+  cached individually, so one backend changing doesn't cold-start the others). It
+  fingerprints the backend's `cache_inputs()` (each store lists the files whose
+  `(path, size, mtime_ns)` identify its data) and, when that matches the on-disk cache
+  (`~/.config/opentab/cache/<source>-<hash>.json`, one per `key|root`), returns cached
+  `workflows()`/`model_breakdown()` **without parsing** — the ~0.8s→~50ms warm start.
+  **Only those two methods are intercepted**; everything else (`workflow_nodes`, the
+  Turns/Tools extras, `supports_*`, `records_cost`, `demo`, `source_name`, …) delegates to
+  the wrapped store via `__getattr__`, which parses lazily the first time you drill in — so
+  a warm start paints instantly and pays the parse only if you open a session. `workflows()`
+  re-fingerprints every call, so reload (`r`) after an edit re-parses; a changed
+  size/mtime misses and rewrites (atomic temp+replace, best-effort — a cache it can't write
+  never blocks launch, and a stale rollup is never shown). Cache stores the raw pre-`$`
+  rows, so the `$` what-if reprices from them unchanged. **Off under `--demo`** (never
+  persists; per-process scale mustn't be baked in) **and `--no-cache`**; `CACHE_VERSION`
+  bumps invalidate old files.
 - **Source selection** — `make_store()`/`resolve_source()`/`available_sources()`/
   `source_cycle()`. `main` resolves the start source from `--source`; on `auto` it restores
   the last-used source from `state.json`, else **merges every present source (`all`)** when

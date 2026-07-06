@@ -96,6 +96,10 @@ class CodexStore:
         }
 
     # --- parsing -------------------------------------------------------------
+    def cache_inputs(self) -> list[str]:
+        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
+        return self._files()
+
     def _files(self) -> list[str]:
         return glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
 

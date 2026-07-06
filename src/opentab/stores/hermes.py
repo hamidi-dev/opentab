@@ -402,6 +402,10 @@ class HermesStore:
             "tokens_total": acc["tokens_total"],
         }
 
+    def cache_inputs(self) -> list[str]:
+        # The single DB file whose (size, mtime) fingerprints the warm-start cache.
+        return [self.db_path]
+
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload on `r`
         sessions = self._parse()

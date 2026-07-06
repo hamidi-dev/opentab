@@ -265,6 +265,10 @@ class OpenClawStore:
         }
 
     # --- parsing -------------------------------------------------------------
+    def cache_inputs(self) -> list[str]:
+        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
+        return self._files()
+
     def _files(self) -> list[str]:
         out = []
         for path in glob.glob(os.path.join(self.root_dir, "agents", "*", "sessions", "*")):
