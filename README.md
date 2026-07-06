@@ -2,26 +2,16 @@
 
 <p align="center"><em>Your AI coding tools keep a tab. OpenTab opens it.</em></p>
 
-<p align="center"><sub>Anonymized demo data — click any clip for the full-quality video.</sub></p>
+<p align="center"><sub>Anonymized demo data — click the reel for the full-quality video.</sub></p>
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/fdfc2626-6ebb-4422-901c-6d2f67068160"><img src="https://github.com/user-attachments/assets/23c2e927-aa72-4bff-a972-e166166345a0" alt="Trends — daily/weekly/monthly charts and model/provider/source rankings" width="820"></a>
-  <br><sub><b>Trends</b> — daily / weekly / monthly spend, plus model-, provider- and source-spend rankings</sub>
+  <a href="https://github.com/user-attachments/assets/6d384355-a14e-489e-86df-24f7873c79da"><img src="https://github.com/user-attachments/assets/51b013fc-46cf-48ce-b6c8-dec2426400fd" alt="OpenTab — trends, a calendar spend heatmap, drill-downs across OpenCode / Claude Code / Codex, and live theming" width="900"></a>
+  <br><sub><b>One reel, every view</b> — trends, a calendar spend heatmap, drill from a month down to a single session, and live theming</sub>
 </p>
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/674534af-3047-4b18-9031-2cf99f1f0cf9"><img src="https://github.com/user-attachments/assets/d2a81e36-34f7-46d2-af0b-eb31545b9a55" alt="Spend heatmap — Trends to Calendar, GitHub-style daily-spend map" width="820"></a>
-  <br><sub><b>Spend heatmap</b> — Trends → Calendar; <code>+</code>/<code>−</code> tune the shades, Enter drills a day</sub>
-</p>
-
-<p align="center">
-  <a href="https://github.com/user-attachments/assets/f11f3493-55fa-4722-b2f1-8cd96355bfab"><img src="https://github.com/user-attachments/assets/5c88abf8-1d44-4237-a527-f166082ab512" alt="Sessions ranked by cost, tagged by tool, drilled to a session breakdown" width="820"></a>
-  <br><sub><b>Sessions</b> — a day's sessions ranked by cost and tagged by tool; open the priciest for its cost split, model mix and subagent tree</sub>
-</p>
-
-<p align="center">
-  <a href="https://github.com/user-attachments/assets/aad33047-3345-40c5-8539-b36b533207d6"><img src="https://github.com/user-attachments/assets/5733178c-dd5b-4aa3-bce0-dfcd7c002d41" alt="Projects across tools, source cycling, fuzzy filter and live range" width="820"></a>
-  <br><sub><b>Projects &amp; sources</b> — group spend by repo across tools, isolate one with <code>c</code>, fuzzy-filter, and rescope the range live</sub>
+  <img src="https://github.com/user-attachments/assets/a84029a3-7887-42c7-ba5a-d8c905f3fa19" alt="OpenTab web report — the same data as a self-contained page" width="900">
+  <br><sub><b>Also a web report</b> — <code>opentab --web</code> renders the same data as one self-contained, shareable page</sub>
 </p>
 
 A local, standard-library terminal UI for your AI coding spend. It reads the records your
