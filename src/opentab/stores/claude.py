@@ -11,7 +11,7 @@ from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
 from opentab.pricing import api_equivalent_cost
-from opentab.util import git_root
+from opentab.util import git_root, read_files_parallel
 
 
 class ClaudeStore:
@@ -138,21 +138,16 @@ class ClaudeStore:
             return self._sessions
         sessions: dict[str, dict] = {}
         seen: set = set()  # dedupe resumed/forked overlap on (message.id, requestId)
-        for path in self._files():
-            try:
-                fh = open(path, errors="replace")
-            except OSError:
-                continue
-            with fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except ValueError:
-                        continue
-                    self._ingest(obj, sessions, seen)
+        for _path, text in read_files_parallel(self._files()):
+            for line in text.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                self._ingest(obj, sessions, seen)
         for sid, s in sessions.items():
             self._finalize(sid, s)
         self._sessions = sessions

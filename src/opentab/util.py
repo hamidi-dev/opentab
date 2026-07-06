@@ -6,9 +6,63 @@ import re
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from opentab.models import Workflow
+
+
+def _read_text(path: str) -> str | None:
+    # Text mode: universal-newline translation (\r\n -> \n) matches what `for line in
+    # fh` yields, so a caller that splits on "\n" gets exactly the same lines. Returns
+    # None on an unreadable file, which read_files_parallel drops.
+    try:
+        with open(path, errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _read_worker_count(n: int) -> int:
+    override = os.environ.get("OPENTAB_MAX_WORKERS")
+    if override:
+        try:
+            return max(1, min(n, int(override)))
+        except ValueError:
+            pass
+    # Reading files is I/O-bound and open()/read() release the GIL, so oversubscribing
+    # cores overlaps the per-file open latency that dominates on Windows/WSL (every open
+    # is virus-scanned). Cap it so a huge transcript dir can't spawn a thread per file.
+    return max(1, min(16, n, (os.cpu_count() or 4) * 2))
+
+
+def read_files_parallel(paths, max_workers: int | None = None):
+    """Yield (path, text) for each readable path, IN THE GIVEN ORDER, reading the files
+    concurrently in a thread pool.
+
+    Only the I/O is parallel: json.loads and each store's cross-file dedup/merge stay on
+    the caller's thread, so parsing determinism is untouched -- this just hides the
+    per-file open/read latency instead of paying it one file at a time. Unreadable files
+    are skipped. Set OPENTAB_MAX_WORKERS=1 to force serial reads (an A/B baseline, or a
+    filesystem that punishes concurrent opens)."""
+    paths = list(paths)
+    if not paths:
+        return
+    workers = max_workers or _read_worker_count(len(paths))
+    if workers <= 1 or len(paths) == 1:
+        for path in paths:
+            text = _read_text(path)
+            if text is not None:
+                yield path, text
+        return
+    window = workers * 4  # bound how many files' contents sit in memory at once
+    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="opentab-read") as ex:
+        for start in range(0, len(paths), window):
+            batch = paths[start : start + window]
+            for path, text in zip(batch, ex.map(_read_text, batch)):
+                if text is not None:
+                    yield path, text
+
 
 # OpenCode's built-in tools. Everything else is an MCP server or a local plugin
 # tool, which OpenCode names "{server}_{tool}" (e.g. serena_find_symbol,

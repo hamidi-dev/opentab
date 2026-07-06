@@ -11,7 +11,7 @@ import re
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import iso_to_local
 from opentab.models import Workflow
-from opentab.util import git_root
+from opentab.util import git_root, read_files_parallel
 
 
 class PiStore:
@@ -212,61 +212,56 @@ class PiStore:
         if self._sessions is not None:
             return self._sessions
         sessions: dict[str, dict] = {}
-        for path in self._files():
-            self._parse_file(path, sessions)
+        for path, text in read_files_parallel(self._files()):
+            self._parse_file(path, text.split("\n"), sessions)
         for sid, s in sessions.items():
             self._finalize(sid, s)
         # Drop sessions with no recorded usage (a stub with only session/model_change rows).
         self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
         return self._sessions
 
-    def _parse_file(self, path: str, sessions: dict[str, dict]) -> None:
+    def _parse_file(self, path: str, lines: list[str], sessions: dict[str, dict]) -> None:
         sid = self._id_from_name(path)
         if not sid:
             return
-        try:
-            fh = open(path, errors="replace")
-        except OSError:
-            return
         s = sessions.setdefault(sid, self._new_session())
-        with fh:
-            for line in fh:
-                if '"type"' not in line:
-                    continue
-                try:
-                    o = json.loads(line)
-                except ValueError:
-                    continue
-                typ = o.get("type")
-                ts = o.get("timestamp")
-                if ts and (s["ts_min"] is None or ts < s["ts_min"]):
-                    s["ts_min"] = ts
-                if typ == "session":
-                    if o.get("cwd") and not s["cwd"]:
-                        s["cwd"] = o["cwd"]
-                    if o.get("timestamp") and not s["ts_meta"]:
-                        s["ts_meta"] = o["timestamp"]
-                    continue
-                if typ != "message":
-                    continue
-                msg = o.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                role = msg.get("role")
-                if role == "user":
-                    if not s["title_prompt"]:
-                        txt = self._user_text(msg.get("content"))
-                        if txt.strip():
-                            s["title_prompt"] = " ".join(txt.split())[:80]
-                    continue
-                if role != "assistant" or not isinstance(msg.get("usage"), dict):
-                    continue
-                mid = o.get("id")
-                if mid is not None:
-                    if mid in s["seen_msgs"]:
-                        continue  # same assistant step in a resumed/forked file
-                    s["seen_msgs"].add(mid)
-                self._apply_usage(s, msg)
+        for line in lines:
+            if '"type"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            typ = o.get("type")
+            ts = o.get("timestamp")
+            if ts and (s["ts_min"] is None or ts < s["ts_min"]):
+                s["ts_min"] = ts
+            if typ == "session":
+                if o.get("cwd") and not s["cwd"]:
+                    s["cwd"] = o["cwd"]
+                if o.get("timestamp") and not s["ts_meta"]:
+                    s["ts_meta"] = o["timestamp"]
+                continue
+            if typ != "message":
+                continue
+            msg = o.get("message")
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if role == "user":
+                if not s["title_prompt"]:
+                    txt = self._user_text(msg.get("content"))
+                    if txt.strip():
+                        s["title_prompt"] = " ".join(txt.split())[:80]
+                continue
+            if role != "assistant" or not isinstance(msg.get("usage"), dict):
+                continue
+            mid = o.get("id")
+            if mid is not None:
+                if mid in s["seen_msgs"]:
+                    continue  # same assistant step in a resumed/forked file
+                s["seen_msgs"].add(mid)
+            self._apply_usage(s, msg)
 
     def _apply_usage(self, s: dict, msg: dict) -> None:
         usage = msg["usage"]

@@ -11,7 +11,7 @@ import re
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import iso_to_local
 from opentab.models import Workflow
-from opentab.util import git_root
+from opentab.util import git_root, read_files_parallel
 
 
 class CodexStore:
@@ -103,8 +103,8 @@ class CodexStore:
         if self._sessions is not None:
             return self._sessions
         sessions: dict[str, dict] = {}
-        for path in self._files():
-            self._parse_file(path, sessions)
+        for path, text in read_files_parallel(self._files()):
+            self._parse_file(path, text.split("\n"), sessions)
         for sid, s in sessions.items():
             self._finalize(sid, s)
         # Drop sessions with no recorded token usage (legacy rollouts, aborted runs):
@@ -112,61 +112,56 @@ class CodexStore:
         self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
         return self._sessions
 
-    def _parse_file(self, path: str, sessions: dict[str, dict]) -> None:
-        try:
-            fh = open(path, errors="replace")
-        except OSError:
-            return
+    def _parse_file(self, path: str, lines: list[str], sessions: dict[str, dict]) -> None:
         sid = self._id_from_name(path)
         s = sessions.setdefault(sid, self._new_session()) if sid else None
         cur_model: str | None = None
         prev = (0, 0, 0, 0)  # cumulative (input, output, cached, total) seen so far
-        with fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    o = json.loads(line)
-                except ValueError:
-                    continue
-                typ = o.get("type")
-                p = o.get("payload") if isinstance(o.get("payload"), dict) else None
-                # session metadata: wrapped (type session_meta) or a rare legacy file
-                # whose first record is the bare {id, timestamp, git, ...} blob.
-                meta = p if typ == "session_meta" else (o if typ is None and "git" in o else None)
-                if meta is not None:
-                    if s is None and meta.get("id"):
-                        sid = meta["id"]
-                        s = sessions.setdefault(sid, self._new_session())
-                    if s is not None:
-                        if meta.get("cwd") and not s["cwd"]:
-                            s["cwd"] = meta["cwd"]
-                        if meta.get("timestamp") and not s["ts_meta"]:
-                            s["ts_meta"] = meta["timestamp"]
-                if s is None:
-                    continue  # nothing to attribute usage to yet
-                ts = o.get("timestamp")
-                if ts and (s["ts_min"] is None or ts < s["ts_min"]):
-                    s["ts_min"] = ts
-                if p is None:
-                    continue
-                if typ == "turn_context":
-                    if p.get("model"):
-                        cur_model = p["model"]
-                    if p.get("cwd") and not s["cwd"]:
-                        s["cwd"] = p["cwd"]
-                elif typ == "event_msg" and p.get("type") == "user_message":
-                    # First user prompt = session title. Take any user_message (older
-                    # rollouts omit kind; only "plain" appears on newer ones), and
-                    # collapse whitespace since Codex prompts often span lines with
-                    # @file mentions that would otherwise break the one-line title cell.
-                    if not s["title_prompt"]:
-                        txt = p.get("message")
-                        if isinstance(txt, str) and txt.strip():
-                            s["title_prompt"] = " ".join(txt.split())[:80]
-                elif typ == "event_msg" and p.get("type") == "token_count":
-                    prev = self._apply_token_count(s, p.get("info"), cur_model, prev)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            typ = o.get("type")
+            p = o.get("payload") if isinstance(o.get("payload"), dict) else None
+            # session metadata: wrapped (type session_meta) or a rare legacy file
+            # whose first record is the bare {id, timestamp, git, ...} blob.
+            meta = p if typ == "session_meta" else (o if typ is None and "git" in o else None)
+            if meta is not None:
+                if s is None and meta.get("id"):
+                    sid = meta["id"]
+                    s = sessions.setdefault(sid, self._new_session())
+                if s is not None:
+                    if meta.get("cwd") and not s["cwd"]:
+                        s["cwd"] = meta["cwd"]
+                    if meta.get("timestamp") and not s["ts_meta"]:
+                        s["ts_meta"] = meta["timestamp"]
+            if s is None:
+                continue  # nothing to attribute usage to yet
+            ts = o.get("timestamp")
+            if ts and (s["ts_min"] is None or ts < s["ts_min"]):
+                s["ts_min"] = ts
+            if p is None:
+                continue
+            if typ == "turn_context":
+                if p.get("model"):
+                    cur_model = p["model"]
+                if p.get("cwd") and not s["cwd"]:
+                    s["cwd"] = p["cwd"]
+            elif typ == "event_msg" and p.get("type") == "user_message":
+                # First user prompt = session title. Take any user_message (older
+                # rollouts omit kind; only "plain" appears on newer ones), and
+                # collapse whitespace since Codex prompts often span lines with
+                # @file mentions that would otherwise break the one-line title cell.
+                if not s["title_prompt"]:
+                    txt = p.get("message")
+                    if isinstance(txt, str) and txt.strip():
+                        s["title_prompt"] = " ".join(txt.split())[:80]
+            elif typ == "event_msg" and p.get("type") == "token_count":
+                prev = self._apply_token_count(s, p.get("info"), cur_model, prev)
 
     def _apply_token_count(self, s: dict, info, cur_model: str | None, prev: tuple) -> tuple:
         # Returns the new cumulative tuple; folds one turn's delta into the session.

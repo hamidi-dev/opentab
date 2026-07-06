@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.models import Workflow
-from opentab.util import git_root
+from opentab.util import git_root, read_files_parallel
 
 
 class CopilotStore:
@@ -315,8 +315,8 @@ class CopilotStore:
         if self._sessions is not None:
             return self._sessions
         sessions: dict[str, dict] = {}
-        for path in self._files():
-            self._parse_file(path, sessions)
+        for path, text in read_files_parallel(self._files()):
+            self._parse_file(path, text.split("\n"), sessions)
         for sid, s in sessions.items():
             self._finalize(sid, s)
         # Drop sessions with no recorded usage (non-LLM-only files): they would only add
@@ -324,18 +324,14 @@ class CopilotStore:
         self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
         return self._sessions
 
-    def _parse_file(self, path: str, sessions: dict[str, dict]) -> None:
-        try:
-            with open(path, errors="replace") as fh:
-                records = [
-                    o
-                    for line in fh
-                    if '"attributes"' in line
-                    for o in (self._loads(line),)
-                    if isinstance(o, dict) and isinstance(o.get("attributes"), dict)
-                ]
-        except OSError:
-            return
+    def _parse_file(self, path: str, lines: list[str], sessions: dict[str, dict]) -> None:
+        records = [
+            o
+            for line in lines
+            if '"attributes"' in line
+            for o in (self._loads(line),)
+            if isinstance(o, dict) and isinstance(o.get("attributes"), dict)
+        ]
         # Per-file trace context: a model / session id seen anywhere on a trace fills in
         # for records on that trace that omit it.
         trace_ctx: dict[str, dict] = {}

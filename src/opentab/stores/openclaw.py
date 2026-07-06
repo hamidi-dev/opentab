@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.models import Workflow
+from opentab.util import read_files_parallel
 
 
 class OpenClawStore:
@@ -320,76 +321,71 @@ class OpenClawStore:
         if self._sessions is not None:
             return self._sessions
         sessions: dict[str, dict] = {}
-        for path in self._files():
-            self._parse_file(path, sessions)
+        for path, text in read_files_parallel(self._files()):
+            self._parse_file(path, text.split("\n"), sessions)
         for sid, s in sessions.items():
             self._finalize(sid, s)
         # Drop sessions with no recorded usage (a stub with only session/model_change rows).
         self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
         return self._sessions
 
-    def _parse_file(self, path: str, sessions: dict[str, dict]) -> None:
+    def _parse_file(self, path: str, lines: list[str], sessions: dict[str, dict]) -> None:
         sid = self._session_id(path)
         agent = os.path.basename(os.path.dirname(os.path.dirname(path)))
-        try:
-            fh = open(path, errors="replace")
-        except OSError:
-            return
         s = sessions.setdefault(sid, self._new_session())
         if not s["agent"]:
             s["agent"] = agent
         current_model = None
         current_provider = None
-        with fh:
-            for line in fh:
-                if '"type"' not in line:
-                    continue
-                try:
-                    o = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(o, dict):
-                    continue
-                ts = self._epoch(o.get("timestamp"))
-                if ts is not None and (s["ts_min"] is None or ts < s["ts_min"]):
-                    s["ts_min"] = ts
-                if self._is_model_change(o):
-                    src = o.get("data") if isinstance(o.get("data"), dict) else o
-                    m = src.get("modelId") or src.get("model")
-                    if isinstance(m, str) and m:
-                        current_model = m
-                    p = src.get("provider")
-                    if isinstance(p, str) and p:
-                        current_provider = p
-                    continue
-                typ = o.get("type")
-                if typ == "session":
-                    if ts is not None and s["ts_meta"] is None:
-                        s["ts_meta"] = ts
-                    continue
-                if typ != "message":
-                    continue
-                msg = o.get("message")
-                if not isinstance(msg, dict):
-                    continue
-                mts = self._epoch(msg.get("timestamp"))
-                if mts is not None and (s["ts_min"] is None or mts < s["ts_min"]):
-                    s["ts_min"] = mts
-                role = msg.get("role")
-                if role == "user":
-                    if not s["title_prompt"]:
-                        txt = self._user_text(msg.get("content"))
-                        if txt.strip():
-                            s["title_prompt"] = " ".join(txt.split())[:80]
-                    continue
-                if role != "assistant" or not isinstance(msg.get("usage"), dict):
-                    continue
-                mid = o.get("id") or msg.get("idempotencyKey")
-                if mid is not None:
-                    if mid in s["seen_msgs"]:
-                        continue  # same assistant step in a resumed/archived file
-                    s["seen_msgs"].add(mid)
-                self._apply_usage(s, msg, current_model, current_provider)
+        for line in lines:
+            if '"type"' not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(o, dict):
+                continue
+            ts = self._epoch(o.get("timestamp"))
+            if ts is not None and (s["ts_min"] is None or ts < s["ts_min"]):
+                s["ts_min"] = ts
+            if self._is_model_change(o):
+                src = o.get("data") if isinstance(o.get("data"), dict) else o
+                m = src.get("modelId") or src.get("model")
+                if isinstance(m, str) and m:
+                    current_model = m
+                p = src.get("provider")
+                if isinstance(p, str) and p:
+                    current_provider = p
+                continue
+            typ = o.get("type")
+            if typ == "session":
+                if ts is not None and s["ts_meta"] is None:
+                    s["ts_meta"] = ts
+                continue
+            if typ != "message":
+                continue
+            msg = o.get("message")
+            if not isinstance(msg, dict):
+                continue
+            mts = self._epoch(msg.get("timestamp"))
+            if mts is not None and (s["ts_min"] is None or mts < s["ts_min"]):
+                s["ts_min"] = mts
+            role = msg.get("role")
+            if role == "user":
+                if not s["title_prompt"]:
+                    txt = self._user_text(msg.get("content"))
+                    if txt.strip():
+                        s["title_prompt"] = " ".join(txt.split())[:80]
+                continue
+            if role != "assistant" or not isinstance(msg.get("usage"), dict):
+                continue
+            mid = o.get("id") or msg.get("idempotencyKey")
+            if mid is not None:
+                if mid in s["seen_msgs"]:
+                    continue  # same assistant step in a resumed/archived file
+                s["seen_msgs"].add(mid)
+            self._apply_usage(s, msg, current_model, current_provider)
 
     def _apply_usage(self, s: dict, msg: dict, current_model, current_provider) -> None:
         usage = msg["usage"]

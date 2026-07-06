@@ -13,7 +13,7 @@ from urllib.parse import unquote
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt
 from opentab.models import Workflow
-from opentab.util import git_root, windows_to_wsl_path
+from opentab.util import git_root, read_files_parallel, windows_to_wsl_path
 
 
 class VscodeStore:
@@ -309,8 +309,13 @@ class VscodeStore:
             return self._sessions
         sessions: dict[str, dict] = {}
         seen: set[tuple[str, str]] = set()  # (session id, request id) across files
-        for path, hash_dir in self._session_files():
-            root = self._load_session(path)
+        pairs = self._session_files()
+        texts = dict(read_files_parallel(p for p, _ in pairs))  # concurrent reads
+        for path, hash_dir in pairs:
+            text = texts.get(path)
+            if text is None:
+                continue
+            root = self._load_session(path, text)
             if root is not None:
                 self._ingest(root, path, self._project_dir(hash_dir), sessions, seen)
         for sid, s in sessions.items():
@@ -320,13 +325,14 @@ class VscodeStore:
         self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
         return self._sessions
 
-    def _load_session(self, path: str) -> dict | None:
+    def _load_session(self, path: str, text: str) -> dict | None:
+        # Content already read (concurrently) by _parse; split on "\n" to match the
+        # journal's one-JSON-object-per-line shape that _replay expects.
         try:
-            with open(path, errors="replace") as fh:
-                if path.endswith(".jsonl"):
-                    return self._replay(fh)
-                obj = json.load(fh)
-        except (OSError, ValueError):
+            if path.endswith(".jsonl"):
+                return self._replay(text.split("\n"))
+            obj = json.loads(text)
+        except ValueError:
             return None
         return obj if isinstance(obj, dict) else None
 
