@@ -1537,6 +1537,40 @@ def test_resolve_project_root_path_fallback_for_removed_worktree():
     assert ot.resolve_project_root("/Users/x/code/plain-repo") == "/Users/x/code/plain-repo"
 
 
+def test_normalize_project_path_canonicalizes_windows_drive_paths():
+    n = ot.normalize_project_path
+    # OpenCode's forward-slash spelling and a native backslash spelling of the SAME
+    # directory must collapse to one canonical form (issue #4).
+    assert n("C:/DEV/Agentic-Coding/examples/okf") == r"C:\DEV\Agentic-Coding\examples\okf"
+    assert n(r"C:\DEV\Agentic-Coding\examples\okf") == r"C:\DEV\Agentic-Coding\examples\okf"
+    assert n("C:/DEV/app") == n(r"C:\DEV\app")
+    # drive letter is case-insensitive; trailing and doubled separators collapse
+    assert n("c:/dev/app") == r"C:\dev\app"
+    assert n("C:/DEV//okf/") == r"C:\DEV\okf"
+    assert n("C:/") == "C:\\" and n("C:\\") == "C:\\"
+    # POSIX paths (incl. a literal backslash in a name), tilde, agent names, and the
+    # "(unknown)" sentinel are NOT drive paths -- returned untouched.
+    for p in ("/home/mo/proj", "~/code/opentab", "/weird/na\\me", "finance-os", "(unknown)"):
+        assert n(p) == p
+    # idempotent
+    assert n(n("C:/DEV/app")) == n("C:/DEV/app")
+
+
+def test_projects_merge_across_windows_slash_styles():
+    # Pi records the cwd with backslashes; OpenCode records the same directory with
+    # forward slashes. They must group as ONE project, not two (issue #4).
+    app = app_with(
+        [
+            workflow("pi", "2026-06-01 12:00:00", cost=2, directory=r"C:\DEV\examples\okf"),
+            workflow("oc", "2026-06-02 12:00:00", cost=3, directory="C:/DEV/examples/okf"),
+        ]
+    )
+    projects = app.projects
+    assert [p.directory for p in projects] == [r"C:\DEV\examples\okf"]
+    assert projects[0].workflows == 2 and projects[0].cost == 5
+    assert {w.id for w in app.workflows_for_project(r"C:\DEV\examples\okf")} == {"pi", "oc"}
+
+
 def test_projects_group_worktrees_under_root():
     app = app_with(
         [

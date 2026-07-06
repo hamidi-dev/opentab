@@ -158,6 +158,7 @@ from opentab.util import (
     launcher_hook,
     month_bounds,
     month_window_start,
+    normalize_project_path,
     open_path,
     parse_range_text,
     resolve_project_root,

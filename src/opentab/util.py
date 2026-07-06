@@ -190,6 +190,26 @@ def tmux_launch(kind: str, directory: str, command: str) -> str | None:
     return None
 
 
+def normalize_project_path(directory: str) -> str:
+    # Canonicalize a Windows drive path so the SAME directory recorded by different
+    # tools collapses to one project. OpenCode (a JS app) stores forward slashes
+    # (C:/DEV/app) while native tools fold cwd to backslashes (C:\DEV\app), and the
+    # drive letter's case is arbitrary (c: == C:) -- left alone they group AND display
+    # as two separate projects (issue #4). Fold both to one spelling: uppercase drive,
+    # single backslash separators, no trailing slash. POSIX paths (and UNC shares,
+    # agent-name pseudo-dirs, "(unknown)") don't match the drive-path shape and are
+    # returned unchanged -- a backslash in a POSIX path can be a real filename char.
+    m = re.match(r"^([A-Za-z]):[\\/](.*)$", directory)
+    if not m:
+        return directory
+    rest = m.group(2).replace("/", "\\")
+    while "\\\\" in rest:  # collapse doubled separators from mixed spellings
+        rest = rest.replace("\\\\", "\\")
+    rest = rest.rstrip("\\")
+    root = m.group(1).upper() + ":\\"
+    return root + rest if rest else root
+
+
 def resolve_project_root(directory: str) -> str:
     # Fold a git worktree into its main repo so feature worktrees don't show as
     # separate projects. Two strategies, both pure local reads (no `git`):
@@ -200,6 +220,7 @@ def resolve_project_root(directory: str) -> str:
     #   2. Path convention: fold ".../<repo>/.worktrees/<name>" (and the standard
     #      ".git/worktrees/<name>") to <repo>. Works even when the worktree dir is
     #      gone (a removed throwaway worktree still has sessions in the DB).
+    directory = normalize_project_path(directory)  # collapse C:/ vs C:\ spellings first
     try:
         dotgit = os.path.join(os.path.expanduser(directory), ".git")
         if os.path.isfile(dotgit):
@@ -229,18 +250,20 @@ def git_root(directory: str) -> str:
     # rolls up to its repo instead of showing as its own bare-basename project.
     # Pure filesystem reads; returns `directory` unchanged when the path no longer
     # exists or no repo is found (App.resolve_project_root then folds worktrees).
+    # Every return is separator-canonicalized (normalize_project_path) so a Windows
+    # cwd folds to one spelling regardless of the recording tool's slash style.
     try:
         cur = os.path.abspath(os.path.expanduser(directory))
     except (OSError, ValueError):
-        return directory
+        return normalize_project_path(directory)
     if not os.path.isdir(cur):
-        return directory  # path gone -- can't probe; keep the recorded cwd
+        return normalize_project_path(directory)  # path gone -- keep the recorded cwd
     while True:
         if os.path.exists(os.path.join(cur, ".git")):
-            return cur
+            return normalize_project_path(cur)
         parent = os.path.dirname(cur)
         if parent == cur:
-            return directory  # reached filesystem root with no repo
+            return normalize_project_path(directory)  # filesystem root, no repo
         cur = parent
 
 

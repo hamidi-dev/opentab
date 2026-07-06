@@ -11,6 +11,7 @@ from urllib.parse import quote
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt
 from opentab.models import Workflow
+from opentab.util import normalize_project_path
 
 MODEL_EXPR = """
 case
@@ -240,6 +241,10 @@ class Store:
         rows = [Workflow(**dict(row)) for row in self.conn.execute(sql)]
         for w in rows:
             w.source = self.source_name
+            # OpenCode stores forward-slash Windows paths (C:/DEV/app); fold them to
+            # the native C:\DEV\app spelling so a project shared with a backslash
+            # backend (Pi, Claude, ...) groups as one, not two (issue #4).
+            w.directory = normalize_project_path(w.directory)
         if self.demo:
             rows = [self._demo_workflow(w) for w in rows]
         return rows
