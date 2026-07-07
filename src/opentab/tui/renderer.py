@@ -1768,7 +1768,7 @@ class Renderer:
 
     def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
         rows = self._priced_nodes(
-            [row for row in self.store.workflow_nodes(workflow.id) if row["depth"] > 0]
+            [row for row in self.session_node_rows(workflow.id) if row["depth"] > 0]
         )
         if not rows:
             return ["# Subagents", "No subagents used in this workflow."]
