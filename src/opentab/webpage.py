@@ -592,6 +592,9 @@ function barChart(rows) {
   const gap = 2;
   const bw = Math.max(3, Math.min(46, (VW - 2 * padX) / n - gap));
   const step = bw + gap;
+  // A value on top of every bar when they're wide enough to fit the label without
+  // colliding; when too narrow (many months) fall back to labelling just the tallest.
+  const valueEach = step >= 34;
   const x0 = (VW - (n * step - gap)) / 2;
   const plotH = VH - padT - padB;
   const svg = s('svg', { viewBox: '0 0 ' + VW + ' ' + VH, class: 'chart', role: 'img',
@@ -599,8 +602,9 @@ function barChart(rows) {
   for (const f of [0.5, 1]) {
     const y = padT + (1 - f) * plotH;
     svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: thc('line'), 'stroke-width': 1 }));
-    // the peak bar carries its own direct label, so only the midline gets an axis label
-    if (f !== 1) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: moneyLabel(peak * f) }));
+    // The midline gets an axis label only when the bars aren't individually labelled;
+    // with per-bar values it's redundant and collides with the rightmost bar's label.
+    if (f !== 1 && !valueEach) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: moneyLabel(peak * f) }));
   }
   svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
   const peakIdx = rows.findIndex(r => r.cost === Math.max(...rows.map(q => q.cost)));
@@ -613,7 +617,7 @@ function barChart(rows) {
       onclick: () => { go('m', r.month); } });
     g.appendChild(s('rect', { class: 'hit', x, y: padT, width: step, height: VH - padT - padB }));
     if (hgt > 0) g.appendChild(s('path', { d: roundTop(x, y, bw, hgt, 3), fill: thc('accent') }));
-    if (i === peakIdx && r.cost > 0)
+    if (r.cost > 0 && (valueEach || i === peakIdx))
       g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 10, fill: thc('ink2'), text: moneyLabel(r.cost) }));
     if (i % labelEvery === 0)
       g.appendChild(s('text', { x: x + bw / 2, y: VH - 7, 'text-anchor': 'middle', 'font-size': 9.5, fill: thc('mut'), text: monthLabel(r.month) }));
@@ -1136,11 +1140,18 @@ function trendChart(pairs, opts = {}) {
   const gap = n > 40 ? 1.5 : 3;
   const bw = Math.max(2, Math.min(52, (VW - 2 * padX) / n - gap));
   const step = bw + gap, x0 = (VW - (n * step - gap)) / 2, plotH = VH - padT - padB;
+  // Label every bar with its own value when the bars are wide enough to fit the text
+  // without colliding; when too narrow (a fully packed month, like Weekly over many
+  // weeks) fall back to labelling just the tallest. Daily keeps bars wide by charting
+  // only its active days (trendDaily), so the common case labels every bar.
+  const valueEach = step >= 38;
   const svg = s('svg', { viewBox: '0 0 ' + VW + ' ' + VH, class: 'tr-chart', role: 'img', 'aria-label': opts.aria || 'trend chart' });
   for (const f of [0.5, 1]) {
     const y = padT + (1 - f) * plotH;
     svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: thc('line'), 'stroke-width': 1 }));
-    if (f !== 1) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 11, fill: thc('mut'), text: moneyLabel(peak * f) }));
+    // The midline gets an axis label only when the bars aren't individually labelled;
+    // with per-bar values it's redundant and collides with the rightmost bar's label.
+    if (f !== 1 && !valueEach) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 11, fill: thc('mut'), text: moneyLabel(peak * f) }));
   }
   svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
   const peakVal = Math.max(...vals), peakIdx = vals.indexOf(peakVal), tickEvery = Math.max(1, Math.ceil(n / 18));
@@ -1150,7 +1161,7 @@ function trendChart(pairs, opts = {}) {
     const g = s('g', { class: 'bg', tip: () => (p.tip || (p.label + '\n' + money(p.value))), onclick: p.nav || null });
     g.appendChild(s('rect', { class: 'hit', x, y: padT, width: step, height: VH - padT - padB }));
     if (hgt > 0) g.appendChild(s('path', { d: roundTop(x, y, bw, hgt, Math.min(3, bw / 2)), fill: thc('accent') }));
-    if (i === peakIdx && p.value > 0)
+    if (p.value > 0 && (valueEach || i === peakIdx))
       g.appendChild(s('text', { x: x + bw / 2, y: y - 5, 'text-anchor': 'middle', 'font-size': 11, fill: thc('ink2'), text: moneyLabel(p.value) }));
     if (i % tickEvery === 0 || i === n - 1)
       g.appendChild(s('text', { x: x + bw / 2, y: VH - 8, 'text-anchor': 'middle', 'font-size': 10, fill: thc('mut'), text: p.label }));
@@ -1195,8 +1206,14 @@ function trendDaily() {
   const idx = Math.max(0, Math.min(TRENDS.monthIdx, months.length - 1)), month = months[idx];
   const byDay = new Map();
   W.filter(w => w.date.startsWith(month)).forEach(w => { const d = +w.date.slice(8, 10); byDay.set(d, (byDay.get(d) || 0) + cost(w)); });
+  // Chart only up to the last day that has spend, not the whole calendar month: an
+  // in-progress month (e.g. the current one) shouldn't reserve its empty trailing days,
+  // which squeeze the bars narrow. Trimming keeps them as wide as Weekly/Monthly so each
+  // bar carries its own label instead of colliding.
+  let last = 0;
+  for (let d = 1; d <= daysInMonth(month); d++) if ((byDay.get(d) || 0) > 0) last = d;
   const pairs = [];
-  for (let d = 1; d <= daysInMonth(month); d++) {
+  for (let d = 1; d <= last; d++) {
     const date = month + '-' + String(d).padStart(2, '0'), v = byDay.get(d) || 0;
     pairs.push({ label: String(d), value: v, tip: date + '\n' + money(v), nav: v > 0 ? (() => { closeTrends(); go('d', date); }) : null });
   }

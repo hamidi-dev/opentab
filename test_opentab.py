@@ -8653,6 +8653,15 @@ def test_web_html_command_writes_the_report_file():
     assert "keydown" in text  # the j/k/Tab/h/l/Esc/$/T/P/R handler
 
 
+def test_web_daily_trend_charts_only_active_days():
+    page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-07-01 10:00:00")])))
+    # The Daily tab charts only up to the last day with spend, not the full calendar
+    # month, so an in-progress month keeps bars as wide as Weekly/Monthly (each with its
+    # own on-top label) instead of squeezing 31 slots and colliding the labels.
+    assert "> 0) last = d" in page
+    assert "for (let d = 1; d <= last; d++)" in page
+
+
 def test_web_meta_carries_the_baked_theme():
     app = app_with([workflow("w1", "2026-05-01 10:00:00")])
     app.args.theme = "gruvbox"  # --theme sets the browser's initial theme
