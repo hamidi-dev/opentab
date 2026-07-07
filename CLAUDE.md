@@ -200,7 +200,8 @@ Three logical layers (the class names below live in the files above — `Store` 
   `--copilot-dir`); with it off the source never appears. Export carries tokens but **no
   cost** → token-only backend (**`records_cost=False`**, $0/list-price estimate, same
   nudges). OTEL follows the **GenAI semantic conventions** where one call is logged up to
-  four ways, so `_parse_file` **dedups per file** by trace/response id, keeping the
+  four ways — spans and logs land in *different* files — so `_parse` **dedups across all
+  files** by trace/response id, keeping the
   highest-fidelity record (chat span > inference log > agent-turn log > agent-summary span;
   `_classify`/`_emit`). OpenAI-style tokens (input includes cache read; `cache_write` from
   `cache_creation`; reasoning folded into output; a `total_tokens`-only record back-fills).
