@@ -1083,7 +1083,7 @@ function chrome() {
   right.appendChild(h('button', { class: 'hbtn', title: 'Model prices (P)', onclick: openPrices }, '$/M prices'));
   right.appendChild(h('button', { class: 'hbtn', title: 'Theme', onclick: openTheme }, '◑ theme'));
   if (META.serve) right.appendChild(h('button', { class: 'hbtn', title: 're-read the data sources',
-    onclick: () => fetch('/api/reload').then(() => location.reload()) }, '↻ refresh'));
+    onclick: () => fetch('/api/reload', { method: 'POST' }).then(() => location.reload()) }, '↻ refresh'));
   const hints = document.getElementById('hints');
   hints.textContent = '';
   [['j/k', 'move'], ['Tab', 'panel'], ['h/l', 'tabs'], ['Esc', 'back'], ['$', 'what-if'], ['p/t', 'projects/time'], ['T', 'trends'], ['P', 'prices'], ['R', 'range']]
