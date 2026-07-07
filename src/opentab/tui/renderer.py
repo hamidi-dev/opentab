@@ -23,10 +23,13 @@ from opentab.formatting import (
     BAR_CELLS,
     MONEY_PATTERN,
     TOKEN_PATTERN,
+    clip,
     cost_bar,
+    display_width,
     human_tokens,
     money,
     money_label,
+    pad,
     pct,
     short_path,
     shorten,
@@ -176,7 +179,7 @@ class Renderer:
         if project.ignored:
             name = f"× {name}"
         return (
-            f"{marker} {name:{name_width}} "
+            f"{marker} {pad(name, name_width)} "
             f"{money(project.cost):>9} {human_tokens(project.tokens):>7} "
             f"{project.workflows:>3} ses {project.subagents:>3} subs"
         )
@@ -200,7 +203,9 @@ class Renderer:
         # Size to the longest (home-shortened) project path plus the stat columns,
         # but never wider than half the screen — so it fits the content yet leaves
         # the detail pane room. Long paths truncate inside the panel instead.
-        longest = max((len(short_path(p.directory, 999)) for p in self.projects), default=8)
+        longest = max(
+            (display_width(short_path(p.directory, 999)) for p in self.projects), default=8
+        )
         natural = max(longest, len("Project")) + 39  # marker + Cost/Tokens/Ses/Subs
         return max(24, min(natural, width // 2, max(24, width - 44)))
 
@@ -477,7 +482,7 @@ class Renderer:
             return x
         clipped = shorten(text, width - x - 1)
         self.write(stdscr, y, x, clipped, attr)
-        return x + len(clipped)
+        return x + display_width(clipped)
 
     def breadcrumb(self) -> str:
         # Always-visible "you are here" path: scope › month › day › session › tab.
@@ -750,14 +755,22 @@ class Renderer:
         token_text: str,
         width: int,
     ) -> None:
-        rendered = shorten(text, width).ljust(width)
+        rendered = pad(shorten(text, width), width)
         self.write(stdscr, y, x, rendered, curses.A_NORMAL)
         cost_pos = rendered.find(cost)
         if cost_pos >= 0:
-            self.write(stdscr, y, x + cost_pos, cost, self.money_attr(cost))
+            self.write(
+                stdscr, y, x + display_width(rendered[:cost_pos]), cost, self.money_attr(cost)
+            )
         token_pos = rendered.find(token_text)
         if token_pos >= 0:
-            self.write(stdscr, y, x + token_pos, token_text, self.token_attr(token_text))
+            self.write(
+                stdscr,
+                y,
+                x + display_width(rendered[:token_pos]),
+                token_text,
+                self.token_attr(token_text),
+            )
 
     def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # Navigable session list on the Sessions tab of a zoomed month/day/project.
@@ -769,7 +782,7 @@ class Renderer:
         proj_w = 0
         if self.sessions_span_projects():
             proj_head = self.sort_heading("project", "Project")
-            longest = max((len(self.session_project(wf)) for wf in sessions), default=0)
+            longest = max((display_width(self.session_project(wf)) for wf in sessions), default=0)
             proj_w = max(len(proj_head), min(20, longest))
         header = (
             f"  {self.sort_heading('date', date_label):<10} "
@@ -815,14 +828,14 @@ class Renderer:
             tok = human_tokens(wf.total_tokens)
             text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  "
             if proj_w:
-                text += f"{shorten(self.session_project(wf), proj_w):<{proj_w}}  "
+                text += f"{pad(shorten(self.session_project(wf), proj_w), proj_w)}  "
             text += f"{self.source_tag(wf)}{self.bookmark_tag(wf)}{self.ignored_session_tag(wf)}{wf.title}"
             if start + off == idx:
                 self.write(
                     stdscr,
                     ry,
                     x + 2,
-                    shorten(text, w - 4).ljust(w - 4),
+                    pad(shorten(text, w - 4), w - 4),
                     curses.A_REVERSE | curses.A_BOLD,
                 )
             else:
@@ -857,7 +870,7 @@ class Renderer:
                     stdscr,
                     ry,
                     x + 2,
-                    shorten(text, w - 4).ljust(w - 4),
+                    pad(shorten(text, w - 4), w - 4),
                     curses.A_REVERSE | curses.A_BOLD,
                 )
             else:
@@ -927,7 +940,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + 1,
-                    shorten(text, text_w).ljust(text_w),
+                    pad(shorten(text, text_w), text_w),
                     curses.A_REVERSE | curses.A_BOLD,
                 )
             elif selected:
@@ -935,7 +948,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + 1,
-                    shorten(text, text_w).ljust(text_w),
+                    pad(shorten(text, text_w), text_w),
                     curses.color_pair(1) | curses.A_BOLD,
                 )
             else:
@@ -976,7 +989,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + 1,
-                    shorten(text, text_w).ljust(text_w),
+                    pad(shorten(text, text_w), text_w),
                     curses.A_REVERSE | curses.A_BOLD,
                 )
             elif selected:
@@ -984,7 +997,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + 1,
-                    shorten(text, text_w).ljust(text_w),
+                    pad(shorten(text, text_w), text_w),
                     curses.color_pair(1) | curses.A_BOLD,
                 )
             else:
@@ -1029,7 +1042,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + 1,
-                    shorten(text, w - 2).ljust(w - 2),
+                    pad(shorten(text, w - 2), w - 2),
                     curses.A_REVERSE | curses.A_BOLD,
                 )
             else:
@@ -1194,7 +1207,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + 1,
-                    shorten(text, text_w).ljust(text_w),
+                    pad(shorten(text, text_w), text_w),
                     curses.A_REVERSE | curses.A_BOLD,
                 )
             elif selected:
@@ -1202,7 +1215,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + 1,
-                    shorten(text, text_w).ljust(text_w),
+                    pad(shorten(text, text_w), text_w),
                     curses.color_pair(1) | curses.A_BOLD,
                 )
             else:
@@ -1281,7 +1294,7 @@ class Renderer:
                     stdscr,
                     row_y,
                     x + 1,
-                    shorten(text, w - 2).ljust(w - 2),
+                    pad(shorten(text, w - 2), w - 2),
                     curses.A_REVERSE | curses.A_BOLD,
                 )
             else:
@@ -1372,7 +1385,7 @@ class Renderer:
             else:
                 tail = f"{human_tokens(int(cr)):>9} {human_tokens(int(cw)):>9} {human_tokens(int(out)):>8}"
             lines.append(
-                f"{shorten(name, mw):{mw}} {int(runs):>{cw_}} {money(float(cost)):>10} "
+                f"{pad(shorten(name, mw), mw)} {int(runs):>{cw_}} {money(float(cost)):>10} "
                 f"{pct(float(cost), total_cost):>5} "
                 f"{human_tokens(int(tok)):>9} {tail}"
             )
@@ -1785,8 +1798,8 @@ class Renderer:
         for row in rows:
             lines.append(
                 f"{row['depth']:<1} "
-                f"{shorten(row['agent'], 14):14} "
-                f"{shorten(row['model_name'], 31):31} "
+                f"{pad(shorten(row['agent'], 14), 14)} "
+                f"{pad(shorten(row['model_name'], 31), 31)} "
                 f"{money(row['cost']):>8} "
                 f"{human_tokens(row['tokens_total']):>9}  "
                 f"{row['title']}"
@@ -1945,13 +1958,13 @@ class Renderer:
                 title = (r.get("prompt_title") or "").strip() or "(no preceding prompt)"
                 title = shorten(title, max(10, width - len(gc) - 5))
                 head = "▸ " + title
-                lines.append(head + " " * max(1, width - len(head) - len(gc)) + gc)
+                lines.append(head + " " * max(1, width - display_width(head) - len(gc)) + gc)
             cum += cost
             agent = r["agent"] if r["depth"] else "-"
             cumlabel = f"{money(cum)} · {pct(cum, total)}"
             lines.append(
-                f"  {n:>{idx_w}} {clock(r['time']):<{time_w}} {shorten(r['model_name'], mw):<{mw}} "
-                f"{shorten(agent, agent_w):<{agent_w}} "
+                f"  {n:>{idx_w}} {clock(r['time']):<{time_w}} {pad(shorten(r['model_name'], mw), mw)} "
+                f"{pad(shorten(agent, agent_w), agent_w)} "
                 f"{human_tokens(r['tokens_total']):>9} {money(cost):>9} {cumlabel:>16}"
             )
         lines += [
@@ -2218,7 +2231,7 @@ class Renderer:
         w = self._PRICE_COL_W
         cells = " ".join(f"{c:>{w}}" for c in self._price_raw_cells(entry))
         return (
-            f"{shorten(entry.bare, namew):{namew}}  "
+            f"{pad(shorten(entry.bare, namew), namew)}  "
             f"{self._price_eff_cell(entry):>{self._PRICE_EFF_W}}  "
             f"{self._price_use_cell(entry, peak):<{self._PRICE_USE_W}}  {cells}"
         )
@@ -2422,7 +2435,7 @@ class Renderer:
             core = self._price_core_text(entry, namew, peak)
             selected = i == idx
             attr = curses.A_REVERSE | curses.A_BOLD if selected else curses.A_NORMAL
-            self.write(stdscr, row_y, 2, f"{shorten(core, inner_w):<{inner_w}}", attr)
+            self.write(stdscr, row_y, 2, pad(shorten(core, inner_w), inner_w), attr)
             tag = self._price_entry_tag(entry)
             if tag and tag_x < 2 + inner_w and not selected:
                 self.write(
@@ -2542,7 +2555,7 @@ class Renderer:
             body = [f" {line}" for line in wrapped]
             if row + len(body) >= height - 2:  # the whole card must clear the footer hline
                 break
-            cardw = min(max([len(head)] + [len(line) for line in body]) + 1, maxw)
+            cardw = min(max([len(head)] + [display_width(line) for line in body]) + 1, maxw)
             x = max(0, width - cardw - 2)
             fading = toast.remaining(now) < self.TOAST_FADE
             base = curses.color_pair(pair) | curses.A_REVERSE
@@ -2550,7 +2563,7 @@ class Renderer:
                 stdscr,
                 row,
                 x,
-                f"{head:<{cardw}}",
+                pad(head, cardw),
                 base | (curses.A_DIM if fading else curses.A_BOLD),
             )
             for i, line in enumerate(body):
@@ -2558,7 +2571,7 @@ class Renderer:
                     stdscr,
                     row + 1 + i,
                     x,
-                    f"{line:<{cardw}}",
+                    pad(line, cardw),
                     base | (curses.A_DIM if fading else 0),
                 )
             row += len(body) + 2  # card (header + body lines) plus a 1-row gap
@@ -2570,7 +2583,7 @@ class Renderer:
         # the view doesn't bleed through). `lines` is a list of (text, attr); the caller
         # styles each row (header tint, A_REVERSE for a selected entry). Sized to content.
         content = [(str(t), a) for t, a in lines]
-        inner_w = max([len(title) + 2] + [len(t) for t, _ in content] + [16])
+        inner_w = max([len(title) + 2] + [display_width(t) for t, _ in content] + [16])
         w = min(inner_w + 4, max(24, scr_w - 4))
         h = min(len(content) + 4, max(6, scr_h - 4))
         y = max(1, (scr_h - h) // 2)
@@ -2580,7 +2593,7 @@ class Renderer:
         self.box(stdscr, y, x, h, w, title, active=True)
         field = w - 4
         for offset, (text, attr) in enumerate(content[: h - 4]):
-            self.write(stdscr, y + 2 + offset, x + 2, f"{shorten(text, field):<{field}}", attr)
+            self.write(stdscr, y + 2 + offset, x + 2, pad(shorten(text, field), field), attr)
 
     def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `c` picker: a small modal list of every present source. j/k moves the
@@ -3223,7 +3236,7 @@ class Renderer:
         for name, cost in rows:
             bar = "█" * max(0, round((cost / peak) * barw))
             lines.append(
-                f"{shorten(name, namew):{namew}}  {bar:<{barw}} {money(cost):>11} {pct(cost, total):>5}"
+                f"{pad(shorten(name, namew), namew)}  {bar:<{barw}} {money(cost):>11} {pct(cost, total):>5}"
             )
         return lines
 
@@ -3261,7 +3274,7 @@ class Renderer:
         for provider, it in rows:
             bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
             lines.append(
-                f"{shorten(provider, namew):{namew}}  {bar:<{barw}} "
+                f"{pad(shorten(provider, namew), namew)}  {bar:<{barw}} "
                 f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total_cost):>5} "
                 f"{human_tokens(int(it['tokens'])):>9} {int(it['runs']):>7}"
             )
@@ -3353,7 +3366,9 @@ class Renderer:
         if y < 0 or y >= height or x < 0 or x >= width:
             return
         try:
-            stdscr.addstr(y, x, text[: max(0, width - x - 1)], attr)
+            # Clip by display cells, not codepoints, so wide (CJK) text never
+            # overflows the row and wraps.
+            stdscr.addstr(y, x, clip(text, max(0, width - x - 1)), attr)
         except curses.error:
             pass
 
@@ -3365,8 +3380,18 @@ class Renderer:
             return  # session ids can contain money/token-like runs; don't recolor them
         for match in MONEY_PATTERN.finditer(text):
             self.write(
-                stdscr, y, x + match.start(), match.group(0), self.money_attr(match.group(0))
+                stdscr,
+                y,
+                x + display_width(text[: match.start()]),
+                match.group(0),
+                self.money_attr(match.group(0)),
             )
         for match in TOKEN_PATTERN.finditer(text):
             token_text = match.group(0)
-            self.write(stdscr, y, x + match.start(), token_text, self.token_attr(token_text))
+            self.write(
+                stdscr,
+                y,
+                x + display_width(text[: match.start()]),
+                token_text,
+                self.token_attr(token_text),
+            )
