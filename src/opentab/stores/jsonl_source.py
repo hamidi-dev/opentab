@@ -81,7 +81,7 @@ class JsonlStore(CsvStore):
         self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
         self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
-        self.records_cost = self._probe_records_cost()
+        self._records_cost: bool | None = None  # resolved lazily (records_cost property)
 
     def cache_inputs(self) -> list[str]:
         # The single JSONL file whose (size, mtime) fingerprints the warm-start cache.
@@ -107,8 +107,8 @@ class JsonlStore(CsvStore):
         return 0.0
 
     def _probe_records_cost(self) -> bool:
-        # True iff any line records a positive cost. Cheap pass, safe in __init__
-        # (CombinedStore reads records_cost before workflows()).
+        # True iff any line records a positive cost. Early-exits so it stays cheap; only
+        # run when records_cost (the lazy CsvStore property) is read before any parse.
         try:
             with open(self.path, encoding="utf-8", errors="replace") as fh:
                 for line in fh:

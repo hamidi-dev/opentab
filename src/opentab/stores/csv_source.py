@@ -39,7 +39,9 @@ class CsvStore:
     list rates.
     But cost is handled per-row like HermesStore: if the CSV carries a cost_usd/credits
     column with positive values those rows price as real spend, so records_cost is a
-    per-instance attr (True iff any row has a recorded cost), probed cheaply in __init__.
+    per-instance property (True iff any row has a recorded cost), resolved lazily --
+    derived from a parse when one has run, else probed on first read (never in __init__,
+    so the warm-start cache can answer it without touching the file).
 
     Models are mixed-provider, so each id is provider-prefixed (claude->anthropic/,
     gpt|o3->openai/, gemini->google/) for pricing and the Providers rollup. OpenAI-style
@@ -103,7 +105,7 @@ class CsvStore:
         self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
         self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
         self._git_root_cache: dict[str, str] = {}
-        self.records_cost = self._probe_records_cost()
+        self._records_cost: bool | None = None  # resolved lazily (records_cost property)
 
     # --- header / value parsing ---------------------------------------------
     @classmethod
@@ -207,9 +209,23 @@ class CsvStore:
             return self._git_root(project)
         return project
 
+    @property
+    def records_cost(self) -> bool:
+        # True iff any row records a positive cost. Lazy so construction never reads the
+        # file (the warm-start cache answers a hit without reaching here): after a parse
+        # it derives from the accumulated per-model costs; the full-file probe runs only
+        # when it is read before any parse.
+        if self._sessions is not None:
+            return any(
+                acc["cost"] > 0 for s in self._sessions.values() for acc in s["models"].values()
+            )
+        if self._records_cost is None:
+            self._records_cost = self._probe_records_cost()
+        return self._records_cost
+
     def _probe_records_cost(self) -> bool:
-        # True iff the CSV has a cost column with any positive value. Cheap pass so it is
-        # safe in __init__ (CombinedStore reads records_cost before workflows()).
+        # True iff the CSV has a cost column with any positive value. Early-exits so it
+        # stays cheap.
         try:
             with open(self.csv_path, newline="", encoding="utf-8", errors="replace") as fh:
                 reader = csv.DictReader(fh)

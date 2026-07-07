@@ -31,9 +31,10 @@ class PiStore:
     **unpriced** (the "$" view estimates them), while metered messages with a real cost
     price as spend. The two accumulate independently per message, so a session (even one
     model) mixing both routes is split correctly. Cost is therefore mixed, so -- exactly
-    like `CsvStore`/`HermesStore` -- **`records_cost` is a per-instance attr** (True iff any
-    *metered* message has a cost), set by a cheap early-exit probe in `__init__` so
-    `CombinedStore` can read it before `workflows()`.
+    like `CsvStore`/`HermesStore` -- **`records_cost` is a per-instance property** (True iff
+    any *metered* message has a cost), resolved lazily: derived from a parse when one has
+    run, else by an early-exit probe on first read (never in `__init__`, so construction
+    stays free and the warm-start cache can answer it without touching the files).
 
     Each session file is newline-delimited JSON: a `session` record carries the canonical
     id + **cwd** (so directories fold to the **git root**, no path-decoding the project
@@ -66,7 +67,7 @@ class PiStore:
         # "$" view estimates them -- exactly like HermesStore's billing_mode split. The
         # signal: auth.json marks plan logins as type "oauth"; plus a few provider markers.
         self._oauth_providers = self._load_oauth_providers()
-        self.records_cost = self._probe_records_cost()
+        self._records_cost: bool | None = None  # resolved lazily (records_cost property)
 
     # --- helpers -------------------------------------------------------------
     def _git_root(self, cwd: str) -> str:
@@ -186,10 +187,24 @@ class PiStore:
     def _files(self) -> list[str]:
         return glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
 
+    @property
+    def records_cost(self) -> bool:
+        # True iff any *metered* (non-subscription) message records real spend. Lazy so
+        # construction never reads the corpus (the warm-start cache answers a hit without
+        # reaching here): after a parse it derives from the accumulated per-model costs;
+        # the full-file probe runs only when it is read before any parse.
+        if self._sessions is not None:
+            return any(
+                acc["cost"] > 0 for s in self._sessions.values() for acc in s["models"].values()
+            )
+        if self._records_cost is None:
+            self._records_cost = self._probe_records_cost()
+        return self._records_cost
+
     def _probe_records_cost(self) -> bool:
         # True iff any *metered* (non-subscription) assistant message records a positive
-        # cost. Early-exits so it stays cheap (safe in __init__; CombinedStore reads it
-        # before workflows()). A subscription-only setup -> False (every cost is estimated).
+        # cost. Early-exits so it stays cheap. A subscription-only setup -> False (every
+        # cost is estimated).
         for path in self._files():
             try:
                 fh = open(path, encoding="utf-8", errors="replace")

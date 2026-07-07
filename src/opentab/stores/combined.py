@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from functools import cached_property
 
 from opentab.models import Workflow
 
@@ -45,7 +46,6 @@ class CombinedStore:
 
     def __init__(self, stores: list):
         self.stores = stores
-        self.records_cost = all(getattr(s, "records_cost", True) for s in stores)
         # Combined demo: each backend would otherwise draw its own random hidden scale,
         # which would distort the cross-source ratio (the Sources view lies about the
         # OpenCode-vs-Claude proportion). Share ONE scale across all backends so the
@@ -65,6 +65,13 @@ class CombinedStore:
             getattr(s, "supports_tool_breakdown", False) for s in stores
         )
         self._owner: dict[str, object] = {}
+
+    @cached_property
+    def records_cost(self) -> bool:
+        # AND of the backends (False when any doesn't record cost), evaluated lazily so
+        # building the merged view never forces a backend's full-corpus cost probe --
+        # after workflows() the warm-start cache answers this for free.
+        return all(getattr(s, "records_cost", True) for s in self.stores)
 
     def workflows(self) -> list[Workflow]:
         # Roll up every backend in parallel, then build the id->owner map and merge on
