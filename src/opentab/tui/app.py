@@ -177,6 +177,9 @@ class App:
         # Per-turn timeline (OpenCode + Claude), same lazy/cached-per-session deal as
         # the tool rows above -- a cheap per-session scan, never loaded at startup.
         self._turns_by_session: dict[str, list[dict]] = {}
+        # Subagent tree per session (workflow_nodes: a recursive CTE / backend parse),
+        # same lazy/cached-per-session deal -- the Subagents tab repaints every frame.
+        self._nodes_by_session: dict[str, list[dict]] = {}
         # Active range: custom bounds from CLI take precedence, else a day window
         # (None = all). Default is all time so the Months panel is actually useful.
         self.custom_since = args.since
@@ -1061,6 +1064,18 @@ class App:
             r["cost"] = round(r.get("cost", 0) * k, 4)
         return rows
 
+    def session_node_rows(self, workflow_id: str) -> list[dict]:
+        # Subagent tree for one session, fetched once and cached. The store call is the
+        # heavy bit (a recursive CTE / backend parse) and detail_subagents runs on every
+        # paint, so memoize like session_tool_rows; the store already demo-scales nodes,
+        # and _priced_nodes copies rows before repricing, so the memo stays pristine.
+        cached = self._nodes_by_session.get(workflow_id)
+        if cached is not None:
+            return cached
+        rows = [dict(r) for r in self.store.workflow_nodes(workflow_id)]
+        self._nodes_by_session[workflow_id] = rows
+        return rows
+
     def _snapshot_real_costs(self) -> None:
         # Freshly loaded rows carry only real cost; seed the real/api snapshots so
         # _apply_price_mode is safe even before the (deferred) model scan runs.
@@ -1213,6 +1228,7 @@ class App:
         self._resolve_project_roots()
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._nodes_by_session.clear()
         self._load_model_cache()
         self.zoom_project = None
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
@@ -1378,6 +1394,7 @@ class App:
         self._models_loaded = False
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._nodes_by_session.clear()
         self._load_model_cache()
         self._invalidate_workflow_cache()
         if restore:
@@ -1779,7 +1796,7 @@ class App:
 
     def _subagents_dataset(self, session: Workflow) -> tuple[str, list[str], list[list]]:
         nodes = self._priced_nodes(
-            [r for r in self.store.workflow_nodes(session.id) if r["depth"] > 0]
+            [r for r in self.session_node_rows(session.id) if r["depth"] > 0]
         )
         header = ["depth", "agent", "model", "cost", "tokens", "title"]
         rows = [

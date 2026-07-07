@@ -7461,6 +7461,46 @@ def test_records_cost_probe_runs_lazily_not_at_construction():
         assert sub.records_cost is False
 
 
+def test_subagent_nodes_memoized_per_session():
+    def node(workflow_id, depth, agent, title):
+        return {
+            "id": f"{workflow_id}:{depth}",
+            "depth": depth,
+            "agent": agent,
+            "title": title,
+            "created_at": "",
+            "cost": 1.0,
+            "model_name": "anthropic/x",
+            "tokens_input": 1,
+            "tokens_output": 1,
+            "tokens_reasoning": 0,
+            "tokens_cache_read": 0,
+            "tokens_cache_write": 0,
+            "tokens_total": 2,
+        }
+
+    class NodeStore(FakeStore):
+        node_calls = 0
+
+        def workflow_nodes(self, workflow_id):
+            self.node_calls += 1
+            return [node(workflow_id, 0, "-", "root"), node(workflow_id, 1, "task", "sub")]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(NodeStore([workflow("s1", "2026-06-01 12:00:00")]), args)
+    rows1 = app.session_node_rows("s1")
+    rows2 = app.session_node_rows("s1")
+    assert app.store.node_calls == 1  # every repaint after the first is memo-served
+    assert rows1 is rows2 and [r["depth"] for r in rows1] == [0, 1]
+    # The Subagents export dataset reads through the same memo (no new store call).
+    kind, header, rows = app._subagents_dataset(app.loaded[0])
+    assert kind == "subagents" and app.store.node_calls == 1
+    assert [r[0] for r in rows] == [1]  # depth-0 root filtered out, subagent kept
+    # Reload drops the memo -- the underlying data may have changed.
+    app.reload()
+    app.session_node_rows("s1")
+    assert app.store.node_calls == 2
+
 
 def test_wsl_mount_root_and_windows_path_mapping():
     with tempfile.TemporaryDirectory() as tmp:
