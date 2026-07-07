@@ -3259,27 +3259,35 @@ class App:
         # never drifts: a short "<label>: " + the value you type is the input field
         # (orange) at the far LEFT, and the format hint sits to its right in plain
         # slate -- never a whole-orange line. The real cursor sits at the value's end.
-        height, width = stdscr.getmaxyx()
         head = " " + label
-        max_len = max(1, width - len(head) - len(hint) - 6)
         field = curses.color_pair(6) | curses.A_BOLD
         value = initial
         curses.curs_set(1)
         try:
             while True:
-                stdscr.addstr(height - 1, 0, " " * (width - 1))
+                # Re-measure every pass and guard the writes (like Renderer.write):
+                # shrinking the terminal mid-prompt must repaint, never raise.
+                height, width = stdscr.getmaxyx()
+                max_len = max(1, width - len(head) - len(hint) - 6)
                 shown = shorten(value, max_len)
                 left = head + shown
-                stdscr.addstr(height - 1, 0, left[: width - 1], field)
-                hx = len(left)
-                if hint and hx < width - 1:  # format hint in plain slate, to the right
-                    stdscr.addstr(
-                        height - 1, hx, ("   " + hint)[: width - hx - 1], curses.color_pair(4)
-                    )
-                stdscr.move(height - 1, min(width - 2, len(left)))
+                try:
+                    stdscr.addstr(height - 1, 0, " " * (width - 1))
+                    stdscr.addstr(height - 1, 0, left[: width - 1], field)
+                    hx = len(left)
+                    if hint and hx < width - 1:  # format hint in plain slate, to the right
+                        stdscr.addstr(
+                            height - 1, hx, ("   " + hint)[: width - hx - 1], curses.color_pair(4)
+                        )
+                    stdscr.move(height - 1, max(0, min(width - 2, len(left))))
+                except curses.error:
+                    pass  # a resize can invalidate any coordinate; next pass re-measures
                 stdscr.refresh()
 
-                value, done, cancelled = self.filter_prompt_step(value, stdscr.getch(), max_len)
+                key = stdscr.getch()
+                if key == curses.KEY_RESIZE:
+                    continue  # repaint against the new size
+                value, done, cancelled = self.filter_prompt_step(value, key, max_len)
                 if cancelled:
                     return None
                 if done:
