@@ -211,7 +211,7 @@ class CsvStore:
         # True iff the CSV has a cost column with any positive value. Cheap pass so it is
         # safe in __init__ (CombinedStore reads records_cost before workflows()).
         try:
-            with open(self.csv_path, newline="", errors="replace") as fh:
+            with open(self.csv_path, newline="", encoding="utf-8", errors="replace") as fh:
                 reader = csv.DictReader(fh)
                 mapping, is_credits = self._resolve_headers(reader.fieldnames)
                 col = mapping.get("cost")
@@ -247,7 +247,7 @@ class CsvStore:
             return self._sessions
         sessions: dict[str, dict] = {}
         try:
-            with open(self.csv_path, newline="", errors="replace") as fh:
+            with open(self.csv_path, newline="", encoding="utf-8", errors="replace") as fh:
                 reader = csv.DictReader(fh)
                 mapping, cost_is_credits = self._resolve_headers(reader.fieldnames)
                 for row in reader:

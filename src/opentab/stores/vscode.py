@@ -181,7 +181,9 @@ class VscodeStore:
 
     def _resolve_project(self, hash_dir: str) -> str:
         try:
-            with open(os.path.join(hash_dir, "workspace.json"), errors="replace") as fh:
+            with open(
+                os.path.join(hash_dir, "workspace.json"), encoding="utf-8", errors="replace"
+            ) as fh:
                 meta = json.load(fh)
         except (OSError, ValueError):
             return "(unknown)"

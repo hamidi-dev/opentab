@@ -110,7 +110,7 @@ class JsonlStore(CsvStore):
         # True iff any line records a positive cost. Cheap pass, safe in __init__
         # (CombinedStore reads records_cost before workflows()).
         try:
-            with open(self.path, errors="replace") as fh:
+            with open(self.path, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
@@ -139,7 +139,7 @@ class JsonlStore(CsvStore):
             return self._sessions
         sessions: dict[str, dict] = {}
         try:
-            with open(self.path, errors="replace") as fh:
+            with open(self.path, encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
