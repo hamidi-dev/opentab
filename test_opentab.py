@@ -7335,6 +7335,133 @@ def test_cached_store_warm_start_and_invalidation():
                 os.environ["XDG_CONFIG_HOME"] = old_xdg
 
 
+def test_cached_store_serves_records_cost_and_survives_field_drift():
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
+        data = os.path.join(tmp, "data.jsonl")
+        with open(data, "w") as fh:
+            fh.write("one\n")
+
+        class Backend:
+            combined = False
+            demo = False
+            source_name = "Fake"
+
+            def __init__(self):
+                self.workflow_calls = 0
+                self.probe_calls = 0
+
+            @property
+            def records_cost(self):
+                self.probe_calls += 1  # stands in for the full-corpus cost probe
+                return True
+
+            def cache_inputs(self):
+                return [data]
+
+            def workflows(self):
+                self.workflow_calls += 1
+                return [workflow("s1", "2026-06-01 12:00:00", cost=2.0, tokens=100)]
+
+            def model_breakdown(self):
+                return [
+                    {"root_id": "s1", "model_name": "anthropic/x", "runs": 1, "tokens_total": 100}
+                ]
+
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        cid = "fake|" + data
+        try:
+            # Cold: a real parse; the write reads records_cost off the backend (once).
+            b1 = Backend()
+            c1 = ot.CachedStore(b1, cid, args)
+            c1.workflows()
+            c1.model_breakdown()
+            assert b1.probe_calls == 1
+
+            # Warm: records_cost round-trips from the cache -- the backend's probe is
+            # never touched, whether it's read after workflows() or straight away.
+            b2 = Backend()
+            c2 = ot.CachedStore(b2, cid, args)
+            c2.workflows()
+            assert c2.records_cost is True
+            assert b2.probe_calls == 0 and b2.workflow_calls == 0
+            b3 = Backend()
+            assert ot.CachedStore(b3, cid, args).records_cost is True  # fingerprints itself
+            assert b3.probe_calls == 0
+
+            # A cached row that no longer matches the Workflow dataclass (field drift
+            # without a version bump) falls back to a real parse instead of crashing.
+            with open(c1._path) as fh:
+                payload = json.load(fh)
+            payload["workflows"][0]["bogus_field"] = 1
+            with open(c1._path, "w") as fh:
+                json.dump(payload, fh)
+            b4 = Backend()
+            c4 = ot.CachedStore(b4, cid, args)
+            wf4 = c4.workflows()
+            assert b4.workflow_calls == 1 and [w.id for w in wf4] == ["s1"]
+            assert c4.served_from_cache is False
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
+def test_records_cost_probe_runs_lazily_not_at_construction():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.jsonl")
+        _write_jsonl(
+            path,
+            [
+                {
+                    "timestamp": "2026-06-18T10:00:00Z",
+                    "session_id": "s1",
+                    "model": "gpt-4o",
+                    "input_tokens": 100,
+                    "output_tokens": 10,
+                    "cost_usd": 0.05,
+                }
+            ],
+        )
+        calls = []
+        orig = ot.JsonlStore._probe_records_cost
+        ot.JsonlStore._probe_records_cost = lambda self: (calls.append(1), orig(self))[1]
+        try:
+            store = ot.JsonlStore(path, _jsonl_args())
+            assert calls == []  # constructing must not read the file
+            assert store.records_cost is True  # first read probes...
+            assert store.records_cost is True and calls == [1]  # ...and the answer sticks
+
+            # Parsed first (the cold-start order): the answer derives from the parse's
+            # accumulated per-model costs and the probe never runs at all.
+            calls.clear()
+            store2 = ot.JsonlStore(path, _jsonl_args())
+            store2.workflows()
+            assert store2.records_cost is True and calls == []
+        finally:
+            ot.JsonlStore._probe_records_cost = orig
+
+        # pi's parse-derived answer honors the metered/subscription split like the probe:
+        # a codex-plan cost is a list-price estimate, not spend -> records_cost False.
+        root = os.path.join(tmp, "pi-sessions")
+        _pi_write(
+            root,
+            "--proj--",
+            PI_SID,
+            [
+                _pi_session(PI_SID, tmp),
+                _pi_user("hi"),
+                _pi_assistant("openai/gpt-5", 10, 5, cost=0.01, provider="openai-codex"),
+            ],
+        )
+        sub = ot.PiStore(root, _pi_args())
+        sub.workflows()  # parse first: no probe needed
+        assert sub.records_cost is False
+
+
+
 def test_wsl_mount_root_and_windows_path_mapping():
     with tempfile.TemporaryDirectory() as tmp:
         # wsl.conf parsing: [automount] root= wins, comments stripped, missing -> /mnt.
