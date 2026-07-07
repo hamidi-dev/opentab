@@ -29,7 +29,7 @@ def money_label(value: float) -> str:
     if value <= 0:
         return ""
     if value < 0.005:
-        return "<$.01"
+        return "<$0.01"
     if value < 10:
         return f"${value:.2f}"  # $2.34
     if value < 1000:
