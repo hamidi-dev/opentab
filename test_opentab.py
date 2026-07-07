@@ -8177,6 +8177,51 @@ def test_web_report_server_serves_page_extras_and_404():
     thread.join(timeout=5)
 
 
+def test_web_server_is_hardened_against_csrf_and_dns_rebinding():
+    import threading
+    import urllib.error
+    import urllib.request
+
+    app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+    server = ot.web.ReportServer(("127.0.0.1", 0), app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+    base = f"http://127.0.0.1:{port}"
+    try:
+        # Every response carries the lockdown headers (self-contained page: inline
+        # JS/CSS, data: favicon, fetch back to this server only).
+        resp = urllib.request.urlopen(base + "/")
+        csp = resp.headers["Content-Security-Policy"]
+        assert csp.startswith("default-src 'none'")
+        assert "connect-src 'self'" in csp and "img-src data:" in csp
+        assert resp.headers["X-Content-Type-Options"] == "nosniff"
+        # Reload mutates state, so it is POST-only: a GET (fireable cross-origin
+        # by any webpage) gets a 405 and does not touch the stores.
+        try:
+            urllib.request.urlopen(base + "/api/reload")
+            raise AssertionError("expected a 405")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 405
+        req = urllib.request.Request(base + "/api/reload", data=b"", method="POST")
+        assert json.loads(urllib.request.urlopen(req).read().decode("utf-8")) == {"ok": True}
+        # DNS rebinding: a foreign Host header is rejected on a loopback bind...
+        req = urllib.request.Request(base + "/", headers={"Host": "evil.example.com"})
+        try:
+            urllib.request.urlopen(req)
+            raise AssertionError("expected a 403")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 403
+        # ...while every local spelling passes, with or without the port.
+        for host in ("localhost", f"localhost:{port}", "127.0.0.1", f"[::1]:{port}"):
+            req = urllib.request.Request(base + "/", headers={"Host": host})
+            assert urllib.request.urlopen(req).status == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+    thread.join(timeout=5)
+
+
 def test_cli_web_flag_is_recognized_and_is_distinct_from_serve():
     # --web is its own flag; web_command/main route it through the serve path.
     import sys as _sys

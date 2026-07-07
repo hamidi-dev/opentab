@@ -279,23 +279,59 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        # The page is fully self-contained -- inline JS/CSS, a data: favicon, and
+        # fetches only back to this server -- so everything else can be denied.
+        self.send_header(
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+            "img-src data:; connect-src 'self'",
+        )
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
 
     def _send_json(self, data: dict) -> None:
         self._send(200, "application/json; charset=utf-8", json.dumps(data).encode("utf-8"))
 
+    def _check_host(self) -> bool:
+        # DNS-rebinding defense: an attacker's domain can be pointed at 127.0.0.1
+        # and read this server cross-origin, but the Host header still names that
+        # domain -- so on a loopback bind only local names pass. An explicit
+        # --bind beyond loopback opted out (and got the startup warning).
+        if self.server.server_address[0] not in ("127.0.0.1", "::1"):
+            return True
+        raw = (self.headers.get("Host") or "").strip().lower()
+        host = raw[1:].partition("]")[0] if raw.startswith("[") else raw.partition(":")[0]
+        if host in ("localhost", "127.0.0.1", "::1") or raw == "::1":
+            return True
+        self._send(403, "text/plain; charset=utf-8", b"forbidden host")
+        return False
+
     def do_GET(self):
+        if not self._check_host():
+            return
         path = self.path.split("?", 1)[0]
         server: ReportServer = self.server  # type: ignore[assignment]
         if path == "/":
             self._send(200, "text/html; charset=utf-8", server.page().encode("utf-8"))
         elif path == "/api/reload":
-            server.reload()
-            self._send_json({"ok": True})
+            # State-changing, so POST-only: a GET can be fired cross-origin by any
+            # webpage (CSRF), and each reload re-parses the sources off disk.
+            self._send(405, "text/plain; charset=utf-8", b"reload is POST-only")
         elif path.startswith("/api/session/"):
             workflow_id = unquote(path[len("/api/session/") :])
             self._send_json(session_extras(server.app, workflow_id))
+        else:
+            self._send(404, "text/plain; charset=utf-8", b"not found")
+
+    def do_POST(self):
+        if not self._check_host():
+            return
+        path = self.path.split("?", 1)[0]
+        server: ReportServer = self.server  # type: ignore[assignment]
+        if path == "/api/reload":
+            server.reload()
+            self._send_json({"ok": True})
         else:
             self._send(404, "text/plain; charset=utf-8", b"not found")
 
