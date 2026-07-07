@@ -593,7 +593,7 @@ class Renderer:
         # appears only where it does something (like "s/S sort").
         parts.append(("R range", self.range_label() != "all time"))
         if self.can_filter_current_view():
-            parts.append(("f filter", bool(self.query)))
+            parts.append(("f,/ filter", bool(self.query)))
         parts += [
             ("T trends", self.trends),
             ("P prices", self.show_prices),
@@ -1987,6 +1987,7 @@ class Renderer:
                         "(per-tool / MCP spend, OpenCode); Sources joins in the merged 'all' view",
                     ),
                     ("j / k", "move in the list (↑/↓ too), or scroll the detail pane"),
+                    ("PgDn/PgUp", "move / scroll by half a page (Ctrl-D / Ctrl-U too)"),
                     ("g / G", "jump to the top / bottom"),
                     (
                         "mouse",
@@ -2005,7 +2006,7 @@ class Renderer:
                     ("a", "show all time, keeping the current selection where possible"),
                     ("s", "open the sort picker for the visible list (j/k move · Enter · Esc)"),
                     (
-                        "f",
+                        "f or /",
                         "live filter — fuzzy over sessions (title/project/id), projects and "
                         "Models; substring over Prices",
                         "while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
