@@ -148,6 +148,12 @@ def test_money_marks_sub_cent_costs():
     assert ot.money(0.02) == "$0.02"
 
 
+def test_money_label_marks_sub_cent_costs_like_money():
+    # The compact bar label spells sub-cent the same way money() does.
+    assert ot.money_label(0.004) == "<$0.01"
+    assert ot.money_label(0) == ""
+
+
 def test_display_width_counts_terminal_cells():
     assert ot.display_width("abc") == 3
     assert ot.display_width("") == 0
@@ -343,9 +349,9 @@ def test_model_table_splits_cost_across_token_categories_in_wide_panes():
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
     lines = app.renderer._model_table(rows, "# Top Models", 120)
-    assert "800.0k($0.80)" in lines[2]
-    assert "100.0k($1.25)" in lines[2]
-    assert "50.0k($2.50)" in lines[2]
+    assert "800.0k ($0.80)" in lines[2]
+    assert "100.0k ($1.25)" in lines[2]
+    assert "50.0k ($2.50)" in lines[2]
 
 
 def test_model_table_split_scales_to_the_recorded_cost():
@@ -355,9 +361,9 @@ def test_model_table_split_scales_to_the_recorded_cost():
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 10.10, 1_000_000, 800_000, 100_000, 50_000)]
     lines = app.renderer._model_table(rows, "# Top Models", 120)
-    assert "800.0k($1.60)" in lines[2]
-    assert "100.0k($2.50)" in lines[2]
-    assert "50.0k($5.00)" in lines[2]
+    assert "800.0k ($1.60)" in lines[2]
+    assert "100.0k ($2.50)" in lines[2]
+    assert "50.0k ($5.00)" in lines[2]
 
 
 def test_model_table_split_cells_align_under_their_labels():
@@ -374,7 +380,7 @@ def test_model_table_split_cells_align_under_their_labels():
     for label in ("CacheR", "CacheW", "Output"):
         i = header.index(label)
         assert first[i + 5] != " " and second[i + 5] != " "  # tokens end under the label
-        assert first[i + 12] == ")" and second[i + 12] == ")"
+        assert first[i + 13] == ")" and second[i + 13] == ")"
     assert "( " not in first and "( " not in second  # parens hug the amount
 
 
