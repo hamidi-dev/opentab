@@ -236,11 +236,19 @@ class Renderer:
             workflow = self.current_session()
             if workflow is None:
                 return []
-            if self.tab == 0:
-                return self.detail_overview(workflow, content_width)
-            if self.tab == 1:
+            # Dispatch by tab NAME like draw_detail: current_tabs() appends Turns and
+            # Tools per session, so a fixed index would page the wrong line count.
+            tabs = self.current_tabs()
+            current = tabs[self.tab % len(tabs)]
+            if current == "Models":
                 return self.detail_models(workflow, content_width)
-            return self.detail_subagents(workflow, content_width)
+            if current == "Subagents":
+                return self.detail_subagents(workflow, content_width)
+            if current == "Turns":
+                return self.detail_turns(workflow, content_width)
+            if current == "Tools":
+                return self.detail_tools(workflow, content_width)
+            return self.detail_overview(workflow, content_width)
 
         if self.view == "zoom":
             if self.browse_mode == "projects":
