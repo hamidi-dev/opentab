@@ -7551,6 +7551,78 @@ def test_subagent_nodes_memoized_per_session():
     assert app.store.node_calls == 2
 
 
+def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
+    # OpenCode runs SQLite in WAL mode, so a new session lands in <db>-wal while the
+    # main .db's size/mtime don't move until a checkpoint. cache_inputs() must
+    # fingerprint the WAL sidecars, or CachedStore keeps serving the stale rollup and a
+    # reload (r) / the report's refresh never shows sessions written since -- the
+    # reported "--web refresh doesn't get new sessions" bug.
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
+        db = os.path.join(tmp, "opencode.db")
+        # Writer stays open the whole test with autocheckpoint off, so every commit
+        # stays in the -wal file and the main .db is never checkpointed/rewritten.
+        w = sqlite3.connect(db)
+        w.execute("PRAGMA journal_mode=WAL")
+        w.execute("PRAGMA wal_autocheckpoint=0")
+        w.executescript(
+            """
+            create table session (
+              id text primary key, parent_id text, title text, directory text,
+              time_created integer, cost real default 0 not null,
+              tokens_input integer default 0 not null, tokens_output integer default 0 not null,
+              tokens_reasoning integer default 0 not null, tokens_cache_read integer default 0 not null,
+              tokens_cache_write integer default 0 not null
+            );
+            create table message (id text primary key, session_id text, data text);
+            """
+        )
+        w.execute(
+            "insert into session values ('s1',null,'One','/work/repo',1760000000000,1.0,0,0,0,0,0)"
+        )
+        w.commit()
+        try:
+            store = ot.Store(db, type("A", (), {"demo": False})())
+            ci = store.cache_inputs()
+            assert db in ci and db + "-wal" in ci and db + "-shm" in ci  # sidecars fingerprinted
+
+            cid = "opencode|" + db
+            cargs = type("A", (), {"demo": False, "no_cache": False})()
+
+            # Cold: parse s1 and write the cache (workflows + breakdown both fresh).
+            c1 = ot.CachedStore(store, cid, cargs)
+            assert [x.id for x in c1.workflows()] == ["s1"]
+            c1.model_breakdown()
+            assert c1.served_from_cache is False
+
+            # Warm: a fresh wrapper over the unchanged DB serves the cache untouched.
+            c2 = ot.CachedStore(store, cid, cargs)
+            c2.workflows()
+            assert c2.served_from_cache is True
+
+            # OpenCode adds a new session -> it lands in the WAL, main .db mtime unchanged.
+            mtime_before = os.stat(db).st_mtime_ns
+            w.execute(
+                "insert into session values ('s2',null,'Two','/work/repo',1760000100000,2.0,0,0,0,0,0)"
+            )
+            w.commit()
+            assert os.stat(db).st_mtime_ns == mtime_before  # the WAL grew, not the .db
+
+            # A reload now MISSES the cache (the -wal fingerprint moved) and re-parses,
+            # so the new session is visible -- the fix.
+            c3 = ot.CachedStore(store, cid, cargs)
+            wf3 = c3.workflows()
+            assert c3.served_from_cache is False
+            assert sorted(x.id for x in wf3) == ["s1", "s2"]
+        finally:
+            w.close()
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
 def test_wsl_mount_root_and_windows_path_mapping():
     with tempfile.TemporaryDirectory() as tmp:
         # wsl.conf parsing: [automount] root= wins, comments stripped, missing -> /mnt.

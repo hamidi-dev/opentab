@@ -403,8 +403,12 @@ class HermesStore:
         }
 
     def cache_inputs(self) -> list[str]:
-        # The single DB file whose (size, mtime) fingerprints the warm-start cache.
-        return [self.db_path]
+        # The DB file whose (size, mtime) fingerprints the warm-start cache, plus its
+        # WAL sidecars: if Hermes runs SQLite in WAL mode, new sessions land in
+        # <db>-wal and the main .db's mtime doesn't move until a checkpoint, so
+        # fingerprinting the .db alone would let a reload serve a stale cache. Missing
+        # sidecars (a non-WAL DB) are simply skipped by the fingerprint's stat().
+        return [self.db_path, self.db_path + "-wal", self.db_path + "-shm"]
 
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload on `r`

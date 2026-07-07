@@ -187,8 +187,16 @@ class Store:
         return f"coalesce({', '.join(parts)}, {fallback})"
 
     def cache_inputs(self) -> list[str]:
-        # The single DB file whose (size, mtime) fingerprints the warm-start cache.
-        return [os.path.abspath(self.db)]
+        # The DB file whose (size, mtime) fingerprints the warm-start cache, plus its
+        # WAL sidecars. OpenCode runs SQLite in WAL mode, so new sessions land in
+        # <db>-wal and the main .db's size/mtime don't move until a checkpoint -- so
+        # fingerprinting the .db alone made a reload (r, or the report's refresh) serve
+        # the stale cache and never show sessions written since. The sidecars move on
+        # every commit; a read-only connection still reads them, so a re-parse sees the
+        # new rows. Missing sidecars (a non-WAL DB, or a checkpoint that removed them)
+        # are simply skipped by the fingerprint's stat().
+        db = os.path.abspath(self.db)
+        return [db, db + "-wal", db + "-shm"]
 
     def workflows(self) -> list[Workflow]:
         # Load every root session; the App filters by the active range in memory
