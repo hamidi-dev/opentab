@@ -3866,6 +3866,47 @@ def test_export_sources_tab_exports_the_source_breakdown():
     assert rows[0][0] == "Claude Code" and rows[0][1] == 5  # cost-sorted, priciest first
 
 
+def test_export_neutralizes_formula_prefixed_cells():
+    # Formula injection: a cell starting with =, +, -, @, tab, or CR is executed
+    # by Excel/LibreOffice/Sheets on import. Would-be formulas get a leading
+    # apostrophe; plain numbers (negative included) and non-strings pass through.
+    safe = ot.App._csv_safe
+    assert safe("=SUM(A1:A9)") == "'=SUM(A1:A9)"
+    assert safe("+cmd|' /C calc'!A0") == "'+cmd|' /C calc'!A0"
+    assert safe("@evil") == "'@evil"
+    assert safe("-rm -rf notes") == "'-rm -rf notes"
+    assert safe("\t=1+1") == "'\t=1+1"
+    assert safe("\r=1+1") == "'\r=1+1"
+    assert safe("-1.5") == "-1.5"  # a negative number string is not a formula
+    assert safe("+42") == "+42"
+    assert safe(-1.5) == -1.5 and safe(0) == 0  # non-strings untouched
+    assert safe("session title") == "session title"
+    assert safe("") == ""
+
+
+def test_export_current_sanitizes_the_written_csv():
+    import csv
+    import tempfile
+
+    w = workflow("w1", "2026-06-01 12:00:00", title='=HYPERLINK("http://x","y")')
+    app = app_with([w])
+    app.view = "zoom"
+    app.focus = "months"
+    app.tab = app.month_tabs.index("Sessions")
+    cwd = os.getcwd()
+    os.chdir(tempfile.mkdtemp(prefix="ot-export-"))
+    try:
+        app.export_current()
+        assert "exported" in app.notice
+        (name,) = (f for f in os.listdir(".") if f.startswith("opentab-sessions-"))
+        with open(name, newline="") as fh:
+            header, row = list(csv.reader(fh))
+    finally:
+        os.chdir(cwd)
+    assert row[header.index("title")] == '\'=HYPERLINK("http://x","y")'
+    assert row[header.index("total_cost")] == "1.0"  # numeric cells stay numbers
+
+
 def test_export_session_tabs_dispatch_to_their_tables():
     # A store rich enough to back the Subagents / Turns / Tools tabs.
     class RichStore(FakeStore):

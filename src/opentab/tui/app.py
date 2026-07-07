@@ -1872,6 +1872,21 @@ class App:
             )
         return "tools", header, rows
 
+    @staticmethod
+    def _csv_safe(value):
+        # Neutralize spreadsheet formula injection: a cell starting with =, +, -,
+        # @, tab, or CR is executed as a formula by Excel/LibreOffice/Sheets, and
+        # titles/dirs/models are attacker-influenced text. Only strings need the
+        # guard, and a string that is itself a plain number (a negative cost)
+        # passes through -- only would-be formulas get the leading apostrophe.
+        if not isinstance(value, str) or not value or value[0] not in "=+-@\t\r":
+            return value
+        try:
+            float(value)
+            return value
+        except ValueError:
+            return "'" + value
+
     def export_current(self) -> None:
         if self.store.demo:
             self.notify("export disabled in demo mode", "error")
@@ -1886,7 +1901,7 @@ class App:
             with open(path, "w", newline="") as fh:
                 writer = csv.writer(fh)
                 writer.writerow(header)
-                writer.writerows(rows)
+                writer.writerows([[self._csv_safe(cell) for cell in row] for row in rows])
         except OSError as exc:
             self.notify(f"export failed: {exc}", "error")
             return
