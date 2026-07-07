@@ -47,9 +47,9 @@ ruff format --check src/opentab test_opentab.py   # format check (matches CI)
 python3 -m compileall -q src/opentab          # byte-compile smoke check
 python3 -m opentab --demo                     # run the TUI with anonymized/synthetic data
 opentab --status "$PWD"                       # one-shot: current session's cost incl. subagents (tmux status line; OpenCode only)
-opentab --demo --html demo.html               # one-shot: write the self-contained HTML report
-opentab --serve                               # same report served on http://localhost:8321 (+ live Turns/Tools)
-opentab --web                                 # --serve, and open the report in the default browser
+opentab --demo --html demo.html               # one-shot: write the self-contained HTML browser
+opentab --serve                               # same browser served on http://localhost:8321 (+ live Turns/Tools)
+opentab --web                                 # --serve, and open it in the default browser
 ```
 
 `test_opentab.py` is **not** pytest — it has its own runner at the bottom that just runs
@@ -97,7 +97,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org) — `type(sco
   `--refresh-models` / `r` in the `P` overlay), the warm-start rollup cache under
   `~/.config/opentab/cache/` (one JSON per backend, rewritten after a parse when that
   backend's files change; off under `--demo` / `--no-cache`), `opentab-*.csv` exports
-  (on `e`), and the HTML report (only on `--html`, default `opentab-report.html`).
+  (on `e`), and the HTML browser (only on `--html`, default `opentab-report.html`).
 - **Python 3.9+.** `MIN_PYTHON = (3, 9)`; `target-version = py39`. Don't use newer syntax.
 
 ## Architecture
@@ -117,11 +117,11 @@ src/opentab/
   util.py            clipboard/launchers/git_root/fuzzy/parse_range/tool_namespace
   sources.py         make_store/resolve_source/available_sources/source_cycle + path routing
   state.py           load_state/save_state/apply_state
-  themes.py          THEMES palettes (single source for the web report + the TUI) + hex math
+  themes.py          THEMES palettes (single source for the web browser + the TUI) + hex math
   stores/            opencode, claude, codex, hermes, csv_source, jsonl_source, copilot, vscode, pi, openclaw, combined, cached
   tui/               renderer (Renderer), app (App)
   web.py             build_payload/session_extras + html_command/serve_command (ReportServer)
-  webpage.py         render_html: the self-contained report page (inline CSS/JS strings)
+  webpage.py         render_html: the self-contained browser page (inline CSS/JS strings)
 ```
 
 Three logical layers (the class names below live in the files above — `Store` in
@@ -434,7 +434,7 @@ exists. The `c`/`L`/price-prompt pickers are all small centered modals via
 `Renderer.draw_modal` (drawn after the body so context shows behind), unlike the full-body
 help/prices/trends overlays.
 
-### The web report (`--html` / `--serve`)
+### The web browser (`--html` / `--serve`)
 
 A second frontend over the same data, stdlib-only (`http.server`), curses-free (works on
 native Windows). `cli.web_command` builds the usual **headless App** — rollups, worktree
@@ -504,8 +504,8 @@ export **omits Turns/Tools** (embedding them would be a startup-wide scan), whil
 `--serve` (`web.ReportServer`) exposes them as `/api/session/<id>` fetched on drill-in,
 plus `/api/reload`. The server is **deliberately single-threaded** — the stores' sqlite
 connections are bound to their creating thread — and binds 127.0.0.1 by default (the
-report leaks prompt titles/paths/spend; `--bind` warns beyond localhost). **`--web` is
-`--serve` plus opening the report in the default browser** (`web.open_report`, stdlib
+browser leaks prompt titles/paths/spend; `--bind` warns beyond localhost). **`--web` is
+`--serve` plus opening it in the default browser** (`web.open_report`, stdlib
 `webbrowser` → `open`/`xdg-open`/Windows shell-association, so it's cross-platform),
 launched from a daemon thread once the socket is listening (a console-browser fallback
 can't block `serve_forever`, and it never touches the sqlite-bound store); a headless box

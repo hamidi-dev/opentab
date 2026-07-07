@@ -2077,7 +2077,7 @@ class Renderer:
                     (
                         "C",
                         "colour-theme picker — j/k live-preview · Enter keep · Esc revert "
-                        "(also the web report's)",
+                        "(also the web browser's)",
                     ),
                     ("D", "toggle real / demo data (demo anonymizes titles and paths)"),
                 ],
@@ -2610,11 +2610,11 @@ class Renderer:
 
     def draw_theme_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `C` (Colours) picker: a modal list of the themes (shared with the web
-        # report). j/k live-previews each (the whole UI is the swatch), Enter keeps it,
+        # browser). j/k live-previews each (the whole UI is the swatch), Enter keeps it,
         # Esc reverts to the theme active on open. Colours re-map via init_theme_colors.
         entries = self.theme_menu_entries()
         idx = self.theme_menu_index % len(entries) if entries else 0
-        lines = [("Colour theme (also the web report's):", curses.color_pair(4)), ("", 0)]
+        lines = [("Colour theme (also the web browser's):", curses.color_pair(4)), ("", 0)]
         for offset, (_tid, name, is_current) in enumerate(entries):
             marker = "●" if is_current else "○"
             suffix = "  (current)" if is_current else ""

@@ -170,7 +170,7 @@ def parse_args() -> argparse.Namespace:
         const="opentab-report.html",
         default=None,
         metavar="FILE",
-        help="write a self-contained HTML report and exit: drill-in by month/day/"
+        help="write a self-contained HTML browser and exit: drill-in by month/day/"
         "project/session, calendar heat map, sortable tables, the $ what-if toggle "
         "-- all client-side in one file (default FILE: opentab-report.html). "
         "Pairs with --demo for a shareable page",
@@ -178,14 +178,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="serve the HTML report from a local web server; adds the per-session "
+        help="serve the HTML browser from a local web server; adds the per-session "
         "Turns/Tools drill-in as live endpoints and a data-refresh button "
         "(Ctrl-C stops it)",
     )
     parser.add_argument(
         "--web",
         action="store_true",
-        help="like --serve, but also open the report in your default browser "
+        help="like --serve, but also open it in your default web browser "
         "(cross-platform via the stdlib webbrowser: `open` on macOS, `xdg-open` on "
         "Linux, the shell association on Windows); honors --port/--bind",
     )
@@ -193,9 +193,9 @@ def parse_args() -> argparse.Namespace:
         "--theme",
         choices=themes.THEME_IDS,
         default=themes.DEFAULT_THEME,
-        help="colour theme for the TUI and the --html/--serve report (opentab, "
+        help="colour theme for the TUI and the --html/--serve browser (opentab, "
         "catppuccin-mocha/latte, tokyo-night/-day, gruvbox, nord, dracula, rose-pine); "
-        "switch live in the TUI with Y or the report's theme button, and your choice is "
+        "switch live in the TUI with Y or the browser's theme button, and your choice is "
         f"remembered. Default: {themes.DEFAULT_THEME}",
     )
     parser.add_argument(
@@ -204,7 +204,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bind",
         default="127.0.0.1",
-        help="address for --serve/--web (default: 127.0.0.1). The report exposes prompt "
+        help="address for --serve/--web (default: 127.0.0.1). The browser exposes prompt "
         "titles, project paths, and spend -- bind beyond localhost only on a "
         "trusted/VPN (e.g. Tailscale) interface, never a public one",
     )
@@ -446,7 +446,7 @@ def main() -> int:
         or getattr(args, "serve", False)
         or getattr(args, "web", False)
     ):
-        return web_command(args)  # HTML report / local report server; no curses
+        return web_command(args)  # HTML browser / local browser server; no curses
     if curses is None:
         raise SystemExit(
             "OpenTab needs Python's curses module, which native Windows Python doesn't bundle.\n"

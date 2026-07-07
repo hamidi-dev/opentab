@@ -1,4 +1,4 @@
-"""The web report: a self-contained HTML export (--html) and a local server (--serve).
+"""The web browser: a self-contained HTML export (--html) and a local server (--serve).
 
 A second frontend over the same data the TUI reads: cli builds the usual
 *headless* App (which owns the rollups, worktree folding, ignored
@@ -14,11 +14,11 @@ per-session extras (Turns/Tools) as JSON endpoints — the exact per-session
 drill-in trade-off the TUI makes, which is why the static export omits those two
 tabs: embedding them would mean the startup-wide scan the TUI deliberately avoids.
 Subagent trees are cheap per-session queries and *are* embedded (only for sessions
-that have subagents). `--web` is `--serve` plus popping the report open in the
-user's default browser (stdlib `webbrowser`, so cross-platform).
+that have subagents). `--web` is `--serve` plus popping the browser open in the
+user's default web browser (stdlib `webbrowser`, so cross-platform).
 
 Everything here is read-only on the data sources; the one file written is the
---html report the user asked for.
+--html browser the user asked for.
 """
 
 from __future__ import annotations
@@ -263,7 +263,7 @@ def html_command(app: App, args: argparse.Namespace) -> int:
         fh.write(text)
     meta = payload["meta"]
     print(
-        f"report: {path} ({len(text) // 1024} kB, "
+        f"OpenTab browser: {path} ({len(text) // 1024} kB, "
         f"{len(payload['workflows'])} sessions, {meta['range']}, {meta['source']})"
     )
     return 0
@@ -337,7 +337,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 class ReportServer(HTTPServer):
-    """Serves the rendered report page plus the per-session JSON extras. The page
+    """Serves the rendered browser page plus the per-session JSON extras. The page
     (payload included) is built once and cached; /api/reload re-reads the stores
     and invalidates it -- wired to the page's refresh button.
 
@@ -367,7 +367,7 @@ class ReportServer(HTTPServer):
 
 
 def open_report(url: str) -> bool:
-    """Open the report in the user's default browser -- stdlib `webbrowser`, so it's
+    """Open the browser page in the user's default web browser -- stdlib `webbrowser`, so it's
     cross-platform out of the box (`open` on macOS, `xdg-open` on Linux, the shell
     association on Windows). Best effort: a headless box with no browser returns
     False instead of raising, so `--web` never crashes serving over it."""
@@ -395,7 +395,7 @@ def serve_command(app: App, args: argparse.Namespace) -> int:
     server.page()  # build eagerly so the first request is instant and errors surface here
     host = "localhost" if bind in ("127.0.0.1", "::1") else bind
     url = f"http://{host}:{server.server_address[1]}/"
-    print(f"opentab report at {url}  (Ctrl-C to stop)")
+    print(f"OpenTab browser at {url}  (Ctrl-C to stop)")
     import threading
 
     if getattr(args, "web", False):

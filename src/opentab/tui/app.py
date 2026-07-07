@@ -200,7 +200,7 @@ class App:
         self.source_menu_index = 0  # highlighted row in that picker
         self.sort_menu = False  # the `s` sort-order picker overlay
         self.sort_menu_index = 0  # highlighted row in that picker
-        # Active colour theme (shared source with the web report). Seeded from
+        # Active colour theme (shared source with the web browser). Seeded from
         # --theme; a valid saved theme (apply_state) or the `Y` picker takes over.
         self.theme_id = getattr(args, "theme", None) or themes.DEFAULT_THEME
         if self.theme_id not in themes.THEMES:
@@ -2607,7 +2607,7 @@ class App:
         curses.curs_set(0)
         curses.use_default_colors()
         # Colours come from the active theme (opentab/themes.py, shared with the web
-        # report). The renderer maps its role hexes onto the fixed color-pair layout --
+        # browser). The renderer maps its role hexes onto the fixed color-pair layout --
         # exact via init_color on true-colour terminals, nearest-256 otherwise, and the
         # generated ANSI ramp on 8-colour. Foreground-only: a TUI paints over the
         # terminal's own background. Live theme switches re-run init_theme_colors().

@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/a84029a3-7887-42c7-ba5a-d8c905f3fa19" alt="OpenTab web report — the same data as a self-contained page" width="900">
-  <br><sub><b>Also a web report</b> — <code>opentab --web</code> renders the same data as one self-contained, shareable page</sub>
+  <img src="https://github.com/user-attachments/assets/a84029a3-7887-42c7-ba5a-d8c905f3fa19" alt="OpenTab web browser — the same data as a self-contained page" width="900">
+  <br><sub><b>Also a web browser</b> — <code>opentab --web</code> renders the same data as one self-contained, shareable page</sub>
 </p>
 
 A local, standard-library terminal UI for your AI coding spend. It reads the records your
@@ -39,13 +39,13 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
 - Git worktrees folded into their main repo
 - Live fuzzy filter (fzf-style, title / project / id) and live date-range scoping
 - CSV export of any view
-- A self-contained **HTML report** (`--html`) — same drill-in, calendar heatmap, and
+- A self-contained **HTML browser** (`--html`) — same drill-in, calendar heatmap, and
   `$` toggle in one shareable file — and a local live server for it (`--serve`, or
   `--web` to also pop it open in your browser)
 - Keyboard- and mouse-driven (scroll, click to select, double-click to drill)
 - Remembers your range, sort, ignored projects, and the `$` view between runs
 - Colour themes (opentab, Catppuccin, Tokyo Night, Gruvbox, Nord, Dracula, Rosé Pine —
-  light and dark) shared by the TUI (`C`) and the web report, set with `--theme`
+  light and dark) shared by the TUI (`C`) and the web browser, set with `--theme`
 - Read-only, local-only, standard-library runtime (nothing extra to pull in)
 - Demo mode for screenshots and live demos
 
@@ -87,7 +87,7 @@ touches, all on your own machine:
   source, range, and sort; disable with `--no-state`), an optional model-price cache at
   `~/.config/opentab/prices.json` (only when you run `--refresh-models` or press `r` in the
   `P` overlay), and — only when you press `e` or run `--html` — an `opentab-*.csv`
-  export or the HTML report file in the current directory.
+  export or the HTML browser file in the current directory.
 - **Runs** external programs only on the key you press: your file opener
   (`open`/`xdg-open`, or Explorer on Windows) for `o`, and for `L` either `tmux`, your own
   [launcher hook](#custom-launchers) (`~/.config/opentab/launcher`), or your clipboard tool
@@ -155,7 +155,7 @@ opentab --db /path/to/opencode.db  # default: ~/.local/share/opencode/opencode.d
 opentab --source claude          # browse Claude Code spend instead (see below)
 opentab --demo                   # safe for live demos / screenshots (see below)
 opentab --html                   # write opentab-report.html and exit (see below)
-opentab --serve                  # same report on http://localhost:8321, live
+opentab --serve                  # same browser on http://localhost:8321, live
 opentab --web                    # --serve, and open it in your browser
 ```
 
@@ -235,7 +235,7 @@ and months, and the model mix (which models, in what ratio) — but the absolute
 numbers do not. A `DEMO — synthetic` tag shows in the header so synthetic figures
 are never mistaken for real ones.
 
-### Web report (`--html` / `--serve` / `--web`)
+### Web browser (`--html` / `--serve` / `--web`)
 
 `opentab --html` writes the whole browser as **one self-contained HTML file** —
 no server, no dependencies, works from disk or any static host. It's the TUI in
@@ -255,12 +255,12 @@ this year, or a custom span). The **theme** button switches the palette live
 Pine — light and dark) and remembers your pick; `--theme <name>` bakes the
 default. Combine with `--demo` for a page you can publish.
 
-`opentab --serve` serves the same report on `http://localhost:8321` (`--port`)
+`opentab --serve` serves the same browser on `http://localhost:8321` (`--port`)
 and adds what a static file can't have: the per-session **Turns** timeline and
 **Tools** attribution fetched live on drill-in, plus a refresh button that
-re-reads your data. `opentab --web` is the same thing but also opens the report in
-your default browser (cross-platform — `open` on macOS, `xdg-open` on Linux, the
-shell association on Windows). It binds to localhost only — the report shows prompt
+re-reads your data. `opentab --web` is the same thing but also opens it in
+your default web browser (cross-platform — `open` on macOS, `xdg-open` on Linux, the
+shell association on Windows). It binds to localhost only — the browser shows prompt
 titles, project paths, and spend, so if you want it on another machine put it behind
 something like Tailscale (`--bind`), never a public interface.
 
@@ -295,7 +295,7 @@ detail — cost split, model mix, and subagent tree. `Esc` steps back out.
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>` / `codex resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project), with **y** copying the `cd <project> && …` command to the clipboard; outside tmux the menu offers only the copy. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
 | `c` | Switch data source — any present backend (OpenCode, Claude Code, Codex, Hermes, Copilot CLI, VS Code, pi, OpenClaw, CSV, JSONL), or all merged |
-| `C` | Colours — pick a theme (opentab, Catppuccin Mocha/Latte, Tokyo Night/Day, Gruvbox, Nord, Dracula, Rosé Pine — the same set as the web report). `j`/`k` live-preview, `Enter` keeps, `Esc` reverts; light themes light up the whole screen. `--theme` sets it at launch |
+| `C` | Colours — pick a theme (opentab, Catppuccin Mocha/Latte, Tokyo Night/Day, Gruvbox, Nord, Dracula, Rosé Pine — the same set as the web browser). `j`/`k` live-preview, `Enter` keeps, `Esc` reverts; light themes light up the whole screen. `--theme` sets it at launch |
 | `r` | Reload the database |
 | `?` | Help; `q` quits |
 

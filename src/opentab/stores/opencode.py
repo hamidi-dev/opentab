@@ -190,7 +190,7 @@ class Store:
         # The DB file whose (size, mtime) fingerprints the warm-start cache, plus its
         # WAL sidecars. OpenCode runs SQLite in WAL mode, so new sessions land in
         # <db>-wal and the main .db's size/mtime don't move until a checkpoint -- so
-        # fingerprinting the .db alone made a reload (r, or the report's refresh) serve
+        # fingerprinting the .db alone made a reload (r, or the browser's refresh) serve
         # the stale cache and never show sessions written since. The sidecars move on
         # every commit; a read-only connection still reads them, so a re-parse sees the
         # new rows. Missing sidecars (a non-WAL DB, or a checkpoint that removed them)

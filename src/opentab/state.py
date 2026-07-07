@@ -43,7 +43,7 @@ def save_state(app: App) -> None:
         "bookmarks": sorted(app.bookmarks),  # sessions starred with `b`
         "show_api_prices": app.show_api_prices,
         "source": app.source_key,  # restore the last source (opencode/claude/all) next run
-        "theme": app.theme_id,  # the colour theme (shared with the web report)
+        "theme": app.theme_id,  # the colour theme (shared with the web browser)
         "cal_levels": app.cal_levels,  # the Calendar heat-map granularity (+/-)
         "prices_prompt_dismissed": app.prices_prompt_dismissed,  # "don't ask again" for prices
     }

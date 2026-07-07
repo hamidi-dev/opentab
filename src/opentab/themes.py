@@ -1,8 +1,8 @@
-"""Shared theme palettes — the single source of truth for the web report and the TUI.
+"""Shared theme palettes — the single source of truth for the web browser and the TUI.
 
 Each theme names a role palette (semantic slots, not hues) plus a calendar heat ramp
 (`heat`, coldest→hottest) and a cheap→pricey price-heat ramp (`price_heat`), and a
-`dark` flag. The web report reads these verbatim (`web_payload()` reshapes them to the
+`dark` flag. The web browser reads these verbatim (`web_payload()` reshapes them to the
 JS token names and is injected into the page), and the curses TUI maps the same role
 hexes to color pairs via `init_color` on true-color terminals (or nearest-256 elsewhere).
 Adding a theme is one entry here; both frontends and the `--theme` CLI choices pick it up.

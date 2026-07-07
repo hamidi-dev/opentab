@@ -7555,7 +7555,7 @@ def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
     # OpenCode runs SQLite in WAL mode, so a new session lands in <db>-wal while the
     # main .db's size/mtime don't move until a checkpoint. cache_inputs() must
     # fingerprint the WAL sidecars, or CachedStore keeps serving the stale rollup and a
-    # reload (r) / the report's refresh never shows sessions written since -- the
+    # reload (r) / the browser's refresh never shows sessions written since -- the
     # reported "--web refresh doesn't get new sessions" bug.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CONFIG_HOME")
@@ -8498,7 +8498,7 @@ def test_status_line_prices_an_exact_session_id():
         assert ot.status_line(store, "ses_gone") == ""
 
 
-# --- The web report (--html / --serve) --------------------------------------
+# --- The web browser (--html / --serve) -------------------------------------
 
 
 class NodesFakeStore(FakeStore):
@@ -8640,7 +8640,7 @@ def test_web_html_command_writes_the_report_file():
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
     assert 'id="opentab-data"' in text
-    assert "opentab — AI spend report" in text
+    assert "OpenTab — AI spend browser" in text
     # The page mirrors the TUI: sidebar host + keymap-driven detail pane + the
     # Trends overlay. Lock in the load-bearing hooks so a refactor can't silently
     # drop the TUI feel.
@@ -8655,7 +8655,7 @@ def test_web_html_command_writes_the_report_file():
 
 def test_web_meta_carries_the_baked_theme():
     app = app_with([workflow("w1", "2026-05-01 10:00:00")])
-    app.args.theme = "gruvbox"  # --theme sets the report's initial theme
+    app.args.theme = "gruvbox"  # --theme sets the browser's initial theme
     meta = ot.build_payload(app)["meta"]
     assert meta["theme"] == "gruvbox"
     # Absent (older args) falls back to the default, never crashes.
@@ -8663,7 +8663,7 @@ def test_web_meta_carries_the_baked_theme():
     assert ot.build_payload(app)["meta"]["theme"] == "opentab"
 
 
-# --- Shared themes (one source for the web report + the TUI) -----------------
+# --- Shared themes (one source for the web browser + the TUI) ----------------
 
 
 def test_themes_are_complete_and_consistent():
@@ -8846,7 +8846,7 @@ def test_cli_web_flag_is_recognized_and_is_distinct_from_serve():
 
 
 def test_web_open_report_opens_a_browser_and_survives_a_headless_box():
-    # --web pops the report open cross-platform via stdlib webbrowser; a box with no
+    # --web pops the browser open cross-platform via stdlib webbrowser; a box with no
     # browser must return False, never raise, so serving keeps running.
     import webbrowser
 
