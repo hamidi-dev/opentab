@@ -308,7 +308,8 @@ class CopilotStore:
     def _files(self) -> list[str]:
         files = glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
         # Add the env-var export file, but only if it isn't already one of the globbed
-        # ones -- dedup is per file, so reading the same file twice would double-count.
+        # ones -- the fallback dedup keys are index-based, so reading the same file
+        # twice would double-count records that lack trace/span ids.
         if self._extra_file and os.path.isfile(self._extra_file):
             seen = {os.path.realpath(f) for f in files}
             if os.path.realpath(self._extra_file) not in seen:
@@ -319,40 +320,37 @@ class CopilotStore:
         if self._sessions is not None:
             return self._sessions
         sessions: dict[str, dict] = {}
-        for path, text in read_files_parallel(self._files()):
-            self._parse_file(path, text.split("\n"), sessions)
-        for sid, s in sessions.items():
-            self._finalize(sid, s)
-        # Drop sessions with no recorded usage (non-LLM-only files): they would only add
-        # $0 / 0-token rows to a spend browser.
-        self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
-        return self._sessions
-
-    def _parse_file(self, path: str, lines: list[str], sessions: dict[str, dict]) -> None:
-        records = [
-            o
-            for line in lines
-            if '"attributes"' in line
-            for o in (self._loads(line),)
-            if isinstance(o, dict) and isinstance(o.get("attributes"), dict)
+        # OTEL exporters write spans and logs to DIFFERENT files, so trace context, the
+        # dedup coverage sets, and the seen keys must span all files: one call logged as
+        # a chat span in file A and an inference log in file B is still one call. Two
+        # passes -- collect every file's candidates first, then emit.
+        per_file = [
+            (path, self._file_records(text.split("\n")))
+            for path, text in read_files_parallel(self._files())
         ]
-        # Per-file trace context: a model / session id seen anywhere on a trace fills in
-        # for records on that trace that omit it.
+        # Cross-file trace context: a model / session id seen anywhere on a trace fills
+        # in for records on that trace that omit it.
         trace_ctx: dict[str, dict] = {}
-        for rec in records:
-            tid = self._trace_id(rec)
-            if not tid:
-                continue
-            attrs = rec["attributes"]
-            ctx = trace_ctx.setdefault(tid, {"model": None, "session": None, "prio": -1})
-            if ctx["model"] is None:
-                ctx["model"] = self._attr_str(attrs, *self._MODEL_ATTRS)
-            sid, prio = self._session_attr(attrs)
-            if sid is not None and prio > ctx["prio"]:
-                ctx["session"], ctx["prio"] = sid, prio
-        candidates = [
-            c for i, rec in enumerate(records) if (c := self._to_candidate(rec, i, trace_ctx, path))
-        ]
+        for _path, records in per_file:
+            for rec in records:
+                tid = self._trace_id(rec)
+                if not tid:
+                    continue
+                attrs = rec["attributes"]
+                ctx = trace_ctx.setdefault(tid, {"model": None, "session": None, "prio": -1})
+                if ctx["model"] is None:
+                    ctx["model"] = self._attr_str(attrs, *self._MODEL_ATTRS)
+                sid, prio = self._session_attr(attrs)
+                if sid is not None and prio > ctx["prio"]:
+                    ctx["session"], ctx["prio"] = sid, prio
+        candidates: list[dict] = []
+        idx = 0  # global running index keeps the fallback dedup keys unique across files
+        for path, records in per_file:
+            for rec in records:
+                c = self._to_candidate(rec, idx, trace_ctx, path)
+                idx += 1
+                if c is not None:
+                    candidates.append(c)
         # Dedup: a chat span is the source of truth; an inference log is dropped when a
         # chat covers its trace/response, an agent-turn log when a chat or inference does,
         # an agent-summary span when any of the three do.
@@ -371,6 +369,22 @@ class CopilotStore:
                 continue
             seen.add(c["dedup_key"])
             self._fold(sessions, c)
+        for sid, s in sessions.items():
+            self._finalize(sid, s)
+        # Drop sessions with no recorded usage (non-LLM-only files): they would only add
+        # $0 / 0-token rows to a spend browser.
+        self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
+        return self._sessions
+
+    @classmethod
+    def _file_records(cls, lines: list[str]) -> list[dict]:
+        return [
+            o
+            for line in lines
+            if '"attributes"' in line
+            for o in (cls._loads(line),)
+            if isinstance(o, dict) and isinstance(o.get("attributes"), dict)
+        ]
 
     @staticmethod
     def _loads(line: str):

@@ -6891,6 +6891,38 @@ def test_copilot_store_dedupes_redundant_records_keeping_chat_span():
         assert rows[0]["tokens_total"] == 70
 
 
+def test_copilot_store_dedupes_span_and_log_split_across_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        # OTEL exporters write spans and logs to DIFFERENT files: the same call appears
+        # as a chat span in spans.jsonl and an inference log in logs.jsonl. It must
+        # count once (the chat span's 60/10), never twice.
+        chat = _otel_chat(
+            "conv-x", "gpt-5.4", 60, 10, trace="trace-x", span="chat-1", resp="resp-x"
+        )
+        inference = {
+            "traceId": "trace-x",
+            "hrTime": [1775934263, 0],
+            "_body": "GenAI inference: gpt-5.4",
+            "attributes": {
+                "event.name": "gen_ai.client.inference.operation.details",
+                "gen_ai.response.model": "gpt-5.4",
+                "gen_ai.conversation.id": "conv-x",
+                "gen_ai.response.id": "resp-x",
+                "gen_ai.usage.input_tokens": 80,
+                "gen_ai.usage.output_tokens": 20,
+            },
+        }
+        _write_otel(otel, [chat], name="spans.jsonl")
+        _write_otel(otel, [inference], name="logs.jsonl")
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        rows = [r for r in store.model_breakdown() if r["root_id"] == "conv-x"]
+        assert len(rows) == 1
+        assert rows[0]["runs"] == 1  # the log in the other file was suppressed
+        assert rows[0]["unpriced_input"] == 60 and rows[0]["unpriced_output"] == 10
+        assert rows[0]["tokens_total"] == 70
+
+
 def test_copilot_store_enriches_cwd_and_title_from_session_store_db():
     with tempfile.TemporaryDirectory() as tmp:
         copilot = os.path.join(tmp, ".copilot")
