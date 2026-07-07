@@ -1396,6 +1396,81 @@ def test_jk_scrolls_the_help_overlay():
     assert not app.help
 
 
+def test_mouse_wheel_scrolls_the_help_overlay():
+    # The wheel over the open help pages it (like the P overlay) instead of
+    # closing it; a plain click still closes.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.handle_key(None, ord("?"))
+    assert app.help and app.help_scroll == 0
+    app._wheel_down = getattr(ot.curses, "BUTTON5_PRESSED", 0) or ot.curses.REPORT_MOUSE_POSITION
+    orig = ot.curses.getmouse
+    try:
+        ot.curses.getmouse = lambda: (0, 0, 0, 0, app._wheel_down)  # wheel down
+        app.handle_mouse()
+        assert app.help and app.help_scroll == 3
+        ot.curses.getmouse = lambda: (0, 0, 0, 0, ot.curses.BUTTON4_PRESSED)  # wheel up
+        app.handle_mouse()
+        assert app.help and app.help_scroll == 0
+        app.handle_mouse()  # floored at the top, still open
+        assert app.help and app.help_scroll == 0
+        ot.curses.getmouse = lambda: (0, 0, 0, 0, ot.curses.BUTTON1_CLICKED)  # click closes
+        app.handle_mouse()
+        assert not app.help
+    finally:
+        ot.curses.getmouse = orig
+
+
+def test_page_keys_stride_lists_by_half_a_screen():
+    # PgDn/PgUp and Ctrl-D/Ctrl-U move by half the visible pager height; headless
+    # (no screen to measure) the stride is a fixed 10 rows.
+    app = app_with([workflow(f"s{i:02d}", "2026-06-01 12:00:00") for i in range(25)])
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    app.handle_key(None, ot.curses.KEY_NPAGE)
+    assert app.workflow_index == 10
+    app.handle_key(None, 4)  # Ctrl-D
+    assert app.workflow_index == 20
+    app.handle_key(None, ot.curses.KEY_NPAGE)  # clamped at the last row
+    assert app.workflow_index == 24
+    app.handle_key(None, ot.curses.KEY_PPAGE)
+    assert app.workflow_index == 14
+    app.handle_key(None, 21)  # Ctrl-U
+    assert app.workflow_index == 4
+    app.handle_key(None, 21)  # floored at the top
+    assert app.workflow_index == 0
+    # with a real screen the stride is half the pager height (height - 9)
+    assert app._page_step(FakeScreen(29, 80)) == 10
+    assert app._page_step(FakeScreen(5, 80)) == 1  # never 0 on a tiny window
+
+
+def test_page_keys_scroll_the_detail_help_and_prices_pagers():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app.view = "session"
+    app.handle_key(None, ot.curses.KEY_NPAGE)  # detail pager, via move()
+    assert app.scroll == 10
+    app.handle_key(None, 21)  # Ctrl-U back up
+    assert app.scroll == 0
+    app.handle_key(None, ord("?"))  # the help pager
+    app.handle_key(None, 4)  # Ctrl-D
+    assert app.help and app.help_scroll == 10
+    app.handle_key(None, ot.curses.KEY_PPAGE)
+    assert app.help and app.help_scroll == 0
+    app.handle_key(None, ord("q"))  # close help (any other key)
+    app.view = "browse"
+    app._model_by_root = {
+        "a": [
+            _model_row("claude-opus-4-8", 5.0, 10),
+            _model_row("gpt-5-codex", 2.0, 10),
+            _model_row("claude-haiku-4-5", 1.0, 10),
+        ]
+    }
+    app.handle_key(None, ord("P"))  # the P overlay's model cursor
+    app.handle_key(None, ot.curses.KEY_NPAGE)
+    assert app.show_prices and app.prices_index == 2  # clamped to the last of 3 rows
+    app.handle_key(None, 21)
+    assert app.show_prices and app.prices_index == 0
+
+
 def test_help_sections_group_and_cover_the_keymap():
     # The help overlay is grouped; help_sections() is the content source of truth
     # (draw_help only wraps/colours it). Lock the sections and that the load-bearing
@@ -1415,7 +1490,21 @@ def test_help_sections_group_and_cover_the_keymap():
             assert len(row) >= 2 and row[0] and row[1]  # (key, summary, *notes)
             assert all(isinstance(note, str) and note for note in row[2:])
             keys.add(row[0])
-    for binding in ("p / t", "Enter / +", "R", "f", "b / B", "L", "T", "P", "$", "c", "C", "q"):
+    for binding in (
+        "p / t",
+        "Enter / +",
+        "PgDn/PgUp",
+        "R",
+        "f or /",
+        "b / B",
+        "L",
+        "T",
+        "P",
+        "$",
+        "c",
+        "C",
+        "q",
+    ):
         assert binding in keys, f"missing help entry for {binding}"
 
 
@@ -5393,6 +5482,28 @@ def test_f_enters_live_filter_mode():
     # q is text here, not quit; Ctrl-C still quits
     assert app.handle_key(None, ord("q")) and app.query == "q"
     assert app.handle_key(None, 3) is False
+
+
+def test_slash_is_an_alias_for_the_filter_key():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", title="alpha"),
+            workflow("b", "2026-06-02 12:00:00", title="beta"),
+        ]
+    )
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    assert app.handle_key(None, ord("/")) and app.filter_active
+    for ch in "bet":
+        app.handle_key(None, ord(ch))
+    assert [w.title for w in app.current_sessions()] == ["beta"]
+    app.handle_key(None, 10)  # Enter keeps the filter and leaves the mode
+    assert not app.filter_active and app.query == "bet"
+    # `/` also opens the P overlay's filter, like `f`
+    app.handle_key(None, ord("x"))  # clear the committed filter first
+    app.handle_key(None, ord("P"))
+    assert app.show_prices and not app.filter_active
+    assert app.handle_key(None, ord("/")) and app.filter_active and app.show_prices
 
 
 def test_f_is_a_noop_where_no_list_is_filtered():

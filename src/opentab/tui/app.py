@@ -2472,6 +2472,14 @@ class App:
             if n:
                 self.day_index = max(0, min(self.day_index + delta, n - 1))
 
+    def _page_step(self, stdscr: curses.window | None) -> int:
+        # Half the visible pager height (the window minus chrome, mirroring
+        # Renderer.max_scroll) -- the PgDn/PgUp and Ctrl-D/Ctrl-U stride.
+        if stdscr is None:
+            return 10
+        height, _width = stdscr.getmaxyx()
+        return max(1, (height - 9) // 2)
+
     def jump(self, to_end: bool, stdscr: curses.window | None = None) -> None:
         if self.view == "browse":
             if self.browse_mode == "projects":
@@ -2741,12 +2749,16 @@ class App:
         if self.price_prompt:
             return self.handle_price_prompt_key(key)
         if self.help:
-            # A pager like the price overlay: j/k/arrows and g/G scroll;
+            # A pager like the price overlay: j/k/arrows, page keys and g/G scroll;
             # any other key closes it.
             if key in (ord("j"), curses.KEY_DOWN):
                 self.help_scroll += 1
             elif key in (ord("k"), curses.KEY_UP):
                 self.help_scroll = max(0, self.help_scroll - 1)
+            elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+                self.help_scroll += self._page_step(stdscr)  # clamped on draw
+            elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+                self.help_scroll = max(0, self.help_scroll - self._page_step(stdscr))
             elif key == ord("g"):
                 self.help_scroll = 0
             elif key == ord("G"):
@@ -2760,8 +2772,8 @@ class App:
             if self.filter_active:
                 return self.handle_filter_key(key)
             if self.prices_model is not None:
-                return self._handle_price_sessions_key(key)
-            return self._handle_price_models_key(key)
+                return self._handle_price_sessions_key(key, stdscr)
+            return self._handle_price_models_key(key, stdscr)
         if self.trends:
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
             if current == "Calendar":
@@ -2890,7 +2902,7 @@ class App:
         if key == ord("B"):
             self.toggle_bookmarks_view()
             return True
-        if key == ord("f"):
+        if key in (ord("f"), ord("/")):
             if not self.can_filter_current_view():
                 self.notify(
                     "nothing to filter here — open a sessions, projects, or models list", "error"
@@ -2955,6 +2967,12 @@ class App:
         if key in (ord("k"), curses.KEY_UP):
             self.move(-1)
             return True
+        if key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+            self.move(self._page_step(stdscr))
+            return True
+        if key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+            self.move(-self._page_step(stdscr))
+            return True
         return True
 
     def prices_view_label(self, view: str | None = None) -> str:
@@ -2971,11 +2989,11 @@ class App:
         self.prices_scroll = 0
         self.notice = f"view: {self.prices_view_label()}"
 
-    def _handle_price_models_key(self, key: int) -> bool:
-        # The P overlay's model list: j/k/arrows move a cursor, g/G jump to ends,
-        # Enter drills into the selected model's sessions, s sorts by a column, p
-        # cycles the layout (by vendor / by provider / flat), f filters, r refreshes,
-        # e exports the table; any other key closes the overlay.
+    def _handle_price_models_key(self, key: int, stdscr: curses.window | None = None) -> bool:
+        # The P overlay's model list: j/k/arrows move a cursor, page keys stride,
+        # g/G jump to ends, Enter drills into the selected model's sessions, s sorts
+        # by a column, p cycles the layout (by vendor / by provider / flat), f
+        # filters, r refreshes, e exports the table; any other key closes the overlay.
         n = len(self.priced_model_names())
         if key in (ord("s"), ord("S")):
             self.open_sort_menu()
@@ -2987,6 +3005,10 @@ class App:
             self.prices_index = min(self.prices_index + 1, max(0, n - 1))
         elif key in (ord("k"), curses.KEY_UP):
             self.prices_index = max(0, self.prices_index - 1)
+        elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+            self.prices_index = min(self.prices_index + self._page_step(stdscr), max(0, n - 1))
+        elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+            self.prices_index = max(0, self.prices_index - self._page_step(stdscr))
         elif key == ord("g"):
             self.prices_index = 0
         elif key == ord("G"):
@@ -2998,7 +3020,7 @@ class App:
                 self.prices_scroll = 0
         elif key in (ord("r"), ord("R")):
             self.refresh_prices_action()  # keeps the overlay open
-        elif key == ord("f"):
+        elif key in (ord("f"), ord("/")):
             self.filter_active = True
             self._filter_before = self.query
             self.prices_scroll = 0
@@ -3008,13 +3030,18 @@ class App:
             self.show_prices = False
         return True
 
-    def _handle_price_sessions_key(self, key: int) -> bool:
-        # The P overlay's per-model drill-in: j/k/arrows and g/G scroll the session
-        # list; Esc/left/backspace backs out to the model list; any other key closes.
+    def _handle_price_sessions_key(self, key: int, stdscr: curses.window | None = None) -> bool:
+        # The P overlay's per-model drill-in: j/k/arrows, page keys and g/G scroll the
+        # session list; Esc/left/backspace backs out to the model list; any other key
+        # closes.
         if key in (ord("j"), curses.KEY_DOWN):
             self.prices_scroll += 1
         elif key in (ord("k"), curses.KEY_UP):
             self.prices_scroll = max(0, self.prices_scroll - 1)
+        elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+            self.prices_scroll += self._page_step(stdscr)  # clamped on draw
+        elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+            self.prices_scroll = max(0, self.prices_scroll - self._page_step(stdscr))
         elif key == ord("g"):
             self.prices_scroll = 0
         elif key == ord("G"):
@@ -3110,7 +3137,11 @@ class App:
                 self.launch_menu = None  # click cancels the launch picker
             return True
         if self.help:
-            if up or down or click or double:
+            if up:
+                self.help_scroll = max(0, self.help_scroll - 3)
+            elif down:
+                self.help_scroll += 3  # clamped to the last page on draw
+            elif click or double:
                 self.help = False
             return True
         if self.show_prices:
