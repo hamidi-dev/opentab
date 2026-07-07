@@ -272,8 +272,13 @@ class CsvStore:
         inp = self._to_int(g("input"))
         out = self._to_int(g("output"))
         cached = self._to_int(g("cached"))
-        if inp == 0 and out == 0 and cached == 0:
-            return  # nothing to attribute (header echo, blank line, metadata-only row)
+        cost = self._to_float(g("cost"))
+        if cost_is_credits:
+            cost *= 0.01
+        # A cost-only row (no token counts) is still real spend; only rows with neither
+        # tokens nor cost are skipped (header echo, blank line, metadata-only row).
+        if inp == 0 and out == 0 and cached == 0 and cost <= 0:
+            return
         ts = self._parse_ts(g("timestamp"))
         project = (g("project") or "").strip()
         sid = (g("session") or "").strip()
@@ -292,9 +297,6 @@ class CsvStore:
                 s["title"] = " ".join(title.split())[:80]
 
         model = self._prefix_model(g("model") or "")
-        cost = self._to_float(g("cost"))
-        if cost_is_credits:
-            cost *= 0.01
         acc = s["models"].get(model)
         if acc is None:
             acc = s["models"][model] = self._new_acc()

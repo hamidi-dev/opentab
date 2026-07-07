@@ -6288,6 +6288,29 @@ def test_csv_credits_column_prices_as_real_spend():
         assert row["unpriced_input"] == 0 and row["unpriced_output"] == 0
 
 
+def test_csv_keeps_cost_only_rows_as_real_spend():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "copilot.csv")
+        # A row logging only a cost (no token counts) is still real spend: records_cost
+        # probes True from it, so dropping the row would show a $0 metered source.
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "output_tokens", "credits", "session_id"],
+            [
+                ["2026-06-18T10:00:00Z", "gpt-4o", 1000, 100, "", "s1"],
+                ["2026-06-18T11:00:00Z", "claude-opus-4-5", "", "", 75, "s2"],
+                ["2026-06-18T12:00:00Z", "", "", "", "", "s3"],  # truly empty -> skipped
+            ],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        assert store.records_cost is True
+        workflows = store.workflows()
+        assert {w.id for w in workflows} == {"s1", "s2"}  # s3 stays dropped
+        s2 = next(w for w in workflows if w.id == "s2")
+        assert s2.total_cost == round(75 * 0.01, 6)  # credits x $0.01 = $0.75
+        assert s2.total_tokens == 0 and s2.unpriced_tokens == 0
+
+
 def test_csv_tolerates_header_aliases_and_epoch_timestamps():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "copilot.csv")
@@ -6473,6 +6496,39 @@ def test_jsonl_cost_and_credits_price_as_real_spend():
         assert w.unpriced_tokens == 0  # metered rows aren't re-estimated under "$"
         row = store.model_breakdown()[0]
         assert row["unpriced_input"] == 0 and row["unpriced_output"] == 0
+
+
+def test_jsonl_keeps_cost_only_lines_as_real_spend():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.jsonl")
+        # A line logging only a cost (no token counts) is still real spend: records_cost
+        # probes True from it, so dropping the line would show a $0 metered source.
+        _write_jsonl(
+            path,
+            [
+                {
+                    "timestamp": "2026-06-18T10:00:00Z",
+                    "session_id": "s1",
+                    "model": "gpt-4o",
+                    "input_tokens": 100,
+                    "output_tokens": 10,
+                },
+                {
+                    "timestamp": "2026-06-18T11:00:00Z",
+                    "session_id": "s2",
+                    "model": "claude-opus-4-5",
+                    "cost_usd": 0.5,
+                },
+                {"timestamp": "2026-06-18T12:00:00Z", "session_id": "s3"},  # empty -> skipped
+            ],
+        )
+        store = ot.JsonlStore(path, _jsonl_args())
+        assert store.records_cost is True
+        workflows = store.workflows()
+        assert {w.id for w in workflows} == {"s1", "s2"}  # s3 stays dropped
+        s2 = next(w for w in workflows if w.id == "s2")
+        assert s2.total_cost == 0.5
+        assert s2.total_tokens == 0 and s2.unpriced_tokens == 0
 
 
 def test_jsonl_dedupes_request_id_and_synthesizes_sessions():

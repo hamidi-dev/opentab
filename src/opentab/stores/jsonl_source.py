@@ -167,8 +167,11 @@ class JsonlStore(CsvStore):
         inp = self._to_int(self._get(obj, "input"))
         out = self._to_int(self._get(obj, "output"))
         cached = self._to_int(self._get(obj, "cached"))
-        if inp == 0 and out == 0 and cached == 0:
-            return  # nothing to attribute (metadata-only / malformed line)
+        cost = self._row_cost(obj)
+        # A cost-only line (no token counts) is still real spend; only lines with
+        # neither tokens nor cost are skipped (metadata-only / malformed line).
+        if inp == 0 and out == 0 and cached == 0 and cost <= 0:
+            return
         ts = self._parse_ts(self._get(obj, "timestamp"))
         project = str(self._get(obj, "project") or "").strip()
         sid = str(self._get(obj, "session") or "").strip()
@@ -190,7 +193,6 @@ class JsonlStore(CsvStore):
             s["project"] = project
 
         model = self._prefix_model(str(self._get(obj, "model") or ""))
-        cost = self._row_cost(obj)
         acc = s["models"].get(model)
         if acc is None:
             acc = s["models"][model] = self._new_acc()
