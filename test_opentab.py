@@ -3985,6 +3985,86 @@ def test_export_session_tabs_dispatch_to_their_tables():
     assert scope == "tools" and header[0] == "tool" and rows[0][0] == "bash"
 
 
+def test_pager_lines_dispatch_session_tabs_by_name():
+    # current_pager_lines feeds G / max_scroll / page scrolling; it must dispatch
+    # the session tabs by NAME like draw_detail does -- current_tabs() appends
+    # Turns/Tools per session, so a fixed index would clamp e.g. the Turns tab
+    # against the Subagents line count.
+    class RichStore(FakeStore):
+        def workflow_nodes(self, wid):
+            return [
+                {
+                    "depth": 1,
+                    "agent": "build",
+                    "model_name": "anthropic/claude",
+                    "cost": 0.5,
+                    "tokens_total": 1234,
+                    "title": "do the thing",
+                    "tokens_input": 1000,
+                    "tokens_output": 200,
+                    "tokens_reasoning": 0,
+                    "tokens_cache_read": 34,
+                    "tokens_cache_write": 0,
+                }
+            ]
+
+        def supports_turns(self, wid):
+            return True
+
+        def supports_tools(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            return [
+                {
+                    "time": "2026-06-01 12:00:01",
+                    "agent": "main",
+                    "depth": 0,
+                    "model_name": "anthropic/claude",
+                    "cost": 0.25,
+                    "tokens_total": 800,
+                    "input": 600,
+                    "output": 200,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "prompt_id": "p1",
+                    "prompt_title": "first prompt",
+                }
+            ]
+
+        def tool_breakdown(self, wid):
+            return [
+                {
+                    "tool": "bash",
+                    "model_name": "anthropic/claude",
+                    "calls": 3,
+                    "cost": 0.1,
+                    "tokens_total": 500,
+                    "input": 400,
+                    "output": 100,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                }
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(RichStore([workflow("ses_1", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+    wf = app.current_session()
+    assert app.current_tabs() == ("Overview", "Models", "Subagents", "Turns", "Tools")
+    for name, table in (
+        ("Overview", app.renderer.detail_overview),
+        ("Models", app.renderer.detail_models),
+        ("Subagents", app.renderer.detail_subagents),
+        ("Turns", app.renderer.detail_turns),
+        ("Tools", app.renderer.detail_tools),
+    ):
+        app.tab = app.current_tabs().index(name)
+        assert app.renderer.current_pager_lines(100) == table(wf, 96)  # content = width - 4
+
+
 def test_export_disabled_in_demo_mode():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.store.demo = True
