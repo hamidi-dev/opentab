@@ -116,7 +116,7 @@ class OpenClawStore:
         path = os.path.join(self.root_dir, "openclaw.json")
         out: set[str] = set()
         try:
-            with open(path) as fh:
+            with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
         except (OSError, ValueError):
             return out
@@ -282,7 +282,7 @@ class OpenClawStore:
         # before workflows()). A subscription-only setup -> False (every cost is estimated).
         for path in self._files():
             try:
-                fh = open(path, errors="replace")
+                fh = open(path, encoding="utf-8", errors="replace")
             except OSError:
                 continue
             current_provider = None

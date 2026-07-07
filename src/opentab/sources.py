@@ -189,7 +189,7 @@ def _vscode_available(args: argparse.Namespace) -> bool:
                 if not path.endswith((".json", ".jsonl")):
                     continue
                 try:
-                    with open(path, errors="replace") as fh:
+                    with open(path, encoding="utf-8", errors="replace") as fh:
                         for line in fh:
                             if '"promptTokens"' in line or '"completionTokens"' in line:
                                 return True

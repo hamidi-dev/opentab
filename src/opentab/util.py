@@ -17,7 +17,7 @@ def _read_text(path: str) -> str | None:
     # fh` yields, so a caller that splits on "\n" gets exactly the same lines. Returns
     # None on an unreadable file, which read_files_parallel drops.
     try:
-        with open(path, errors="replace") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             return fh.read()
     except OSError:
         return None
@@ -278,7 +278,7 @@ def resolve_project_root(directory: str) -> str:
     try:
         dotgit = os.path.join(os.path.expanduser(directory), ".git")
         if os.path.isfile(dotgit):
-            with open(dotgit) as fh:
+            with open(dotgit, encoding="utf-8") as fh:
                 line = fh.read(4096).strip()
             if line.startswith("gitdir:"):
                 gitdir = line[len("gitdir:") :].strip()
@@ -335,7 +335,7 @@ def is_wsl() -> bool:
                 _IS_WSL = True
             else:
                 try:
-                    with open("/proc/version", errors="replace") as fh:
+                    with open("/proc/version", encoding="utf-8", errors="replace") as fh:
                         _IS_WSL = "microsoft" in fh.read().lower()
                 except OSError:
                     _IS_WSL = False
@@ -347,7 +347,7 @@ def wsl_mount_root(conf_path: str = "/etc/wsl.conf") -> str:
     # default /mnt (so C: appears at /mnt/c).
     try:
         section = ""
-        with open(conf_path, errors="replace") as fh:
+        with open(conf_path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 for comment in ("#", ";"):
                     line = line.split(comment, 1)[0]

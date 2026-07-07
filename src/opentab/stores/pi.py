@@ -92,7 +92,7 @@ class PiStore:
         path = os.path.join(os.path.dirname(os.path.normpath(self.root_dir)), "auth.json")
         out: set[str] = set()
         try:
-            with open(path) as fh:
+            with open(path, encoding="utf-8") as fh:
                 data = json.load(fh)
             if isinstance(data, dict):
                 for prov, info in data.items():
@@ -192,7 +192,7 @@ class PiStore:
         # before workflows()). A subscription-only setup -> False (every cost is estimated).
         for path in self._files():
             try:
-                fh = open(path, errors="replace")
+                fh = open(path, encoding="utf-8", errors="replace")
             except OSError:
                 continue
             with fh:
