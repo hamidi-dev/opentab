@@ -341,10 +341,13 @@ class ReportServer(HTTPServer):
     (payload included) is built once and cached; /api/reload re-reads the stores
     and invalidates it -- wired to the page's refresh button.
 
-    Deliberately single-threaded: the stores' sqlite connections are bound to the
-    thread that created them (check_same_thread), and every request is fast (the
-    page is cached, the extras are the same cheap per-session queries the TUI runs
-    on drill-in), so serializing a single local user's requests costs nothing."""
+    Deliberately single-threaded: the stores forbid concurrent access to a
+    connection, and every request is fast (the page is cached, the extras are the
+    same cheap per-session queries the TUI runs on drill-in), so serializing a
+    single local user's requests on one serve thread costs nothing. serve_command
+    runs serve_forever on a background thread (all requests still one at a time on
+    it) so the main thread can catch a Ctrl-C that Windows won't deliver to
+    serve_forever's select()."""
 
     def __init__(self, address: tuple[str, int], app: App):
         super().__init__(address, _Handler)
@@ -393,19 +396,33 @@ def serve_command(app: App, args: argparse.Namespace) -> int:
     host = "localhost" if bind in ("127.0.0.1", "::1") else bind
     url = f"http://{host}:{server.server_address[1]}/"
     print(f"opentab report at {url}  (Ctrl-C to stop)")
+    import threading
+
     if getattr(args, "web", False):
         # --web: pop the browser now the socket is listening (bound in __init__, so a
         # request racing serve_forever just queues in the backlog). In a daemon thread
         # so a console-browser fallback that runs in the foreground can't block
         # serve_forever; it only calls webbrowser, never the sqlite-bound store, so
         # the single-threaded-request design still holds.
-        import threading
-
         threading.Thread(target=open_report, args=(url,), daemon=True).start()
+    # Serve on a background thread and block the main thread on an interruptible join --
+    # NOT serve_forever() on the main thread. On Windows a Ctrl-C never wakes the
+    # select() inside serve_forever (Winsock select ignores the SIGINT event, so the
+    # KeyboardInterrupt stays pending until some request happens to return control to the
+    # eval loop), which left --serve/--web unkillable from the keyboard. Thread.join()
+    # instead waits on a lock whose acquire IS wired to the SIGINT event on Windows, so
+    # Ctrl-C interrupts it at once. Requests still run one at a time on the single serve
+    # thread, so the store's no-concurrent-access invariant holds; daemon=True is a
+    # backstop so the process can still exit even mid-request.
+    server_thread = threading.Thread(target=server.serve_forever, name="opentab-serve", daemon=True)
+    server_thread.start()
     try:
-        server.serve_forever()
+        while server_thread.is_alive():
+            server_thread.join(0.5)  # interruptible by Ctrl-C on Windows, unlike select()
     except KeyboardInterrupt:
         pass
     finally:
+        server.shutdown()  # off the serve thread, so it stops the loop without deadlock
         server.server_close()
+        server_thread.join(timeout=2)
     return 0

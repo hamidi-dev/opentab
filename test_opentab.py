@@ -8717,6 +8717,48 @@ def test_web_server_is_hardened_against_csrf_and_dns_rebinding():
     thread.join(timeout=5)
 
 
+def test_serve_command_runs_serve_forever_off_the_main_thread():
+    # Regression: on Windows a Ctrl-C never wakes serve_forever's select(), so serving
+    # in the foreground was unkillable from the keyboard. serve_command must run
+    # serve_forever on a background thread (leaving the main thread free to catch the
+    # interrupt) and always tear the server down via shutdown() + server_close().
+    import threading
+    import types
+
+    class FakeServer:
+        def __init__(self, address, app):
+            self.server_address = (address[0], 8765)
+            self.events = []
+            self.serve_on_main = None
+
+        def page(self):
+            self.events.append("page")
+
+        def serve_forever(self):
+            self.serve_on_main = threading.current_thread() is threading.main_thread()
+            self.events.append("serve")  # returns at once -> the join loop then exits
+
+        def shutdown(self):
+            self.events.append("shutdown")
+
+        def server_close(self):
+            self.events.append("close")
+
+    made = {}
+    real = ot.web.ReportServer
+    ot.web.ReportServer = lambda address, app: made.setdefault("s", FakeServer(address, app))
+    try:
+        args = types.SimpleNamespace(bind="127.0.0.1", port=0, web=False)
+        rc = ot.web.serve_command(app_with([workflow("w1", "2026-05-01 10:00:00")]), args)
+    finally:
+        ot.web.ReportServer = real
+    server = made["s"]
+    assert rc == 0
+    assert server.serve_on_main is False  # never the foreground / main thread
+    assert "serve" in server.events
+    assert server.events[-2:] == ["shutdown", "close"]  # always torn down
+
+
 def test_cli_web_flag_is_recognized_and_is_distinct_from_serve():
     # --web is its own flag; web_command/main route it through the serve path.
     import sys as _sys
