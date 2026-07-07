@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
 from datetime import datetime, timezone
 
 # Real token figures from human_tokens are always decimal + space-delimited
@@ -97,15 +98,61 @@ def human_tokens(value: int) -> str:
     return str(value)
 
 
+def _char_cells(ch: str) -> int:
+    if unicodedata.combining(ch):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def display_width(value: str) -> int:
+    # Terminal cells, not codepoints: east-asian Wide/Fullwidth glyphs take two
+    # cells, combining marks none. An approximation (emoji ZWJ sequences and flags
+    # are beyond east_asian_width), but it keeps CJK titles/paths in their columns.
+    if value.isascii():
+        return len(value)
+    return sum(_char_cells(ch) for ch in value)
+
+
+def clip(value: str, width: int) -> str:
+    # Longest prefix within `width` display cells; a wide char that would straddle
+    # the boundary is dropped, so the result never exceeds the cell budget.
+    if width <= 0:
+        return ""
+    if value.isascii():
+        return value[:width]
+    if display_width(value) <= width:
+        return value
+    out = []
+    used = 0
+    for ch in value:
+        cells = _char_cells(ch)
+        if used + cells > width:
+            break
+        out.append(ch)
+        used += cells
+    return "".join(out)
+
+
+def pad(value: str, width: int) -> str:
+    # ljust by display cells, so a padded wide-char row still fills exactly `width`.
+    return value + " " * max(0, width - display_width(value))
+
+
 def shorten(value: str, width: int) -> str:
     if width <= 0:
         return ""
     value = value.replace("\n", " ").replace("\t", " ")
-    if len(value) <= width:
+    if value.isascii():
+        if len(value) <= width:
+            return value
+        if width <= 3:
+            return value[:width]
+        return value[: width - 3] + "..."
+    if display_width(value) <= width:
         return value
     if width <= 3:
-        return value[:width]
-    return value[: width - 3] + "..."
+        return clip(value, width)
+    return clip(value, width - 3) + "..."
 
 
 def _clean_prompt(text, limit: int = 160) -> str:
@@ -117,12 +164,28 @@ def _clean_prompt(text, limit: int = 160) -> str:
     return " ".join(str(text).split())[:limit]
 
 
+def _clip_tail(value: str, width: int) -> str:
+    # Longest suffix within `width` display cells (the tail-keeping twin of clip).
+    if value.isascii():
+        return value[len(value) - width :] if width > 0 else ""
+    out = []
+    used = 0
+    for ch in reversed(value):
+        cells = _char_cells(ch)
+        if used + cells > width:
+            break
+        out.append(ch)
+        used += cells
+    out.reverse()
+    return "".join(out)
+
+
 def short_path(path: str, width: int) -> str:
     home = os.path.expanduser("~")
     if path.startswith(home):
         path = "~" + path[len(home) :]
-    if len(path) <= width:
+    if display_width(path) <= width:
         return path
     if width <= 4:
-        return path[-width:]
-    return "..." + path[-(width - 3) :]
+        return _clip_tail(path, width)
+    return "..." + _clip_tail(path, width - 3)

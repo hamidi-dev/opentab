@@ -148,6 +148,49 @@ def test_money_marks_sub_cent_costs():
     assert ot.money(0.02) == "$0.02"
 
 
+def test_display_width_counts_terminal_cells():
+    assert ot.display_width("abc") == 3
+    assert ot.display_width("") == 0
+    assert ot.display_width("日本語") == 6  # CJK glyphs take two cells each
+    assert ot.display_width("日本語 ok") == 9
+    assert ot.display_width("e\u0301") == 1  # combining accent adds no cell
+
+
+def test_shorten_truncates_by_display_cells():
+    # A CJK title must never render wider than its column budget.
+    title = "日本語のセッションタイトル"
+    for width in (6, 7, 10, 13):
+        cut = ot.shorten(title, width)
+        assert ot.display_width(cut) <= width
+        assert cut.endswith("...")
+    assert ot.shorten(title, 100) == title
+    assert ot.shorten("hello world", 8) == "hello..."
+    # A wide char straddling the boundary is dropped, not half-drawn.
+    assert ot.shorten("日日日", 5) == "日..."
+
+
+def test_pad_fills_to_exact_display_width():
+    assert ot.pad("abc", 6) == "abc   "
+    padded = ot.pad("日本", 8)
+    assert padded == "日本    "
+    assert ot.display_width(padded) == 8
+    assert ot.pad("toolong", 3) == "toolong"  # never truncates, only pads
+
+
+def test_clip_never_exceeds_the_cell_budget():
+    assert ot.clip("hello", 3) == "hel"
+    assert ot.clip("日本語", 4) == "日本"
+    assert ot.clip("日本語", 5) == "日本"  # the straddling wide char is dropped
+    assert ot.clip("日本語", 0) == ""
+
+
+def test_short_path_keeps_wide_tails_within_budget():
+    path = "/home/user/プロジェクト/深いディレクトリ"
+    cut = ot.short_path(path, 12)
+    assert ot.display_width(cut) <= 12
+    assert cut.startswith("...")
+
+
 def test_pct():
     assert ot.pct(50, 200) == "25%"
     assert ot.pct(1, 3) == "33%"
