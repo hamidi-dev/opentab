@@ -108,9 +108,10 @@ class ClaudeStore:
 
     @classmethod
     def _prompt_text(cls, message) -> str | None:
-        # First *real* user prompt, as a last-resort session title when no aiTitle
-        # exists. Returns None for empty content or an injected wrapper (see above),
-        # so the caller keeps scanning to the next user message.
+        # A *real* user prompt's full text (the Turns tab can expand it; the
+        # session-title fallback caps it at its use site). Returns None for empty
+        # content or an injected wrapper (see above), so the caller keeps scanning
+        # to the next user message.
         if not isinstance(message, dict):
             return None
         content = message.get("content")
@@ -127,7 +128,7 @@ class ClaudeStore:
                     break
         if not text or text.startswith(cls._WRAPPER_TAGS):
             return None
-        return text[:80]
+        return text
 
     # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
@@ -203,7 +204,7 @@ class ClaudeStore:
                     {"ts": ts or "", "title": text, "id": uuid or f"p{len(s['prompts'])}"}
                 )
                 if not s["title_prompt"]:
-                    s["title_prompt"] = text
+                    s["title_prompt"] = text[:80]  # the session-title fallback stays short
         if typ != "assistant":
             return
         msg = o.get("message")
@@ -456,15 +457,17 @@ class ClaudeStore:
             return []
         prompts = sorted(s["prompts"], key=lambda p: p["ts"])
         out = []
-        pi, cur_id, cur_title = 0, "", ""
+        pi, cur_id, cur_title, cur_full = 0, "", "", ""
         for t in sorted(s["turns"], key=lambda r: r["ts"]):
             while pi < len(prompts) and prompts[pi]["ts"] <= t["ts"]:
-                cur_id, cur_title = prompts[pi]["id"], _clean_prompt(prompts[pi]["title"])
+                cur_id, cur_full = prompts[pi]["id"], prompts[pi]["title"]
+                cur_title = _clean_prompt(cur_full)
                 pi += 1
             r = dict(t)
             r["time"] = iso_to_local(r.pop("ts"))
             r["prompt_id"] = cur_id
             r["prompt_title"] = cur_title
+            r["prompt_full"] = cur_full
             out.append(r)
         return out
 

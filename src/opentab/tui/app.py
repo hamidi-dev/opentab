@@ -241,6 +241,8 @@ class App:
         # Drilled into a ranked row's sessions: ("model"|"provider"|"source", key).
         self.trend_drill: tuple[str, str] | None = None
         self.trend_drill_index = 0  # cursor within that sessions list
+        self.turns_full = False  # Turns tab: expand every ▸ prompt to its full text (z)
+        self._turns_expanded: set[str] = set()  # individually expanded prompts (click)
         self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
         self.has256 = False  # set in run() once curses knows the terminal's color depth
         self._cal_geom: tuple | None = None  # last calendar grid geometry, for mouse hit-testing
@@ -1068,9 +1070,11 @@ class App:
         for n, r in enumerate(rows):
             r["model_name"] = demo_model(r["model_name"])
             # Anonymize the prompt title (a real prompt would leak); keep it stable per
-            # prompt_id so a group's turns stay under one fake header.
+            # prompt_id so a group's turns stay under one fake header. The expandable
+            # full text mirrors the fake -- never the real prompt.
             if "prompt_title" in r:
                 r["prompt_title"] = demo_title(r.get("prompt_id") or "noprompt")
+                r["prompt_full"] = r["prompt_title"]
             if r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
                 r["cost"] = demo_cost(r["tokens_total"], f"{workflow_id}:{n}")
             for f in ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write"):
@@ -3351,6 +3355,15 @@ class App:
             else:
                 self.notify("no active filter", "error")
             return True
+        if key == ord("z") and self.view == "session":
+            # On the Turns tab, z folds/unfolds every ▸ prompt header to its full
+            # text (vim's fold key); a click on one header toggles just that group.
+            tabs = self.current_tabs()
+            if tabs and tabs[self.tab % len(tabs)] == "Turns":
+                self.turns_full = not self.turns_full
+                self._turns_expanded.clear()
+                self.notice = "full prompts" if self.turns_full else "prompt titles"
+                return True
         if key == ord("e"):
             self.export_current()
             return True
@@ -3739,6 +3752,13 @@ class App:
             if self.tab != value:
                 self.tab = value
                 self.scroll = 0
+            return
+        if kind == "turnline":
+            # A click on a Turns-tab "▸" prompt header folds/unfolds that one group
+            # (z toggles them all); clicks on the turn rows between headers are inert.
+            pid = getattr(self.renderer, "_turn_header_at", {}).get(value)
+            if pid is not None:
+                self._turns_expanded.symmetric_difference_update({pid})
             return
         if kind == "year" and self.view == "browse" and self.browse_mode == "time":
             if self.focus != "years":

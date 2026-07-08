@@ -3095,6 +3095,145 @@ def test_claude_message_timeline_groups_turns_by_owning_user_prompt():
         assert rows[0]["prompt_id"] == "ua" and rows[1]["prompt_id"] == "ub"
 
 
+def test_claude_turns_carry_the_full_prompt_uncapped():
+    # The Turns tab can unfold a prompt, so the timeline keeps its whole text: the
+    # one-line group title stays capped, prompt_full is the raw prompt (line breaks
+    # kept), and the session-title fallback stays short.
+    long_prompt = ("please refactor the frobnicator carefully " * 6).strip() + "\nkeep tests green"
+    assert len(long_prompt) > 200
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        rows_in = [
+            {
+                "type": "user",
+                "sessionId": "s1",
+                "cwd": cwd,
+                "timestamp": "2026-06-10T18:46:00.000Z",
+                "uuid": "ua",
+                "message": {"role": "user", "content": long_prompt},
+            },
+            _claude_msg(
+                "s1",
+                "claude-opus-4-8",
+                _usage(100, 50),
+                uuid="a1",
+                cwd=cwd,
+                ts="2026-06-10T18:46:05.000Z",
+            ),
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), rows_in)
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        w = store.workflows()[0]
+        assert w.title == long_prompt[:80]  # the session-title fallback stays short
+        rows = store.message_timeline("s1")
+        assert rows[0]["prompt_full"] == long_prompt  # uncapped, newline kept
+        assert rows[0]["prompt_title"] == " ".join(long_prompt.split())[:160]
+
+
+def _write_opencode_db_with_long_prompt(path, long_prompt):
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        create table session (
+          id text primary key, parent_id text, title text, directory text, agent text,
+          time_created integer
+        );
+        create table message (id text primary key, session_id text, data text);
+        create table part (id text primary key, message_id text, session_id text, data text);
+        """
+    )
+    conn.execute(
+        "insert into session values (?,?,?,?,?,?)",
+        ("s1", None, "Root", "/work/repo", None, 1760000000000),
+    )
+    user = {"role": "user", "time": {"created": 500}}
+    part = {"type": "text", "text": long_prompt}
+    turn = {
+        "role": "assistant",
+        "providerID": "anthropic",
+        "modelID": "claude-opus-4-8",
+        "cost": 2.0,
+        "time": {"created": 1000},
+        "tokens": {"input": 100, "output": 10},
+    }
+    conn.executemany(
+        "insert into message values (?,?,?)",
+        [("u1", "s1", json.dumps(user)), ("m1", "s1", json.dumps(turn))],
+    )
+    conn.execute("insert into part values (?,?,?,?)", ("p1", "u1", "s1", json.dumps(part)))
+    conn.commit()
+    conn.close()
+
+
+def test_opencode_turns_carry_the_full_prompt_uncapped():
+    # No summary.title on the user message: the one-line group title is the capped
+    # raw prompt, prompt_full the whole thing with its line breaks kept.
+    long_prompt = ("rework the cache invalidation and explain the tradeoffs " * 5).strip()
+    long_prompt += "\nthen run the whole suite"
+    assert len(long_prompt) > 200
+    args = type("Args", (), {"since": None, "until": None, "days": None})
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_long_prompt(db, long_prompt)
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        rows = store.message_timeline("s1")
+        assert rows[0]["prompt_full"] == long_prompt
+        assert rows[0]["prompt_title"] == " ".join(long_prompt.split())[:160]
+
+        # The TUI unfolds it: z flips every ▸ header to ▾ + the wrapped whole text,
+        # and a click on one header (the "turnline" region) toggles just that group.
+        app = ot.App(store, args())
+        rnd = app.renderer  # the instance _apply_click resolves headers against
+        wf = app.loaded[0]
+        folded = rnd.detail_turns(wf, 96)
+        assert any(ln.startswith("▸ ") for ln in folded)
+        assert not any(ln.startswith("  │") for ln in folded)
+        app.turns_full = True
+        unfolded = rnd.detail_turns(wf, 96)
+        assert any(ln.startswith("▾ ") for ln in unfolded)
+        body = " ".join(ln[4:] for ln in unfolded if ln.startswith("  │"))
+        assert "then run the whole suite" in body  # the tail survived the unfold
+        assert " ".join(long_prompt.split()) == " ".join(body.split())  # nothing lost
+        # Click-toggle one group while the global fold is off.
+        app.turns_full = False
+        rnd.detail_turns(wf, 96)  # a paint pass records the header line indices
+        idx, pid = next(iter(rnd._turn_header_at.items()))
+        app._apply_click(("turnline", idx), drill=False)
+        assert pid in app._turns_expanded
+        assert any(ln.startswith("▾ ") for ln in rnd.detail_turns(wf, 96))
+        app._apply_click(("turnline", idx), drill=False)  # toggles back off
+        assert pid not in app._turns_expanded
+
+
+def test_demo_turns_anonymize_the_full_prompt_too():
+    # Demo must never leak a real prompt through the expandable full text: both the
+    # title and prompt_full become the same stable fake.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.store.demo_scale = 0.5
+    rows = app._scale_demo_turns(
+        "a",
+        [
+            {
+                "model_name": "anthropic/claude-opus-4-8",
+                "prompt_id": "p1",
+                "prompt_title": "company secret plan",
+                "prompt_full": "company secret plan\nwith all the details",
+                "cost": 1.0,
+                "tokens_total": 10,
+                "input": 10,
+                "output": 0,
+                "reasoning": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+            }
+        ],
+    )
+    assert "secret" not in rows[0]["prompt_title"] and "secret" not in rows[0]["prompt_full"]
+    assert rows[0]["prompt_full"] == rows[0]["prompt_title"]  # the fake, twice
+
+
 def test_api_price_helpers():
     # input/output/cache priced per 1M, reasoning billed as output.
     assert "gpt-4o-2024-05-13" in ot.MODEL_PRICE_TABLE
@@ -8835,6 +8974,7 @@ class TurnsFakeStore(FakeStore):
             "cache_write": 0,
             "prompt_id": "p1",
             "prompt_title": "do the thing",
+            "prompt_full": "do the thing\nand do it properly, with tests",
         }
         return [
             dict(
@@ -8900,6 +9040,8 @@ def test_web_session_extras_reports_turns_with_both_costs():
     assert first["real"] == 0.0 and first["api"] > 0  # $0 turn gets a list-price figure
     assert second["real"] == 0.5 and second["api"] == 0.5  # priced turn stays as recorded
     assert first["promptTitle"] == "do the thing"
+    # The whole prompt travels too, so the page's ▸ header can unfold/hover it.
+    assert first["promptFull"] == "do the thing\nand do it properly, with tests"
 
 
 def test_web_render_html_defuses_embedded_script_tags():
@@ -8935,6 +9077,8 @@ def test_web_html_command_writes_the_report_file():
     # Every scope Overview carries the TUI's Top sessions section, and the day
     # Overview the full model mix (day has no Models tab).
     assert "topSessionsTable" in text and "'Top sessions'" in text and "'Model mix'" in text
+    # Turns ▸ headers unfold/hover the whole prompt (serve-only data, baked JS).
+    assert "promptFull" in text and "prompt-full" in text
     assert 'id="prices"' in text and 'id="rangepick"' in text  # P prices + R range overlays
     assert 'id="themepick"' in text and "const THEMES" in text  # the theme picker + palettes
     assert "catppuccin-mocha" in text and "tokyo-night" in text  # bundled themes

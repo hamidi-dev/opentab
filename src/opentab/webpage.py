@@ -228,6 +228,11 @@ input.filter:focus{outline:none;border-color:var(--accent)}
 /* turns */
 tr.prompt-row td{color:var(--accent);padding-top:9px;font-weight:600}
 tr.prompt-row td:first-child{white-space:normal;overflow-wrap:anywhere}
+tr.prompt-row.rowlink{cursor:pointer}
+/* the unfolded whole prompt (header click): its own line breaks kept */
+tr.prompt-full-row td{padding:2px 10px 8px 22px}
+.prompt-full{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink2);
+  font-size:11.5px;border-left:2px solid var(--line);padding-left:10px}
 td.indent{color:var(--ink2)}
 
 /* tooltip */
@@ -929,10 +934,18 @@ function turnsTable(turns) {
     if (key !== lastPrompt) {
       lastPrompt = key;
       const title = (t.promptTitle || '(prompt)').slice(0, 160) + ((t.promptTitle || '').length > 160 ? '…' : '');
-      rows.push(h('tr', { class: 'prompt-row' },
-        h('td', { colspan: 3 }, '▸ ' + title),
+      const full = (t.promptFull || t.promptTitle || '').trim();
+      // The header folds open to the whole prompt: hover previews it, a click
+      // toggles the full-text row beneath (mirrors the TUI's z / header click).
+      const marker = h('span', null, '▸ ');
+      const fullRow = h('tr', { class: 'prompt-full-row', hidden: '' },
+        h('td', { colspan: 6 }, h('div', { class: 'prompt-full' }, full)));
+      rows.push(h('tr', { class: 'prompt-row' + (full ? ' rowlink' : ''), title: full || null,
+        onclick: full ? (() => { fullRow.hidden = !fullRow.hidden; marker.textContent = fullRow.hidden ? '▸ ' : '▾ '; }) : null },
+        h('td', { colspan: 3 }, marker, title),
         h('td', { class: 'r' }, moneyCell(groups.get(key))),
         h('td', null, ''), h('td', null, '')));
+      if (full) rows.push(fullRow);
     }
     cum += mCost(t);
     rows.push(h('tr', null,

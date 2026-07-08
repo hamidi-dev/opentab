@@ -408,7 +408,8 @@ class VscodeStore:
         message = req.get("message")
         if isinstance(message, dict):
             message = message.get("text")
-        prompt = _clean_prompt(message) if isinstance(message, str) else ""
+        full = message.strip() if isinstance(message, str) else ""
+        prompt = _clean_prompt(full)
         if s["title"] is None and prompt:
             s["title"] = prompt[:80]
 
@@ -434,6 +435,7 @@ class VscodeStore:
                 "cache_write": 0,
                 "tokens_total": inp + out,
                 "prompt": prompt,
+                "prompt_full": full,  # uncapped; the Turns tab can expand it
                 "prompt_id": rid,  # one chat request == one user prompt == one turn
             }
         )
@@ -596,6 +598,7 @@ class VscodeStore:
             prompt = r.pop("prompt", "")
             r["prompt_id"] = r["prompt_id"] or prompt
             r["prompt_title"] = prompt
+            r["prompt_full"] = r.get("prompt_full") or prompt
             out.append(r)
         return out
 

@@ -228,6 +228,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     "tokens": int(r.get("tokens_total") or 0),
                     "promptId": r.get("prompt_id") or "",
                     "promptTitle": r.get("prompt_title") or "",
+                    "promptFull": r.get("prompt_full") or "",
                 }
             )
     tools = []

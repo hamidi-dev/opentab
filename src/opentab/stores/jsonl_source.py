@@ -204,8 +204,9 @@ class JsonlStore(CsvStore):
         acc["cost"] += cost
         acc["tokens_total"] += uncached + cached + out
 
-        prompt = self._get(obj, "prompt")
-        prompt = _clean_prompt(prompt) if isinstance(prompt, str) else ""
+        raw_prompt = self._get(obj, "prompt")
+        full = raw_prompt.strip() if isinstance(raw_prompt, str) else ""
+        prompt = _clean_prompt(full)
         pid = str(self._get(obj, "prompt_id") or "").strip()
         if s["title"] is None:  # title precedence: explicit title > first prompt
             title = str(self._get(obj, "title") or "").strip()
@@ -225,6 +226,7 @@ class JsonlStore(CsvStore):
                 "cache_write": 0,
                 "tokens_total": uncached + cached + out,
                 "prompt": prompt,
+                "prompt_full": full,  # uncapped; the Turns tab can expand it
                 "prompt_id": pid,
             }
         )
@@ -246,6 +248,7 @@ class JsonlStore(CsvStore):
             explicit = r.pop("prompt_id", "")
             r["prompt_id"] = explicit or prompt  # group consecutive same-prompt turns
             r["prompt_title"] = prompt
+            r["prompt_full"] = r.get("prompt_full") or prompt
             out.append(r)
         return out
 

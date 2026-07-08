@@ -385,7 +385,13 @@ double-click drills — bar hit-testing via `_trend_bar_geom`, rows via the
   header-vs-rows split *is* the user-vs-llm distinction. Subagent (Task) turns are
   interleaved by time and tagged in the Agent column; demo anonymizes prompt titles
   (stable per `prompt_id`). The Time column shows date + clock (`MM-DD HH:MM:SS`) on every
-  row — turns can be seconds apart and a resumed session spans days.
+  row — turns can be seconds apart and a resumed session spans days. Every timeline row
+  also carries **`prompt_full`** — the raw prompt uncapped, line breaks kept
+  (`prompt_title` stays the capped one-liner; demo mirrors the fake into both) — and each
+  `▸` header **unfolds to it**: in the TUI `z` toggles all groups and a click one (the
+  `turnline` region → `_turn_header_at`; `▾` + dim `│` lines), in the web the header
+  hovers the full text and a click toggles a `pre-wrap` row beneath (`promptFull` in
+  `session_extras`).
 - Subagent costs are recursive: `workflow_nodes` walks `session.parent_id` with a
   recursive CTE so a root session's cost includes its whole subagent subtree.
 - Range/projection: `ranged_workflows` (date-filtered) → `all_workflows` (also drops

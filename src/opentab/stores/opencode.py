@@ -563,14 +563,12 @@ class Store:
                 "where p.message_id = m.id and json_extract(p.data, '$.type') = 'text' "
                 "order by p.rowid limit 1)"
             )
-            title_expr = (
-                f"case when json_extract(m.data, '$.role') = 'user' "
-                f"then coalesce({summary_title}, {part_text}) end"
-            )
         else:
-            title_expr = (
-                f"case when json_extract(m.data, '$.role') = 'user' then {summary_title} end"
-            )
+            part_text = "null"
+        # Summary title and raw prompt as separate columns: the one-line group title
+        # prefers the generated summary, the expandable full text the raw prompt.
+        title_expr = f"case when json_extract(m.data, '$.role') = 'user' then {summary_title} end"
+        prompt_expr = f"case when json_extract(m.data, '$.role') = 'user' then {part_text} end"
         sql = f"""
         with recursive tree(id, depth) as (
           select id, 0 from session where id = ?
@@ -592,7 +590,8 @@ class Store:
           coalesce(json_extract(m.data, '$.tokens.cache.read'), 0) as cache_read,
           coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) as cache_write,
           ({MSG_TOKEN_TOTAL_EXPR}) as tokens_total,
-          {title_expr} as prompt_title
+          {title_expr} as summary_title,
+          {prompt_expr} as prompt_text
         from message m
         join tree on tree.id = m.session_id
         join session s on s.id = m.session_id
@@ -600,12 +599,16 @@ class Store:
         order by {ts_expr}, m.rowid
         """
         out = []
-        cur_id, cur_title = "", ""
+        cur_id, cur_title, cur_full = "", "", ""
         for r in self.conn.execute(sql, [workflow_id]):
             d = dict(r)
             if d["role"] == "user":  # opens/owns the following assistant turns
                 cur_id = d["mid"] or ""
-                cur_title = _clean_prompt(d["prompt_title"])
+                cur_title = _clean_prompt(d["summary_title"] or d["prompt_text"])
+                # The expandable full text is the raw prompt itself (uncapped, line
+                # breaks kept); the generated summary only stands in when no text
+                # part was recorded.
+                cur_full = str(d["prompt_text"] or d["summary_title"] or "").strip()
                 continue
             # A turn that recorded neither tokens nor cost (an aborted/errored step) is
             # noise on a "how the money accrued" timeline -- drop it.
@@ -614,7 +617,8 @@ class Store:
             d["time"] = d["time"] or ""
             d["prompt_id"] = cur_id
             d["prompt_title"] = cur_title
-            del d["role"], d["mid"]
+            d["prompt_full"] = cur_full
+            del d["role"], d["mid"], d["summary_title"], d["prompt_text"]
             out.append(d)
         return out
 

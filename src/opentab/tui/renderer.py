@@ -106,6 +106,8 @@ class Renderer:
         self._bar_slots: list[tuple[int, int, str]] | None = None
         self._bar_click_rows = 0
         self._trend_rows_at: tuple[int, int, int] | None = None
+        # Turns tab: which detail-line indices are ▸ prompt headers (click unfolds).
+        self._turn_header_at: dict[int, str] = {}
 
     def __getattr__(self, name: str):
         # Misses are App state/logic; read them from the App. (Renderer's own
@@ -1357,15 +1359,22 @@ class Renderer:
 
         visible = h - 4
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+        drawn = lines[self.scroll : self.scroll + visible]
+        for offset, line in enumerate(drawn):
             attr = (
                 curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
             )
             if line.startswith("! "):
                 attr = curses.color_pair(5) | curses.A_BOLD
-            elif line.startswith("▸ "):  # Turns tab: a user-prompt group header
+            elif line.startswith(("▸ ", "▾ ")):  # Turns tab: a user-prompt group header
                 attr = curses.color_pair(6) | curses.A_BOLD
+            elif line.startswith("  │"):  # Turns tab: an unfolded prompt's full text
+                attr = curses.color_pair(1)
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+        if current == "Turns":
+            # Make the ▸/▾ headers clickable: the region maps a row back to its line
+            # index; _apply_click resolves headers via _turn_header_at.
+            self._add_rows_region("turnline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
 
     def _model_table(
         self,
@@ -1978,15 +1987,24 @@ class Renderer:
         ]
         cum = 0.0
         last_pid = object()  # sentinel: the first row always opens a group
+        self._turn_header_at = {}  # line index -> prompt_id, for the click toggle
         for n, (r, cost) in enumerate(zip(rows, costs), start=1):
             pid = r.get("prompt_id", "")
             if pid != last_pid:
                 last_pid = pid
                 gc = money(subtotal[pid])
+                opened = self.turns_full or pid in self._turns_expanded
                 title = (r.get("prompt_title") or "").strip() or "(no preceding prompt)"
                 title = shorten(title, max(10, width - len(gc) - 5))
-                head = "▸ " + title
+                head = ("▾ " if opened else "▸ ") + title
+                self._turn_header_at[len(lines)] = pid
                 lines.append(head + " " * max(1, width - display_width(head) - len(gc)) + gc)
+                if opened:
+                    # The whole prompt, its own line breaks kept, wrapped to the pane.
+                    full = (r.get("prompt_full") or r.get("prompt_title") or "").strip()
+                    for para in full.splitlines() or [""]:
+                        for piece in textwrap.wrap(para, max(20, width - 4)) or [""]:
+                            lines.append("  │ " + piece)
             cum += cost
             agent = r["agent"] if r["depth"] else "-"
             cumlabel = f"{money(cum)} · {pct(cum, total)}"
@@ -1999,6 +2017,7 @@ class Renderer:
             "",
             "! Grouped by the user prompt (▸) that triggered each run; indented rows are the",
             "! agent's turns. Time order, not cost; Cumulative is the running session total.",
+            "! z (or a click on a ▸ header) unfolds the whole prompt, not just its first line.",
         ]
         return lines
 
@@ -2026,6 +2045,7 @@ class Renderer:
                         "years/months: Overview · Models · Projects · Sessions; days drop Models",
                         "a session adds Turns (per-turn cost, OpenCode + Claude) and Tools "
                         "(per-tool / MCP spend, OpenCode); Sources joins in the merged 'all' view",
+                        "on Turns, z (or clicking a ▸ header) unfolds the whole prompt text",
                     ),
                     ("j / k", "move in the list (↑/↓ too), or scroll the detail pane"),
                     ("PgDn/PgUp", "move / scroll by half a page (Ctrl-D / Ctrl-U too)"),
