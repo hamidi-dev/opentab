@@ -392,7 +392,7 @@ const VIEW = { calYear: null };
 let EXTRAS = { id: null, loading: false, turns: [], tools: [] }; // per-session Turns/Tools (serve)
 // The Trends overlay (T) -- mirrors the TUI's 7-tab Trends over the whole range.
 const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Sources'];
-let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0 };
+let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null };
 // The P prices overlay: the models.dev list-price reference behind $ (app-wide,
 // never range-scoped -- like the TUI). eff sorts cheapest-first; others high→low.
 const PRICE_VIEWS = [['flat', 'flat list'], ['family', 'by vendor'], ['provider', 'by provider']];
@@ -1193,12 +1193,47 @@ function rankedBars(rows, cfg) {
   const peak = Math.max(...rows.map(r => r.cost), 0), total = rows.reduce((a, r) => a + r.cost, 0);
   const head = h('tr', null, h('th', { class: 'l' }, cfg.nameLabel), h('th', { class: 'l' }, ''),
     h('th', null, 'Cost'), h('th', null, 'Share'), cfg.extra.map(c => h('th', null, c.label)));
-  const body = rows.map(r => h('tr', null,
+  const body = rows.map(r => h('tr', cfg.onRow ? { class: 'rowlink', onclick: () => cfg.onRow(r) } : null,
     h('td', { class: 'l' }, cfg.nameFmt ? cfg.nameFmt(r) : r.name),
     h('td', { class: 'bar' }, h('div', { class: 'hb' }, h('i', { style: '--w:' + (peak > 0 ? Math.max(2, Math.round(100 * r.cost / peak)) : 0) + '%' }))),
     h('td', null, moneyCell(r.cost)), h('td', { class: 'mut' }, pct(r.cost, total)),
     cfg.extra.map(c => h('td', { class: c.cls || null }, c.get(r)))));
   return h('table', { class: 'rank' }, h('thead', null, head), h('tbody', null, body));
+}
+/* a ranked row's sessions (the TUI's Trends drill): every session in the active
+   range that used the model / provider / source, most spend first, each row a
+   deep link into the session itself */
+function trendDrillRows() {
+  const { kind, key } = TRENDS.drill, out = [];
+  for (const w of W) {
+    let c = 0, tok = 0;
+    if (kind === 'source') {
+      if ((w.source || META.source) !== key) continue;
+      c = cost(w); tok = w.tokens;
+    } else {
+      for (const r of (DATA.models[w.id] || [])) {
+        if (kind === 'model' ? r.model === key : (r.model.split('/')[0] || 'unknown') === key) { c += mCost(r); tok += r.tokens; }
+      }
+      if (!c && !tok) continue;
+    }
+    out.push({ id: w.id, date: w.date, title: w.title, cost: c, tokens: tok });
+  }
+  return out.sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+}
+function trendDrill() {
+  const { key } = TRENDS.drill;
+  const rows = trendDrillRows();
+  const back = h('button', { class: 'hbtn', onclick: () => { TRENDS.drill = null; renderTrends(); } }, '← back');
+  if (!rows.length) return h('div', null, h('div', { class: 'tr-nav' }, back), h('div', { class: 'hint' }, 'No sessions used ' + key + ' in the active range.'));
+  const total = rows.reduce((a, r) => a + r.cost, 0);
+  const head = h('tr', null, h('th', { class: 'l' }, 'Started'), h('th', null, 'Cost'), h('th', null, 'Tokens'), h('th', { class: 'l' }, 'Title'));
+  const body = rows.map(r => h('tr', { class: 'rowlink', onclick: () => { closeTrends(); go('s', r.id); } },
+    h('td', { class: 'l mut' }, r.date.slice(0, 10)), h('td', null, moneyCell(r.cost)),
+    h('td', { class: 'mut' }, hTok(r.tokens)), h('td', { class: 'l' }, r.title)));
+  return h('div', null,
+    h('div', { class: 'tr-nav' }, back, h('span', { class: 'lbl' }, 'Sessions · ' + key),
+      h('span', { class: 'mut' }, rows.length + ' session(s) · ' + money(total))),
+    h('table', { class: 'rank' }, h('thead', null, head), h('tbody', null, body)));
 }
 function trendDaily() {
   const months = trendMonths();
@@ -1257,6 +1292,7 @@ function trendModels() {
     .filter(r => r.cost > 0).sort((a, b) => b.cost - a.cost);
   if (!rows.length) return h('div', { class: 'hint' }, 'No priced model spend in the active range.');
   return rankedBars(rows, { nameLabel: 'Model', nameFmt: r => modelCell(r.name),
+    onRow: r => { TRENDS.drill = { kind: 'model', key: r.name }; renderTrends(); },
     extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Msgs', get: r => String(r.runs), cls: 'mut' }] });
 }
 function trendProviders() {
@@ -1264,6 +1300,7 @@ function trendProviders() {
     .filter(r => r.cost > 0 || r.tokens > 0).sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
   if (!rows.length) return h('div', { class: 'hint' }, 'No model usage in the active range.');
   return rankedBars(rows, { nameLabel: 'Provider',
+    onRow: r => { TRENDS.drill = { kind: 'provider', key: r.name }; renderTrends(); },
     extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Msgs', get: r => String(r.runs), cls: 'mut' }] });
 }
 function trendSources() {
@@ -1271,17 +1308,19 @@ function trendSources() {
     .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
   if (!rows.length) return h('div', { class: 'hint' }, 'No sessions in the active range.');
   return rankedBars(rows, { nameLabel: 'Source',
+    onRow: r => { TRENDS.drill = { kind: 'source', key: r.name }; renderTrends(); },
     extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
 }
-function openTrends() { TRENDS.open = true; if (!TREND_TABS.includes(TRENDS.tab)) TRENDS.tab = 'Daily'; renderTrends(); }
-function closeTrends() { TRENDS.open = false; renderTrends(); }
+function openTrends() { TRENDS.open = true; TRENDS.drill = null; if (!TREND_TABS.includes(TRENDS.tab)) TRENDS.tab = 'Daily'; renderTrends(); }
+function closeTrends() { TRENDS.open = false; TRENDS.drill = null; renderTrends(); }
 function renderTrends() {
   const host = document.getElementById('trends');
   if (!TRENDS.open) { host.hidden = true; host.textContent = ''; return; }
   host.hidden = false; host.textContent = '';
   const tab = TRENDS.tab;
-  const body = ({ Daily: trendDaily, Weekly: trendWeekly, Monthly: trendMonthly, Calendar: trendCalendar,
-    Models: trendModels, Providers: trendProviders, Sources: trendSources }[tab])();
+  const body = TRENDS.drill ? trendDrill()
+    : ({ Daily: trendDaily, Weekly: trendWeekly, Monthly: trendMonthly, Calendar: trendCalendar,
+        Models: trendModels, Providers: trendProviders, Sources: trendSources }[tab])();
   const footer = h('div', { class: 'tr-nav', style: 'margin-top:14px' });
   if (META.demo) footer.append(h('span', { class: 'tr-note' }, 'h/l tabs · j/k page · esc close'));
   else if (MODE === 'api') footer.append(h('span', { class: 'badge est' }, 'estimated · list prices'));
@@ -1291,7 +1330,7 @@ function renderTrends() {
     h('div', { class: 'tr-head' },
       h('h3', null, 'Trends · ' + rangeLabel()),
       h('div', { class: 'tr-tabs' }, TREND_TABS.map(t => h('button', { class: t === tab ? 'on' : null,
-        onclick: () => { TRENDS.tab = t; renderTrends(); } }, t))),
+        onclick: () => { TRENDS.tab = t; TRENDS.drill = null; renderTrends(); } }, t))),
       h('button', { class: 'tr-close', onclick: closeTrends }, 'esc ✕')),
     body, footer);
   panel.addEventListener('click', e => e.stopPropagation());
@@ -1463,10 +1502,13 @@ document.addEventListener('keydown', e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   // While the Trends overlay is open it owns the keyboard (its own tab/page keys).
   if (TRENDS.open) {
-    if (e.key === 'Escape' || e.key === 'T') { closeTrends(); e.preventDefault(); }
+    // Esc first backs out of a ranked row's sessions drill, then closes; h/l
+    // switch tabs even from inside a drill (leaving it) -- mirrors the TUI.
+    if (e.key === 'Escape') { if (TRENDS.drill) { TRENDS.drill = null; renderTrends(); } else closeTrends(); e.preventDefault(); }
+    else if (e.key === 'T') { closeTrends(); e.preventDefault(); }
     else if (e.key === 'h' || e.key === 'ArrowLeft' || e.key === 'l' || e.key === 'ArrowRight') {
       const i = TREND_TABS.indexOf(TRENDS.tab), step = (e.key === 'h' || e.key === 'ArrowLeft') ? -1 : 1;
-      TRENDS.tab = TREND_TABS[(i + step + TREND_TABS.length) % TREND_TABS.length]; renderTrends(); e.preventDefault();
+      TRENDS.tab = TREND_TABS[(i + step + TREND_TABS.length) % TREND_TABS.length]; TRENDS.drill = null; renderTrends(); e.preventDefault();
     } else if (e.key === 'j' || e.key === 'ArrowDown' || e.key === 'k' || e.key === 'ArrowUp') {
       const unit = { Daily: 'month', Weekly: 'week', Calendar: 'year' }[TRENDS.tab];
       if (unit) { stepTrend(unit, (e.key === 'j' || e.key === 'ArrowDown') ? 1 : -1); e.preventDefault(); }

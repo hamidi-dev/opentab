@@ -247,7 +247,8 @@ month / day / project / session (the browser's back button steps out, and every
 view is a shareable deep link), and every table sorts on a header click. Press
 `T` (or the **trends** button) for the full Trends overlay — Daily / Weekly /
 Monthly cost charts, the calendar heatmap, and Model / Provider / Source
-rankings, with `h`/`l` for tabs and `j`/`k` to page; `P` opens the models.dev
+rankings, with `h`/`l` for tabs and `j`/`k` to page (click a ranking row for
+its sessions, and a session to open it); `P` opens the models.dev
 price table (`eff $/M` at your token mix, heat-shaded, three layouts); and `R`
 (or the range chip) rescopes everything to a window (last 7/30/90 days, N months,
 this year, or a custom span). The **theme** button switches the palette live

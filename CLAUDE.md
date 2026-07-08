@@ -472,8 +472,11 @@ Trends overlay** — a modal mirroring the TUI's 7-tab Trends over the whole ran
 (`App.trend_tabs`): Daily/Weekly/Monthly bar charts (each with a `◀ ▶`/`j`/`k` pager over
 months/weeks, bars drill through to that scope and close), the Calendar heatmap (year
 pager), and Model/Provider/Source ranked bars (`providerAgg` rolls model ids to their route
-prefix, exactly like `trend_providers`). It reads the whole `W`, reacts to `$` live, and is
-transient (not hash-routed), matching the TUI overlay. **`P` opens the prices overlay** —
+prefix, exactly like `trend_providers`) whose rows **drill to an in-overlay sessions list**
+(`trendDrillRows`, range-scoped like the TUI's Trends drill) — session rows deep-link into
+the session and close; Esc backs out of the drill first, h/l leave it and switch tabs. It
+reads the whole `W`, reacts to `$` live, and is transient (not hash-routed), matching the
+TUI overlay. **`P` opens the prices overlay** —
 the models.dev list-price reference behind `$` (`build_payload` serializes
 `App.priced_model_entries` for the flat/provider row sets + `price_token_mix`), with the
 `eff $/M` blend, per-column green→red heat (log position in the column's [min,max], the

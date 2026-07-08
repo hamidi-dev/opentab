@@ -8929,6 +8929,9 @@ def test_web_html_command_writes_the_report_file():
     assert 'id="side"' in text and 'id="tabbar"' in text
     assert 'id="trends"' in text  # the T Trends overlay host
     assert "TREND_TABS" in text and "Providers" in text  # the 7-tab Trends
+    # The ranked tabs drill: a row opens its in-overlay sessions list, whose rows
+    # deep-link into the session (mirrors the TUI's Trends drill).
+    assert "trendDrillRows" in text and "Sessions · " in text
     assert 'id="prices"' in text and 'id="rangepick"' in text  # P prices + R range overlays
     assert 'id="themepick"' in text and "const THEMES" in text  # the theme picker + palettes
     assert "catppuccin-mocha" in text and "tokyo-night" in text  # bundled themes
