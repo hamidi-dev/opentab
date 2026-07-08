@@ -1795,6 +1795,46 @@ def test_prices_overlay_close_only_on_esc_q_or_P():
     assert not app.show_prices and app.prices_model is None
 
 
+def test_footer_highlights_the_focused_time_panel():
+    # The "Tab yr/mo/day" footer hint doubles as a position indicator: the token of
+    # the focused sidebar panel lights up in the accent as Tab moves between them.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00"),
+            workflow("b", "2025-06-01 12:00:00"),  # two years, so Years is a panel
+        ]
+    )
+    app.can_switch_source = lambda: False  # the bare test Args has no source flags
+    app.renderer.hline = lambda *a: None  # ACS_HLINE needs initscr; skip the separator
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: n  # identity so we can read the pair off the attr
+    ot.curses.init_pair = lambda *a: None
+    try:
+
+        def token_attrs(focus):
+            app.focus = focus
+            scr = AttrScreen(24, 120)
+            app.renderer.draw_footer(scr, 24, 120)
+            row = 23
+            line = "".join(scr.cells.get((row, x), " ") for x in range(120))
+            i = line.index("Tab yr/mo/day")
+            return {
+                "yr": scr.attrs[(row, i + 4)],
+                "mo": scr.attrs[(row, i + 7)],
+                "day": scr.attrs[(row, i + 10)],
+            }
+
+        accent = 6 | ot.curses.A_BOLD
+        a = token_attrs("months")
+        assert a["mo"] == accent and a["yr"] == 4 and a["day"] == 4
+        a = token_attrs("days")
+        assert a["day"] == accent and a["mo"] == 4
+        a = token_attrs("years")
+        assert a["yr"] == accent and a["day"] == 4
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+
+
 def test_dollar_key_toggles_prices_without_closing_trends():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app._models_loaded = True  # skip the deferred scan in toggle_api_prices

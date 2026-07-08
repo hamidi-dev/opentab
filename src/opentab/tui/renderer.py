@@ -569,12 +569,25 @@ class Renderer:
                 width,
             )
             return
-        # Each entry is (label, active). An active toggle -- its overlay or mode is
-        # currently ON -- renders in the orange accent so the footer reflects state at
-        # a glance (e.g. hitting T highlights "T trends" while the overlay is open).
-        parts: list[tuple[str, bool]] = []
+        # Each entry is (label, active) -- or a list of such pairs painted as one
+        # contiguous segment, so a single token inside a hint can light up. An active
+        # toggle -- its overlay or mode is currently ON -- renders in the orange
+        # accent so the footer reflects state at a glance (e.g. hitting T highlights
+        # "T trends" while the overlay is open).
+        parts: list = []
         if self.view == "browse" and self.browse_mode == "time":
-            parts.append(("Tab yr/mo/day", False))
+            # The focused panel's own token lights up, so "where am I?" is answered
+            # by the same hint that says how to move (Tab).
+            parts.append(
+                [
+                    ("Tab ", False),
+                    ("yr", self.focus == "years"),
+                    ("/", False),
+                    ("mo", self.focus == "months"),
+                    ("/", False),
+                    ("day", self.focus == "days"),
+                ]
+            )
         parts.append(("Enter in", False))
         if self.view != "browse":
             parts.append(("Esc out", False))
@@ -631,23 +644,27 @@ class Renderer:
     def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts) -> None:
         # Render the footer key strip segment by segment so active toggles can stand
         # out in the orange accent (pair 6) against the slate baseline (pair 4),
-        # instead of one flat-coloured joined string.
+        # instead of one flat-coloured joined string. An entry may itself be a list
+        # of (text, on) sub-segments painted contiguously (no separator), so one
+        # token inside a hint -- the focused panel in "Tab yr/mo/day" -- can light up.
         base = curses.color_pair(4)
         active = curses.color_pair(6) | curses.A_BOLD
         x = 0
         self.write(stdscr, y, x, " ", base)
         x += 1
-        for i, (text, on) in enumerate(parts):
+        for i, part in enumerate(parts):
+            segs = part if isinstance(part, list) else [part]
             # Stop before a hint (plus its leading separator) that won't fully fit -- a
             # clean gap at the right edge, and ahead of the version label, instead of a
             # clipped half-word.
-            if x + (2 if i else 0) + len(text) > width - 1:
+            if x + (2 if i else 0) + sum(len(t) for t, _ in segs) > width - 1:
                 break
             if i:
                 self.write(stdscr, y, x, "  ", base)
                 x += 2
-            self.write(stdscr, y, x, text, active if on else base)
-            x += len(text)
+            for text, on in segs:
+                self.write(stdscr, y, x, text, active if on else base)
+                x += len(text)
 
     def sort_heading(self, key: str, label: str) -> str:
         if self.effective_sort_by() != key:
