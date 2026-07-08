@@ -3068,6 +3068,15 @@ class App:
             self.trend_drill_index = max(0, n - 1)
         elif key in (10, 13, curses.KEY_ENTER):
             self._open_trend_drill_session()
+        elif key in (ord("h"), ord("l"), curses.KEY_RIGHT):
+            # h/l switch Trends tabs even from inside a drill list -- leave the drill
+            # and move, instead of falling into "any other key closes the overlay"
+            # (which threw you back to the main view). ←/Esc stay "back to the rows".
+            self.trend_drill = None
+            self.trend_focus = False
+            self.trend_row_index = 0
+            step = -1 if key == ord("h") else 1
+            self.trend_tab = (self.trend_tab + step) % len(self.trend_tabs)
         elif key in (27, curses.KEY_LEFT, curses.KEY_BACKSPACE, 127, 8):
             self.trend_drill = None  # back to the ranked rows
         elif key == ord("$"):

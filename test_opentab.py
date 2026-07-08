@@ -1076,6 +1076,36 @@ def test_trend_sources_row_drills_into_that_sources_sessions():
     assert [w.id for w, _c, _t in app.trend_drill_sessions()] == ["b"]
 
 
+def test_trend_drill_list_h_l_switch_tabs_instead_of_closing():
+    # The reported trap: drill a model's sessions, jump into a session, Esc back to
+    # the drill list, hit l -- the overlay used to close to the main view ("any
+    # other key closes"). h/l must switch Trends tabs from inside a drill too.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=5.0, directory="/x"),
+            workflow("b", "2026-06-02 12:00:00", cost=2.0, directory="/x"),
+        ]
+    )
+    app._model_by_root = {
+        "a": [_model_row("anthropic/opus", 5.0, 10)],
+        "b": [_model_row("openai/gpt-5", 2.0, 7)],
+    }
+    app.handle_key(None, ord("T"))
+    while app.trend_tabs[app.trend_tab] != "Models":
+        app.handle_key(None, ord("l"))
+    app.handle_key(None, ord("j"))
+    app.handle_key(None, 10)  # the model's sessions
+    app.handle_key(None, 10)  # into a session
+    app.handle_key(None, 27)  # Esc -> day zoom
+    app.handle_key(None, 27)  # Esc -> back to the drill list
+    assert app.trends and app.trend_drill == ("model", "openai/gpt-5")
+    app.handle_key(None, ord("l"))  # -> Providers, drill left behind, overlay open
+    assert app.trends and app.trend_drill is None
+    assert app.trend_tabs[app.trend_tab] == "Providers" and app.trend_row_index == 0
+    app.handle_key(None, ord("h"))  # and back onto Models
+    assert app.trends and app.trend_tabs[app.trend_tab] == "Models"
+
+
 def test_capital_p_opens_model_prices_overlay():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {
