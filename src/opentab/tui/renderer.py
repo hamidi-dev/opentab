@@ -2150,11 +2150,20 @@ class Renderer:
         render: list[list[tuple[int, str, int]]] = []
 
         def header(title: str) -> None:
-            seg = [(key_x, title, head)]
-            rule_x = key_x + len(title) + 1
-            if rule_end > rule_x:
-                seg.append((rule_x, "─" * (rule_end - rule_x), rule))
-            render.append(seg)
+            # Centered section title with a rule filling both sides.
+            span = rule_end - key_x
+            label = f" {title} "
+            left = (span - len(label)) // 2
+            if left < 1:  # a panel too narrow to center: plain left-aligned title
+                render.append([(key_x, title, head)])
+                return
+            render.append(
+                [
+                    (key_x, "─" * left, rule),
+                    (key_x + left, label, head),
+                    (key_x + left + len(label), "─" * max(1, span - len(label) - left), rule),
+                ]
+            )
 
         def dim_wrapped(text: str) -> None:
             for piece in textwrap.wrap(text, desc_w) or [""]:
