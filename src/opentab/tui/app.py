@@ -3424,7 +3424,8 @@ class App:
         # The P overlay's model list: j/k/arrows move a cursor, page keys stride,
         # g/G jump to ends, Enter drills into the selected model's sessions, s sorts
         # by a column, p cycles the layout (by vendor / by provider / flat), f
-        # filters, r refreshes, e exports the table; any other key closes the overlay.
+        # filters, r refreshes, e exports the table. Closing is explicit (Esc/q/P),
+        # like the Trends overlay -- a mistyped key must not tear the table down.
         n = len(self.priced_model_names())
         if key in (ord("s"), ord("S")):
             self.open_sort_menu()
@@ -3457,14 +3458,39 @@ class App:
             self.prices_scroll = 0
         elif key == ord("e"):
             self.export_current()  # _export_dataset sees show_prices; overlay stays open
+        elif key == 27:
+            self.show_prices = False  # Esc closes the overlay from the model list
         else:
-            self.show_prices = False
+            handled = self._prices_common_key(key)
+            if handled is not None:
+                return handled
+            # Any other key is swallowed -- closing is explicit.
         return True
+
+    def _prices_common_key(self, key: int) -> bool | None:
+        # Overlay-wide keys that work anywhere inside the P overlay (model list and
+        # the per-model drill): Esc handling stays contextual at the call sites; q or
+        # P again close the overlay, ? floats help above it (closing that lands back
+        # here), $ re-prices the app behind it in place, Ctrl-C still quits.
+        if key in (ord("q"), ord("P")):
+            self.show_prices = False
+            self.prices_model = None
+            return True
+        if key == ord("?"):
+            self.help = True
+            self.help_scroll = 0
+            return True
+        if key == ord("$"):
+            self.toggle_api_prices()
+            return True
+        if key == 3:  # Ctrl-C
+            return False
+        return None
 
     def _handle_price_sessions_key(self, key: int, stdscr: curses.window | None = None) -> bool:
         # The P overlay's per-model drill-in: j/k/arrows, page keys and g/G scroll the
-        # session list; Esc/left/backspace backs out to the model list; any other key
-        # closes.
+        # session list; Esc/left/backspace backs out to the model list; q/P close the
+        # overlay; any other key is swallowed (closing is explicit, like Trends).
         if key in (ord("j"), curses.KEY_DOWN):
             self.prices_scroll += 1
         elif key in (ord("k"), curses.KEY_UP):
@@ -3481,8 +3507,10 @@ class App:
             self.prices_model = None  # back to the model list
             self.prices_scroll = 0
         else:
-            self.show_prices = False
-            self.prices_model = None
+            handled = self._prices_common_key(key)
+            if handled is not None:
+                return handled
+            # Any other key is swallowed -- it must not tear down the list.
         return True
 
     def handle_filter_key(self, key: int) -> bool:

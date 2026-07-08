@@ -1155,7 +1155,9 @@ def test_jk_navigates_the_prices_overlay():
     assert app.prices_index == 2
     app.handle_key(None, ord("g"))
     assert app.prices_index == 0
-    app.handle_key(None, ord("x"))  # any other key closes
+    app.handle_key(None, ord("x"))  # unbound keys are swallowed, the table stays
+    assert app.show_prices
+    app.handle_key(None, ord("q"))  # closing is explicit (Esc/q/P)
     assert not app.show_prices
 
 
@@ -1534,10 +1536,12 @@ def test_prices_enter_lists_sessions_that_used_the_model():
     assert "2 session(s)" in body[0] and "$8.00" in body[0]
     assert any("alpha" in ln for ln in body) and any("beta" in ln for ln in body)
     assert not any("gamma" in ln for ln in body)
-    # Esc backs out to the model list; another key closes the overlay.
+    # Esc backs out to the model list; unbound keys are swallowed; q closes.
     app.handle_key(None, 27)
     assert app.prices_model is None and app.show_prices
     app.handle_key(None, ord("x"))
+    assert app.show_prices
+    app.handle_key(None, ord("q"))
     assert not app.show_prices
 
 
@@ -1739,7 +1743,7 @@ def test_trends_close_only_on_esc_q_or_T():
     assert not app.help and app.trends
     app.handle_key(None, ord("P"))  # same for the prices overlay
     assert app.show_prices and app.trends
-    app.handle_key(None, ord("x"))
+    app.handle_key(None, ord("q"))  # (P swallows unbound keys too; q closes it)
     assert not app.show_prices and app.trends
     app.handle_key(None, ord("q"))  # q closes the overlay (not the app)
     assert not app.trends
@@ -1760,6 +1764,35 @@ def test_trends_close_only_on_esc_q_or_T():
     assert a.trends and a.trend_drill is not None
     a.handle_key(None, ord("q"))  # q closes the whole overlay from the drill too
     assert not a.trends and a.trend_drill is None
+
+
+def test_prices_overlay_close_only_on_esc_q_or_P():
+    # The P overlay gets the same explicit-close policy as Trends: unbound keys are
+    # swallowed, ? floats help above it, $ re-prices in place, Esc/q/P close it,
+    # and inside the per-model drill q closes while Esc only backs out.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {"a": [_model_row("claude-opus-4-8", 5.0, 10)]}
+    app._models_loaded = True  # keep $'s deferred scan from wiping the fixture rows
+    app.handle_key(None, ord("P"))
+    for key in (ord("x"), ord("c"), ord("D"), ord("T"), ord("b")):
+        app.handle_key(None, key)
+        assert app.show_prices, f"key {chr(key)!r} closed the P overlay"
+    app.handle_key(None, ord("?"))  # help floats above...
+    assert app.help and app.show_prices
+    app.handle_key(None, ord("x"))  # ...and closing it lands back on the table
+    assert not app.help and app.show_prices
+    app.handle_key(None, ord("$"))  # $ re-prices in place, the table stays
+    assert app.show_api_prices and app.show_prices
+    app.handle_key(None, ord("P"))  # P again closes (a toggle)
+    assert not app.show_prices
+    app.handle_key(None, ord("P"))
+    assert app.handle_key(None, 3) is False  # Ctrl-C still quits from inside
+    app.handle_key(None, 10)  # Enter -> the model's sessions (overlay still open)
+    assert app.prices_model == "claude-opus-4-8"
+    app.handle_key(None, ord("x"))  # swallowed, the list stays
+    assert app.show_prices and app.prices_model is not None
+    app.handle_key(None, ord("q"))  # q closes the whole overlay from the drill
+    assert not app.show_prices and app.prices_model is None
 
 
 def test_dollar_key_toggles_prices_without_closing_trends():
