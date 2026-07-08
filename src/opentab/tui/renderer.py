@@ -759,6 +759,18 @@ class Renderer:
             return "! estimates — subscription tokens at API list prices"
         return "! $0.00 = subscription tokens — press $ to estimate"
 
+    def line_attr(self, line: str) -> int:
+        # Shared prefix styling for the text panes: "# " titles (accent), "! "
+        # caveats (amber -- attention without alarm; red is for errors and the
+        # error toast only), "· " explainer captions (dim).
+        if line.startswith("# "):
+            return curses.color_pair(4) | curses.A_BOLD
+        if line.startswith("! "):
+            return curses.color_pair(2)
+        if line.startswith("· "):
+            return curses.color_pair(1)
+        return curses.A_NORMAL
+
     def money_attr(self, cost_text: str) -> int:
         # "$0.00" means zero or unpriced (tokens with no local price); muted grey so
         # it recedes behind real spend. "<$0.01" is a real cost and stays green.
@@ -1110,12 +1122,9 @@ class Renderer:
         visible = h - 4
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            self.write_rich(
+                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
             )
-            if line.startswith("! "):
-                attr = curses.color_pair(5) | curses.A_BOLD
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
 
     def draw_year_detail(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -1156,12 +1165,9 @@ class Renderer:
         visible = h - 4
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            self.write_rich(
+                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
             )
-            if line.startswith("! "):
-                attr = curses.color_pair(5) | curses.A_BOLD
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
 
     def draw_month_detail(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -1196,12 +1202,9 @@ class Renderer:
         visible = h - 4
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            self.write_rich(
+                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
             )
-            if line.startswith("! "):
-                attr = curses.color_pair(5) | curses.A_BOLD
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
 
     def draw_day_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -1290,12 +1293,9 @@ class Renderer:
         visible = h - 4
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
+            self.write_rich(
+                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
             )
-            if line.startswith("! "):
-                attr = curses.color_pair(5) | curses.A_BOLD
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
 
     def draw_workflow_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         day = self.active_day
@@ -1361,14 +1361,8 @@ class Renderer:
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         drawn = lines[self.scroll : self.scroll + visible]
         for offset, line in enumerate(drawn):
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
-            )
-            if line.startswith("! "):  # a real caveat (pricing, missing data): loud
-                attr = curses.color_pair(5) | curses.A_BOLD
-            elif line.startswith("· "):  # an explainer caption: quiet, never red
-                attr = curses.color_pair(1)
-            elif line.startswith(("▸ ", "▾ ")):  # Turns tab: a user-prompt group header
+            attr = self.line_attr(line)
+            if line.startswith(("▸ ", "▾ ")):  # Turns tab: a user-prompt group header
                 attr = curses.color_pair(6) | curses.A_BOLD
             elif line.startswith("  │"):  # Turns tab: an unfolded prompt's full text
                 attr = curses.color_pair(1)
