@@ -621,7 +621,7 @@ def test_calendar_heat_grid_dims_until_focused():
     ot.curses.init_pair = lambda *a: None
     try:
         unfocused = AttrScreen(24, 130)
-        app.cal_focus = False
+        app.trend_focus = False
         app.renderer.draw_calendar(unfocused, 0, 0, 24, 130)
         gy0, row_pitch, gx, pitch, start_col, shown, year, grid_start = app._cal_geom
         cd = datetime.strptime("2026-06-15", "%Y-%m-%d")
@@ -629,7 +629,7 @@ def test_calendar_heat_grid_dims_until_focused():
         cy, cx = gy0 + cd.weekday() * row_pitch, gx + col * pitch
         dim_attr = unfocused.attrs[(cy, cx)]
         focused = AttrScreen(24, 130)
-        app.cal_focus = True
+        app.trend_focus = True
         app.renderer.draw_calendar(focused, 0, 0, 24, 130)
         bright_attr = focused.attrs[(cy, cx)]
     finally:
@@ -648,10 +648,10 @@ def test_calendar_shows_orange_enter_prompt_until_focused():
     ot.curses.init_pair = lambda *a: None
     try:
         unfocused = AttrScreen(24, 130)
-        app.cal_focus = False
+        app.trend_focus = False
         app.renderer.draw_calendar(unfocused, 0, 0, 24, 130)
         focused = AttrScreen(24, 130)
-        app.cal_focus = True
+        app.trend_focus = True
         app.renderer.draw_calendar(focused, 0, 0, 24, 130)
     finally:
         ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
@@ -801,7 +801,7 @@ def test_calendar_mouse_is_gated_until_focused():
     my, mx = gy0 + cd.weekday() * row_pitch, gx + col * pitch
     # A double-click on the sleeping grid focuses it but does not drill into the day.
     app._mouse_trends(my, mx, up=False, down=False, click=False, double=True)
-    assert app.cal_focus and app.trends and app.view == "browse"
+    assert app.trend_focus and app.trends and app.view == "browse"
     assert app.cal_cursor is None  # no day was picked
 
 
@@ -821,7 +821,7 @@ def test_calendar_escape_returns_to_the_heat_map():
     assert app.view == "browse"
     assert app.trend_year_index == app.calendar_years().index("2026")
     assert app.cal_cursor == "2026-07-09"  # cursor restored to the day we came from
-    assert app.cal_focus  # and the grid is focused again, so arrows resume
+    assert app.trend_focus  # and the grid is focused again, so arrows resume
 
 
 def test_calendar_unfocused_arrows_switch_tabs():
@@ -830,12 +830,12 @@ def test_calendar_unfocused_arrows_switch_tabs():
     # move between tabs like everywhere else and leave the day cursor alone.
     app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
     open_calendar(app)
-    assert not app.cal_focus and app.cal_cursor is None
+    assert not app.trend_focus and app.cal_cursor is None
     app.handle_key(None, ot.curses.KEY_RIGHT)  # -> next tab, not a day move
     assert app.trend_tabs[app.trend_tab] != "Calendar"
     assert app.cal_cursor is None  # the day cursor never moved
     app.handle_key(None, ot.curses.KEY_LEFT)  # <- back onto Calendar
-    assert app.trend_tabs[app.trend_tab] == "Calendar" and not app.cal_focus
+    assert app.trend_tabs[app.trend_tab] == "Calendar" and not app.trend_focus
 
 
 def test_calendar_enter_focuses_and_escape_steps_back_out():
@@ -843,13 +843,13 @@ def test_calendar_enter_focuses_and_escape_steps_back_out():
     # the overlay, and a second Esc closes it -- the mode the issue asked for.
     app = app_with([workflow("hot", "2026-07-09 12:00:00", cost=40)])
     open_calendar(app)
-    assert not app.cal_focus
+    assert not app.trend_focus
     app.handle_key(None, 10)  # Enter -> focus the grid
-    assert app.cal_focus and app.trends
+    assert app.trend_focus and app.trends
     app.handle_key(None, ot.curses.KEY_UP)  # now arrows walk days
     assert app.cal_cursor == "2026-07-08"
     app.handle_key(None, 27)  # Esc -> leave focus, overlay stays open
-    assert app.trends and not app.cal_focus
+    assert app.trends and not app.trend_focus
     assert app.trend_tabs[app.trend_tab] == "Calendar"
     app.handle_key(None, 27)  # Esc again -> close the overlay
     assert not app.trends
@@ -861,13 +861,83 @@ def test_normal_day_drill_does_not_bounce_back_to_the_calendar():
     focus_calendar(app)
     app.cal_cursor = "2026-07-09"
     app.handle_key(None, 10)  # heat-map drill arms the return
-    assert app._cal_return == "2026-07-09"
+    assert app._trend_return == ("Calendar", "2026-07-09")
     app.view = "browse"  # back out to the panels and drill a day the ordinary way
     app.focus = "days"
     app.drill_in()
-    assert app._cal_return is None  # the fresh drill disarmed it
+    assert app._trend_return is None  # the fresh drill disarmed it
     app.drill_out()
     assert not app.trends  # so Esc stays in browse, no calendar bounce
+
+
+def test_trend_daily_bars_focus_walk_and_drill():
+    # The Daily chart follows the Calendar's modal pattern: Enter focuses it, arrows
+    # walk the bar cursor (↑/↓ hop a week), Enter drills into the highlighted day,
+    # and Esc out of that day returns to the focused chart with the cursor kept.
+    app = app_with(
+        [
+            workflow("a", "2026-06-10 12:00:00", cost=40),
+            workflow("b", "2026-06-12 12:00:00", cost=8),
+        ]
+    )
+    app.handle_key(None, ord("T"))  # opens on Daily
+    assert app.trend_tabs[app.trend_tab] == "Daily" and not app.trend_focus
+    app.handle_key(None, 10)  # Enter -> focus the chart
+    assert app.trend_focus
+    assert app.trend_bar_cursor() == "2026-06-10"  # defaults to the peak day
+    app.handle_key(None, ot.curses.KEY_RIGHT)
+    assert app.trend_bar_cursor() == "2026-06-11"
+    app.handle_key(None, ot.curses.KEY_DOWN)  # a week forward on Daily
+    assert app.trend_bar_cursor() == "2026-06-18"
+    app.handle_key(None, 27)  # Esc -> unfocus, overlay stays open
+    assert app.trends and not app.trend_focus
+    app.handle_key(None, 10)  # refocus
+    app.trend_cursor = "2026-06-12"
+    app.handle_key(None, 10)  # Enter -> drill into that day
+    assert not app.trends and app.view == "zoom" and app.focus == "days"
+    assert app.panel_days[app.day_index].day == "2026-06-12"
+    app.handle_key(None, 27)  # Esc -> back to the Daily chart, focused, cursor kept
+    assert app.trends and app.trend_tabs[app.trend_tab] == "Daily"
+    assert app.trend_focus and app.trend_cursor == "2026-06-12"
+    app.trend_cursor = "2026-06-01"  # an empty day
+    app.handle_key(None, 10)  # Enter nudges instead of drilling
+    assert app.trends and "no sessions on 2026-06-01" in app.notice
+
+
+def test_trend_monthly_bar_drills_into_month():
+    app = app_with(
+        [
+            workflow("jun", "2026-06-01 12:00:00", cost=5),
+            workflow("apr", "2026-04-01 12:00:00", cost=9),
+        ]
+    )
+    app.handle_key(None, ord("T"))
+    while app.trend_tabs[app.trend_tab] != "Monthly":
+        app.handle_key(None, ord("l"))
+    app.handle_key(None, 10)  # Enter -> focus the chart
+    assert app.trend_bar_cursor() == "2026-04"  # the peak month
+    app.handle_key(None, ot.curses.KEY_RIGHT)  # -> 2026-05 (empty, still walkable)
+    assert app.trend_bar_cursor() == "2026-05"
+    app.handle_key(None, 10)  # Enter on an empty month nudges, overlay stays
+    assert app.trends and "no spend in 2026-05" in app.notice
+    app.handle_key(None, ot.curses.KEY_RIGHT)
+    app.handle_key(None, 10)  # Enter on June -> zoom that month
+    assert not app.trends and app.view == "zoom" and app.focus == "months"
+    assert app.months[app.month_index].month == "2026-06"
+    app.handle_key(None, 27)  # Esc -> back to the Monthly chart
+    assert app.trends and app.trend_tabs[app.trend_tab] == "Monthly" and app.trend_focus
+    assert app.trend_cursor == "2026-06"
+
+
+def test_trend_daily_marks_the_selected_bar_when_focused():
+    app = app_with([workflow("a", "2026-06-10 12:00:00", cost=40)])
+    app.handle_key(None, ord("T"))
+    app.handle_key(None, 10)  # focus the Daily chart
+    lines = app.renderer.trend_daily(100, 20)
+    marked = next((ln for ln in lines if "▲" in ln), None)
+    assert marked is not None and "2026-06-10" in marked and "$40.00" in marked
+    app.trend_focus = False  # unfocused (or drawn outside the overlay): no cursor
+    assert not any("▲" in ln for ln in app.renderer.trend_daily(100, 20))
 
 
 def test_trend_models_ranks_priced_models():
@@ -951,6 +1021,59 @@ def test_trend_providers_lists_unpriced_provider_and_hints_at_dollar():
     assert "$0.00" in row and "5.0k" in row
     # ...and the view nudges toward "$" to price it.
     assert any("$ prices subscription" in ln for ln in lines)
+
+
+def test_trend_models_rows_drill_into_sessions_and_a_session():
+    # The ranked tabs are navigable: j/k pick a row, Enter lists its sessions
+    # (range-scoped), Enter again jumps into the selected session itself, and the
+    # Esc chain walks all the way back to the drill list.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=5.0, directory="/x"),
+            workflow("b", "2026-06-02 12:00:00", cost=2.0, directory="/x"),
+        ]
+    )
+    app._model_by_root = {
+        "a": [_model_row("anthropic/opus", 5.0, 10)],
+        "b": [_model_row("openai/gpt-5", 2.0, 7)],
+    }
+    app.handle_key(None, ord("T"))
+    while app.trend_tabs[app.trend_tab] != "Models":
+        app.handle_key(None, ord("l"))
+    assert app.trend_ranked_keys() == ["anthropic/opus", "openai/gpt-5"]
+    app.handle_key(None, ord("j"))  # row cursor moves; the tab stays put
+    assert app.trend_row_index == 1 and app.trend_tabs[app.trend_tab] == "Models"
+    app.handle_key(None, 10)  # Enter -> the row's sessions list
+    assert app.trend_drill == ("model", "openai/gpt-5")
+    rows = app.trend_drill_sessions()
+    assert [w.id for w, _c, _t in rows] == ["b"] and rows[0][1] == 2.0
+    lines = app.renderer.trend_drill_lines(80, 12)
+    assert lines[0] == "# Sessions · openai/gpt-5"
+    assert any("2026-06-02" in ln and "$2.00" in ln for ln in lines)
+    app.handle_key(None, 10)  # Enter again -> straight into that session
+    assert not app.trends and app.view == "session"
+    assert app.current_session().id == "b"
+    app.handle_key(None, 27)  # Esc -> back out to the day zoom
+    app.handle_key(None, 27)  # Esc -> back to the Trends drill list
+    assert app.trends and app.trend_drill == ("model", "openai/gpt-5")
+    assert app.trend_tabs[app.trend_tab] == "Models"
+    app.handle_key(None, 27)  # Esc -> back to the ranked rows
+    assert app.trends and app.trend_drill is None
+
+
+def test_trend_sources_row_drills_into_that_sources_sessions():
+    a = workflow("a", "2026-06-01 12:00:00", cost=5.0)
+    b = workflow("b", "2026-06-02 12:00:00", cost=2.0)
+    a.source, b.source = "opencode", "claude"
+    app = app_with([a, b])
+    app.handle_key(None, ord("T"))
+    while app.trend_tabs[app.trend_tab] != "Sources":
+        app.handle_key(None, ord("l"))
+    assert app.trend_ranked_keys() == ["opencode", "claude"]
+    app.handle_key(None, ord("j"))
+    app.handle_key(None, 10)
+    assert app.trend_drill == ("source", "claude")
+    assert [w.id for w, _c, _t in app.trend_drill_sessions()] == ["b"]
 
 
 def test_capital_p_opens_model_prices_overlay():

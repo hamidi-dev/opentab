@@ -27,6 +27,7 @@ from opentab.heatmap import (
     HEAT_DEFAULT_LEVELS,
     HEAT_MAX_LEVELS,
     HEAT_MIN_LEVELS,
+    month_range,
     week_key,
 )
 from opentab.models import ALL_YEARS, DaySummary, MonthSummary, ProjectSummary, YearSummary
@@ -50,6 +51,7 @@ from opentab.util import (
     fuzzy_score,
     in_tmux,
     launcher_hook,
+    month_bounds,
     month_window_start,
     open_path,
     parse_range_text,
@@ -229,11 +231,23 @@ class App:
         self.trend_week_index = 0  # which week the Weekly tab shows (0 = newest)
         self.trend_year_index = 0  # which year the Calendar tab shows (0 = newest)
         self.cal_cursor: str | None = None  # highlighted day on the Calendar tab (None = peak)
-        self.cal_focus = False  # Calendar day-grid focused (Enter focuses, Esc steps back out)
+        # One focus flag for every trend canvas (Calendar grid + the bar charts):
+        # Enter focuses, arrows then pick a day/bar, Esc steps back to tab navigation.
+        self.trend_focus = False
+        # Highlighted bucket on the bar tabs: a date (Daily/Weekly) or "YYYY-MM"
+        # (Monthly); None = that chart's peak bucket (mirrors cal_cursor).
+        self.trend_cursor: str | None = None
+        self.trend_row_index = 0  # cursor on the ranked tabs (Models/Providers/Sources)
+        # Drilled into a ranked row's sessions: ("model"|"provider"|"source", key).
+        self.trend_drill: tuple[str, str] | None = None
+        self.trend_drill_index = 0  # cursor within that sessions list
         self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
         self.has256 = False  # set in run() once curses knows the terminal's color depth
         self._cal_geom: tuple | None = None  # last calendar grid geometry, for mouse hit-testing
-        self._cal_return: str | None = None  # day drilled in from the heat map; Esc returns there
+        self._trend_bar_geom: tuple | None = None  # last bar-chart geometry, for mouse hit-testing
+        # Scope drilled into from the Trends overlay; Esc out of it returns there.
+        # ("Calendar"|"Daily"|"Weekly", date) · ("Monthly", month) · ("drill", kind, key, row).
+        self._trend_return: tuple | None = None
         self.show_prices = False  # the "P" model-prices reference overlay
         self.prices_scroll = 0  # pager offset within that overlay
         self.prices_index = 0  # selected model row in the P overlay's list
@@ -2401,7 +2415,9 @@ class App:
                 self.scroll = 0
                 self.workflow_index = 0
                 self.zoom_project = None
-                self._cal_return = None  # a fresh drill; the calendar re-sets this if it began one
+                self._trend_return = (
+                    None  # a fresh drill; the Trends overlay re-arms it if it began one
+                )
                 if self.browse_mode != "projects":
                     # In time mode, project_index is only the zoom Projects-tab
                     # picker; reset it. In projects mode it is the selected project
@@ -2436,23 +2452,57 @@ class App:
             else:
                 self.view = "browse"
                 self.zoom_project = None
-                if self._cal_return is not None:
-                    self._reopen_calendar(self._cal_return)
+                if self._trend_return is not None:
+                    self._reopen_trends(self._trend_return)
         self.scroll = 0
 
-    def _reopen_calendar(self, date: str) -> None:
-        # Stepping out of a day we drilled into from the heat map returns to it: reopen
-        # the Calendar tab on that year, cursor back on the day we came from.
-        self._cal_return = None
-        years = self.calendar_years()
-        yi = next((i for i, y in enumerate(years) if y == date[:4]), None)
-        if yi is None:
-            return  # the day's year is gone (range/source changed) — just stay in browse
+    def _reopen_trends(self, ret: tuple) -> None:
+        # Stepping out of a scope we drilled into from the Trends overlay returns to
+        # it: reopen the tab we came from with the cursor back where it was. Bails
+        # (stays in browse) when the bucket is gone (range/source changed).
+        self._trend_return = None
+        tab = ret[0]
+        if tab == "drill":
+            _tag, kind, key, row = ret
+            ranked = {"model": "Models", "provider": "Providers", "source": "Sources"}[kind]
+            self.trends = True
+            self.trend_tab = self.trend_tabs.index(ranked)
+            keys = self.trend_ranked_keys()
+            if key not in keys:
+                self.trend_drill = None
+                return
+            self.trend_row_index = keys.index(key)
+            self.trend_drill = (kind, key)
+            self.trend_drill_index = row
+            return
+        key = ret[1]
+        if tab == "Calendar":
+            years = self.calendar_years()
+            yi = next((i for i, y in enumerate(years) if y == key[:4]), None)
+            if yi is None:
+                return
+            self.trend_year_index = yi
+            self.cal_cursor = key
+        elif tab == "Daily":
+            months = self.trend_months()
+            if key[:7] not in months:
+                return
+            self.trend_month_index = months.index(key[:7])
+            self.trend_cursor = key
+        elif tab == "Weekly":
+            weeks = self.trend_weeks()
+            wk = week_key(key)
+            if wk not in weeks:
+                return
+            self.trend_week_index = weeks.index(wk)
+            self.trend_cursor = key
+        elif tab == "Monthly":
+            if not self.trend_months():
+                return
+            self.trend_cursor = key
         self.trends = True
-        self.trend_tab = self.trend_tabs.index("Calendar")
-        self.trend_year_index = yi
-        self.cal_cursor = date
-        self.cal_focus = True  # we drilled in from a focused grid; resume there
+        self.trend_tab = self.trend_tabs.index(tab)
+        self.trend_focus = True  # we drilled in from a focused canvas; resume there
 
     def move(self, delta: int) -> None:
         if self.view == "session":
@@ -2691,6 +2741,165 @@ class App:
         year = years[max(0, min(self.trend_year_index, len(years) - 1))]
         return self._effective_cursor(year, self._calendar_by_date(year))
 
+    # --- Trends bar/row data (shared by the renderer and the key/mouse handlers) ---
+    def trend_months(self) -> list[str]:
+        # Months with spend in the active range, newest first -- the Daily tab's
+        # pager buckets (index 0 == newest).
+        return sorted(
+            {w.created_at[:7] for w in self.all_workflows if week_key(w.created_at)}, reverse=True
+        )
+
+    def trend_weeks(self) -> list[str]:
+        # ISO-week Mondays with spend, newest first -- the Weekly tab's pager buckets.
+        return sorted(
+            {k for w in self.all_workflows if (k := week_key(w.created_at))}, reverse=True
+        )
+
+    def trend_daily_data(self) -> tuple[str | None, list[tuple[str, float]]]:
+        # The Daily tab's chart: (shown month, [(date, cost) for each of its days]).
+        months = self.trend_months()
+        if not months:
+            return None, []
+        month = months[max(0, min(self.trend_month_index, len(months) - 1))]
+        by_date: dict[str, float] = defaultdict(float)
+        for w in self.all_workflows:
+            if w.created_at[:7] == month:
+                by_date[w.created_at[:10]] += w.total_cost
+        ndays = int(month_bounds(month)[1][8:10])
+        days = [f"{month}-{d:02d}" for d in range(1, ndays + 1)]
+        return month, [(d, by_date.get(d, 0.0)) for d in days]
+
+    def trend_weekly_data(self) -> tuple[str | None, list[tuple[str, float]]]:
+        # The Weekly tab's chart: (shown week's Monday, [(date, cost) Mon..Sun]).
+        weeks = self.trend_weeks()
+        if not weeks:
+            return None, []
+        monday = weeks[max(0, min(self.trend_week_index, len(weeks) - 1))]
+        start = datetime.strptime(monday, "%Y-%m-%d")
+        by_date: dict[str, float] = defaultdict(float)
+        for w in self.all_workflows:
+            if week_key(w.created_at) == monday:
+                by_date[w.created_at[:10]] += w.total_cost
+        days = [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)]
+        return monday, [(d, by_date.get(d, 0.0)) for d in days]
+
+    def trend_monthly_data(self) -> list[tuple[str, float]]:
+        # The Monthly tab's chart: every month between the first and last with spend.
+        by_month: dict[str, float] = defaultdict(float)
+        for w in self.all_workflows:
+            if week_key(w.created_at):  # skip undated rows so month_range never sees ""
+                by_month[w.created_at[:7]] += w.total_cost
+        if not by_month:
+            return []
+        keys = sorted(by_month)
+        return [(m, by_month.get(m, 0.0)) for m in month_range(keys[0], keys[-1])]
+
+    def trend_bar_data(self) -> list[tuple[str, float]]:
+        # The active bar tab's (bucket key, cost) pairs; empty off the bar tabs.
+        current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
+        if current == "Daily":
+            return self.trend_daily_data()[1]
+        if current == "Weekly":
+            return self.trend_weekly_data()[1]
+        if current == "Monthly":
+            return self.trend_monthly_data()
+        return []
+
+    def _effective_bar_cursor(self, pairs: list[tuple[str, float]]) -> str | None:
+        # The highlighted bar: the remembered cursor while it's still charted, else
+        # the peak bucket (mirrors the Calendar's _effective_cursor).
+        if not pairs:
+            return None
+        if self.trend_cursor in {k for k, _ in pairs}:
+            return self.trend_cursor
+        return max(pairs, key=lambda kv: kv[1])[0]
+
+    def trend_bar_cursor(self) -> str | None:
+        return self._effective_bar_cursor(self.trend_bar_data())
+
+    def trend_model_rows(self) -> list[tuple[str, float]]:
+        # The Models tab's ranked rows: (model, cost) with any priced spend, biggest
+        # first (aggregate_models is already cost-sorted).
+        agg = self.aggregate_models(self.all_workflows)
+        return [(name, float(it["cost"])) for name, it in agg if float(it["cost"]) > 0]
+
+    def trend_provider_rows(self) -> list[tuple[str, dict[str, float | int]]]:
+        # Per-model spend rolled up to its provider (the "openai" in "openai/gpt-5"),
+        # cost-sorted -- the Providers tab's rows.
+        by_provider: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {"cost": 0.0, "tokens": 0, "runs": 0}
+        )
+        for name, it in self.aggregate_models(self.all_workflows):
+            item = by_provider[str(name).split("/", 1)[0] or "unknown"]
+            item["cost"] = float(item["cost"]) + float(it["cost"])
+            item["tokens"] = int(item["tokens"]) + int(it["tokens"])
+            item["runs"] = int(item["runs"]) + int(it["runs"])
+        return sorted(
+            by_provider.items(),
+            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+            reverse=True,
+        )
+
+    def source_rows(self, workflows: list[Workflow]) -> list[tuple[str, dict[str, float | int]]]:
+        # Spend grouped by the tool it came from, cost-sorted -- the Sources tab's
+        # rows and the per-scope Sources detail tables.
+        by_source: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
+        )
+        for w in workflows:
+            item = by_source[w.source or "unknown"]
+            item["cost"] = float(item["cost"]) + w.total_cost
+            item["tokens"] = int(item["tokens"]) + w.total_tokens
+            item["sessions"] = int(item["sessions"]) + 1
+        return sorted(
+            by_source.items(),
+            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+            reverse=True,
+        )
+
+    def trend_ranked_keys(self) -> list[str]:
+        # The active ranked tab's row keys, in display order; empty off those tabs.
+        current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
+        if current == "Models":
+            return [name for name, _cost in self.trend_model_rows()]
+        if current == "Providers":
+            return [p for p, _it in self.trend_provider_rows()]
+        if current == "Sources":
+            return [s for s, _it in self.source_rows(self.all_workflows)]
+        return []
+
+    def trend_drill_sessions(self) -> list[tuple[Workflow, float, int]]:
+        # Sessions behind a Trends ranked row: every root session in the active
+        # range that used the model / provider / source, with its cost/tokens within
+        # it, most spend first. Range-scoped, unlike the app-wide P overlay drill;
+        # models match the row's exact spelling (the ranked rows aren't
+        # canonically deduped, so each alias row owns its own sessions).
+        if self.trend_drill is None:
+            return []
+        kind, key = self.trend_drill
+        if kind == "source":
+            rows = [
+                (w, w.total_cost, w.total_tokens)
+                for w in self.all_workflows
+                if (w.source or "unknown") == key
+            ]
+            rows.sort(key=lambda r: (r[1], r[2]), reverse=True)
+            return rows
+        out = []
+        for w in self.all_workflows:
+            cost, tokens = 0.0, 0
+            for m in self.model_mix(w.id):
+                name = str(m.get("model_name"))
+                if (kind == "model" and name == key) or (
+                    kind == "provider" and name.split("/", 1)[0] == key
+                ):
+                    cost += float(m.get("cost", 0) or 0)
+                    tokens += int(m.get("tokens_total", 0) or 0)
+            if cost or tokens:
+                out.append((w, cost, tokens))
+        out.sort(key=lambda r: (r[1], r[2]), reverse=True)
+        return out
+
     def drill_into_date(self, date: str) -> bool:
         # Jump from the Calendar heat map straight into a day's detail: point the
         # time-browse panels at <date> and zoom in. Returns False (no jump) when that
@@ -2714,6 +2923,43 @@ class App:
         self.drill_in()
         return True
 
+    def drill_into_month(self, month: str) -> bool:
+        # Jump from the Monthly bar chart straight into a month's detail: point the
+        # time-browse panels at <month> and zoom in. Returns False (no jump) when the
+        # month has no sessions (an empty bar), so the caller can nudge instead.
+        if not any(w.created_at[:7] == month for w in self.all_workflows):
+            return False
+        yi = next((i for i, y in enumerate(self.years) if y.year == month[:4]), None)
+        if yi is None:
+            return False
+        self.view = "browse"  # the overlay may sit over a zoom; land back in browse first
+        self.browse_mode = "time"
+        self.focus = "months"
+        self.year_index = yi
+        self.tab = 0
+        self.scroll = 0
+        self.zoom_project = None
+        self.month_index = next((i for i, m in enumerate(self.months) if m.month == month), 0)
+        self.day_index = 0
+        self.drill_in()
+        return True
+
+    def drill_into_session(self, workflow_id: str) -> bool:
+        # Jump from a Trends sessions list straight into that session's detail: zoom
+        # its day, land on the Sessions tab with it selected, and drill in.
+        w = next((x for x in self.all_workflows if x.id == workflow_id), None)
+        if w is None or not self.drill_into_date(w.created_at[:10]):
+            return False
+        tabs = self.current_tabs()
+        if "Sessions" in tabs:
+            self.tab = tabs.index("Sessions")
+        rows = self.current_sessions()
+        i = next((j for j, x in enumerate(rows) if x.id == workflow_id), None)
+        if i is not None:
+            self.workflow_index = i
+            self.drill_in()  # the day's Sessions tab -> the session view
+        return True
+
     def _calendar_key(self, key: int) -> bool:
         # +/- tune the heat-map granularity live (more shades = finer spend bands);
         # arrow keys walk the day cursor (←/→ = ∓1 week, ↑/↓ = ∓1 day, clamped to the
@@ -2729,7 +2975,7 @@ class App:
             return True
         if key in (10, 13, curses.KEY_ENTER):
             if self.drill_into_date(cursor):
-                self._cal_return = cursor  # Esc out of the day returns to the heat map
+                self._trend_return = ("Calendar", cursor)  # Esc out of the day returns here
                 self.trends = False
             else:
                 self.notify(f"no sessions on {cursor}", "error")
@@ -2754,6 +3000,95 @@ class App:
             return None
         date = (grid_start + timedelta(days=(start_col + col) * 7 + row)).strftime("%Y-%m-%d")
         return date if date[:4] == year else None
+
+    def _trend_bar_key(self, key: int, current: str) -> bool:
+        # Arrow keys walk the bar cursor on a focused Daily/Weekly/Monthly chart
+        # (↑/↓ hop a week on Daily, one bar elsewhere); Enter drills into the
+        # highlighted day / month, clamped to the charted buckets.
+        pairs = self.trend_bar_data()
+        cursor = self._effective_bar_cursor(pairs)
+        if cursor is None:
+            return True
+        if key in (10, 13, curses.KEY_ENTER):
+            self._trend_bar_open(current, cursor)
+            return True
+        vstep = 7 if current == "Daily" else 1
+        delta = {
+            curses.KEY_LEFT: -1,
+            curses.KEY_RIGHT: 1,
+            curses.KEY_UP: -vstep,
+            curses.KEY_DOWN: vstep,
+        }[key]
+        keys = [k for k, _ in pairs]
+        i = keys.index(cursor)
+        self.trend_cursor = keys[max(0, min(i + delta, len(keys) - 1))]
+        return True
+
+    def _trend_bar_open(self, current: str, cursor: str) -> None:
+        # Drill from a bar into its scope; an empty bucket nudges instead (like the
+        # Calendar). On success, Esc out of the scope returns to this chart.
+        if current == "Monthly":
+            opened, noun = self.drill_into_month(cursor), "spend in"
+        else:
+            opened, noun = self.drill_into_date(cursor), "sessions on"
+        if opened:
+            self._trend_return = (current, cursor)
+            self.trends = False
+        else:
+            self.notify(f"no {noun} {cursor}", "error")
+
+    def _open_trend_drill(self) -> None:
+        # Enter on a ranked row (Models/Providers/Sources): open its sessions list.
+        current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
+        keys = self.trend_ranked_keys()
+        if not keys:
+            return
+        kind = {"Models": "model", "Providers": "provider", "Sources": "source"}[current]
+        self.trend_drill = (kind, keys[max(0, min(self.trend_row_index, len(keys) - 1))])
+        self.trend_drill_index = 0
+
+    def _trend_drill_key(self, key: int, stdscr: curses.window | None = None) -> bool:
+        # A ranked row's sessions list: j/k/arrows move the cursor, page keys stride,
+        # g/G jump to the ends, Enter opens the selected session itself, Esc/left/
+        # backspace backs out to the ranked tab; any other key closes the overlay.
+        n = len(self.trend_drill_sessions())
+        if key in (ord("j"), curses.KEY_DOWN):
+            self.trend_drill_index = min(self.trend_drill_index + 1, max(0, n - 1))
+        elif key in (ord("k"), curses.KEY_UP):
+            self.trend_drill_index = max(0, self.trend_drill_index - 1)
+        elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+            self.trend_drill_index = min(
+                self.trend_drill_index + self._page_step(stdscr), max(0, n - 1)
+            )
+        elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+            self.trend_drill_index = max(0, self.trend_drill_index - self._page_step(stdscr))
+        elif key == ord("g"):
+            self.trend_drill_index = 0
+        elif key == ord("G"):
+            self.trend_drill_index = max(0, n - 1)
+        elif key in (10, 13, curses.KEY_ENTER):
+            self._open_trend_drill_session()
+        elif key in (27, curses.KEY_LEFT, curses.KEY_BACKSPACE, 127, 8):
+            self.trend_drill = None  # back to the ranked rows
+        elif key == ord("$"):
+            self.toggle_api_prices()  # re-prices the list in place, stays open
+        else:
+            self.trends = False
+            self.trend_drill = None
+        return True
+
+    def _open_trend_drill_session(self) -> None:
+        # Enter on a session in a Trends drill list: jump into that session's
+        # detail. Esc-ing back out of it returns to this list, cursor kept.
+        rows = self.trend_drill_sessions()
+        if not rows or self.trend_drill is None:
+            return
+        kind, key = self.trend_drill
+        idx = max(0, min(self.trend_drill_index, len(rows) - 1))
+        if self.drill_into_session(rows[idx][0].id):
+            self._trend_return = ("drill", kind, key, idx)
+            self.trends = False
+            self.trend_drill = None
 
     def handle_key(self, stdscr: curses.window, key: int) -> bool:
         if key == curses.KEY_MOUSE:
@@ -2793,14 +3128,16 @@ class App:
             return self._handle_price_models_key(key, stdscr)
         if self.trends:
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
+            if self.trend_drill is not None:
+                return self._trend_drill_key(key, stdscr)
             if current == "Calendar":
                 # The Calendar tab is modal so the arrows aren't trapped: until you
                 # focus the grid, arrows move between tabs like every other tab. Enter
                 # focuses it (arrows then walk the day cursor, Enter drills in), and Esc
                 # steps back out to tab navigation instead of closing the whole overlay.
-                if self.cal_focus:
+                if self.trend_focus:
                     if key == 27:  # Esc -> leave focus, back to tab navigation
-                        self.cal_focus = False
+                        self.trend_focus = False
                         return True
                     if key in (
                         curses.KEY_LEFT,
@@ -2813,29 +3150,63 @@ class App:
                     ):
                         return self._calendar_key(key)
                 elif key in (10, 13, curses.KEY_ENTER):
-                    self.cal_focus = True  # focus the grid; arrows now pick days
+                    self.trend_focus = True  # focus the grid; arrows now pick days
                     return True
                 if key in (ord("+"), ord("="), ord("-"), ord("_")):
                     return self._calendar_key(key)  # +/- tune shades in either mode
+            elif current in ("Daily", "Weekly", "Monthly"):
+                # The bar charts follow the Calendar's modal pattern: Enter focuses
+                # the chart (arrows then walk the bars, Enter drills into the
+                # highlighted day / month), Esc steps back out to tab navigation.
+                if self.trend_focus:
+                    if key == 27:
+                        self.trend_focus = False
+                        return True
+                    if key in (
+                        curses.KEY_LEFT,
+                        curses.KEY_RIGHT,
+                        curses.KEY_UP,
+                        curses.KEY_DOWN,
+                        10,
+                        13,
+                        curses.KEY_ENTER,
+                    ):
+                        return self._trend_bar_key(key, current)
+                elif key in (10, 13, curses.KEY_ENTER):
+                    self.trend_focus = True  # focus the chart; arrows now pick bars
+                    return True
+            else:
+                # Ranked tabs (Models/Providers/Sources): j/k move the row cursor
+                # directly (no pager competes for them), Enter opens its sessions.
+                if key in (10, 13, curses.KEY_ENTER):
+                    self._open_trend_drill()
+                    return True
+                if key in (ord("j"), curses.KEY_DOWN, ord("k"), curses.KEY_UP):
+                    n = len(self.trend_ranked_keys())
+                    step = 1 if key in (ord("j"), curses.KEY_DOWN) else -1
+                    self.trend_row_index = max(0, min(self.trend_row_index + step, n - 1))
+                    return True
             if key in (ord("h"), curses.KEY_LEFT):
                 self.trend_tab = (self.trend_tab - 1) % len(self.trend_tabs)
-                self.cal_focus = False
+                self.trend_focus = False  # switching tabs leaves any focused canvas
+                self.trend_row_index = 0
             elif key in (ord("l"), curses.KEY_RIGHT):
                 self.trend_tab = (self.trend_tab + 1) % len(self.trend_tabs)
-                self.cal_focus = False
+                self.trend_focus = False
+                self.trend_row_index = 0
             elif key in (ord("j"), curses.KEY_DOWN, ord("["), ord("k"), curses.KEY_UP, ord("]")):
                 # Page the Daily tab's month / the Weekly tab's week / the Calendar's year.
                 older = key in (ord("j"), curses.KEY_DOWN, ord("["))
                 if current == "Daily":
-                    n = len(
-                        {w.created_at[:7] for w in self.all_workflows if week_key(w.created_at)}
-                    )
+                    n = len(self.trend_months())
                     self.trend_month_index = self._step_trend_index(
                         self.trend_month_index, n, older
                     )
+                    self.trend_cursor = None  # re-anchor the cursor on the new month's peak
                 elif current == "Weekly":
-                    n = len({k for w in self.all_workflows if (k := week_key(w.created_at))})
+                    n = len(self.trend_weeks())
                     self.trend_week_index = self._step_trend_index(self.trend_week_index, n, older)
+                    self.trend_cursor = None
                 elif current == "Calendar":
                     n = len(self.calendar_years())
                     self.trend_year_index = self._step_trend_index(self.trend_year_index, n, older)
@@ -2869,7 +3240,10 @@ class App:
             self.trend_week_index = 0  # and the most recent week
             self.trend_year_index = 0  # and the most recent year
             self.cal_cursor = None  # Calendar cursor defaults to that year's peak day
-            self.cal_focus = False  # land on the Calendar tab unfocused (arrows pick tabs)
+            self.trend_cursor = None  # bar cursors default to each chart's peak
+            self.trend_row_index = 0
+            self.trend_drill = None
+            self.trend_focus = False  # land unfocused (arrows pick tabs)
             return True
         if key == ord("P"):
             self.show_prices = True
@@ -3206,42 +3580,90 @@ class App:
         current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
         if up or down:
             older = down  # wheel down pages to older buckets, mirroring j/k
-            if current == "Daily":
-                n = len({w.created_at[:7] for w in self.all_workflows if week_key(w.created_at)})
+            if self.trend_drill is not None:
+                n = len(self.trend_drill_sessions())
+                step = 1 if down else -1
+                self.trend_drill_index = max(0, min(self.trend_drill_index + step, n - 1))
+            elif current == "Daily":
+                n = len(self.trend_months())
                 self.trend_month_index = self._step_trend_index(self.trend_month_index, n, older)
+                self.trend_cursor = None  # re-anchor the cursor on the new month's peak
             elif current == "Weekly":
-                n = len({k for w in self.all_workflows if (k := week_key(w.created_at))})
+                n = len(self.trend_weeks())
                 self.trend_week_index = self._step_trend_index(self.trend_week_index, n, older)
+                self.trend_cursor = None
             elif current == "Calendar":
                 n = len(self.calendar_years())
                 self.trend_year_index = self._step_trend_index(self.trend_year_index, n, older)
                 self.cal_cursor = None  # re-anchor the cursor on the new year's peak
+            else:  # ranked tabs: the wheel moves the row cursor
+                n = len(self.trend_ranked_keys())
+                step = 1 if down else -1
+                self.trend_row_index = max(0, min(self.trend_row_index + step, n - 1))
             return True
-        if current == "Calendar" and (click or double):
+        if not (click or double):
+            return True
+        if current == "Calendar":
             date = self._calendar_date_at(my, mx)
             if date:
-                if not self.cal_focus:
+                if not self.trend_focus:
                     # The grid is modal: a click on the sleeping calendar only wakes it
                     # (like Enter). You can't pick or open a day until it's focused, so a
                     # stray click never jumps into a day -- the next click does that.
-                    self.cal_focus = True
+                    self.trend_focus = True
                     return True
                 # Focused: a click moves the day cursor onto that cell, a double-click drills.
                 self.cal_cursor = date
                 if double:
                     if self.drill_into_date(date):
-                        self._cal_return = date  # Esc out of the day returns to the heat map
+                        self._trend_return = ("Calendar", date)  # Esc returns to the heat map
                         self.trends = False
                     else:
                         self.notify(f"no sessions on {date}", "error")
                 return True
-        if click or double:
-            target = self.renderer.hit(my, mx)
-            if target and target[0] == "trend":
-                if self.trend_tab != target[1]:
-                    self.cal_focus = False  # switching tabs leaves the calendar grid
-                self.trend_tab = target[1]
+        elif current in ("Daily", "Weekly", "Monthly"):
+            key = self._trend_bar_at(my, mx)
+            if key:
+                if not self.trend_focus:
+                    self.trend_focus = True  # a click on the sleeping chart only wakes it
+                    return True
+                # Focused: a click moves the bar cursor, a double-click drills in.
+                self.trend_cursor = key
+                if double:
+                    self._trend_bar_open(current, key)
+                return True
+        target = self.renderer.hit(my, mx)
+        if target and target[0] == "trendrow":
+            # A ranked row (Models/Providers/Sources): click selects, double drills.
+            self.trend_row_index = target[1]
+            if double:
+                self._open_trend_drill()
+            return True
+        if target and target[0] == "trendses":
+            # A session row in a drill list: click selects, double opens the session.
+            self.trend_drill_index = target[1]
+            if double:
+                self._open_trend_drill_session()
+            return True
+        if target and target[0] == "trend":
+            if self.trend_tab != target[1]:
+                self.trend_focus = False  # switching tabs leaves any focused canvas
+                self.trend_row_index = 0
+                self.trend_drill = None
+            self.trend_tab = target[1]
         return True
+
+    def _trend_bar_at(self, my: int, mx: int) -> str | None:
+        # Resolve a mouse (y, x) to the bar-chart bucket under it, or None. Reads the
+        # geometry the last bar-chart draw stashed (the whole column is clickable,
+        # not just the filled cells, so short bars are easy to hit).
+        geom = self._trend_bar_geom
+        if geom is None:
+            return None
+        y0, y1, slots = geom
+        if not (y0 <= my <= y1):
+            return None
+        return next((key for x0, x1, key in slots if x0 <= mx <= x1), None)
 
     def _apply_click(self, target: tuple[str, int], drill: bool) -> None:
         kind, value = target

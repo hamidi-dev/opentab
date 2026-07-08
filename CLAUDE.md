@@ -338,6 +338,18 @@ gated per-session so the merged view hides an unsupported tab rather than showin
 empty, and injects **Sources** in the merged view — so `draw_detail` dispatches the
 session tabs by **name**, not by a fixed `self.tab` index.
 
+**Every Trends tab is navigable + drillable**, all through one modal pattern
+(`trend_focus`, shared with the Calendar grid so arrows are never trapped): on the bar
+charts Enter focuses, arrows walk `trend_cursor` (a date, or `YYYY-MM` on Monthly; ▲
+marker), Enter drills into that day/month; on the ranked tabs j/k move `trend_row_index`
+and Enter opens `trend_drill` — an in-overlay, **range-scoped** sessions list (unlike the
+app-wide P drill; models match the row's exact spelling, not the canonical id) where
+Enter jumps into the session itself (`drill_into_month`/`drill_into_session` mirror
+`drill_into_date`). Esc out of any drilled scope returns to the overlay via
+`_trend_return` (the generalized `_cal_return`); mouse mirrors keys (click wakes/selects,
+double-click drills — bar hit-testing via `_trend_bar_geom`, rows via the
+`trendrow`/`trendses` regions).
+
 ### Data flow & the deferred model scan
 
 - `App.__init__` loads `store.workflows()` (fast per-root session rollup) so the first

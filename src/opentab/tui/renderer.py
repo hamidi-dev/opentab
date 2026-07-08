@@ -45,12 +45,10 @@ from opentab.heatmap import (
     heat_glyph,
     heat_level,
     heat_palette,
-    month_range,
-    week_key,
 )
 from opentab.models import ALL_YEARS, year_label
 from opentab.pricing import api_equivalent_cost, family_label, model_price, price_cache_meta
-from opentab.util import fuzzy_score, launcher_hook, month_bounds, tool_namespace
+from opentab.util import fuzzy_score, launcher_hook, tool_namespace
 
 
 class Renderer:
@@ -101,6 +99,13 @@ class Renderer:
         # Clickable column-header zones for sortable lists: (y, x0, x1, key, target).
         # Rebuilt every draw() alongside regions; sort_hit() resolves a click.
         self.sort_regions: list[tuple] = []
+        # Trends-overlay paint artifacts, stashed by the drawers for draw_trends to
+        # turn into mouse geometry / row highlights: the last bar chart's per-bar
+        # slots + clickable height, and where a ranked/sessions list's rows sit
+        # within its returned lines as (first line, rows drawn, dataset offset).
+        self._bar_slots: list[tuple[int, int, str]] | None = None
+        self._bar_click_rows = 0
+        self._trend_rows_at: tuple[int, int, int] | None = None
 
     def __getattr__(self, name: str):
         # Misses are App state/logic; read them from the App. (Renderer's own
@@ -2058,8 +2063,10 @@ class Renderer:
                         "T",
                         "Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Sources",
                         "h/l tabs · j/k page months / weeks / years · $ what-if prices",
-                        "Calendar is a spend heat map: Enter focuses the grid, ↑↓←→ pick a "
-                        "day, Enter opens it, Esc back; +/- adjusts colour granularity",
+                        "charts (and the Calendar heat map): Enter focuses, ↑↓←→ pick a "
+                        "bar / day, Enter drills into it, Esc back; +/- calendar shades",
+                        "Models/Providers/Sources: j/k pick a row · Enter its sessions "
+                        "· Enter again opens one · Esc backs out",
                     ),
                     (
                         "P",
@@ -2711,26 +2718,35 @@ class Renderer:
         self.box(stdscr, y, 0, h, width, f"Trends · {self.range_label()}", active=True)
         tabs = self.trend_tabs
         current = tabs[self.trend_tab % len(tabs)]
-        unit = {"Daily": "month", "Weekly": "week"}.get(current)
-        if current == "Calendar":
-            if self.cal_focus:
+        self.app._trend_bar_geom = None  # rebuilt below when a bar chart draws
+        self._trend_rows_at = None  # rebuilt below when a selectable list draws
+        if self.trend_drill is not None:
+            hint = "j/k move · Enter opens session · esc back"
+        elif current == "Calendar":
+            if self.trend_focus:
                 hint = "↑↓←→ day · +/- shades · Enter open · esc back"
             else:
                 hint = "h/l tabs · Enter pick days · esc closes"
-        elif unit:
-            hint = f"h/l tabs · j/k {unit} · esc closes"
+        elif current in ("Daily", "Weekly", "Monthly"):
+            if self.trend_focus:
+                hint = "↑↓←→ bar · Enter open · esc back"
+            else:
+                unit = {"Daily": "j/k month · ", "Weekly": "j/k week · "}.get(current, "")
+                hint = f"h/l tabs · {unit}Enter pick bars · esc closes"
         else:
-            hint = "h/l tabs · esc closes"
+            hint = "h/l tabs · j/k rows · Enter sessions · esc closes"
         self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, tabs, self.trend_tab, kind="trend")
         self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
         content_h = h - 4
-        if current == "Calendar":
+        if self.trend_drill is not None:
+            lines = self.trend_drill_lines(inner_w, content_h)
+        elif current == "Calendar":
             # The heat map paints itself: its cells carry per-cell color attributes,
             # so it bypasses the generic string -> write_rich path the other tabs use.
             self.draw_calendar(stdscr, y + 3, 2, content_h, inner_w)
             return
-        if current == "Daily":
+        elif current == "Daily":
             lines = self.trend_daily(inner_w, content_h)
         elif current == "Weekly":
             lines = self.trend_weekly(inner_w, content_h)
@@ -2752,18 +2768,61 @@ class Renderer:
         graph_w = max((len(line) for line in content if not line.startswith("# ")), default=0)
         graph_off = max(0, (inner_w - graph_w) // 2)
         graph_center = graph_off + graph_w // 2
+        # The selected row of a ranked/sessions list, as a content-line index.
+        sel_line = None
+        if self._trend_rows_at is not None:
+            line0, drawn, start = self._trend_rows_at
+            cursor = self.trend_drill_index if self.trend_drill else self.trend_row_index
+            if start <= cursor < start + drawn:
+                sel_line = line0 + (cursor - start)
         for i, line in enumerate(content):
             is_title = line.startswith("# ")
-            attr = curses.color_pair(4) | curses.A_BOLD if is_title else curses.A_NORMAL
+            is_marker = line.lstrip().startswith("▲")  # the bar cursor's pointer line
+            if i == sel_line:
+                row = pad(line, inner_w - graph_off)
+                self.write(stdscr, y + 3 + i, 2 + graph_off, row, curses.A_REVERSE | curses.A_BOLD)
+                continue
+            if is_title:
+                attr = curses.color_pair(4) | curses.A_BOLD
+            elif is_marker:
+                attr = curses.color_pair(6) | curses.A_BOLD
+            else:
+                attr = curses.A_NORMAL
             x = max(0, graph_center - len(line) // 2) if is_title else graph_off
             self.write_rich(stdscr, y + 3 + i, 2 + x, shorten(line, inner_w - x), attr)
+        # Hand the mouse handler this frame's geometry: the bar slots (shifted by
+        # the centering offset) and the selectable rows' screen band.
+        if self._bar_slots and current in ("Daily", "Weekly", "Monthly"):
+            xoff = 2 + graph_off
+            y0 = y + 3 + 2  # the chart block starts after its title + blank line
+            y1 = min(y0 + self._bar_click_rows - 1, y + 3 + len(content) - 1)
+            self.app._trend_bar_geom = (
+                y0,
+                y1,
+                [(x0 + xoff, x1 + xoff, key) for x0, x1, key in self._bar_slots],
+            )
+        if self._trend_rows_at is not None:
+            line0, drawn, start = self._trend_rows_at
+            kind = "trendses" if self.trend_drill else "trendrow"
+            self._add_rows_region(kind, y + 3 + line0, 2, width - 3, start, drawn)
 
-    def _bar_chart(self, pairs: list[tuple[str, float]], width: int, height: int) -> list[str]:
+    def _bar_chart(
+        self,
+        pairs: list[tuple[str, float]],
+        width: int,
+        height: int,
+        keys: list[str] | None = None,
+        selected: str | None = None,
+    ) -> list[str]:
         # Vertical bar chart from chronological (label, value) pairs. Shows the most
         # recent buckets that fit; eighth-blocks give sub-row resolution on top.
         # The spend for each bar rides on top of it (no y-axis) — the peak is always
         # labelled and the rest fill in where there's room; when dense (e.g. daily),
         # bars pack in and labels/x-ticks are spaced so they never overlap.
+        # `keys` names each bar's bucket (defaults to its label) for the mouse
+        # geometry stash; `selected` marks that bucket's bar with a ▲ cursor line.
+        self._bar_slots = None
+        self._bar_click_rows = 0
         if not pairs or height < 5:
             return ["Not enough room to chart."]
         margin = 1  # the y-axis is gone; just a sliver of left padding
@@ -2789,6 +2848,14 @@ class Renderer:
             lo = round(i * step)
             hi = round((i + 1) * step)
             return margin + lo + max(0, (hi - lo - bar_w) // 2)
+
+        # Each shown bar's clickable slot (its whole float-width column, so short
+        # bars are easy to hit) tagged with its bucket key, for _trend_bar_at.
+        shown_keys = (keys or [label for label, _ in pairs])[len(pairs) - n :]
+        self._bar_slots = [
+            (margin + round(i * step), margin + round((i + 1) * step) - 1, shown_keys[i])
+            for i in range(n)
+        ]
 
         peak = max((v for _, v in shown), default=0.0)
         scale = peak or 1.0  # bar-height denominator; guards an all-empty window
@@ -2860,6 +2927,24 @@ class Renderer:
                 place(pos, label)
                 next_free = pos + len(label) + 1
         out.append("".join(axis).rstrip())
+        self._bar_click_rows = len(out)  # grid + baseline + axis: the clickable band
+        if selected in shown_keys:
+            # The focused-chart cursor: a ▲ under the selected bar, its bucket and
+            # value beside it (before the ▲ when the bar sits near the right edge).
+            sel_i = shown_keys.index(selected)
+            marker = [" "] * total_w
+            center = min(x0_of(sel_i) + bar_w // 2, total_w - 1)
+            marker[center] = "▲"
+            text = f" {selected} · {money(shown[sel_i][1])}"
+            if center + 1 + len(text) <= total_w:
+                start = center + 1
+            else:
+                text = f"{selected} · {money(shown[sel_i][1])} "
+                start = max(0, center - len(text))
+            for j, ch in enumerate(text):
+                if 0 <= start + j < total_w and start + j != center:
+                    marker[start + j] = ch
+            out.append("".join(marker).rstrip())
         total = sum(v for _, v in shown)  # match exactly what's charted
         if total:
             peak_label = max(shown, key=lambda kv: kv[1])[0]
@@ -2873,63 +2958,69 @@ class Renderer:
             out.append(f"{' ' * margin}(most recent {len(shown)} of {len(pairs)} — widen for more)")
         return out
 
+    def _bar_selection(self, tab: str, data: list[tuple[str, float]]) -> str | None:
+        # The bucket to mark with the ▲ cursor: only when this chart is the focused
+        # Trends tab (a direct trend_* call from a detail context never selects).
+        active = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
+        if not (self.trends and self.trend_focus and active == tab):
+            return None
+        return self._effective_bar_cursor(data)
+
     def trend_daily(self, width: int, height: int) -> list[str]:
         # One calendar month at a time (navigate with j/k); the x-axis is the day
         # of the month, so it stays readable instead of cramming the whole range.
-        months = sorted(
-            {w.created_at[:7] for w in self.all_workflows if week_key(w.created_at)}, reverse=True
-        )
-        if not months:
+        month, data = self.trend_daily_data()
+        if month is None:
             return ["# Daily spend", "", "No spend in the active range."]
-        idx = max(0, min(self.trend_month_index, len(months) - 1))
-        month = months[idx]
-        ndays = int(month_bounds(month)[1][8:10])
-        by_day: dict[int, float] = defaultdict(float)
-        for w in self.all_workflows:
-            if w.created_at[:7] == month:
-                by_day[int(w.created_at[8:10])] += w.total_cost
-        pairs = [(str(d), by_day.get(d, 0.0)) for d in range(1, ndays + 1)]
+        months = self.trend_months()
+        idx = months.index(month)
+        pairs = [(str(int(d[8:10])), v) for d, v in data]
         title = f"# Daily spend · {month}"
         if len(months) > 1:
             title += f"   ({idx + 1}/{len(months)} — j/k older/newer month)"
-        return [title, ""] + self._bar_chart(pairs, width, height - 2)
+        chart = self._bar_chart(
+            pairs,
+            width,
+            height - 2,
+            keys=[d for d, _ in data],
+            selected=self._bar_selection("Daily", data),
+        )
+        return [title, ""] + chart
 
     def trend_weekly(self, width: int, height: int) -> list[str]:
         # One ISO week at a time (navigate with j/k), x-axis is Mon..Sun of that week.
         # Like trend_daily, but a week instead of a month -- finer-grained browsing.
-        weeks = sorted(
-            {k for w in self.all_workflows if (k := week_key(w.created_at))}, reverse=True
-        )
-        if not weeks:
+        monday, data = self.trend_weekly_data()
+        if monday is None:
             return ["# Weekly spend", "", "No spend in the active range."]
-        idx = max(0, min(self.trend_week_index, len(weeks) - 1))
-        monday = weeks[idx]
-        start = datetime.strptime(monday, "%Y-%m-%d")
-        by_date: dict[str, float] = defaultdict(float)
-        for w in self.all_workflows:
-            if week_key(w.created_at) == monday:
-                by_date[w.created_at[:10]] += w.total_cost
+        weeks = self.trend_weeks()
+        idx = weeks.index(monday)
         names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        pairs = [
-            (names[i], by_date.get((start + timedelta(days=i)).strftime("%Y-%m-%d"), 0.0))
-            for i in range(7)
-        ]
-        sunday = (start + timedelta(days=6)).strftime("%Y-%m-%d")
+        pairs = [(names[i], v) for i, (_d, v) in enumerate(data)]
+        sunday = data[-1][0]
         title = f"# Weekly spend · {monday} – {sunday}"
         if len(weeks) > 1:
             title += f"   ({idx + 1}/{len(weeks)} — j/k older/newer week)"
-        return [title, ""] + self._bar_chart(pairs, width, height - 2)
+        chart = self._bar_chart(
+            pairs,
+            width,
+            height - 2,
+            keys=[d for d, _ in data],
+            selected=self._bar_selection("Weekly", data),
+        )
+        return [title, ""] + chart
 
     def trend_monthly(self, width: int, height: int) -> list[str]:
-        by_month: dict[str, float] = defaultdict(float)
-        for w in self.all_workflows:
-            if week_key(w.created_at):  # skip undated rows so month_range never sees ""
-                by_month[w.created_at[:7]] += w.total_cost
-        if not by_month:
+        data = self.trend_monthly_data()
+        if not data:
             return ["# Monthly spend", "", "No spend in the active range."]
-        keys = sorted(by_month)
-        pairs = [(m, by_month.get(m, 0.0)) for m in month_range(keys[0], keys[-1])]
-        return ["# Monthly spend (cost per month)", ""] + self._bar_chart(pairs, width, height - 2)
+        chart = self._bar_chart(
+            data,
+            width,
+            height - 2,
+            selected=self._bar_selection("Monthly", data),
+        )
+        return ["# Monthly spend (cost per month)", ""] + chart
 
     def draw_calendar(
         self, stdscr: curses.window, top: int, left: int, height: int, width: int
@@ -3014,7 +3105,7 @@ class Renderer:
                 if cell is None:
                     continue  # a padding day outside the year: leave it blank
                 glyph, attr = self._heat_cell(heat_level(cell, peak, levels), levels)
-                if not self.cal_focus:
+                if not self.trend_focus:
                     attr = (attr & ~curses.A_BOLD) | curses.A_DIM  # dim the sleeping grid
                 self.write(stdscr, ry, gx + c * pitch, glyph, attr)
 
@@ -3070,7 +3161,7 @@ class Renderer:
         # detail (when the grid is live) or an orange "press Enter" call-to-action (when
         # it's asleep), then the $ nudge for $0 years. Painted top-down, clipped to fit.
         info: list[tuple[str, int]] = [(summary, curses.A_NORMAL)]
-        if self.cal_focus:
+        if self.trend_focus:
             if cursor:
                 cd = datetime.strptime(cursor, "%Y-%m-%d")
                 day_cost = by_date.get(cursor, 0.0)
@@ -3218,14 +3309,24 @@ class Renderer:
             return HEAT_EMPTY_GLYPH, curses.color_pair(1) | curses.A_DIM
         return heat_glyph(level, levels, self.has256), curses.color_pair(7 + level) | curses.A_BOLD
 
+    def _trend_cursor_window(self, n: int, fit: int) -> tuple[int, int, int]:
+        # Clamp the ranked-row cursor (writing the clamp back, so a shrunk list
+        # never leaves it dangling), then a stateless window that keeps it visible:
+        # (cursor, window start, rows shown).
+        idx = max(0, min(self.app.trend_row_index, n - 1))
+        self.app.trend_row_index = idx
+        fit = max(1, fit)
+        start = max(0, min(idx - fit // 2, n - fit))
+        return idx, start, min(fit, n - start)
+
     def trend_models(self, width: int, height: int) -> list[str]:
-        agg = self.aggregate_models(self.all_workflows)
-        rows = [(name, float(it["cost"])) for name, it in agg if float(it["cost"]) > 0]
-        rows = rows[: max(1, height - 3)]
-        if not rows:
+        all_rows = self.trend_model_rows()
+        if not all_rows:
             return ["# Model spend", "", "No priced model spend in the active range."]
-        total = sum(c for _, c in rows)
-        peak = max(c for _, c in rows) or 1.0
+        total = sum(c for _, c in all_rows)
+        peak = max(c for _, c in all_rows) or 1.0
+        _idx, start, shown = self._trend_cursor_window(len(all_rows), height - 3)
+        rows = all_rows[start : start + shown]
         # Names get priority so long ids like claude-opus-4-5-20251101 show in
         # full; the bar takes only the leftover (kept modest) instead of eating
         # the width and forcing names to truncate.
@@ -3233,6 +3334,7 @@ class Renderer:
         namew = min(max(len(n) for n, _ in rows), max(12, width - tail - 4))
         barw = max(3, min(24, width - namew - tail))
         lines = ["# Model spend (priced, in range)", ""]
+        self._trend_rows_at = (len(lines), len(rows), start)
         for name, cost in rows:
             bar = "█" * max(0, round((cost / peak) * barw))
             lines.append(
@@ -3241,29 +3343,19 @@ class Renderer:
         return lines
 
     def trend_providers(self, width: int, height: int) -> list[str]:
-        # Roll the per-model spend up to its provider (the "openai" in "openai/gpt-5"),
-        # so you can compare e.g. openai vs github-copilot. Subscription/credit providers
-        # record $0 per message, so their cost only shows once "$" reprices unpriced
-        # usage at API list rates -- the cost column and bar react to it live. We still
-        # list those providers when "$" is off (tokens are the tell) and nudge toward "$".
-        by_provider: dict[str, dict[str, float | int]] = defaultdict(
-            lambda: {"cost": 0.0, "tokens": 0, "runs": 0}
-        )
-        for name, it in self.aggregate_models(self.all_workflows):
-            item = by_provider[str(name).split("/", 1)[0] or "unknown"]
-            item["cost"] = float(item["cost"]) + float(it["cost"])
-            item["tokens"] = int(item["tokens"]) + int(it["tokens"])
-            item["runs"] = int(item["runs"]) + int(it["runs"])
-        rows = sorted(
-            by_provider.items(),
-            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
-            reverse=True,
-        )
-        if not rows:
+        # The per-model spend rolled up to its provider (the "openai" in
+        # "openai/gpt-5"), so you can compare e.g. openai vs github-copilot.
+        # Subscription/credit providers record $0 per message, so their cost only
+        # shows once "$" reprices unpriced usage at API list rates -- the cost column
+        # and bar react to it live. We still list those providers when "$" is off
+        # (tokens are the tell) and nudge toward "$".
+        all_rows = self.trend_provider_rows()
+        if not all_rows:
             return ["# Spend by provider", "", "No model usage in the active range."]
-        rows = rows[: max(1, height - 4)]
-        total_cost = sum(float(it["cost"]) for _, it in rows)
-        peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
+        total_cost = sum(float(it["cost"]) for _, it in all_rows)
+        peak = max((float(it["cost"]) for _, it in all_rows), default=0.0) or 1.0
+        _idx, start, shown = self._trend_cursor_window(len(all_rows), height - 4)
+        rows = all_rows[start : start + shown]
         namew = min(max(len(p) for p, _ in rows), max(10, width - 44))
         barw = max(3, min(20, width - namew - 38))
         lines = [
@@ -3271,6 +3363,7 @@ class Renderer:
             "",
             f"{'Provider':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Msgs':>7}",
         ]
+        self._trend_rows_at = (len(lines), len(rows), start)
         for provider, it in rows:
             bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
             lines.append(
@@ -3286,34 +3379,37 @@ class Renderer:
 
     def trend_sources(self, width: int, height: int) -> list[str]:
         # The Trends overlay's headline cut: spend by tool across the whole range.
-        return self.source_table(self.all_workflows, width, limit=max(1, height - 4))
+        return self.source_table(
+            self.all_workflows, width, limit=max(1, height - 4), selectable=True
+        )
 
     def source_table(
-        self, workflows: list[Workflow], width: int, limit: int | None = None
+        self,
+        workflows: list[Workflow],
+        width: int,
+        limit: int | None = None,
+        selectable: bool = False,
     ) -> list[str]:
         # Spend grouped by the *tool* it came from (OpenCode / Claude Code / Codex).
-        # Shared by the Trends "Sources" tab (whole range) and the per-month/day/
-        # project "Sources" detail tabs (a scoped slice). Subscription rows (Claude
-        # Code, Codex) cost $0 until "$" reprices their tokens, so the bar reacts live.
-        by_source: dict[str, dict[str, float | int]] = defaultdict(
-            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
-        )
-        for w in workflows:
-            item = by_source[w.source or "unknown"]
-            item["cost"] = float(item["cost"]) + w.total_cost
-            item["tokens"] = int(item["tokens"]) + w.total_tokens
-            item["sessions"] = int(item["sessions"]) + 1
-        rows = sorted(
-            by_source.items(),
-            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
-            reverse=True,
-        )
-        if not rows:
+        # Shared by the Trends "Sources" tab (whole range, selectable: the rows get
+        # the trend cursor + Enter drill) and the per-month/day/project "Sources"
+        # detail tabs (a scoped slice, plain). Subscription rows (Claude Code,
+        # Codex) cost $0 until "$" reprices their tokens, so the bar reacts live.
+        all_rows = self.source_rows(workflows)
+        if not all_rows:
             return ["# Spend by source", "", "No sessions in the active range."]
-        if limit is not None:
-            rows = rows[:limit]
-        total_cost = sum(float(it["cost"]) for _, it in rows)
-        peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
+        if selectable and limit is not None:
+            _idx, start, shown = self._trend_cursor_window(len(all_rows), limit)
+            rows = all_rows[start : start + shown]
+            # Shares/bars stay anchored to the whole list so scrolling the window
+            # never re-scales them under the cursor.
+            total_cost = sum(float(it["cost"]) for _, it in all_rows)
+            peak = max((float(it["cost"]) for _, it in all_rows), default=0.0) or 1.0
+        else:
+            start = 0
+            rows = all_rows if limit is None else all_rows[:limit]
+            total_cost = sum(float(it["cost"]) for _, it in rows)
+            peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
         namew = min(max(len(s) for s, _ in rows), max(10, width - 44))
         barw = max(3, min(20, width - namew - 38))
         lines = [
@@ -3321,6 +3417,8 @@ class Renderer:
             "",
             f"{'Source':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}",
         ]
+        if selectable:
+            self._trend_rows_at = (len(lines), len(rows), start)
         for source, it in rows:
             bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
             lines.append(
@@ -3332,6 +3430,35 @@ class Renderer:
             float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
         ):
             lines += ["", "$ prices subscription/credit usage at API list rates"]
+        return lines
+
+    def trend_drill_lines(self, width: int, height: int) -> list[str]:
+        # A ranked row's sessions list (Enter on Models/Providers/Sources): every
+        # root session in the active range that used it, with its cost/tokens
+        # within the session, windowed around the cursor.
+        kind, key = self.trend_drill
+        rows = self.trend_drill_sessions()
+        title = f"# Sessions · {key}"
+        if not rows:
+            return [title, "", f"No sessions used {key} in the active range."]
+        subtotal = sum(cost for _w, cost, _t in rows)
+        lines = [
+            title,
+            "",
+            f"{len(rows)} session(s) · {money(subtotal)} on this {kind}",
+            f"{'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}",
+        ]
+        idx = max(0, min(self.app.trend_drill_index, len(rows) - 1))
+        self.app.trend_drill_index = idx
+        fit = max(1, height - len(lines))
+        start = max(0, min(idx - fit // 2, len(rows) - fit))
+        shown = rows[start : start + min(fit, len(rows) - start)]
+        self._trend_rows_at = (len(lines), len(shown), start)
+        for w, cost, tok in shown:
+            lines.append(
+                f"{w.created_at[:10]:<10} {money(cost):>9} {human_tokens(tok):>8}  "
+                f"{self.src_col(w)}{shorten(w.title, max(8, width - 34))}"
+            )
         return lines
 
     def box(
