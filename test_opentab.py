@@ -1719,8 +1719,47 @@ def test_trends_overlay_toggles_and_switches_tabs():
     assert app.trend_tab == 1
     app.handle_key(None, ord("h"))
     assert app.trend_tab == 0
-    app.handle_key(None, 27)  # Esc (a non-nav key) closes the overlay
+    app.handle_key(None, 27)  # Esc closes the overlay
     assert not app.trends
+
+
+def test_trends_close_only_on_esc_q_or_T():
+    # Trends is interactive, so a mistyped key must never tear it down: closing is
+    # explicit (Esc, q, or T again); ? and P float their overlay above it instead,
+    # every other unbound key is swallowed, and Ctrl-C still quits the app.
+    app = app_with([workflow("a", "2026-06-10 12:00:00", cost=5)])
+    app._models_loaded = True  # keep ? / P cheap (skip the deferred scan)
+    app.handle_key(None, ord("T"))
+    for key in (ord("e"), ord("c"), ord("D"), ord("R"), ord("x"), ord("o"), ord("b")):
+        app.handle_key(None, key)
+        assert app.trends, f"key {chr(key)!r} closed the overlay"
+    app.handle_key(None, ord("?"))  # help floats above Trends...
+    assert app.help and app.trends
+    app.handle_key(None, ord("x"))  # ...and closing it lands back on Trends
+    assert not app.help and app.trends
+    app.handle_key(None, ord("P"))  # same for the prices overlay
+    assert app.show_prices and app.trends
+    app.handle_key(None, ord("x"))
+    assert not app.show_prices and app.trends
+    app.handle_key(None, ord("q"))  # q closes the overlay (not the app)
+    assert not app.trends
+    app.handle_key(None, ord("T"))  # T toggles it open...
+    app.handle_key(None, ord("T"))  # ...and closed again
+    assert not app.trends
+    app.handle_key(None, ord("T"))
+    assert app.handle_key(None, 3) is False  # Ctrl-C still quits from inside
+    # Inside a ranked row's drill list the same policy holds.
+    a = app_with([workflow("s1", "2026-06-01 12:00:00", cost=5.0)])
+    a._model_by_root = {"s1": [_model_row("anthropic/opus", 5.0, 10)]}
+    a.handle_key(None, ord("T"))
+    while a.trend_tabs[a.trend_tab] != "Models":
+        a.handle_key(None, ord("l"))
+    a.handle_key(None, 10)  # open the model's sessions
+    assert a.trend_drill is not None
+    a.handle_key(None, ord("x"))  # swallowed, list stays
+    assert a.trends and a.trend_drill is not None
+    a.handle_key(None, ord("q"))  # q closes the whole overlay from the drill too
+    assert not a.trends and a.trend_drill is None
 
 
 def test_dollar_key_toggles_prices_without_closing_trends():

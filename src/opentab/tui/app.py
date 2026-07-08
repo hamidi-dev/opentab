@@ -3082,9 +3082,34 @@ class App:
         elif key == ord("$"):
             self.toggle_api_prices()  # re-prices the list in place, stays open
         else:
+            handled = self._trend_common_key(key)
+            if handled is not None:
+                return handled
+            # Any other key is swallowed -- it must not tear down the list.
+        return True
+
+    def _trend_common_key(self, key: int) -> bool | None:
+        # Overlay-wide keys that work anywhere inside Trends (tabs, focused charts
+        # excepted -- they see arrows/Enter first -- and drill lists): q or T again
+        # close the overlay, ? and P float their overlay above it (closing that one
+        # lands back on Trends), Ctrl-C still quits. None = not one of these.
+        if key in (ord("q"), ord("T")):
             self.trends = False
             self.trend_drill = None
-        return True
+            return True
+        if key == ord("?"):
+            self.help = True
+            self.help_scroll = 0
+            return True
+        if key == ord("P"):
+            self.show_prices = True
+            self.prices_scroll = 0
+            self.prices_index = 0
+            self.prices_model = None
+            return True
+        if key == 3:  # Ctrl-C
+            return False
+        return None
 
     def _open_trend_drill_session(self) -> None:
         # Enter on a session in a Trends drill list: jump into that session's
@@ -3222,8 +3247,14 @@ class App:
                     self.cal_cursor = None  # re-anchor the cursor on the new year's peak
             elif key == ord("$"):
                 self.toggle_api_prices()  # re-prices the charts in place, stays open
+            elif key == 27:
+                self.trends = False  # Esc (with nothing focused) closes the overlay
             else:
-                self.trends = False  # any other key closes the overlay
+                handled = self._trend_common_key(key)
+                if handled is not None:
+                    return handled
+                # Any other key is swallowed: Trends is interactive, so a mistyped
+                # key must not tear the overlay down. Closing is explicit (Esc/q/T).
             return True
 
         if self.theme_menu:
