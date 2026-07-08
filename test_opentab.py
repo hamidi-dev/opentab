@@ -2977,7 +2977,7 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         normal = rnd.detail_turns(wf, 96)
         joined = "\n".join(normal)
         assert normal[0] == "# Turns — 3 turns, $3.00 total"
-        assert "! Grouped by the user prompt" in joined
+        assert "· Grouped by the user prompt" in joined
         assert "$3.00 · 100%" in joined  # last turn's cumulative cell
         # turns are grouped under their owning user prompt (▸ header), m2 under u2
         assert "▸ Add feature X" in joined and "▸ Fix the bug" in joined

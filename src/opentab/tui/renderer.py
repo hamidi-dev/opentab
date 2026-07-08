@@ -1364,8 +1364,10 @@ class Renderer:
             attr = (
                 curses.color_pair(4) | curses.A_BOLD if line.startswith("# ") else curses.A_NORMAL
             )
-            if line.startswith("! "):
+            if line.startswith("! "):  # a real caveat (pricing, missing data): loud
                 attr = curses.color_pair(5) | curses.A_BOLD
+            elif line.startswith("· "):  # an explainer caption: quiet, never red
+                attr = curses.color_pair(1)
             elif line.startswith(("▸ ", "▾ ")):  # Turns tab: a user-prompt group header
                 attr = curses.color_pair(6) | curses.A_BOLD
             elif line.startswith("  │"):  # Turns tab: an unfolded prompt's full text
@@ -1927,8 +1929,8 @@ class Renderer:
         )
         lines += [
             "",
-            "! Tokens/cost are for the LLM turns that invoked each tool (split evenly across",
-            "! a turn's tools), not the tool's own output size.",
+            "· Tokens/cost are for the LLM turns that invoked each tool (split evenly across",
+            "· a turn's tools), not the tool's own output size.",
         ]
         return lines
 
@@ -2015,9 +2017,8 @@ class Renderer:
             )
         lines += [
             "",
-            "! Grouped by the user prompt (▸) that triggered each run; indented rows are the",
-            "! agent's turns. Time order, not cost; Cumulative is the running session total.",
-            "! z (or a click on a ▸ header) unfolds the whole prompt, not just its first line.",
+            "· Grouped by the user prompt (▸) that triggered each run — time order, not cost.",
+            "· z (or a click on a ▸ header) unfolds the whole prompt.",
         ]
         return lines
 
