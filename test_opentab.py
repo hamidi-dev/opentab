@@ -1831,6 +1831,23 @@ def test_footer_highlights_the_focused_time_panel():
         assert a["day"] == accent and a["mo"] == 4
         a = token_attrs("years")
         assert a["yr"] == accent and a["day"] == 4
+
+        # The p/t hint mirrors the idea for the browse mode; and the footer stays
+        # lean -- sort/export/open live in the help overlay, not down here.
+        def footer_line():
+            scr = AttrScreen(24, 120)
+            app.renderer.draw_footer(scr, 24, 120)
+            return scr, "".join(scr.cells.get((23, x), " ") for x in range(120))
+
+        scr, line = footer_line()
+        for gone in ("s sort", "e export", "o open"):
+            assert gone not in line
+        i = line.index("p/t mode")
+        assert scr.attrs[(23, i + 2)] == accent and scr.attrs[(23, i)] == 4  # time mode: t lit
+        app.browse_mode = "projects"
+        scr, line = footer_line()
+        i = line.index("p/t mode")
+        assert scr.attrs[(23, i)] == accent and scr.attrs[(23, i + 2)] == 4  # projects: p lit
     finally:
         ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
 

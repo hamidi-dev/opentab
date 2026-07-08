@@ -592,9 +592,15 @@ class Renderer:
         if self.view != "browse":
             parts.append(("Esc out", False))
         if self.view != "session":
-            parts.append(("p/t mode", False))
-        if self.can_sort_current_view():
-            parts.append(("s sort", self.sort_menu))
+            # Like yr/mo/day: the active browse mode's own letter lights up.
+            parts.append(
+                [
+                    ("p", self.browse_mode == "projects"),
+                    ("/", False),
+                    ("t", self.browse_mode == "time"),
+                    (" mode", False),
+                ]
+            )
         if self.can_toggle_ignore():
             parts.append(("i ignore", False))
         if self.ignored_projects or self.ignored_sessions:
@@ -613,15 +619,15 @@ class Renderer:
         # active/non-default modifiers light up too, matching the header chips: a
         # range that isn't "all time", a committed filter query. Range narrows every
         # view so it's always offered; "f" only filters session/project lists, so it
-        # appears only where it does something (like "s/S sort").
+        # appears only where it does something.
         parts.append(("R range", self.range_label() != "all time"))
         if self.can_filter_current_view():
             parts.append(("f,/ filter", bool(self.query)))
+        # s sort / e export / o open live in the help overlay -- the footer keeps
+        # only navigation, toggles with visible state, and the overlay openers.
         parts += [
             ("T trends", self.trends),
             ("P prices", self.show_prices),
-            ("e export", False),
-            ("o open", False),
         ]
         if self.can_launch_current():
             parts.append(("L launch", self.launch_menu is not None))
