@@ -876,12 +876,7 @@ function filterInput() {
     oninput: e => { FILTER = e.target.value; render(false); const el = document.getElementById('filter-input');
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } });
 }
-function sessionsTable(id, ws) {
-  let rows = ws;
-  if (FILTER) {
-    const q = FILTER.toLowerCase();
-    rows = ws.filter(w => (w.title + ' ' + w.project + ' ' + w.id).toLowerCase().includes(q));
-  }
+function sessionCols() {
   const cols = [
     { key: 'date', label: 'Date', align: 'r', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },
     { key: 'title', label: 'Title', asc: true, sortVal: r => r.title.toLowerCase(), cls: 'grow' },
@@ -891,9 +886,23 @@ function sessionsTable(id, ws) {
     { key: 'subagents', label: 'Sub', align: 'r', fmt: r => r.subagents || h('span', { class: 'mut' }, '·') },
   ];
   if (META.combined) cols.push({ key: 'source', label: 'Src', fmt: r => h('span', { class: 'mut' }, r.source) });
+  return cols;
+}
+function sessionsTable(id, ws) {
+  let rows = ws;
+  if (FILTER) {
+    const q = FILTER.toLowerCase();
+    rows = ws.filter(w => (w.title + ' ' + w.project + ' ' + w.id).toLowerCase().includes(q));
+  }
   return h('div', null, filterInput(),
-    table(id, cols, rows, { defaultSort: { key: 'cost', desc: true }, collapse: 25,
+    table(id, sessionCols(), rows, { defaultSort: { key: 'cost', desc: true }, collapse: 25,
       onRow: r => { go('s', r.id); } }));
+}
+/* the Overview's Top-sessions pane: the sessions table without the filter box,
+   collapsed to the biggest few (the TUI's "# Top Sessions" section) */
+function topSessionsTable(id, ws, n) {
+  return table(id, sessionCols(), ws, { defaultSort: { key: 'cost', desc: true }, collapse: n,
+    onRow: r => { go('s', r.id); } });
 }
 function sourcesTable(id, ws) {
   const rows = sourceRows(ws);
@@ -980,7 +989,6 @@ function renderOverview(root, sc, ws) {
           h('button', { class: y === year ? 'on' : null, onclick: () => { VIEW.calYear = y; render(false); } }, y))) : null,
         calendar(year, byDate)));
     }
-    return;
   }
   if (sc.kind === 'y') {
     const months = monthRows(ws);
@@ -992,9 +1000,12 @@ function renderOverview(root, sc, ws) {
   }
   const panes = [];
   if (sc.kind !== 'p') panes.push(pane('Top projects', projectsTable('t-ov-projects', ws, 8)));
-  if (sc.kind !== 'd') panes.push(pane('Top models', modelsTable('t-ov-models', modelAgg(ws), 8)));
+  // A day touches few models, so its Overview carries the full mix -- the day
+  // scope has no Models tab (the TUI's day_overview trade-off).
+  panes.push(pane(sc.kind === 'd' ? 'Model mix' : 'Top models', modelsTable('t-ov-models', modelAgg(ws), 8)));
   if (panes.length === 2) root.appendChild(sideBySide(...panes));
   else panes.forEach(p => root.appendChild(p));
+  root.appendChild(pane('Top sessions', topSessionsTable('t-ov-sessions', ws, 8)));
 }
 function renderSessionOverview(root, sc) {
   const w = sc.session;
