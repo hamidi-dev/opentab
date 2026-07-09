@@ -2105,6 +2105,7 @@ class Renderer:
                         "bar / day, Enter drills into it, Esc back; +/- calendar shades",
                         "Models/Providers/Sources: j/k pick a row · Enter its sessions "
                         "· Enter again opens one · Esc backs out",
+                        "C theme · c source · D demo · ? help keep working inside",
                     ),
                     (
                         "P",
@@ -2112,6 +2113,7 @@ class Renderer:
                         "mix (cheapest first), beside your usage share and raw rates",
                         "p cycles the layout — flat / by vendor / by provider",
                         "j/k select · Enter its sessions · s sort a column (or click a header) · f/r/e as usual",
+                        "C theme · c source · D demo · $ what-if · ? help keep working inside",
                     ),
                     ("$", "toggle what-if prices — what unpriced usage would cost at API list"),
                     (

@@ -350,6 +350,21 @@ Enter jumps into the session itself (`drill_into_month`/`drill_into_session` mir
 double-click drills — bar hit-testing via `_trend_bar_geom`, rows via the
 `trendrow`/`trendses` regions).
 
+**Global toggles stay live inside the overlays.** Trends and the P table swallow
+mistyped keys (closing is explicit — Esc/q/their own toggle), but the overlay-wide
+`_trend_common_key`/`_prices_common_key` handlers let `?`, `C` (theme), `c` (source) and
+`D` (demo) act from anywhere inside them (Trends also floats `P`, and `C` works from
+help). The `C`/`c` pickers float *above* the overlays: `handle_key` (and `handle_mouse`)
+check `theme_menu`/`source_menu` **before** the overlay branches — keep that dispatch
+order, it's what lets the picker own the keys while the overlay behind is the live
+preview swatch. A source/demo swap under an open overlay goes through
+`_reload_for_source`, which re-anchors every overlay cursor (trend drill/cursors, the P
+drill) so nothing dangles into the old dataset; the overlay itself stays open. The web
+mirrors all of this in its keydown chain: `THEMEPICK` → `PRICES` → `TRENDS` top-down
+(stacking = DOM order of the `#themepick`/`#prices`/`#trends` hosts), `C` opens the theme
+panel from anywhere, and `render(false)` re-renders every open overlay so a theme click
+re-colors the SVG charts behind the picker.
+
 ### Data flow & the deferred model scan
 
 - `App.__init__` loads `store.workflows()` (fast per-root session rollup) so the first

@@ -1731,10 +1731,11 @@ def test_trends_close_only_on_esc_q_or_T():
     # Trends is interactive, so a mistyped key must never tear it down: closing is
     # explicit (Esc, q, or T again); ? and P float their overlay above it instead,
     # every other unbound key is swallowed, and Ctrl-C still quits the app.
+    # (C/c/D act from inside too -- covered by their own tests below.)
     app = app_with([workflow("a", "2026-06-10 12:00:00", cost=5)])
     app._models_loaded = True  # keep ? / P cheap (skip the deferred scan)
     app.handle_key(None, ord("T"))
-    for key in (ord("e"), ord("c"), ord("D"), ord("R"), ord("x"), ord("o"), ord("b")):
+    for key in (ord("e"), ord("R"), ord("x"), ord("o"), ord("b")):
         app.handle_key(None, key)
         assert app.trends, f"key {chr(key)!r} closed the overlay"
     app.handle_key(None, ord("?"))  # help floats above Trends...
@@ -1774,7 +1775,7 @@ def test_prices_overlay_close_only_on_esc_q_or_P():
     app._model_by_root = {"a": [_model_row("claude-opus-4-8", 5.0, 10)]}
     app._models_loaded = True  # keep $'s deferred scan from wiping the fixture rows
     app.handle_key(None, ord("P"))
-    for key in (ord("x"), ord("c"), ord("D"), ord("T"), ord("b")):
+    for key in (ord("x"), ord("T"), ord("b")):
         app.handle_key(None, key)
         assert app.show_prices, f"key {chr(key)!r} closed the P overlay"
     app.handle_key(None, ord("?"))  # help floats above...
@@ -1793,6 +1794,82 @@ def test_prices_overlay_close_only_on_esc_q_or_P():
     assert app.show_prices and app.prices_model is not None
     app.handle_key(None, ord("q"))  # q closes the whole overlay from the drill
     assert not app.show_prices and app.prices_model is None
+
+
+def test_theme_picker_opens_from_inside_overlays():
+    # C works from anywhere: inside Trends and P it floats the Colours picker above
+    # the overlay (which stays open as the live-preview swatch), the picker owns the
+    # keys while it's up, and Esc reverts + lands back on the overlay.
+    app = app_with([workflow("a", "2026-06-10 12:00:00", cost=5)])
+    app._models_loaded = True
+    app.handle_key(None, ord("T"))
+    app.handle_key(None, ord("C"))
+    assert app.theme_menu and app.trends
+    before = app.theme_id
+    app.handle_key(None, ord("j"))  # the picker sees the keys, not the Trends tabs
+    assert app.theme_id != before and app.trend_tab == 0
+    app.handle_key(None, 27)  # Esc reverts the preview and closes just the picker
+    assert not app.theme_menu and app.theme_id == before and app.trends
+    app.handle_key(None, ord("q"))
+    assert not app.trends
+    app.handle_key(None, ord("P"))  # same from inside the P overlay
+    app.handle_key(None, ord("C"))
+    assert app.theme_menu and app.show_prices
+    app.handle_key(None, 10)  # Enter keeps the highlighted theme, back to the table
+    assert not app.theme_menu and app.show_prices
+
+
+def test_theme_picker_floats_above_help():
+    # Help closes on any unbound key, but C is the exception: the picker floats
+    # above it (help is the swatch background) and Esc closes only the picker.
+    app = app_with([workflow("a", "2026-06-10 12:00:00")])
+    app.handle_key(None, ord("?"))
+    assert app.help
+    app.handle_key(None, ord("C"))
+    assert app.theme_menu and app.help
+    app.handle_key(None, 27)
+    assert not app.theme_menu and app.help
+
+
+def test_source_and_demo_toggles_route_from_inside_overlays():
+    # c and D are overlay-wide too: from inside Trends or P they open the source
+    # picker / swap demo data instead of being swallowed, and the overlay stays up.
+    app = app_with([workflow("a", "2026-06-10 12:00:00", cost=5)])
+    app._models_loaded = True
+    calls = []
+    app.open_source_menu = lambda: calls.append("source")  # bare Args has no flags
+    app.toggle_demo = lambda: calls.append("demo")
+    app.handle_key(None, ord("T"))
+    app.handle_key(None, ord("c"))
+    app.handle_key(None, ord("D"))
+    assert calls == ["source", "demo"] and app.trends
+    app.handle_key(None, ord("q"))
+    app.handle_key(None, ord("P"))
+    app.handle_key(None, ord("c"))
+    app.handle_key(None, ord("D"))
+    assert calls == ["source", "demo", "source", "demo"] and app.show_prices
+
+
+def test_data_swap_reanchors_overlay_cursors():
+    # A source switch / demo toggle replaces the dataset, so every overlay cursor
+    # that pointed into the old one (a drilled model, a bar cursor, the P drill)
+    # re-anchors instead of dangling; the overlays themselves stay open.
+    app = app_with([workflow("a", "2026-06-10 12:00:00", cost=5)])
+    app.trends = True
+    app.trend_drill = ("model", "anthropic/gone")
+    app.trend_drill_index = 3
+    app.trend_row_index = 2
+    app.trend_cursor = "2026-06-10"
+    app.cal_cursor = "2026-06-10"
+    app.trend_month_index = 1
+    app.prices_model = "anthropic/gone"
+    app.prices_index = 4
+    app._reload_for_source()
+    assert app.trends  # the overlay survives the swap
+    assert app.trend_drill is None and app.trend_drill_index == 0
+    assert app.trend_row_index == 0 and app.trend_cursor is None
+    assert app.cal_cursor is None and app.trend_month_index == 0
+    assert app.prices_model is None and app.prices_index == 0
 
 
 def test_footer_highlights_the_focused_time_panel():

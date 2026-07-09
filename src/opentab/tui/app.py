@@ -1415,6 +1415,21 @@ class App:
         self._nodes_by_session.clear()
         self._load_model_cache()
         self._invalidate_workflow_cache()
+        # Overlay cursors point into the old dataset (a drilled model / provider may
+        # not exist anymore) -- close the drills and re-anchor every chart cursor on
+        # the new data's peaks. The overlays themselves stay open: c and D can now be
+        # pressed from inside Trends / P, and the swap happens under them in place.
+        self.trend_drill = None
+        self.trend_drill_index = 0
+        self.trend_row_index = 0
+        self.trend_cursor = None
+        self.cal_cursor = None
+        self.trend_month_index = 0
+        self.trend_week_index = 0
+        self.trend_year_index = 0
+        self.prices_model = None
+        self.prices_index = 0
+        self.prices_scroll = 0
         if restore:
             self.browse_mode = restore["browse_mode"]
             self.focus = restore["focus"]
@@ -3096,7 +3111,9 @@ class App:
         # Overlay-wide keys that work anywhere inside Trends (tabs, focused charts
         # excepted -- they see arrows/Enter first -- and drill lists): q or T again
         # close the overlay, ? and P float their overlay above it (closing that one
-        # lands back on Trends), Ctrl-C still quits. None = not one of these.
+        # lands back on Trends), C and c float their picker over the charts, D swaps
+        # real/demo data under them in place, Ctrl-C still quits. None = not one of
+        # these.
         if key in (ord("q"), ord("T")):
             self.trends = False
             self.trend_drill = None
@@ -3110,6 +3127,15 @@ class App:
             self.prices_scroll = 0
             self.prices_index = 0
             self.prices_model = None
+            return True
+        if key == ord("C"):
+            self.open_theme_menu()  # live-previews with the charts as the swatch
+            return True
+        if key == ord("c"):
+            self.open_source_menu()  # switching re-scopes the charts in place
+            return True
+        if key == ord("D"):
+            self.toggle_demo()  # anonymize before a screenshot without leaving
             return True
         if key == 3:  # Ctrl-C
             return False
@@ -3138,6 +3164,13 @@ class App:
             return True
         if self.price_prompt:
             return self.handle_price_prompt_key(key)
+        # The C (Colours) and c (source) pickers float above everything -- they can
+        # be opened from inside Trends / P / help now, so they must see keys before
+        # the overlays do (draw() already paints these small modals on top).
+        if self.theme_menu:
+            return self.handle_theme_menu_key(key)
+        if self.source_menu:
+            return self.handle_source_menu_key(key)
         if self.help:
             # A pager like the price overlay: j/k/arrows, page keys and g/G scroll;
             # any other key closes it.
@@ -3153,6 +3186,8 @@ class App:
                 self.help_scroll = 0
             elif key == ord("G"):
                 self.help_scroll = 10_000  # clamped to the last page on draw
+            elif key == ord("C"):
+                self.open_theme_menu()  # the Colours picker floats above help too
             else:
                 self.help = False
             return True
@@ -3261,10 +3296,6 @@ class App:
                 # key must not tear the overlay down. Closing is explicit (Esc/q/T).
             return True
 
-        if self.theme_menu:
-            return self.handle_theme_menu_key(key)
-        if self.source_menu:
-            return self.handle_source_menu_key(key)
         if self.sort_menu:
             return self.handle_sort_menu_key(key)
         if self.filter_active:
@@ -3484,7 +3515,8 @@ class App:
         # Overlay-wide keys that work anywhere inside the P overlay (model list and
         # the per-model drill): Esc handling stays contextual at the call sites; q or
         # P again close the overlay, ? floats help above it (closing that lands back
-        # here), $ re-prices the app behind it in place, Ctrl-C still quits.
+        # here), C and c float their picker over the table, $ re-prices the app
+        # behind it in place, D swaps real/demo data under it, Ctrl-C still quits.
         if key in (ord("q"), ord("P")):
             self.show_prices = False
             self.prices_model = None
@@ -3492,6 +3524,15 @@ class App:
         if key == ord("?"):
             self.help = True
             self.help_scroll = 0
+            return True
+        if key == ord("C"):
+            self.open_theme_menu()
+            return True
+        if key == ord("c"):
+            self.open_source_menu()
+            return True
+        if key == ord("D"):
+            self.toggle_demo()
             return True
         if key == ord("$"):
             self.toggle_api_prices()
@@ -3585,6 +3626,15 @@ class App:
             if click or double:
                 self.price_prompt = False  # click = not now
                 self.notice = "skipped — fetch anytime with --refresh-models or r in the P view"
+            return True
+        if self.theme_menu:
+            if up:
+                self._preview_theme_at(self.theme_menu_index - 1)  # wheel live-previews
+            elif down:
+                self._preview_theme_at(self.theme_menu_index + 1)
+            elif click or double:
+                self.select_theme(self._theme_before, announce=False)
+                self.theme_menu = False  # click cancels, theme reverted (like Esc)
             return True
         if self.source_menu:
             order = sources.source_cycle(self.args)
