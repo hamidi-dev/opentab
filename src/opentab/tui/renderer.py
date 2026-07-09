@@ -388,6 +388,9 @@ class Renderer:
             left = self.browse_left_width(width)
             self.draw_project_list(stdscr, top, 0, avail, left)
             self.draw_project_detail(stdscr, top, left, avail, width - left, active=False)
+            # Catch-all region under the preview's own tabs/rows (first match wins,
+            # so it's appended last): a click anywhere in the pane focuses it.
+            self._add_rows_region("detail", top, left, width - 1, 0, avail)
         else:
             left = self.browse_left_width(width)
             self.draw_time_panels(stdscr, top, avail, left, focus=self.focus)
@@ -398,6 +401,7 @@ class Renderer:
                 self.draw_month_detail(stdscr, top, rx, avail, rw, active=False)
             else:
                 self.draw_day_detail(stdscr, top, rx, avail, rw, active=False)
+            self._add_rows_region("detail", top, rx, width - 1, 0, avail)
 
         # Small centered modals float on top of the current view (so context stays
         # visible behind them), unlike the full-body help/prices/trends overlays.
@@ -518,6 +522,8 @@ class Renderer:
             segs.append("projects")
             if project:
                 segs.append(short_path(project.directory, 34))
+            if self.zoom_source and self.on_sessions_tab:
+                segs.append(self.zoom_source)
             segs.append(tab_name)
             return sep.join(s for s in segs if s)
         if self.view == "session":
@@ -534,6 +540,8 @@ class Renderer:
                 segs.append(self.active_day)
             if self.browse_mode != "projects" and self.zoom_project:
                 segs.append(short_path(self.zoom_project, 24))
+            if self.zoom_source:
+                segs.append(self.zoom_source)
             sess = self.current_session()
             segs.append(shorten(sess.title, 28) if sess else "session")
             segs.append(tab_name)
@@ -542,12 +550,16 @@ class Renderer:
                 segs.append(self.focused_year)
             if self.zoom_project and self.on_sessions_tab:
                 segs.append(short_path(self.zoom_project, 24))
+            if self.zoom_source and self.on_sessions_tab:
+                segs.append(self.zoom_source)
             segs.append(tab_name)
         elif self.focus == "months":
             if self.focused_month:
                 segs.append(self.focused_month)
             if self.zoom_project and self.on_sessions_tab:
                 segs.append(short_path(self.zoom_project, 24))
+            if self.zoom_source and self.on_sessions_tab:
+                segs.append(self.zoom_source)
             segs.append(tab_name)
         else:
             if self.focused_month:
@@ -556,6 +568,8 @@ class Renderer:
                 segs.append(self.active_day)
             if self.zoom_project and self.on_sessions_tab:
                 segs.append(short_path(self.zoom_project, 24))
+            if self.zoom_source and self.on_sessions_tab:
+                segs.append(self.zoom_source)
             segs.append(tab_name)
         return sep.join(s for s in segs if s)
 
@@ -937,6 +951,61 @@ class Renderer:
         hint = "Enter: open sessions"
         self.write(stdscr, y + 1, x + w - len(hint) - 2, hint, curses.color_pair(1))
 
+    def draw_sources_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        # Navigable source list on the Sources tab of a zoomed scope (merged view):
+        # j/k pick a tool, Enter its sessions within this scope — the Trends
+        # Sources drill, zoom-scoped.
+        rows = self.zoom_source_rows()
+        cy = y + 3
+        if not rows:
+            self.write(stdscr, cy, x + 2, "No sessions in this scope.", curses.color_pair(1))
+            return
+        total = sum(float(it["cost"]) for _, it in rows)
+        peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
+        namew = min(max(len(s) for s, _ in rows), max(10, w - 48))
+        barw = max(3, min(20, w - namew - 44))
+        header = f"  {'Source':<{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}"
+        self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
+        visible = max(1, h - 5)
+        idx = max(0, min(self.source_index, len(rows) - 1))
+        start = max(0, min(idx - visible // 2, max(0, len(rows) - visible)))
+        shown = rows[start : start + visible]
+        self._add_rows_region("zoomsource", cy + 1, x, x + w - 1, start, len(shown))
+        for off, (source, it) in enumerate(shown):
+            ry = cy + 1 + off
+            marker = ">" if start + off == idx else " "
+            cost = money(float(it["cost"]))
+            tok = human_tokens(int(it["tokens"]))
+            bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
+            text = (
+                f"{marker} {shorten(source, namew):{namew}}  {bar:<{barw}} "
+                f"{cost:>11} {pct(float(it['cost']), total):>5} {tok:>9} {int(it['sessions']):>7}"
+            )
+            if start + off == idx:
+                self.write(
+                    stdscr,
+                    ry,
+                    x + 2,
+                    pad(shorten(text, w - 4), w - 4),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
+        if not self.show_api_prices and any(
+            float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
+        ):
+            caption = "· $ prices subscription/credit usage at API list rates"
+            if cy + 2 + len(shown) < y + h - 1:
+                self.write(
+                    stdscr,
+                    cy + 2 + len(shown),
+                    x + 2,
+                    shorten(caption, w - 4),
+                    curses.color_pair(1),
+                )
+        hint = "Enter: open sessions"
+        self.write(stdscr, y + 1, x + w - len(hint) - 2, hint, curses.color_pair(1))
+
     def draw_tabs(
         self,
         stdscr: curses.window,
@@ -1137,6 +1206,9 @@ class Renderer:
         if current == "Sessions" and self.view == "zoom":
             self.draw_sessions_picker(stdscr, y, x, h, w)
             return
+        if current == "Sources" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
+            return
         if current == "Overview":
             lines = self.project_overview(project, w - 4)
         elif current == "Sources":
@@ -1178,6 +1250,9 @@ class Renderer:
         if current == "Projects" and self.view == "zoom":
             self.draw_projects_picker(stdscr, y, x, h, w)
             return
+        if current == "Sources" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
+            return
         if current == "Overview":
             lines = self.year_overview(year, w - 4)
         elif current == "Sources":
@@ -1214,6 +1289,9 @@ class Renderer:
             return
         if current == "Projects" and self.view == "zoom":
             self.draw_projects_picker(stdscr, y, x, h, w)
+            return
+        if current == "Sources" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.month_overview(month, w - 4)
@@ -1307,6 +1385,9 @@ class Renderer:
             return
         if current == "Projects" and self.view == "zoom":
             self.draw_projects_picker(stdscr, y, x, h, w)
+            return
+        if current == "Sources" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.day_overview(day, w - 4)
@@ -2058,7 +2139,8 @@ class Renderer:
                     (
                         "Enter / +",
                         "drill into the selected year / month / day / project; on a "
-                        "Sessions or Projects tab, open that session / project",
+                        "Sessions, Projects or Sources tab, open that session / "
+                        "project's / source's sessions in this scope",
                         "the detail opens beside the sidebar, which stays clickable "
                         "to re-scope; + maximizes / restores it (remembered)",
                     ),
@@ -2076,7 +2158,8 @@ class Renderer:
                     ("g / G", "jump to the top / bottom"),
                     (
                         "mouse",
-                        "wheel scrolls · click selects · double-click drills · click a tab "
+                        "wheel scrolls · click selects (anywhere in the preview pane "
+                        "focuses it) · double-click drills · click a tab "
                         "or a column header to sort by it (again to reverse)",
                     ),
                 ],

@@ -316,7 +316,9 @@ Three logical layers (the class names below live in the files above — `Store` 
   is ambiguous → error). `--csv`/`--jsonl` default to **None** so an explicit flag is
   detectable; the real defaults are applied afterward for auto-discovery. The merged view
   adds a **Sources** tab (Trends, plus a per-scope tab after Overview in Month/Day/Project;
-  `Renderer.source_table`).
+  `Renderer.source_table` in previews, and in a zoom a navigable picker
+  (`draw_sources_picker`, `source_index`) whose Enter narrows Sessions to that source —
+  `zoom_source`, the `zoom_project` drill pattern; Esc pops it back to the Sources tab).
 - **`App`** — all state and the keyboard/mouse state machine; stays curses-free except
   the modal prompt line. Holds the view stack and selection indices.
 - **`Renderer`** — all drawing. `Renderer.__getattr__` delegates unknown attributes to
@@ -333,8 +335,10 @@ split as browse with the roles swapped — sidebar inactive (still registering c
 regions, so a row click re-scopes the detail in place; a sidebar double-click is
 swallowed, never "open the selected session"), detail active. `+` toggles
 `zoom_maximized` (full-width detail; a saved pref in `state.json`) — in browse `+`
-stays an Enter alias. The session view is always full-screen. The web needs no
-counterpart: its sidebar is permanent. Overlays are separate booleans on top of any
+stays an Enter alias. In browse the preview pane registers a trailing catch-all
+`"detail"` region, so a click anywhere in it focuses (zooms) it — appended after the
+pane's real regions, which win (hit() is first-match). The session view is always
+full-screen. The web needs no counterpart: its sidebar is permanent. Overlays are separate booleans on top of any
 view: `self.trends` (T), `self.help` (?), `self.show_prices` (P). Detail tabs per zoom level are the class
 tuples `month_tabs`/`day_tabs`/`project_tabs`/`workflow_tabs`. `current_tabs()` is the
 source of truth (don't index a class tuple directly): it appends, in order, a **Turns**

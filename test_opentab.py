@@ -2038,6 +2038,49 @@ def test_sidebar_click_rescopes_the_zoomed_detail():
     assert app.view == "zoom" and app.focus == "days" and app.tab == 0
 
 
+def test_click_anywhere_in_the_preview_pane_focuses_it():
+    # The browse preview registers a catch-all region after its real ones, so a
+    # click on empty pane space focuses (zooms) it while tab clicks still win.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    r = app.renderer
+    r.regions = [("tab", 4, 30, 40, 1), ("rows", "detail", 3, 20, 28, 100, 0)]
+    assert r.hit(4, 35) == ("tab", 1)  # first match wins: the tab, not the pane
+    assert r.hit(10, 50) == ("detail", 7)
+    app._apply_click(("detail", 7), drill=False)
+    assert app.view == "zoom"  # a click on empty preview space focuses the pane
+    app._apply_click(("detail", 7), drill=False)
+    assert app.view == "zoom"  # already focused: inert
+
+
+def test_zoom_sources_tab_navigates_and_drills():
+    # The merged view's per-scope Sources tab works like the Trends Sources tab:
+    # j/k pick a tool, Enter narrows Sessions to it (scoped), Esc pops back.
+    a = workflow("a", "2026-06-01 12:00:00", cost=5)
+    b = workflow("b", "2026-06-01 13:00:00", cost=1)
+    a.source, b.source = "OpenCode", "Claude Code"
+    app = app_with([a, b])
+    app.store.combined = True  # the merged view injects the Sources tab
+    app.handle_key(None, 10)  # zoom the selected day
+    tabs = app.current_tabs()
+    app.tab = tabs.index("Sources")
+    assert [s for s, _ in app.zoom_source_rows()] == ["OpenCode", "Claude Code"]
+    app.handle_key(None, ord("j"))  # j/k drive the source cursor
+    assert app.source_index == 1
+    app.handle_key(None, 10)  # Enter -> that source's sessions in this scope
+    assert app.zoom_source == "Claude Code"
+    assert app.current_tabs()[app.tab] == "Sessions"
+    assert [w.id for w in app.current_sessions()] == ["b"]
+    app.handle_key(None, 27)  # Esc pops the source drill, back to the Sources tab
+    assert app.view == "zoom" and app.zoom_source is None
+    assert app.current_tabs()[app.tab] == "Sources"
+    app._apply_click(("zoomsource", 0), drill=True)  # double-click a source row
+    assert app.zoom_source == "OpenCode"
+    assert [w.id for w in app.current_sessions()] == ["a"]
+    app.handle_key(None, 27)  # pop the drill...
+    app.handle_key(None, 27)  # ...then leave the zoom
+    assert app.view == "browse" and app.zoom_source is None
+
+
 def test_zoom_maximized_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.zoom_maximized = True

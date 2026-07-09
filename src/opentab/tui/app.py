@@ -282,6 +282,10 @@ class App:
         # project's sessions within the zoomed scope. Drilled into from the
         # Projects tab; cleared on step-out or any scope change.
         self.zoom_project: str | None = None
+        # Same drill for the merged view's Sources tab: j/k pick a tool
+        # (source_index), Enter narrows the Sessions list to that source.
+        self.zoom_source: str | None = None
+        self.source_index = 0  # selected row on a zoomed Sources tab
         # All screen output lives on the Renderer; the App stays curses-free
         # (aside from the modal prompt line in prompt_text).
         self.renderer = Renderer(self)
@@ -1252,6 +1256,7 @@ class App:
         self._nodes_by_session.clear()
         self._load_model_cache()
         self.zoom_project = None
+        self.zoom_source = None
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
         self.day_index = min(self.day_index, max(0, len(self.days) - 1))
         self.month_index = min(self.month_index, max(0, len(self.months) - 1))
@@ -1433,6 +1438,8 @@ class App:
         self.prices_model = None
         self.prices_index = 0
         self.prices_scroll = 0
+        self.zoom_source = None  # names a source that may not exist in the new data
+        self.source_index = 0
         if restore:
             self.browse_mode = restore["browse_mode"]
             self.focus = restore["focus"]
@@ -2159,6 +2166,30 @@ class App:
         self.project_index = max(0, min(self.project_index, len(rows) - 1))
         return rows[self.project_index]
 
+    def zoom_source_rows(self) -> list[tuple[str, dict[str, float | int]]]:
+        # Source rows within the zoomed scope — the navigable Sources tab (merged
+        # view). Same slice the plain Sources tables render for this scope.
+        if self.browse_mode == "projects":
+            item = self.selected_project_summary
+            rows = (
+                self.workflows_for_project(
+                    item.directory,
+                    include_ignored=self.include_ignored_for_project(item),
+                )
+                if item
+                else []
+            )
+        else:
+            rows = self.zoom_scope_workflows()
+        return self.source_rows(rows)
+
+    def zoom_selected_source(self) -> str | None:
+        rows = self.zoom_source_rows()
+        if not rows:
+            return None
+        self.source_index = max(0, min(self.source_index, len(rows) - 1))
+        return rows[self.source_index][0]
+
     def current_sessions(self) -> list[Workflow]:
         if self.browse_mode == "projects":
             item = self.selected_project_summary
@@ -2184,6 +2215,8 @@ class App:
             rows = self.workflows_for_day(item.day, source) if item else []
         if self.zoom_project and self.browse_mode != "projects":
             rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
+        if self.zoom_source:
+            rows = [w for w in rows if (w.source or "unknown") == self.zoom_source]
         return self.filtered_sessions(rows)
 
     def _zooming_ignored_project(self) -> bool:
@@ -2225,6 +2258,11 @@ class App:
     def on_projects_tab(self) -> bool:
         tabs = self.current_tabs()
         return tabs[self.tab % len(tabs)] == "Projects"
+
+    @property
+    def on_sources_tab(self) -> bool:
+        tabs = self.current_tabs()
+        return tabs[self.tab % len(tabs)] == "Sources"
 
     def in_project_sort_context(self) -> bool:
         return (self.view == "browse" and self.browse_mode == "projects") or (
@@ -2405,6 +2443,7 @@ class App:
         self.tab = new_tabs.index(active_tab) if active_tab in new_tabs else 0
         self.scroll = 0
         self.zoom_project = None
+        self.zoom_source = None
 
     def toggle_focus(self) -> None:
         self.cycle_focus(1)
@@ -2426,6 +2465,7 @@ class App:
         self.scroll = 0
         self.workflow_index = 0
         self.zoom_project = None
+        self.zoom_source = None
 
     def drill_in(self) -> None:
         if self.view == "browse":
@@ -2443,6 +2483,8 @@ class App:
                 self.scroll = 0
                 self.workflow_index = 0
                 self.zoom_project = None
+                self.zoom_source = None
+                self.source_index = 0
                 self._trend_return = (
                     None  # a fresh drill; the Trends overlay re-arms it if it began one
                 )
@@ -2461,6 +2503,17 @@ class App:
                     self.tab = tabs.index("Sessions")
                 self.workflow_index = 0
                 self.scroll = 0
+        elif self.view == "zoom" and self.on_sources_tab:
+            # Pick a source in a zoom -> its sessions in this scope (the Trends
+            # Sources drill, scoped to the zoomed year/month/day/project).
+            source = self.zoom_selected_source()
+            if source is not None:
+                self.zoom_source = source
+                tabs = self.current_tabs()
+                if "Sessions" in tabs:
+                    self.tab = tabs.index("Sessions")
+                self.workflow_index = 0
+                self.scroll = 0
         elif self.view == "zoom" and self.on_sessions_tab and self.current_session():
             self.view = "session"
             self.tab = 0
@@ -2472,7 +2525,13 @@ class App:
             tabs = self.current_tabs()  # land back on the Sessions tab we came from
             self.tab = tabs.index("Sessions") if "Sessions" in tabs else 0
         elif self.view == "zoom":
-            if self.zoom_project and self.browse_mode != "projects":
+            if self.zoom_source:
+                # Leave a source's sessions, back to the Sources list of this zoom
+                # (popped before a project drill: it was layered on top of one).
+                self.zoom_source = None
+                tabs = self.current_tabs()
+                self.tab = tabs.index("Sources") if "Sources" in tabs else 0
+            elif self.zoom_project and self.browse_mode != "projects":
                 # Leave a project's sessions, back to the Projects list of this zoom.
                 self.zoom_project = None
                 tabs = self.current_tabs()
@@ -2480,6 +2539,7 @@ class App:
             else:
                 self.view = "browse"
                 self.zoom_project = None
+                self.zoom_source = None
                 if self._trend_return is not None:
                     self._reopen_trends(self._trend_return)
         self.scroll = 0
@@ -2544,6 +2604,10 @@ class App:
                 n = len(self.zoom_projects())
                 if n:
                     self.project_index = max(0, min(self.project_index + delta, n - 1))
+            elif self.on_sources_tab:
+                n = len(self.zoom_source_rows())
+                if n:
+                    self.source_index = max(0, min(self.source_index + delta, n - 1))
             else:
                 self.scroll = max(0, self.scroll + delta)
         elif self.browse_mode == "projects":
@@ -2608,6 +2672,12 @@ class App:
             rows = self.zoom_projects()
             if rows:
                 self.project_index = len(rows) - 1 if to_end else 0
+            return
+
+        if self.view == "zoom" and self.on_sources_tab:
+            rows = self.zoom_source_rows()
+            if rows:
+                self.source_index = len(rows) - 1 if to_end else 0
             return
 
         if not to_end:
@@ -3824,6 +3894,12 @@ class App:
                 self.tab = value
                 self.scroll = 0
             return
+        if kind == "detail":
+            # The browse preview's catch-all (registered after its real regions, so
+            # tabs/rows win): a click anywhere in the right pane focuses it.
+            if self.view == "browse":
+                self.drill_in()
+            return
         if kind == "turnline":
             # A click on a Turns-tab "▸" prompt header folds/unfolds that one group
             # (z toggles them all); clicks on the turn rows between headers are inert.
@@ -3857,12 +3933,14 @@ class App:
                 # swallow the drill -- double-clicking a sidebar row must not fall
                 # through to "open the selected session" on a Sessions tab.
                 self.zoom_project = None
+                self.zoom_source = None
                 self.workflow_index = 0
                 self.scroll = 0
                 return
         elif kind == "project":
             self.project_index = value
             if self.view == "zoom":
+                self.zoom_source = None
                 self.workflow_index = 0
                 self.scroll = 0
                 return
@@ -3870,6 +3948,8 @@ class App:
             self.workflow_index = value
         elif kind == "zoomproject":
             self.project_index = value
+        elif kind == "zoomsource":
+            self.source_index = value
         else:
             return
         if drill:
