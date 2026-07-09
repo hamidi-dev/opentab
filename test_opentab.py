@@ -1978,6 +1978,26 @@ def test_mouse_click_selects_and_double_click_drills():
     assert app.tab == 2  # clicking a tab switches detail tab
 
 
+def test_tab_click_in_browse_preview_zooms_into_the_detail():
+    # Clicking a tab in the right preview pane moves the focus there: the browse
+    # view zooms into the selected scope and lands on that tab, so j/k drive the
+    # detail the user clicked instead of the still-active left list.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00"),
+            workflow("b", "2026-06-01 13:00:00"),
+        ]
+    )
+    assert app.view == "browse" and app.focus == "days"
+    sessions = app.current_tabs().index("Sessions")
+    app._apply_click(("tab", sessions), drill=False)
+    assert app.view == "zoom" and app.tab == sessions
+    app.handle_key(None, ord("j"))  # keys now drive the zoomed detail...
+    assert app.workflow_index == 1
+    app.handle_key(None, 27)  # ...and Esc steps back out to browse
+    assert app.view == "browse"
+
+
 def test_mouse_click_on_day_row_switches_focus():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.focus = "months"

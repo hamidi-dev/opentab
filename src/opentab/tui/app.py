@@ -3799,6 +3799,12 @@ class App:
     def _apply_click(self, target: tuple[str, int], drill: bool) -> None:
         kind, value = target
         if kind == "tab":
+            if self.view == "browse":
+                # Clicking a tab in the right preview pane moves the focus there,
+                # lazygit-style: zoom into the selected scope so the keys drive the
+                # detail the user just clicked -- otherwise the left list stays
+                # active and j/k keeps moving it instead.
+                self.drill_in()
             if self.tab != value:
                 self.tab = value
                 self.scroll = 0
