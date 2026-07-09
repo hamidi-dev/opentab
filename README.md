@@ -265,6 +265,7 @@ panel and overlay documented. The short version:
 | Key | Action |
 |-----|--------|
 | `j`/`k` · `h`/`l` · `Enter` · `Esc` | Move · switch tabs · drill in · step back out (`Tab` flips the sidebar panels) |
+| `+` | Maximize / restore the drilled-in detail pane (the sidebar stays clickable beside it) |
 | Mouse | Wheel scrolls, click selects, double-click drills, a column-header click sorts |
 | `T` | Trends — cost charts, the calendar heatmap, model/provider/source rankings; every tab drills down to a session |
 | `$` / `P` | What-if pricing at API list rates, and the price table behind it |

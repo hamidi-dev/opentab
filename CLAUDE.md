@@ -328,8 +328,14 @@ Three logical layers (the class names below live in the files above — `Store` 
 
 `self.view` is `"browse"` → `"zoom"` → `"session"` (drill in with Enter/`+`, out with
 Esc). `self.browse_mode` is `"time"` (Months/Days sidebar, `self.focus` flips between
-them) or `"projects"`. Overlays are separate booleans on top of any view: `self.trends`
-(T), `self.help` (?), `self.show_prices` (P). Detail tabs per zoom level are the class
+them) or `"projects"`. **Zoom is lazygit-style, not full-screen**: it renders the same
+split as browse with the roles swapped — sidebar inactive (still registering click
+regions, so a row click re-scopes the detail in place; a sidebar double-click is
+swallowed, never "open the selected session"), detail active. `+` toggles
+`zoom_maximized` (full-width detail; a saved pref in `state.json`) — in browse `+`
+stays an Enter alias. The session view is always full-screen. The web needs no
+counterpart: its sidebar is permanent. Overlays are separate booleans on top of any
+view: `self.trends` (T), `self.help` (?), `self.show_prices` (P). Detail tabs per zoom level are the class
 tuples `month_tabs`/`day_tabs`/`project_tabs`/`workflow_tabs`. `current_tabs()` is the
 source of truth (don't index a class tuple directly): it appends, in order, a **Turns**
 tab (when `supports_turns(id)` — OpenCode + Claude) and a **Tools** tab (when

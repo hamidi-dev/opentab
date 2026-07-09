@@ -221,6 +221,9 @@ class App:
         self.focus = "days"  # "years" | "months" | "days"
         self.browse_mode = "time"  # "time" | "projects"
         self.view = "browse"  # "browse" | "zoom" | "session"
+        # lazygit-style zoom: the detail becomes the active pane in the split; `+`
+        # maximizes it full-screen on demand (a saved pref, so it sticks between runs).
+        self.zoom_maximized = False
         self.tab = 0
         self.scroll = 0
         self.help = False
@@ -2406,6 +2409,12 @@ class App:
     def toggle_focus(self) -> None:
         self.cycle_focus(1)
 
+    def toggle_zoom_maximized(self) -> None:
+        # `+` in a zoomed detail: full-screen vs the lazygit split. A pref, not a
+        # mode -- it persists (state.json) so "always maximize" is one keypress.
+        self.zoom_maximized = not self.zoom_maximized
+        self.notice = "detail maximized" if self.zoom_maximized else "split view"
+
     def set_browse_mode(self, mode: str) -> None:
         if self.view == "session":
             return
@@ -3339,7 +3348,13 @@ class App:
             self.toggle_demo()
             return True
         if key == ord("+"):
-            self.drill_in()
+            # In browse, + drills in like Enter (its old alias); once the detail is
+            # the active pane it becomes lazygit's screen-mode key: toggle between
+            # the split and a full-screen detail.
+            if self.view == "zoom":
+                self.toggle_zoom_maximized()
+            else:
+                self.drill_in()
             return True
         if key == ord("a"):
             self.set_all_time()
@@ -3816,32 +3831,41 @@ class App:
             if pid is not None:
                 self._turns_expanded.symmetric_difference_update({pid})
             return
-        if kind == "year" and self.view == "browse" and self.browse_mode == "time":
-            if self.focus != "years":
-                self.focus = "years"
+        if kind in ("year", "month", "day"):
+            # The time sidebar: live in browse, and still live behind a zoomed
+            # detail (the split keeps it clickable -- a row click re-scopes the
+            # detail in place, like the web's sidebar).
+            if self.view not in ("browse", "zoom") or self.browse_mode != "time":
+                return
+            focus = {"year": "years", "month": "months", "day": "days"}[kind]
+            if self.focus != focus:
+                self.focus = focus
                 self.tab = 0
                 self.scroll = 0
                 self.zoom_project = None
-            self.year_index = value
-            self.month_index = 0
-            self.day_index = 0
-        elif kind == "month" and self.view == "browse" and self.browse_mode == "time":
-            if self.focus != "months":
-                self.focus = "months"
-                self.tab = 0
-                self.scroll = 0
+            if kind == "year":
+                self.year_index = value
+                self.month_index = 0
+                self.day_index = 0
+            elif kind == "month":
+                self.month_index = value
+                self.day_index = 0
+            else:
+                self.day_index = value
+            if self.view == "zoom":
+                # Re-scoped under the same tab: drop the old scope's cursors, and
+                # swallow the drill -- double-clicking a sidebar row must not fall
+                # through to "open the selected session" on a Sessions tab.
                 self.zoom_project = None
-            self.month_index = value
-            self.day_index = 0
-        elif kind == "day" and self.view == "browse" and self.browse_mode == "time":
-            if self.focus != "days":
-                self.focus = "days"
-                self.tab = 0
+                self.workflow_index = 0
                 self.scroll = 0
-                self.zoom_project = None
-            self.day_index = value
+                return
         elif kind == "project":
             self.project_index = value
+            if self.view == "zoom":
+                self.workflow_index = 0
+                self.scroll = 0
+                return
         elif kind == "session":
             self.workflow_index = value
         elif kind == "zoomproject":

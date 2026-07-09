@@ -227,6 +227,23 @@ class Renderer:
         base = self.list_width(rows, width)
         return max(24, min(base + BAR_CELLS + 2, max(24, width - 44)))
 
+    def draw_time_panels(
+        self, stdscr: curses.window, top: int, avail: int, left: int, focus: str | None
+    ) -> None:
+        # The three stacked time panels (browse sidebar, and the inactive sidebar
+        # beside a zoomed detail -- focus=None dims all three). Years is short (few
+        # rows), so size it to show every year (panels render h-3 rows, hence +3),
+        # capped so a long history can't starve Months/Days; those split the rest.
+        years_h = max(4, min(len(self.years) + 3, max(4, avail // 3)))
+        remaining = avail - years_h
+        months_h = max(4, min(len(self.months) + 3, remaining // 2))
+        days_h = remaining - months_h
+        self.draw_year_list(stdscr, top, 0, years_h, left, active=focus == "years")
+        self.draw_month_list(stdscr, top + years_h, 0, months_h, left, active=focus == "months")
+        self.draw_day_list(
+            stdscr, top + years_h + months_h, 0, days_h, left, active=focus == "days"
+        )
+
     @staticmethod
     def bar_lane(w: int) -> tuple[int, int]:
         # (bar_cells, text_width) for a list panel of inner width w. The bar gets
@@ -348,34 +365,32 @@ class Renderer:
         elif self.view == "session":
             self.draw_detail(stdscr, top, 0, avail, width)
         elif self.view == "zoom":
+            # lazygit-style: the detail is the active pane of the same split, the
+            # sidebar stays put (inactive, still clickable to re-scope); `+`
+            # maximizes the detail full-screen on demand.
+            zx, zw = 0, width
+            if not self.zoom_maximized:
+                left = self.browse_left_width(width)
+                if self.browse_mode == "projects":
+                    self.draw_project_list(stdscr, top, 0, avail, left, active=False)
+                else:
+                    self.draw_time_panels(stdscr, top, avail, left, focus=None)
+                zx, zw = left, width - left
             if self.browse_mode == "projects":
-                self.draw_project_detail(stdscr, top, 0, avail, width)
+                self.draw_project_detail(stdscr, top, zx, avail, zw)
             elif self.focus == "years":
-                self.draw_year_detail(stdscr, top, 0, avail, width)
+                self.draw_year_detail(stdscr, top, zx, avail, zw)
             elif self.focus == "months":
-                self.draw_month_detail(stdscr, top, 0, avail, width)
+                self.draw_month_detail(stdscr, top, zx, avail, zw)
             else:
-                self.draw_day_detail(stdscr, top, 0, avail, width)
+                self.draw_day_detail(stdscr, top, zx, avail, zw)
         elif self.browse_mode == "projects":
             left = self.browse_left_width(width)
             self.draw_project_list(stdscr, top, 0, avail, left)
             self.draw_project_detail(stdscr, top, left, avail, width - left, active=False)
         else:
             left = self.browse_left_width(width)
-            # Three stacked time panels. Years is short (few rows), so size it to
-            # show every year (panels render h-3 rows, hence +3), capped so a long
-            # history can't starve Months/Days; those split the rest as before.
-            years_h = max(4, min(len(self.years) + 3, max(4, avail // 3)))
-            remaining = avail - years_h
-            months_h = max(4, min(len(self.months) + 3, remaining // 2))
-            days_h = remaining - months_h
-            self.draw_year_list(stdscr, top, 0, years_h, left, active=self.focus == "years")
-            self.draw_month_list(
-                stdscr, top + years_h, 0, months_h, left, active=self.focus == "months"
-            )
-            self.draw_day_list(
-                stdscr, top + years_h + months_h, 0, days_h, left, active=self.focus == "days"
-            )
+            self.draw_time_panels(stdscr, top, avail, left, focus=self.focus)
             rx, rw = left, width - left
             if self.focus == "years":
                 self.draw_year_detail(stdscr, top, rx, avail, rw, active=False)
@@ -593,6 +608,8 @@ class Renderer:
         parts.append(("Enter in", False))
         if self.view != "browse":
             parts.append(("Esc out", False))
+        if self.view == "zoom":
+            parts.append(("+ max", self.zoom_maximized))
         if self.view != "session":
             # Like yr/mo/day: the active browse mode's own letter lights up.
             parts.append(
@@ -1053,8 +1070,10 @@ class Renderer:
                     curses.color_pair(1),
                 )
 
-    def draw_project_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        self.box(stdscr, y, x, h, w, "Projects ▸", active=True)
+    def draw_project_list(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
+        self.box(stdscr, y, x, h, w, "Projects" + (" ▸" if active else ""), active=active)
         rows = self.projects
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(1))
@@ -1079,13 +1098,21 @@ class Renderer:
             cost = money(project.cost)
             tok = human_tokens(project.tokens)
             text = self.project_row_text(project, marker, w - 2)
-            if selected:
+            if selected and active:
                 self.write(
                     stdscr,
                     row_y,
                     x + 1,
                     pad(shorten(text, w - 2), w - 2),
                     curses.A_REVERSE | curses.A_BOLD,
+                )
+            elif selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    pad(shorten(text, w - 2), w - 2),
+                    curses.color_pair(1) | curses.A_BOLD,
                 )
             else:
                 self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
@@ -2030,8 +2057,10 @@ class Renderer:
                     ("Shift-Tab", "cycle focus backward; at the top level, step back out"),
                     (
                         "Enter / +",
-                        "zoom into the selected year / month / day / project; on a "
+                        "drill into the selected year / month / day / project; on a "
                         "Sessions or Projects tab, open that session / project",
+                        "the detail opens beside the sidebar, which stays clickable "
+                        "to re-scope; + maximizes / restores it (remembered)",
                     ),
                     ("Esc", "step back out — session → zoom → browse"),
                     (

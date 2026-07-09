@@ -38,6 +38,7 @@ def save_state(app: App) -> None:
         "project_sort_reverse": app.project_sort_reverse,
         "prices_sort_reverse": app.prices_sort_reverse,
         "browse_mode": app.browse_mode,
+        "zoom_maximized": app.zoom_maximized,  # + in a zoomed detail: full-screen vs split
         "ignored_projects": sorted(app.ignored_projects),
         "ignored_sessions": sorted(app.ignored_sessions),
         "bookmarks": sorted(app.bookmarks),  # sessions starred with `b`
@@ -85,6 +86,8 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.prices_sort_reverse = state["prices_sort_reverse"]
     if state.get("browse_mode") in ("time", "projects"):
         app.browse_mode = state["browse_mode"]
+    if isinstance(state.get("zoom_maximized"), bool):
+        app.zoom_maximized = state["zoom_maximized"]
     ignored = state.get("ignored_projects")
     if isinstance(ignored, list):
         app.ignored_projects = {p for p in ignored if isinstance(p, str) and p}

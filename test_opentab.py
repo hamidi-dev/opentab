@@ -1998,6 +1998,65 @@ def test_tab_click_in_browse_preview_zooms_into_the_detail():
     assert app.view == "browse"
 
 
+def test_plus_drills_from_browse_and_toggles_maximize_in_zoom():
+    # + keeps its browse meaning (an Enter alias), and once the detail is the
+    # active pane it becomes lazygit's screen-mode key: split <-> full-screen.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    assert not app.zoom_maximized  # the split is the default
+    app.handle_key(None, ord("+"))
+    assert app.view == "zoom" and not app.zoom_maximized
+    app.handle_key(None, ord("+"))
+    assert app.zoom_maximized and "maximized" in app.notice
+    app.handle_key(None, ord("+"))
+    assert not app.zoom_maximized
+    app.zoom_maximized = True
+    app.handle_key(None, 27)  # Esc out; the pref survives the next drill-in
+    app.handle_key(None, 10)
+    assert app.view == "zoom" and app.zoom_maximized
+
+
+def test_sidebar_click_rescopes_the_zoomed_detail():
+    # The split keeps the sidebar clickable while the detail is the active pane:
+    # a row click re-scopes the zoom in place, keeping the tab across sibling
+    # scopes (the web's sidebar rule), and a double-click must not fall through
+    # to "open the selected session" on a Sessions tab.
+    app = app_with(
+        [
+            workflow("jun", "2026-06-01 12:00:00"),
+            workflow("may", "2026-05-01 12:00:00"),
+        ]
+    )
+    app.focus = "months"
+    app.handle_key(None, 10)  # zoom into the selected month
+    assert app.view == "zoom"
+    sessions = app.current_tabs().index("Sessions")
+    app.tab = sessions
+    app._apply_click(("month", 1), drill=True)  # double-click the other month
+    assert app.view == "zoom" and app.month_index == 1
+    assert app.tab == sessions and app.workflow_index == 0
+    app._apply_click(("day", 0), drill=False)  # a day row switches the level too
+    assert app.view == "zoom" and app.focus == "days" and app.tab == 0
+
+
+def test_zoom_maximized_is_persisted_in_state():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.zoom_maximized = True
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+            assert not restored.zoom_maximized  # the split is the fresh default
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+    assert restored.zoom_maximized
+
+
 def test_mouse_click_on_day_row_switches_focus():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.focus = "months"
