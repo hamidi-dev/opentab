@@ -9510,6 +9510,163 @@ def test_web_open_report_opens_a_browser_and_survives_a_headless_box():
         webbrowser.open = real_open
 
 
+def test_pi_turns_timeline_groups_by_prompt_and_meters_cost():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _pi_session(PI_SID, cwd, ts="2026-05-15T07:32:15.949Z"),
+            _pi_user("first ask", mid="u1", ts="2026-05-15T07:32:20.000Z"),
+            _pi_assistant(
+                "anthropic/claude-sonnet-4",
+                100,
+                50,
+                cost=0.01,
+                mid="a1",
+                ts="2026-05-15T07:32:30.000Z",
+            ),
+            _pi_user("second ask\nwith detail", mid="u2", ts="2026-05-15T07:33:00.000Z"),
+            _pi_assistant(
+                "openai/gpt-5.2",
+                10,
+                5,
+                cost=0.5,
+                provider="openai-codex",  # plan route: its cost is an estimate, not spend
+                mid="a2",
+                ts="2026-05-15T07:33:10.000Z",
+            ),
+        ]
+        _pi_write(root, "--proj--", PI_SID, rows)
+        store = ot.PiStore(root, _pi_args())
+        store.workflows()
+        assert store.supports_turns(PI_SID)
+        t = store.message_timeline(PI_SID)
+        assert [r["prompt_title"] for r in t] == ["first ask", "second ask with detail"]
+        assert t[1]["prompt_full"] == "second ask\nwith detail"  # raw, line breaks kept
+        assert t[0]["cost"] == 0.01 and t[0]["model_name"] == "anthropic/claude-sonnet-4"
+        assert t[1]["cost"] == 0.0  # subscription turn stays $0 (the "$" view estimates)
+        assert t[0]["tokens_total"] == 150 and t[0]["time"].startswith("2026-05-15")
+
+
+def test_openclaw_turns_timeline_groups_by_prompt():
+    with tempfile.TemporaryDirectory() as root:
+        rows = [
+            _ocl_user("build the dashboard", mid="u1", ts="2026-04-27T16:00:00.000Z"),
+            _ocl_msg(
+                "claude-opus-4-6",
+                100,
+                40,
+                cost=0.02,
+                provider="anthropic",
+                mid="a1",
+                ts="2026-04-27T16:00:16.401Z",
+            ),
+            _ocl_msg(
+                "claude-opus-4-6",
+                50,
+                20,
+                cost=0.01,
+                provider="anthropic",
+                mid="a2",
+                ts="2026-04-27T16:01:00.000Z",
+            ),
+        ]
+        _ocl_write(root, "finance-os", "ses-t1", rows)
+        store = ot.OpenClawStore(root, _ocl_args())
+        store.workflows()
+        assert store.supports_turns("ses-t1")
+        t = store.message_timeline("ses-t1")
+        assert len(t) == 2  # chronological, both under the one prompt
+        assert [r["prompt_title"] for r in t] == ["build the dashboard"] * 2
+        assert t[0]["cost"] == 0.02 and t[1]["cost"] == 0.01  # metered: real spend
+        assert t[0]["model_name"] == "anthropic/claude-opus-4-6"
+        assert t[0]["time"] <= t[1]["time"] and t[0]["time"].startswith("2026-04-27")
+
+
+def test_codex_turns_timeline_from_cumulative_deltas():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _codex_meta(CODEX_SID, cwd),
+            _codex_user("write the parser", ts="2025-10-03T14:51:05.000Z"),
+            _codex_turn("gpt-5-codex", cwd, ts="2025-10-03T14:51:10.000Z"),
+            _codex_tokens(1000, 200, 100, 1200, ts="2025-10-03T14:51:20.000Z"),
+            _codex_user("now add tests", ts="2025-10-03T14:52:00.000Z"),
+            _codex_tokens(2500, 500, 600, 3000, ts="2025-10-03T14:52:30.000Z"),
+        ]
+        _codex_rollout(root, CODEX_SID, rows)
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        store.workflows()
+        assert store.supports_turns(CODEX_SID)
+        t = store.message_timeline(CODEX_SID)
+        assert len(t) == 2  # one row per accepted cumulative delta
+        assert [r["prompt_title"] for r in t] == ["write the parser", "now add tests"]
+        assert t[0]["input"] == 900 and t[0]["cache_read"] == 100 and t[0]["output"] == 200
+        assert t[1]["input"] == 1000 and t[1]["cache_read"] == 500 and t[1]["output"] == 300
+        assert all(r["cost"] == 0.0 for r in t)  # Codex records none; "$" estimates
+        assert t[0]["model_name"] == "openai/gpt-5-codex"
+
+
+def test_csv_turns_timeline_groups_prompts_and_dedupes_requests():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            path,
+            [
+                "timestamp",
+                "model",
+                "input_tokens",
+                "output_tokens",
+                "session_id",
+                "prompt",
+                "request_id",
+            ],
+            [
+                ["2026-06-01T10:00:00Z", "gpt-4o", 100, 20, "s1", "fix the bug", "r1"],
+                ["2026-06-01T10:05:00Z", "gpt-4o", 50, 10, "s1", "fix the bug", "r2"],
+                ["2026-06-01T10:05:00Z", "gpt-4o", 50, 10, "s1", "fix the bug", "r2"],  # dupe
+                ["2026-06-01T10:10:00Z", "claude-sonnet-4", 30, 5, "s1", "now the docs", "r3"],
+            ],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        w = store.workflows()[0]
+        assert w.title == "fix the bug"  # no title column -> first prompt
+        assert w.total_tokens == 100 + 20 + 50 + 10 + 30 + 5  # the r2 dupe dropped
+        assert store.supports_turns("s1")
+        t = store.message_timeline("s1")
+        assert len(t) == 3
+        assert [r["prompt_title"] for r in t] == ["fix the bug", "fix the bug", "now the docs"]
+        assert t[0]["prompt_id"] == "fix the bug"  # no explicit id -> the text groups
+        assert t[2]["model_name"] == "anthropic/claude-sonnet-4"
+
+
+def test_copilot_turns_timeline_is_headerless():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        _write_otel(
+            otel,
+            [
+                _otel_chat("sess-1", "gpt-5", 1000, 100, cache_read=200, trace="t1", span="s1"),
+                _otel_chat(
+                    "sess-1", "claude-sonnet-4", 500, 50, trace="t2", span="s2", end=(1775934300, 0)
+                ),
+            ],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        store.workflows()
+        assert store.supports_turns("sess-1")
+        t = store.message_timeline("sess-1")
+        assert len(t) == 2
+        # OTEL captures no prompt content by default -> headerless rows (one group).
+        assert all(r["prompt_id"] == "" and r["prompt_title"] == "" for r in t)
+        assert t[0]["model_name"] == "openai/gpt-5" and t[0]["input"] == 800
+        assert t[0]["time"] <= t[1]["time"] and t[0]["time"].startswith("2026-")
+
+
 if __name__ == "__main__":
     import sys
 

@@ -48,7 +48,9 @@ class CopilotStore:
     provider-prefixed for pricing and the Providers rollup. OTEL carries no working
     directory, so each session's cwd/title is enriched -- read-only, best effort -- from
     the sibling session-store.db. No subagent tree (every session is one depth-0 node);
-    sessions with no recorded usage are dropped.
+    sessions with no recorded usage are dropped. Implements the **Turns** opt-in
+    (message_timeline/supports_turns) with one row per kept call -- headerless, since
+    OTEL captures no prompt content unless content capture is explicitly enabled.
     """
 
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
@@ -124,7 +126,7 @@ class CopilotStore:
 
     @staticmethod
     def _new_session() -> dict:
-        return {"cwd": None, "ts_min": None, "models": {}}
+        return {"cwd": None, "ts_min": None, "models": {}, "turns": []}
 
     # --- OTEL attribute helpers ----------------------------------------------
     @staticmethod
@@ -474,6 +476,24 @@ class CopilotStore:
         acc["cache_write"] += c["cache_write"]
         acc["output"] += c["output"]
         acc["tokens_total"] += c["input"] + c["cache_read"] + c["cache_write"] + c["output"]
+        # One Turns row per kept call. OTEL captures no prompt content by default, so
+        # the rows are headerless (empty prompt_*); cost stays $0 and the tab's "$"
+        # view reprices each row from its token columns.
+        s["turns"].append(
+            {
+                "ts": ts if ts is not None else 0,  # epoch ms; sorts numerically
+                "depth": 0,  # Copilot has no subagent tree
+                "agent": "-",
+                "model_name": c["model"],
+                "cost": 0.0,
+                "input": c["input"],
+                "output": c["output"],
+                "reasoning": 0,
+                "cache_read": c["cache_read"],
+                "cache_write": c["cache_write"],
+                "tokens_total": c["input"] + c["cache_read"] + c["cache_write"] + c["output"],
+            }
+        )
 
     def _finalize(self, sid: str, s: dict) -> None:
         cwd, summary = self._load_meta().get(sid, ("", ""))
@@ -632,3 +652,25 @@ class CopilotStore:
         ):
             n[f] = int(round(n[f] * self.demo_scale))
         return n
+
+    # --- Turns tab opt-in ----------------------------------------------------
+    def message_timeline(self, workflow_id: str) -> list[dict]:
+        # Chronological per-turn rows (one per kept OTEL call). The GenAI conventions
+        # carry no prompt content unless content capture is explicitly enabled, so
+        # every row is headerless: empty prompt_* fields land the turns under the
+        # single "(no preceding prompt)" group -- still a per-call cost/time line.
+        s = self._parse().get(workflow_id)
+        if not s:
+            return []
+        out = []
+        for t in sorted(s["turns"], key=lambda r: r["ts"]):
+            r = dict(t)
+            r["time"] = self._ms_to_local(r.pop("ts"))
+            r["prompt_id"] = ""
+            r["prompt_title"] = ""
+            r["prompt_full"] = ""
+            out.append(r)
+        return out
+
+    def supports_turns(self, workflow_id: str) -> bool:
+        return True

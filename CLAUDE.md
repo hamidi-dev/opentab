@@ -149,7 +149,7 @@ Three logical layers (the class names below live in the files above — `Store` 
   backend-agnostic** (don't reach into SQL/JSONL). The per-session opt-ins ride on top via
   `getattr`, each gated by `supports_*(workflow_id)` so the merged view hides an
   unsupported tab rather than showing it empty (`CombinedStore` routes by owning backend).
-  Tools is **OpenCode-only**; Turns is also implemented here (it's message-based). Records
+  Tools is **OpenCode-only**; Turns is implemented by every backend except Hermes. Records
   **no per-message cost** → a *subscription* backend: `model_breakdown` reports `cost=0`
   with tokens in the `unpriced_*`/`root_unpriced_*` splits, so the normal `$` machinery
   gives **$0 / list-price estimate** with no special-casing. `records_cost=False` drives
@@ -180,7 +180,9 @@ Three logical layers (the class names below live in the files above — `Store` 
   spend, `unpriced_*` zeroed. So **`records_cost` is a per-instance attr** (probed in
   `__init__` so `CombinedStore` can read it before `workflows()`). `parent_session_id` forms
   a subagent tree; model label from `billing_provider` (`_PROVIDER_ALIASES`); `cwd` → git
-  root; archived excluded; SQL schema-adaptive (`_probe_columns`/`_select_sql`).
+  root; archived excluded; SQL schema-adaptive (`_probe_columns`/`_select_sql`). **No Turns**:
+state.db has a `messages` table but its `token_count` is never populated (verified against
+a real DB, 2026-07), so there is no per-message usage to timeline.
 - **`CsvStore`** — fifth backend over a **CSV of logged API requests** (one row per
   request, generic), same methods; the simplest backend. Headers matched
   **case-insensitively with aliases** (`_FIELD_ALIASES`/`_resolve_headers`): required are a
@@ -193,7 +195,9 @@ Three logical layers (the class names below live in the files above — `Store` 
   cache-write); models provider-prefixed (`_infer_provider`/`_prefix_model`:
   claude→`anthropic/`, gpt/o3→`openai/`, gemini→`google/`). No subagent tree; no
   `session_id` → one synthetic session per **(date, project)**; `project` → git root;
-  malformed rows skipped, never crash; usage-less sessions dropped.
+  malformed rows skipped, never crash; usage-less sessions dropped. Implements **Turns**
+(each row is one turn; the optional `prompt`/`prompt_id`/`request_id` columns feed the ▸
+grouping and the regenerate/append dedup) — `JsonlStore` inherits this machinery.
 - **`CopilotStore`** — sixth backend over the **GitHub Copilot CLI** OpenTelemetry export
   (`~/.copilot/otel/**/*.jsonl` + `$COPILOT_OTEL_FILE_EXPORTER_PATH`), same methods. The CLI
   records tokens **only** in this **opt-in** OTEL export (set the env var, or point
@@ -207,7 +211,8 @@ Three logical layers (the class names below live in the files above — `Store` 
   `cache_creation`; reasoning folded into output; a `total_tokens`-only record back-fills).
   Models provider-prefixed (as `CsvStore`). OTEL has **no cwd**, so each session's dir/title
   is enriched **read-only, best effort** from the sibling `session-store.db` (`_load_meta`).
-  No subagent tree; usage-less sessions dropped.
+  No subagent tree; usage-less sessions dropped. **Turns** rows are one per kept call and
+  **headerless** (OTEL captures no prompt content unless content capture is enabled).
 - **`VscodeStore`** — backend over **Copilot Chat in VS Code**, read from VS Code core's
   own chat-session store (`<User>/workspaceStorage/<hash>/chatSessions/*` +
   `globalStorage/emptyWindowChatSessions/*`, across the Code / Code - Insiders / VSCodium
@@ -251,6 +256,8 @@ Three logical layers (the class names below live in the files above — `Store` 
   `totalTokens`-only back-fills output). A `session` record gives id + **cwd** (→ git root),
   `user` gives the title, `assistant` carries `usage`; models already provider-qualified;
   assistant messages dedupe by `id`. No subagent tree; usage-less sessions dropped.
+  Implements **Turns** (one row per assistant message, ▸-grouped by user prompt; a
+  subscription turn stays $0 so `$` estimates it, a metered turn carries real spend).
 - **`OpenClawStore`** — eighth backend over **OpenClaw** gateway NDJSON
   (`~/.openclaw/agents/<agent>/sessions/<id>.jsonl`, `$OPENCLAW_DIR`/`--openclaw-dir`), same
   methods. Like pi it writes a per-message `usage.cost` (an **object**, only `.total` read)
@@ -266,12 +273,13 @@ Three logical layers (the class names below live in the files above — `Store` 
   family (the `CsvStore` pattern); **the project is the agent** (the `agents/` dir, not
   OpenClaw's generic cwd); messages dedupe by record `id` across live + archived
   (`.jsonl.reset.`/`.jsonl.deleted.`). No subagent tree; usage-less sessions dropped.
+  Implements **Turns** exactly like pi (epoch-seconds timestamps).
 - **`JsonlStore`** — ninth backend over a **JSONL/NDJSON of logged API requests** (one JSON
   object per line, generic). **Subclasses `CsvStore`** — its per-line twin — inheriting
   OpenAI-style token accounting, mixed per-row cost (`records_cost` per-instance;
   `cost_usd`/`credits`), provider-prefixed models, synthetic `(date, project)` sessions,
   git-root fold, and demo; only the parser (`json.loads` per line) and the `_KEYS` alias map
-  differ. **Unlike CSV** it keeps each line as a turn and implements **Turns**
+  differ. Like CSV it keeps each line as a turn for **Turns**
   (`message_timeline`/`supports_turns`): each request is one LLM step ordered by time, the
   optional per-line `prompt` (else `prompt_id`) grouping consecutive same-prompt turns under
   one `▸` header (the `ClaudeStore` pattern); a stable `request_id` dedupes a
@@ -342,7 +350,8 @@ full-screen. The web needs no counterpart: its sidebar is permanent. Overlays ar
 view: `self.trends` (T), `self.help` (?), `self.show_prices` (P). Detail tabs per zoom level are the class
 tuples `month_tabs`/`day_tabs`/`project_tabs`/`workflow_tabs`. `current_tabs()` is the
 source of truth (don't index a class tuple directly): it appends, in order, a **Turns**
-tab (when `supports_turns(id)` — OpenCode + Claude) and a **Tools** tab (when
+tab (when `supports_turns(id)` — every backend except Hermes, whose DB records no
+per-message usage) and a **Tools** tab (when
 `supports_tools(id)` — OpenCode only) to the *selected* session's `workflow_tabs`, each
 gated per-session so the merged view hides an unsupported tab rather than showing it
 empty, and injects **Sources** in the merged view — so `draw_detail` dispatches the
@@ -395,14 +404,18 @@ re-colors the SVG charts behind the picker.
   **not** the tool's own output size. `detail_tools` aggregates those `(tool, model)`
   rows per tool and per server (`tool_namespace`: built-in vs `server_*` MCP prefix) and
   reprices `$0` rows under `$` exactly like `_priced_nodes` does for subagents.
-- The **Turns tab** (per-turn cost over time, OpenCode + Claude) is the same lazy
+- The **Turns tab** (per-turn cost over time; **every backend except Hermes** — its
+  state.db has a `messages` table but `token_count` is never populated, so there is no
+  per-message usage to show) is the same lazy
   per-session trade-off: `store.message_timeline` returns every assistant message (one
   LLM step) in the session subtree ordered by time, memoized in `_turns_by_session`
   (cleared on reload / source switch, demo-scaled by `_scale_demo_turns`). It also pulls
   the `user` messages so each turn carries the **owning prompt** (the most recent user
   message in time owns every turn until the next): OpenCode titles it from
   `summary.title` → first text part, Claude from the first real prompt text (reusing
-  `_prompt_text`'s wrapper/tool-result skipping). `detail_turns` reprices `$0` turns
+  `_prompt_text`'s wrapper/tool-result skipping); pi/OpenClaw/Codex reuse Claude's
+  lockstep prompt-assignment, CSV/JSONL group by their per-row `prompt` column, and
+  Copilot's rows are **headerless** (OTEL captures no prompt content by default). `detail_turns` reprices `$0` turns
   under `$` like the Tools tab, **groups** turns under a `▸ <prompt>` header (rendered in
   the orange accent via a `draw_detail` prefix case) carrying that prompt's subtotal, and
   renders a running **Cumulative** column across the whole session — the point of the tab

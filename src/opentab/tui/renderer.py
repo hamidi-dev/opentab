@@ -2048,7 +2048,7 @@ class Renderer:
         if not self.session_supports_turns(workflow.id):
             return [
                 "# Turns",
-                "A per-turn timeline is only available for OpenCode and Claude Code sessions.",
+                "This session's source records no per-turn usage.",
             ]
         rows = self.session_turn_rows(workflow.id)
         if not rows:
@@ -2149,8 +2149,9 @@ class Renderer:
                         "h / l",
                         "switch detail tabs",
                         "years/months: Overview · Models · Projects · Sessions; days drop Models",
-                        "a session adds Turns (per-turn cost, OpenCode + Claude) and Tools "
-                        "(per-tool / MCP spend, OpenCode); Sources joins in the merged 'all' view",
+                        "a session adds Turns (per-turn cost over time; every source that "
+                        "records per-step usage) and Tools (per-tool / MCP spend, OpenCode); "
+                        "Sources joins in the merged 'all' view",
                         "on Turns, z (or clicking a ▸ header) unfolds the whole prompt text",
                     ),
                     ("j / k", "move in the list (↑/↓ too), or scroll the detail pane"),

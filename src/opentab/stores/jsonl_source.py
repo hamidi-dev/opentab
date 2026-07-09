@@ -16,10 +16,9 @@ class JsonlStore(CsvStore):
     attr), provider-prefixed models, synthetic-session fallback, the priced/unpriced
     split and demo handling; only the parser (NDJSON instead of csv.DictReader) differs.
 
-    What JSONL adds *over* CSV is per-request structure, so this backend also implements
-    the Turns tab (message_timeline/supports_turns) -- something CSV can't do well. Each
-    line is one API request = one LLM step ("turn"); the optional per-line `prompt`
-    groups turns under the user message that triggered them, the way OpenCode/Claude do.
+    Like CSV (which shares the machinery), each line is one API request = one LLM step
+    ("turn") on the Turns tab; the optional per-line `prompt` groups turns under the
+    user message that triggered them, the way OpenCode/Claude do.
 
     One JSON object per line (UTF-8, NDJSON -- *not* a JSON array). Keys are matched by a
     small alias set; required are a timestamp, a model, and input/output token counts.
@@ -125,14 +124,6 @@ class JsonlStore(CsvStore):
             return False
         return False
 
-    # --- accumulation --------------------------------------------------------
-    @staticmethod
-    def _new_session() -> dict:
-        s = CsvStore._new_session()
-        s["turns"] = []  # one per request, for the Turns tab (chronological)
-        s["seen"] = set()  # request ids already counted (regenerate/append dedup)
-        return s
-
     # --- parsing -------------------------------------------------------------
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
@@ -231,26 +222,5 @@ class JsonlStore(CsvStore):
             }
         )
 
-    # --- Turns tab opt-in ----------------------------------------------------
-    def message_timeline(self, workflow_id: str) -> list[dict]:
-        # Chronological per-turn rows. ISO/canonical "YYYY-MM-DD HH:MM:SS" timestamps
-        # sort in time order; a turn's prompt_id (the explicit id, else the prompt text)
-        # groups consecutive same-prompt turns under one "▸" header, like the other
-        # backends. App._scale_demo_turns hides magnitudes in demo, like Tools.
-        s = self._parse().get(workflow_id)
-        if not s:
-            return []
-        out = []
-        for t in sorted(s["turns"], key=lambda r: r["ts"]):
-            r = dict(t)
-            r["time"] = r.pop("ts")  # already canonical "YYYY-MM-DD HH:MM:SS" (local)
-            prompt = r.pop("prompt", "")
-            explicit = r.pop("prompt_id", "")
-            r["prompt_id"] = explicit or prompt  # group consecutive same-prompt turns
-            r["prompt_title"] = prompt
-            r["prompt_full"] = r.get("prompt_full") or prompt
-            out.append(r)
-        return out
-
-    def supports_turns(self, workflow_id: str) -> bool:
-        return True
+    # The Turns tab opt-in (message_timeline/supports_turns) is inherited from
+    # CsvStore -- both backends keep one turn per request row, same shape.

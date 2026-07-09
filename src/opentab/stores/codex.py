@@ -9,7 +9,7 @@ import random
 import re
 
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
-from opentab.formatting import iso_to_local
+from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
 from opentab.util import git_root, read_files_parallel
 
@@ -41,6 +41,9 @@ class CodexStore:
 
     Codex has no Task-subagent tree, so every session is a single depth-0 node (root
     == total). Sessions with no recorded token usage (legacy/aborted) are dropped.
+    Implements the **Turns** opt-in (message_timeline/supports_turns): every accepted
+    token_count delta is one turn row, grouped under the ▸ user_message that triggered
+    it (the ClaudeStore lockstep pattern); cost stays $0, so "$" estimates each row.
     """
 
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
@@ -93,6 +96,8 @@ class CodexStore:
             "ts_meta": None,  # session_meta.timestamp, preferred for created_at
             "title_prompt": None,
             "models": {},  # model_name -> acc (no root/sub split: Codex is flat)
+            "turns": [],  # one per accepted token_count delta, for the Turns tab
+            "prompts": [],  # user_message events, for the Turns tab's ▸ grouping
         }
 
     # --- parsing -------------------------------------------------------------
@@ -160,14 +165,19 @@ class CodexStore:
                 # rollouts omit kind; only "plain" appears on newer ones), and
                 # collapse whitespace since Codex prompts often span lines with
                 # @file mentions that would otherwise break the one-line title cell.
-                if not s["title_prompt"]:
-                    txt = p.get("message")
-                    if isinstance(txt, str) and txt.strip():
+                txt = p.get("message")
+                if isinstance(txt, str) and txt.strip():
+                    if not s["title_prompt"]:
                         s["title_prompt"] = " ".join(txt.split())[:80]
+                    # Every prompt is kept (raw, line breaks intact) for the Turns
+                    # tab's ▸ grouping; the record timestamp doubles as its id.
+                    s["prompts"].append({"ts": ts or "", "id": ts or txt, "title": txt.strip()})
             elif typ == "event_msg" and p.get("type") == "token_count":
-                prev = self._apply_token_count(s, p.get("info"), cur_model, prev)
+                prev = self._apply_token_count(s, p.get("info"), cur_model, prev, ts)
 
-    def _apply_token_count(self, s: dict, info, cur_model: str | None, prev: tuple) -> tuple:
+    def _apply_token_count(
+        self, s: dict, info, cur_model: str | None, prev: tuple, ts=None
+    ) -> tuple:
         # Returns the new cumulative tuple; folds one turn's delta into the session.
         if not isinstance(info, dict):
             return prev
@@ -193,11 +203,30 @@ class CodexStore:
         acc = s["models"].get(model_name)
         if acc is None:
             acc = s["models"][model_name] = self._new_acc()
+        uncached = max(0, d_in - d_cached)
         acc["runs"] += 1
-        acc["input"] += max(0, d_in - d_cached)  # input_tokens includes the cached read
+        acc["input"] += uncached  # input_tokens includes the cached read
         acc["cache_read"] += max(0, d_cached)
         acc["output"] += max(0, d_out)
         acc["tokens_total"] += max(0, d_in) + max(0, d_out)
+        # One Turns row per accepted delta -- the per-turn slice of the cumulative
+        # total the block above just attributed. Cost stays $0 (Codex records none);
+        # the Turns tab's "$" view reprices each row from its token columns.
+        s["turns"].append(
+            {
+                "ts": ts or "",
+                "depth": 0,  # Codex has no subagent tree
+                "agent": "-",
+                "model_name": model_name,
+                "cost": 0.0,
+                "input": uncached,
+                "output": max(0, d_out),
+                "reasoning": 0,
+                "cache_read": max(0, d_cached),
+                "cache_write": 0,
+                "tokens_total": max(0, d_in) + max(0, d_out),
+            }
+        )
         return cur
 
     def _finalize(self, sid: str, s: dict) -> None:
@@ -354,3 +383,31 @@ class CodexStore:
         ):
             n[f] = int(round(n[f] * self.demo_scale))
         return n
+
+    # --- Turns tab opt-in ----------------------------------------------------
+    def message_timeline(self, workflow_id: str) -> list[dict]:
+        # Chronological per-turn rows for the Turns tab (the ClaudeStore pattern):
+        # ISO timestamps sort lexicographically, and walking the two time-sorted
+        # streams in lockstep tags each turn with the latest prompt at ts <= the
+        # turn's ts. Real rows -- App._scale_demo_turns hides magnitudes in demo.
+        s = self._parse().get(workflow_id)
+        if not s:
+            return []
+        prompts = sorted(s["prompts"], key=lambda p: p["ts"])
+        out = []
+        pi, cur_id, cur_title, cur_full = 0, "", "", ""
+        for t in sorted(s["turns"], key=lambda r: r["ts"]):
+            while pi < len(prompts) and prompts[pi]["ts"] <= t["ts"]:
+                cur_id, cur_full = prompts[pi]["id"], prompts[pi]["title"]
+                cur_title = _clean_prompt(cur_full)
+                pi += 1
+            r = dict(t)
+            r["time"] = iso_to_local(r.pop("ts"))
+            r["prompt_id"] = cur_id
+            r["prompt_title"] = cur_title
+            r["prompt_full"] = cur_full
+            out.append(r)
+        return out
+
+    def supports_turns(self, workflow_id: str) -> bool:
+        return True

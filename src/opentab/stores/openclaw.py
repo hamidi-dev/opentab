@@ -9,6 +9,7 @@ import random
 from datetime import datetime, timezone
 
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
+from opentab.formatting import _clean_prompt
 from opentab.models import Workflow
 from opentab.util import read_files_parallel
 
@@ -263,6 +264,8 @@ class OpenClawStore:
             "title_prompt": None,
             "models": {},
             "seen_msgs": set(),  # record ids already counted (resume/archive dedup)
+            "turns": [],  # one per assistant message, for the Turns tab
+            "prompts": [],  # user messages, for the Turns tab's ▸ grouping
         }
 
     # --- parsing -------------------------------------------------------------
@@ -391,22 +394,29 @@ class OpenClawStore:
             if mts is not None and (s["ts_min"] is None or mts < s["ts_min"]):
                 s["ts_min"] = mts
             role = msg.get("role")
+            mid = o.get("id") or msg.get("idempotencyKey")
+            rts = mts if mts is not None else ts
             if role == "user":
-                if not s["title_prompt"]:
-                    txt = self._user_text(msg.get("content"))
-                    if txt.strip():
+                txt = self._user_text(msg.get("content"))
+                if txt.strip():
+                    if not s["title_prompt"]:
                         s["title_prompt"] = " ".join(txt.split())[:80]
+                    if mid is None or mid not in s["seen_msgs"]:
+                        if mid is not None:
+                            s["seen_msgs"].add(mid)
+                        s["prompts"].append(
+                            {"ts": rts or 0.0, "id": str(mid or rts or ""), "title": txt.strip()}
+                        )
                 continue
             if role != "assistant" or not isinstance(msg.get("usage"), dict):
                 continue
-            mid = o.get("id") or msg.get("idempotencyKey")
             if mid is not None:
                 if mid in s["seen_msgs"]:
                     continue  # same assistant step in a resumed/archived file
                 s["seen_msgs"].add(mid)
-            self._apply_usage(s, msg, current_model, current_provider)
+            self._apply_usage(s, msg, current_model, current_provider, rts)
 
-    def _apply_usage(self, s: dict, msg: dict, current_model, current_provider) -> None:
+    def _apply_usage(self, s: dict, msg: dict, current_model, current_provider, ts=None) -> None:
         usage = msg["usage"]
         inp = self._int(usage.get("input"))
         out = self._int(usage.get("output"))
@@ -431,7 +441,8 @@ class OpenClawStore:
         acc["cache_write"] += cw
         acc["tokens_total"] += inp + out + cr + cw
         cost = self._cost_total(usage)
-        if cost > 0 and not self._is_subscription(provider, msg.get("api")):
+        metered = cost > 0 and not self._is_subscription(provider, msg.get("api"))
+        if metered:
             acc["cost"] += cost  # metered route with real spend -> tokens stay priced
         else:
             # Subscription/plan route (cost is a list-price estimate, not spend) OR no recorded
@@ -440,6 +451,23 @@ class OpenClawStore:
             acc["u_output"] += out
             acc["u_cache_read"] += cr
             acc["u_cache_write"] += cw
+        # One Turns row per assistant message; a subscription turn stays $0 so the
+        # tab's "$" view reprices it from the token columns (as the rollups do).
+        s["turns"].append(
+            {
+                "ts": ts or 0.0,  # epoch seconds; sorts numerically
+                "depth": 0,  # OpenClaw has no subagent tree
+                "agent": "-",
+                "model_name": model,
+                "cost": round(cost, 6) if metered else 0.0,
+                "input": inp,
+                "output": out,
+                "reasoning": 0,
+                "cache_read": cr,
+                "cache_write": cw,
+                "tokens_total": inp + out + cr + cw,
+            }
+        )
 
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title_prompt"] or "(untitled)"
@@ -612,3 +640,31 @@ class OpenClawStore:
         ):
             n[f] = int(round(n[f] * self.demo_scale))
         return n
+
+    # --- Turns tab opt-in ----------------------------------------------------
+    def message_timeline(self, workflow_id: str) -> list[dict]:
+        # Chronological per-turn rows for the Turns tab (the ClaudeStore pattern,
+        # on epoch-seconds timestamps): walking the two time-sorted streams in
+        # lockstep tags each turn with the latest prompt at ts <= the turn's ts.
+        # Real rows -- App._scale_demo_turns hides magnitudes in demo.
+        s = self._parse().get(workflow_id)
+        if not s:
+            return []
+        prompts = sorted(s["prompts"], key=lambda p: p["ts"])
+        out = []
+        pi, cur_id, cur_title, cur_full = 0, "", "", ""
+        for t in sorted(s["turns"], key=lambda r: r["ts"]):
+            while pi < len(prompts) and prompts[pi]["ts"] <= t["ts"]:
+                cur_id, cur_full = prompts[pi]["id"], prompts[pi]["title"]
+                cur_title = _clean_prompt(cur_full)
+                pi += 1
+            r = dict(t)
+            r["time"] = self._fmt_epoch(r.pop("ts") or None)
+            r["prompt_id"] = cur_id
+            r["prompt_title"] = cur_title
+            r["prompt_full"] = cur_full
+            out.append(r)
+        return out
+
+    def supports_turns(self, workflow_id: str) -> bool:
+        return True

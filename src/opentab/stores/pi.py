@@ -9,7 +9,7 @@ import random
 import re
 
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
-from opentab.formatting import iso_to_local
+from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
 from opentab.util import git_root, read_files_parallel
 
@@ -47,7 +47,10 @@ class PiStore:
     `moonshotai/kimi-k2.6`), so they're used verbatim for pricing and the Providers rollup.
     Assistant messages are deduped by their stable `id` (resumed/forked files overlap). No
     subagent tree (every session is one depth-0 node); sessions with no recorded usage are
-    dropped.
+    dropped. Implements the **Turns** opt-in (message_timeline/supports_turns): every
+    assistant message is one turn row, grouped under the ▸ user prompt that triggered it
+    (the ClaudeStore lockstep pattern); a subscription turn's cost is $0 so "$" estimates
+    it, a metered turn carries its real spend.
     """
 
     combined = False
@@ -177,6 +180,8 @@ class PiStore:
             "title_prompt": None,
             "models": {},
             "seen_msgs": set(),  # assistant ids already counted (resume/fork dedup)
+            "turns": [],  # one per assistant message, for the Turns tab
+            "prompts": [],  # user messages, for the Turns tab's ▸ grouping
         }
 
     # --- parsing -------------------------------------------------------------
@@ -267,22 +272,28 @@ class PiStore:
             if not isinstance(msg, dict):
                 continue
             role = msg.get("role")
+            mid = o.get("id")
             if role == "user":
-                if not s["title_prompt"]:
-                    txt = self._user_text(msg.get("content"))
-                    if txt.strip():
+                txt = self._user_text(msg.get("content"))
+                if txt.strip():
+                    if not s["title_prompt"]:
                         s["title_prompt"] = " ".join(txt.split())[:80]
+                    if mid is None or mid not in s["seen_msgs"]:
+                        if mid is not None:
+                            s["seen_msgs"].add(mid)
+                        s["prompts"].append(
+                            {"ts": ts or "", "id": str(mid or ts or ""), "title": txt.strip()}
+                        )
                 continue
             if role != "assistant" or not isinstance(msg.get("usage"), dict):
                 continue
-            mid = o.get("id")
             if mid is not None:
                 if mid in s["seen_msgs"]:
                     continue  # same assistant step in a resumed/forked file
                 s["seen_msgs"].add(mid)
-            self._apply_usage(s, msg)
+            self._apply_usage(s, msg, ts)
 
-    def _apply_usage(self, s: dict, msg: dict) -> None:
+    def _apply_usage(self, s: dict, msg: dict, ts=None) -> None:
         usage = msg["usage"]
         inp = self._int(usage.get("input"))
         out = self._int(usage.get("output"))
@@ -307,7 +318,8 @@ class PiStore:
         acc["cache_write"] += cw
         acc["tokens_total"] += inp + out + cr + cw
         cost = self._cost_total(usage)
-        if cost > 0 and not self._is_subscription(msg.get("provider"), msg.get("api")):
+        metered = cost > 0 and not self._is_subscription(msg.get("provider"), msg.get("api"))
+        if metered:
             acc["cost"] += cost  # metered route with real spend -> tokens stay priced
         else:
             # Subscription/plan route (its cost is a list-price estimate, not spend) OR no
@@ -316,6 +328,24 @@ class PiStore:
             acc["u_output"] += out
             acc["u_cache_read"] += cr
             acc["u_cache_write"] += cw
+        # One Turns row per assistant message. A subscription turn's cost is $0 (its
+        # recorded figure is a list-price estimate, not spend) so the tab's "$" view
+        # reprices it from the token columns, exactly like the session rollups.
+        s["turns"].append(
+            {
+                "ts": ts or "",
+                "depth": 0,  # pi has no subagent tree
+                "agent": "-",
+                "model_name": model,
+                "cost": round(cost, 6) if metered else 0.0,
+                "input": inp,
+                "output": out,
+                "reasoning": 0,
+                "cache_read": cr,
+                "cache_write": cw,
+                "tokens_total": inp + out + cr + cw,
+            }
+        )
 
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title_prompt"] or "(untitled)"
@@ -492,3 +522,31 @@ class PiStore:
         ):
             n[f] = int(round(n[f] * self.demo_scale))
         return n
+
+    # --- Turns tab opt-in ----------------------------------------------------
+    def message_timeline(self, workflow_id: str) -> list[dict]:
+        # Chronological per-turn rows for the Turns tab (the ClaudeStore pattern):
+        # ISO timestamps sort lexicographically, and walking the two time-sorted
+        # streams in lockstep tags each turn with the latest prompt at ts <= the
+        # turn's ts. Real rows -- App._scale_demo_turns hides magnitudes in demo.
+        s = self._parse().get(workflow_id)
+        if not s:
+            return []
+        prompts = sorted(s["prompts"], key=lambda p: p["ts"])
+        out = []
+        pi_, cur_id, cur_title, cur_full = 0, "", "", ""
+        for t in sorted(s["turns"], key=lambda r: r["ts"]):
+            while pi_ < len(prompts) and prompts[pi_]["ts"] <= t["ts"]:
+                cur_id, cur_full = prompts[pi_]["id"], prompts[pi_]["title"]
+                cur_title = _clean_prompt(cur_full)
+                pi_ += 1
+            r = dict(t)
+            r["time"] = iso_to_local(r.pop("ts"))
+            r["prompt_id"] = cur_id
+            r["prompt_title"] = cur_title
+            r["prompt_full"] = cur_full
+            out.append(r)
+        return out
+
+    def supports_turns(self, workflow_id: str) -> bool:
+        return True

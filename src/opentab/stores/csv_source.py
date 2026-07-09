@@ -8,7 +8,7 @@ import random
 from datetime import datetime, timezone
 
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
-from opentab.formatting import iso_to_local
+from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
 from opentab.util import git_root
 
@@ -29,8 +29,11 @@ class CsvStore:
         output     output_tokens|completion_tokens includes reasoning (priced once at output)
         cached     cached_tokens|cache_read        cached portion of input (default 0)
         session    session_id|conversation_id      groups requests into one session
+        request    request_id|req_id|id            stable per-request id (dedup)
+        prompt     prompt_text|user_prompt          the user message -> Turns grouping
+        prompt_id  prompt_id                        stable id for a prompt (optional)
         project    repo|workspace|directory|cwd    path -> git root; bare name as-is
-        title      name|label|prompt               session label (default first prompt)
+        title      name|label                      session label (default first prompt)
         cost       cost_usd|credits                credits x $0.01; presence -> metered
 
     A logged API request carries no dollar cost (Copilot's usage-based credit billing is
@@ -47,7 +50,10 @@ class CsvStore:
     gpt|o3->openai/, gemini->google/) for pricing and the Providers rollup. OpenAI-style
     accounting: input_tokens includes the cached read, so input is split into uncached +
     cache_read (cache_write stays 0). No subagent tree -- every session is one depth-0
-    node. Sessions with no recorded token usage are dropped.
+    node. Sessions with no recorded token usage are dropped. Implements the **Turns**
+    opt-in (message_timeline/supports_turns): each row is one turn, the optional
+    `prompt` column grouping them under ▸ headers (JsonlStore, the per-line twin,
+    inherits this machinery).
     """
 
     combined = False
@@ -90,7 +96,13 @@ class CsvStore:
         "title": "title",
         "name": "title",
         "label": "title",
-        "prompt": "title",
+        "prompt": "prompt",
+        "prompt_text": "prompt",
+        "user_prompt": "prompt",
+        "prompt_id": "prompt_id",
+        "request_id": "request",
+        "req_id": "request",
+        "id": "request",
         "cost_usd": "cost",
         "cost": "cost",
         "credits": "cost",
@@ -255,7 +267,14 @@ class CsvStore:
 
     @staticmethod
     def _new_session() -> dict:
-        return {"created_at": "", "title": None, "project": "", "models": {}}
+        return {
+            "created_at": "",
+            "title": None,
+            "project": "",
+            "models": {},
+            "turns": [],  # one per request row, for the Turns tab (chronological)
+            "seen": set(),  # request ids already counted (regenerate/append dedup)
+        }
 
     # --- parsing -------------------------------------------------------------
     def _parse(self) -> dict[str, dict]:
@@ -303,14 +322,22 @@ class CsvStore:
             # meaningful. Stable so reloads/merges don't churn ids.
             sid = "csv:" + (ts[:10] or "?") + "|" + (project or "?")
         s = sessions.setdefault(sid, self._new_session())
+        rid = (g("request") or "").strip()
+        if rid:
+            if rid in s["seen"]:
+                return  # regenerated/appended overlap -- count each request once
+            s["seen"].add(rid)
         if ts and (not s["created_at"] or ts < s["created_at"]):
             s["created_at"] = ts
         if not s["project"] and project:
             s["project"] = project
-        if s["title"] is None:
+        raw_prompt = g("prompt")
+        full = raw_prompt.strip() if isinstance(raw_prompt, str) else ""
+        prompt = _clean_prompt(full)
+        pid = (g("prompt_id") or "").strip()
+        if s["title"] is None:  # title precedence: explicit title > first prompt
             title = (g("title") or "").strip()
-            if title:
-                s["title"] = " ".join(title.split())[:80]
+            s["title"] = " ".join(title.split())[:80] if title else (prompt[:80] or None)
 
         model = self._prefix_model(g("model") or "")
         acc = s["models"].get(model)
@@ -323,6 +350,25 @@ class CsvStore:
         acc["output"] += out
         acc["cost"] += cost
         acc["tokens_total"] += uncached + cached + out
+
+        s["turns"].append(
+            {
+                "ts": ts or "",
+                "depth": 0,  # logged requests have no subagent tree
+                "agent": "-",
+                "model_name": model,
+                "cost": round(cost, 6),
+                "input": uncached,
+                "output": out,
+                "reasoning": 0,
+                "cache_read": cached,
+                "cache_write": 0,
+                "tokens_total": uncached + cached + out,
+                "prompt": prompt,
+                "prompt_full": full,  # uncapped; the Turns tab can expand it
+                "prompt_id": pid,
+            }
+        )
 
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title"] or "(untitled)"
@@ -494,3 +540,27 @@ class CsvStore:
         ):
             n[f] = int(round(n[f] * self.demo_scale))
         return n
+
+    # --- Turns tab opt-in ----------------------------------------------------
+    def message_timeline(self, workflow_id: str) -> list[dict]:
+        # Chronological per-turn rows. Canonical "YYYY-MM-DD HH:MM:SS" timestamps
+        # sort in time order; a turn's prompt_id (the explicit id, else the prompt
+        # text) groups consecutive same-prompt turns under one "▸" header, like the
+        # other backends. App._scale_demo_turns hides magnitudes in demo, like Tools.
+        s = self._parse().get(workflow_id)
+        if not s:
+            return []
+        out = []
+        for t in sorted(s["turns"], key=lambda r: r["ts"]):
+            r = dict(t)
+            r["time"] = r.pop("ts")  # already canonical "YYYY-MM-DD HH:MM:SS" (local)
+            prompt = r.pop("prompt", "")
+            explicit = r.pop("prompt_id", "")
+            r["prompt_id"] = explicit or prompt  # group consecutive same-prompt turns
+            r["prompt_title"] = prompt
+            r["prompt_full"] = r.get("prompt_full") or prompt
+            out.append(r)
+        return out
+
+    def supports_turns(self, workflow_id: str) -> bool:
+        return True
