@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/a84029a3-7887-42c7-ba5a-d8c905f3fa19" alt="OpenTab web browser — the same data as a self-contained page" width="900">
+  <img src="https://github.com/user-attachments/assets/b497c617-8a6c-4132-b6e2-aaf5078b8a4e" alt="OpenTab web browser — the same data as a self-contained page" width="900">
   <br><sub><b>Also a web browser</b> — <code>opentab --web</code> renders the same data as one self-contained, shareable page</sub>
 </p>
 
@@ -239,22 +239,11 @@ are never mistaken for real ones.
 
 `opentab --html` writes the whole browser as **one self-contained HTML file** —
 no server, no dependencies, works from disk or any static host. It's the TUI in
-the browser: the same lazygit-style Years / Months / Days (or Projects) sidebar,
-the same detail tabs (Overview / Models / Projects / Sessions / Subagents), the
-calendar spend heatmap, and the `$` what-if toggle — driven by the same keys
-(`j`/`k`, `Tab`, `h`/`l`, `Esc`, `$`, `p`/`t`) or the mouse. Drill in by year /
-month / day / project / session (the browser's back button steps out, and every
-view is a shareable deep link), and every table sorts on a header click. Press
-`T` (or the **trends** button) for the full Trends overlay — Daily / Weekly /
-Monthly cost charts, the calendar heatmap, and Model / Provider / Source
-rankings, with `h`/`l` for tabs and `j`/`k` to page (click a ranking row for
-its sessions, and a session to open it); `P` opens the models.dev
-price table (`eff $/M` at your token mix, heat-shaded, three layouts); and `R`
-(or the range chip) rescopes everything to a window (last 7/30/90 days, N months,
-this year, or a custom span). The **theme** button switches the palette live
-(opentab, Catppuccin Mocha/Latte, Tokyo Night/Day, Gruvbox, Nord, Dracula, Rosé
-Pine — light and dark) and remembers your pick; `--theme <name>` bakes the
-default. Combine with `--demo` for a page you can publish.
+the browser: the same sidebar, detail tabs, Trends and price-table overlays,
+live range scoping and colour themes — driven by the same keys or the mouse.
+Every view is a shareable deep link (the browser's back button steps out) and
+every table sorts on a header click. Combine with `--demo` for a page you can
+publish.
 
 `opentab --serve` serves the same browser on `http://localhost:8321` (`--port`)
 and adds what a static file can't have: the per-session **Turns** timeline and
@@ -265,47 +254,32 @@ shell association on Windows). It binds to localhost only — the browser shows 
 titles, project paths, and spend, so if you want it on another machine put it behind
 something like Tailscale (`--bind`), never a public interface.
 
-OpenTab opens on a stacked **Months / Days** sidebar (lazygit-style). `Tab` flips
-focus between the two panels. `Enter` **zooms** the focused month's or day's
-detail full-screen (Overview / Models / Projects / Sessions, switch with `h`/`l`). On the
-**Sessions** tab, `j`/`k` pick a session and `Enter` opens *that session's* own
-detail — cost split, model mix, and subagent tree. `Esc` steps back out.
-
 ### Keys
+
+OpenTab opens on a stacked **Months / Days** (or Projects) sidebar, lazygit-style:
+drill from a month or day into its detail tabs, from the Sessions tab into a
+single session — cost split, model mix, subagent tree — and step back out with
+`Esc`. Everything is discoverable in-app — **`?` shows the full keymap**, every
+panel and overlay documented. The short version:
 
 | Key | Action |
 |-----|--------|
-| `Tab` | Flip focus between the Months and Days panels |
-| `Enter` / `+` | Drill in: month/day zoom → (on Sessions tab) open a session |
-| `Esc` | Step back out (session → zoom → browse) |
-| `Shift-Tab` | Flip Months/Days focus while browsing; otherwise step back out |
-| `j`/`k` or arrows | Move in the current list / scroll detail |
-| `h`/`l` | Switch detail tabs |
-| Mouse | Wheel scrolls; click a row or tab to select; double-click to drill in; click a column header (Cost / Tokens / Title / …) to sort by it, again to reverse |
-| `g` / `G` | Top / bottom |
-| `R` | Set range (`all`, `30d` or `30`, `2m`, `1y`, `2026`, `2026-05`, `YYYY-MM-DD..YYYY-MM-DD`); `2m`/`1y` are whole calendar months |
-| `a` | Show all time |
-| `s` / `S` | Cycle sort forward/backward for visible session, project, or subagent lists |
-| `i` | Ignore/unignore the selected project from project lists |
-| `I` | Show/hide ignored projects so they can be unignored |
-| `f` | Live fuzzy filter: the lists narrow and re-rank (best match first) as you type, fzf-style subsequence matching over title/project/id; `↑`/`↓` select while typing, `Enter` keeps the filter, `Esc` cancels, `Ctrl-U` clears the input, `x` clears it later |
-| `T` | Trends overlay — Daily / Weekly / Monthly cost charts + Model, Provider, and Source spend ranking (`h`/`l` tabs, `j`/`k` month/week, `$` toggles what-if). Every tab drills: on a chart `Enter` focuses it and `↑↓←→` walk a bar cursor, `Enter` opens that day/month (`Esc` returns to the chart); on a ranking `j`/`k` pick a row, `Enter` lists its sessions, `Enter` again opens one |
-| `$` | What-if pricing: re-price unpriced subscription/credit usage at models.dev API list prices |
-| `P` | Show the models.dev API price table OpenTab uses for `$` (press `r` inside to refresh it from models.dev) |
-| `e` | Export the current list (months/days/projects/sessions/subagents) to a CSV in the working dir |
-| `o` | Open the selected session's / project's directory |
-| `L` | Launch the selected session in its own tool (`opencode --session <id>` / `claude --resume <id>` / `codex resume <id>`). Inside tmux a one-key menu opens it in a new **w**indow, **s**plit, **v**split, or **p**opup (cd'd to the project), with **y** copying the `cd <project> && …` command to the clipboard; outside tmux the menu offers only the copy. See [Custom launchers](#custom-launchers) to route launches through your own tooling |
-| `c` | Switch data source — any present backend (OpenCode, Claude Code, Codex, Hermes, Copilot CLI, VS Code, pi, OpenClaw, CSV, JSONL), or all merged |
-| `C` | Colours — pick a theme (opentab, Catppuccin Mocha/Latte, Tokyo Night/Day, Gruvbox, Nord, Dracula, Rosé Pine — the same set as the web browser). `j`/`k` live-preview, `Enter` keeps, `Esc` reverts; light themes light up the whole screen. `--theme` sets it at launch |
-| `r` | Reload the database |
-| `?` | Help; `q` quits |
+| `j`/`k` · `h`/`l` · `Enter` · `Esc` | Move · switch tabs · drill in · step back out (`Tab` flips the sidebar panels) |
+| Mouse | Wheel scrolls, click selects, double-click drills, a column-header click sorts |
+| `T` | Trends — cost charts, the calendar heatmap, model/provider/source rankings; every tab drills down to a session |
+| `$` / `P` | What-if pricing at API list rates, and the price table behind it |
+| `R` / `a` | Scope to a date range (`30d`, `2026-05`, `start..end`, …) / back to all time |
+| `f` | Live fuzzy filter, fzf-style |
+| `c` / `C` / `D` | Switch data source · colour theme · demo mode — from anywhere, overlays included |
+| `L` | Relaunch the session in its own tool — tmux window/split/popup, or [your own launcher](#custom-launchers) |
+| `e` / `o` | Export the current view to CSV / open the project's directory |
+| `?` / `q` | Help / quit |
 
 The active **source, range, sort, ignored projects, and `$` what-if view are
 remembered between runs** (stored in `~/.config/opentab/state.json`; pass `--no-state`
-to disable, and `--demo` does not persist). An explicit `--source` overrides the saved
-one. Sub-cent costs render as `<$0.01` so they aren't confused with a red
-`$0.00`, which means *unpriced* (tokens with no local price). The Months and Days
-lists show a small bar scaled to the largest spend in view.
+to disable, and `--demo` does not persist). Sub-cent costs render as `<$0.01` so
+they aren't confused with a red `$0.00`, which means *unpriced* (tokens with no
+local price).
 
 ### Custom launchers
 
