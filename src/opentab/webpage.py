@@ -158,6 +158,8 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
   background:none;color:var(--ink2);cursor:pointer}
 #tabbar button.on{background:var(--accent);color:#141009;font-weight:700}
 #tabbar button:not(.on):hover{color:var(--ink)}
+#tabbar button.ld{opacity:.45;font-style:italic;animation:tabpulse 1.2s ease-in-out infinite}
+@keyframes tabpulse{50%{opacity:.8}}
 #tabbar .note{margin-left:auto;color:var(--mut);font-size:11px;padding:0 8px}
 
 /* breadcrumbs / footer */
@@ -756,8 +758,12 @@ function scopeWorkflows(sc) {
 function tabsFor(sc) {
   if (sc.kind === 's') {
     const t = ['Overview', 'Models', 'Subagents'];
-    if (EXTRAS.id === sc.id && EXTRAS.turns.length) t.push('Turns');
-    if (EXTRAS.id === sc.id && EXTRAS.tools.length) t.push('Tools');
+    const mine = EXTRAS.id === sc.id;
+    if (mine && EXTRAS.loading) t.push('Turns', 'Tools'); // placeholders while the fetch runs
+    else {
+      if (mine && EXTRAS.turns.length) t.push('Turns');
+      if (mine && EXTRAS.tools.length) t.push('Tools');
+    }
     return t;
   }
   const base = { all: ['Overview', 'Models', 'Projects', 'Sessions'],
@@ -1059,18 +1065,24 @@ function renderDetail(sc, ws) {
       { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => moneyCell(mCost(r)) },
       { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
     ], nodes) : h('div', { class: 'hint' }, 'no subagents in this session')));
-  } else if (TAB === 'Turns') root.appendChild(pane('Turns · cost over time', turnsTable(EXTRAS.turns)));
-  else if (TAB === 'Tools') root.appendChild(pane('Tools', toolsTable(EXTRAS.tools)));
+  } else if (TAB === 'Turns') root.appendChild(pane('Turns · cost over time',
+    EXTRAS.loading ? h('div', { class: 'hint' }, 'loading turns…') : turnsTable(EXTRAS.turns)));
+  else if (TAB === 'Tools') root.appendChild(pane('Tools',
+    EXTRAS.loading ? h('div', { class: 'hint' }, 'loading tools…') : toolsTable(EXTRAS.tools)));
 }
 
 /* ---------- chrome ---------- */
 function renderTabs(sc, tabs) {
   const bar = document.getElementById('tabbar');
   bar.textContent = '';
-  tabs.forEach(t => bar.appendChild(h('button', { class: t === TAB ? 'on' : null,
-    onclick: () => { TAB = t; render(false); } }, t)));
-  if (sc.kind === 's' && EXTRAS.id === sc.id && EXTRAS.loading)
-    bar.appendChild(h('span', { class: 'note' }, 'loading turns & tools…'));
+  const loading = sc.kind === 's' && EXTRAS.id === sc.id && EXTRAS.loading;
+  tabs.forEach(t => {
+    const ld = loading && (t === 'Turns' || t === 'Tools'); // placeholder while fetching
+    const cls = (t === TAB ? 'on ' : '') + (ld ? 'ld' : '');
+    bar.appendChild(h('button', { class: cls.trim() || null,
+      onclick: () => { TAB = t; render(false); } }, t + (ld ? ' ⋯' : '')));
+  });
+  if (loading) bar.appendChild(h('span', { class: 'note' }, 'loading turns & tools…'));
   else bar.appendChild(h('span', { class: 'note' }, scopeLabel(sc)));
 }
 function renderCrumbs(sc) {
