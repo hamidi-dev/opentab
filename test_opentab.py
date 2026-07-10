@@ -5095,12 +5095,11 @@ def test_claude_title_keeps_genuine_short_first_prompt():
 CODEX_SID = "0199aa8e-1b9e-7912-bcd4-9b00c8733ea6"
 
 
-def _codex_meta(sid, cwd, ts="2025-10-03T14:51:03.966Z"):
-    return {
-        "timestamp": ts,
-        "type": "session_meta",
-        "payload": {"id": sid, "timestamp": ts, "cwd": cwd, "git": {"branch": "main"}},
-    }
+def _codex_meta(sid, cwd, ts="2025-10-03T14:51:03.966Z", source=None):
+    payload = {"id": sid, "timestamp": ts, "cwd": cwd, "git": {"branch": "main"}}
+    if source is not None:  # e.g. the spawned-thread {"subagent": {"thread_spawn": ...}}
+        payload["source"] = source
+    return {"timestamp": ts, "type": "session_meta", "payload": payload}
 
 
 def _codex_turn(model, cwd, ts="2025-10-03T14:51:10.000Z"):
@@ -9935,6 +9934,68 @@ def test_jsonl_tool_field_accepts_a_list_or_delimited_string():
         rows = {r["tool"]: r for r in store.tool_breakdown("s1")}
         assert rows["Bash"]["tokens_total"] == 60 and rows["Read"]["tokens_total"] == 60
         assert rows["Edit"]["tokens_total"] == 60
+
+
+def test_codex_spawned_threads_fold_into_a_subagent_tree():
+    # Codex's collab mode writes a spawned thread as its own rollout whose
+    # session_meta.source carries the parent thread id; it must fold under the
+    # parent (out of the workflows list, into its totals/nodes/Turns/Tools)
+    # instead of showing as an unrelated session.
+    parent_sid = "11111111-1111-1111-1111-111111111111"
+    child_sid = "22222222-2222-2222-2222-222222222222"
+    spawn = {
+        "subagent": {
+            "thread_spawn": {
+                "parent_thread_id": parent_sid,
+                "depth": 1,
+                "agent_nickname": "researcher",
+            }
+        }
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _codex_rollout(
+            root,
+            parent_sid,
+            [
+                _codex_meta(parent_sid, cwd),
+                _codex_user("plan the feature", ts="2025-10-03T14:51:05.000Z"),
+                _codex_turn("gpt-5-codex", cwd),
+                _codex_call("update_plan", ts="2025-10-03T14:51:12.000Z"),
+                _codex_tokens(1000, 200, 0, 1200, ts="2025-10-03T14:51:20.000Z"),
+            ],
+        )
+        _codex_rollout(
+            root,
+            child_sid,
+            [
+                _codex_meta(child_sid, cwd, source=spawn),
+                _codex_turn("gpt-5-codex", cwd, ts="2025-10-03T14:52:00.000Z"),
+                _codex_call("shell_command", ts="2025-10-03T14:52:05.000Z"),
+                _codex_tokens(400, 100, 0, 500, ts="2025-10-03T14:52:10.000Z"),
+            ],
+        )
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        rows = store.workflows()
+        assert len(rows) == 1  # the spawned thread folded away
+        w = rows[0]
+        assert w.id == parent_sid and w.subagents == 1
+        assert w.total_tokens == 1200 + 500  # subtree total
+        nodes = store.workflow_nodes(parent_sid)
+        assert [(n["depth"], n["agent"]) for n in nodes] == [(0, "-"), (1, "researcher")]
+        assert nodes[1]["id"] == child_sid and nodes[1]["tokens_total"] == 500
+        # model rows: total covers the subtree, root_* only the parent's own share
+        mrow = [r for r in store.model_breakdown() if r["root_id"] == parent_sid]
+        assert len(mrow) == 1 and mrow[0]["tokens_total"] == 1700
+        assert mrow[0]["unpriced_output"] == 300 and mrow[0]["root_unpriced_output"] == 200
+        # Turns interleave the child's turn (agent-tagged); Tools cover the subtree.
+        t = store.message_timeline(parent_sid)
+        assert [(r["agent"], r["tokens_total"]) for r in t] == [("-", 1200), ("researcher", 500)]
+        tools = {r["tool"]: r["tokens_total"] for r in store.tool_breakdown(parent_sid)}
+        assert tools == {"update_plan": 1200, "shell_command": 500}
 
 
 def test_session_data_ready_flips_after_prefetch():

@@ -39,8 +39,14 @@ class CodexStore:
         is already counted inside output_tokens, so -- as in ClaudeStore -- it is folded
         into output and never priced twice.
 
-    Codex has no Task-subagent tree, so every session is a single depth-0 node (root
-    == total). Sessions with no recorded token usage (legacy/aborted) are dropped.
+    Codex's collab / multi-agent mode writes each spawned thread as its own rollout
+    file whose session_meta.source carries the parent thread id (_spawn_source), so
+    those fold into a subagent tree under their parent (_link_subagents): the child
+    leaves the workflows list, the root's totals cover the subtree (root_* keeps its
+    own share -- the ClaudeStore accounting), workflow_nodes lists the children with
+    their agent nickname/role, and Turns/Tools cover the whole tree. A plain session
+    stays a single depth-0 node. Sessions with no recorded token usage
+    (legacy/aborted) are dropped.
     Implements the **Turns** opt-in (message_timeline/supports_turns): every accepted
     token_count delta is one turn row, grouped under the ▸ user_message that triggered
     it (the ClaudeStore lockstep pattern); cost stays $0, so "$" estimates each row.
@@ -95,10 +101,29 @@ class CodexStore:
             "ts_min": None,
             "ts_meta": None,  # session_meta.timestamp, preferred for created_at
             "title_prompt": None,
-            "models": {},  # model_name -> acc (no root/sub split: Codex is flat)
+            "models": {},  # model_name -> acc (a session's own usage; trees fold later)
             "turns": [],  # one per accepted token_count delta, for the Turns tab
             "prompts": [],  # user_message events, for the Turns tab's ▸ grouping
+            "parent_id": None,  # ThreadSpawn.parent_thread_id for a spawned thread
+            "agent": None,  # the spawned thread's nickname/role, for the tree label
         }
+
+    @staticmethod
+    def _spawn_source(src) -> tuple[str, str] | None:
+        # session_meta.source for a thread Codex spawned as a subagent (its
+        # collab / multi-agent mode): serde's external tagging of
+        # SessionSource::SubAgent(SubAgentSource::ThreadSpawn{..}) gives
+        #   {"subagent": {"thread_spawn": {"parent_thread_id": ...,
+        #                 "agent_nickname"/"agent_role": ...}}}
+        # -> (parent thread id, agent label). Review/compact subagents
+        # ({"subagent": "review"}) carry no parent id and stay standalone roots.
+        sub = src.get("subagent") if isinstance(src, dict) else None
+        spawn = sub.get("thread_spawn") if isinstance(sub, dict) else None
+        parent = spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
+        if not parent:
+            return None
+        agent = spawn.get("agent_nickname") or spawn.get("agent_role") or "subagent"
+        return str(parent), str(agent)
 
     # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
@@ -119,7 +144,95 @@ class CodexStore:
         # Drop sessions with no recorded token usage (legacy rollouts, aborted runs):
         # they would only add a pile of $0 / 0-token rows to a spend browser.
         self._sessions = {sid: s for sid, s in sessions.items() if s["model_rows"]}
+        self._link_subagents(self._sessions)
         return self._sessions
+
+    def _link_subagents(self, sessions: dict[str, dict]) -> None:
+        # Fold spawned threads (collab / multi-agent mode) under their parent: a
+        # child rollout is its own file whose session_meta carries the parent
+        # thread id (_spawn_source). Children leave the top-level workflows list;
+        # each root's model_rows are rebuilt to cover the whole subtree (total)
+        # while the root_* splits keep the root's own usage -- the ClaudeStore
+        # root-vs-total accounting. A child whose parent isn't on disk (deleted,
+        # different --codex-dir) stays a standalone root.
+        for s in sessions.values():
+            s["children"] = []
+            s["is_child"] = False
+        for sid, s in sessions.items():
+            pid = s["parent_id"]
+            if pid and pid != sid and pid in sessions:
+                sessions[pid]["children"].append(sid)
+                s["is_child"] = True
+        for sid, s in sessions.items():
+            if s["is_child"] or not s["children"]:
+                continue  # a child, or a flat root whose _finalize rows already fit
+            self._fold_tree_rows(sid, s, sessions)
+
+    @staticmethod
+    def _descendants(sessions: dict[str, dict], sid: str) -> list[tuple[str, int]]:
+        # (child sid, depth) breadth-first below sid; a cycle (corrupt metadata)
+        # is cut by the seen-set rather than looping.
+        out: list[tuple[str, int]] = []
+        queue, seen = [(sid, 0)], {sid}
+        while queue:
+            cur, depth = queue.pop(0)
+            for child in sessions[cur]["children"]:
+                if child in seen:
+                    continue
+                seen.add(child)
+                out.append((child, depth + 1))
+                queue.append((child, depth + 1))
+        return out
+
+    def _fold_tree_rows(self, sid: str, s: dict, sessions: dict[str, dict]) -> None:
+        # Rebuild the root's model_rows so `total` covers root + every descendant
+        # while `root_*` keeps only the root's own usage (all of it unpriced --
+        # Codex records no cost -- so unpriced_* mirrors total and root_unpriced_*
+        # the root's own share, exactly like ClaudeStore._finalize).
+        total: dict[str, dict] = {}
+        own: dict[str, dict] = {}
+
+        def add(bucket: dict[str, dict], model: str, acc: dict) -> None:
+            t = bucket.setdefault(model, self._new_acc())
+            for k in t:
+                t[k] += acc[k]
+
+        for model, acc in s["models"].items():
+            add(total, model, acc)
+            add(own, model, acc)
+        for child, _depth in self._descendants(sessions, sid):
+            for model, acc in sessions[child]["models"].items():
+                add(total, model, acc)
+        rows: list[dict] = []
+        for model, acc in total.items():
+            r = own.get(model, self._new_acc())
+            rows.append(
+                {
+                    "root_id": sid,
+                    "model_name": model,
+                    "runs": acc["runs"],
+                    "cost": 0.0,
+                    "root_cost": 0.0,
+                    "tokens_total": acc["tokens_total"],
+                    "input": acc["input"],
+                    "reasoning": acc["reasoning"],
+                    "cache_read": acc["cache_read"],
+                    "cache_write": acc["cache_write"],
+                    "output": acc["output"],
+                    "unpriced_input": acc["input"],
+                    "unpriced_reasoning": acc["reasoning"],
+                    "unpriced_cache_read": acc["cache_read"],
+                    "unpriced_cache_write": acc["cache_write"],
+                    "unpriced_output": acc["output"],
+                    "root_unpriced_input": r["input"],
+                    "root_unpriced_reasoning": r["reasoning"],
+                    "root_unpriced_cache_read": r["cache_read"],
+                    "root_unpriced_cache_write": r["cache_write"],
+                    "root_unpriced_output": r["output"],
+                }
+            )
+        s["model_rows"] = rows
+        s["unpriced_tokens"] = sum(r["tokens_total"] for r in rows)
 
     def _parse_file(self, path: str, lines: list[str], sessions: dict[str, dict]) -> None:
         sid = self._id_from_name(path)
@@ -149,6 +262,10 @@ class CodexStore:
                         s["cwd"] = meta["cwd"]
                     if meta.get("timestamp") and not s["ts_meta"]:
                         s["ts_meta"] = meta["timestamp"]
+                    if s["parent_id"] is None:
+                        spawn = self._spawn_source(meta.get("source"))
+                        if spawn:
+                            s["parent_id"], s["agent"] = spawn
             if s is None:
                 continue  # nothing to attribute usage to yet
             ts = o.get("timestamp")
@@ -260,7 +377,9 @@ class CodexStore:
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
             # Recorded cost is $0 (Codex logs none); every token is "unpriced", so the
-            # unpriced_* splits carry the full counts. No subagents, so root == total.
+            # unpriced_* splits carry the full counts. root == total here: a session
+            # that turns out to have spawned children gets these rows rebuilt by
+            # _fold_tree_rows once the tree is linked.
             rows.append(
                 {
                     "root_id": sid,
@@ -322,6 +441,8 @@ class CodexStore:
         sessions = self._parse()
         rows = []
         for sid, s in sessions.items():
+            if s["is_child"]:
+                continue  # a spawned thread rolls up into its parent's row
             model_rows = s["model_rows"]
             rows.append(
                 Workflow(
@@ -331,7 +452,7 @@ class CodexStore:
                     created_at=s["created_at"],
                     root_cost=0.0,  # recorded cost is $0; "$" reprices the tokens
                     total_cost=0.0,
-                    subagents=0,  # Codex has no subagent tree
+                    subagents=len(self._descendants(sessions, sid)),
                     model_count=0,  # filled by App._load_model_cache
                     total_tokens=sum(r["tokens_total"] for r in model_rows),
                     unpriced_tokens=s["unpriced_tokens"],
@@ -371,22 +492,46 @@ class CodexStore:
     def model_breakdown(self) -> list[dict]:
         out: list[dict] = []
         for s in self._parse().values():
+            if s["is_child"]:
+                continue  # its usage is already inside the root's folded rows
             out.extend(s["model_rows"])
         return out
 
-    def workflow_nodes(self, workflow_id: str) -> list[dict]:
-        s = self._parse().get(workflow_id)
-        if not s:
-            return []
-        root = self._new_acc()
+    @staticmethod
+    def _session_rollup(s: dict) -> tuple[dict, str]:
+        # One session's own usage rolled across models -> (acc, busiest model).
+        acc_out = CodexStore._new_acc()
         best, best_runs = "unknown (not recorded)", -1
         for model_name, acc in s["models"].items():
-            for k in root:
-                root[k] += acc[k]
+            for k in acc_out:
+                acc_out[k] += acc[k]
             if acc["runs"] > best_runs:
                 best_runs, best = acc["runs"], model_name
+        return acc_out, best
+
+    def workflow_nodes(self, workflow_id: str) -> list[dict]:
+        sessions = self._parse()
+        s = sessions.get(workflow_id)
+        if not s:
+            return []
         # cost 0 (recorded); _priced_nodes reprices from the token columns under "$".
-        nodes = [self._node(workflow_id, 0, "-", s["title"], s["created_at"], best, 0.0, root)]
+        acc, best = self._session_rollup(s)
+        nodes = [self._node(workflow_id, 0, "-", s["title"], s["created_at"], best, 0.0, acc)]
+        for child, depth in self._descendants(sessions, workflow_id):
+            cs = sessions[child]
+            acc, best = self._session_rollup(cs)
+            nodes.append(
+                self._node(
+                    child,
+                    depth,
+                    cs["agent"] or "subagent",
+                    cs["title"],
+                    cs["created_at"],
+                    best,
+                    0.0,
+                    acc,
+                )
+            )
         if self.demo:
             nodes = [self._demo_node(n) for n in nodes]
         return nodes
@@ -408,19 +553,38 @@ class CodexStore:
             n[f] = int(round(n[f] * self.demo_scale))
         return n
 
+    def _subtree_turns(self, workflow_id: str) -> list[dict]:
+        # The session's own turn rows plus every spawned descendant's, the child
+        # rows tagged with their depth/agent so the Turns tab marks them like
+        # Claude's sidechains (and tool_breakdown covers the whole tree).
+        sessions = self._parse()
+        s = sessions.get(workflow_id)
+        if not s:
+            return []
+        turns = list(s["turns"])
+        for child, depth in self._descendants(sessions, workflow_id):
+            cs = sessions[child]
+            agent = cs["agent"] or "subagent"
+            for t in cs["turns"]:
+                turns.append({**t, "depth": depth, "agent": agent})
+        return turns
+
     # --- Turns tab opt-in ----------------------------------------------------
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # Chronological per-turn rows for the Turns tab (the ClaudeStore pattern):
         # ISO timestamps sort lexicographically, and walking the two time-sorted
         # streams in lockstep tags each turn with the latest prompt at ts <= the
-        # turn's ts. Real rows -- App._scale_demo_turns hides magnitudes in demo.
+        # turn's ts. Spawned threads' turns are interleaved by time, tagged with
+        # their agent (prompts stay the root's own -- a child's user_message is
+        # the spawn instruction, not something the user typed). Real rows --
+        # App._scale_demo_turns hides magnitudes in demo.
         s = self._parse().get(workflow_id)
         if not s:
             return []
         prompts = sorted(s["prompts"], key=lambda p: p["ts"])
         out = []
         pi, cur_id, cur_title, cur_full = 0, "", "", ""
-        for t in sorted(s["turns"], key=lambda r: r["ts"]):
+        for t in sorted(self._subtree_turns(workflow_id), key=lambda r: r["ts"]):
             while pi < len(prompts) and prompts[pi]["ts"] <= t["ts"]:
                 cur_id, cur_full = prompts[pi]["id"], prompts[pi]["title"]
                 cur_title = _clean_prompt(cur_full)
@@ -440,10 +604,10 @@ class CodexStore:
         # Per-(tool, model) token attribution for the Tools tab: each accepted
         # token_count delta is one turn, and the function_call/custom_tool_call
         # records since the previous delta are the calls that turn made -- its
-        # tokens split evenly across them (Store.tool_breakdown semantics). Cost
-        # stays $0 (Codex records none); the "$" view reprices per row.
-        s = self._parse().get(workflow_id)
-        return tool_rows_from_turns(s["turns"]) if s else []
+        # tokens split evenly across them (Store.tool_breakdown semantics),
+        # spawned descendants included. Cost stays $0 (Codex records none); the
+        # "$" view reprices per row.
+        return tool_rows_from_turns(self._subtree_turns(workflow_id))
 
     def supports_tools(self, workflow_id: str) -> bool:
         # Rollouts always record the turn's tool calls, so the tab applies to every

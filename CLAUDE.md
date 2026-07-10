@@ -177,7 +177,14 @@ Three logical layers (the class names below live in the files above — `Store` 
   equal = duplicate echo (skip), smaller = context-compaction reset (new total is fresh).
   Deltas sum back to the final total, each attributed to that turn's `turn_context.model`
   (`openai/`-prefixed). OpenAI-style tokens (input includes the cache read → uncached +
-  `cache_read`, no cache-write; reasoning folded into output). No subagent tree; `cwd` → git
+  `cache_read`, no cache-write; reasoning folded into output). **Subagent tree from
+  spawned threads**: a collab/multi-agent child is its own rollout whose
+  `session_meta.source` is `{"subagent":{"thread_spawn":{"parent_thread_id",…}}}`
+  (`_spawn_source`, shape verified against openai/codex's `SessionSource`/
+  `SubAgentSource` serde); `_link_subagents` folds it under the parent — out of
+  `workflows()`, into the root's totals (`_fold_tree_rows`, ClaudeStore root-vs-total
+  accounting), into `workflow_nodes` (agent nickname/role label) and the subtree
+  Turns/Tools (`_subtree_turns`); an orphaned child stays a standalone root. `cwd` → git
   root; usage-less sessions dropped. Implements **Tools**: the `function_call`/
   `custom_tool_call`/`local_shell_call` records since the previous accepted delta are that
   turn's calls (the duplicate echo doesn't consume them), split evenly.

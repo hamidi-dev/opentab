@@ -139,7 +139,7 @@ What each tool's records support on top:
 |--------|------|:---:|:---:|:---:|
 | OpenCode | real recorded | ✓ | ✓ | ✓ |
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ |
-| Codex CLI | tokens only — `$` estimates | — | ✓ | ✓ |
+| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ |
 | Hermes Agent | mixed — metered real, rest estimated | ✓ | — | — |
 | GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — |
@@ -185,7 +185,9 @@ Where each tool's records live, and their quirks:
 - **Cost**: tokens only, like Claude Code — `$0` recorded, estimated under `$`.
 - **Notes**: Codex logs a *cumulative* token counter, twice per turn — OpenTab derives
   per-turn deltas from it, skips the duplicate echoes, and detects context-compaction
-  resets, so turns sum exactly to the session total.
+  resets, so turns sum exactly to the session total. Threads spawned by Codex's
+  collab/multi-agent mode fold into a subagent cost tree under the session that
+  spawned them, labeled with each agent's nickname.
 
 </details>
 
