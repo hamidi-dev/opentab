@@ -15,11 +15,9 @@
 </p>
 
 A local, standard-library terminal UI for your AI coding spend. It reads the records your
-coding tools already keep on disk — [OpenCode](https://opencode.ai)'s SQLite database,
-[Claude Code](https://claude.com/claude-code)'s and [Codex](https://developers.openai.com/codex)'s
-session transcripts, plus Hermes, GitHub Copilot (CLI and VS Code), pi-agent, OpenClaw, and CSV/JSONL
-logs of API requests — and shows where your tokens and money went: by month, day, project,
-session, and model, down to the subagent tree. Browse one tool at a time, or merge them all.
+coding tools already keep on disk and shows where your tokens and money went: by month,
+day, project, session, and model, down to the subagent tree. Browse one tool at a time,
+or merge them all.
 
 Your tools already keep this ledger; OpenTab is just the reader. No backend, no telemetry,
 no accounts — it opens those files **read-only**. Standard-library-only at runtime
@@ -27,191 +25,268 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
 
 ## Features
 
-- Reads OpenCode, Claude Code, Codex, Hermes, GitHub Copilot (its CLI and Copilot Chat in VS Code), pi-agent, OpenClaw, and logged-request CSV/JSONL files — one tool at a time, or merged into a single view
-- Cost by month, day, project, session, and model
-- Trends overlay: daily / weekly / monthly charts, a calendar spend heatmap, and model-, provider- and source-spend rankings
-- Cost-share percentages and inline spend bars
-- Per-session model mix and token breakdown
-- Per-turn cost over time, and token usage per tool call
-- Recursive subagent costs, on the sessions that delegated work
-- "What-if" pricing (`$`): re-price unpriced subscription/credit usage at
-  models.dev API list rates; `P` shows the price table behind it
-- Git worktrees folded into their main repo
-- Live fuzzy filter (fzf-style, title / project / id) and live date-range scoping
-- CSV export of any view
-- A self-contained **HTML browser** (`--html`) — same drill-in, calendar heatmap, and
-  `$` toggle in one shareable file — and a local live server for it (`--serve`, or
-  `--web` to also pop it open in your browser)
-- Keyboard- and mouse-driven (scroll, click to select, double-click to drill)
-- Remembers your range, sort, ignored projects, and the `$` view between runs
-- Colour themes (opentab, Catppuccin, Tokyo Night, Gruvbox, Nord, Dracula, Rosé Pine —
-  light and dark) shared by the TUI (`C`) and the web browser, set with `--theme`
-- Read-only, local-only, standard-library runtime (nothing extra to pull in)
-- Demo mode for screenshots and live demos
-
-## Why a browser, not just a usage CLI
-
-Plenty of tools will print your token totals. OpenTab is built to *explore* them:
-
-- **Interactive, not a one-shot report.** Drill month → day → project → session →
-  model, fuzzy-filter the lists live, rescope the date range on the fly, sort, and
-  navigate by keyboard or mouse — a lazygit-style browser, not a table you re-run with
-  different flags.
-- **Subagent cost trees.** When a session delegated work, OpenTab attributes the cost
-  across its whole recursive subagent subtree — so you see *where* the spend went, not
-  just the session total.
-- **Standard-library runtime.** Just `curses` + `sqlite3` from the standard library:
-  no Node, no `npx`, no service to run. `pipx install opentab-ai` and it runs anywhere
-  Python 3.9+ exists, including a locked-down box (the sole dependency, `windows-curses`,
-  is pulled in only on native Windows).
-- **Honest cost for subscription usage.** Subscription/credit sessions show a truthful
-  `$0` recorded, and the **`$`** view reprices their tokens at API list rates — a clear
-  "what this would have cost metered" estimate you can toggle on and off.
-
-If you just want a single number in your terminal, a usage CLI does the job. OpenTab is
-for when you want to *poke at* the spend. (See also [A note on cost accuracy](#a-note-on-cost-accuracy).)
-
-## What it touches
-
-Local-only, no network, no telemetry, no accounts — it opens every source file
-**read-only**, so it doesn't modify any of them. For full transparency, everything it
-touches, all on your own machine:
-
-- **Reads** your tools' own records, read-only: OpenCode's SQLite DB, the JSONL
-  transcripts of Claude Code / Codex / pi-agent / OpenClaw, Hermes' SQLite DB, the Copilot
-  CLI's OpenTelemetry export, VS Code's Copilot Chat session store, and a CSV/JSONL of
-  logged API requests (`--csv`/`--jsonl`).
-  To fold git worktrees into their main repo it also reads project `.git` files (no `git`
-  process is spawned; disable with `--no-worktrees`).
-- **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
-  source, range, and sort; disable with `--no-state`), an optional model-price cache at
-  `~/.config/opentab/prices.json` (only when you run `--refresh-models` or press `r` in the
-  `P` overlay), and — only when you press `e` or run `--html` — an `opentab-*.csv`
-  export or the HTML browser file in the current directory.
-- **Runs** external programs only on the key you press: your file opener
-  (`open`/`xdg-open`, or Explorer on Windows) for `o`, and for `L` either `tmux`, your own
-  [launcher hook](#custom-launchers) (`~/.config/opentab/launcher`), or your clipboard tool
-  (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for its copy target. All are
-  disabled in `--demo`.
-
-## Requirements
-
-Python **3.9+** and a terminal with `curses` — already present on macOS, Linux,
-and WSL. Native Windows works too: installing `opentab-ai` pulls in `windows-curses`
-automatically (see [Windows](#windows)).
+- **One tab for every tool** — [OpenCode](https://opencode.ai),
+  [Claude Code](https://claude.com/claude-code), [Codex](https://developers.openai.com/codex),
+  Hermes, GitHub Copilot (its CLI and Copilot Chat in VS Code), pi-agent, OpenClaw, and
+  CSV/JSONL logs of your own API requests — [each detailed below](#data-sources).
+- **Drill, don't scroll** — month → day → project → session → model, down the recursive
+  subagent tree, with a live fuzzy filter (fzf-style) and live date-range scoping.
+- **Trends** — daily / weekly / monthly charts, a calendar spend heatmap, and model /
+  provider / source rankings; every one navigable down to a single session.
+- **Turns and Tools** — per-turn cost over time inside a session, and token attribution
+  per tool call.
+- **Honest `$` what-if** — subscription usage shows its true `$0`, and `$` reprices it at
+  API list rates; `P` shows the exact per-model table behind the estimate.
+- **A web twin** — the same browser as one self-contained HTML file (`--html`), or served
+  live with per-session drill-in (`--serve`, `--web`).
+- **Lazygit-style driving** — keyboard and mouse: scroll, click to select, double-click to
+  drill, click a column header to sort.
+- **Themes** — Catppuccin, Tokyo Night, Gruvbox, Nord, Dracula, Rosé Pine and more, light
+  and dark, shared by the TUI (`C`) and the web page.
+- **Quality of life** — git worktrees fold into their repo, CSV export of any view, and
+  your source, range, sort, and `$` view are remembered between runs.
+- **Private by construction** — local-only, read-only, no telemetry, no accounts; a demo
+  mode anonymizes everything for screenshots and live demos.
 
 ## Install
 
-### Try it first (no install)
+Python **3.9+** and a terminal — nothing else. Already true on macOS, Linux, and WSL;
+native Windows works too (see [Windows](#windows)).
+
+Try it first, nothing installed:
 
 ```sh
 uvx --from opentab-ai opentab --demo     # or: pipx run --spec opentab-ai opentab --demo
 ```
 
-One command, nothing installed: `--demo` runs the full TUI on anonymized synthetic
-data, so it works even on a machine with no AI-tool history to read. Drop `--demo` to
-point it at your real usage.
+`--demo` runs the full TUI on your real usage, anonymized in memory — titles, paths, and
+absolute numbers replaced with synthetic ones — so trying it out (and sharing the screen)
+is safe. It reads your tools' own records, so it needs at least one AI coding tool's
+history on disk. Drop `--demo` to see the real numbers.
 
-### pipx (recommended)
+Then install for real:
 
 ```sh
 pipx install opentab-ai
 ```
 
-Upgrade later with `pipx upgrade opentab-ai`. (Plain `pip install --user opentab-ai`
-works too.) The PyPI distribution is **`opentab-ai`**; the command it installs is
-**`opentab`**.
+The PyPI distribution is **`opentab-ai`**; the command it installs is **`opentab`**.
+Upgrade later with `pipx upgrade opentab-ai`.
 
-### Homebrew (macOS / Linux)
+<details>
+<summary><strong>Other ways to install</strong> — Homebrew, install script, pip, from source</summary>
+
+**Homebrew (macOS / Linux):**
 
 ```sh
-brew install hamidi-dev/tap/opentab
+brew install hamidi-dev/tap/opentab      # upgrade later with `brew upgrade opentab`
 ```
 
-Upgrade later with `brew upgrade opentab`.
-
-### Install script
-
-One line (installs the `opentab` command via pipx; re-run to update):
+**Install script** (installs via pipx; re-run to update):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/install.sh | bash
 ```
 
-### From source
+**pip:** plain `pip install --user opentab-ai` works too.
+
+**From source:**
 
 ```sh
 git clone https://github.com/hamidi-dev/opentab && cd opentab
 pipx install .        # or `pip install -e .` for a live-editable checkout
 ```
 
+</details>
+
 ## Usage
 
 ```sh
 opentab                          # open the browser, all time
-opentab --days 30                # start within a window (change live with R)
+opentab --days 30                # start within a window (rescope live with R)
 opentab --since 2026-05-01 --until 2026-05-31
-opentab --db /path/to/opencode.db  # default: ~/.local/share/opencode/opencode.db
-opentab --source claude          # browse Claude Code spend instead (see below)
-opentab --demo                   # safe for live demos / screenshots (see below)
-opentab --html                   # write opentab-report.html and exit (see below)
-opentab --serve                  # same browser on http://localhost:8321, live
-opentab --web                    # --serve, and open it in your browser
+opentab --source claude          # one tool only (switch live with c)
+opentab --demo                   # safe for live demos / screenshots
+opentab --web                    # the same browser, in your web browser
 ```
 
-### Data sources
+Everything is discoverable in-app — **`?` shows the full keymap**, every panel and
+overlay documented.
 
-OpenTab reads the local records each AI coding tool keeps — **OpenCode** (SQLite),
-**Claude Code** (`~/.claude/projects/**/*.jsonl`), **Codex**
-(`~/.codex/sessions/**/rollout-*.jsonl`), the **GitHub Copilot CLI** (its OpenTelemetry
-export under `~/.copilot/otel/`), **Copilot Chat in VS Code** (VS Code's own
-`chatSessions` store), **pi-agent** (`~/.pi/agent/sessions/`), and **OpenClaw**
-(`~/.openclaw/agents/**/sessions/`), plus a **Hermes** database and a generic **CSV** or
-**JSONL** of logged API requests. Pick one with `--source`:
+## Data sources
+
+OpenTab reads the local records each AI coding tool keeps. Pick one with `--source`,
+point its flag at a non-default location, or just pass a file path (`opentab
+requests.csv`, `opentab path/to/opencode.db`) and the source is inferred:
 
 ```sh
 opentab --source opencode                    # OpenCode only
 opentab --source claude --claude-dir /path   # Claude Code (default ~/.claude/projects)
 opentab --source codex --codex-dir /path     # Codex (default ~/.codex/sessions)
+opentab --source hermes                      # Hermes Agent (default ~/.hermes/state.db)
 opentab --source copilot                     # GitHub Copilot CLI (default ~/.copilot/otel)
 opentab --source vscode                      # Copilot Chat in VS Code (every installed variant)
 opentab --source pi                          # pi-agent (default ~/.pi/agent/sessions)
-opentab --source openclaw                    # OpenClaw gateway (default ~/.openclaw; honors $OPENCLAW_DIR)
-opentab --csv requests.csv                   # a CSV of logged API requests (or --jsonl requests.jsonl)
+opentab --source openclaw                    # OpenClaw gateway (default ~/.openclaw)
+opentab --csv requests.csv                   # a CSV of logged API requests (or --jsonl)
 opentab --source all                         # all present sources, merged
 ```
 
-> **GitHub Copilot CLI:** it records usage **only** when its OpenTelemetry export is
-> enabled. Set `COPILOT_OTEL_FILE_EXPORTER_PATH` before launching/resuming a session
-> (`export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl`); sessions after
-> that show up under `--source copilot`.
+Every source feeds the same browser — months, days, projects, sessions, models, trends.
+What each tool's records support on top:
 
-> **Copilot Chat in VS Code:** read from VS Code's own chat-session store
-> (`<User>/workspaceStorage/*/chatSessions`, plus empty-window sessions), across Code,
-> Code&nbsp;-&nbsp;Insiders, and VSCodium — nothing to enable. Projects come from each
-> workspace's folder; sessions the panel merely opened (no tokens) are ignored. Point
-> `--vscode-dir` at a User directory for a portable/remote copy — from WSL, at the
-> Windows-side store (see [Windows](#windows)).
+| Source | Cost | Subagent tree | Turns | Tools |
+|--------|------|:---:|:---:|:---:|
+| OpenCode | real recorded | ✓ | ✓ | ✓ |
+| Claude Code | tokens only — `$` estimates | ✓ | ✓ | — |
+| Codex CLI | tokens only — `$` estimates | — | ✓ | — |
+| Hermes Agent | mixed — metered real, rest estimated | ✓ | — | — |
+| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — |
+| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — |
+| pi-agent | mixed — metered real, rest estimated | — | ✓ | — |
+| OpenClaw | mixed — metered real, rest estimated | — | ✓ | — |
+| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | — |
 
-> **OpenClaw:** sessions live under `~/.openclaw/agents/<agent>/sessions/` (one project per
-> agent); point `--openclaw-dir`/`$OPENCLAW_DIR` at a mounted copy if it runs on a server.
-> It records a per-message cost for every provider, but only **metered** routes (a direct
-> Anthropic/OpenRouter key) are real spend — plan routes (openai-codex, github-copilot) are
-> estimated under `$`, read from `openclaw.json` (read-only).
+<sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
+**Turns** — the per-turn cost timeline inside a session · **Tools** — token attribution
+per tool call and MCP server · ¹ headerless: the OTEL export captures no prompt text.</sub>
+
+Where each tool's records live, and their quirks:
+
+<details>
+<summary><strong>OpenCode</strong> — SQLite database · records real cost</summary>
+
+- **Reads** `~/.local/share/opencode/opencode.db`, read-only (`--db`, or just
+  `opentab path/to.db`). Adapts to OpenCode's schema across versions.
+- **Cost**: OpenCode records real per-message cost, so metered spend is real recorded
+  money; subscription sessions record a truthful `$0` and get the `$` estimate.
+- **Extras**: the recursive subagent cost tree, and — OpenCode only — the Tools tab:
+  token attribution per tool call and MCP server.
+
+</details>
+
+<details>
+<summary><strong>Claude Code</strong> — JSONL transcripts · tokens only, <code>$</code> estimates</summary>
+
+- **Reads** `~/.claude/projects/**/*.jsonl` (`--claude-dir`).
+- **Cost**: Claude Code records tokens but no per-message cost — sessions show `$0`
+  recorded, and the `$` view (on by default here) estimates them at API list rates.
+- **Notes**: subagent (Task) work shows as a cost tree under its session; resumed and
+  forked sessions are deduplicated instead of double-counted; projects roll up to their
+  git root.
+
+</details>
+
+<details>
+<summary><strong>Codex CLI</strong> — rollout JSONL · tokens only, <code>$</code> estimates</summary>
+
+- **Reads** `~/.codex/sessions/**/rollout-*.jsonl` (`--codex-dir`).
+- **Cost**: tokens only, like Claude Code — `$0` recorded, estimated under `$`.
+- **Notes**: Codex logs a *cumulative* token counter, twice per turn — OpenTab derives
+  per-turn deltas from it, skips the duplicate echoes, and detects context-compaction
+  resets, so turns sum exactly to the session total.
+
+</details>
+
+<details>
+<summary><strong>Hermes Agent</strong> — SQLite database · mixed: metered real, subscription estimated</summary>
+
+- **Reads** `~/.hermes/state.db`, read-only (`--hermes-db`).
+- **Cost**: mixed per session — metered routes carry Hermes' real recorded cost;
+  subscription routes record `$0` and get the `$` estimate.
+- **Notes**: multi-provider, with Hermes' own normalized token accounting; subagent
+  sessions form a cost tree. No Turns tab (Hermes stores no per-message usage).
+
+</details>
+
+<details>
+<summary><strong>GitHub Copilot CLI</strong> — OpenTelemetry export · opt-in · tokens only, <code>$</code> estimates</summary>
+
+- **Reads** `~/.copilot/otel/**/*.jsonl` (`--copilot-dir`), plus the file named by
+  `$COPILOT_OTEL_FILE_EXPORTER_PATH`.
+- **Enable it**: the CLI records usage **only** when its OpenTelemetry export is on. Set
+  the env var before launching/resuming a session — sessions after that show up:
+
+  ```sh
+  export COPILOT_OTEL_FILE_EXPORTER_PATH=~/.copilot/otel/usage.jsonl
+  ```
+
+- **Cost**: the export carries tokens but no cost — `$0` recorded, estimated under `$`.
+- **Notes**: OTEL logs one call up to four ways across spans and logs; OpenTab
+  deduplicates them and keeps the highest-fidelity record. Turns are headerless (the
+  export captures no prompt text by default).
+
+</details>
+
+<details>
+<summary><strong>Copilot Chat in VS Code</strong> — VS Code's chat-session store · nothing to enable · tokens only</summary>
+
+- **Reads** VS Code's own store, `<User>/workspaceStorage/*/chatSessions` plus
+  empty-window sessions, across Code, Code&nbsp;-&nbsp;Insiders, and VSCodium. Point
+  `--vscode-dir` at one User directory for a portable/remote copy — from WSL, at the
+  Windows-side store (see [Windows](#windows)).
+- **Cost**: no dollar cost is recorded (Copilot credits are a quota unit, not USD) —
+  `$0` recorded, estimated under `$`.
+- **Notes**: token figures are VS Code's own; the recorded input covers a turn's final
+  tool round, so long agentic turns under-count input. Projects come from each
+  workspace's folder; sessions the panel merely opened (no tokens) are ignored.
+
+</details>
+
+<details>
+<summary><strong>pi-agent</strong> — session JSONL · mixed: metered real, subscription estimated</summary>
+
+- **Reads** `~/.pi/agent/sessions/**/*.jsonl` (`--pi-dir`, honors `$PI_AGENT_DIR`).
+- **Cost**: pi writes a list-price figure for *every* route, so OpenTab counts only
+  **metered** routes (OpenRouter, a direct API key) as real spend; OAuth/subscription
+  routes stay `$0` and are estimated under `$`. The split is read from pi's `auth.json`,
+  read-only.
+
+</details>
+
+<details>
+<summary><strong>OpenClaw</strong> — gateway session JSONL · mixed: metered real, plan routes estimated</summary>
+
+- **Reads** `~/.openclaw/agents/<agent>/sessions/*.jsonl` (`--openclaw-dir`, honors
+  `$OPENCLAW_DIR`) — point it at a mounted copy if OpenClaw runs on a server.
+- **Cost**: like pi, per-message cost is list-price for every provider — only metered
+  routes (a direct Anthropic/OpenRouter key) count as real spend; plan routes
+  (openai-codex, github-copilot) are estimated under `$`. The split is read from
+  `openclaw.json`, read-only.
+- **Notes**: one project per agent; archived sessions are included and deduplicated.
+
+</details>
+
+<details>
+<summary><strong>CSV / JSONL request logs</strong> — bring your own ledger · mixed per row</summary>
+
+- **Reads** any CSV (`--csv`) or NDJSON (`--jsonl`) of logged API requests, one request
+  per row/line — auto-discovered at `~/.config/opentab/requests.csv` / `requests.jsonl`
+  if present. Log your own gateway or proxy traffic and browse it like any other source.
+- **Schema**: headers/keys match case-insensitively with aliases. Required: a timestamp
+  (ISO-8601 or epoch), `model`, and input/output token counts. Optional:
+  `cached_tokens`, `session_id`, `request_id`, `prompt`, `project`, `title`, and
+  `cost_usd` (or `credits`, × $0.01). The full alias table is in the `JsonlStore`
+  docstring.
+- **Cost**: per row — a populated cost column is real spend; rows without one are
+  estimated under `$`.
+- **Notes**: each request is one turn on the Turns tab, grouped under its `prompt`;
+  a stable `request_id` deduplicates regenerated/appended files; malformed rows are
+  skipped, never a crash.
+
+</details>
 
 `--source auto` (the default) restores your last-used source, else **merges every present
-source** when more than one exists (a single source when only one is). The active source
-shows as a header chip; **switch live with `c`** (cycles whichever sources are present,
-plus `all`). The whole TUI works the same — months, days, projects, sessions, models,
-trends — with two differences, because **Claude Code, Codex, and Copilot (CLI and VS
-Code) record only tokens, no per-message cost**:
+source** when more than one exists. The active source shows as a header chip; **switch
+live with `c`**. The whole TUI works the same everywhere — with two differences for the
+token-only tools (Claude Code, Codex, and Copilot, CLI and VS Code alike):
 
-- Such a session works like an OpenCode subscription session: **\$0 in normal mode** and an
+- Their sessions work like OpenCode subscription sessions: **\$0 in normal mode** and an
   **estimate** (tokens × API list price) under the **`$`** view. Since that view would
   otherwise be a wall of `$0.00`, the estimate **starts on by default** there (header tag:
   `ESTIMATED`); press `$` for the recorded numbers, and your choice is remembered.
-- Projects roll up to their **git root**, so sessions started in subdirectories group under
-  the repo instead of bare folder names.
+- Projects roll up to their **git root**, so sessions started in subdirectories group
+  under the repo instead of bare folder names.
 
 `--source all` merges every present source: the same repo across tools rolls up into one
 project row, every session row shows its origin (a `Src` column, `[oc]`/`[cc]`/`[cx]`/`[cp]`/`[vs]`/`[pi]`/`[ocl]`/`[csv]`/`[jl]`
@@ -220,47 +295,12 @@ all of them. (With more than one source present, `--demo` **defaults to this mer
 and anonymizes every backend under one shared scale so the cross-tool proportion stays
 truthful.)
 
-### Demo mode
-
-`opentab --demo` is for showing the tool to other people without leaking your real
-work. Everything is transformed in memory on load and nothing is written back:
-
-- Session titles and project paths are replaced with deterministic, plausible
-  fakes (stable across redraws).
-- Sessions OpenCode recorded with no cost get a synthetic price derived from
-  their real token counts, so there are no `$0.00 / unpriced` gaps on screen.
-
-The *shape* of your data stays real — the relative proportions between sessions
-and months, and the model mix (which models, in what ratio) — but the absolute
-numbers do not. A `DEMO — synthetic` tag shows in the header so synthetic figures
-are never mistaken for real ones.
-
-### Web browser (`--html` / `--serve` / `--web`)
-
-`opentab --html` writes the whole browser as **one self-contained HTML file** —
-no server, no dependencies, works from disk or any static host. It's the TUI in
-the browser: the same sidebar, detail tabs, Trends and price-table overlays,
-live range scoping and colour themes — driven by the same keys or the mouse.
-Every view is a shareable deep link (the browser's back button steps out) and
-every table sorts on a header click. Combine with `--demo` for a page you can
-publish.
-
-`opentab --serve` serves the same browser on `http://localhost:8321` (`--port`)
-and adds what a static file can't have: the per-session **Turns** timeline and
-**Tools** attribution fetched live on drill-in, plus a refresh button that
-re-reads your data. `opentab --web` is the same thing but also opens it in
-your default web browser (cross-platform — `open` on macOS, `xdg-open` on Linux, the
-shell association on Windows). It binds to localhost only — the browser shows prompt
-titles, project paths, and spend, so if you want it on another machine put it behind
-something like Tailscale (`--bind`), never a public interface.
-
-### Keys
+## Keys
 
 OpenTab opens on a stacked **Months / Days** (or Projects) sidebar, lazygit-style:
 drill from a month or day into its detail tabs, from the Sessions tab into a
 single session — cost split, model mix, subagent tree — and step back out with
-`Esc`. Everything is discoverable in-app — **`?` shows the full keymap**, every
-panel and overlay documented. The short version:
+`Esc`. The short version:
 
 | Key | Action |
 |-----|--------|
@@ -295,8 +335,10 @@ launcher <kind> <directory> <command>
 ```
 
 and a nonzero exit shows its stderr as the launch error. The footer reads
-"launch via launcher hook" when one is active. Use it to route launches through
-your own popup manager, zellij, kitty tabs, a different multiplexer — anything:
+"launch via launcher hook" when one is active.
+
+<details>
+<summary><strong>Example hook</strong> — route launches through zellij (or kitty, or your own popup manager)</summary>
 
 ```sh
 #!/bin/sh
@@ -309,59 +351,58 @@ case $kind in
 esac
 ```
 
-## Windows
+</details>
 
-OpenTab uses Python's `curses`, which native Windows Python doesn't bundle. Two
-ways to run it:
+## Web browser (`--html` / `--serve` / `--web`)
 
-**Native Windows (cmd / PowerShell).** Just install and run — `opentab-ai` declares
-`windows-curses` as a Windows-only dependency, so pipx pulls in the curses shim for you:
+`opentab --html` writes the whole browser as **one self-contained HTML file** —
+no server, no dependencies, works from disk or any static host. It's the TUI in
+the browser: the same sidebar, detail tabs, Trends and price-table overlays,
+live range scoping and colour themes — driven by the same keys or the mouse.
+Every view is a shareable deep link (the browser's back button steps out) and
+every table sorts on a header click. Combine with `--demo` for a page you can
+publish.
 
-```sh
-pipx install opentab-ai
-opentab
-```
+`opentab --serve` serves the same browser on `http://localhost:8321` (`--port`)
+and adds what a static file can't have: the per-session **Turns** timeline and
+**Tools** attribution fetched live on drill-in, plus a refresh button that
+re-reads your data. `opentab --web` is the same thing but also opens it in
+your default web browser (cross-platform — `open` on macOS, `xdg-open` on Linux, the
+shell association on Windows). It binds to localhost only — the browser shows prompt
+titles, project paths, and spend, so if you want it on another machine put it behind
+something like Tailscale (`--bind`), never a public interface.
 
-`windows-curses` is just an OS-level provider for the stdlib `curses` module — the lone
-runtime dependency, and only on Windows. Confirmed working against the **OpenCode** source; the Claude Code and
-Codex backends read plain JSON files and should behave the same, but are less
-exercised on native Windows. The `o` key opens the selected directory in
-Explorer (via `os.startfile`), so reveal-in-folder works natively too.
+## Demo mode
 
-**WSL.** `curses` is already there, so a plain `opentab` works. OpenCode itself
-doesn't have to run inside WSL — even on native Windows it keeps its database
-under your Windows home, at `%USERPROFILE%\.local\share\opencode\opencode.db`,
-which WSL reads through `/mnt/c`:
+`opentab --demo` is for showing the tool to other people without leaking your real
+work: session titles and project paths become deterministic, plausible fakes, and
+sessions recorded with no cost get a synthetic price derived from their real token
+counts — all transformed in memory on load, nothing written back. The *shape* of your
+data stays real (the proportions between sessions and months, the model mix), the
+absolute numbers do not, and a `DEMO — synthetic` header tag keeps synthetic figures
+from ever being mistaken for real ones.
 
-```sh
-# from inside WSL, reading the Windows-side OpenCode database
-opentab --db /mnt/c/Users/<you>/.local/share/opencode/opencode.db
-```
+## Why a browser, not just a usage CLI
 
-If OpenCode runs inside WSL, the default path
-(`~/.local/share/opencode/opencode.db`) just works. Either way, `--db` points
-OpenTab at any non-standard location.
+Plenty of tools will print your token totals. OpenTab is built to *explore* them:
 
-Copilot Chat in VS Code works the same way from WSL: chat sessions are stored by
-the Windows-side VS Code (also for Remote-WSL windows), under the Windows profile.
-That store is *not* scanned by default — reading through `/mnt/c` is slow enough
-to drag down every startup — so opt in by pointing `--vscode-dir` at it, e.g. via
-an alias:
+- **Interactive, not a one-shot report.** Drill month → day → project → session →
+  model, fuzzy-filter the lists live, rescope the date range on the fly, sort, and
+  navigate by keyboard or mouse — a lazygit-style browser, not a table you re-run with
+  different flags.
+- **Subagent cost trees.** When a session delegated work, OpenTab attributes the cost
+  across its whole recursive subagent subtree — so you see *where* the spend went, not
+  just the session total.
+- **Standard-library runtime.** Just `curses` + `sqlite3` from the standard library:
+  no Node, no `npx`, no service to run. `pipx install opentab-ai` and it runs anywhere
+  Python 3.9+ exists, including a locked-down box (the sole dependency, `windows-curses`,
+  is pulled in only on native Windows).
+- **Honest cost for subscription usage.** Subscription/credit sessions show a truthful
+  `$0` recorded, and the **`$`** view reprices their tokens at API list rates — a clear
+  "what this would have cost metered" estimate you can toggle on and off.
 
-```sh
-alias opentab='opentab --vscode-dir "/mnt/c/Users/<you>/AppData/Roaming/Code/User"'
-```
-
-Remote-WSL workspaces then resolve back to their in-distro project directories,
-and native Windows workspaces to their `/mnt/c/...` paths.
-
-If `curses` is missing, OpenTab prints a short hint (install `windows-curses`)
-instead of crashing.
-
-## Development
-
-CI runs Ruff, unit tests, and ShellCheck. See [CONTRIBUTING.md](CONTRIBUTING.md) for local
-setup, the test/lint commands, the pre-push hooks, and commit conventions.
+If you just want a single number in your terminal, a usage CLI does the job. OpenTab is
+for when you want to *poke at* the spend. (See also [A note on cost accuracy](#a-note-on-cost-accuracy).)
 
 ## A note on cost accuracy
 
@@ -392,6 +433,91 @@ network, and only on this explicit command — stdlib `urllib`, no dependency). 
 When OpenTab notices models it has no built-in price for, it offers this fetch **once** on
 startup (`y` now, `n` not now, `d` never — remembered in `state.json`, suppressed under
 `--no-state`/`--demo`).
+
+## What it touches
+
+Local-only, no network, no telemetry, no accounts — it opens every source file
+**read-only**, so it doesn't modify any of them.
+
+<details>
+<summary><strong>Full transparency</strong> — everything it reads, writes, and runs</summary>
+
+- **Reads** your tools' own records, read-only: OpenCode's SQLite DB, the JSONL
+  transcripts of Claude Code / Codex / pi-agent / OpenClaw, Hermes' SQLite DB, the Copilot
+  CLI's OpenTelemetry export, VS Code's Copilot Chat session store, and a CSV/JSONL of
+  logged API requests (`--csv`/`--jsonl`).
+  To fold git worktrees into their main repo it also reads project `.git` files (no `git`
+  process is spawned; disable with `--no-worktrees`).
+- **Writes** a small preferences file at `~/.config/opentab/state.json` (your last
+  source, range, and sort; disable with `--no-state`), an optional model-price cache at
+  `~/.config/opentab/prices.json` (only when you run `--refresh-models` or press `r` in the
+  `P` overlay), and — only when you press `e` or run `--html` — an `opentab-*.csv`
+  export or the HTML browser file in the current directory.
+- **Runs** external programs only on the key you press: your file opener
+  (`open`/`xdg-open`, or Explorer on Windows) for `o`, and for `L` either `tmux`, your own
+  [launcher hook](#custom-launchers) (`~/.config/opentab/launcher`), or your clipboard tool
+  (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for its copy target. All are
+  disabled in `--demo`.
+
+</details>
+
+## Windows
+
+OpenTab uses Python's `curses`, which native Windows Python doesn't bundle. Two
+ways to run it:
+
+**Native Windows (cmd / PowerShell).** Just install and run — `opentab-ai` declares
+`windows-curses` as a Windows-only dependency, so pipx pulls in the curses shim for you:
+
+```sh
+pipx install opentab-ai
+opentab
+```
+
+`windows-curses` is just an OS-level provider for the stdlib `curses` module — the lone
+runtime dependency, and only on Windows. Confirmed working against the **OpenCode** source;
+the file-based backends read plain JSON and should behave the same, but are less exercised
+on native Windows. The `o` key opens the selected directory in Explorer (via
+`os.startfile`), so reveal-in-folder works natively too. If `curses` is missing, OpenTab
+prints a short hint (install `windows-curses`) instead of crashing.
+
+**WSL.** `curses` is already there, so a plain `opentab` works.
+
+<details>
+<summary><strong>WSL specifics</strong> — reading the Windows-side OpenCode DB and VS Code store</summary>
+
+OpenCode itself doesn't have to run inside WSL — even on native Windows it keeps its
+database under your Windows home, at `%USERPROFILE%\.local\share\opencode\opencode.db`,
+which WSL reads through `/mnt/c`:
+
+```sh
+# from inside WSL, reading the Windows-side OpenCode database
+opentab --db /mnt/c/Users/<you>/.local/share/opencode/opencode.db
+```
+
+If OpenCode runs inside WSL, the default path
+(`~/.local/share/opencode/opencode.db`) just works. Either way, `--db` points
+OpenTab at any non-standard location.
+
+Copilot Chat in VS Code works the same way from WSL: chat sessions are stored by
+the Windows-side VS Code (also for Remote-WSL windows), under the Windows profile.
+That store is *not* scanned by default — reading through `/mnt/c` is slow enough
+to drag down every startup — so opt in by pointing `--vscode-dir` at it, e.g. via
+an alias:
+
+```sh
+alias opentab='opentab --vscode-dir "/mnt/c/Users/<you>/AppData/Roaming/Code/User"'
+```
+
+Remote-WSL workspaces then resolve back to their in-distro project directories,
+and native Windows workspaces to their `/mnt/c/...` paths.
+
+</details>
+
+## Development
+
+CI runs Ruff, unit tests, and ShellCheck. See [CONTRIBUTING.md](CONTRIBUTING.md) for local
+setup, the test/lint commands, the pre-push hooks, and commit conventions.
 
 ## License
 
