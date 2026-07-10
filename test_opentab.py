@@ -9118,6 +9118,76 @@ def test_status_line_prices_an_exact_session_id():
         assert ot.status_line(store, "ses_gone") == ""
 
 
+def _write_claude_status_session(projects, sid, cwd, mtime, usage):
+    # One Claude session = one <slug>/<sid>.jsonl transcript whose mtime is the
+    # session's last activity (recent_roots orders by it, no parse).
+    slug = re.sub(r"[^A-Za-z0-9]", "-", cwd)
+    os.makedirs(os.path.join(projects, slug), exist_ok=True)
+    path = os.path.join(projects, slug, sid + ".jsonl")
+    _write_jsonl(path, [_claude_msg(sid, "claude-opus-4-8", usage, uuid=sid + "-u1", cwd=cwd)])
+    os.utime(path, (mtime, mtime))
+
+
+def test_status_line_prices_claude_sessions_without_a_full_parse():
+    # ClaudeStore's status trio: recent_roots orders roots by transcript mtime,
+    # root_of confirms the transcript (a Claude id is already its root), and the
+    # figure is always a "~" list-price estimate -- Claude Code records no cost.
+    # All off the single transcript: the full-tree parse must never run.
+    sid_a = "11111111-1111-1111-1111-111111111111"
+    sid_b = "22222222-2222-2222-2222-222222222222"
+    with tempfile.TemporaryDirectory() as tmp:
+        projects = os.path.join(tmp, "projects")
+        alpha, beta = os.path.join(tmp, "alpha"), os.path.join(tmp, "beta")
+        os.makedirs(alpha)
+        os.makedirs(beta)
+        _write_claude_status_session(projects, sid_a, alpha, 1760000100, _usage(1000, 50))
+        _write_claude_status_session(projects, sid_b, beta, 1760000200, _usage(500, 20))
+
+        store = ot.ClaudeStore(projects, type("A", (), {"demo": False})())
+        assert [r["id"] for r in store.recent_roots()] == [sid_b, sid_a]
+        assert store.root_of(sid_a) == sid_a
+        assert store.root_of("33333333-3333-3333-3333-333333333333") is None
+
+        expected = "~" + ot.money(
+            ot.api_equivalent_cost("anthropic/claude-opus-4-8", 1000, 50, 0, 0, 0)
+        )
+        assert ot.status_line(store) != ""  # newest overall: sid_b
+        assert ot.status_line(store, alpha) == expected  # dir scopes to its project
+        assert ot.status_line(store, sid_a) == expected  # uuid prices exactly that one
+        assert ot.status_line(store, "44444444-4444-4444-4444-444444444444") == ""
+        assert store._sessions is None  # the full-tree parse never ran
+
+
+def test_status_command_prices_whichever_tool_ran_last():
+    # A directory target consults every present backend and the newest root wins:
+    # drive Claude Code after OpenCode and the segment shows the Claude estimate;
+    # explicit session ids always route to their own backend.
+    sid = "55555555-5555-5555-5555-555555555555"
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(repo)
+        db = os.path.join(tmp, "opencode.db")
+        _write_status_db(db, [("ses_oc", None, repo, 1760000000000, 1760000500000, 2.0, 10)])
+        projects = os.path.join(tmp, "projects")
+        _write_claude_status_session(projects, sid, repo, 1760000900, _usage(1000, 50))
+
+        args = type("A", (), {"demo": False, "db": db, "claude_dir": projects})()
+        claude_price = "~" + ot.money(
+            ot.api_equivalent_cost("anthropic/claude-opus-4-8", 1000, 50, 0, 0, 0)
+        )
+        assert ot.cli._status_line_all(args, repo) == claude_price  # claude is newer
+        assert ot.cli._status_line_all(args, "ses_oc") == "$2.00"
+        assert ot.cli._status_line_all(args, sid) == claude_price
+
+        # Now OpenCode sees activity after the Claude transcript's mtime -- it wins.
+        os.utime(
+            os.path.join(projects, re.sub(r"[^A-Za-z0-9]", "-", repo), sid + ".jsonl"),
+            (1760000100, 1760000100),
+        )
+        assert ot.cli._status_line_all(args, repo) == "$2.00"
+        assert ot.cli._status_line_all(args, None) == "$2.00"  # no target: newest overall
+
+
 # --- The web browser (--html / --serve) -------------------------------------
 
 

@@ -46,7 +46,7 @@ ruff format src/opentab test_opentab.py       # autoformat
 ruff format --check src/opentab test_opentab.py   # format check (matches CI)
 python3 -m compileall -q src/opentab          # byte-compile smoke check
 python3 -m opentab --demo                     # run the TUI with anonymized/synthetic data
-opentab --status "$PWD"                       # one-shot: current session's cost incl. subagents (tmux status line; OpenCode only)
+opentab --status "$PWD"                       # one-shot: current session's cost incl. subagents (tmux status line; OpenCode + Claude Code)
 opentab --demo --html demo.html               # one-shot: write the self-contained HTML browser
 opentab --serve                               # same browser served on http://localhost:8321 (+ live Turns/Tools)
 opentab --web                                 # --serve, and open it in the default browser
@@ -141,8 +141,15 @@ Three logical layers (the class names below live in the files above — `Store` 
   extra, `recent_roots` (roots newest-subtree-activity-first), feeds the curses-free
   `--status` one-shot (`cli.status_line`/`status_command`): the current session's cost for
   a tmux status line, `~`-prefixed when it contains a list-price estimate for $0 rows. Its
-  target is a directory (project's latest session) or a `ses_…` id (exactly that session;
-  `root_of` walks a subagent id up to its root).
+  target is a directory (project's latest session) or a session id (exactly that session;
+  `root_of` walks a subagent id up to its root). **`--status` consults OpenCode + Claude
+  Code**: a `ses_…` id names OpenCode, a bare UUID names Claude, and a directory (or no
+  target) prices the newest root across both (`cli._status_line_all`). `ClaudeStore`
+  implements the status trio without the full-tree parse — `recent_roots` orders
+  transcripts by mtime with the cwd read lazily from the file head (`_TranscriptRoot`),
+  `root_of` just confirms the transcript (a Claude id is already its root), and
+  `status_nodes` (the `getattr` opt-in `_price_root` prefers over `workflow_nodes`)
+  parses only that session's own transcript.
 - **`ClaudeStore`** — second backend over Claude Code JSONL, same four methods
   (`workflows`/`summary`/`workflow_nodes`/`model_breakdown`) + `demo`/`demo_scale`. **That
   four-method surface is the whole `App`↔store contract — keep `App`/`Renderer`

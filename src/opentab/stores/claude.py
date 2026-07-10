@@ -138,12 +138,36 @@ class ClaudeStore:
     def _files(self) -> list[str]:
         return glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
 
+    def _transcripts(self, session_id: str) -> list[str]:
+        # A session's transcript is <project-slug>/<sessionId>.jsonl. Resuming the
+        # session from another directory can leave the same id under a second slug,
+        # so glob for every copy.
+        return glob.glob(os.path.join(self.root_dir, "**", session_id + ".jsonl"), recursive=True)
+
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
             return self._sessions
+        self._sessions = self._parse_texts(
+            text for _path, text in read_files_parallel(self._files())
+        )
+        return self._sessions
+
+    def _parse_one(self, workflow_id: str) -> dict | None:
+        # Parse only this session's own transcript(s) -- the --status fast path, so
+        # pricing one session never pays for the whole ~/.claude/projects tree. A
+        # transcript can replay resumed/forked history under other sessionIds; the
+        # grouping lands those rows under their own ids and we return just ours.
+        paths = self._transcripts(workflow_id)
+        if not paths:
+            return None
+        return self._parse_texts(text for _path, text in read_files_parallel(paths)).get(
+            workflow_id
+        )
+
+    def _parse_texts(self, texts) -> dict[str, dict]:
         sessions: dict[str, dict] = {}
         seen: set = set()  # dedupe resumed/forked overlap on (message.id, requestId)
-        for _path, text in read_files_parallel(self._files()):
+        for text in texts:
             for line in text.split("\n"):
                 line = line.strip()
                 if not line:
@@ -155,7 +179,6 @@ class ClaudeStore:
                 self._ingest(obj, sessions, seen)
         for sid, s in sessions.items():
             self._finalize(sid, s)
-        self._sessions = sessions
         return sessions
 
     def _ingest(self, o: dict, sessions: dict[str, dict], seen: set) -> None:
@@ -425,10 +448,77 @@ class ClaudeStore:
             out.extend(s["model_rows"])
         return out
 
+    # How much of a transcript head to scan for its "cwd" -- every Claude Code
+    # record carries one, so the first complete line normally answers; the budget
+    # only bounds the pathological transcript that opens with megabytes of pasted
+    # prompt, keeping the --status poll cheap.
+    _CWD_HEAD_BYTES = 262144
+
+    def _transcript_cwd(self, path: str) -> str:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                remaining = self._CWD_HEAD_BYTES
+                while remaining > 0:
+                    line = fh.readline()
+                    if not line:
+                        break
+                    remaining -= len(line)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except ValueError:
+                        continue
+                    cwd = obj.get("cwd") if isinstance(obj, dict) else None
+                    if cwd:
+                        return cwd
+        except OSError:
+            pass
+        return "(unknown)"
+
+    def recent_roots(self) -> list[dict]:
+        # Root sessions newest-activity-first -- the cheap sibling of
+        # Store.recent_roots for the one-shot --status command. No parse: Claude
+        # Code appends every message (sidechains included) to the session's own
+        # transcript, so the file mtime IS the subtree's last activity, and the
+        # session id is the file name. "directory" is read lazily from the file
+        # head (_TranscriptRoot), so a scan stops paying at the row that matches.
+        newest: dict[str, _TranscriptRoot] = {}
+        for path in self._files():
+            sid = os.path.basename(path)[: -len(".jsonl")]
+            try:
+                last_active = int(os.stat(path).st_mtime * 1000)  # ms, like Store's
+            except OSError:
+                continue  # deleted mid-scan
+            row = newest.get(sid)
+            if row is None or last_active > row["last_active"]:
+                newest[sid] = _TranscriptRoot(self, path, sid, last_active)
+        return sorted(newest.values(), key=lambda r: r["last_active"], reverse=True)
+
+    def root_of(self, session_id: str) -> str | None:
+        # A Claude session id is already its root -- sidechain (Task) messages live
+        # inside the same transcript -- so this only confirms the transcript exists.
+        return session_id if self._transcripts(session_id) else None
+
     def workflow_nodes(self, workflow_id: str) -> list[dict]:
         s = self._parse().get(workflow_id)
         if not s:
             return []
+        return self._nodes(workflow_id, s)
+
+    def status_nodes(self, workflow_id: str) -> list[dict]:
+        # workflow_nodes for the --status one-shot: identical rows, but off the
+        # single-transcript parse when nothing is loaded yet -- a status poll must
+        # never trigger the full-tree parse.
+        if self._sessions is not None:
+            return self.workflow_nodes(workflow_id)
+        s = self._parse_one(workflow_id)
+        if not s:
+            return []
+        return self._nodes(workflow_id, s)
+
+    def _nodes(self, workflow_id: str, s: dict) -> list[dict]:
         root_tot = self._new_acc()
         best, best_runs = "unknown (not recorded)", -1
         for model_name, e in s["models"].items():
@@ -490,3 +580,20 @@ class ClaudeStore:
         ):
             n[f] = int(round(n[f] * self.demo_scale))
         return n
+
+
+class _TranscriptRoot(dict):
+    """A recent_roots() row over one transcript file. Id and last-active come free
+    from the file name and mtime; "directory" (the session's cwd) needs the file
+    head, so it is read only on first access -- a --status project scan walks rows
+    newest-first and stops reading files at the row that matches."""
+
+    def __init__(self, store: ClaudeStore, path: str, sid: str, last_active: int):
+        super().__init__(id=sid, last_active=last_active)
+        self._store = store
+        self._path = path
+
+    def __getitem__(self, key):
+        if key == "directory" and "directory" not in self:
+            self["directory"] = self._store._transcript_cwd(self._path)
+        return super().__getitem__(key)
