@@ -21,6 +21,7 @@ except ImportError:  # native Windows has no stdlib curses
 
 from opentab.formatting import (
     BAR_CELLS,
+    BAR_GLYPH_PATTERN,
     MONEY_PATTERN,
     TOKEN_PATTERN,
     clip,
@@ -982,13 +983,9 @@ class Renderer:
                 f"{cost:>11} {pct(float(it['cost']), total):>5} {tok:>9} {int(it['sessions']):>7}"
             )
             if start + off == idx:
-                self.write(
-                    stdscr,
-                    ry,
-                    x + 2,
-                    pad(shorten(text, w - 4), w - 4),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
+                row = pad(shorten(text, w - 4), w - 4)
+                self.write(stdscr, ry, x + 2, row, curses.A_REVERSE | curses.A_BOLD)
+                self.write_selected_bars(stdscr, ry, x + 2, row)
             else:
                 self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
         if not self.show_api_prices and any(
@@ -2604,7 +2601,10 @@ class Renderer:
             core = self._price_core_text(entry, namew, peak)
             selected = i == idx
             attr = curses.A_REVERSE | curses.A_BOLD if selected else curses.A_NORMAL
-            self.write(stdscr, row_y, 2, pad(shorten(core, inner_w), inner_w), attr)
+            core_row = pad(shorten(core, inner_w), inner_w)
+            self.write(stdscr, row_y, 2, core_row, attr)
+            if selected:
+                self.write_selected_bars(stdscr, row_y, 2, core_row)
             tag = self._price_entry_tag(entry)
             if tag and tag_x < 2 + inner_w and not selected:
                 self.write(
@@ -2943,6 +2943,7 @@ class Renderer:
             if i == sel_line:
                 row = pad(line, inner_w - graph_off)
                 self.write(stdscr, y + 3 + i, 2 + graph_off, row, curses.A_REVERSE | curses.A_BOLD)
+                self.write_selected_bars(stdscr, y + 3 + i, 2 + graph_off, row)
                 continue
             if is_title:
                 attr = curses.color_pair(4) | curses.A_BOLD
@@ -3660,6 +3661,21 @@ class Renderer:
             stdscr.addstr(y, x, clip(text, max(0, width - x - 1)), attr)
         except curses.error:
             pass
+
+    def write_selected_bars(self, stdscr: curses.window, y: int, x: int, text: str) -> None:
+        # Repaint the block-glyph bar runs of a row just written with A_REVERSE:
+        # reverse video renders a block in the pair's background colour, so the
+        # spend bar reads as a theme-bg hole in the highlight band. Overdrawing
+        # the runs non-reversed in the focus accent keeps the bar legible (a full
+        # block fills its cell, so the band shows no seam around it).
+        for match in BAR_GLYPH_PATTERN.finditer(text):
+            self.write(
+                stdscr,
+                y,
+                x + display_width(text[: match.start()]),
+                match.group(0),
+                curses.color_pair(6) | curses.A_BOLD,
+            )
 
     def write_rich(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
         self.write(stdscr, y, x, text, attr)

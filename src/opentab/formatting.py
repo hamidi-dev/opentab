@@ -12,6 +12,11 @@ from datetime import datetime, timezone
 # being mistaken for token counts (e.g. the "35B" in Qwen3.6-35B-A3B).
 TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.\-])\d+\.\d+[kMB](?![A-Za-z0-9_\-])")
 MONEY_PATTERN = re.compile(r"\$\d+(?:,\d{3})*(?:\.\d+)?")
+# Block glyphs (cost_bar / the ranked spend bars) fill their cell with the
+# *foreground* colour, so under a selected row's A_REVERSE they invert to the
+# theme background — a hole punched in the highlight band. Selected-row writers
+# overdraw runs of them (matched here) non-reversed to keep the bar visible.
+BAR_GLYPH_PATTERN = re.compile(r"[█▏▎▍▌▋▊▉]+")
 
 
 def money(value: float) -> str:
