@@ -6626,6 +6626,69 @@ def test_hermes_store_loads_tokens_and_rolls_up_to_git_root():
         assert est > 0
 
 
+def test_hermes_untitled_sessions_fall_back_to_first_user_prompt():
+    # Hermes never titles api_server/voice sessions; the first real user prompt
+    # becomes the title. Injected "[ ... ]" note blocks are stripped, a voice
+    # turn's quoted transcript is mined out of its block, and a note-only first
+    # message falls through to the next user message.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(
+            db,
+            [
+                {"id": "s1", "title": "", "inp": 10, "out": 5},
+                {"id": "s2", "title": "", "inp": 10, "out": 5},
+                {"id": "s3", "title": "", "inp": 10, "out": 5},
+                {"id": "titled", "title": "Real Title", "inp": 10, "out": 5},
+            ],
+        )
+        conn = sqlite3.connect(db)
+        conn.execute(
+            """CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?,?,?,?)",
+            [
+                ("s1", "user", "[Note: model was just switched.]\n\nhow do i configure this", 1.0),
+                ("s1", "assistant", "like so", 2.0),
+                (
+                    "s2",
+                    "user",
+                    '[The user sent a voice message~ Here\'s what they said: "Hallo, kannst du mich verstehen?"]',
+                    1.0,
+                ),
+                ("s3", "user", "[CONTEXT COMPACTION -- REFERENCE]", 1.0),
+                ("s3", "user", "  real question here  ", 2.0),
+                ("titled", "user", "must not be used", 1.0),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        args = type("Args", (), {"demo": False})()
+        titles = {w.id: w.title for w in ot.HermesStore(db, args).workflows()}
+        assert titles["s1"] == "how do i configure this"
+        assert titles["s2"] == "Hallo, kannst du mich verstehen?"
+        assert titles["s3"] == "real question here"
+        assert titles["titled"] == "Real Title"
+
+
+def test_hermes_untitled_without_messages_table_stays_untitled():
+    # An old/partial state.db without a messages table must not crash the parse.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "title": "", "inp": 10, "out": 5}])
+        args = type("Args", (), {"demo": False})()
+        (w,) = ot.HermesStore(db, args).workflows()
+        assert w.title == "(untitled)"
+
+
 def test_hermes_store_rolls_child_session_into_parent_subtotal():
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "state.db")

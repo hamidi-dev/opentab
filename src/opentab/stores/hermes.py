@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import re
 import sqlite3
 from datetime import datetime
 
@@ -34,6 +35,15 @@ class HermesStore:
     estimated) is trusted as real/priced and shown in normal mode. records_cost is
     True iff any live session carries a recorded cost (computed once at init,
     since CombinedStore reads it before workflows()).
+
+    Titles: sessions.title when Hermes set one; otherwise the first real user
+    prompt from the messages table (api_server/voice sessions are never titled by
+    Hermes). Hermes wraps injected context in leading "[ ... ]" blocks ("[Note:
+    model was just switched...]", "[CONTEXT COMPACTION ...]"), which are stripped
+    -- except a voice turn, whose whole prompt lives inside one such block as
+    '[The user sent a voice message~ Here's what they said: "..."]'; that quoted
+    transcript is the title. This is the only read of the messages table (its
+    token_count is never populated, so there is still no Turns tab).
 
     Sessions with a parent_session_id form a subagent tree; HermesStore rolls
     child tokens/cost up into the root's totals. cwd is resolved to the git repo
@@ -181,6 +191,54 @@ class HermesStore:
         prefix = cls._PROVIDER_ALIASES.get(prov, prov or cls._infer_provider(model))
         return f"{prefix}/{model}" if prefix else model
 
+    # The transcript a voice turn carries inside its bracketed note block.
+    _VOICE_RE = re.compile(r'said:\s*"(.*?)"', re.S)
+
+    @classmethod
+    def _title_from_content(cls, text: str) -> str:
+        # A user message's visible words, for the title fallback. Hermes prepends
+        # injected context as "[ ... ]" blocks; drop them -- but a voice turn is
+        # one such block whose quoted transcript IS the prompt, so mine that.
+        text = (text or "").strip()
+        while text.startswith("["):
+            end = text.find("]")
+            if end < 0:
+                return ""
+            block, text = text[: end + 1], text[end + 1 :].lstrip()
+            if "voice message" in block:
+                m = cls._VOICE_RE.search(block)
+                if m and m.group(1).strip():
+                    return m.group(1).strip()[:80]
+        for line in text.splitlines():
+            if line.strip():
+                return line.strip()[:80]  # the title fallback stays short (ClaudeStore)
+        return ""
+
+    def _fallback_titles(self, conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
+        # First real user prompt for sessions Hermes left untitled (api_server /
+        # voice sessions never get one) -- the ClaudeStore title precedence. One
+        # query over the untitled ids; per session the first usable prompt wins.
+        out: dict[str, str] = {}
+        if not ids:
+            return out
+        marks = ",".join("?" * len(ids))
+        sql = (
+            "SELECT session_id, substr(content, 1, 400) FROM messages "
+            f"WHERE role = 'user' AND session_id IN ({marks}) "
+            "AND content IS NOT NULL AND content != '' ORDER BY timestamp"
+        )
+        try:
+            rows = conn.execute(sql, ids).fetchall()
+        except sqlite3.Error:
+            return out  # no messages table (old/partial DB): titles stay bare
+        for sid, content in rows:
+            if sid in out:
+                continue
+            title = self._title_from_content(content)
+            if title:
+                out[sid] = title
+        return out
+
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
             return self._sessions
@@ -190,32 +248,39 @@ class HermesStore:
         conn = self._connect()
         try:
             rows = conn.execute(self._select_sql()).fetchall()
+
+            # Flat map of all sessions. Each carries a recorded cost: $0 for
+            # subscription routes (-> unpriced, the "$" view estimates it) or the
+            # metered cost for paid routes (-> priced, shown as real spend).
+            flat: dict[str, dict] = {}
+            for row in rows:
+                inp = row["input_tokens"] or 0
+                out = row["output_tokens"] or 0
+                cr = row["cache_read_tokens"] or 0
+                cw = row["cache_write_tokens"] or 0
+                flat[row["id"]] = {
+                    "id": row["id"],
+                    "title": row["title"] or "",
+                    "model": self._prefix_model(row["model"] or "", row["billing_provider"] or ""),
+                    "cwd": row["cwd"] or "",
+                    "parent_id": row["parent_session_id"],
+                    "started_at": row["started_at"] or 0.0,
+                    "inp": inp,
+                    "out": out,
+                    "cr": cr,
+                    "cw": cw,
+                    "cost": self._recorded_cost(row["actual_cost_usd"], row["estimated_cost_usd"]),
+                    "tokens_total": inp + out + cr + cw,
+                }
+
+            # Untitled sessions (roots and subagent nodes alike) fall back to
+            # their first real user prompt, while the connection is still open.
+            untitled = [sid for sid, s in flat.items() if not s["title"]]
+            fallbacks = self._fallback_titles(conn, untitled)
+            for sid in untitled:
+                flat[sid]["title"] = fallbacks.get(sid) or "(untitled)"
         finally:
             conn.close()
-
-        # Flat map of all sessions. Each carries a recorded cost: $0 for
-        # subscription routes (-> unpriced, the "$" view estimates it) or the
-        # metered cost for paid routes (-> priced, shown as real spend).
-        flat: dict[str, dict] = {}
-        for row in rows:
-            inp = row["input_tokens"] or 0
-            out = row["output_tokens"] or 0
-            cr = row["cache_read_tokens"] or 0
-            cw = row["cache_write_tokens"] or 0
-            flat[row["id"]] = {
-                "id": row["id"],
-                "title": row["title"] or "(untitled)",
-                "model": self._prefix_model(row["model"] or "", row["billing_provider"] or ""),
-                "cwd": row["cwd"] or "",
-                "parent_id": row["parent_session_id"],
-                "started_at": row["started_at"] or 0.0,
-                "inp": inp,
-                "out": out,
-                "cr": cr,
-                "cw": cw,
-                "cost": self._recorded_cost(row["actual_cost_usd"], row["estimated_cost_usd"]),
-                "tokens_total": inp + out + cr + cw,
-            }
 
         # Map root_id -> list of direct children
         children: dict[str, list[str]] = {}
