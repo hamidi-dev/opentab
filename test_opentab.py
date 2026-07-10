@@ -2600,8 +2600,8 @@ def test_sessions_picker_shows_a_project_column_in_time_mode():
     app.tab = app.month_tabs.index("Sessions")
     lines = _paint_sessions_picker(app)
     header = next(ln for ln in lines if "Title" in ln)
-    assert "Project" in header  # the column header sits between Subs and Title
-    assert header.index("Subs") < header.index("Project") < header.index("Title")
+    assert "Project" in header  # the column header sits between Subagents and Title
+    assert header.index("Subagents") < header.index("Project") < header.index("Title")
     assert any("alpha" in ln and "first" in ln for ln in lines)  # each row names its project
     assert any("beta" in ln and "second" in ln for ln in lines)
 
@@ -2676,9 +2676,10 @@ def test_sessions_sort_by_project_groups_sessions_by_root():
     rows = app.sorted_workflows(app.loaded)
     # a->z by project, costliest session first within each project.
     assert [w.id for w in rows] == ["a", "b-costly", "b-cheap"]
-    app.sort_reverse = True  # a header re-click flips to z->a
+    app.sort_reverse = True  # a header re-click flips the *groups* to z->a...
     rows = app.sorted_workflows(app.loaded)
-    assert [w.id for w in rows] == ["b-cheap", "b-costly", "a"]
+    # ...but each project still leads with its costliest session.
+    assert [w.id for w in rows] == ["b-costly", "b-cheap", "a"]
 
 
 def test_what_if_price_view_is_persisted_in_state():
@@ -4004,19 +4005,16 @@ def test_shift_s_opens_the_sort_picker_too():
     assert not app.sort_menu and app.sort_by == "tokens"
 
 
-def test_subagents_tab_is_sortable_by_tokens():
-    app = app_with([workflow("june", "2026-06-01 12:00:00")])
-    app.view = "session"
-    app.tab = app.workflow_tabs.index("Subagents")
-    app.sort_by = "tokens"
-    rows = [
+def _subagent_rows():
+    return [
         {
             "depth": 1,
             "agent": "b",
             "model_name": "m",
-            "cost": 1.0,
+            "cost": 2.0,
             "tokens_total": 10,
             "title": "b",
+            "created_at": "2026-06-01 13:00:00",
         },
         {
             "depth": 1,
@@ -4025,11 +4023,51 @@ def test_subagents_tab_is_sortable_by_tokens():
             "cost": 1.0,
             "tokens_total": 20,
             "title": "a",
+            "created_at": "2026-06-01 12:00:00",
         },
     ]
 
+
+def test_subagents_tab_is_sortable_by_tokens():
+    app = app_with([workflow("june", "2026-06-01 12:00:00")])
+    app.view = "session"
+    app.tab = app.workflow_tabs.index("Subagents")
+    app.subagent_sort_by = "tokens"
+
     assert app.current_sort_options() == app.subagent_sort_options
-    assert app.sorted_subagent_rows(rows)[0]["title"] == "a"
+    assert app.sorted_subagent_rows(_subagent_rows())[0]["title"] == "a"
+
+
+def test_subagents_tab_is_sortable_by_date():
+    app = app_with([workflow("june", "2026-06-01 12:00:00")])
+    app.view = "session"
+    app.tab = app.workflow_tabs.index("Subagents")
+    app.subagent_sort_by = "date"  # newest first by default
+    assert [r["title"] for r in app.sorted_subagent_rows(_subagent_rows())] == ["b", "a"]
+    app.subagent_sort_reverse = True  # flipped: chronological
+    assert [r["title"] for r in app.sorted_subagent_rows(_subagent_rows())] == ["a", "b"]
+
+
+def test_subagent_sort_is_independent_of_session_sort():
+    # Sorting the Subagents tab must not clobber the sessions-list preference
+    # (they used to share sort_by, so picking "depth" here reset sessions to cost).
+    app = app_with([workflow("june", "2026-06-01 12:00:00")])
+    app.sort_by = "date"
+    app.view = "session"
+    app.tab = app.workflow_tabs.index("Subagents")
+
+    assert app.handle_key(None, ord("s"))  # opens the subagent sort picker
+    assert app.sort_menu and app.sort_menu_options() == app.subagent_sort_options
+    app.handle_key(None, ord("G"))  # jump to the last option (depth)
+    app.handle_key(None, 10)  # Enter applies
+    assert app.subagent_sort_by == "depth"
+    assert app.sort_by == "date"  # the sessions sort survived
+
+    # A header click on the Subagents tab targets the subagent pair only.
+    app.apply_header_sort("model", "subagent")
+    assert app.subagent_sort_by == "model" and app.sort_by == "date"
+    app.apply_header_sort("model", "subagent")  # re-click flips direction
+    assert app.subagent_sort_reverse is True
 
 
 def test_projects_are_grouped_and_sorted_by_cost():
@@ -4125,7 +4163,9 @@ def test_project_header_aligns_with_project_rows():
     assert header.index("Cost") + len("Cost v") == row.index("$12.34") + len("$12.34")
     assert header.index("Tokens") + len("Tokens") == row.index("1.5k") + len("1.5k")
     assert header.index("Ses") + len("Ses") == row.index("  1 ses") + len("  1 ses")
-    assert header.index("Subs") + len("Subs") == row.index("  0 subs") + len("  0 subs")
+    assert header.index("Subagents") + len("Subagents") == row.index("     0 subs") + len(
+        "     0 subs"
+    )
     assert len(header) <= 80
     assert len(row) <= 80
 
@@ -4142,7 +4182,7 @@ def test_clicking_a_column_header_sorts_by_that_column():
     # Each label word resolves to its sort key (x_base=1, so screen x = 1 + offset).
     assert rnd.sort_hit(2, 1 + header.index("Tokens")) == ("tokens", "project")
     assert rnd.sort_hit(2, 1 + header.index("Cost")) == ("cost", "project")
-    assert rnd.sort_hit(2, 1 + header.index("Subs")) == ("subagents", "project")
+    assert rnd.sort_hit(2, 1 + header.index("Subagents")) == ("subagents", "project")
     # A different row, or the leading marker gutter, is not a column label.
     assert rnd.sort_hit(3, 1 + header.index("Cost")) is None
     assert rnd.sort_hit(2, 1) is None
@@ -4210,6 +4250,107 @@ def test_header_arrow_reflects_sort_direction():
     assert "Cost v" in rnd.project_header_text(80)  # default cost sort, descending
     app.apply_header_sort("cost", "project")  # active column -> flip to ascending
     assert "Cost ^" in rnd.project_header_text(80)
+
+
+def test_sort_arrows_do_not_cross_lists_in_projects_mode():
+    # Projects browse mode shows the project sidebar and a sessions preview at
+    # once; each header must arrow its own list's sort (they used to share the
+    # context-dependent effective_sort_by, so one list borrowed the other's arrow).
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/a")])
+    app.set_browse_mode("projects")
+    app.project_sort_by = "tokens"
+    app.sort_by = "cost"
+    rnd = app.renderer
+    assert "Tokens v" in rnd.project_header_text(80)
+    # The sessions preview arrows the session sort (cost), not the project sort.
+    assert rnd.sort_heading("cost", "Cost") == "Cost v"
+    assert rnd.sort_heading("tokens", "Tokens") == "Tokens"
+    # The subagent heading reads its own pair, leaving both others untouched.
+    app.subagent_sort_by = "depth"
+    assert rnd.subagent_sort_heading("depth", "D") == "D ^"
+    assert rnd.sort_heading("cost", "Cost") == "Cost v"
+
+
+def test_legacy_subagent_sort_state_routes_home_and_direction_stays_safe():
+    # A pre-split state.json could hold a subagent-only key in sort_by (the lists
+    # used to share it); it must land on subagent_sort_by, and the saved direction
+    # must not flip the cost fallback (sessions would start cheapest-first).
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    ot.apply_state(app, app.args, {"sort_by": "depth", "sort_reverse": True})
+    assert app.sort_by == "cost" and app.sort_reverse is False
+    assert app.subagent_sort_by == "depth"
+
+
+def test_subagent_sort_is_persisted_in_state():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.subagent_sort_by, app.subagent_sort_reverse = "agent", True
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+    assert restored.subagent_sort_by == "agent"
+    assert restored.subagent_sort_reverse is True
+
+
+def test_preview_session_lists_register_clickable_sort_headers():
+    # Browse previews used to show sort arrows on headers that ignored clicks;
+    # the drawers now mark the header line so the paint loop registers zones.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.focus = "months"
+    rnd = app.renderer
+    rnd._line_sort_headers = {}
+    lines = rnd.month_workflows(app.selected_month_summary, 100)
+    cols, target = rnd._line_sort_headers[1]
+    assert target == "session"
+    assert ("date", "Started") in cols and ("subagents", "Subagents") in cols
+    rnd.sort_regions = []
+    rnd._register_line_sort_header(5, 2, 1, lines[1], 96)
+    keys = {(k, t) for _y, _x0, _x1, k, t in rnd.sort_regions}
+    assert ("date", "session") in keys and ("subagents", "session") in keys
+
+
+def test_subagents_tab_header_is_click_sortable_and_shows_started():
+    class NodeStore(FakeStore):
+        def workflow_nodes(self, wid):
+            return [
+                {
+                    "depth": d,
+                    "agent": "task",
+                    "model_name": "anthropic/x",
+                    "cost": 1.0,
+                    "tokens_total": 10,
+                    "title": t,
+                    "created_at": ts,
+                    "tokens_input": 5,
+                    "tokens_output": 5,
+                    "tokens_reasoning": 0,
+                    "tokens_cache_read": 0,
+                    "tokens_cache_write": 0,
+                }
+                for d, t, ts in (
+                    (0, "root", "2026-06-01 12:00:00"),
+                    (1, "sub", "2026-06-01 12:30:00"),
+                )
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(NodeStore([workflow("s1", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+    rnd = app.renderer
+    rnd._line_sort_headers = {}
+    lines = rnd.detail_subagents(app.loaded[0], 120)
+    assert lines[1].startswith("Started")
+    assert "2026-06-01 12:30" in lines[2]  # the subagent row carries its start time
+    cols, target = rnd._line_sort_headers[1]
+    assert target == "subagent" and cols == rnd.SUBAGENT_SORT_COLUMNS
 
 
 def test_project_mode_sessions_use_selected_project():
@@ -4765,7 +4906,7 @@ def test_export_session_tabs_dispatch_to_their_tables():
 
     app.tab = app.current_tabs().index("Subagents")
     scope, header, rows = app._export_dataset()
-    assert scope == "subagents" and header[0] == "depth" and rows[0][1] == "build"
+    assert scope == "subagents" and header[0] == "date" and rows[0][2] == "build"
 
     app.tab = app.current_tabs().index("Turns")
     scope, header, rows = app._export_dataset()
@@ -8220,7 +8361,7 @@ def test_subagent_nodes_memoized_per_session():
     # The Subagents export dataset reads through the same memo (no new store call).
     kind, header, rows = app._subagents_dataset(app.loaded[0])
     assert kind == "subagents" and app.store.node_calls == 1
-    assert [r[0] for r in rows] == [1]  # depth-0 root filtered out, subagent kept
+    assert [r[1] for r in rows] == [1]  # depth-0 root filtered out, subagent kept
     # Reload drops the memo -- the underlying data may have changed.
     app.reload()
     app.session_node_rows("s1")

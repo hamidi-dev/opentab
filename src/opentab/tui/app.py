@@ -108,7 +108,7 @@ class App:
     project_tabs = ("Overview", "Models", "Sessions")
     sort_options = ("cost", "tokens", "date", "subagents", "project", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
-    subagent_sort_options = ("cost", "tokens", "title", "model", "agent", "depth")
+    subagent_sort_options = ("cost", "tokens", "date", "title", "model", "agent", "depth")
     # The P overlay's price table sorts by model name, the blended eff column, your
     # usage share, or any of the four list-price columns. "eff" is the default and
     # sorts cheapest-first (it's in ascending_sort_keys); model sorts a->z; the raw
@@ -268,11 +268,13 @@ class App:
         self.prices_view = "flat"  # P overlay layout: one of prices_views (p cycles)
         self.sort_by = "cost"
         self.project_sort_by = "cost"
+        self.subagent_sort_by = "cost"
         # Per-context "flipped off the natural order" flags, toggled by re-clicking a
-        # column header. sort_reverse covers the session and subagent lists (which
-        # share sort_by); project lists have their own.
+        # column header. Session, project, and subagent lists each keep their own
+        # sort pair so reordering one list never clobbers another's preference.
         self.sort_reverse = False
         self.project_sort_reverse = False
+        self.subagent_sort_reverse = False
         self.ignored_projects: set[str] = set()
         self.ignored_sessions: set[str] = set()
         self.show_ignored_projects = False
@@ -582,11 +584,7 @@ class App:
         return project.ignored or self.show_ignored_projects
 
     def sorted_projects(self, rows: list[ProjectSummary]) -> list[ProjectSummary]:
-        sort_by = (
-            self.project_sort_by
-            if self.project_sort_by in self.project_sort_options
-            else self.project_sort_options[0]
-        )
+        sort_by = self.project_sort_key()
         desc = self.sort_descending(sort_by, self.project_sort_reverse)
         if sort_by == "tokens":
             return sorted(rows, key=lambda p: (p.tokens, p.cost), reverse=desc)
@@ -1833,7 +1831,7 @@ class App:
     def _session_tab_dataset(self) -> tuple[str, list[str], list[list]]:
         session = self.current_session()
         if session is None:
-            return "subagents", ["depth", "agent", "model", "cost", "tokens", "title"], []
+            return "subagents", ["date", "depth", "agent", "model", "cost", "tokens", "title"], []
         tab = self._active_tab()
         if tab == "Subagents":
             return self._subagents_dataset(session)
@@ -1869,9 +1867,17 @@ class App:
         nodes = self._priced_nodes(
             [r for r in self.session_node_rows(session.id) if r["depth"] > 0]
         )
-        header = ["depth", "agent", "model", "cost", "tokens", "title"]
+        header = ["date", "depth", "agent", "model", "cost", "tokens", "title"]
         rows = [
-            [r["depth"], r["agent"], r["model_name"], r["cost"], r["tokens_total"], r["title"]]
+            [
+                r.get("created_at", ""),
+                r["depth"],
+                r["agent"],
+                r["model_name"],
+                r["cost"],
+                r["tokens_total"],
+                r["title"],
+            ]
             for r in self.sorted_subagent_rows(nodes)
         ]
         return "subagents", header, rows
@@ -2148,7 +2154,7 @@ class App:
         return True
 
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
-        sort_by = self.sort_by if self.sort_by in self.sort_options else self.sort_options[0]
+        sort_by = self.session_sort_key()
         desc = self.sort_descending(sort_by, self.sort_reverse)
         if sort_by == "cost":
             return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=desc)
@@ -2159,12 +2165,15 @@ class App:
         if sort_by == "title":
             return sorted(rows, key=lambda item: item.title.lower(), reverse=desc)
         if sort_by == "project":
-            # Groups a mixed session list by project (costliest session first within
-            # each) -- the sessions-tab way to eyeball one project's sessions together.
+            # Groups a mixed session list by project -- the sessions-tab way to eyeball
+            # one project's sessions together. Costliest session stays first within
+            # each group whichever way the project names run (the direction flip
+            # reorders the groups, not their insides), hence the two stable passes.
+            by_cost = sorted(
+                rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True
+            )
             return sorted(
-                rows,
-                key=lambda item: (self.project_root(item.directory).lower(), -item.total_cost),
-                reverse=desc,
+                by_cost, key=lambda item: self.project_root(item.directory).lower(), reverse=desc
             )
         return sorted(rows, key=lambda item: item.created_at, reverse=desc)
 
@@ -2302,12 +2311,37 @@ class App:
         # by column, so it gets its own sort state (prices_sort/prices_sort_reverse).
         return self.show_prices and self.prices_model is None
 
+    def in_subagent_sort_context(self) -> bool:
+        # The session view's Subagents tab; its own sort pair, like project lists.
+        return self.view == "session" and self.on_subagents_tab
+
+    # The three lists' active sort keys, each validated against its own vocabulary.
+    # Headers and sorters read these directly (never each other's, and never the
+    # context-dependent effective_sort_by) so that when a project list and a session
+    # list share the screen neither borrows the other's sort arrow.
+    def session_sort_key(self) -> str:
+        return self.sort_by if self.sort_by in self.sort_options else self.sort_options[0]
+
+    def project_sort_key(self) -> str:
+        return (
+            self.project_sort_by
+            if self.project_sort_by in self.project_sort_options
+            else self.project_sort_options[0]
+        )
+
+    def subagent_sort_key(self) -> str:
+        return (
+            self.subagent_sort_by
+            if self.subagent_sort_by in self.subagent_sort_options
+            else self.subagent_sort_options[0]
+        )
+
     def can_sort_current_view(self) -> bool:
         return (
             self.in_prices_sort_context()
             or self.in_project_sort_context()
             or (self.view != "session" and self.on_sessions_tab)
-            or (self.view == "session" and self.on_subagents_tab)
+            or self.in_subagent_sort_context()
         )
 
     def can_filter_current_view(self) -> bool:
@@ -2328,18 +2362,18 @@ class App:
         return self.view == "session" or (self.view == "zoom" and self.on_sessions_tab)
 
     def effective_sort_by(self) -> str | None:
+        # The sort key of the list the user is acting on -- feeds the header status
+        # line and the `s` picker's "(current)" marker. Column-arrow rendering does
+        # NOT go through this: each list's *_sort_heading reads its own key.
         if self.in_prices_sort_context():
             return self.prices_sort  # always a column ("eff" by default), so it arrows
         if self.in_project_sort_context():
-            return (
-                self.project_sort_by
-                if self.project_sort_by in self.project_sort_options
-                else self.project_sort_options[0]
-            )
-        options = self.current_sort_options()
-        if not options:
+            return self.project_sort_key()
+        if self.in_subagent_sort_context():
+            return self.subagent_sort_key()
+        if not self.current_sort_options():
             return None
-        return self.sort_by if self.sort_by in options else options[0]
+        return self.session_sort_key()
 
     def sort_descending(self, key: str, reverse: bool) -> bool:
         # The on-screen order for a column: its natural direction (numbers and dates
@@ -2380,7 +2414,10 @@ class App:
             self.prices_index = 0
             self.prices_scroll = 0
             return
-        if self.in_project_sort_context():
+        if self.in_subagent_sort_context():
+            self.subagent_sort_by = value
+            self.subagent_sort_reverse = False
+        elif self.in_project_sort_context():
             self.project_sort_by = value
             self.project_sort_reverse = False
             self.project_index = 0
@@ -2406,6 +2443,16 @@ class App:
                 self.prices_sort_reverse = False
             self.prices_index = 0
             self.prices_scroll = 0
+            return
+        if target == "subagent":
+            if key not in self.subagent_sort_options:
+                return
+            if self.subagent_sort_by == key:
+                self.subagent_sort_reverse = not self.subagent_sort_reverse
+            else:
+                self.subagent_sort_by = key
+                self.subagent_sort_reverse = False
+            self.scroll = 0
             return
         if target == "project":
             if key not in self.project_sort_options:
@@ -4173,14 +4220,12 @@ class App:
         return out
 
     def sorted_subagent_rows(self, rows: list) -> list:
-        sort_by = (
-            self.sort_by
-            if self.sort_by in self.subagent_sort_options
-            else self.subagent_sort_options[0]
-        )
-        desc = self.sort_descending(sort_by, self.sort_reverse)
+        sort_by = self.subagent_sort_key()
+        desc = self.sort_descending(sort_by, self.subagent_sort_reverse)
         if sort_by == "tokens":
             return sorted(rows, key=lambda row: (row["tokens_total"], row["cost"]), reverse=desc)
+        if sort_by == "date":
+            return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=desc)
         if sort_by == "title":
             return sorted(rows, key=lambda row: str(row["title"]).lower(), reverse=desc)
         if sort_by == "model":
@@ -4188,7 +4233,12 @@ class App:
         if sort_by == "agent":
             return sorted(rows, key=lambda row: str(row["agent"]).lower(), reverse=desc)
         if sort_by == "depth":
-            return sorted(rows, key=lambda row: (row["depth"], row["tokens_total"]), reverse=desc)
+            # Biggest execution first within a depth whichever way the depths run
+            # (the flip reorders depths, not their insides) -- two stable passes.
+            by_tokens = sorted(
+                rows, key=lambda row: (row["tokens_total"], row["cost"]), reverse=True
+            )
+            return sorted(by_tokens, key=lambda row: row["depth"], reverse=desc)
         return sorted(rows, key=lambda row: (row["cost"], row["tokens_total"]), reverse=desc)
 
     def range_label(self) -> str:

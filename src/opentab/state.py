@@ -32,10 +32,12 @@ def save_state(app: App) -> None:
         "range": app.range_input_value(),
         "sort_by": app.sort_by,
         "project_sort_by": app.project_sort_by,
+        "subagent_sort_by": app.subagent_sort_by,
         "prices_sort": app.prices_sort,
         "prices_view": app.prices_view,
         "sort_reverse": app.sort_reverse,
         "project_sort_reverse": app.project_sort_reverse,
+        "subagent_sort_reverse": app.subagent_sort_reverse,
         "prices_sort_reverse": app.prices_sort_reverse,
         "browse_mode": app.browse_mode,
         "zoom_maximized": app.zoom_maximized,  # + in a zoomed detail: full-screen vs split
@@ -70,18 +72,30 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
                 app._anchor_default_selection()
             except ValueError:
                 pass
-    if state.get("sort_by") in app.sort_options:
-        app.sort_by = state["sort_by"]
+    saved_sort = state.get("sort_by")
+    if saved_sort in app.sort_options:
+        app.sort_by = saved_sort
+    elif saved_sort in app.subagent_sort_options:
+        # A pre-split state.json could stash a subagent-only key ("depth", "model",
+        # "agent") in sort_by; route it home instead of silently dropping it.
+        app.subagent_sort_by = saved_sort
     if state.get("project_sort_by") in app.project_sort_options:
         app.project_sort_by = state["project_sort_by"]
+    if state.get("subagent_sort_by") in app.subagent_sort_options:
+        app.subagent_sort_by = state["subagent_sort_by"]
     if state.get("prices_sort") in app.prices_sort_options:
         app.prices_sort = state["prices_sort"]
     if state.get("prices_view") in {k for k, _label in app.prices_views}:
         app.prices_view = state["prices_view"]
-    if isinstance(state.get("sort_reverse"), bool):
+    # Restore a direction flip only when its column key was restored too -- a
+    # direction without its column would flip whatever default the key fell back
+    # to (e.g. a pre-split "depth" + reverse must not start sessions cheapest-first).
+    if isinstance(state.get("sort_reverse"), bool) and saved_sort in app.sort_options:
         app.sort_reverse = state["sort_reverse"]
     if isinstance(state.get("project_sort_reverse"), bool):
         app.project_sort_reverse = state["project_sort_reverse"]
+    if isinstance(state.get("subagent_sort_reverse"), bool):
+        app.subagent_sort_reverse = state["subagent_sort_reverse"]
     if isinstance(state.get("prices_sort_reverse"), bool):
         app.prices_sort_reverse = state["prices_sort_reverse"]
     if state.get("browse_mode") in ("time", "projects"):

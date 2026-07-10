@@ -894,9 +894,9 @@ function sessionCols() {
     { key: 'project', label: 'Project', asc: true, sortVal: r => projName(r.project).toLowerCase(), fmt: r => h('span', { class: 'dim' }, projName(r.project)) },
     { key: 'cost', label: 'Cost', align: 'r', sortVal: cost, fmt: r => moneyCell(cost(r)) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
-    { key: 'subagents', label: 'Sub', align: 'r', fmt: r => r.subagents || h('span', { class: 'mut' }, '·') },
+    { key: 'subagents', label: 'Subagents', align: 'r', fmt: r => r.subagents || h('span', { class: 'mut' }, '·') },
   ];
-  if (META.combined) cols.push({ key: 'source', label: 'Src', fmt: r => h('span', { class: 'mut' }, r.source) });
+  if (META.combined) cols.push({ key: 'source', label: 'Src', asc: true, fmt: r => h('span', { class: 'mut' }, r.source) });
   return cols;
 }
 function sessionsTable(id, ws) {
@@ -1060,6 +1060,7 @@ function renderDetail(sc, ws) {
     const nodes = DATA.nodes[sc.id];
     root.appendChild(pane('Session tree', nodes ? table('t-s-nodes', [
       { key: 'title', label: 'Title', asc: true, cls: 'grow', fmt: r => [r.depth ? h('span', { class: 'mut' }, '└ '.padStart(r.depth * 2 + 2, ' ')) : null, r.title] },
+      { key: 'date', label: 'Started', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },
       { key: 'agent', label: 'Agent', asc: true, fmt: r => h('span', { class: 'dim' }, r.agent) },
       { key: 'model', label: 'Model', asc: true, fmt: r => modelCell(r.model) },
       { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => moneyCell(mCost(r)) },
@@ -1268,7 +1269,7 @@ function trendDrill() {
     h('td', { class: 'mut' }, hTok(r.tokens)), h('td', { class: 'l' }, r.title)));
   return h('div', null,
     h('div', { class: 'tr-nav' }, back, h('span', { class: 'lbl' }, 'Sessions · ' + key),
-      h('span', { class: 'mut' }, rows.length + ' session(s) · ' + money(total))),
+      h('span', { class: 'mut' }, rows.length + ' session(s) · ' + money(total) + ' · most spend first')),
     h('table', { class: 'rank' }, h('thead', null, head), h('tbody', null, body)));
 }
 function trendDaily() {

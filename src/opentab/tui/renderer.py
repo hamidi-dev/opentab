@@ -66,7 +66,7 @@ class Renderer:
     SESSION_SORT_COLUMNS = (
         ("cost", "Cost"),
         ("tokens", "Tokens"),
-        ("subagents", "Subs"),
+        ("subagents", "Subagents"),
         ("title", "Title"),
     )
     PROJECT_SORT_COLUMNS = (
@@ -74,7 +74,17 @@ class Renderer:
         ("cost", "Cost"),
         ("tokens", "Tokens"),
         ("sessions", "Ses"),
-        ("subagents", "Subs"),
+        ("subagents", "Subagents"),
+    )
+    # The Subagents tab's clickable headers, in column order (detail_subagents).
+    SUBAGENT_SORT_COLUMNS = (
+        ("date", "Started"),
+        ("depth", "D"),
+        ("agent", "Agent"),
+        ("model", "Model"),
+        ("cost", "Cost"),
+        ("tokens", "Tokens"),
+        ("title", "Title"),
     )
     # The P overlay's clickable price-table headers: (sort_key, label) in column
     # order, matching what _price_header draws. The active column carries a v/^
@@ -109,6 +119,11 @@ class Renderer:
         self._trend_rows_at: tuple[int, int, int] | None = None
         # Turns tab: which detail-line indices are ▸ prompt headers (click unfolds).
         self._turn_header_at: dict[int, str] = {}
+        # Line-based panes (browse previews, the Subagents tab): which line indices
+        # are sortable column headers, as line_index -> (columns, target). The paint
+        # loops turn a visible one into sort_regions at its on-screen y, so header
+        # clicks sort these lists exactly like the zoom pickers' headers.
+        self._line_sort_headers: dict[int, tuple[tuple, str]] = {}
 
     def __getattr__(self, name: str):
         # Misses are App state/logic; read them from the App. (Renderer's own
@@ -159,6 +174,31 @@ class Renderer:
                 return key, target
         return None
 
+    def _register_line_sort_header(
+        self, sy: int, sx: int, line_index: int, line: str, max_w: int
+    ) -> None:
+        # If this detail line is a sortable column header (_line_sort_headers), give
+        # it click zones at the y it was actually painted on.
+        meta = self._line_sort_headers.get(line_index)
+        if meta:
+            self._register_sort_header(sy, sx, line, meta[0], meta[1], max_w)
+
+    def _paint_detail_lines(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, lines: list[str]
+    ) -> None:
+        # The shared body painter for the line-based detail panes (browse previews,
+        # zoom tabs without a picker): clamp the scroll, paint the visible window,
+        # and make any sortable header line clickable.
+        visible = h - 4
+        self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
+        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+            self.write_rich(
+                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
+            )
+            self._register_line_sort_header(
+                y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
+            )
+
     def year_row_text(self, year: YearSummary, marker: str) -> str:
         return (
             f"{marker} {year_label(year.year):<9} {money(year.cost):>9} "
@@ -179,7 +219,7 @@ class Renderer:
 
     @staticmethod
     def project_name_width(width: int) -> int:
-        return max(8, width - 38)
+        return max(8, width - 41)
 
     def project_row_text(self, project: ProjectSummary, marker: str, width: int) -> str:
         name_width = self.project_name_width(width)
@@ -189,7 +229,7 @@ class Renderer:
         return (
             f"{marker} {pad(name, name_width)} "
             f"{money(project.cost):>9} {human_tokens(project.tokens):>7} "
-            f"{project.workflows:>3} ses {project.subagents:>3} subs"
+            f"{project.workflows:>3} ses {project.subagents:>6} subs"
         )
 
     def project_header_text(self, width: int) -> str:
@@ -199,7 +239,7 @@ class Renderer:
             f"{self.project_sort_heading('cost', 'Cost'):>9} "
             f"{self.project_sort_heading('tokens', 'Tokens'):>7} "
             f"{self.project_sort_heading('sessions', 'Ses'):>7} "
-            f"{self.project_sort_heading('subagents', 'Subs'):>8}"
+            f"{self.project_sort_heading('subagents', 'Subagents'):>11}"
         )
 
     def list_width(self, rows_text: list[str], width: int) -> int:
@@ -214,7 +254,7 @@ class Renderer:
         longest = max(
             (display_width(short_path(p.directory, 999)) for p in self.projects), default=8
         )
-        natural = max(longest, len("Project")) + 39  # marker + Cost/Tokens/Ses/Subs
+        natural = max(longest, len("Project")) + 42  # marker + Cost/Tokens/Ses/Subagents
         return max(24, min(natural, width // 2, max(24, width - 44)))
 
     def browse_left_width(self, width: int) -> int:
@@ -343,6 +383,7 @@ class Renderer:
         stdscr.erase()
         self.regions = []  # rebuilt below as panels draw, for this frame's clicks
         self.sort_regions = []  # column-header sort zones, same lifecycle as regions
+        self._line_sort_headers = {}  # refilled by the line-based drawers below
         height, width = stdscr.getmaxyx()
         if height < 20 or width < 80:
             self.write(
@@ -429,7 +470,7 @@ class Renderer:
             f" {summary['workflows']} sessions "
             f"cost {money(float(summary['cost']))} "
             f"tokens {human_tokens(int(summary['tokens']))} "
-            f"subs {summary['subagents']} "
+            f"subagents {summary['subagents']} "
         )
         self.write(stdscr, 0, 0, title, curses.color_pair(2) | curses.A_BOLD)
         # Source chip, always visible (and live-switchable with `c`): which backend
@@ -657,8 +698,12 @@ class Renderer:
         parts.append(("R range", self.range_label() != "all time"))
         if self.can_filter_current_view():
             parts.append(("f,/ filter", bool(self.query)))
-        # s sort / e export / o open live in the help overlay -- the footer keeps
-        # only navigation, toggles with visible state, and the overlay openers.
+        # `s` shows only where a sortable list is on screen (like f); it lights up
+        # while its picker is open.
+        if self.can_sort_current_view():
+            parts.append(("s sort", self.sort_menu))
+        # e export / o open live in the help overlay -- the footer keeps only
+        # navigation, toggles with visible state, and the overlay openers.
         parts += [
             ("T trends", self.trends),
             ("P prices", self.show_prices),
@@ -706,16 +751,25 @@ class Renderer:
                 self.write(stdscr, y, x, text, active if on else base)
                 x += len(text)
 
+    # Each list's column headings read that list's own sort pair -- never the
+    # context-dependent effective_sort_by -- so when a project list and a session
+    # list share the screen (projects mode) neither borrows the other's arrow.
     def sort_heading(self, key: str, label: str) -> str:
-        if self.effective_sort_by() != key:
+        if self.session_sort_key() != key:
             return label
         desc = self.sort_descending(key, self.sort_reverse)
         return f"{label} {'v' if desc else '^'}"
 
     def project_sort_heading(self, key: str, label: str) -> str:
-        if self.effective_sort_by() != key:
+        if self.project_sort_key() != key:
             return label
         desc = self.sort_descending(key, self.project_sort_reverse)
+        return f"{label} {'v' if desc else '^'}"
+
+    def subagent_sort_heading(self, key: str, label: str) -> str:
+        if self.subagent_sort_key() != key:
+            return label
+        desc = self.sort_descending(key, self.subagent_sort_reverse)
         return f"{label} {'v' if desc else '^'}"
 
     def session_started(self, workflow: Workflow) -> str:
@@ -729,6 +783,16 @@ class Renderer:
 
     def session_date_label(self) -> str:
         return "Started" if self.browse_mode == "projects" or self.focus != "days" else "Time"
+
+    def _mark_session_header(self, lines: list[str]) -> None:
+        # The just-appended line is a session-list column header (browse preview);
+        # record it in _line_sort_headers so the paint loop makes it click-sortable.
+        # The date column's label varies (Started/Time), so read it off the header.
+        date_label = "Time" if lines[-1].startswith("Time") else "Started"
+        self._line_sort_headers[len(lines) - 1] = (
+            (("date", date_label), *self.SESSION_SORT_COLUMNS),
+            "session",
+        )
 
     def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
         return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
@@ -865,7 +929,7 @@ class Renderer:
             f"  {self.sort_heading('date', date_label):<10} "
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Subs'):>6}  "
+            f"{self.sort_heading('subagents', 'Subagents'):>11}  "
         )
         if proj_w:
             header += f"{self.sort_heading('project', 'Project'):<{proj_w}}  "
@@ -879,7 +943,7 @@ class Renderer:
         )
         sort_columns = [("date", date_label), *self.SESSION_SORT_COLUMNS]
         if proj_w:
-            sort_columns.insert(-1, ("project", "Project"))  # between Subs and Title
+            sort_columns.insert(-1, ("project", "Project"))  # between Subagents and Title
         self._register_sort_header(
             cy,
             x + 2,
@@ -903,7 +967,7 @@ class Renderer:
             started = self.session_started(wf)
             cost = money(wf.total_cost)
             tok = human_tokens(wf.total_tokens)
-            text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>6}  "
+            text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>11}  "
             if proj_w:
                 text += f"{pad(shorten(self.session_project(wf), proj_w), proj_w)}  "
             text += f"{self.source_tag(wf)}{self.bookmark_tag(wf)}{self.ignored_session_tag(wf)}{wf.title}"
@@ -1218,12 +1282,7 @@ class Renderer:
         else:
             lines = self.project_workflows(project, w - 4)
 
-        visible = h - 4
-        self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            self.write_rich(
-                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
-            )
+        self._paint_detail_lines(stdscr, y, x, h, w, lines)
 
     def draw_year_detail(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -1264,12 +1323,7 @@ class Renderer:
         else:
             lines = self.year_workflows(year, w - 4)
 
-        visible = h - 4
-        self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            self.write_rich(
-                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
-            )
+        self._paint_detail_lines(stdscr, y, x, h, w, lines)
 
     def draw_month_detail(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -1304,12 +1358,7 @@ class Renderer:
         else:
             lines = self.month_workflows(month, w - 4)
 
-        visible = h - 4
-        self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            self.write_rich(
-                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
-            )
+        self._paint_detail_lines(stdscr, y, x, h, w, lines)
 
     def draw_day_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -1398,45 +1447,7 @@ class Renderer:
         else:
             lines = self.day_workflows(day, w - 4)
 
-        visible = h - 4
-        self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            self.write_rich(
-                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
-            )
-
-    def draw_workflow_list(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        day = self.active_day
-        title = f"Sessions · {day}" if day else "Sessions"
-        self.box(stdscr, y, x, h, w, title, active=True)
-        rows = self.workflows
-        if not rows:
-            self.write(stdscr, y + 2, x + 2, "No sessions match the filter.", curses.color_pair(1))
-            return
-
-        visible = h - 3
-        start = max(0, min(self.workflow_index - visible // 2, max(0, len(rows) - visible)))
-        for row_y, workflow in enumerate(rows[start : start + visible], y + 2):
-            selected = start + row_y - (y + 2) == self.workflow_index
-            marker = ">" if selected else " "
-            cost = money(workflow.total_cost)
-            tok = human_tokens(workflow.total_tokens)
-            text = (
-                f"{marker} {cost:>9} "
-                f"{tok:>7} "
-                f"{workflow.subagents:>3} subs "
-                f"{shorten(self.bookmark_tag(workflow) + workflow.title, max(12, w - 25))}"
-            )
-            if selected:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x + 1,
-                    pad(shorten(text, w - 2), w - 2),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
-            else:
-                self.write_colored_summary_row(stdscr, row_y, x + 1, text, cost, tok, w - 2)
+        self._paint_detail_lines(stdscr, y, x, h, w, lines)
 
     def draw_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         workflow = self.current_session()
@@ -1491,6 +1502,9 @@ class Renderer:
             elif line.startswith("  │"):  # Turns tab: an unfolded prompt's full text
                 attr = curses.color_pair(1)
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+            self._register_line_sort_header(
+                y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
+            )
         if current == "Turns":
             # Make the ▸/▾ headers clickable: the region maps a row back to its line
             # index; _apply_click resolves headers via _turn_header_at.
@@ -1642,8 +1656,8 @@ class Renderer:
             lines.append(
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, month.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
-                f"agents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 37))}"
+                f"subagents {workflow.subagents:<3} "
+                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 40))}"
             )
         return lines
 
@@ -1660,15 +1674,16 @@ class Renderer:
             f"{self.sort_heading('date', 'Started'):<10} "
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('subagents', 'Subagents'):>11} Models  "
             f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
+        self._mark_session_header(lines)
         for workflow in self.filtered_sessions(self.workflows_for_month(month.month)):
             lines.append(
                 f"{workflow.created_at[:10]:<10} "
                 f"{money(workflow.total_cost):>9} "
                 f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>4} "
+                f"{workflow.subagents:>11} "
                 f"{workflow.model_count:>6}  "
                 f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
             )
@@ -1711,8 +1726,8 @@ class Renderer:
             lines.append(
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, year.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
-                f"agents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 37))}"
+                f"subagents {workflow.subagents:<3} "
+                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 40))}"
             )
         return lines
 
@@ -1733,15 +1748,16 @@ class Renderer:
             f"{self.sort_heading('date', 'Started'):<10} "
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('subagents', 'Subagents'):>11} Models  "
             f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
+        self._mark_session_header(lines)
         for workflow in self.filtered_sessions(self.workflows_for_year(year.year)):
             lines.append(
                 f"{workflow.created_at[:10]:<10} "
                 f"{money(workflow.total_cost):>9} "
                 f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>4} "
+                f"{workflow.subagents:>11} "
                 f"{workflow.model_count:>6}  "
                 f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
             )
@@ -1770,8 +1786,8 @@ class Renderer:
             lines.append(
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, day.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
-                f"agents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 37))}"
+                f"subagents {workflow.subagents:<3} "
+                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 40))}"
             )
         return lines
 
@@ -1784,15 +1800,16 @@ class Renderer:
             f"{self.sort_heading('date', 'Time'):<10} "
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('subagents', 'Subagents'):>11} Models  "
             f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
+        self._mark_session_header(lines)
         for workflow in self.filtered_sessions(self.workflows_for_day(day.day)):
             lines.append(
                 f"{workflow.created_at[11:16]:<10} "
                 f"{money(workflow.total_cost):>9} "
                 f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>4} "
+                f"{workflow.subagents:>11} "
                 f"{workflow.model_count:>6}  "
                 f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
             )
@@ -1827,8 +1844,8 @@ class Renderer:
             lines.append(
                 f"{workflow.created_at[:10]:<10} {money(workflow.total_cost):>10} "
                 f"{pct(workflow.total_cost, project.cost):>5} "
-                f"{human_tokens(workflow.total_tokens):>8} agents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 50))}"
+                f"{human_tokens(workflow.total_tokens):>8} subagents {workflow.subagents:<3} "
+                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 53))}"
             )
         return lines
 
@@ -1872,9 +1889,10 @@ class Renderer:
             f"{self.sort_heading('date', 'Started'):<10} "
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Agts'):>4} Models  "
+            f"{self.sort_heading('subagents', 'Subagents'):>11} Models  "
             f"{self.src_col()}{self.sort_heading('title', 'Title')}",
         ]
+        self._mark_session_header(lines)
         workflows = self.workflows_for_project(
             project.directory,
             include_ignored=self.include_ignored_for_project(project),
@@ -1884,7 +1902,7 @@ class Renderer:
                 f"{workflow.created_at[:10]:<10} "
                 f"{money(workflow.total_cost):>9} "
                 f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>4} "
+                f"{workflow.subagents:>11} "
                 f"{workflow.model_count:>6}  "
                 f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
             )
@@ -1945,16 +1963,19 @@ class Renderer:
         rows = self.sorted_subagent_rows(rows)
         lines = [
             "# Subagent Executions",
-            f"{self.sort_heading('depth', 'D'):<1} "
-            f"{self.sort_heading('agent', 'Agent'):14} "
-            f"{self.sort_heading('model', 'Model'):31} "
-            f"{self.sort_heading('cost', 'Cost'):>8} "
-            f"{self.sort_heading('tokens', 'Tokens'):>9}  "
-            f"{self.sort_heading('title', 'Title')}",
+            f"{self.subagent_sort_heading('date', 'Started'):<16} "
+            f"{self.subagent_sort_heading('depth', 'D'):<3} "
+            f"{self.subagent_sort_heading('agent', 'Agent'):14} "
+            f"{self.subagent_sort_heading('model', 'Model'):31} "
+            f"{self.subagent_sort_heading('cost', 'Cost'):>8} "
+            f"{self.subagent_sort_heading('tokens', 'Tokens'):>9}  "
+            f"{self.subagent_sort_heading('title', 'Title')}",
         ]
+        self._line_sort_headers[1] = (self.SUBAGENT_SORT_COLUMNS, "subagent")
         for row in rows:
             lines.append(
-                f"{row['depth']:<1} "
+                f"{str(row.get('created_at') or '')[:16]:<16} "
+                f"{row['depth']:<3} "
                 f"{pad(shorten(row['agent'], 14), 14)} "
                 f"{pad(shorten(row['model_name'], 31), 31)} "
                 f"{money(row['cost']):>8} "
@@ -2666,7 +2687,7 @@ class Renderer:
             return [f"No sessions used {model}."]
         subtotal = sum(cost for _w, cost, _t in rows)
         lines = [
-            f"{len(rows)} session(s) · {money(subtotal)} on this model",
+            f"{len(rows)} session(s) · {money(subtotal)} on this model · most spend first",
             f"{'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}",
         ]
         for w, cost, tok in rows:
@@ -2825,6 +2846,8 @@ class Renderer:
         "model": "Model",
         "agent": "Agent",
         "depth": "Depth",
+        "eff": "eff $/M (your mix)",
+        "use": "use (token share)",
         "input": "Input price",
         "output": "Output price",
         "cache_read": "Cache-read price",
@@ -3627,7 +3650,7 @@ class Renderer:
         lines = [
             title,
             "",
-            f"{len(rows)} session(s) · {money(subtotal)} on this {kind}",
+            f"{len(rows)} session(s) · {money(subtotal)} on this {kind} · most spend first",
             f"{'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}",
         ]
         idx = max(0, min(self.app.trend_drill_index, len(rows) - 1))
