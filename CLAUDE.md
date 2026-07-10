@@ -455,6 +455,15 @@ re-colors the SVG charts behind the picker.
   `session_extras`).
 - Subagent costs are recursive: `workflow_nodes` walks `session.parent_id` with a
   recursive CTE so a root session's cost includes its whole subagent subtree.
+- **Drilling into a session never freezes mid-draw**: when its lazy fetches
+  (nodes/Turns/Tools) aren't memoized (`App.session_data_ready`), `draw_detail` paints
+  one "Loading session — reading … records…" frame (skipping the tabs — their
+  `supports_*` gates could trigger the same parse) and sets `_session_loading`;
+  `run()`'s prefetch tick then does the blocking work (`prefetch_session_data`, on a
+  warm start the whole backend parse) and repaints — the first-frame model-scan
+  pattern. The web mirrors it: `tabsFor` shows placeholder `Turns ⋯`/`Tools ⋯` tabs
+  (`.ld`, pulsing) while the `/api/session` fetch is in flight, and their panes render
+  a loading hint.
 - Range/projection: `ranged_workflows` (date-filtered) → `all_workflows` (also drops
   ignored projects) are cached properties; mutating range/ignored state must call
   `_invalidate_workflow_cache()`.

@@ -9937,6 +9937,30 @@ def test_jsonl_tool_field_accepts_a_list_or_delimited_string():
         assert rows["Edit"]["tokens_total"] == 60
 
 
+def test_session_data_ready_flips_after_prefetch():
+    # The TUI's drill-in loading frame: a session whose lazy fetches aren't
+    # memoized isn't "ready" (draw_detail paints the loading placeholder instead
+    # of blocking mid-draw), and one prefetch_session_data satisfies every gate
+    # so the next frame renders real data -- the prefetch must never leave
+    # ready() False (that would be a loading-frame loop).
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        rows_in = [
+            _claude_msg(
+                "s1", "claude-opus-4-8", _usage(100, 50), uuid="a1", cwd=cwd, tools=["Bash"]
+            ),
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), rows_in)
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        app = ot.App(store, type("Args", (), {"since": None, "until": None, "days": None})())
+        assert not app.session_data_ready("s1")
+        app.prefetch_session_data("s1")
+        assert app.session_data_ready("s1")
+        assert app.session_tool_rows("s1")[0]["tool"] == "Bash"
+
+
 def test_tool_namespace_folds_builtins_case_insensitively_and_mcp_servers():
     # OpenCode/pi log "bash" where Claude Code logs "Bash"; both are built-ins.
     assert ot.tool_namespace("Bash") == "(built-in)"

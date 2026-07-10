@@ -182,6 +182,9 @@ class App:
         # Subagent tree per session (workflow_nodes: a recursive CTE / backend parse),
         # same lazy/cached-per-session deal -- the Subagents tab repaints every frame.
         self._nodes_by_session: dict[str, list[dict]] = {}
+        # Session id whose lazy fetches the next run() tick should prefetch: set by
+        # draw_detail when it paints the "loading" frame instead of blocking mid-draw.
+        self._session_loading: str | None = None
         # Active range: custom bounds from CLI take precedence, else a day window
         # (None = all). Default is all time so the Months panel is actually useful.
         self.custom_since = args.since
@@ -1088,6 +1091,31 @@ class App:
                 r[f] = int(round(r.get(f, 0) * k))
             r["cost"] = round(r.get("cost", 0) * k, 4)
         return rows
+
+    def session_data_ready(self, workflow_id: str) -> bool:
+        # Whether every lazy per-session fetch (subagent tree, Turns, Tools) is
+        # already memoized. When it isn't, draw_detail paints one "loading" frame
+        # and sets _session_loading; run()'s prefetch tick then does the blocking
+        # store work (a whole-backend parse on a warm start) and repaints. Cheap:
+        # dict lookups + the supports_* gates, no store fetch.
+        if workflow_id not in self._nodes_by_session:
+            return False
+        if self.session_supports_turns(workflow_id) and workflow_id not in self._turns_by_session:
+            return False
+        if self.session_supports_tools(workflow_id) and workflow_id not in self._tool_by_session:
+            return False
+        return True
+
+    def prefetch_session_data(self, workflow_id: str) -> None:
+        # The blocking fetches behind the loading frame -- same getters the tabs
+        # use, so everything lands in the per-session memos and the next paint
+        # renders instantly. Gates mirror session_data_ready, so one prefetch
+        # always satisfies it (no loading-frame loop).
+        self.session_node_rows(workflow_id)
+        if self.session_supports_turns(workflow_id):
+            self.session_turn_rows(workflow_id)
+        if self.session_supports_tools(workflow_id):
+            self.session_tool_rows(workflow_id)
 
     def session_node_rows(self, workflow_id: str) -> list[dict]:
         # Subagent tree for one session, fetched once and cached. The store call is the
@@ -2796,6 +2824,16 @@ class App:
                 self.maybe_prompt_prices()  # offer a models.dev fetch if prices are missing
                 self.renderer.draw(stdscr)
                 self._mark_toasts_shown()
+            if self._session_loading is not None:
+                # draw_detail just painted its "loading" frame (a drilled-in session
+                # whose subagents/Turns/Tools aren't memoized yet -- on a warm start
+                # this is the whole backend parse). Same trick as the first frame:
+                # do the blocking fetch now that the placeholder is visible, then
+                # repaint immediately instead of waiting for a key.
+                wf_id, self._session_loading = self._session_loading, None
+                stdscr.refresh()  # make sure the loading frame actually hits the screen
+                self.prefetch_session_data(wf_id)
+                continue
             stdscr.timeout(self._input_timeout_ms())
             key = stdscr.getch()
             if key == -1:

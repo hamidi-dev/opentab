@@ -1446,6 +1446,22 @@ class Renderer:
         if workflow is None:
             self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(1))
             return
+        if not self.app.session_data_ready(workflow.id):
+            # First frame after a drill-in: the lazy fetches (subagent tree, Turns,
+            # Tools) can mean parsing the whole backend on a warm start, so show
+            # this placeholder instead of freezing mid-draw; run()'s prefetch tick
+            # does the blocking work right after and repaints. Tabs are skipped
+            # too -- current_tabs' supports_* gates could trigger the same parse.
+            self.app._session_loading = workflow.id
+            src = getattr(workflow, "source", "") or self.store.source_name
+            self.write(
+                stdscr,
+                y + 2,
+                x + 2,
+                f"Loading session — reading {src} records…",
+                curses.color_pair(6) | curses.A_BOLD,
+            )
+            return
 
         tabs = self.current_tabs()
         self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab)
