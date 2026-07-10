@@ -198,7 +198,7 @@ def parse_args() -> argparse.Namespace:
         default=themes.DEFAULT_THEME,
         help="colour theme for the TUI and the --html/--serve browser (opentab, "
         "catppuccin-mocha/latte, tokyo-night/-day, gruvbox, nord, dracula, rose-pine); "
-        "switch live in the TUI with Y or the browser's theme button, and your choice is "
+        "switch live in the TUI with C or the browser's theme button, and your choice is "
         f"remembered. Default: {themes.DEFAULT_THEME}",
     )
     parser.add_argument(
