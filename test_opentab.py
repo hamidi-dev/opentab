@@ -2606,6 +2606,39 @@ def test_sessions_picker_shows_a_project_column_in_time_mode():
     assert any("beta" in ln and "second" in ln for ln in lines)
 
 
+def test_sessions_picker_shows_the_date_beyond_day_scope():
+    # A year (or "All years") scope spans months, so a bare clock time is useless --
+    # the picker must show the date there, like the month scope already does. Only a
+    # zoomed day (every row shares that day) keeps the time-only column.
+    app = app_with(
+        [
+            workflow("s1", "2026-06-01 12:15:00", title="june"),
+            workflow("s2", "2025-11-02 08:34:00", title="november"),
+        ]
+    )
+    app.view = "zoom"
+    app.focus = "years"  # defaults to the "All years" row -> both years listed
+    app.tab = app.year_tabs.index("Sessions")
+    lines = _paint_sessions_picker(app)
+    header = next(ln for ln in lines if "Title" in ln)
+    assert "Started" in header and "Time" not in header
+    assert any("2026-06-01" in ln and "june" in ln for ln in lines)
+    assert any("2025-11-02" in ln and "november" in ln for ln in lines)
+    app.focus = "months"  # scoped to one month, but it still spans days -> date column
+    app.tab = app.month_tabs.index("Sessions")
+    lines = _paint_sessions_picker(app)
+    header = next(ln for ln in lines if "Title" in ln)
+    assert "Started" in header and "Time" not in header
+    assert any("2026-06-01" in ln and "june" in ln for ln in lines)
+    app.focus = "days"
+    app.tab = app.day_tabs.index("Sessions")
+    lines = _paint_sessions_picker(app)
+    header = next(ln for ln in lines if "Title" in ln)
+    assert "Time" in header and "Started" not in header
+    assert any("12:15" in ln and "june" in ln for ln in lines)  # clock, not the date
+    assert not any("2026-06-01" in ln for ln in lines)
+
+
 def test_sessions_picker_hides_the_project_column_when_project_scoped():
     app = app_with(
         [

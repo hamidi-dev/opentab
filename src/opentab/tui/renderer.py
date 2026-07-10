@@ -719,14 +719,16 @@ class Renderer:
         return f"{label} {'v' if desc else '^'}"
 
     def session_started(self, workflow: Workflow) -> str:
+        # Date whenever the scope spans more than a day (projects mode, a month, a year,
+        # or "All years"); a bare clock time only when every row shares the scoped day.
         return (
             workflow.created_at[:10]
-            if self.browse_mode == "projects" or self.focus == "months"
+            if self.browse_mode == "projects" or self.focus != "days"
             else workflow.created_at[11:16]
         )
 
     def session_date_label(self) -> str:
-        return "Started" if self.browse_mode == "projects" or self.focus == "months" else "Time"
+        return "Started" if self.browse_mode == "projects" or self.focus != "days" else "Time"
 
     def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
         return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
