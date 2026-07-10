@@ -4891,8 +4891,29 @@ def test_store_reads_db_without_session_token_columns():
 
 
 def _claude_msg(
-    session, model, usage, *, uuid, cwd, parent=None, side=False, mid=None, req=None, ts=None
+    session,
+    model,
+    usage,
+    *,
+    uuid,
+    cwd,
+    parent=None,
+    side=False,
+    mid=None,
+    req=None,
+    ts=None,
+    tools=None,
 ):
+    message = {
+        "id": mid or (uuid + "-id"),
+        "model": model,
+        "role": "assistant",
+        "usage": usage,
+    }
+    if tools:  # the step's tool_use blocks, for the Tools tab
+        message["content"] = [
+            {"type": "tool_use", "id": f"{uuid}-t{i}", "name": t} for i, t in enumerate(tools)
+        ]
     return {
         "type": "assistant",
         "sessionId": session,
@@ -4902,12 +4923,7 @@ def _claude_msg(
         "parentUuid": parent,
         "isSidechain": side,
         "requestId": req or (uuid + "-req"),
-        "message": {
-            "id": mid or (uuid + "-id"),
-            "model": model,
-            "role": "assistant",
-            "usage": usage,
-        },
+        "message": message,
     }
 
 
@@ -5097,6 +5113,14 @@ def _codex_user(text, ts="2025-10-03T14:51:05.000Z"):
         "type": "event_msg",
         "payload": {"type": "user_message", "message": text, "kind": "plain"},
     }
+
+
+def _codex_call(name, ts="2025-10-03T14:51:15.000Z", kind="function_call"):
+    # A tool-call response_item; it belongs to the turn whose token_count follows.
+    payload = {"type": kind, "call_id": "c1"}
+    if name is not None:
+        payload["name"] = name
+    return {"timestamp": ts, "type": "response_item", "payload": payload}
 
 
 def _codex_tokens(inp, out, cached, total, ts="2025-10-03T14:51:20.000Z"):
@@ -8327,6 +8351,7 @@ def _pi_assistant(
     api=None,
     mid="a1",
     ts="2026-05-15T07:32:36.257Z",
+    tools=None,
 ):
     usage = {"input": inp, "output": out, "cacheRead": cache_read, "cacheWrite": cache_write}
     usage["totalTokens"] = total if total is not None else inp + out + cache_read + cache_write
@@ -8337,6 +8362,11 @@ def _pi_assistant(
         message["provider"] = provider
     if api is not None:
         message["api"] = api
+    if tools:  # the step's toolCall blocks, for the Tools tab
+        message["content"] = [
+            {"type": "toolCall", "id": f"{mid}-t{i}", "name": t, "arguments": {}}
+            for i, t in enumerate(tools)
+        ]
     return {"type": "message", "id": mid, "timestamp": ts, "message": message}
 
 
@@ -9735,6 +9765,186 @@ def test_copilot_turns_timeline_is_headerless():
         assert all(r["prompt_id"] == "" and r["prompt_title"] == "" for r in t)
         assert t[0]["model_name"] == "openai/gpt-5" and t[0]["input"] == 800
         assert t[0]["time"] <= t[1]["time"] and t[0]["time"].startswith("2026-")
+
+
+def test_claude_tool_breakdown_splits_steps_across_tool_use_blocks():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        rows_in = [
+            # One step calling two tools in parallel: its 150 tokens split 75/75.
+            _claude_msg(
+                "s1",
+                "claude-opus-4-8",
+                _usage(100, 50),
+                uuid="a1",
+                cwd=cwd,
+                tools=["Bash", "Read"],
+            ),
+            # An MCP step; and a tool-less step that must not appear at all.
+            _claude_msg(
+                "s1",
+                "claude-opus-4-8",
+                _usage(40, 10),
+                uuid="a2",
+                cwd=cwd,
+                tools=["mcp__linear__create_issue"],
+            ),
+            _claude_msg("s1", "claude-opus-4-8", _usage(30, 5), uuid="a3", cwd=cwd),
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), rows_in)
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        store.workflows()
+        assert store.supports_tools("s1")
+        rows = {r["tool"]: r for r in store.tool_breakdown("s1")}
+        assert set(rows) == {"Bash", "Read", "mcp__linear__create_issue"}
+        assert rows["Bash"]["tokens_total"] == 75 and rows["Read"]["tokens_total"] == 75
+        assert rows["Bash"]["calls"] == 1 and rows["Bash"]["model_name"] == (
+            "anthropic/claude-opus-4-8"
+        )
+        assert rows["mcp__linear__create_issue"]["tokens_total"] == 50
+        assert all(r["cost"] == 0.0 for r in rows.values())  # recorded $0; "$" reprices
+
+
+def test_codex_tool_breakdown_attributes_turn_deltas_to_pending_calls():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _codex_meta(CODEX_SID, cwd),
+            _codex_turn("gpt-5-codex", cwd),
+            # Turn 1 calls two tools; its 1200-token delta splits 600/600.
+            _codex_call("shell_command", ts="2025-10-03T14:51:12.000Z"),
+            _codex_call("apply_patch", ts="2025-10-03T14:51:15.000Z", kind="custom_tool_call"),
+            _codex_tokens(1000, 200, 100, 1200, ts="2025-10-03T14:51:20.000Z"),
+            # The duplicate echo must not consume the next turn's pending calls.
+            _codex_tokens(1000, 200, 100, 1200, ts="2025-10-03T14:51:21.000Z"),
+            _codex_call("update_plan", ts="2025-10-03T14:52:10.000Z"),
+            _codex_tokens(2500, 500, 600, 3000, ts="2025-10-03T14:52:30.000Z"),
+        ]
+        _codex_rollout(root, CODEX_SID, rows)
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        store.workflows()
+        assert store.supports_tools(CODEX_SID)
+        rows = {r["tool"]: r for r in store.tool_breakdown(CODEX_SID)}
+        assert set(rows) == {"shell_command", "apply_patch", "update_plan"}
+        assert rows["shell_command"]["tokens_total"] == 600
+        assert rows["apply_patch"]["tokens_total"] == 600
+        assert rows["update_plan"]["tokens_total"] == 1800  # turn 2's whole delta
+        assert rows["update_plan"]["model_name"] == "openai/gpt-5-codex"
+
+
+def test_pi_tool_breakdown_splits_metered_cost_across_tool_calls():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _pi_session(PI_SID, cwd),
+            # Metered step calling two tools: cost and tokens split evenly.
+            _pi_assistant(
+                "anthropic/claude-sonnet-4",
+                100,
+                50,
+                cost=0.01,
+                mid="a1",
+                tools=["bash", "read"],
+            ),
+            # Subscription step: stays $0 so the "$" view estimates it.
+            _pi_assistant(
+                "openai/gpt-5.2",
+                10,
+                5,
+                cost=0.5,
+                provider="openai-codex",
+                mid="a2",
+                ts="2026-05-15T07:33:10.000Z",
+                tools=["edit"],
+            ),
+        ]
+        _pi_write(root, "--proj--", PI_SID, rows)
+        store = ot.PiStore(root, _pi_args())
+        store.workflows()
+        assert store.supports_tools(PI_SID)
+        rows = {r["tool"]: r for r in store.tool_breakdown(PI_SID)}
+        assert rows["bash"]["tokens_total"] == 75 and rows["read"]["tokens_total"] == 75
+        assert abs(rows["bash"]["cost"] - 0.005) < 1e-9  # the metered cost, split
+        assert rows["edit"]["cost"] == 0.0  # plan route: estimate, not spend
+
+
+def test_csv_tool_column_gates_the_tab_and_splits_rows():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "output_tokens", "session_id", "tool"],
+            [
+                ["2026-06-01T10:00:00Z", "gpt-4o", 100, 20, "s1", "Bash;Read"],
+                ["2026-06-01T10:05:00Z", "gpt-4o", 50, 10, "s1", ""],
+                ["2026-06-01T10:10:00Z", "gpt-4o", 30, 5, "s1", "Bash"],
+            ],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        store.workflows()
+        assert store.supports_tools("s1")
+        rows = {r["tool"]: r for r in store.tool_breakdown("s1")}
+        assert rows["Bash"]["tokens_total"] == 60 + 35  # half of row 1 + all of row 3
+        assert rows["Bash"]["calls"] == 2 and rows["Read"]["tokens_total"] == 60
+        # A log without the tool column hides the tab instead of showing it empty.
+        bare = os.path.join(tmp, "bare.csv")
+        _write_csv(
+            bare,
+            ["timestamp", "model", "input_tokens", "output_tokens", "session_id"],
+            [["2026-06-01T10:00:00Z", "gpt-4o", 100, 20, "s2"]],
+        )
+        store2 = ot.CsvStore(bare, _csv_args())
+        store2.workflows()
+        assert not store2.supports_tools("s2")
+
+
+def test_jsonl_tool_field_accepts_a_list_or_delimited_string():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.jsonl")
+        _write_jsonl(
+            path,
+            [
+                {
+                    "timestamp": "2026-06-01T10:00:00Z",
+                    "model": "gpt-4o",
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "session_id": "s1",
+                    "tools": ["Bash", "Read"],
+                },
+                {
+                    "timestamp": "2026-06-01T10:05:00Z",
+                    "model": "gpt-4o",
+                    "input_tokens": 50,
+                    "output_tokens": 10,
+                    "session_id": "s1",
+                    "tool": "Edit",
+                },
+            ],
+        )
+        store = ot.JsonlStore(path, _csv_args())
+        store.workflows()
+        assert store.supports_tools("s1")
+        rows = {r["tool"]: r for r in store.tool_breakdown("s1")}
+        assert rows["Bash"]["tokens_total"] == 60 and rows["Read"]["tokens_total"] == 60
+        assert rows["Edit"]["tokens_total"] == 60
+
+
+def test_tool_namespace_folds_builtins_case_insensitively_and_mcp_servers():
+    # OpenCode/pi log "bash" where Claude Code logs "Bash"; both are built-ins.
+    assert ot.tool_namespace("Bash") == "(built-in)"
+    assert ot.tool_namespace("bash") == "(built-in)"
+    assert ot.tool_namespace("shell_command") == "(built-in)"  # Codex; not a "shell" server
+    # Claude Code MCP names group under their server, like OpenCode's prefix form.
+    assert ot.tool_namespace("mcp__chrome-devtools__evaluate_script") == "chrome-devtools"
+    assert ot.tool_namespace("serena_find_symbol") == "serena"
 
 
 if __name__ == "__main__":

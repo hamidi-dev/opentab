@@ -1012,9 +1012,9 @@ class App:
         return sorted(rows, key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
     def session_supports_tools(self, workflow_id: str) -> bool:
-        # Whether the Tools tab applies to this session -- backends that don't
-        # implement tool_breakdown (Claude/Codex/Hermes/CSV) have no supports_tools,
-        # so the tab is hidden rather than shown empty.
+        # Whether the Tools tab applies to this session -- backends without the
+        # opt-in (Hermes, Copilot, VS Code, OpenClaw) have no supports_tools, so
+        # the tab is hidden rather than shown empty.
         check = getattr(self.store, "supports_tools", None)
         return bool(check(workflow_id)) if check else False
 

@@ -156,7 +156,8 @@ Three logical layers (the class names below live in the files above — `Store` 
   backend-agnostic** (don't reach into SQL/JSONL). The per-session opt-ins ride on top via
   `getattr`, each gated by `supports_*(workflow_id)` so the merged view hides an
   unsupported tab rather than showing it empty (`CombinedStore` routes by owning backend).
-  Tools is **OpenCode-only**; Turns is implemented by every backend except Hermes. Records
+  Turns is implemented by every backend except Hermes; Tools by OpenCode, Claude, Codex,
+  pi, and CSV/JSONL (the others record no per-step tool calls with usage). Records
   **no per-message cost** → a *subscription* backend: `model_breakdown` reports `cost=0`
   with tokens in the `unpriced_*`/`root_unpriced_*` splits, so the normal `$` machinery
   gives **$0 / list-price estimate** with no special-casing. `records_cost=False` drives
@@ -165,7 +166,9 @@ Three logical layers (the class names below live in the files above — `Store` 
   overlap on `(message.id, requestId)`; folds `cwd` to **git root**; sidechain (Task)
   messages become depth-1 nodes grouped by `parentUuid`. Title precedence: `custom-title` →
   `ai-title` → first real user prompt → `(untitled)` (`_prompt_text` skips injected `<…>`
-  command wrappers, `_ingest` skips `isMeta`/sidechain).
+  command wrappers, `_ingest` skips `isMeta`/sidechain). Implements **Tools**: each
+  step's `tool_use` block names ride on its turn row, aggregated by
+  `util.tool_rows_from_turns` (MCP names `mcp__server__tool` roll up to their server).
 - **`CodexStore`** — third backend over Codex rollout JSONL, same methods; another
   *subscription* backend (`records_cost=False`, same $0/$ behavior + nudges). Codex's token
   accounting is the tricky bit: each turn logs a **cumulative** `total_token_usage`, written
@@ -175,7 +178,9 @@ Three logical layers (the class names below live in the files above — `Store` 
   Deltas sum back to the final total, each attributed to that turn's `turn_context.model`
   (`openai/`-prefixed). OpenAI-style tokens (input includes the cache read → uncached +
   `cache_read`, no cache-write; reasoning folded into output). No subagent tree; `cwd` → git
-  root; usage-less sessions dropped.
+  root; usage-less sessions dropped. Implements **Tools**: the `function_call`/
+  `custom_tool_call`/`local_shell_call` records since the previous accepted delta are that
+  turn's calls (the duplicate echo doesn't consume them), split evenly.
 - **`HermesStore`** — fourth backend over Hermes' SQLite (`~/.hermes/state.db`), same
   methods. **Multi-provider** but Hermes **normalizes every provider's usage to one
   canonical shape**, so no per-provider token special-casing: `input_tokens` is *uncached*,
@@ -194,7 +199,7 @@ a real DB, 2026-07), so there is no per-message usage to timeline.
   request, generic), same methods; the simplest backend. Headers matched
   **case-insensitively with aliases** (`_FIELD_ALIASES`/`_resolve_headers`): required are a
   timestamp (ISO-8601 or epoch via `_parse_ts`), `model`, and input/output tokens; optional
-  `cached_tokens`, `session_id`, `project`, `title`, `cost_usd`/`credits`. **Mixed cost
+  `cached_tokens`, `session_id`, `project`, `title`, `cost_usd`/`credits`, `tool`. **Mixed cost
   per-row** like Hermes: no cost column → subscription (every token unpriced, `$`-estimated,
   same nudges); a positive `cost_usd`/`credits` (`credits` × $0.01) → real spend,
   `unpriced_*` zeroed — so **`records_cost` is a per-instance attr** (`_probe_records_cost`).
@@ -204,7 +209,9 @@ a real DB, 2026-07), so there is no per-message usage to timeline.
   `session_id` → one synthetic session per **(date, project)**; `project` → git root;
   malformed rows skipped, never crash; usage-less sessions dropped. Implements **Turns**
 (each row is one turn; the optional `prompt`/`prompt_id`/`request_id` columns feed the ▸
-grouping and the regenerate/append dedup) — `JsonlStore` inherits this machinery.
+grouping and the regenerate/append dedup) and **Tools** (the optional `tool` column —
+`Bash;Read`, or a JSON list in JSONL — gated per session on it actually being used) —
+`JsonlStore` inherits this machinery.
 - **`CopilotStore`** — sixth backend over the **GitHub Copilot CLI** OpenTelemetry export
   (`~/.copilot/otel/**/*.jsonl` + `$COPILOT_OTEL_FILE_EXPORTER_PATH`), same methods. The CLI
   records tokens **only** in this **opt-in** OTEL export (set the env var, or point
@@ -264,7 +271,9 @@ grouping and the regenerate/append dedup) — `JsonlStore` inherits this machine
   `user` gives the title, `assistant` carries `usage`; models already provider-qualified;
   assistant messages dedupe by `id`. No subagent tree; usage-less sessions dropped.
   Implements **Turns** (one row per assistant message, ▸-grouped by user prompt; a
-  subscription turn stays $0 so `$` estimates it, a metered turn carries real spend).
+  subscription turn stays $0 so `$` estimates it, a metered turn carries real spend) and
+  **Tools** (the step's `toolCall` content blocks; a metered step's real cost splits
+  across them).
 - **`OpenClawStore`** — eighth backend over **OpenClaw** gateway NDJSON
   (`~/.openclaw/agents/<agent>/sessions/<id>.jsonl`, `$OPENCLAW_DIR`/`--openclaw-dir`), same
   methods. Like pi it writes a per-message `usage.cost` (an **object**, only `.total` read)
@@ -359,7 +368,8 @@ tuples `month_tabs`/`day_tabs`/`project_tabs`/`workflow_tabs`. `current_tabs()` 
 source of truth (don't index a class tuple directly): it appends, in order, a **Turns**
 tab (when `supports_turns(id)` — every backend except Hermes, whose DB records no
 per-message usage) and a **Tools** tab (when
-`supports_tools(id)` — OpenCode only) to the *selected* session's `workflow_tabs`, each
+`supports_tools(id)` — OpenCode, Claude, Codex, pi, and CSV/JSONL sessions whose log
+carries the optional `tool` column) to the *selected* session's `workflow_tabs`, each
 gated per-session so the merged view hides an unsupported tab rather than showing it
 empty, and injects **Sources** in the merged view — so `draw_detail` dispatches the
 session tabs by **name**, not by a fixed `self.tab` index.
@@ -402,14 +412,20 @@ re-colors the SVG charts behind the picker.
 - The breakdown is computed once for every root session and cached in `_model_by_root`,
   then sliced per session/day/month (`model_mix`, `aggregate_models`) — never re-queried
   per workflow.
-- The **Tools tab** (per-tool / MCP-server token attribution, OpenCode only) is the
-  opposite trade-off: it's a *per-session* `part`-table scan (`store.tool_breakdown`),
-  cheap enough to fetch **lazily when you drill into a session** and memoize in
+- The **Tools tab** (per-tool / MCP-server token attribution; OpenCode, Claude, Codex,
+  pi, and CSV/JSONL logs with the optional `tool` column) is the
+  opposite trade-off: a *per-session* fetch (`store.tool_breakdown` — OpenCode scans its
+  `part` table; the file backends aggregate the `tools` names their in-memory turn rows
+  carry via `util.tool_rows_from_turns`), cheap enough to fetch **lazily when you drill
+  into a session** and memoize in
   `_tool_by_session` (cleared on reload / source switch). Each assistant message is one
-  LLM step whose recorded tokens/cost are attributed to the tools it invoked that step,
-  split evenly across parallel tool calls — i.e. "tokens in turns that used this tool",
+  LLM step whose recorded tokens/cost are attributed to the tools it invoked that step
+  (Codex: the `function_call`/`custom_tool_call` records since the previous accepted
+  cumulative delta belong to that turn), split evenly across parallel tool calls — i.e.
+  "tokens in turns that used this tool",
   **not** the tool's own output size. `detail_tools` aggregates those `(tool, model)`
-  rows per tool and per server (`tool_namespace`: built-in vs `server_*` MCP prefix) and
+  rows per tool and per server (`tool_namespace`: built-ins matched case-insensitively
+  across the tools' spellings, `server_*`/`mcp__server__*` MCP names to their server) and
   reprices `$0` rows under `$` exactly like `_priced_nodes` does for subagents.
 - The **Turns tab** (per-turn cost over time; **every backend except Hermes** — its
   state.db has a `messages` table but `token_count` is never populated, so there is no

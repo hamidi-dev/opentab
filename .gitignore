@@ -15,3 +15,4 @@ build/
 # Generated README previews
 /README.html
 /README.single.html
+.worktrees

@@ -11,7 +11,7 @@ from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
 from opentab.pricing import api_equivalent_cost
-from opentab.util import git_root, read_files_parallel
+from opentab.util import git_root, read_files_parallel, tool_rows_from_turns
 
 
 class ClaudeStore:
@@ -257,6 +257,14 @@ class ClaudeStore:
         cr = int(usage.get("cache_read_input_tokens", 0) or 0)
         cw = int(usage.get("cache_creation_input_tokens", 0) or 0)
         side = o.get("isSidechain") is True
+        # The tool_use blocks this step invoked (duplicates kept: two Bash calls =
+        # two calls, two shares) -- tool_breakdown splits the turn's tokens across
+        # them, the Store.tool_breakdown attribution.
+        tools = [
+            c.get("name")
+            for c in (msg.get("content") or [])
+            if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name")
+        ]
         s["turns"].append(
             {
                 "ts": o.get("timestamp") or "",
@@ -270,6 +278,7 @@ class ClaudeStore:
                 "cache_read": cr,
                 "cache_write": cw,
                 "tokens_total": i + out_t + cr + cw,
+                "tools": tools,
             }
         )
         if o.get("isSidechain") is True:
@@ -562,6 +571,21 @@ class ClaudeStore:
         return out
 
     def supports_turns(self, workflow_id: str) -> bool:
+        return True
+
+    def tool_breakdown(self, workflow_id: str) -> list[dict]:
+        # Per-(tool, model) token attribution for the Tools tab, the
+        # Store.tool_breakdown semantics off the in-memory turn rows: each
+        # assistant message is one LLM step whose recorded tokens are split evenly
+        # across the tool_use blocks it invoked (sidechain steps included -- the
+        # subtree is one transcript). Cost stays $0 (recorded); the "$" view
+        # reprices per (tool, model) row like every other Claude panel.
+        s = self._parse().get(workflow_id)
+        return tool_rows_from_turns(s["turns"]) if s else []
+
+    def supports_tools(self, workflow_id: str) -> bool:
+        # Claude Code transcripts always record tool_use blocks, so the tab applies
+        # to every session; one without tool calls shows the honest empty message.
         return True
 
     def _demo_node(self, n: dict) -> dict:

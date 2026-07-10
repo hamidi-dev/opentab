@@ -64,13 +64,16 @@ def read_files_parallel(paths, max_workers: int | None = None):
                     yield path, text
 
 
-# OpenCode's built-in tools. Everything else is an MCP server or a local plugin
-# tool, which OpenCode names "{server}_{tool}" (e.g. serena_find_symbol,
-# playwright_browser_navigate) -- so the server is the segment before the first
-# underscore. This set is only used to LABEL the Tools tab's server rollup
-# (built-in vs MCP); the token/cost attribution itself never depends on it. Built-in
-# names that themselves contain an underscore (apply_patch, plan_exit, todowrite...)
-# must stay listed here so they aren't mis-split into a fake "apply"/"plan" server.
+# The coding tools' built-in tools (OpenCode, plus Claude Code / Codex / pi names,
+# matched lowercased; the historical constant name stays for the public API).
+# Everything else is an MCP server or a local plugin tool, which OpenCode names
+# "{server}_{tool}" (e.g. serena_find_symbol, playwright_browser_navigate) -- so the
+# server is the segment before the first underscore -- and Claude Code names
+# "mcp__{server}__{tool}". This set is only used to LABEL the Tools tab's server
+# rollup (built-in vs MCP); the token/cost attribution itself never depends on it.
+# Built-in names that themselves contain an underscore (apply_patch, shell_command,
+# update_plan...) must stay listed here so they aren't mis-split into a fake
+# "apply"/"shell" server.
 OPENCODE_BUILTIN_TOOLS = frozenset(
     {
         "bash",
@@ -92,17 +95,68 @@ OPENCODE_BUILTIN_TOOLS = frozenset(
         "skill",
         "plan_exit",
         "invalid",
+        # Claude Code (logged CamelCase; matched lowercased)
+        "websearch",
+        "toolsearch",
+        "notebookedit",
+        "askuserquestion",
+        "exitplanmode",
+        "enterplanmode",
+        "bashoutput",
+        "killshell",
+        "slashcommand",
+        # Codex CLI (the underscored ones must be listed or they'd mis-split
+        # into a fake "shell"/"update" server)
+        "shell",
+        "shell_command",
+        "update_plan",
+        "web_search",
+        "view_image",
     }
 )
 
 
 def tool_namespace(tool: str) -> str:
     # Group a tool name into its source for the Tools tab's server rollup: a built-in
-    # tool folds to "(built-in)"; an MCP/plugin tool ("server_name") to its server
-    # prefix; anything else stands alone as its own bucket.
-    if tool in OPENCODE_BUILTIN_TOOLS:
+    # tool folds to "(built-in)" -- matched case-insensitively, since OpenCode/pi log
+    # "bash" where Claude Code logs "Bash"; an MCP tool goes to its server, in Claude
+    # Code's "mcp__server__tool" form or OpenCode's "server_tool" prefix; anything
+    # else stands alone as its own bucket.
+    if tool.lower() in OPENCODE_BUILTIN_TOOLS:
         return "(built-in)"
+    if tool.startswith("mcp__"):
+        parts = tool.split("__")
+        return parts[1] if len(parts) > 2 and parts[1] else "mcp"
     return tool.split("_", 1)[0] if "_" in tool else tool
+
+
+def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
+    # Aggregate per-turn rows (each carrying the "tools" it invoked that step) into
+    # the per-(tool, model) rows the Tools tab expects -- the Store.tool_breakdown
+    # attribution, computed off the in-memory turn rows the file-based backends
+    # already build: a turn's tokens/cost split evenly across its tool calls, so a
+    # step that called two tools contributes half its tokens to each. Duplicate
+    # names are kept (two Bash calls in one step = two calls, two shares). Turns
+    # with no tool calls don't appear -- this is "tokens spent in turns that used
+    # this tool", not the tool's own output size.
+    agg: dict[tuple[str, str], dict] = {}
+    fields = ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write", "cost")
+    for t in turns:
+        tools = t.get("tools") or []
+        n = len(tools)
+        if not n:
+            continue
+        for tool in tools:
+            row = agg.get((tool, t["model_name"]))
+            if row is None:
+                row = agg[(tool, t["model_name"])] = dict.fromkeys(fields, 0.0)
+                row["tool"] = tool
+                row["model_name"] = t["model_name"]
+                row["calls"] = 0
+            row["calls"] += 1
+            for f in fields:
+                row[f] += (t.get(f) or 0) / n
+    return sorted(agg.values(), key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
 
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")

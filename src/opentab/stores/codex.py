@@ -11,7 +11,7 @@ import re
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
-from opentab.util import git_root, read_files_parallel
+from opentab.util import git_root, read_files_parallel, tool_rows_from_turns
 
 
 class CodexStore:
@@ -126,6 +126,7 @@ class CodexStore:
         s = sessions.setdefault(sid, self._new_session()) if sid else None
         cur_model: str | None = None
         prev = (0, 0, 0, 0)  # cumulative (input, output, cached, total) seen so far
+        pending_tools: list[str] = []  # tool calls since the last accepted turn delta
         for line in lines:
             line = line.strip()
             if not line:
@@ -160,6 +161,16 @@ class CodexStore:
                     cur_model = p["model"]
                 if p.get("cwd") and not s["cwd"]:
                     s["cwd"] = p["cwd"]
+            elif typ == "response_item" and p.get("type") in (
+                "function_call",
+                "custom_tool_call",
+                "local_shell_call",
+            ):
+                # A tool call belongs to the turn whose token_count closes it; queue
+                # it for the next accepted delta (the duplicate echo doesn't consume).
+                pending_tools.append(
+                    p.get("name") or ("shell" if p["type"] == "local_shell_call" else p["type"])
+                )
             elif typ == "event_msg" and p.get("type") == "user_message":
                 # First user prompt = session title. Take any user_message (older
                 # rollouts omit kind; only "plain" appears on newer ones), and
@@ -173,10 +184,16 @@ class CodexStore:
                     # tab's ▸ grouping; the record timestamp doubles as its id.
                     s["prompts"].append({"ts": ts or "", "id": ts or txt, "title": txt.strip()})
             elif typ == "event_msg" and p.get("type") == "token_count":
-                prev = self._apply_token_count(s, p.get("info"), cur_model, prev, ts)
+                prev = self._apply_token_count(s, p.get("info"), cur_model, prev, ts, pending_tools)
 
     def _apply_token_count(
-        self, s: dict, info, cur_model: str | None, prev: tuple, ts=None
+        self,
+        s: dict,
+        info,
+        cur_model: str | None,
+        prev: tuple,
+        ts=None,
+        pending_tools: list[str] | None = None,
     ) -> tuple:
         # Returns the new cumulative tuple; folds one turn's delta into the session.
         if not isinstance(info, dict):
@@ -212,6 +229,12 @@ class CodexStore:
         # One Turns row per accepted delta -- the per-turn slice of the cumulative
         # total the block above just attributed. Cost stays $0 (Codex records none);
         # the Turns tab's "$" view reprices each row from its token columns.
+        # An accepted delta consumes the tool calls queued since the last one --
+        # they're the calls this turn made, and tool_breakdown splits the turn's
+        # tokens across them.
+        tools = list(pending_tools) if pending_tools else []
+        if pending_tools:
+            pending_tools.clear()
         s["turns"].append(
             {
                 "ts": ts or "",
@@ -225,6 +248,7 @@ class CodexStore:
                 "cache_read": max(0, d_cached),
                 "cache_write": 0,
                 "tokens_total": max(0, d_in) + max(0, d_out),
+                "tools": tools,
             }
         )
         return cur
@@ -410,4 +434,18 @@ class CodexStore:
         return out
 
     def supports_turns(self, workflow_id: str) -> bool:
+        return True
+
+    def tool_breakdown(self, workflow_id: str) -> list[dict]:
+        # Per-(tool, model) token attribution for the Tools tab: each accepted
+        # token_count delta is one turn, and the function_call/custom_tool_call
+        # records since the previous delta are the calls that turn made -- its
+        # tokens split evenly across them (Store.tool_breakdown semantics). Cost
+        # stays $0 (Codex records none); the "$" view reprices per row.
+        s = self._parse().get(workflow_id)
+        return tool_rows_from_turns(s["turns"]) if s else []
+
+    def supports_tools(self, workflow_id: str) -> bool:
+        # Rollouts always record the turn's tool calls, so the tab applies to every
+        # session; one without tool calls shows the honest empty message.
         return True

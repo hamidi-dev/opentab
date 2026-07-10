@@ -33,6 +33,8 @@ class JsonlStore(CsvStore):
         request     request_id|id|req_id                stable per-request id (dedup)
         prompt      prompt|prompt_text|user_prompt       the user message -> Turns grouping
         prompt_id   prompt_id                            stable id for a prompt (optional)
+        tool        tool|tool_name|tools                 tool call(s) this request made: a
+                                                         list, or "Bash" / "Bash;Read" -> Tools tab
         project     project|repo|workspace|cwd|...       path -> git root; bare name as-is
         title       title|name|label                     session label (default first prompt)
         cost        cost_usd|cost (USD) | credits|credit (x $0.01)   presence -> metered
@@ -59,6 +61,7 @@ class JsonlStore(CsvStore):
         "request": ("request_id", "id", "req_id"),
         "prompt": ("prompt", "prompt_text", "user_prompt"),
         "prompt_id": ("prompt_id",),
+        "tool": ("tool", "tool_name", "tools"),
         "project": (
             "project",
             "repo",
@@ -219,8 +222,17 @@ class JsonlStore(CsvStore):
                 "prompt": prompt,
                 "prompt_full": full,  # uncapped; the Turns tab can expand it
                 "prompt_id": pid,
+                "tools": self._row_tools(obj),
             }
         )
+
+    def _row_tools(self, obj: dict) -> list[str]:
+        # The optional per-request tool call(s): a JSON list of names, or a string
+        # ("Bash" / "Bash;Read") handled by the CsvStore splitter.
+        raw = self._get(obj, "tool")
+        if isinstance(raw, list):
+            return [str(t).strip() for t in raw if str(t).strip()]
+        return self._split_tools(raw)
 
     # The Turns tab opt-in (message_timeline/supports_turns) is inherited from
     # CsvStore -- both backends keep one turn per request row, same shape.

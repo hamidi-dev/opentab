@@ -107,18 +107,18 @@ class CombinedStore:
         return []
 
     def tool_breakdown(self, workflow_id: str) -> list:
-        # Route to the owning backend; only OpenCode produces rows, the rest don't
-        # implement it (so the Tools tab is empty for a Claude/Codex/Hermes/CSV
-        # session even in the merged view).
+        # Route to the owning backend; a backend without the Tools opt-in
+        # (Hermes, Copilot, VS Code, OpenClaw) contributes no rows.
         owner = self._owner.get(workflow_id)
         fetch = getattr(owner, "tool_breakdown", None)
         return fetch(workflow_id) if fetch else []
 
     def supports_tools(self, workflow_id: str) -> bool:
-        # Only the owning backend decides -- so an OpenCode session offers the Tools
-        # tab even in the merged view, while a Claude/Codex/Hermes/CSV session never
-        # does (they don't implement tool_breakdown yet).
-        return getattr(self._owner.get(workflow_id), "supports_tool_breakdown", False)
+        # The owning backend decides per session (the supports_turns pattern) -- so
+        # an OpenCode/Claude/Codex/pi/CSV session offers the Tools tab even in the
+        # merged view, while a backend without the opt-in never does.
+        check = getattr(self._owner.get(workflow_id), "supports_tools", None)
+        return bool(check(workflow_id)) if check else False
 
     def message_timeline(self, workflow_id: str) -> list:
         # Route to the owning backend; only OpenCode and Claude Code implement it, so

@@ -1953,7 +1953,7 @@ class Renderer:
         if not self.session_supports_tools(workflow.id):
             return [
                 "# Tools",
-                "Per-tool token attribution is only available for OpenCode sessions.",
+                "This session's tool doesn't record per-tool attribution.",
             ]
         rows = self.session_tool_rows(workflow.id)
         if not rows:

@@ -138,18 +138,19 @@ What each tool's records support on top:
 | Source | Cost | Subagent tree | Turns | Tools |
 |--------|------|:---:|:---:|:---:|
 | OpenCode | real recorded | ✓ | ✓ | ✓ |
-| Claude Code | tokens only — `$` estimates | ✓ | ✓ | — |
-| Codex CLI | tokens only — `$` estimates | — | ✓ | — |
+| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ |
+| Codex CLI | tokens only — `$` estimates | — | ✓ | ✓ |
 | Hermes Agent | mixed — metered real, rest estimated | ✓ | — | — |
 | GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — |
-| pi-agent | mixed — metered real, rest estimated | — | ✓ | — |
+| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ |
 | OpenClaw | mixed — metered real, rest estimated | — | ✓ | — |
-| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | — |
+| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
 **Turns** — the per-turn cost timeline inside a session · **Tools** — token attribution
-per tool call and MCP server · ¹ headerless: the OTEL export captures no prompt text.</sub>
+per tool call and MCP server · ¹ headerless: the OTEL export captures no prompt text ·
+² with the optional `tool` column.</sub>
 
 Where each tool's records live, and their quirks:
 
@@ -160,8 +161,8 @@ Where each tool's records live, and their quirks:
   `opentab path/to.db`). Adapts to OpenCode's schema across versions.
 - **Cost**: OpenCode records real per-message cost, so metered spend is real recorded
   money; subscription sessions record a truthful `$0` and get the `$` estimate.
-- **Extras**: the recursive subagent cost tree, and — OpenCode only — the Tools tab:
-  token attribution per tool call and MCP server.
+- **Extras**: the recursive subagent cost tree, and the Tools tab's token attribution
+  per tool call and MCP server.
 
 </details>
 
@@ -265,9 +266,10 @@ Where each tool's records live, and their quirks:
   if present. Log your own gateway or proxy traffic and browse it like any other source.
 - **Schema**: headers/keys match case-insensitively with aliases. Required: a timestamp
   (ISO-8601 or epoch), `model`, and input/output token counts. Optional:
-  `cached_tokens`, `session_id`, `request_id`, `prompt`, `project`, `title`, and
-  `cost_usd` (or `credits`, × $0.01). The full alias table is in the `JsonlStore`
-  docstring.
+  `cached_tokens`, `session_id`, `request_id`, `prompt`, `project`, `title`,
+  `cost_usd` (or `credits`, × $0.01), and `tool` — the call(s) a request made
+  (`Bash;Read`, or a JSON list in JSONL), feeding the Tools tab. The full alias table
+  is in the `JsonlStore` docstring.
 - **Cost**: per row — a populated cost column is real spend; rows without one are
   estimated under `$`.
 - **Notes**: each request is one turn on the Turns tab, grouped under its `prompt`;

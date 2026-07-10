@@ -11,7 +11,7 @@ import re
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
-from opentab.util import git_root, read_files_parallel
+from opentab.util import git_root, read_files_parallel, tool_rows_from_turns
 
 
 class PiStore:
@@ -331,6 +331,13 @@ class PiStore:
         # One Turns row per assistant message. A subscription turn's cost is $0 (its
         # recorded figure is a list-price estimate, not spend) so the tab's "$" view
         # reprices it from the token columns, exactly like the session rollups.
+        # The toolCall blocks this step invoked feed tool_breakdown (duplicates
+        # kept: two bash calls = two calls, two shares).
+        tools = [
+            c.get("name")
+            for c in (msg.get("content") or [])
+            if isinstance(c, dict) and c.get("type") == "toolCall" and c.get("name")
+        ]
         s["turns"].append(
             {
                 "ts": ts or "",
@@ -344,6 +351,7 @@ class PiStore:
                 "cache_read": cr,
                 "cache_write": cw,
                 "tokens_total": inp + out + cr + cw,
+                "tools": tools,
             }
         )
 
@@ -549,4 +557,18 @@ class PiStore:
         return out
 
     def supports_turns(self, workflow_id: str) -> bool:
+        return True
+
+    def tool_breakdown(self, workflow_id: str) -> list[dict]:
+        # Per-(tool, model) token attribution for the Tools tab: each assistant
+        # message is one LLM step whose tokens (and, on a metered route, real cost)
+        # are split evenly across its toolCall blocks -- the Store.tool_breakdown
+        # semantics off the in-memory turn rows. A subscription row stays $0 so the
+        # "$" view reprices it per (tool, model).
+        s = self._parse().get(workflow_id)
+        return tool_rows_from_turns(s["turns"]) if s else []
+
+    def supports_tools(self, workflow_id: str) -> bool:
+        # pi records every step's toolCall blocks, so the tab applies to every
+        # session; one without tool calls shows the honest empty message.
         return True

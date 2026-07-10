@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
-from opentab.util import git_root
+from opentab.util import git_root, tool_rows_from_turns
 
 
 class CsvStore:
@@ -52,8 +52,10 @@ class CsvStore:
     cache_read (cache_write stays 0). No subagent tree -- every session is one depth-0
     node. Sessions with no recorded token usage are dropped. Implements the **Turns**
     opt-in (message_timeline/supports_turns): each row is one turn, the optional
-    `prompt` column grouping them under ▸ headers (JsonlStore, the per-line twin,
-    inherits this machinery).
+    `prompt` column grouping them under ▸ headers -- and the **Tools** opt-in
+    (tool_breakdown/supports_tools, gated per session on the optional `tool`
+    column being used): the row's tokens/cost split evenly across the tools it
+    names ("Bash;Read"). JsonlStore, the per-line twin, inherits this machinery.
     """
 
     combined = False
@@ -100,6 +102,9 @@ class CsvStore:
         "prompt_text": "prompt",
         "user_prompt": "prompt",
         "prompt_id": "prompt_id",
+        "tool": "tool",
+        "tool_name": "tool",
+        "tools": "tool",
         "request_id": "request",
         "req_id": "request",
         "id": "request",
@@ -158,6 +163,15 @@ class CsvStore:
             return max(0.0, float(s))
         except ValueError:
             return 0.0
+
+    @staticmethod
+    def _split_tools(raw) -> list[str]:
+        # The optional per-request tool call(s): "Bash", or several as "Bash;Read"
+        # ("|" works too -- "," is the CSV delimiter). Duplicates kept: two Bash
+        # calls in one request = two calls, two shares in tool_breakdown.
+        if raw is None:
+            return []
+        return [p.strip() for p in str(raw).replace("|", ";").split(";") if p.strip()]
 
     @staticmethod
     def _parse_ts(raw) -> str:
@@ -367,6 +381,7 @@ class CsvStore:
                 "prompt": prompt,
                 "prompt_full": full,  # uncapped; the Turns tab can expand it
                 "prompt_id": pid,
+                "tools": self._split_tools(g("tool")),
             }
         )
 
@@ -413,6 +428,9 @@ class CsvStore:
         s["total_cost"] = round(sum(r["cost"] for r in rows), 6)
         s["total_tokens"] = sum(r["tokens_total"] for r in rows)
         s["unpriced_tokens"] = sum(r["tokens_total"] for r in rows if r["cost"] <= 0)
+        # Whether any request logged a tool -- the per-session Tools tab gate, computed
+        # once here so supports_tools stays O(1) per frame.
+        s["has_tools"] = any(t.get("tools") for t in s["turns"])
 
     @staticmethod
     def _node(
@@ -564,3 +582,18 @@ class CsvStore:
 
     def supports_turns(self, workflow_id: str) -> bool:
         return True
+
+    def tool_breakdown(self, workflow_id: str) -> list[dict]:
+        # Per-(tool, model) token/cost attribution for the Tools tab: each request
+        # row's tokens (and recorded cost, when the log carries one) split evenly
+        # across the tools its optional `tool` column names -- the
+        # Store.tool_breakdown semantics off the in-memory turn rows.
+        s = self._parse().get(workflow_id)
+        return tool_rows_from_turns(s["turns"]) if s else []
+
+    def supports_tools(self, workflow_id: str) -> bool:
+        # Gated per session on the optional `tool` column actually being used --
+        # a log without it hides the tab rather than showing it empty
+        # (JsonlStore inherits this with its per-line `tool` key).
+        s = self._parse().get(workflow_id)
+        return bool(s and s.get("has_tools"))
