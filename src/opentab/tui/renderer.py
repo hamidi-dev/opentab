@@ -744,6 +744,7 @@ class Renderer:
             "VS Code": "vs",
             "Pi": "pi",
             "OpenClaw": "ocl",
+            "Zaly": "zy",
         }.get(workflow.source, (workflow.source or "??")[:2].lower())
 
     def source_tag(self, workflow: Workflow) -> str:

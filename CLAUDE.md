@@ -23,17 +23,19 @@ Code/Insiders/VSCodium variants, or `--vscode-dir` — from WSL, pointed at the 
 store — `VscodeStore`),
 **pi-agent** sessions (`~/.pi/agent/sessions/**/*.jsonl` or `$PI_AGENT_DIR`, `PiStore`),
 **OpenClaw** gateway sessions (`~/.openclaw/agents/**/sessions/*.jsonl` or `$OPENCLAW_DIR`,
-`OpenClawStore`), and a **JSONL/NDJSON of logged API requests** (the per-line twin of the
+`OpenClawStore`), **Zaly** sessions
+(`~/.local/share/zaly/sessions/*/*/session.jsonl` or `$ZALY_DATA`/`$ZALY_ROOT`,
+`ZalyStore`), and a **JSONL/NDJSON of logged API requests** (the per-line twin of the
 CSV source; `--jsonl`, default `~/.config/opentab/requests.jsonl`, `JsonlStore`).
 `CombinedStore` merges them. Pick with
-`--source {auto,opencode,claude,codex,hermes,csv,jsonl,copilot,vscode,pi,openclaw,all}` or
-switch live with **`c`**.
+`--source {auto,opencode,claude,codex,hermes,csv,jsonl,copilot,vscode,pi,openclaw,zaly,all}`
+or switch live with **`c`**.
 
 Cost model: Claude Code, Codex, and Copilot (CLI and VS Code) record **no per-message
 cost**, so they behave like an OpenCode *subscription* session — **$0 in normal mode**, a
-list-price estimate (tokens × API price) only under **`$`**. Hermes, CSV/JSONL, pi, and
-OpenClaw are **mixed**: subscription/OAuth routes stay $0/estimated, metered routes record
-real spend. See each backend's note under Architecture.
+list-price estimate (tokens × API price) only under **`$`**. Hermes, CSV/JSONL, pi,
+OpenClaw, and Zaly are **mixed**: subscription/OAuth routes stay $0/estimated, metered
+routes record real spend. See each backend's note under Architecture.
 
 ## Commands
 
@@ -118,7 +120,7 @@ src/opentab/
   sources.py         make_store/resolve_source/available_sources/source_cycle + path routing
   state.py           load_state/save_state/apply_state
   themes.py          THEMES palettes (single source for the web browser + the TUI) + hex math
-  stores/            opencode, claude, codex, hermes, csv_source, jsonl_source, copilot, vscode, pi, openclaw, combined, cached
+  stores/            opencode, claude, codex, hermes, csv_source, jsonl_source, copilot, vscode, pi, openclaw, zaly, combined, cached
   tui/               renderer (Renderer), app (App)
   web.py             build_payload/session_extras + html_command/serve_command (ReportServer)
   webpage.py         render_html: the self-contained browser page (inline CSS/JS strings)
@@ -157,7 +159,7 @@ Three logical layers (the class names below live in the files above — `Store` 
   `getattr`, each gated by `supports_*(workflow_id)` so the merged view hides an
   unsupported tab rather than showing it empty (`CombinedStore` routes by owning backend).
   Turns is implemented by every backend except Hermes; Tools by OpenCode, Claude, Codex,
-  pi, and CSV/JSONL (the others record no per-step tool calls with usage). Records
+  pi, Zaly, and CSV/JSONL (the others record no per-step tool calls with usage). Records
   **no per-message cost** → a *subscription* backend: `model_breakdown` reports `cost=0`
   with tokens in the `unpriced_*`/`root_unpriced_*` splits, so the normal `$` machinery
   gives **$0 / list-price estimate** with no special-casing. `records_cost=False` drives
@@ -297,7 +299,31 @@ grouping and the regenerate/append dedup) and **Tools** (the optional `tool` col
   OpenClaw's generic cwd); messages dedupe by record `id` across live + archived
   (`.jsonl.reset.`/`.jsonl.deleted.`). No subagent tree; usage-less sessions dropped.
   Implements **Turns** exactly like pi (epoch-seconds timestamps).
-- **`JsonlStore`** — ninth backend over a **JSONL/NDJSON of logged API requests** (one JSON
+- **`ZalyStore`** — ninth backend over **Zaly** session NDJSON
+  (`<data>/sessions/<encoded-workspace>/<uuid>/session.jsonl`; data resolved like zaly's
+  own envPaths — `$ZALY_DATA` / `$ZALY_ROOT/data` / `$XDG_DATA_HOME/zaly`, default
+  `~/.local/share/zaly`, or `--zaly-dir`), same methods. Each session is one append-only
+  JSONL **DAG** (`session-settings` snapshots `{sessionId, cwd/workspace, modelId}`;
+  resume/fork append to the *same* file, so no cross-file dedup — assistant messages
+  still dedupe by `message.id`, and abandoned regenerated branches count: each was a
+  real API call). Usage lives on `message.meta.usage` (model on `meta.modelId`, already
+  provider-qualified — `openai-codex/gpt-5.6-sol` — used verbatim): **Anthropic-normalized**
+  tokens (`input` already uncached — zaly's OpenAI adapter subtracts `cached_tokens`
+  itself; cacheRead/cacheWrite separate) with **`reasoning` a subset of `output`**
+  (OpenAI's reasoning_tokens detail) → reported as 0 like Codex/Copilot, since opentab's
+  reasoning column is additive and counting it would double-bill under `$`. The
+  per-message `usage.cost` is a **per-component USD object** ({input, output, cacheRead,
+  …}, no `.total` — summed) computed from zaly's catalog for **every** route, so the
+  pi/OpenClaw **metered-vs-subscription split**: subscription when the `meta.modelId`
+  provider prefix is an OAuth login in zaly's `<state>/auth.json`
+  (`{provider: {type: "oauth"|"api-key"}}`, `$ZALY_STATE`-resolved, read-only) or matches
+  `_SUBSCRIPTION_MARKERS` (codex/copilot/ollama/lm-studio/…); **`records_cost`
+  per-instance**. Workspace → git root; settings `sessionId` beats the dir name. **No
+  subagent tree** — zaly writes subagent transcripts to tmpdir and does *not* fold their
+  usage into the parent (a latent undercount, documented in the docstring). Settings-only
+  sessions (zaly launched, nothing asked) are dropped. Implements **Turns** (epoch-ms
+  timestamps, ▸-grouped like pi) and **Tools** (the step's `tool-call` content parts).
+- **`JsonlStore`** — tenth backend over a **JSONL/NDJSON of logged API requests** (one JSON
   object per line, generic). **Subclasses `CsvStore`** — its per-line twin — inheriting
   OpenAI-style token accounting, mixed per-row cost (`records_cost` per-instance;
   `cost_usd`/`credits`), provider-prefixed models, synthetic `(date, project)` sessions,
@@ -375,7 +401,7 @@ tuples `month_tabs`/`day_tabs`/`project_tabs`/`workflow_tabs`. `current_tabs()` 
 source of truth (don't index a class tuple directly): it appends, in order, a **Turns**
 tab (when `supports_turns(id)` — every backend except Hermes, whose DB records no
 per-message usage) and a **Tools** tab (when
-`supports_tools(id)` — OpenCode, Claude, Codex, pi, and CSV/JSONL sessions whose log
+`supports_tools(id)` — OpenCode, Claude, Codex, pi, Zaly, and CSV/JSONL sessions whose log
 carries the optional `tool` column) to the *selected* session's `workflow_tabs`, each
 gated per-session so the merged view hides an unsupported tab rather than showing it
 empty, and injects **Sources** in the merged view — so `draw_detail` dispatches the

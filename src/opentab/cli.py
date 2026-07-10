@@ -27,6 +27,7 @@ from opentab.sources import (
     DEFAULT_JSONL_PATH,
     _default_openclaw_dir,
     _default_pi_dir,
+    _default_zaly_dir,
     _jsonl_dir_available,
     _route_path_arg,
     resolve_source,
@@ -55,6 +56,7 @@ def parse_args() -> argparse.Namespace:
             "vscode",
             "pi",
             "openclaw",
+            "zaly",
             "all",
         ),
         default="auto",
@@ -62,8 +64,8 @@ def parse_args() -> argparse.Namespace:
         "(Codex CLI rollouts), hermes (Hermes Agent DB), csv (a CSV of logged API "
         "requests, e.g. GitHub Copilot), jsonl (an NDJSON of logged API requests), "
         "copilot (GitHub Copilot CLI via its OTEL export), vscode (Copilot Chat sessions "
-        "in VS Code), pi (pi-agent sessions), openclaw (OpenClaw gateway sessions), or "
-        "all (merged); auto merges every present "
+        "in VS Code), pi (pi-agent sessions), openclaw (OpenClaw gateway sessions), "
+        "zaly (Zaly sessions), or all (merged); auto merges every present "
         "source (default: auto). Or just pass a file path -- e.g. `opentab requests.csv`",
     )
     parser.add_argument(
@@ -117,6 +119,12 @@ def parse_args() -> argparse.Namespace:
         default=_default_openclaw_dir(),
         help="OpenClaw gateway home holding agents/ and openclaw.json (for --source "
         "openclaw); honors $OPENCLAW_DIR, default ~/.openclaw",
+    )
+    parser.add_argument(
+        "--zaly-dir",
+        default=_default_zaly_dir(),
+        help="Zaly data directory holding sessions/ (for --source zaly); honors "
+        "$ZALY_DATA and $ZALY_ROOT, default ~/.local/share/zaly",
     )
     parser.add_argument(
         "--csv",

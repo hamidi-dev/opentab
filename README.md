@@ -27,7 +27,8 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
 
 - **One tab for every tool** — [OpenCode](https://opencode.ai),
   [Claude Code](https://claude.com/claude-code), [Codex](https://developers.openai.com/codex),
-  Hermes, GitHub Copilot (its CLI and Copilot Chat in VS Code), pi-agent, OpenClaw, and
+  Hermes, GitHub Copilot (its CLI and Copilot Chat in VS Code), pi-agent, OpenClaw,
+  [zaly](https://github.com/folke/zaly), and
   CSV/JSONL logs of your own API requests — [each detailed below](#data-sources).
 - **Drill, don't scroll** — month → day → project → session → model, down the recursive
   subagent tree, with a live fuzzy filter (fzf-style) and live date-range scoping.
@@ -128,6 +129,7 @@ opentab --source copilot                     # GitHub Copilot CLI (default ~/.co
 opentab --source vscode                      # Copilot Chat in VS Code (every installed variant)
 opentab --source pi                          # pi-agent (default ~/.pi/agent/sessions)
 opentab --source openclaw                    # OpenClaw gateway (default ~/.openclaw)
+opentab --source zaly                        # zaly (default ~/.local/share/zaly)
 opentab --csv requests.csv                   # a CSV of logged API requests (or --jsonl)
 opentab --source all                         # all present sources, merged
 ```
@@ -145,6 +147,7 @@ What each tool's records support on top:
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ |
 | OpenClaw | mixed — metered real, rest estimated | — | ✓ | — |
+| zaly | mixed — metered real, rest estimated | — | ✓ | ✓ |
 | CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
@@ -257,6 +260,22 @@ Where each tool's records live, and their quirks:
   (openai-codex, github-copilot) are estimated under `$`. The split is read from
   `openclaw.json`, read-only.
 - **Notes**: one project per agent; archived sessions are included and deduplicated.
+
+</details>
+
+<details>
+<summary><strong>zaly</strong> — session JSONL · mixed: metered real, plan routes estimated</summary>
+
+- **Reads** `~/.local/share/zaly/sessions/*/*/session.jsonl` (`--zaly-dir`, honors
+  `$ZALY_DATA` and `$ZALY_ROOT`).
+- **Cost**: zaly prices every message from its model catalog regardless of route, so —
+  like pi and OpenClaw — only **metered** routes (a direct API key) count as real
+  spend; OAuth/plan logins (a ChatGPT-plan `openai-codex`, Claude Pro/Max) and local
+  models stay `$0` and are estimated under `$`. The split is read from zaly's
+  `auth.json`, read-only.
+- **Notes**: projects fold to the workspace's git root; resume/fork append to the same
+  file, so nothing double-counts. Subagent transcripts are not persisted by zaly
+  (they live in the temp dir), so their usage can't be shown.
 
 </details>
 
@@ -447,9 +466,9 @@ Local-only, no network, no telemetry, no accounts — it opens every source file
 <summary><strong>Full transparency</strong> — everything it reads, writes, and runs</summary>
 
 - **Reads** your tools' own records, read-only: OpenCode's SQLite DB, the JSONL
-  transcripts of Claude Code / Codex / pi-agent / OpenClaw, Hermes' SQLite DB, the Copilot
-  CLI's OpenTelemetry export, VS Code's Copilot Chat session store, and a CSV/JSONL of
-  logged API requests (`--csv`/`--jsonl`).
+  transcripts of Claude Code / Codex / pi-agent / OpenClaw / zaly, Hermes' SQLite DB, the
+  Copilot CLI's OpenTelemetry export, VS Code's Copilot Chat session store, and a
+  CSV/JSONL of logged API requests (`--csv`/`--jsonl`).
   To fold git worktrees into their main repo it also reads project `.git` files (no `git`
   process is spawned; disable with `--no-worktrees`).
 - **Writes** a small preferences file at `~/.config/opentab/state.json` (your last

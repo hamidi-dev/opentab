@@ -18,6 +18,7 @@ from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import Store
 from opentab.stores.pi import PiStore
 from opentab.stores.vscode import VscodeStore
+from opentab.stores.zaly import ZalyStore, default_zaly_data_dir
 
 DEFAULT_CSV_PATH = os.path.expanduser("~/.config/opentab/requests.csv")
 DEFAULT_JSONL_PATH = os.path.expanduser("~/.config/opentab/requests.jsonl")
@@ -69,6 +70,14 @@ def _default_openclaw_dir() -> str:
     return env or os.path.expanduser("~/.openclaw")
 
 
+def _default_zaly_dir() -> str:
+    # Zaly's data dir (holding sessions/), resolved like zaly's own envPaths:
+    # $ZALY_DATA / $ZALY_ROOT/data / $XDG_DATA_HOME/zaly, default ~/.local/share/zaly
+    # (LOCALAPPDATA\\zaly\\Data on native Windows). Lives in the store module so the
+    # auth.json (state-dir) twin sits beside it.
+    return default_zaly_data_dir()
+
+
 # Which --flag each concrete source reads its path from (used to route a bare
 # positional path into the right slot).
 _PATH_SLOT = {
@@ -82,6 +91,7 @@ _PATH_SLOT = {
     "vscode": "vscode_dir",
     "pi": "pi_dir",
     "openclaw": "openclaw_dir",
+    "zaly": "zaly_dir",
 }
 
 
@@ -164,6 +174,18 @@ def _openclaw_available(root_dir: str) -> bool:
     )
 
 
+def _zaly_available(root_dir: str) -> bool:
+    # Zaly sessions live at <data>/sessions/<encoded-workspace>/<uuid>/session.jsonl;
+    # check that precise shape (launching zaly writes settings-only files, but only under
+    # that layout) so an unrelated zaly-named directory never trips detection.
+    if not root_dir or not os.path.isdir(root_dir):
+        return False
+    return (
+        next(glob.iglob(os.path.join(root_dir, "sessions", "*", "*", "session.jsonl")), None)
+        is not None
+    )
+
+
 def _copilot_otel_available(args: argparse.Namespace) -> bool:
     # Copilot CLI usage lives only in its (opt-in) OTEL export: the export directory
     # holding *.jsonl, or the single file named by $COPILOT_OTEL_FILE_EXPORTER_PATH.
@@ -210,6 +232,7 @@ SOURCE_LABELS = {
     "vscode": "VS Code",
     "pi": "Pi",
     "openclaw": "OpenClaw",
+    "zaly": "Zaly",
     "all": "all",
 }
 
@@ -222,6 +245,7 @@ RESUME_COMMANDS = {
     "Hermes": "hermes --resume",
     "Copilot": "copilot --resume",
     "Pi": "pi --session",
+    "Zaly": "zaly --session",
 }
 
 
@@ -242,6 +266,7 @@ def _detect_fingerprint(args: argparse.Namespace) -> tuple:
             "vscode_dir",
             "pi_dir",
             "openclaw_dir",
+            "zaly_dir",
         )
     ) + (os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH", ""),)
 
@@ -277,6 +302,8 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("pi")
     if _openclaw_available(getattr(args, "openclaw_dir", "")):
         keys.append("openclaw")
+    if _zaly_available(getattr(args, "zaly_dir", "")):
+        keys.append("zaly")
     args._available_sources = (fp, keys)
     return list(keys)
 
@@ -389,6 +416,14 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
                 f"OpenClaw home holding agents/*/sessions/*.jsonl (looked in {args.openclaw_dir})."
             )
         return OpenClawStore(args.openclaw_dir, args), "OpenTab: loading OpenClaw sessions…\r"
+    if key == "zaly":
+        if not _zaly_available(getattr(args, "zaly_dir", "")):
+            raise SystemExit(
+                "No Zaly sessions found. Point --zaly-dir (or $ZALY_DATA) at a Zaly data "
+                "directory holding sessions/*/*/session.jsonl "
+                f"(looked in {getattr(args, 'zaly_dir', '')})."
+            )
+        return ZalyStore(args.zaly_dir, args), "OpenTab: loading Zaly sessions…\r"
     if not os.path.exists(args.db):
         raise SystemExit(f"OpenCode database not found: {args.db}")
     return Store(args.db, args), "OpenTab: loading OpenCode database…\r"

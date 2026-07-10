@@ -1,7 +1,7 @@
 """OpenTab — a lazygit-style browser for your AI coding spend.
 
 Reads OpenCode, Claude Code, Codex, Hermes, the Copilot CLI, pi-agent, OpenClaw,
-and logged-request CSVs read-only and shows cost by month / day / project /
+Zaly, and logged-request CSVs read-only and shows cost by month / day / project /
 session / model, including the recursive subagent tree.
 
 This package is the modular form of what used to be a single ``opentab`` script.
@@ -139,6 +139,7 @@ from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import MODEL_EXPR, MSG_MODEL_EXPR, MSG_TOKEN_TOTAL_EXPR, Store
 from opentab.stores.pi import PiStore
 from opentab.stores.vscode import VscodeStore
+from opentab.stores.zaly import ZalyStore
 from opentab.themes import (
     DEFAULT_THEME,
     THEME_IDS,
