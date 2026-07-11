@@ -101,10 +101,10 @@ from opentab.pricing import (
     FALLBACK_PRICE,
     LOCAL_PROVIDERS,
     MODEL_PRICE_FALLBACKS,
-    MODEL_PRICE_TABLE,
     MODELS_DEV_URL,
     api_equivalent_cost,
     canonical_model,
+    catalog_models,
     display_model,
     effective_price,
     family_label,
@@ -114,6 +114,8 @@ from opentab.pricing import (
     model_price,
     price_cache_meta,
     price_cache_path,
+    price_source_meta,
+    prune_models_dev,
     refresh_model_prices,
 )
 from opentab.sources import (

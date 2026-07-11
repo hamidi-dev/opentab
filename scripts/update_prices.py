@@ -1,121 +1,74 @@
 #!/usr/bin/env python3
-"""Refresh OpenTab's embedded API list-price table from models.dev.
+"""Refresh the bundled models.dev price catalog (src/opentab/data/models.json).
 
-Runtime OpenTab stays offline and stdlib-only. This dev helper is the one place
-that touches the network, then rewrites the generated block in
-../src/opentab/pricing.py.
+Runtime OpenTab stays offline and stdlib-only: this dev helper is the release-time
+fetcher that snapshots every models.dev provider's list prices into the JSON file
+bundled with the package. Run it before cutting a release and commit the result.
 """
 
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from urllib.request import Request, urlopen
 
-MODELS_DEV_URL = "https://models.dev/api.json"
-DEFAULT_PROVIDERS = ("anthropic", "openai", "google")
-BEGIN = "# ===== BEGIN GENERATED PRICES (scripts/update_prices.py) ====="
-END = "# ===== END GENERATED PRICES ====="
+SRC = Path(__file__).resolve().parents[1] / "src"
+sys.path.insert(0, str(SRC))
+
+from opentab.pricing import MODELS_DEV_URL, prune_models_dev  # noqa: E402
 
 
-def fetch_models(url: str) -> dict[str, Any]:
-    req = Request(url, headers={"User-Agent": "opentab-price-updater/1.0"})
-    with urlopen(req, timeout=30) as response:
-        return json.load(response)
-
-
-def as_price(value: Any) -> float | None:
-    if isinstance(value, int | float):
-        return float(value)
-    return None
-
-
-def fmt(value: float) -> str:
-    text = f"{value:.6f}".rstrip("0").rstrip(".")
-    return text if "." in text else f"{text}.0"
-
-
-def collect_prices(
-    data: dict[str, Any], providers: tuple[str, ...]
-) -> dict[str, tuple[float, float, float, float]]:
-    prices: dict[str, tuple[float, float, float, float]] = {}
-    for provider in providers:
-        provider_data = data.get(provider)
-        if not isinstance(provider_data, dict):
-            raise SystemExit(f"provider not found in models.dev data: {provider}")
-        models = provider_data.get("models", {})
-        if not isinstance(models, dict):
-            raise SystemExit(f"unexpected models.dev shape for provider: {provider}")
-        for model_id, model in models.items():
-            if not isinstance(model, dict):
-                continue
-            cost = model.get("cost", {})
-            if not isinstance(cost, dict):
-                continue
-            inp = as_price(cost.get("input"))
-            out = as_price(cost.get("output"))
-            if inp is None or out is None:
-                continue
-            cache_read = as_price(cost.get("cache_read")) or 0.0
-            cache_write = as_price(cost.get("cache_write")) or 0.0
-            prices[str(model_id).lower()] = (inp, out, cache_read, cache_write)
-    return dict(sorted(prices.items()))
-
-
-def render_table(
-    prices: dict[str, tuple[float, float, float, float]], providers: tuple[str, ...]
-) -> str:
-    today = datetime.now(UTC).date().isoformat()
-    lines = [
-        BEGIN,
-        f"# Generated from models.dev on {today} for providers: {', '.join(providers)}.",
-        "MODEL_PRICE_TABLE: dict[str, tuple[float, float, float, float]] = {",
-    ]
-    for model_id, (inp, out, cache_read, cache_write) in prices.items():
-        lines.append(
-            f'    "{model_id}": ({fmt(inp)}, {fmt(out)}, {fmt(cache_read)}, {fmt(cache_write)}),'
-        )
-    lines += ["}", END]
-    return "\n".join(lines)
-
-
-def replace_block(path: Path, block: str) -> None:
-    text = path.read_text()
-    if text.count(BEGIN) != 1 or text.count(END) != 1:
-        raise SystemExit(f"expected exactly one generated price block in {path}")
-    start = text.index(BEGIN)
-    end_start = text.find(END, start + len(BEGIN))
-    if end_start == -1:
-        raise SystemExit(f"generated price markers are out of order in {path}")
-    end = end_start + len(END)
-    path.write_text(text[:start] + block + text[end:])
+def kb(n: int) -> str:
+    return f"{n / 1024:.1f} KB"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=MODELS_DEV_URL)
     parser.add_argument(
-        "--provider",
-        action="append",
-        choices=DEFAULT_PROVIDERS,
-        help="provider to embed; repeatable (default: anthropic, openai, google)",
-    )
-    parser.add_argument(
         "--target",
         type=Path,
-        default=Path(__file__).resolve().parents[1] / "src" / "opentab" / "pricing.py",
+        default=SRC / "opentab" / "data" / "models.json",
+        help="where to write the pruned catalog (default: the bundled snapshot)",
     )
     args = parser.parse_args()
 
-    providers = tuple(args.provider or DEFAULT_PROVIDERS)
-    prices = collect_prices(fetch_models(args.url), providers)
-    if not prices:
-        raise SystemExit("no priced models found")
-    replace_block(args.target, render_table(prices, providers))
-    print(f"embedded {len(prices)} model prices into {args.target}")
+    req = Request(args.url, headers={"User-Agent": "opentab-price-updater/2.0"})
+    with urlopen(req, timeout=30) as resp:
+        raw = resp.read()
+    providers = prune_models_dev(json.loads(raw))
+    models = sum(len(p["models"]) for p in providers.values())
+    if not models:
+        raise SystemExit("no priced models found in the models.dev response")
+    payload = {
+        "source": args.url,
+        "fetched_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "providers": providers,
+    }
+    # indent=1 + sorted keys: one leaf per line, so the per-release regeneration
+    # diffs as changed models rather than one opaque blob.
+    text = json.dumps(payload, indent=1, sort_keys=True) + "\n"
+    args.target.parent.mkdir(parents=True, exist_ok=True)
+    args.target.write_text(text)
+
+    deprecated = sum(
+        1
+        for p in providers.values()
+        for m in p["models"].values()
+        if m.get("status") == "deprecated"
+    )
+    print(f"wrote {args.target}")
+    print(f"  raw api.json:    {kb(len(raw))}")
+    print(f"  pruned catalog:  {kb(len(text))}  (gzipped {kb(len(gzip.compress(text.encode())))})")
+    print(f"  providers:       {len(providers)}")
+    print(f"  priced models:   {models}  ({deprecated} deprecated)")
+    top = sorted(providers.items(), key=lambda kv: -len(kv[1]["models"]))[:8]
+    for pid, p in top:
+        print(f"    {pid:<28} {len(p['models']):>4} models")
     return 0
 
 

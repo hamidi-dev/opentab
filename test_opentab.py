@@ -3468,21 +3468,32 @@ def test_demo_turns_anonymize_the_full_prompt_too():
 
 
 def test_api_price_helpers():
-    # input/output/cache priced per 1M, reasoning billed as output.
-    assert "gpt-4o-2024-05-13" in ot.MODEL_PRICE_TABLE
-    assert "claude-fable-5" in ot.MODEL_PRICE_TABLE
-    assert "claude-sonnet-4-5" in ot.MODEL_PRICE_TABLE
-    assert "gemini-2.5-pro" in ot.MODEL_PRICE_TABLE
-    assert ot.model_price("openai/gpt-4o-2024-05-13") == (5.0, 15.0, 0.0, 0.0)  # exact table hit
-    assert ot.model_price("anthropic/claude-fable-5") == (10.0, 50.0, 1.0, 12.5)
-    assert ot.model_price("anthropic/claude-fable-5-20260613") == (10.0, 50.0, 1.0, 12.5)
-    assert ot.model_price("github-copilot/claude-haiku-4.5") == (1.0, 5.0, 0.1, 1.25)
-    assert ot.model_price("openai/o1-mini") == (1.1, 4.4, 0.55, 0.0)
-    assert ot.model_price("openai/o1-preview") == (15.0, 60.0, 7.5, 0.0)
-    assert ot.model_price("openai/gpt-5.2-xhigh")[:2] == (1.75, 14.0)  # variant suffix tolerated
+    # input/output/cache priced per 1M, reasoning billed as output. Rates come from
+    # the bundled models.dev snapshot, which is regenerated every release -- so
+    # assert *resolution* (known models price, aliases fold, fallbacks catch), never
+    # a pinned dollar figure that would break on the next scripts/update_prices.py.
+    for name in (
+        "anthropic/claude-fable-5",
+        "anthropic/claude-sonnet-4-5",
+        "openai/gpt-4o-2024-05-13",
+        "google/gemini-2.5-pro",
+    ):
+        ir, orr, _cr, _cw = ot.model_price(name)
+        assert ir > 0 and orr > 0, name
+        assert ot.model_price(name) != ot.FALLBACK_PRICE, name
+    # a date pin resolves like the plain id, and a gateway route like the vendor's
+    assert ot.model_price("anthropic/claude-fable-5-20260613") == ot.model_price(
+        "anthropic/claude-fable-5"
+    )
+    assert ot.model_price("github-copilot/claude-haiku-4.5")[0] > 0
+    # a reasoning-effort variant suffix falls back to its family price
+    assert ot.model_price("openai/gpt-5.2-xhigh")[:2] == (1.75, 14.0)
     assert ot.model_price("unknown/future-model") == ot.FALLBACK_PRICE
-    # 1M input + 1M output(+reasoning) of Haiku = $1 + $5 = $6.
-    assert round(ot.api_equivalent_cost("x/claude-haiku-4.5", 1e6, 5e5, 5e5, 0, 0), 2) == 6.0
+    # 1M input + 1M output-equivalent: reasoning tokens bill as output.
+    ir, orr, _cr, _cw = ot.model_price("x/claude-haiku-4.5")
+    assert round(ot.api_equivalent_cost("x/claude-haiku-4.5", 1e6, 5e5, 5e5, 0, 0), 6) == round(
+        ir + orr, 6
+    )
 
 
 def test_local_providers_are_not_priced():
@@ -9399,7 +9410,102 @@ def test_model_price_uses_embedded_table_without_cache():
             ot.invalidate_price_cache()
             assert ot.price_cache_meta() is None
             ir, orr, _cr, _cw = ot.model_price("anthropic/claude-opus-4-8")
-            assert ir > 0 and orr > 0  # from the embedded table, not the (absent) cache
+            assert ir > 0 and orr > 0  # from the bundled snapshot, not the (absent) cache
+        finally:
+            ot.invalidate_price_cache()
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
+def test_bundled_catalog_is_the_offline_price_source():
+    # With no user cache, everything prices off the release-bundled models.dev
+    # snapshot: every provider, so open models on paid routes resolve offline (the
+    # old embedded table covered only the big three and left them to FALLBACK_PRICE).
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.invalidate_price_cache()
+            meta = ot.price_source_meta()
+            assert meta and meta["kind"] == "bundled" and meta["count"] > 500
+            assert meta["fetched_at"]
+            rows = ot.catalog_models()
+            assert len(rows) > 1000
+            pid, mid, price, status = rows[0]
+            assert pid and mid and len(price) == 4 and isinstance(status, str)
+            assert ot.model_price("openrouter/deepseek/deepseek-chat") != ot.FALLBACK_PRICE
+        finally:
+            ot.invalidate_price_cache()
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
+def test_price_layers_newest_fetch_wins():
+    # The cache and the bundled snapshot are ordered by fetched_at: a year-old cache
+    # must not shadow a fresher release snapshot, and a fresh refresh beats any
+    # release. (Pre-catalog behavior was "cache always wins", which inverts once the
+    # bundled layer refreshes every release.)
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        cache_dir = os.path.join(tmp, "opentab")
+        os.makedirs(cache_dir)
+
+        def write_cache(fetched_at, models):
+            with open(os.path.join(cache_dir, "prices.json"), "w") as fh:
+                json.dump(
+                    {
+                        "fetched_at": fetched_at,
+                        "providers": {"anthropic": {"name": "Anthropic", "models": models}},
+                    },
+                    fh,
+                )
+            ot.invalidate_price_cache()
+
+        try:
+            ot.invalidate_price_cache()
+            bundled = ot.model_price("anthropic/claude-fable-5")
+            stale = {"claude-fable-5": {"cost": [111.0, 222.0, 0.0, 0.0]}}
+            write_cache("2000-01-01T00:00:00Z", stale)  # ancient cache: bundled wins
+            assert ot.model_price("anthropic/claude-fable-5") == bundled
+            assert ot.price_source_meta()["kind"] == "bundled"
+            write_cache("9999-01-01T00:00:00Z", stale)  # fresher cache: it wins
+            assert ot.model_price("anthropic/claude-fable-5") == (111.0, 222.0, 0.0, 0.0)
+            assert ot.price_source_meta()["kind"] == "cache"
+        finally:
+            ot.invalidate_price_cache()
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
+def test_legacy_flat_price_cache_still_read():
+    # A pre-catalog cache ({"models": {bare_id: [4 rates]}}) still prices lookups;
+    # the models.dev view falls back to the bundled provider tree the flat shape
+    # can't provide.
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        cache_dir = os.path.join(tmp, "opentab")
+        os.makedirs(cache_dir)
+        with open(os.path.join(cache_dir, "prices.json"), "w") as fh:
+            json.dump(
+                {
+                    "fetched_at": "9999-01-01T00:00:00Z",
+                    "models": {"claude-fable-5": [111.0, 222.0, 0.0, 0.0]},
+                },
+                fh,
+            )
+        try:
+            ot.invalidate_price_cache()
+            assert ot.model_price("anthropic/claude-fable-5") == (111.0, 222.0, 0.0, 0.0)
+            assert ot.price_source_meta()["kind"] == "cache"
+            assert ot.catalog_models()  # bundled tree still backs the catalog view
         finally:
             ot.invalidate_price_cache()
             if old_xdg is None:
