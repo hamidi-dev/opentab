@@ -102,6 +102,7 @@ class PriceEntry(NamedTuple):
     eff: float  # $/M for the app-wide token mix at `price` (the "eff $/M" column)
     approx: bool  # eff had no cache-read rate; reads were billed at the input rate
     status: str = ""  # models.dev lifecycle flag (alpha/beta/deprecated); catalog view only
+    pinned: bool = False  # in App.pinned_models (by canon); floats above every view
 
 
 class App:
@@ -270,6 +271,10 @@ class App:
         self.show_prices = False  # the "P" model-prices reference overlay
         self.prices_scroll = 0  # pager offset within that overlay
         self.prices_index = 0  # selected model row in the P overlay's list
+        # Pinned models (canonical ids; space toggles): a hand-picked shortlist that
+        # floats above every P view -- the point is keeping your candidate models in
+        # sight above the ~5k-row models.dev catalog. Persisted in state.json.
+        self.pinned_models: set[str] = set()
         self.prices_model: str | None = None  # drilled into this model's sessions (P overlay)
         # The P overlay's column sort: cheapest-for-your-mix first by default (the
         # point of the overlay); pick another column via the `s` picker or a header
@@ -1691,6 +1696,7 @@ class App:
                     price=price,
                     eff=eff,
                     approx=approx,
+                    pinned=canon in self.pinned_models,
                 )
             )
         return self._order_price_entries(self._filter_price_entries(entries))
@@ -1768,27 +1774,32 @@ class App:
                     eff=eff,
                     approx=approx,
                     status=status,
+                    pinned=canon in self.pinned_models,
                 )
             )
         return entries
 
     def _order_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
-        # Order the entries for the active view. "flat" (and the catalog view, which
-        # is a flat leaderboard) is one globally-sorted list; the grouped views order
+        # Order the entries for the active view, with pinned models first in *every*
+        # view (their own sorted block -- the shortlist stays in sight above the
+        # ~5k-row catalog). Below that, "flat" (and the catalog view, which is a
+        # flat leaderboard) is one globally-sorted list; the grouped views order
         # groups most-spend-first (the empty group -- Other, or a route-less id --
         # always last) and apply the active column sort *within* each.
+        pinned = self._sort_price_entries([e for e in entries if e.pinned])
+        rest = [e for e in entries if not e.pinned]
         if self.prices_view in ("flat", "all"):
-            return self._sort_price_entries(entries)
+            return pinned + self._sort_price_entries(rest)
         group_spend: dict[str, float] = defaultdict(float)
-        for e in entries:
+        for e in rest:
             group_spend[e.group] += e.spend
         groups = sorted(
-            {e.group for e in entries},
+            {e.group for e in rest},
             key=lambda g: (g == "", -group_spend[g]),  # empty group last, else most spend
         )
-        out: list[PriceEntry] = []
+        out: list[PriceEntry] = pinned
         for g in groups:
-            out.extend(self._sort_price_entries([e for e in entries if e.group == g]))
+            out.extend(self._sort_price_entries([e for e in rest if e.group == g]))
         return out
 
     def _sort_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
@@ -1847,6 +1858,7 @@ class App:
             "model",
             "family",
             "routes",
+            "pinned",
             "share",
             "eff_usd_per_mtok",
             "eff_approx",
@@ -1860,6 +1872,7 @@ class App:
                 e.bare,
                 family_label(e.family),
                 " ".join(e.routes),
+                e.pinned,
                 round(e.share, 4),
                 round(e.eff, 4),
                 e.approx,
@@ -3726,6 +3739,24 @@ class App:
         i = keys.index(self.prices_view) if self.prices_view in keys else 0
         self.set_prices_view(keys[(i + step) % len(keys)])
 
+    def toggle_price_pin(self) -> None:
+        # Space pins/unpins the selected model by canonical id -- spelling- and
+        # route-independent, so pinning it once floats every provider's row for
+        # that model (the cross-route price comparison is the point). The cursor
+        # follows the row to its new position (into or out of the pinned block).
+        entries = self.priced_model_entries()
+        if not entries:
+            return
+        entry = entries[max(0, min(self.prices_index, len(entries) - 1))]
+        if entry.canon in self.pinned_models:
+            self.pinned_models.discard(entry.canon)
+        else:
+            self.pinned_models.add(entry.canon)
+        for i, e in enumerate(self.priced_model_entries()):
+            if e.canon == entry.canon and e.routes == entry.routes:
+                self.prices_index = i
+                break
+
     def _handle_price_models_key(self, key: int, stdscr: curses.window | None = None) -> bool:
         # The P overlay's model list: j/k/arrows move a cursor, page keys stride,
         # g/G jump to ends, Enter drills into the selected model's sessions, s sorts
@@ -3744,6 +3775,9 @@ class App:
             return True
         if key in (ord("h"), curses.KEY_LEFT):
             self.cycle_prices_view(-1)
+            return True
+        if key == ord(" "):
+            self.toggle_price_pin()
             return True
         if key in (ord("j"), curses.KEY_DOWN):
             self.prices_index = min(self.prices_index + 1, max(0, n - 1))

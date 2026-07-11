@@ -2263,7 +2263,8 @@ class Renderer:
                         "mix (cheapest first), beside your usage share and raw rates",
                         "h/l (or p, or a tab click) switch the view — flat / by vendor / "
                         "by provider / models.dev (the whole catalog at your mix)",
-                        "j/k select · Enter its sessions · s sort a column (or click a header) · f/r/e as usual",
+                        "j/k select · space pins a model (★ shortlist floats above every "
+                        "view) · Enter its sessions · s sort · f/r/e as usual",
                         "C theme · c source · D demo · $ what-if · ? help keep working inside",
                     ),
                     ("$", "toggle what-if prices — what unpriced usage would cost at API list"),
@@ -2434,13 +2435,15 @@ class Renderer:
         return [f"{ir:.2f}", f"{orr:.2f}", cr, f"{cwr:.2f}"]
 
     def _price_core_text(self, entry, namew: int, peak: float) -> str:
-        # One model's name + eff/use/raw-price cells (no route tag -- that's overlaid
-        # dim, and appended by the text path). Every entry carries its resolved price
-        # (from the most completely-priced alias; local models are dropped upstream).
+        # One model's name (★-prefixed when pinned) + eff/use/raw-price cells (no
+        # route tag -- that's overlaid dim, and appended by the text path). Every
+        # entry carries its resolved price (from the most completely-priced alias;
+        # local models are dropped upstream).
         w = self._PRICE_COL_W
+        name = f"★ {entry.bare}" if getattr(entry, "pinned", False) else entry.bare
         cells = " ".join(f"{c:>{w}}" for c in self._price_raw_cells(entry))
         return (
-            f"{pad(shorten(entry.bare, namew), namew)}  "
+            f"{pad(shorten(name, namew), namew)}  "
             f"{self._price_eff_cell(entry):>{self._PRICE_EFF_W}}  "
             f"{self._price_use_cell(entry, peak):<{self._PRICE_USE_W}}  {cells}"
         )
@@ -2470,7 +2473,8 @@ class Renderer:
         return f"{model:{namew}}  {eff}  {use}  {cells}"
 
     def _price_namew(self, entries, width: int) -> int:
-        return min(max(len(e.bare) for e in entries), max(12, width - self._PRICE_BLOCK_W - 3))
+        widest = max(len(e.bare) + (2 if getattr(e, "pinned", False) else 0) for e in entries)
+        return min(widest, max(12, width - self._PRICE_BLOCK_W - 3))
 
     @staticmethod
     def _price_use_peak(entries) -> float:
@@ -2537,14 +2541,24 @@ class Renderer:
     def _price_render_rows(self, entries) -> list[tuple]:
         # Flatten the ordered entries into drawable rows: ("header", label) before each
         # new group (unless the view is flat), then ("model", entry_index, entry) for
-        # each model. The entry_index is the position in `entries`, so the cursor
-        # (prices_index) and this list stay in lock-step.
+        # each model. Pinned entries always come first (ordered so upstream) under one
+        # "★ pinned" header, in every view. The entry_index is the position in
+        # `entries`, so the cursor (prices_index) and this list stay in lock-step.
         rows: list[tuple] = []
         grouped = self.app.prices_view in ("family", "provider")
+        prev = None
         for i, entry in enumerate(entries):
-            if grouped and (i == 0 or entry.group != entries[i - 1].group):
+            pinned = getattr(entry, "pinned", False)
+            if pinned and prev is None:
+                rows.append(("header", "★ pinned"))
+            elif (
+                not pinned
+                and grouped
+                and (prev is None or getattr(prev, "pinned", False) or entry.group != prev.group)
+            ):
                 rows.append(("header", self._price_group_label(entry.group)))
             rows.append(("model", i, entry))
+            prev = entry
         return rows
 
     def _price_empty_msg(self) -> str:
@@ -2589,7 +2603,7 @@ class Renderer:
         # (h/l or a click switches, p still cycles), a short right-aligned hint, and
         # one dim context line -- everything else is table.
         self.box(stdscr, y, 0, bottom - y, width, "Model prices", active=True)
-        hint = "h/l views · j/k · Enter sessions · f filter · q closes"
+        hint = "h/l views · j/k · space pin · Enter sessions · f filter · q closes"
         labels = tuple(label for _key, label in self.app.prices_views)
         keys = [key for key, _label in self.app.prices_views]
         active = keys.index(self.app.prices_view) if self.app.prices_view in keys else 0

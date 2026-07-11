@@ -1267,6 +1267,60 @@ def test_prices_sort_is_persisted_in_state():
     assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
 
 
+def test_prices_pinning_floats_a_shortlist_and_persists():
+    # Space pins the selected model by canonical id: its rows float to the top of
+    # *every* view under a "★ pinned" header (the shortlist stays in sight above the
+    # ~5k-row catalog), the cursor follows the row, and the set persists like the
+    # other prefs.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {
+        "a": [
+            _model_row("anthropic/claude-opus-4-8", 5.0, 100),
+            _model_row("openai/gpt-5-mini", 1.0, 100),
+        ]
+    }
+    app.handle_key(None, ord("P"))
+    app.prices_index = app.priced_model_names().index("gpt-5-mini")
+    app.handle_key(None, ord(" "))
+    assert app.pinned_models == {"gpt-5-mini"}
+    entries = app.priced_model_entries()
+    assert entries[0].bare == "gpt-5-mini" and entries[0].pinned  # floats to the top
+    assert app.prices_index == 0  # the cursor follows the row into the pinned block
+    lines = app.renderer.price_table_lines(120)
+    assert any(ln.startswith("▸ ★ pinned") for ln in lines)
+    assert any(ln.startswith("★ gpt-5-mini") for ln in lines)
+    # Above the group headers in the vendor view too...
+    app.prices_view = "family"
+    assert app.priced_model_entries()[0].bare == "gpt-5-mini"
+    # ...and in the catalog view every route selling the model floats up together.
+    app.prices_view = "all"
+    entries = app.priced_model_entries()
+    top = [e for e in entries if e.pinned]
+    assert top and all(e.canon == "gpt-5-mini" for e in top)
+    assert len({e.routes[0] for e in top}) > 1
+    assert entries[: len(top)] == top  # contiguous, first
+    # Space on the pinned row unpins; the set round-trips through state.json.
+    app.prices_view = "flat"
+    app.prices_index = 0
+    app.handle_key(None, ord(" "))
+    assert app.pinned_models == set()
+    app.pinned_models = {"gpt-5-mini", "claude-opus-4-8"}
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+            assert restored.pinned_models == set()
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+    assert restored.pinned_models == {"gpt-5-mini", "claude-opus-4-8"}
+
+
 def test_prices_heat_scales_each_column_cheap_to_expensive():
     app = _price_sort_app()
     app.handle_key(None, ord("P"))
@@ -4799,6 +4853,7 @@ def test_export_prices_overlay_exports_the_price_table():
         "model",
         "family",
         "routes",
+        "pinned",
         "share",
         "eff_usd_per_mtok",
         "eff_approx",
@@ -4812,9 +4867,9 @@ def test_export_prices_overlay_exports_the_price_table():
     assert names[0] == "gpt-5.3"  # cheapest for the mix first (the eff default sort)
     opus = next(r for r in rows if r[0] == "claude-opus-4-8")
     assert opus[1] == "Anthropic" and opus[2] == "anthropic"  # family + route columns
-    # every priced row carries share/eff/approx and four numeric rates
-    assert all(len(r) == 10 and all(isinstance(v, (int, float)) for v in r[6:]) for r in rows)
-    assert all(isinstance(r[5], bool) for r in rows)
+    # every priced row carries pinned/share/eff/approx and four numeric rates
+    assert all(len(r) == 11 and all(isinstance(v, (int, float)) for v in r[7:]) for r in rows)
+    assert all(isinstance(r[3], bool) and isinstance(r[6], bool) for r in rows)
 
     # the active P filter narrows the export too (shared priced_model_entries)
     app.query = "gpt"

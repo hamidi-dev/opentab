@@ -298,6 +298,9 @@ td.indent{color:var(--ink2)}
 #pr-filter{font:inherit;font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);
   border-radius:6px;padding:5px 10px;width:150px;outline:none}
 #pr-filter:focus{border-color:var(--accent)}
+.pin{cursor:pointer;color:var(--mut);margin-right:7px;user-select:none}
+.pin.on{color:var(--accent)}
+.pin:hover{color:var(--ink)}
 table.prices{width:100%;border-collapse:collapse;font-size:12.5px}
 table.prices th{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);font-weight:600;
   text-align:right;padding:4px 9px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
@@ -1392,6 +1395,27 @@ function priceRanges(rows) {
   rows.forEach(r => r.price.forEach((v, i) => { if (v > 0) cols[i + 1].push(v); }));
   return cols.map(vals => { if (!vals.length) return null; const lo = Math.min(...vals), hi = Math.max(...vals); return hi > lo ? [lo, hi] : null; });
 }
+// Canonical model id, mirroring pricing.canonical_model: date/effort suffixes
+// stripped, version dots == dashes. Pins key by it, so one pin covers every
+// spelling and every route that resells the model.
+const canonId = m => m.toLowerCase().replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, '')
+  .replace(/-(minimal|low|medium|high|xhigh)$/, '').replace(/(\d)\.(?=\d)/g, '$1-');
+// Pinned models: the browser keeps its own set in localStorage, seeded from the
+// TUI's state.json pins the first time (DATA.prices.pinned).
+let PIN_SET = null;
+function pins() {
+  if (!PIN_SET) {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem('opentab-pins') || 'null'); } catch (e) { /* file:// may block storage */ }
+    PIN_SET = new Set(Array.isArray(saved) ? saved : (DATA.prices.pinned || []));
+  }
+  return PIN_SET;
+}
+function togglePin(cid) {
+  const p = pins();
+  if (p.has(cid)) p.delete(cid); else p.add(cid);
+  try { localStorage.setItem('opentab-pins', JSON.stringify([...p])); } catch (e) { /* ditto */ }
+}
 // The models.dev catalog travels slim ({m, r, p, u?, s?}); eff and the ~ approx flag
 // are pure functions of price + your mix, so they expand client-side, once, lazily.
 function catalogRows() {
@@ -1461,11 +1485,18 @@ function renderPrices() {
   let lastGrp = null;
   // The catalog view holds ~4.6k rows; rendering them all would lag every filter
   // keystroke, so cap the DOM and say what was cut (never a silent truncation).
+  // Pinned models float first in every view (the ★ shortlist stays in sight
+  // above the ~5k-row catalog), keeping the active sort within each block.
+  const isPinned = r => pins().has(canonId(r.model));
+  rows = rows.filter(isPinned).concat(rows.filter(r => !isPinned(r)));
   const CAP = 500;
   const cut = Math.max(0, rows.length - CAP);
   const shown = cut ? rows.slice(0, CAP) : rows;
   shown.forEach(r => {
-    if (PRICES.view === 'family' || PRICES.view === 'provider') {
+    const pinnedRow = isPinned(r);
+    if (pinnedRow) {
+      if (lastGrp !== '★') { lastGrp = '★'; body.push(h('tr', { class: 'grp' }, h('td', { colspan: 7 }, '▸ ★ pinned'))); }
+    } else if (PRICES.view === 'family' || PRICES.view === 'provider') {
       const g = PRICES.view === 'family' ? (r.familyLabel || 'Other') : (r.routes[0] || '(direct)');
       if (g !== lastGrp) { lastGrp = g; body.push(h('tr', { class: 'grp' }, h('td', { colspan: 7 }, '▸ ' + g))); }
     }
@@ -1474,7 +1505,10 @@ function renderPrices() {
     let tag = PRICES.view === 'provider' ? r.familyLabel : (r.routes.length ? r.routes.join(' ') : '');
     if (PRICES.view === 'all' && r.status) tag = tag ? tag + ' · ' + r.status : r.status;
     body.push(h('tr', null,
-      h('td', { class: 'l' }, modelCell(r.model), tag ? h('span', { class: 'tag' }, tag) : null),
+      h('td', { class: 'l' },
+        h('span', { class: 'pin' + (pinnedRow ? ' on' : ''), title: pinnedRow ? 'unpin' : 'pin',
+          onclick: ev => { ev.stopPropagation(); togglePin(canonId(r.model)); renderPrices(); } }, pinnedRow ? '★' : '☆'),
+        modelCell(r.model), tag ? h('span', { class: 'tag' }, tag) : null),
       heatTd(r.eff, ranges[0], (r.approx ? '~' : '') + '$' + r.eff.toFixed(2)),
       h('td', null, r.share > 0 ? h('span', { class: 'pr-use' }, pct(r.share, 1),
         h('span', { class: 'hb' }, h('i', { style: '--w:' + (usePeak > 0 ? Math.round(100 * r.share / usePeak) : 0) + '%' }))) : null),

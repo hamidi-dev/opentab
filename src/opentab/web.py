@@ -156,6 +156,11 @@ def _prices_payload(app: App) -> dict:
     finally:
         app.prices_view, app.query = prev_view, prev_query
     out = {"byModel": by_model, "byRoute": by_route, "catalog": catalog}
+    # Seed the page's pin set with the TUI's (canonical ids); the page then keeps
+    # its own copy in localStorage, so the two frontends start aligned but a
+    # browser-side pin never has to write back into state.json.
+    if app.pinned_models:
+        out["pinned"] = sorted(app.pinned_models)
     mix = app.price_token_mix()
     if mix:
         (inp, output, cr, cw), total = mix
