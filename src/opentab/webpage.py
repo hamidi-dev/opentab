@@ -1423,11 +1423,13 @@ function renderPrices() {
   host.hidden = false; host.textContent = '';
   let rows = priceRows().slice();
   if (PRICES.q) {
-    // dots==dashes so "opus-4.8" also finds providers spelling it "claude-opus-4-8"
+    // fzf-style subsequence (like the TUI's f filter): "opus8" narrows to the
+    // claude-opus-4-8 rows; dots==dashes against the canonical spelling so
+    // "opus-4.8" also finds providers that write "claude-opus-4-8".
+    const fz = (q, s) => { s = s.toLowerCase(); let i = 0; for (let j = 0; j < s.length && i < q.length; j++) if (s[j] === q[i]) i++; return i === q.length; };
     const canon = s => s.toLowerCase().replace(/(\d)\.(?=\d)/g, '$1-');
     const q = PRICES.q.toLowerCase(), qc = canon(PRICES.q);
-    rows = rows.filter(r => (r.model + ' ' + r.routes.join(' ') + ' ' + (r.familyLabel || '')).toLowerCase().includes(q)
-      || canon(r.model).includes(qc));
+    rows = rows.filter(r => fz(q, r.model) || fz(qc, canon(r.model)) || fz(q, r.familyLabel || '') || r.routes.some(rt => fz(q, rt)));
   }
   const ASC = new Set(['model', 'eff']);  // natural order per column (else high→low)
   const key = PRICES.sort;

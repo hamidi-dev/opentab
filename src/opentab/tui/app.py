@@ -1696,21 +1696,25 @@ class App:
         return self._order_price_entries(self._filter_price_entries(entries))
 
     def _filter_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
-        # The active filter, a plain case-insensitive substring over the model,
-        # vendor family, or access route -- essential in the catalog view (5k+ rows).
-        # The query also matches dots==dashes against the canonical id, so
+        # The active filter: the same fzf-style subsequence match as the session
+        # filter (util.fuzzy_score, per field so a query can't straddle fields), over
+        # the model id, vendor family, and access route(s) -- "opus8" narrows to the
+        # claude-opus-4-8 rows. The dots==dashes canonical id is matched too, so
         # "opus-4.8" finds providers that spell it "claude-opus-4-8" and vice versa.
+        # Rows keep the active column sort (a filtered catalog should stay
+        # cheapest-first, not re-rank by match quality -- the columns are the point).
         if not self.query:
             return entries
-        q = self.query.lower()
-        qc = re.sub(r"(?<=\d)\.(?=\d)", "-", q)
+        q = self.query
+        qc = re.sub(r"(?<=\d)\.(?=\d)", "-", q.lower())
         return [
             e
             for e in entries
-            if q in e.bare.lower()
-            or qc in e.canon
-            or q in family_label(e.family).lower()
-            or any(q in r.lower() for r in e.routes)
+            if fuzzy_score(qc, e.canon) is not None
+            or any(
+                fuzzy_score(q, field) is not None
+                for field in (e.bare, family_label(e.family), *e.routes)
+            )
         ]
 
     def _catalog_price_entries(self, shares: tuple) -> list[PriceEntry]:

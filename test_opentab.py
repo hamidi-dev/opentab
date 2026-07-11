@@ -1498,10 +1498,13 @@ def test_prices_models_dev_view_lists_the_whole_catalog_at_your_mix():
     assert entries[0].eff <= entries[-1].eff  # default sort: cheapest-for-your-mix first
     app.query = "claude-opus-4.8"  # the f filter tames the ~5k rows
     hits = app.priced_model_entries()
-    assert 0 < len(hits) < 100 and all("claude-opus-4-8" in e.canon for e in hits)
+    assert 0 < len(hits) < 200 and all("opus" in e.canon for e in hits)
     # dots==dashes in the filter too: the dotted query still finds providers that
     # spell the id with dashes (anthropic itself says "claude-opus-4-8")
-    assert any(e.routes[0] == "anthropic" for e in hits)
+    exact = [e for e in hits if e.canon == "claude-opus-4-8"]
+    assert any(e.routes[0] == "anthropic" for e in exact)
+    app.query = "opus8"  # and it's fuzzy: a scattered subsequence narrows too
+    assert any(e.canon == "claude-opus-4-8" for e in app.priced_model_entries())
     app.query = ""
 
 
@@ -1527,7 +1530,7 @@ def test_prices_provider_view_groups_by_route_and_tags_vendor():
     assert any("OpenAI" in ln or "Anthropic" in ln for ln in lines)  # vendor shown as the tag
 
 
-def test_prices_filter_is_substring_not_fuzzy():
+def test_prices_filter_is_fuzzy():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {
         "a": [
@@ -1535,13 +1538,17 @@ def test_prices_filter_is_substring_not_fuzzy():
             _model_row("gpt-5-codex", 2.0, 10),
         ]
     }
-    # A scattered-letter query ("gtex") subsequence-matches "gpt-5-codex" but is not a
-    # substring, so the P filter (unlike the fuzzy session filter) must reject it.
+    # The P filter is the same fzf-style subsequence match as the session filter:
+    # a scattered-letter query narrows without needing the exact substring.
     app.query = "gtex"
-    assert app.priced_model_names() == []
-    # A literal substring still matches.
+    assert app.priced_model_names() == ["gpt-5-codex"]
+    app.query = "snt45"
+    assert app.priced_model_names() == ["claude-sonnet-4-5"]
+    # A literal substring still matches; garbage still yields nothing.
     app.query = "codex"
     assert app.priced_model_names() == ["gpt-5-codex"]
+    app.query = "zzz"
+    assert app.priced_model_names() == []
 
 
 def test_prices_enter_lists_sessions_that_used_the_model():
