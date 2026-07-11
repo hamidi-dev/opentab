@@ -3706,14 +3706,21 @@ class App:
         view = view or self.prices_view
         return dict(self.prices_views).get(view, view)
 
-    def cycle_prices_view(self) -> None:
-        # `p` walks the P overlay's layout modes (flat -> by vendor -> by provider).
-        keys = [k for k, _label in self.prices_views]
-        i = keys.index(self.prices_view) if self.prices_view in keys else 0
-        self.prices_view = keys[(i + 1) % len(keys)]
+    def set_prices_view(self, view: str) -> None:
+        # Switch the P overlay's view (a tab click, h/l, or the p cycle). No toast:
+        # the tab bar itself shows the active view.
+        if view == self.prices_view:
+            return
+        self.prices_view = view
         self.prices_index = 0  # the row order (and count) changed under the cursor
         self.prices_scroll = 0
-        self.notice = f"view: {self.prices_view_label()}"
+
+    def cycle_prices_view(self, step: int = 1) -> None:
+        # `p` (and h/l) walk the P overlay's views (flat -> by vendor -> by provider
+        # -> models.dev).
+        keys = [k for k, _label in self.prices_views]
+        i = keys.index(self.prices_view) if self.prices_view in keys else 0
+        self.set_prices_view(keys[(i + step) % len(keys)])
 
     def _handle_price_models_key(self, key: int, stdscr: curses.window | None = None) -> bool:
         # The P overlay's model list: j/k/arrows move a cursor, page keys stride,
@@ -3727,6 +3734,12 @@ class App:
             return True
         if key == ord("p"):
             self.cycle_prices_view()
+            return True
+        if key in (ord("l"), curses.KEY_RIGHT):
+            self.cycle_prices_view()  # the tabs read left-to-right, like Trends
+            return True
+        if key in (ord("h"), curses.KEY_LEFT):
+            self.cycle_prices_view(-1)
             return True
         if key in (ord("j"), curses.KEY_DOWN):
             self.prices_index = min(self.prices_index + 1, max(0, n - 1))
@@ -3924,8 +3937,12 @@ class App:
                 elif down:
                     self.prices_index += 1  # clamped on draw
                 elif click or double:
-                    # A click on a column header sorts by it (re-click flips); any
-                    # other click closes, as before.
+                    # A view tab switches the view, a column header sorts by it
+                    # (re-click flips); any other click closes, as before.
+                    target = self.renderer.hit(my, mx)
+                    if target and target[0] == "pricetab":
+                        self.set_prices_view(self.prices_views[target[1]][0])
+                        return True
                     sort = self.renderer.sort_hit(my, mx)
                     if sort is not None:
                         self.apply_header_sort(*sort)

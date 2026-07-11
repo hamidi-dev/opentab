@@ -2261,8 +2261,8 @@ class Renderer:
                         "P",
                         "model prices — eff $/M blends each model's list rates at your token "
                         "mix (cheapest first), beside your usage share and raw rates",
-                        "p cycles the view — flat / by vendor / by provider / models.dev "
-                        "(the whole catalog at your mix, f filters it)",
+                        "h/l (or p, or a tab click) switch the view — flat / by vendor / "
+                        "by provider / models.dev (the whole catalog at your mix)",
                         "j/k select · Enter its sessions · s sort a column (or click a header) · f/r/e as usual",
                         "C theme · c source · D demo · $ what-if · ? help keep working inside",
                     ),
@@ -2366,33 +2366,26 @@ class Renderer:
                 self.write(stdscr, row_y, sx, text, attr)
 
     def price_intro_lines(self) -> list[str]:
-        # The fixed header block above the P overlay's price table: where the rates
-        # came from and what the eff blend means. Pulled out so both the flat
-        # price_table_lines (export/tests) and the navigable draw_prices share one
-        # source of truth.
+        # ONE dim context line above the P overlay's price table (plus a spacer):
+        # where the rates come from and what the eff blend means. Deliberately terse
+        # -- the overlay chrome (tabs + hint) carries the navigation, and the P help
+        # entry documents the long form. Shared by the flat price_table_lines
+        # (export/tests) and the navigable draw_prices.
         meta = price_source_meta()
         if meta:
-            kind = "cache" if meta.get("kind") == "cache" else "bundled snapshot"
-            when = (meta.get("fetched_at") or "?")[:10]
-            source = f"models.dev {kind} · {meta.get('count', 0)} models · fetched {when}"
+            kind = "refreshed" if meta.get("kind") == "cache" else "bundled"
+            source = f"models.dev {(meta.get('fetched_at') or '?')[:10]} ({kind})"
         else:
-            source = "no models.dev catalog on record — hand-kept fallback rates only"
-        lines = [f"Source: {source}.  API list prices per 1M tokens; r refreshes from models.dev."]
+            source = "no models.dev catalog — fallback rates"
+        parts = [source]
         mix = self.app.price_token_mix()
         if mix:
-            (inp, out, cr, cw), total = mix
-            lines.append(
-                f"eff $/M prices each model's list rates at YOUR token mix: {inp:.1%} input · {out:.1%} output · {cr:.1%} cacheR · {cw:.1%} cacheW ({human_tokens(total)} tokens)."
+            (inp, out, cr, cw), _total = mix
+            parts.append(
+                f"eff $/M = list rates at your mix: {inp:.1%} in · {out:.1%} out · {cr:.1%} cacheR · {cw:.1%} cacheW"
             )
-            lines.append(
-                "~ = no cache-read rate on record; those reads are billed at the input rate (an upper bound)."
-            )
-        if self.app.prices_view == "all":
-            lines.append(
-                "The whole models.dev catalog at your mix — a model repeats per provider (gateway markups are real data)."
-            )
-        lines.append("")
-        return lines
+            parts.append("~ = no cacheR rate")
+        return [" · ".join(parts), ""]
 
     # Price columns are 8 wide (not 7) so the active-sort header can carry a " v"/
     # " ^" arrow -- "output v"/"cacheR v" need the eighth cell -- and still line up
@@ -2592,21 +2585,23 @@ class Renderer:
         if self.app.prices_model is not None:
             self.draw_price_sessions(stdscr, y, bottom, width)
             return
-        self.box(
-            stdscr,
-            y,
-            0,
-            bottom - y,
-            width,
-            f"Model prices ({self.prices_view_label()})  ·  j/k select · Enter sessions · s sort · p view · f filter · r refresh · e export · q closes",
-            active=True,
-        )
+        # Trends-style chrome: a plain box title, the view modes as clickable tabs
+        # (h/l or a click switches, p still cycles), a short right-aligned hint, and
+        # one dim context line -- everything else is table.
+        self.box(stdscr, y, 0, bottom - y, width, "Model prices", active=True)
+        hint = "h/l views · j/k · Enter sessions · f filter · q closes"
+        labels = tuple(label for _key, label in self.app.prices_views)
+        keys = [key for key, _label in self.app.prices_views]
+        active = keys.index(self.app.prices_view) if self.app.prices_view in keys else 0
+        self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, labels, active, kind="pricetab")
+        self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
         intro = self.price_intro_lines()
-        top = y + 2
+        top = y + 3
         for offset, line in enumerate(intro):
-            attr = curses.color_pair(4) if "models.dev" in line else curses.A_NORMAL
-            self.write(stdscr, top + offset, 2, shorten(line, inner_w), attr)
+            self.write(
+                stdscr, top + offset, 2, shorten(line, inner_w), curses.color_pair(1) | curses.A_DIM
+            )
         entries = self.priced_model_entries()
         head_y = top + len(intro)
         if not entries:
@@ -2723,9 +2718,11 @@ class Renderer:
             0,
             bottom - y,
             width,
-            f"Sessions using {shorten(model, max(8, width - 48))}  ·  j/k scroll · Esc back · q closes",
+            f"Model prices · {shorten(model, max(8, width - 30))}",
             active=True,
         )
+        hint = "j/k scroll · esc back · q closes"
+        self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
         lines = self.price_session_lines(model, inner_w)
         top = y + 2

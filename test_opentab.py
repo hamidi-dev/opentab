@@ -1471,6 +1471,10 @@ def test_prices_p_cycles_view_modes():
     assert not any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(160))
     app.handle_key(None, ord("p"))  # wraps back to flat
     assert app.prices_view == "flat"
+    app.handle_key(None, ord("l"))  # h/l walk the view tabs too, like Trends
+    assert app.prices_view == "family"
+    app.handle_key(None, ord("h"))
+    assert app.prices_view == "flat"
 
 
 def test_prices_models_dev_view_lists_the_whole_catalog_at_your_mix():
