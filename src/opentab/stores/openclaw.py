@@ -280,6 +280,67 @@ class OpenClawStore:
                 out.append(path)
         return out
 
+    def _session_files(self, session_id: str) -> list[str]:
+        # A session's live file plus its .reset./.deleted. archives, under whichever
+        # agent owns it -- the id is the filename stem before ".jsonl".
+        out = []
+        pattern = os.path.join(
+            self.root_dir, "agents", "*", "sessions", glob.escape(session_id) + ".jsonl*"
+        )
+        for path in glob.glob(pattern):
+            if os.path.isfile(path) and self._is_session_file(os.path.basename(path)):
+                out.append(path)
+        return out
+
+    def recent_roots(self) -> list[dict]:
+        # Root sessions newest-activity-first, the cheap sibling of
+        # Store.recent_roots for the one-shot --status command (file mtime = last
+        # activity; archives count, collapsed onto their session id). "directory"
+        # is the agent's ABSOLUTE directory, not the TUI's bare agent name: the
+        # --status caller folds directories through git_root, and a bare name like
+        # "finance-os" would resolve against the caller's own cwd. OpenClaw
+        # sessions carry no user cwd, so a directory target matches only a pane
+        # actually inside agents/<agent>; session-id targets are the reliable route.
+        newest: dict[str, dict] = {}
+        for path in self._files():
+            sid = self._session_id(path)
+            try:
+                last_active = int(os.stat(path).st_mtime * 1000)  # ms, like Store's
+            except OSError:
+                continue  # deleted mid-scan
+            row = newest.get(sid)
+            if row is None or last_active > row["last_active"]:
+                newest[sid] = {
+                    "id": sid,
+                    "last_active": last_active,
+                    "directory": os.path.dirname(os.path.dirname(path)),  # .../agents/<agent>
+                }
+        return sorted(newest.values(), key=lambda r: r["last_active"], reverse=True)
+
+    def root_of(self, session_id: str) -> str | None:
+        # An OpenClaw session id is already its root (no subagent tree), so this
+        # only confirms a session file carries the id -- the cheap membership
+        # answer the --status backend probe relies on.
+        return session_id if self._session_files(session_id) else None
+
+    def status_nodes(self, workflow_id: str) -> list[dict]:
+        # workflow_nodes for the --status one-shot: the identical row, but off a
+        # parse of just this session's own live + archived files when nothing is
+        # loaded yet (deduped by record id, as always) -- a status poll must never
+        # trigger the full-tree parse.
+        if self._sessions is not None:
+            return self.workflow_nodes(workflow_id)
+        sessions: dict[str, dict] = {}
+        for path, text in read_files_parallel(self._session_files(workflow_id)):
+            self._parse_file(path, text.split("\n"), sessions)
+        s = sessions.get(workflow_id)
+        if not s:
+            return []
+        self._finalize(workflow_id, s)
+        if not s["model_rows"]:
+            return []
+        return self._nodes_from(workflow_id, s)
+
     @property
     def records_cost(self) -> bool:
         # True iff any *metered* (non-subscription) message records real spend. Lazy so
@@ -606,6 +667,9 @@ class OpenClawStore:
         s = self._parse().get(workflow_id)
         if not s:
             return []
+        return self._nodes_from(workflow_id, s)
+
+    def _nodes_from(self, workflow_id: str, s: dict) -> list[dict]:
         root = self._new_acc()
         best, best_runs = "unknown (not recorded)", -1
         for model_name, acc in s["models"].items():

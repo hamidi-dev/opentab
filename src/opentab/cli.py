@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import locale
 import os
-import re
 import sqlite3
 import sys
 import time
@@ -28,13 +27,10 @@ from opentab.sources import (
     _default_openclaw_dir,
     _default_pi_dir,
     _default_zaly_dir,
-    _jsonl_dir_available,
     _route_path_arg,
     resolve_source,
 )
 from opentab.state import apply_state, load_state, save_state
-from opentab.stores.claude import ClaudeStore
-from opentab.stores.opencode import Store
 from opentab.tui.app import App
 from opentab.util import git_root, resolve_project_root
 
@@ -168,10 +164,12 @@ def parse_args() -> argparse.Namespace:
         const="",
         default=None,
         metavar="DIR|SESSION",
-        help="print the cost of the most recently active OpenCode or Claude Code "
-        "session (subagent subtree included) and exit; with DIR only sessions of that "
-        "project count, with a session id (an OpenCode ses_... or a Claude Code UUID) "
-        "exactly that session is priced. Made for a tmux status line: set -g "
+        help="print the cost of the most recently active agent session (subagent "
+        "subtree included) and exit, consulting every present harness backend "
+        "(OpenCode, Claude Code, Codex, Hermes, pi, OpenClaw, Zaly); with DIR only "
+        "sessions of that project count, with a session id (ses_... or a UUID -- the "
+        "id is matched to its own backend) exactly that session is priced, and "
+        "--source pins one backend. Made for a tmux status line: set -g "
         "status-right '#(opentab --status \"#{pane_current_path}\")'. A leading ~ "
         "marks a list-price estimate for usage recorded at $0 (subscription models)",
     )
@@ -358,16 +356,23 @@ def _project_key(directory: str) -> str:
     return os.path.normpath(resolve_project_root(git_root(os.path.expanduser(directory))))
 
 
-# Claude Code session ids are plain UUIDs (OpenCode's carry a ses_ prefix).
-_CLAUDE_SESSION_ID = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
+# The backends a --status target can price: the interactive harnesses, each with
+# a live session a tmux pane can point at. The request-log sources (csv/jsonl)
+# have synthetic per-(date, project) sessions with no live identity, and the
+# Copilot/VS Code stores record no terminal session to follow.
+_STATUS_SOURCES = ("opencode", "claude", "codex", "hermes", "pi", "openclaw", "zaly")
 
 
-def _is_session_id(target: str) -> bool:
-    return (target.startswith("ses_") and os.sep not in target) or bool(
-        _CLAUDE_SESSION_ID.match(target)
-    )
+def _is_session_target(target: str) -> bool:
+    # A --status target is a directory or a session id. An id never contains a
+    # path separator and doesn't exist on disk; anything else scopes by project.
+    # Which backend an id belongs to is NOT decided here -- ids are probed via
+    # each store's root_of (UUID shapes collide across Claude/Codex/pi/Zaly), and
+    # an id nobody claims yields an empty segment rather than being reinterpreted
+    # as a directory, so a stale id can never price the shell's own project.
+    if os.sep in target or (os.altsep and os.altsep in target):
+        return False
+    return not os.path.exists(os.path.expanduser(target))
 
 
 def _status_candidate(store, project: str | None) -> tuple[str, int] | None:
@@ -411,7 +416,7 @@ def status_line(store, target: str | None = None) -> str:
     # sessions run in one project, e.g. stamped per-pane by a tmux plugin); a
     # subagent id resolves to its root.
     workflow_id = None
-    if target and _is_session_id(target):
+    if target and _is_session_target(target):
         workflow_id = store.root_of(target)
     else:
         project = _project_key(target) if target else None
@@ -422,24 +427,26 @@ def status_line(store, target: str | None = None) -> str:
     return _price_root(store, workflow_id)
 
 
-def _status_stores(args: argparse.Namespace, target: str | None) -> list:
-    # The backends a --status target can name: an explicit session id picks its
-    # own (ses_… is OpenCode, a bare UUID is Claude Code); a directory -- or no
-    # target -- consults every present one.
-    db = os.path.expanduser(args.db)
-    opencode = Store(db, args) if os.path.exists(db) else None
-    claude = ClaudeStore(args.claude_dir, args) if _jsonl_dir_available(args.claude_dir) else None
-    if target and target.startswith("ses_") and os.sep not in target:
-        return [s for s in (opencode,) if s]
-    if target and _CLAUDE_SESSION_ID.match(target):
-        return [s for s in (claude,) if s]
-    return [s for s in (opencode, claude) if s]
+def _status_stores(args: argparse.Namespace) -> list:
+    # Every present status-capable backend, built raw (no cache wrap -- the
+    # status trio answers from file names/heads or SQL, never a corpus parse).
+    # An explicit --source narrows to that one backend; auto/all consult them
+    # all, deliberately ignoring the TUI's saved source preference.
+    keys = [k for k in sources.available_sources(args) if k in _STATUS_SOURCES]
+    source = getattr(args, "source", "auto")
+    if source not in ("auto", "all"):
+        keys = [k for k in keys if k == source]
+    return [sources._build_store(args, k)[0] for k in keys]
 
 
 def _status_line_all(args: argparse.Namespace, target: str | None) -> str:
-    stores = _status_stores(args, target)
-    if target and _is_session_id(target):
-        for store in stores:  # the id names its backend; _status_stores kept just it
+    stores = _status_stores(args)
+    if target and _is_session_target(target):
+        # The id itself names its backend: every store's root_of answers from a
+        # cheap filename/dir/SQL lookup (never a parse), so probe each and let
+        # the first claimant price it -- ids are UUIDs or ses_-prefixed, so a
+        # cross-backend collision is not a realistic concern.
+        for store in stores:
             line = status_line(store, target)
             if line:
                 return line

@@ -9771,6 +9771,304 @@ def test_status_command_prices_whichever_tool_ran_last():
         assert ot.cli._status_line_all(args, None) == "$2.00"  # no target: newest overall
 
 
+def test_status_line_prices_codex_sessions_and_folds_spawned_threads():
+    # CodexStore's status trio: recent_roots orders rollouts by mtime with "id"
+    # lazily walking a spawned thread up to its root (a child still streaming
+    # surfaces its parent), root_of resolves child ids the same way, and
+    # status_nodes prices the whole subtree off head-reads plus a subtree-only
+    # parse -- the full-tree parse must never run. Codex records no cost, so the
+    # figure is always a "~" list-price estimate.
+    root_sid = "aaaa1111-1111-7111-8111-111111111111"
+    child_sid = "bbbb2222-2222-7222-8222-222222222222"
+    with tempfile.TemporaryDirectory() as tmp:
+        sessions = os.path.join(tmp, "sessions", "2026", "07", "01")
+        os.makedirs(sessions)
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        spawn = {
+            "subagent": {"thread_spawn": {"parent_thread_id": root_sid, "agent_nickname": "worker"}}
+        }
+        root_path = os.path.join(sessions, f"rollout-2026-07-01T10-00-00-{root_sid}.jsonl")
+        child_path = os.path.join(sessions, f"rollout-2026-07-01T10-05-00-{child_sid}.jsonl")
+        _write_jsonl(
+            root_path,
+            [
+                _codex_meta(root_sid, repo),
+                _codex_turn("gpt-5-codex", repo),
+                _codex_tokens(1000, 50, 0, 1050),
+            ],
+        )
+        _write_jsonl(
+            child_path,
+            [
+                _codex_meta(child_sid, repo, source=spawn),
+                _codex_turn("gpt-5-codex", repo),
+                _codex_tokens(2000, 100, 0, 2100),
+            ],
+        )
+        os.utime(root_path, (1760000100, 1760000100))
+        os.utime(child_path, (1760000200, 1760000200))  # the child is still streaming
+
+        store = ot.CodexStore(os.path.join(tmp, "sessions"), type("A", (), {"demo": False})())
+        rows = store.recent_roots()
+        assert rows[0]["id"] == root_sid  # newest file is the child -> its root wins
+        assert rows[0]["directory"] == repo
+        assert store.root_of(child_sid) == root_sid
+        assert store.root_of(root_sid) == root_sid
+        assert store.root_of("dddd4444-4444-7444-8444-444444444444") is None
+
+        expected = "~" + ot.money(
+            ot.api_equivalent_cost("openai/gpt-5-codex", 1000, 50, 0, 0, 0)
+            + ot.api_equivalent_cost("openai/gpt-5-codex", 2000, 100, 0, 0, 0)
+        )
+        assert ot.status_line(store, root_sid) == expected  # the subtree, not just the root
+        assert ot.status_line(store, child_sid) == expected  # child id -> its root
+        assert ot.status_line(store, repo) == expected  # dir -> the project's newest root
+
+        # A root that only spawned threads (no usage of its own) still prices its
+        # children's subtree -- the browser's rollup drops it, --status must not.
+        bare_root = "eeee5555-5555-7555-8555-555555555555"
+        bare_child = "ffff6666-6666-7666-8666-666666666666"
+        spawn2 = {
+            "subagent": {"thread_spawn": {"parent_thread_id": bare_root, "agent_role": "worker"}}
+        }
+        _write_jsonl(
+            os.path.join(sessions, f"rollout-2026-07-01T11-00-00-{bare_root}.jsonl"),
+            [_codex_meta(bare_root, repo)],
+        )
+        _write_jsonl(
+            os.path.join(sessions, f"rollout-2026-07-01T11-05-00-{bare_child}.jsonl"),
+            [
+                _codex_meta(bare_child, repo, source=spawn2),
+                _codex_turn("gpt-5-codex", repo),
+                _codex_tokens(300, 30, 0, 330),
+            ],
+        )
+        assert ot.status_line(store, bare_root) == "~" + ot.money(
+            ot.api_equivalent_cost("openai/gpt-5-codex", 300, 30, 0, 0, 0)
+        )
+        assert store._sessions is None  # the full-tree parse never ran
+
+
+def test_status_line_prices_hermes_sessions_and_walks_the_parent_chain():
+    # HermesStore's status pair: recent_roots orders roots by subtree activity
+    # (started_at fallback -- this DB has no messages table), root_of walks
+    # parent_session_id and never claims an archived id, and the figure is real
+    # metered spend -- or a "~" estimate for a $0 subscription session.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db_full(
+            db,
+            [
+                {
+                    "id": "r1",
+                    "cwd": "/work/alpha",
+                    "started_at": 1750000100.0,
+                    "model": "claude-opus-4.5",
+                    "provider": "anthropic",
+                    "inp": 100,
+                    "out": 10,
+                    "actual_cost_usd": 2.0,
+                },
+                {
+                    "id": "r1c",
+                    "parent_id": "r1",
+                    "cwd": "/work/alpha",
+                    "started_at": 1750000300.0,  # the subagent bumps its root past r2
+                    "model": "claude-opus-4.5",
+                    "provider": "anthropic",
+                    "inp": 50,
+                    "out": 5,
+                    "actual_cost_usd": 0.5,
+                },
+                {
+                    "id": "r2",
+                    "cwd": "/work/beta",
+                    "started_at": 1750000200.0,
+                    "model": "claude-opus-4.5",
+                    "provider": "anthropic",
+                    "inp": 1_000_000,
+                    "out": 0,
+                    "billing_mode": "subscription_included",
+                },
+                {"id": "r3", "cwd": "/work/alpha", "started_at": 1750000900.0, "archived": 1},
+            ],
+        )
+        store = ot.HermesStore(db, type("A", (), {"demo": False})())
+        assert [r["id"] for r in store.recent_roots()] == ["r1", "r2"]
+        assert store.recent_roots()[0]["last_active"] == 1750000300000  # ms, subtree max
+        assert store.root_of("r1c") == "r1"
+        assert store.root_of("r1") == "r1"
+        assert store.root_of("r3") is None  # archived sessions are never claimed
+        assert store.root_of("nope") is None
+        assert ot.status_line(store, "/work/alpha") == "$2.50"  # subtree: r1 + r1c
+        assert ot.status_line(store, "r1c") == "$2.50"  # subagent id -> its root
+        expected = "~" + ot.money(
+            ot.api_equivalent_cost("anthropic/claude-opus-4.5", 1_000_000, 0, 0, 0, 0)
+        )
+        assert ot.status_line(store, "/work/beta") == expected  # $0 subscription -> estimate
+
+
+def test_status_line_prices_pi_sessions_without_a_full_parse():
+    # PiStore's status trio: recent_roots orders session files by mtime with the
+    # cwd read lazily from the `session` record at the file head, root_of only
+    # confirms a file carries the uuid, and status_nodes parses just that file.
+    sid_a = "77777777-7777-7777-7777-777777777777"
+    sid_b = "88888888-8888-8888-8888-888888888888"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        alpha, beta = os.path.join(tmp, "alpha"), os.path.join(tmp, "beta")
+        os.makedirs(alpha)
+        os.makedirs(beta)
+        _pi_write(
+            root,
+            "--alpha--",
+            sid_a,
+            [
+                _pi_session(sid_a, alpha),
+                _pi_user("hi"),
+                # A metered route (no oauth/plan marker) with real recorded spend.
+                _pi_assistant("moonshotai/kimi-k2.6", 1000, 50, cost=0.5, provider="openrouter"),
+            ],
+        )
+        _pi_write(
+            root,
+            "--beta--",
+            sid_b,
+            [
+                _pi_session(sid_b, beta),
+                _pi_user("yo"),
+                # A subscription route: its recorded cost is an estimate, not spend.
+                _pi_assistant("openai-codex/gpt-5.2", 500, 20, cost=0.1, provider="openai-codex"),
+            ],
+        )
+        prefix = "2026-05-15T07-32-15-949Z"
+        os.utime(os.path.join(root, "--alpha--", f"{prefix}_{sid_a}.jsonl"), (1760000100,) * 2)
+        os.utime(os.path.join(root, "--beta--", f"{prefix}_{sid_b}.jsonl"), (1760000200,) * 2)
+
+        store = ot.PiStore(root, _pi_args())
+        rows = store.recent_roots()
+        assert [r["id"] for r in rows] == [sid_b, sid_a]
+        assert rows[0]["directory"] == beta  # the session record's cwd, off the file head
+        assert store.root_of(sid_a) == sid_a
+        assert store.root_of("99999999-9999-9999-9999-999999999999") is None
+        assert ot.status_line(store, alpha) == "$0.50"  # metered -> real spend, no ~
+        expected = "~" + ot.money(ot.api_equivalent_cost("openai-codex/gpt-5.2", 500, 20, 0, 0, 0))
+        assert ot.status_line(store, sid_b) == expected  # subscription -> estimated
+        assert store._sessions is None  # the full-tree parse never ran
+
+
+def test_status_line_prices_zaly_sessions_by_their_uuid_directory():
+    # ZalyStore's status trio: the <uuid> directory names the session on disk
+    # (settings.sessionId may differ -- the browser's canonical id -- and
+    # status_nodes tolerates the mismatch), the mtime of its append-only
+    # session.jsonl is the last activity, and the workspace reads off the head.
+    dir_id = "019f9999-9999-7999-8999-999999999999"
+    canonical = "019f8888-8888-7888-8888-888888888888"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "zaly")
+        ws = os.path.join(tmp, "ws")
+        os.makedirs(ws)
+        _zaly_write(
+            root,
+            "+ws+",
+            dir_id,
+            [
+                _zaly_settings(canonical, ws),
+                _zaly_user("hey"),
+                _zaly_assistant("anthropic/claude-opus-4-6", 1000, 50),  # no cost -> unpriced
+            ],
+        )
+        store = _zaly_store(root)
+        rows = store.recent_roots()
+        assert [r["id"] for r in rows] == [dir_id]
+        assert rows[0]["directory"] == ws  # the settings workspace, off the file head
+        assert store.root_of(dir_id) == dir_id
+        assert store.root_of(canonical) is None  # only the on-disk uuid is claimable
+        expected = "~" + ot.money(
+            ot.api_equivalent_cost("anthropic/claude-opus-4-6", 1000, 50, 0, 0, 0)
+        )
+        assert ot.status_line(store, dir_id) == expected
+        assert ot.status_line(store, ws) == expected  # dir target -> same session
+        assert store._sessions is None  # the full-tree parse never ran
+
+
+def test_status_line_prices_openclaw_sessions_by_id():
+    # OpenClaw sessions carry no user cwd (the project is the agent), so session
+    # ids are the reliable status route; recent_roots exposes the agent's
+    # ABSOLUTE directory so a bare agent name can never fold against the
+    # caller's own cwd through _project_key.
+    with tempfile.TemporaryDirectory() as root:
+        rows = [
+            _ocl_user("go"),
+            _ocl_msg("claude-opus-4-6", 100, 50, cost=0.01, provider="anthropic"),
+        ]
+        _ocl_write(root, "finance-os", OCL_SID, rows)
+        store = ot.OpenClawStore(root, _ocl_args())
+        assert store.root_of(OCL_SID) == OCL_SID
+        assert store.root_of("01998b2c-0000-7000-8000-000000000000") is None
+        recent = store.recent_roots()
+        assert [r["id"] for r in recent] == [OCL_SID]
+        assert recent[0]["directory"] == os.path.join(root, "agents", "finance-os")
+        assert ot.status_line(store, OCL_SID) == "$0.01"  # metered spend, no estimate
+        assert store._sessions is None  # the full-tree parse never ran
+
+
+def test_status_command_routes_uuid_ids_by_probing_backends():
+    # A bare UUID is no longer assumed to be Claude Code's -- Codex/pi/Zaly ids
+    # share the shape -- so every present backend's root_of is probed and the
+    # id's own backend prices it. An explicit --source pins one backend, for the
+    # directory fallback and for ids alike.
+    claude_sid = "55555555-5555-5555-5555-555555555555"
+    codex_sid = "66666666-6666-7666-8666-666666666666"
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(repo)
+        projects = os.path.join(tmp, "projects")
+        _write_claude_status_session(projects, claude_sid, repo, 1760000900, _usage(1000, 50))
+        codex_root = os.path.join(tmp, "codex")
+        day_dir = os.path.join(codex_root, "2026", "07", "01")
+        os.makedirs(day_dir)
+        codex_path = os.path.join(day_dir, f"rollout-2026-07-01T10-00-00-{codex_sid}.jsonl")
+        _write_jsonl(
+            codex_path,
+            [
+                _codex_meta(codex_sid, repo),
+                _codex_turn("gpt-5-codex", repo),
+                _codex_tokens(2000, 100, 0, 2100),
+            ],
+        )
+        os.utime(codex_path, (1760000100, 1760000100))
+
+        def stub(source):
+            return type(
+                "A",
+                (),
+                {
+                    "demo": False,
+                    "db": os.path.join(tmp, "none.db"),
+                    "claude_dir": projects,
+                    "codex_dir": codex_root,
+                    "source": source,
+                },
+            )()
+
+        claude_price = "~" + ot.money(
+            ot.api_equivalent_cost("anthropic/claude-opus-4-8", 1000, 50, 0, 0, 0)
+        )
+        codex_price = "~" + ot.money(
+            ot.api_equivalent_cost("openai/gpt-5-codex", 2000, 100, 0, 0, 0)
+        )
+        args = stub("auto")
+        assert ot.cli._status_line_all(args, codex_sid) == codex_price  # a Codex-owned UUID
+        assert ot.cli._status_line_all(args, claude_sid) == claude_price
+        assert ot.cli._status_line_all(args, repo) == claude_price  # dir: claude is newer
+
+        pinned = stub("codex")
+        assert ot.cli._status_line_all(pinned, repo) == codex_price  # --source pins the backend
+        assert ot.cli._status_line_all(pinned, claude_sid) == ""  # ...for ids too
+
+
 # --- The web browser (--html / --serve) -------------------------------------
 
 

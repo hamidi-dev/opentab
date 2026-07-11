@@ -159,6 +159,24 @@ def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
     return sorted(agg.values(), key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
 
+class LazyStatusRoot(dict):
+    """A recent_roots() row whose expensive fields resolve on first access (the
+    ClaudeStore._TranscriptRoot pattern, shared by the other file backends): the
+    id and last-active come free from the file name and mtime, while "directory"
+    (a file-head read) -- or, for Codex, "id" (a spawned thread's walk up to its
+    root) -- is computed only when the --status scan actually reads it, so a
+    project scan walking rows newest-first stops paying at the row that matches."""
+
+    def __init__(self, fields: dict, lazy: dict):
+        super().__init__(fields)
+        self._lazy = lazy
+
+    def __getitem__(self, key):
+        if key not in self and key in self._lazy:
+            self[key] = self._lazy[key]()
+        return super().__getitem__(key)
+
+
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 YEAR_PATTERN = re.compile(r"^\d{4}$")

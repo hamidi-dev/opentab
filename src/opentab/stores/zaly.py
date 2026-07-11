@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt
 from opentab.models import Workflow
-from opentab.util import git_root, read_files_parallel, tool_rows_from_turns
+from opentab.util import LazyStatusRoot, git_root, read_files_parallel, tool_rows_from_turns
 
 
 def default_zaly_data_dir() -> str:
@@ -263,6 +263,90 @@ class ZalyStore:
 
     def _files(self) -> list[str]:
         return glob.glob(os.path.join(self.root_dir, "sessions", "*", "*", "session.jsonl"))
+
+    def _session_files(self, session_id: str) -> list[str]:
+        # A session lives at sessions/<encoded-workspace>/<uuid>/session.jsonl; the
+        # uuid directory names it on disk. (settings.sessionId can override the
+        # canonical id for the browser, but the dir uuid is what an id target can
+        # name without parsing -- status_nodes tolerates the mismatch.)
+        return glob.glob(
+            os.path.join(self.root_dir, "sessions", "*", glob.escape(session_id), "session.jsonl")
+        )
+
+    def _head_cwd(self, path: str) -> str:
+        # The session-settings snapshot at the file head carries workspace/cwd; a
+        # bounded read (ClaudeStore's _transcript_cwd pattern) so a recent_roots
+        # scan stops paying at the row that matches.
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                remaining = 65536
+                while remaining > 0:
+                    line = fh.readline()
+                    if not line:
+                        break
+                    remaining -= len(line)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(o, dict) or o.get("type") != "session-settings":
+                        continue
+                    settings = o.get("settings")
+                    if isinstance(settings, dict):
+                        cwd = settings.get("workspace") or settings.get("cwd")
+                        if isinstance(cwd, str) and cwd:
+                            return cwd
+        except OSError:
+            pass
+        return "(unknown)"
+
+    def recent_roots(self) -> list[dict]:
+        # Root sessions newest-activity-first, the cheap sibling of
+        # Store.recent_roots for the one-shot --status command. No parse: resume
+        # and fork append to the same session.jsonl, so its mtime IS the last
+        # activity and the uuid directory names the session; "directory" (the
+        # settings workspace) is read lazily from the file head.
+        rows = []
+        for path in self._files():
+            sid = os.path.basename(os.path.dirname(path))
+            try:
+                last_active = int(os.stat(path).st_mtime * 1000)  # ms, like Store's
+            except OSError:
+                continue  # deleted mid-scan
+            rows.append(
+                LazyStatusRoot(
+                    {"id": sid, "last_active": last_active},
+                    {"directory": lambda p=path: self._head_cwd(p)},
+                )
+            )
+        rows.sort(key=lambda r: r["last_active"], reverse=True)
+        return rows
+
+    def root_of(self, session_id: str) -> str | None:
+        # A zaly session id is already its root (no durable subagent tree), so
+        # this only confirms the uuid directory exists -- the cheap membership
+        # answer the --status backend probe relies on.
+        return session_id if self._session_files(session_id) else None
+
+    def status_nodes(self, workflow_id: str) -> list[dict]:
+        # workflow_nodes for the --status one-shot: the identical row, but off a
+        # parse of just this session's own file when nothing is loaded yet -- a
+        # status poll must never trigger the full-tree parse. The canonical id can
+        # differ from the <uuid> directory name (settings.sessionId wins), so take
+        # the file's single parsed session whatever it keyed to.
+        if self._sessions is not None and workflow_id in self._sessions:
+            return self.workflow_nodes(workflow_id)
+        sessions: dict[str, dict] = {}
+        for path, text in read_files_parallel(self._session_files(workflow_id)):
+            self._parse_file(path, text.split("\n"), sessions)
+        for s in sessions.values():
+            self._finalize(s)
+            if s["model_rows"]:
+                return self._nodes_from(workflow_id, s)
+        return []
 
     @property
     def records_cost(self) -> bool:
@@ -589,6 +673,9 @@ class ZalyStore:
         s = self._parse().get(workflow_id)
         if not s:
             return []
+        return self._nodes_from(workflow_id, s)
+
+    def _nodes_from(self, workflow_id: str, s: dict) -> list[dict]:
         root = self._new_acc()
         best, best_runs = "unknown (not recorded)", -1
         for model_name, acc in s["models"].items():

@@ -11,7 +11,7 @@ import re
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
-from opentab.util import git_root, read_files_parallel, tool_rows_from_turns
+from opentab.util import LazyStatusRoot, git_root, read_files_parallel, tool_rows_from_turns
 
 
 class CodexStore:
@@ -64,6 +64,7 @@ class CodexStore:
         self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
         self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
         self._git_root_cache: dict[str, str] = {}
+        self._head_meta_cache: dict[str, dict | None] = {}  # path -> head metadata
 
     # --- token accumulation helpers (mirror ClaudeStore) ---------------------
     @staticmethod
@@ -132,6 +133,86 @@ class CodexStore:
 
     def _files(self) -> list[str]:
         return glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
+
+    def _session_files(self, session_id: str) -> list[str]:
+        # A session's rollout is rollout-<timestamp>-<uuid>.jsonl somewhere in the
+        # YYYY/MM/DD tree; glob for the uuid so an id resolves without a parse.
+        pattern = os.path.join(self.root_dir, "**", "*" + glob.escape(session_id) + ".jsonl")
+        return glob.glob(pattern, recursive=True)
+
+    def _head_meta(self, path: str) -> dict | None:
+        # The session_meta at a rollout's head (or the rare legacy bare blob --
+        # _parse_file's two shapes) without parsing the file: {id, cwd, parent_id,
+        # agent}, the currency of the --status trio. cwd can be missing from the
+        # meta and appear on the first turn_context instead, so scanning continues
+        # (within the byte budget) until one supplies it. Memoized per path: one
+        # status call touches the same heads from recent_roots, root_of, and
+        # status_nodes.
+        if path in self._head_meta_cache:
+            return self._head_meta_cache[path]
+        meta = None
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                remaining = 65536
+                while remaining > 0:
+                    line = fh.readline()
+                    if not line:
+                        break
+                    remaining -= len(line)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except ValueError:
+                        continue
+                    if not isinstance(o, dict):
+                        continue
+                    typ = o.get("type")
+                    p = o.get("payload") if isinstance(o.get("payload"), dict) else None
+                    m = p if typ == "session_meta" else (o if typ is None and "git" in o else None)
+                    if m is not None and meta is None:
+                        spawn = self._spawn_source(m.get("source"))
+                        meta = {
+                            "id": m.get("id"),
+                            "cwd": m.get("cwd"),
+                            "parent_id": spawn[0] if spawn else None,
+                            "agent": spawn[1] if spawn else None,
+                        }
+                        if meta["cwd"]:
+                            break
+                    elif meta is not None and typ == "turn_context" and p and p.get("cwd"):
+                        meta["cwd"] = p["cwd"]
+                        break
+        except OSError:
+            pass
+        self._head_meta_cache[path] = meta
+        return meta
+
+    def _walk_root(self, session_id: str) -> str | None:
+        # Resolve a session id to the root of its spawned-thread tree by following
+        # session_meta parent ids while the parent's rollout exists on disk (an
+        # orphaned child stays its own root, matching _link_subagents). None when
+        # the id has no rollout at all -- the cheap membership answer the --status
+        # backend probe relies on.
+        paths = self._session_files(session_id)
+        if not paths:
+            return None
+        cur, seen = session_id, {session_id}
+        while True:
+            meta = None
+            for path in paths:
+                meta = self._head_meta(path)
+                if meta:
+                    break
+            pid = (meta or {}).get("parent_id")
+            if not pid or pid in seen:
+                return cur
+            paths = self._session_files(pid)
+            if not paths:
+                return cur  # parent rollout deleted or in another dir -> child stands alone
+            seen.add(pid)
+            cur = pid
 
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
@@ -509,8 +590,91 @@ class CodexStore:
                 best_runs, best = acc["runs"], model_name
         return acc_out, best
 
+    def recent_roots(self) -> list[dict]:
+        # Root sessions newest-activity-first, the cheap sibling of
+        # Store.recent_roots for the one-shot --status command. No parse: Codex
+        # appends every record to the session's own rollout, so the file mtime IS
+        # the session's last activity and the uuid in its name is the id. The two
+        # lazy fields pay a file-head read only when accessed: "directory" is the
+        # session_meta cwd, and "id" walks a spawned thread up to its root -- so a
+        # child rollout still streaming surfaces its parent workflow, matching the
+        # subtree-activity ordering of Store.recent_roots.
+        newest: dict[str, tuple[int, str]] = {}
+        for path in self._files():
+            sid = self._id_from_name(path)
+            if not sid:
+                continue
+            try:
+                last_active = int(os.stat(path).st_mtime * 1000)  # ms, like Store's
+            except OSError:
+                continue  # deleted mid-scan
+            prev = newest.get(sid)
+            if prev is None or last_active > prev[0]:
+                newest[sid] = (last_active, path)
+        rows = []
+        for sid, (last_active, path) in newest.items():
+            rows.append(
+                LazyStatusRoot(
+                    {"last_active": last_active},
+                    {
+                        "id": lambda s=sid: self._walk_root(s) or s,
+                        "directory": lambda p=path: (self._head_meta(p) or {}).get("cwd")
+                        or "(unknown)",
+                    },
+                )
+            )
+        rows.sort(key=lambda r: r["last_active"], reverse=True)
+        return rows
+
+    def root_of(self, session_id: str) -> str | None:
+        # Resolve any session id to its root: a spawned thread's id walks up its
+        # parent chain; None when no rollout carries the id (the id belongs to
+        # some other backend, or the file is gone).
+        return self._walk_root(session_id)
+
+    def status_nodes(self, workflow_id: str) -> list[dict]:
+        # workflow_nodes for the --status one-shot: identical rows, but off a
+        # parse of just this session's subtree when nothing is loaded yet -- a
+        # status poll must never trigger the full-tree parse. Children reference
+        # their parent (not vice versa), so candidate descendants -- rollouts whose
+        # filename timestamp is at or after the root's own (a thread is spawned
+        # after its parent started) -- have their heads scanned for a thread_spawn
+        # source pointing into the subtree; only the matched files are parsed.
+        # Walking candidates in filename order guarantees a parent's file is
+        # admitted before any of its children's.
+        if self._sessions is not None:
+            return self.workflow_nodes(workflow_id)
+        own = self._session_files(workflow_id)
+        if not own:
+            return []
+        root_base = min(os.path.basename(p) for p in own)
+        chosen = dict.fromkeys(own)  # ordered set of files to parse
+        subtree = {workflow_id}
+        for path in sorted(self._files(), key=os.path.basename):
+            if path in chosen or os.path.basename(path) < root_base:
+                continue
+            sid = self._id_from_name(path)
+            if not sid or sid in subtree:
+                continue
+            meta = self._head_meta(path)
+            if meta and meta.get("parent_id") in subtree:
+                subtree.add(sid)
+                chosen[path] = None
+        sessions: dict[str, dict] = {}
+        for path, text in read_files_parallel(list(chosen)):
+            self._parse_file(path, text.split("\n"), sessions)
+        for sid, s in sessions.items():
+            self._finalize(sid, s)
+        # Keep the target even when usage-less (unlike _parse's drop): a root that
+        # only spawned threads must still price its children's subtree.
+        sessions = {sid: s for sid, s in sessions.items() if s["model_rows"] or sid == workflow_id}
+        self._link_subagents(sessions)
+        return self._nodes_from(sessions, workflow_id)
+
     def workflow_nodes(self, workflow_id: str) -> list[dict]:
-        sessions = self._parse()
+        return self._nodes_from(self._parse(), workflow_id)
+
+    def _nodes_from(self, sessions: dict[str, dict], workflow_id: str) -> list[dict]:
         s = sessions.get(workflow_id)
         if not s:
             return []

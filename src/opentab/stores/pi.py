@@ -11,7 +11,7 @@ import re
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
-from opentab.util import git_root, read_files_parallel, tool_rows_from_turns
+from opentab.util import LazyStatusRoot, git_root, read_files_parallel, tool_rows_from_turns
 
 
 class PiStore:
@@ -191,6 +191,90 @@ class PiStore:
 
     def _files(self) -> list[str]:
         return glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
+
+    def _session_files(self, session_id: str) -> list[str]:
+        # A session's file is <timestamp>_<uuid>.jsonl; a resumed session leaves
+        # several files with the same uuid, so glob for every copy (the leading *
+        # also matches a bare "<uuid>.jsonl" spelling).
+        pattern = os.path.join(self.root_dir, "**", "*" + glob.escape(session_id) + ".jsonl")
+        return glob.glob(pattern, recursive=True)
+
+    def _head_cwd(self, path: str) -> str:
+        # The `session` record at the file head carries the cwd; a bounded read
+        # (ClaudeStore's _transcript_cwd pattern) so a recent_roots scan stops
+        # paying at the row that matches.
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                remaining = 65536
+                while remaining > 0:
+                    line = fh.readline()
+                    if not line:
+                        break
+                    remaining -= len(line)
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(o, dict) and o.get("type") == "session" and o.get("cwd"):
+                        return o["cwd"]
+        except OSError:
+            pass
+        return "(unknown)"
+
+    def recent_roots(self) -> list[dict]:
+        # Root sessions newest-activity-first, the cheap sibling of
+        # Store.recent_roots for the one-shot --status command. No parse: pi
+        # appends every record to the session's own file, so the mtime IS the
+        # last activity (a resume writes a new file with the same uuid -- the
+        # newest copy wins) and the uuid in the name is the id; "directory" (the
+        # session record's cwd) is read lazily from the file head.
+        newest: dict[str, tuple[int, str]] = {}
+        for path in self._files():
+            sid = self._id_from_name(path)
+            if not sid:
+                continue
+            try:
+                last_active = int(os.stat(path).st_mtime * 1000)  # ms, like Store's
+            except OSError:
+                continue  # deleted mid-scan
+            prev = newest.get(sid)
+            if prev is None or last_active > prev[0]:
+                newest[sid] = (last_active, path)
+        rows = [
+            LazyStatusRoot(
+                {"id": sid, "last_active": last_active},
+                {"directory": lambda p=path: self._head_cwd(p)},
+            )
+            for sid, (last_active, path) in newest.items()
+        ]
+        rows.sort(key=lambda r: r["last_active"], reverse=True)
+        return rows
+
+    def root_of(self, session_id: str) -> str | None:
+        # A pi session id is already its root (no subagent tree), so this only
+        # confirms a file carries the id -- the cheap membership answer the
+        # --status backend probe relies on.
+        return session_id if self._session_files(session_id) else None
+
+    def status_nodes(self, workflow_id: str) -> list[dict]:
+        # workflow_nodes for the --status one-shot: the identical row, but off a
+        # parse of just this session's own file(s) when nothing is loaded yet --
+        # a status poll must never trigger the full-tree parse.
+        if self._sessions is not None:
+            return self.workflow_nodes(workflow_id)
+        sessions: dict[str, dict] = {}
+        for path, text in read_files_parallel(self._session_files(workflow_id)):
+            self._parse_file(path, text.split("\n"), sessions)
+        s = sessions.get(workflow_id)
+        if not s:
+            return []
+        self._finalize(workflow_id, s)
+        if not s["model_rows"]:
+            return []
+        return self._nodes_from(workflow_id, s)
 
     @property
     def records_cost(self) -> bool:
@@ -496,6 +580,9 @@ class PiStore:
         s = self._parse().get(workflow_id)
         if not s:
             return []
+        return self._nodes_from(workflow_id, s)
+
+    def _nodes_from(self, workflow_id: str, s: dict) -> list[dict]:
         root = self._new_acc()
         best, best_runs = "unknown (not recorded)", -1
         for model_name, acc in s["models"].items():

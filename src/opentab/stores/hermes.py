@@ -5,7 +5,7 @@ import argparse
 import random
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.models import Workflow
@@ -168,6 +168,29 @@ class HermesStore:
             return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
         except (OSError, OverflowError, ValueError):
             return ""
+
+    @staticmethod
+    def _epoch_ms(value) -> int:
+        # Epoch milliseconds for the cross-backend recent_roots contract. Hermes
+        # writes epoch seconds (started_at, messages.timestamp), but be liberal --
+        # milliseconds already, or an ISO string -- since the schema is probed,
+        # never guaranteed. 0 when unreadable, so max() just ignores it.
+        if isinstance(value, bool) or value is None:
+            return 0
+        if isinstance(value, (int, float)):
+            v = float(value)
+            if v <= 0:
+                return 0
+            return int(v if v > 1e11 else v * 1000)
+        if isinstance(value, str) and value.strip():
+            try:
+                dt = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            except ValueError:
+                return 0
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        return 0
 
     @staticmethod
     def _infer_provider(model: str) -> str:
@@ -528,6 +551,84 @@ class HermesStore:
         for s in self._parse().values():
             out.extend(s["model_rows"])
         return out
+
+    def recent_roots(self) -> list[dict]:
+        # Root sessions newest-activity-first for the one-shot --status command
+        # (the Store.recent_roots contract): activity is the newest message
+        # anywhere in the subtree, falling back to started_at -- state.db has no
+        # per-session updated column. Two plain SELECTs and a Python rollup
+        # instead of an adaptive recursive CTE: the sessions table is small and
+        # the schema is probed, not guaranteed. No status_nodes is needed on top
+        # -- workflow_nodes' backing parse is these same queries, not a file scan.
+        if "id" not in self._cols:
+            return []
+        try:
+            conn = self._connect()
+        except sqlite3.Error:
+            return []
+        try:
+            rows = conn.execute(self._select_sql()).fetchall()
+            last_msg: dict[str, object] = {}
+            try:
+                for sid, ts in conn.execute(
+                    "SELECT session_id, MAX(timestamp) FROM messages GROUP BY session_id"
+                ):
+                    last_msg[sid] = ts
+            except sqlite3.Error:
+                pass  # no messages table -> started_at carries the ordering
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
+        info = {r["id"]: r for r in rows}
+        best: dict[str, list] = {}  # root id -> [last_active ms, directory]
+        for r in rows:
+            active = max(self._epoch_ms(last_msg.get(r["id"])), self._epoch_ms(r["started_at"]))
+            cur, seen = r["id"], {r["id"]}
+            while True:  # walk to the root (cycle-guarded); a busy child bumps its root
+                parent = info[cur]["parent_session_id"]
+                if not parent or parent not in info or parent in seen:
+                    break
+                seen.add(parent)
+                cur = parent
+            row = best.setdefault(cur, [0, info[cur]["cwd"] or "(unknown)"])
+            row[0] = max(row[0], active)
+        out = [{"id": rid, "last_active": v[0], "directory": v[1]} for rid, v in best.items()]
+        out.sort(key=lambda r: r["last_active"], reverse=True)
+        return out
+
+    def root_of(self, session_id: str) -> str | None:
+        # Resolve any session id to its root by walking parent_session_id upward
+        # (the Store.root_of contract); None when the id is unknown or archived --
+        # also the cheap membership probe --status uses to find which backend a
+        # bare id belongs to.
+        if "id" not in self._cols:
+            return None
+        parent_col = "parent_session_id" if "parent_session_id" in self._cols else "NULL"
+        where = " AND archived = 0" if "archived" in self._cols else ""
+        try:
+            conn = self._connect()
+        except sqlite3.Error:
+            return None
+        try:
+            cur, seen = session_id, set()
+            while cur not in seen:
+                seen.add(cur)
+                row = conn.execute(
+                    f"SELECT {parent_col} AS parent FROM sessions WHERE id = ?{where}", [cur]
+                ).fetchone()
+                if row is None:
+                    # unknown id -- or a parent pointer whose session is gone, in
+                    # which case the last session that did exist is the root
+                    return None if cur == session_id else cur
+                if not row["parent"]:
+                    return cur
+                cur = row["parent"]
+            return cur  # cyclic parent metadata: stop where the walk closed
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
 
     def workflow_nodes(self, workflow_id: str) -> list[dict]:
         s = self._parse().get(workflow_id)
