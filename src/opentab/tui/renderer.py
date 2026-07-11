@@ -2263,8 +2263,9 @@ class Renderer:
                         "mix (cheapest first), beside your usage share and raw rates",
                         "h/l (or p, or a tab click) switch the view — flat / by vendor / "
                         "by provider / models.dev (the whole catalog at your mix)",
-                        "j/k select · space pins a model (★ shortlist floats above every "
-                        "view) · Enter its sessions · s sort · f/r/e as usual",
+                        "j/k select · space pins the selected row (★ shortlist floats "
+                        "first — just that route, never every reseller) · Enter its "
+                        "sessions · s sort · f/r/e as usual",
                         "C theme · c source · D demo · $ what-if · ? help keep working inside",
                     ),
                     ("$", "toggle what-if prices — what unpriced usage would cost at API list"),

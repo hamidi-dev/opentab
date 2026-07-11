@@ -102,7 +102,7 @@ class PriceEntry(NamedTuple):
     eff: float  # $/M for the app-wide token mix at `price` (the "eff $/M" column)
     approx: bool  # eff had no cache-read rate; reads were billed at the input rate
     status: str = ""  # models.dev lifecycle flag (alpha/beta/deprecated); catalog view only
-    pinned: bool = False  # in App.pinned_models (by canon); floats above every view
+    pinned: bool = False  # row is pinned (App.pinned_models, "route/canon" keys); floats first
 
 
 class App:
@@ -271,9 +271,13 @@ class App:
         self.show_prices = False  # the "P" model-prices reference overlay
         self.prices_scroll = 0  # pager offset within that overlay
         self.prices_index = 0  # selected model row in the P overlay's list
-        # Pinned models (canonical ids; space toggles): a hand-picked shortlist that
-        # floats above every P view -- the point is keeping your candidate models in
-        # sight above the ~5k-row models.dev catalog. Persisted in state.json.
+        # Pinned models (space toggles): a hand-picked shortlist that floats above
+        # every P view -- the point is keeping your candidate models in sight above
+        # the ~5k-row models.dev catalog. Pins are ROW-scoped, stored as
+        # "route/canon" ("canon" for a route-less row): pinning one gateway's row in
+        # the catalog must not light up the 20 other resellers of the same model,
+        # while pinning an aggregated flat/vendor row pins the routes it covers
+        # (the ones you actually use). Persisted in state.json.
         self.pinned_models: set[str] = set()
         self.prices_model: str | None = None  # drilled into this model's sessions (P overlay)
         # The P overlay's column sort: cheapest-for-your-mix first by default (the
@@ -1680,12 +1684,13 @@ class App:
         for (route, canon), d in raw.items():
             price = self._best_alias_price(d["aliases"])
             eff, approx = effective_price(price, shares)
+            routes_t = tuple(sorted(d["routes"]))
             entries.append(
                 PriceEntry(
                     bare=display_model(max(d["aliases"], key=d["aliases"].get)),
                     canon=canon,
                     family=model_family(canon),
-                    routes=tuple(sorted(d["routes"])),
+                    routes=routes_t,
                     spend=d["spend"],
                     group=(
                         route
@@ -1696,7 +1701,7 @@ class App:
                     price=price,
                     eff=eff,
                     approx=approx,
-                    pinned=canon in self.pinned_models,
+                    pinned=self._is_pinned(canon, routes_t),
                 )
             )
         return self._order_price_entries(self._filter_price_entries(entries))
@@ -1774,7 +1779,7 @@ class App:
                     eff=eff,
                     approx=approx,
                     status=status,
-                    pinned=canon in self.pinned_models,
+                    pinned=self._is_pinned(canon, (pid,)),
                 )
             )
         return entries
@@ -3739,19 +3744,30 @@ class App:
         i = keys.index(self.prices_view) if self.prices_view in keys else 0
         self.set_prices_view(keys[(i + step) % len(keys)])
 
+    @staticmethod
+    def _pin_keys(canon: str, routes: tuple) -> set[str]:
+        # The pin identities one row covers: "route/canon" per route the row spans
+        # (a route-less row pins the bare canon). Canon keeps pins spelling- and
+        # date-pin-independent; the route scope keeps them row-scoped.
+        return {f"{r}/{canon}" for r in routes} if routes else {canon}
+
+    def _is_pinned(self, canon: str, routes: tuple) -> bool:
+        return any(k in self.pinned_models for k in self._pin_keys(canon, routes))
+
     def toggle_price_pin(self) -> None:
-        # Space pins/unpins the selected model by canonical id -- spelling- and
-        # route-independent, so pinning it once floats every provider's row for
-        # that model (the cross-route price comparison is the point). The cursor
-        # follows the row to its new position (into or out of the pinned block).
+        # Space pins/unpins the selected ROW: exactly that (route, model) in the
+        # route-scoped views, or the routes an aggregated flat/vendor row covers --
+        # never every reseller of the same model name. The cursor follows the row
+        # to its new position (into or out of the pinned block).
         entries = self.priced_model_entries()
         if not entries:
             return
         entry = entries[max(0, min(self.prices_index, len(entries) - 1))]
-        if entry.canon in self.pinned_models:
-            self.pinned_models.discard(entry.canon)
+        keys = self._pin_keys(entry.canon, entry.routes)
+        if keys <= self.pinned_models:
+            self.pinned_models -= keys
         else:
-            self.pinned_models.add(entry.canon)
+            self.pinned_models |= keys
         for i, e in enumerate(self.priced_model_entries()):
             if e.canon == entry.canon and e.routes == entry.routes:
                 self.prices_index = i

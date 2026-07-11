@@ -1268,10 +1268,11 @@ def test_prices_sort_is_persisted_in_state():
 
 
 def test_prices_pinning_floats_a_shortlist_and_persists():
-    # Space pins the selected model by canonical id: its rows float to the top of
-    # *every* view under a "★ pinned" header (the shortlist stays in sight above the
-    # ~5k-row catalog), the cursor follows the row, and the set persists like the
-    # other prefs.
+    # Space pins the selected ROW ("route/canon" keys): it floats to the top of the
+    # view under a "★ pinned" header (the shortlist stays in sight above the ~5k-row
+    # catalog), the cursor follows it, and the set persists like the other prefs.
+    # Row-scoped on purpose: pinning must never light up the 20 other resellers of
+    # the same model name.
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {
         "a": [
@@ -1282,7 +1283,7 @@ def test_prices_pinning_floats_a_shortlist_and_persists():
     app.handle_key(None, ord("P"))
     app.prices_index = app.priced_model_names().index("gpt-5-mini")
     app.handle_key(None, ord(" "))
-    assert app.pinned_models == {"gpt-5-mini"}
+    assert app.pinned_models == {"openai/gpt-5-mini"}  # the row's route, not the bare name
     entries = app.priced_model_entries()
     assert entries[0].bare == "gpt-5-mini" and entries[0].pinned  # floats to the top
     assert app.prices_index == 0  # the cursor follows the row into the pinned block
@@ -1292,19 +1293,33 @@ def test_prices_pinning_floats_a_shortlist_and_persists():
     # Above the group headers in the vendor view too...
     app.prices_view = "family"
     assert app.priced_model_entries()[0].bare == "gpt-5-mini"
-    # ...and in the catalog view every route selling the model floats up together.
+    # ...and in the catalog view ONLY the pinned route's row floats -- the other
+    # gateways reselling gpt-5-mini stay where the sort puts them.
     app.prices_view = "all"
     entries = app.priced_model_entries()
     top = [e for e in entries if e.pinned]
-    assert top and all(e.canon == "gpt-5-mini" for e in top)
-    assert len({e.routes[0] for e in top}) > 1
-    assert entries[: len(top)] == top  # contiguous, first
+    assert [(e.canon, e.routes) for e in top] == [("gpt-5-mini", ("openai",))]
+    assert entries[0] == top[0]  # first
+    assert sum(1 for e in entries if e.canon == "gpt-5-mini") > 1  # resellers exist, unpinned
+    # Pinning a catalog row pins exactly that (route, model) too.
+    other = next(
+        i
+        for i, e in enumerate(entries)
+        if e.canon == "claude-opus-4-8" and e.routes != ("anthropic",)
+    )
+    app.prices_index = other
+    route = entries[other].routes[0]
+    app.handle_key(None, ord(" "))
+    assert f"{route}/claude-opus-4-8" in app.pinned_models
+    assert sum(1 for e in app.priced_model_entries() if e.pinned) == 2
+    app.handle_key(None, ord(" "))  # cursor followed the row: space again unpins it
+    assert app.pinned_models == {"openai/gpt-5-mini"}
     # Space on the pinned row unpins; the set round-trips through state.json.
     app.prices_view = "flat"
     app.prices_index = 0
     app.handle_key(None, ord(" "))
     assert app.pinned_models == set()
-    app.pinned_models = {"gpt-5-mini", "claude-opus-4-8"}
+    app.pinned_models = {"openai/gpt-5-mini", "anthropic/claude-opus-4-8"}
     old_xdg = os.environ.get("XDG_CONFIG_HOME")
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["XDG_CONFIG_HOME"] = tmp
@@ -1318,7 +1333,7 @@ def test_prices_pinning_floats_a_shortlist_and_persists():
                 os.environ.pop("XDG_CONFIG_HOME", None)
             else:
                 os.environ["XDG_CONFIG_HOME"] = old_xdg
-    assert restored.pinned_models == {"gpt-5-mini", "claude-opus-4-8"}
+    assert restored.pinned_models == {"openai/gpt-5-mini", "anthropic/claude-opus-4-8"}
 
 
 def test_prices_heat_scales_each_column_cheap_to_expensive():

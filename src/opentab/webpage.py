@@ -1401,7 +1401,10 @@ function priceRanges(rows) {
 const canonId = m => m.toLowerCase().replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, '')
   .replace(/-(minimal|low|medium|high|xhigh)$/, '').replace(/(\d)\.(?=\d)/g, '$1-');
 // Pinned models: the browser keeps its own set in localStorage, seeded from the
-// TUI's state.json pins the first time (DATA.prices.pinned).
+// TUI's state.json pins the first time (DATA.prices.pinned). Pins are ROW-scoped
+// "route/canon" keys -- pinning one gateway's catalog row must not light up the
+// 20 other resellers of the same model; an aggregated flat/vendor row pins the
+// routes it covers (the ones you actually use).
 let PIN_SET = null;
 function pins() {
   if (!PIN_SET) {
@@ -1411,9 +1414,10 @@ function pins() {
   }
   return PIN_SET;
 }
-function togglePin(cid) {
-  const p = pins();
-  if (p.has(cid)) p.delete(cid); else p.add(cid);
+const pinKeys = r => (r.routes.length ? r.routes : ['']).map(rt => rt ? rt + '/' + canonId(r.model) : canonId(r.model));
+function togglePin(r) {
+  const p = pins(), ks = pinKeys(r);
+  if (ks.every(k => p.has(k))) ks.forEach(k => p.delete(k)); else ks.forEach(k => p.add(k));
   try { localStorage.setItem('opentab-pins', JSON.stringify([...p])); } catch (e) { /* ditto */ }
 }
 // The models.dev catalog travels slim ({m, r, p, u?, s?}); eff and the ~ approx flag
@@ -1487,7 +1491,7 @@ function renderPrices() {
   // keystroke, so cap the DOM and say what was cut (never a silent truncation).
   // Pinned models float first in every view (the ★ shortlist stays in sight
   // above the ~5k-row catalog), keeping the active sort within each block.
-  const isPinned = r => pins().has(canonId(r.model));
+  const isPinned = r => pinKeys(r).some(k => pins().has(k));
   rows = rows.filter(isPinned).concat(rows.filter(r => !isPinned(r)));
   const CAP = 500;
   const cut = Math.max(0, rows.length - CAP);
@@ -1507,7 +1511,7 @@ function renderPrices() {
     body.push(h('tr', null,
       h('td', { class: 'l' },
         h('span', { class: 'pin' + (pinnedRow ? ' on' : ''), title: pinnedRow ? 'unpin' : 'pin',
-          onclick: ev => { ev.stopPropagation(); togglePin(canonId(r.model)); renderPrices(); } }, pinnedRow ? '★' : '☆'),
+          onclick: ev => { ev.stopPropagation(); togglePin(r); renderPrices(); } }, pinnedRow ? '★' : '☆'),
         modelCell(r.model), tag ? h('span', { class: 'tag' }, tag) : null),
       heatTd(r.eff, ranges[0], (r.approx ? '~' : '') + '$' + r.eff.toFixed(2)),
       h('td', null, r.share > 0 ? h('span', { class: 'pr-use' }, pct(r.share, 1),

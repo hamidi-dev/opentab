@@ -44,7 +44,7 @@ def save_state(app: App) -> None:
         "ignored_projects": sorted(app.ignored_projects),
         "ignored_sessions": sorted(app.ignored_sessions),
         "bookmarks": sorted(app.bookmarks),  # sessions starred with `b`
-        "pinned_models": sorted(app.pinned_models),  # P-overlay pins (canonical ids, space)
+        "pinned_models": sorted(app.pinned_models),  # P-overlay pins ("route/canon", space)
         "show_api_prices": app.show_api_prices,
         "source": app.source_key,  # restore the last source (opencode/claude/all) next run
         "theme": app.theme_id,  # the colour theme (shared with the web browser)
