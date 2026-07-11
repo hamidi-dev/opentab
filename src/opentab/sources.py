@@ -391,7 +391,7 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
             raise SystemExit(
                 "No GitHub Copilot CLI usage found. Enable its OpenTelemetry file export "
                 "(set COPILOT_OTEL_FILE_EXPORTER_PATH before launching Copilot, or point "
-                "--copilot-dir at the export) -- see the README."
+                "--copilot-dir at the export) -- see docs/sources.md."
             )
         return CopilotStore(args.copilot_dir, args), "OpenTab: loading Copilot CLI sessions…\r"
     if key == "vscode":

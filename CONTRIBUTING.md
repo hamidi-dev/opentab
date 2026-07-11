@@ -13,8 +13,7 @@ conventions keep it that way.
   `~/.config/opentab/` and the `opentab-*.csv` you ask for with `e`.
 - **Python 3.9+.** Don't reach for newer syntax (`target-version = py39`).
 
-See [`CLAUDE.md`](CLAUDE.md) for the full architecture, layering rules, and the backend
-contract before making larger changes.
+See [`docs/architecture.md`](docs/architecture.md) for the architecture, layering rules, and the backend contract before making larger changes.
 
 ## Setup
 
