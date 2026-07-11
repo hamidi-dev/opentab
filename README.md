@@ -438,21 +438,27 @@ surfaces it as "unpriced tokens" rather than guessing.
 
 Press `$` (non-demo) for the **what-if** view: real recorded spend plus what `$0.00`
 subscription/credit usage _would have cost_ at published API list prices (`P` shows the
-exact per-model rates). The estimate uses an embedded table generated from models.dev for
-Anthropic/OpenAI/Google, with family fallbacks for version churn and a mid-range fallback
-for unknown models. Nothing is fetched at runtime, so the TUI stays offline.
+exact per-model rates). The estimate uses a **models.dev snapshot bundled with each
+release** — every provider, so open models on paid routes (Kimi, DeepSeek, Qwen, … via
+OpenRouter/Together/etc.) price out of the box — with family fallbacks for version churn
+and a mid-range fallback for unknown models. Nothing is fetched at runtime, so the TUI
+stays offline.
 
-That embedded table only covers the big three, so **open models on paid routes** (Kimi,
-DeepSeek, Qwen, … via OpenRouter/Together/etc.) show as unpriced. Refresh from models.dev
-to price them:
+Inside `P`, the **models.dev view** (`p` cycles to it) opens the *whole* catalog — every
+model on every route, blended to one `eff $/M` figure at **your** token mix, cheapest
+first, with your own models keeping their usage bar on every gateway that resells them.
+`f` filters the ~5k rows; a model you've used drills into its sessions with `Enter`.
+
+Want rates fresher than your release? Refresh from models.dev:
 
 ```sh
 opentab --refresh-models     # fetch every provider's list prices into a local cache
 ```
 
 This writes `~/.config/opentab/prices.json` (the one time runtime OpenTab touches the
-network, and only on this explicit command — stdlib `urllib`, no dependency). The cache
-**overlays** the embedded table; you can also press **`r`** inside `P` to refresh in place.
+network, and only on this explicit command — stdlib `urllib`, no dependency). The newer
+of the cache and the bundled snapshot wins; you can also press **`r`** inside `P` to
+refresh in place.
 When OpenTab notices models it has no built-in price for, it offers this fetch **once** on
 startup (`y` now, `n` not now, `d` never — remembered in `state.json`, suppressed under
 `--no-state`/`--demo`).

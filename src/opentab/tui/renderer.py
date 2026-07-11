@@ -48,7 +48,7 @@ from opentab.heatmap import (
     heat_palette,
 )
 from opentab.models import ALL_YEARS, year_label
-from opentab.pricing import api_equivalent_cost, family_label, model_price, price_cache_meta
+from opentab.pricing import api_equivalent_cost, family_label, model_price, price_source_meta
 from opentab.util import fuzzy_score, launcher_hook, tool_namespace
 
 
@@ -2261,7 +2261,8 @@ class Renderer:
                         "P",
                         "model prices — eff $/M blends each model's list rates at your token "
                         "mix (cheapest first), beside your usage share and raw rates",
-                        "p cycles the layout — flat / by vendor / by provider",
+                        "p cycles the view — flat / by vendor / by provider / models.dev "
+                        "(the whole catalog at your mix, f filters it)",
                         "j/k select · Enter its sessions · s sort a column (or click a header) · f/r/e as usual",
                         "C theme · c source · D demo · $ what-if · ? help keep working inside",
                     ),
@@ -2369,12 +2370,13 @@ class Renderer:
         # came from and what the eff blend means. Pulled out so both the flat
         # price_table_lines (export/tests) and the navigable draw_prices share one
         # source of truth.
-        meta = price_cache_meta()
+        meta = price_source_meta()
         if meta:
+            kind = "cache" if meta.get("kind") == "cache" else "bundled snapshot"
             when = (meta.get("fetched_at") or "?")[:10]
-            source = f"models.dev cache · {meta.get('count', 0)} models · fetched {when}"
+            source = f"models.dev {kind} · {meta.get('count', 0)} models · fetched {when}"
         else:
-            source = "embedded offline snapshot (anthropic/openai/google)"
+            source = "no models.dev catalog on record — hand-kept fallback rates only"
         lines = [f"Source: {source}.  API list prices per 1M tokens; r refreshes from models.dev."]
         mix = self.app.price_token_mix()
         if mix:
@@ -2384,6 +2386,10 @@ class Renderer:
             )
             lines.append(
                 "~ = no cache-read rate on record; those reads are billed at the input rate (an upper bound)."
+            )
+        if self.app.prices_view == "all":
+            lines.append(
+                "The whole models.dev catalog at your mix — a model repeats per provider (gateway markups are real data)."
             )
         lines.append("")
         return lines
@@ -2419,6 +2425,10 @@ class Renderer:
 
     def _price_use_cell(self, entry, peak: float) -> str:
         # Your usage share of this model: a bar scaled to the biggest row + percent.
+        # A share of exactly 0 (a catalog model you've never used) stays blank --
+        # thousands of "0%" cells would drown the rows that carry information.
+        if entry.share <= 0:
+            return " " * self._PRICE_USE_W
         bar = cost_bar(entry.share, peak, self._PRICE_USE_BAR)
         return f"{bar}{entry.share:>4.0%}"
 
@@ -2522,9 +2532,14 @@ class Renderer:
     def _price_entry_tag(self, entry) -> str:
         # The trailing annotation per row: in the "provider" view the group is already
         # the route, so show the vendor family instead; otherwise show the route(s).
+        # The catalog view appends the models.dev lifecycle flag (alpha/beta/deprecated).
         if self.app.prices_view == "provider":
             return family_label(entry.family)
-        return self._route_tag(entry.routes)
+        tag = self._route_tag(entry.routes)
+        status = getattr(entry, "status", "")
+        if status and self.app.prices_view == "all":
+            tag = f"{tag}·{status}" if tag else status
+        return tag
 
     def _price_render_rows(self, entries) -> list[tuple]:
         # Flatten the ordered entries into drawable rows: ("header", label) before each
@@ -2532,7 +2547,7 @@ class Renderer:
         # each model. The entry_index is the position in `entries`, so the cursor
         # (prices_index) and this list stay in lock-step.
         rows: list[tuple] = []
-        grouped = self.app.prices_view != "flat"
+        grouped = self.app.prices_view in ("family", "provider")
         for i, entry in enumerate(entries):
             if grouped and (i == 0 or entry.group != entries[i - 1].group):
                 rows.append(("header", self._price_group_label(entry.group)))
@@ -2540,11 +2555,11 @@ class Renderer:
         return rows
 
     def _price_empty_msg(self) -> str:
-        return (
-            f"No model prices match the filter: {self.query}"
-            if self.query
-            else "No model usage on record yet."
-        )
+        if self.query:
+            return f"No model prices match the filter: {self.query}"
+        if self.app.prices_view == "all":
+            return "No models.dev catalog on record — fetch one with r."
+        return "No model usage on record yet."
 
     def price_table_lines(self, width: int) -> list[str]:
         # The models you have used and the models.dev API list prices OpenTab applies

@@ -5,6 +5,7 @@ import argparse
 import copy
 import csv
 import os
+import re
 import shlex
 import sys
 import time
@@ -33,8 +34,10 @@ from opentab.heatmap import (
 from opentab.models import ALL_YEARS, DaySummary, MonthSummary, ProjectSummary, YearSummary
 from opentab.pricing import (
     FALLBACK_PRICE,
+    LOCAL_PROVIDERS,
     api_equivalent_cost,
     canonical_model,
+    catalog_models,
     display_model,
     effective_price,
     family_label,
@@ -98,6 +101,7 @@ class PriceEntry(NamedTuple):
     price: tuple  # (input, output, cacheR, cacheW) from the most completely-priced alias
     eff: float  # $/M for the app-wide token mix at `price` (the "eff $/M" column)
     approx: bool  # eff had no cache-read rate; reads were billed at the input rate
+    status: str = ""  # models.dev lifecycle flag (alpha/beta/deprecated); catalog view only
 
 
 class App:
@@ -118,8 +122,15 @@ class App:
     # ungrouped list -- cheapest-for-your-mix is a cross-vendor question -- while
     # "family" groups deduped models under their vendor (Anthropic/OpenAI/…) and
     # "provider" groups one row per access route (anthropic/github-copilot/…, a
-    # model can repeat across gateways). (key, label) -- shown in header + toast.
-    prices_views = (("flat", "flat list"), ("family", "by vendor"), ("provider", "by provider"))
+    # model can repeat across gateways). "all" swaps the row *set*, not just the
+    # layout: the whole models.dev catalog priced at your mix (used or not), flat.
+    # (key, label) -- shown in header + toast.
+    prices_views = (
+        ("flat", "flat list"),
+        ("family", "by vendor"),
+        ("provider", "by provider"),
+        ("all", "models.dev"),
+    )
     # Columns whose natural order is ascending (a->z / shallow-first / cheap-first);
     # every other column sorts high->low by default. A header re-click flips it.
     ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth", "eff"})
@@ -1628,12 +1639,17 @@ class App:
         # (alias spellings/date pins/effort suffixes fold together -- the list price
         # is route- and spelling-independent), carrying the route(s) it was reached
         # through; in the "provider" view a row is one (route, model) pair grouped by
-        # route, so a model can appear under more than one gateway. Each row carries
-        # its usage share and the eff $/M blend of the app-wide mix. Narrowed by the
-        # active filter (a plain case-insensitive substring over the model, family,
-        # or route), then ordered by _order_price_entries. Shared with the `e` export.
+        # route, so a model can appear under more than one gateway; the "all" view
+        # swaps the row set for the whole models.dev catalog (_catalog_price_entries).
+        # Each row carries its usage share and the eff $/M blend of the app-wide mix.
+        # Narrowed by the active filter (a plain case-insensitive substring over the
+        # model, family, or route), then ordered by _order_price_entries. Shared with
+        # the `e` export.
         mix = self.price_token_mix()
         shares = mix[0] if mix else (1.0, 0.0, 0.0, 0.0)
+        if self.prices_view == "all":
+            entries = self._catalog_price_entries(shares)
+            return self._order_price_entries(self._filter_price_entries(entries))
         by_route = self.prices_view == "provider"
         raw: dict[tuple[str, str], dict] = {}
         grand = 0.0
@@ -1677,22 +1693,87 @@ class App:
                     approx=approx,
                 )
             )
-        if self.query:
-            q = self.query.lower()
-            entries = [
-                e
-                for e in entries
-                if q in e.bare.lower()
-                or q in family_label(e.family).lower()
-                or any(q in r.lower() for r in e.routes)
-            ]
-        return self._order_price_entries(entries)
+        return self._order_price_entries(self._filter_price_entries(entries))
+
+    def _filter_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
+        # The active filter, a plain case-insensitive substring over the model,
+        # vendor family, or access route -- essential in the catalog view (5k+ rows).
+        # The query also matches dots==dashes against the canonical id, so
+        # "opus-4.8" finds providers that spell it "claude-opus-4-8" and vice versa.
+        if not self.query:
+            return entries
+        q = self.query.lower()
+        qc = re.sub(r"(?<=\d)\.(?=\d)", "-", q)
+        return [
+            e
+            for e in entries
+            if q in e.bare.lower()
+            or qc in e.canon
+            or q in family_label(e.family).lower()
+            or any(q in r.lower() for r in e.routes)
+        ]
+
+    def _catalog_price_entries(self, shares: tuple) -> list[PriceEntry]:
+        # The models.dev view's rows: every model in the price catalog (the bundled
+        # snapshot, or the refreshed cache when that's newer), one row per
+        # (provider, canonical model), each priced at YOUR token mix -- a
+        # cheapest-for-your-mix leaderboard over the whole catalog, used or not. The
+        # same model deliberately repeats across providers: gateways resell at their
+        # own rates, and that spread is the information. Rows join against your
+        # usage by canonical id, so a model you've used keeps its spend/use bar (and
+        # a meaningful Enter drill); the rest show a 0 share. Free/$0 models are
+        # excluded like local ones (a $0 row would own the cheap end of every sort
+        # and pin the heat ramp); a provider's date-pinned aliases fold onto their
+        # plain spelling, most completely-priced first.
+        usage: dict[str, list[float]] = {}
+        grand = 0.0
+        for rows in self._model_by_root.values():
+            for m in rows:
+                name = str(m["model_name"])
+                if is_local_provider(name):
+                    continue
+                tok = float(m.get("tokens_total") or 0)
+                grand += tok
+                u = usage.setdefault(canonical_model(name), [0.0, 0.0])
+                u[0] += float(m.get("cost", 0) or 0)
+                u[1] += tok
+        best: dict[tuple[str, str], tuple] = {}
+        for pid, mid, price, status in catalog_models():
+            if pid.lower() in LOCAL_PROVIDERS or (price[0] <= 0 and price[1] <= 0):
+                continue
+            bare = display_model(mid.rsplit("/", 1)[-1])
+            canon = canonical_model(bare)
+            key = (sum(1 for v in price if v > 0), -len(mid))
+            cur = best.get((pid, canon))
+            if cur is None or key > cur[0]:
+                best[(pid, canon)] = (key, bare, canon, pid, price, status)
+        entries = []
+        for _key, bare, canon, pid, price, status in best.values():
+            u = usage.get(canon)
+            eff, approx = effective_price(price, shares)
+            entries.append(
+                PriceEntry(
+                    bare=bare,
+                    canon=canon,
+                    family=model_family(canon),
+                    routes=(pid,),
+                    spend=u[0] if u else 0.0,
+                    group="",
+                    share=(u[1] / grand if u and grand > 0 else 0.0),
+                    price=price,
+                    eff=eff,
+                    approx=approx,
+                    status=status,
+                )
+            )
+        return entries
 
     def _order_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
-        # Order the entries for the active view. "flat" is one globally-sorted list;
-        # the grouped views order groups most-spend-first (the empty group -- Other, or
-        # a route-less id -- always last) and apply the active column sort *within* each.
-        if self.prices_view == "flat":
+        # Order the entries for the active view. "flat" (and the catalog view, which
+        # is a flat leaderboard) is one globally-sorted list; the grouped views order
+        # groups most-spend-first (the empty group -- Other, or a route-less id --
+        # always last) and apply the active column sort *within* each.
+        if self.prices_view in ("flat", "all"):
             return self._sort_price_entries(entries)
         group_spend: dict[str, float] = defaultdict(float)
         for e in entries:

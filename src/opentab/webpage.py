@@ -295,6 +295,9 @@ td.indent{color:var(--ink2)}
 .pr-views button{font:inherit;font-size:12px;padding:3px 12px;border:0;border-radius:4px;background:none;color:var(--ink2);cursor:pointer}
 .pr-views button.on{background:var(--accent);color:#141009;font-weight:700}
 .pr-views button:not(.on):hover{color:var(--ink)}
+#pr-filter{font:inherit;font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);
+  border-radius:6px;padding:5px 10px;width:150px;outline:none}
+#pr-filter:focus{border-color:var(--accent)}
 table.prices{width:100%;border-collapse:collapse;font-size:12.5px}
 table.prices th{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);font-weight:600;
   text-align:right;padding:4px 9px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;white-space:nowrap}
@@ -402,8 +405,8 @@ const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Provide
 let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null };
 // The P prices overlay: the models.dev list-price reference behind $ (app-wide,
 // never range-scoped -- like the TUI). eff sorts cheapest-first; others high→low.
-const PRICE_VIEWS = [['flat', 'flat list'], ['family', 'by vendor'], ['provider', 'by provider']];
-let PRICES = { open: false, view: 'flat', sort: 'eff', desc: false };
+const PRICE_VIEWS = [['flat', 'flat list'], ['family', 'by vendor'], ['provider', 'by provider'], ['all', 'models.dev']];
+let PRICES = { open: false, view: 'flat', sort: 'eff', desc: false, q: '' };
 
 /* ---------- formatting (mirrors opentab.formatting) ---------- */
 const money = v => (v > 0 && v < 0.005) ? '<$0.01'
@@ -1389,7 +1392,22 @@ function priceRanges(rows) {
   rows.forEach(r => r.price.forEach((v, i) => { if (v > 0) cols[i + 1].push(v); }));
   return cols.map(vals => { if (!vals.length) return null; const lo = Math.min(...vals), hi = Math.max(...vals); return hi > lo ? [lo, hi] : null; });
 }
-const priceRows = () => PRICES.view === 'provider' ? DATA.prices.byRoute : DATA.prices.byModel;
+// The models.dev catalog travels slim ({m, r, p, u?, s?}); eff and the ~ approx flag
+// are pure functions of price + your mix, so they expand client-side, once, lazily.
+function catalogRows() {
+  if (!DATA.prices.catalogRows) {
+    const mix = DATA.prices.mix || [1, 0, 0, 0];
+    DATA.prices.catalogRows = (DATA.prices.catalog || []).map(c => {
+      const [ir, orr, cr, cw] = c.p;
+      const approx = cr <= 0 && ir > 0;
+      const eff = mix[0] * ir + mix[1] * orr + mix[2] * (approx ? ir : cr) + mix[3] * cw;
+      return { model: c.m, familyLabel: '', routes: [c.r], spend: 0, share: c.u || 0, price: c.p, eff, approx, status: c.s || '' };
+    });
+  }
+  return DATA.prices.catalogRows;
+}
+const priceRows = () => PRICES.view === 'provider' ? DATA.prices.byRoute
+  : PRICES.view === 'all' ? catalogRows() : DATA.prices.byModel;
 function priceIntro() {
   const m = DATA.prices.mix;
   if (!m) return null;
@@ -1404,12 +1422,19 @@ function renderPrices() {
   if (!PRICES.open) { host.hidden = true; host.textContent = ''; return; }
   host.hidden = false; host.textContent = '';
   let rows = priceRows().slice();
+  if (PRICES.q) {
+    // dots==dashes so "opus-4.8" also finds providers spelling it "claude-opus-4-8"
+    const canon = s => s.toLowerCase().replace(/(\d)\.(?=\d)/g, '$1-');
+    const q = PRICES.q.toLowerCase(), qc = canon(PRICES.q);
+    rows = rows.filter(r => (r.model + ' ' + r.routes.join(' ') + ' ' + (r.familyLabel || '')).toLowerCase().includes(q)
+      || canon(r.model).includes(qc));
+  }
   const ASC = new Set(['model', 'eff']);  // natural order per column (else high→low)
   const key = PRICES.sort;
   const val = { model: r => r.model.toLowerCase(), eff: r => r.eff, use: r => r.share,
     input: r => r.price[0], output: r => r.price[1], cache_read: r => r.price[2], cache_write: r => r.price[3] }[key];
   const flip = PRICES.desc ? -1 : 1;
-  if (PRICES.view === 'flat') {
+  if (PRICES.view === 'flat' || PRICES.view === 'all') {  // the catalog is a flat leaderboard too
     rows.sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * flip; });
   } else {
     // grouped: order groups by total spend (empty/Other last), sort within each group
@@ -1432,34 +1457,45 @@ function renderPrices() {
   const heatTd = (v, rng, text) => { const c = priceHeatColor(v, rng); return h('td', { style: c ? 'color:' + c + ';font-weight:600' : null }, text); };
   const body = [];
   let lastGrp = null;
-  rows.forEach(r => {
-    if (PRICES.view !== 'flat') {
+  // The catalog view holds ~4.6k rows; rendering them all would lag every filter
+  // keystroke, so cap the DOM and say what was cut (never a silent truncation).
+  const CAP = 500;
+  const cut = Math.max(0, rows.length - CAP);
+  const shown = cut ? rows.slice(0, CAP) : rows;
+  shown.forEach(r => {
+    if (PRICES.view === 'family' || PRICES.view === 'provider') {
       const g = PRICES.view === 'family' ? (r.familyLabel || 'Other') : (r.routes[0] || '(direct)');
       if (g !== lastGrp) { lastGrp = g; body.push(h('tr', { class: 'grp' }, h('td', { colspan: 7 }, '▸ ' + g))); }
     }
     const [ir, orr, crr, cwr] = r.price;
     const crCell = crr <= 0 && ir > 0 ? h('td', { class: 'mut' }, '—') : heatTd(crr, ranges[3], crr.toFixed(2));
-    const tag = PRICES.view === 'provider' ? r.familyLabel : (r.routes.length ? r.routes.join(' ') : '');
+    let tag = PRICES.view === 'provider' ? r.familyLabel : (r.routes.length ? r.routes.join(' ') : '');
+    if (PRICES.view === 'all' && r.status) tag = tag ? tag + ' · ' + r.status : r.status;
     body.push(h('tr', null,
       h('td', { class: 'l' }, modelCell(r.model), tag ? h('span', { class: 'tag' }, tag) : null),
       heatTd(r.eff, ranges[0], (r.approx ? '~' : '') + '$' + r.eff.toFixed(2)),
-      h('td', null, h('span', { class: 'pr-use' }, pct(r.share, 1),
-        h('span', { class: 'hb' }, h('i', { style: '--w:' + (usePeak > 0 ? Math.round(100 * r.share / usePeak) : 0) + '%' })))),
+      h('td', null, r.share > 0 ? h('span', { class: 'pr-use' }, pct(r.share, 1),
+        h('span', { class: 'hb' }, h('i', { style: '--w:' + (usePeak > 0 ? Math.round(100 * r.share / usePeak) : 0) + '%' }))) : null),
       heatTd(ir, ranges[1], ir.toFixed(2)),
       heatTd(orr, ranges[2], orr.toFixed(2)),
       crCell,
       heatTd(cwr, ranges[4], cwr.toFixed(2))));
   });
+  if (cut) body.push(h('tr', { class: 'grp' }, h('td', { colspan: 7, class: 'mut' }, '… ' + cut.toLocaleString() + ' more — filter or sort to narrow')));
   const panel = h('div', { class: 'tr-panel' },
     h('div', { class: 'tr-head' },
       h('h3', null, 'Model prices'),
       h('div', { class: 'pr-views' }, PRICE_VIEWS.map(([v, label]) => h('button', { class: v === PRICES.view ? 'on' : null,
         onclick: () => { PRICES.view = v; renderPrices(); } }, label))),
+      h('input', { id: 'pr-filter', type: 'search', placeholder: 'f filter…', value: PRICES.q,
+        oninput: e => { PRICES.q = e.target.value; renderPrices(); const el = document.getElementById('pr-filter');
+          if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } }),
       h('button', { class: 'tr-close', onclick: closePrices }, 'esc ✕')),
     priceIntro(),
     rows.length ? h('div', { class: 'scroll' }, h('table', { class: 'prices' }, h('thead', null, h('tr', null, th)), h('tbody', null, body)))
-      : h('div', { class: 'hint' }, 'No priced models on record (local-only usage, or no models.dev rates). ' + (META.demo ? '' : 'Run opentab --refresh-models to price open models.')),
-    h('div', { class: 'tr-nav', style: 'margin-top:12px' }, h('span', { class: 'tr-note' }, 'cheapest-for-your-mix first · click a header to sort · p cycles view · esc close')));
+      : h('div', { class: 'hint' }, PRICES.q ? 'No models match the filter.'
+        : 'No priced models on record (local-only usage, or no models.dev rates). ' + (META.demo ? '' : 'Run opentab --refresh-models to price open models.')),
+    h('div', { class: 'tr-nav', style: 'margin-top:12px' }, h('span', { class: 'tr-note' }, 'cheapest-for-your-mix first · click a header to sort · p cycles view · f filters · esc close')));
   panel.addEventListener('click', e => e.stopPropagation());
   host.appendChild(panel);
 }
@@ -1543,6 +1579,7 @@ document.addEventListener('keydown', e => {
   if (PRICES.open) {
     if (e.key === 'Escape' || e.key === 'P') closePrices();
     else if (e.key === 'p') { const i = PRICE_VIEWS.findIndex(v => v[0] === PRICES.view); PRICES.view = PRICE_VIEWS[(i + 1) % PRICE_VIEWS.length][0]; renderPrices(); }
+    else if (e.key === 'f' || e.key === '/') { const el = document.getElementById('pr-filter'); if (el) el.focus(); }
     else if (e.key === 'C') openTheme();
     else if (e.key === '$' && !META.demo) { MODE = MODE === 'api' ? 'real' : 'api'; render(false); }
     e.preventDefault(); return;

@@ -1466,8 +1466,39 @@ def test_prices_p_cycles_view_modes():
     app.handle_key(None, ord("p"))  # -> by provider (still grouped, by route)
     assert app.prices_view == "provider"
     assert any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(120))
+    app.handle_key(None, ord("p"))  # -> the whole models.dev catalog (flat, ungrouped)
+    assert app.prices_view == "all"
+    assert not any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(160))
     app.handle_key(None, ord("p"))  # wraps back to flat
     assert app.prices_view == "flat"
+
+
+def test_prices_models_dev_view_lists_the_whole_catalog_at_your_mix():
+    # The "all" view swaps the row *set* for the bundled models.dev catalog: every
+    # priced model on every route (the same model repeating across gateways is the
+    # price-spread information), eff-blended at YOUR mix, joined against your usage
+    # by canonical id so a used model keeps its share everywhere it's sold -- every
+    # other row shows 0 and draws a blank use cell.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app._model_by_root = {"a": [_model_row("anthropic/claude-opus-4-8", 5.0, 1000)]}
+    app.handle_key(None, ord("P"))
+    app.prices_view = "all"
+    entries = app.priced_model_entries()
+    assert len(entries) > 1000  # the whole catalog, not just what you've used
+    assert all(e.price[0] > 0 or e.price[1] > 0 for e in entries)  # $0 rows excluded
+    used = [e for e in entries if e.share > 0]
+    assert used and all(e.canon == "claude-opus-4-8" for e in used)
+    assert len({e.routes[0] for e in used}) > 1  # your model, compared across routes
+    unused = next(e for e in entries if e.share == 0)
+    assert app.renderer._price_use_cell(unused, 1.0).strip() == ""
+    assert entries[0].eff <= entries[-1].eff  # default sort: cheapest-for-your-mix first
+    app.query = "claude-opus-4.8"  # the f filter tames the ~5k rows
+    hits = app.priced_model_entries()
+    assert 0 < len(hits) < 100 and all("claude-opus-4-8" in e.canon for e in hits)
+    # dots==dashes in the filter too: the dotted query still finds providers that
+    # spell the id with dashes (anthropic itself says "claude-opus-4-8")
+    assert any(e.routes[0] == "anthropic" for e in hits)
+    app.query = ""
 
 
 def test_prices_provider_view_groups_by_route_and_tags_vendor():
@@ -10410,8 +10441,14 @@ def test_web_payload_embeds_the_price_reference():
     # so assert the structural shape (present, both row sets, mix optional).
     app = app_with([workflow("w1", "2026-05-01 10:00:00")])
     prices = ot.build_payload(app)["prices"]
-    assert set(prices) >= {"byModel", "byRoute"}
+    assert set(prices) >= {"byModel", "byRoute", "catalog"}
     assert isinstance(prices["byModel"], list) and isinstance(prices["byRoute"], list)
+    # The models.dev catalog rides in every payload, so it travels slim: m/r/p per
+    # row (u/s only when meaningful); eff and the ~ flag are recomputed client-side.
+    assert len(prices["catalog"]) > 1000
+    row = prices["catalog"][0]
+    assert set(row) >= {"m", "r", "p"} and len(row["p"]) == 4
+    assert "eff" not in row and "approx" not in row
 
 
 def test_web_report_server_serves_page_extras_and_404():

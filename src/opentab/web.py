@@ -114,14 +114,34 @@ def _price_entry(e) -> dict:
         "price": [round(float(v), 6) for v in e.price],
         "eff": round(float(e.eff), 6),
         "approx": bool(e.approx),
+        "status": getattr(e, "status", ""),
     }
+
+
+def _catalog_entry(e) -> dict:
+    # One models.dev-view row, slimmed: ~4.6k catalog rows ride in *every* payload,
+    # so only what the page can't derive travels -- m(odel), r(oute), p(rice); the
+    # eff blend and the ~ approx flag are pure functions of price + mix, recomputed
+    # client-side. u(se share) only when you've actually used the model, s(tatus)
+    # only when models.dev flags a lifecycle stage.
+    out = {
+        "m": e.bare,
+        "r": e.routes[0] if e.routes else "",
+        "p": [round(float(v), 6) for v in e.price],
+    }
+    if e.share > 0:
+        out["u"] = round(e.share, 6)
+    if e.status:
+        out["s"] = e.status
+    return out
 
 
 def _prices_payload(app: App) -> dict:
     # The P overlay's data: every priced model you've used, as two row sets --
     # per-canonical-model (flat/by-vendor views) and per-(route, model) (by-provider
-    # view) -- plus the app-wide token mix behind the eff $/M blend. Reuses the App's
-    # own priced_model_entries so the numbers match the TUI exactly; local models are
+    # view) -- plus the whole models.dev catalog (slim rows, the "all" view) and the
+    # app-wide token mix behind the eff $/M blend. Reuses the App's own
+    # priced_model_entries so the numbers match the TUI exactly; local models are
     # dropped upstream (no API rate). App-wide, never range-scoped (like the TUI).
     app._ensure_models()
     prev_view, prev_query = app.prices_view, app.query
@@ -131,9 +151,11 @@ def _prices_payload(app: App) -> dict:
         by_model = [_price_entry(e) for e in app.priced_model_entries()]
         app.prices_view = "provider"
         by_route = [_price_entry(e) for e in app.priced_model_entries()]
+        app.prices_view = "all"
+        catalog = [_catalog_entry(e) for e in app.priced_model_entries()]
     finally:
         app.prices_view, app.query = prev_view, prev_query
-    out = {"byModel": by_model, "byRoute": by_route}
+    out = {"byModel": by_model, "byRoute": by_route, "catalog": catalog}
     mix = app.price_token_mix()
     if mix:
         (inp, output, cr, cw), total = mix
