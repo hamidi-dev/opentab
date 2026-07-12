@@ -22,8 +22,8 @@ static host.
 - Combine with `--demo` for a page you can publish:
   `opentab --demo --html demo.html`.
 
-The static file omits the per-session Turns/Tools tabs (embedding them would mean
-scanning every session up front) — that's what the server is for.
+The static file omits the per-session Turns/Tools/Context tabs (embedding them would
+mean scanning every session up front) — that's what the server is for.
 
 ## Served live: `--serve` and `--web`
 

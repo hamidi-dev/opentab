@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 from opentab import __version__
-from opentab.pricing import api_equivalent_cost, family_label
+from opentab.pricing import api_equivalent_cost, family_label, model_context_window
 from opentab.util import tool_namespace
 from opentab.webpage import render_html
 
@@ -280,7 +280,45 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     "tokens": int(r.get("tokens_total") or 0),
                 }
             )
-    return {"turns": turns, "tools": tools}
+    # The Context tab's data (the TUI's detail_context, serialized): measured
+    # per-turn prompt sizes for the growth curve (main-thread turns only --
+    # subagents run in their own windows) plus the estimated composition rows
+    # for backends with the opt-in. The client derives peak/final/compactions
+    # itself, mirroring how the prices overlay recomputes eff client-side.
+    context = None
+    if app.session_supports_context_curve(workflow_id):
+        points = []
+        windows = set()
+        model = ""
+        for r in app.session_turn_rows(workflow_id):
+            if r.get("depth"):
+                continue
+            size = (r.get("input") or 0) + (r.get("cache_read") or 0) + (r.get("cache_write") or 0)
+            if size <= 0:
+                continue
+            model = r.get("model_name") or model
+            points.append({"t": (r.get("time") or "")[5:16], "v": int(size)})
+            windows.add(model_context_window(model))
+        if points:
+            comp = []
+            if app.session_supports_context(workflow_id):
+                comp = [
+                    {
+                        "cat": r["category"],
+                        "kind": r["kind"],
+                        "count": r["count"],
+                        "est": r["est_tokens"],
+                    }
+                    for r in app.session_context_rows(workflow_id)
+                ]
+            context = {
+                "model": model,
+                "window": model_context_window(model),  # the live (last) model's
+                "mixedWindows": len(windows) > 1,
+                "points": points,
+                "comp": comp,
+            }
+    return {"turns": turns, "tools": tools, "context": context}
 
 
 def html_command(app: App, args: argparse.Namespace) -> int:

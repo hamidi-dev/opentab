@@ -10419,6 +10419,25 @@ def test_web_session_extras_reports_turns_with_both_costs():
     assert first["promptTitle"] == "do the thing"
     # The whole prompt travels too, so the page's ▸ header can unfold/hover it.
     assert first["promptFull"] == "do the thing\nand do it properly, with tests"
+    # The Context tab's data rides along: measured per-turn prompt sizes (input +
+    # cache) + the live model's window; no composition opt-in -> comp stays empty.
+    ctx = extras["context"]
+    assert [p["v"] for p in ctx["points"]] == [1000, 400]
+    assert ctx["window"] == ot.model_context_window("anthropic/claude-fable-5")
+    assert ctx["mixedWindows"] is False and ctx["comp"] == []
+
+
+def test_web_session_extras_context_gated_by_curve_support():
+    # A backend whose turn rows are cumulative deltas (Codex) opts out of the
+    # curve; the payload ships context: None so the page never draws a wrong one.
+    class DeltaTurns(TurnsFakeStore):
+        def supports_context_curve(self, workflow_id):
+            return False
+
+    w = workflow("w1", "2026-05-01 10:00:00", cost=0.5)
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(DeltaTurns([w]), args)
+    assert ot.session_extras(app, "w1")["context"] is None
 
 
 def test_web_render_html_defuses_embedded_script_tags():
@@ -10556,7 +10575,8 @@ def test_web_report_server_serves_page_extras_and_404():
         assert 'id="opentab-data"' in page
         assert '"serve":true' in page  # the served page knows the extras exist
         extras = json.loads(urllib.request.urlopen(base + "/api/session/w1").read().decode("utf-8"))
-        assert extras == {"turns": [], "tools": []}  # FakeStore: no turns/tools support
+        # FakeStore: no turns/tools support, and no turns means no context curve
+        assert extras == {"turns": [], "tools": [], "context": None}
         try:
             urllib.request.urlopen(base + "/nope")
             raise AssertionError("expected a 404")

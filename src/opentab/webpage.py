@@ -402,7 +402,7 @@ let FILTER = '';
 const SORT = {};
 const EXPANDED = new Set(); // table ids whose "show all" is open (reset per view)
 const VIEW = { calYear: null };
-let EXTRAS = { id: null, loading: false, turns: [], tools: [] }; // per-session Turns/Tools (serve)
+let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null }; // per-session Turns/Tools/Context (serve)
 // The Trends overlay (T) -- mirrors the TUI's 7-tab Trends over the whole range.
 const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Sources'];
 let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null };
@@ -765,10 +765,11 @@ function tabsFor(sc) {
   if (sc.kind === 's') {
     const t = ['Overview', 'Models', 'Subagents'];
     const mine = EXTRAS.id === sc.id;
-    if (mine && EXTRAS.loading) t.push('Turns', 'Tools'); // placeholders while the fetch runs
+    if (mine && EXTRAS.loading) t.push('Turns', 'Tools', 'Context'); // placeholders while the fetch runs
     else {
       if (mine && EXTRAS.turns.length) t.push('Turns');
       if (mine && EXTRAS.tools.length) t.push('Tools');
+      if (mine && EXTRAS.context) t.push('Context');
     }
     return t;
   }
@@ -990,14 +991,124 @@ function toolsTable(toolRows) {
   ], rows, { defaultSort: { key: 'cost', desc: true } });
 }
 
+/* ---------- the Context tab (the TUI's detail_context, in SVG) ---------- */
+// The server ships measured per-turn prompt sizes (points) + the model's window
+// + the estimated composition rows; peak/final/compactions derive here, with the
+// TUI's exact heuristic (a >40% drop from >=50k is a compaction).
+function ctxHeatColor(v, window) {
+  const lvl = Math.max(0, Math.min(4, Math.floor((window > 0 ? v / window : 0) * 5)));
+  return TH.priceHeat[lvl];
+}
+function ctxChart(ctx, vs, comps) {
+  const VW = 920, VH = 210, padL = 52, padR = 12, padT = 18, padB = 22;
+  const ymax = Math.max(...vs) || 1, n = vs.length;
+  const iw = VW - padL - padR, ih = VH - padT - padB;
+  const x = i => padL + (n > 1 ? i * iw / (n - 1) : iw / 2);
+  const y = v => padT + (1 - v / ymax) * ih;
+  const svg = s('svg', { viewBox: '0 0 ' + VW + ' ' + VH, class: 'chart', preserveAspectRatio: 'none', style: 'width:100%;height:210px' });
+  // Fullness gradient, banded like the TUI's heat rows: hard stops wherever a
+  // window-fifth boundary crosses the chart's y range.
+  const defs = s('defs', null);
+  const grad = s('linearGradient', { id: 'ctxheat', x1: 0, y1: 1, x2: 0, y2: 0 });
+  let prev = 0;
+  for (let i = 1; i <= 5; i++) {
+    const off = Math.min(1, (ctx.window * i / 5) / ymax);
+    grad.appendChild(s('stop', { offset: prev, 'stop-color': TH.priceHeat[i - 1] }));
+    grad.appendChild(s('stop', { offset: off, 'stop-color': TH.priceHeat[i - 1] }));
+    prev = off;
+    if (off >= 1) break;
+  }
+  if (prev < 1) { grad.appendChild(s('stop', { offset: prev, 'stop-color': TH.priceHeat[4] })); grad.appendChild(s('stop', { offset: 1, 'stop-color': TH.priceHeat[4] })); }
+  defs.appendChild(grad);
+  svg.appendChild(defs);
+  // gridlines + y labels at max and half
+  [1, 0.5].forEach(f => {
+    const gy = y(ymax * f);
+    svg.appendChild(s('line', { x1: padL, y1: gy, x2: VW - padR, y2: gy, stroke: thc('line'), 'stroke-width': 1 }));
+    svg.appendChild(s('text', { x: padL - 6, y: gy + 3, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: hTok(Math.round(ymax * f)) }));
+  });
+  svg.appendChild(s('line', { x1: padL, y1: VH - padB, x2: VW - padR, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
+  // the measured area, filled with the fullness gradient
+  const pts = vs.map((v, i) => x(i) + ',' + y(v)).join(' ');
+  svg.appendChild(s('polygon', { points: padL + ',' + (VH - padB) + ' ' + pts + ' ' + x(n - 1) + ',' + (VH - padB), fill: 'url(#ctxheat)', 'fill-opacity': 0.55 }));
+  svg.appendChild(s('polyline', { points: pts, fill: 'none', stroke: 'url(#ctxheat)', 'stroke-width': 2 }));
+  // ▼ compaction markers ride above their drop point
+  comps.forEach(i => svg.appendChild(s('text', { x: x(i), y: padT - 6, 'text-anchor': 'middle', 'font-size': 11, fill: thc('accent'), text: '▼' })));
+  svg.appendChild(s('text', { x: padL, y: VH - 8, 'font-size': 10, fill: thc('mut'), text: 'turn 1' }));
+  svg.appendChild(s('text', { x: VW - padR, y: VH - 8, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: String(n) }));
+  return svg;
+}
+function contextPane(ctx) {
+  if (!ctx || !ctx.points || !ctx.points.length)
+    return h('div', { class: 'hint' }, 'no per-turn context usage recorded for this session');
+  const vs = ctx.points.map(p => p.v);
+  const fin = vs[vs.length - 1], peak = Math.max(...vs), start = vs[0];
+  const peakAt = vs.indexOf(peak) + 1;
+  const comps = [];
+  for (let i = 1; i < vs.length; i++) if (vs[i - 1] > 50000 && vs[i] < vs[i - 1] * 0.6) comps.push(i);
+  const freed = comps.reduce((a, i) => a + vs[i - 1] - vs[i], 0);
+  const pctW = v => Math.round(100 * v / ctx.window) + '%';
+  const wrap = h('div', null);
+  wrap.appendChild(tiles([
+    ['window', hTok(ctx.window), ctx.model],
+    ['end', hTok(fin) + ' · ' + pctW(fin), 'of the window'],
+    ['peak', hTok(peak) + ' · ' + pctW(peak), 'at turn ' + peakAt + ' of ' + vs.length],
+    ['session start', hTok(start), 'system prompt + tools + first prompt'],
+    comps.length ? ['compactions', String(comps.length), '~' + hTok(freed) + ' freed'] : null,
+  ].filter(Boolean)));
+  wrap.appendChild(ctxChart(ctx, vs, comps));
+  if (ctx.mixedWindows)
+    wrap.appendChild(h('div', { class: 'hint' }, 'this session switched between models with different windows — the chart scales to the last one'));
+  if (comps.length)
+    wrap.appendChild(h('div', { class: 'hint' }, comps.map(i => '▼ turn ' + (i + 1) + ' · ' + (ctx.points[i].t || '') + ' — ' + hTok(vs[i - 1]) + ' → ' + hTok(vs[i])).join('    ')));
+  wrap.appendChild(h('div', { class: 'hint' }, 'measured per-turn prompt tokens; green → red = window fullness; subagents excluded'));
+  return wrap;
+}
+function contextCompTable(comp) {
+  // Category rows with their kinds nested beneath, biggest first (the TUI tree).
+  const byCat = new Map();
+  for (const r of comp) {
+    let c = byCat.get(r.cat);
+    if (!c) { c = { cat: r.cat, count: 0, est: 0, kinds: [] }; byCat.set(r.cat, c); }
+    c.count += r.count; c.est += r.est;
+    if (r.kind) c.kinds.push(r);
+  }
+  const cats = [...byCat.values()].sort((a, b) => b.est - a.est);
+  const total = cats.reduce((a, c) => a + c.est, 0) || 1;
+  const rows = [];
+  const cells = (label, count, est, dim) => h('tr', null,
+    h('td', { class: 'grow' + (dim ? ' dim' : '') }, label),
+    h('td', { class: 'r' + (dim ? ' dim' : '') }, count.toLocaleString('en-US') + '×'),
+    h('td', { class: 'r' + (dim ? ' dim' : '') }, '~' + hTok(est)),
+    h('td', { class: 'r' + (dim ? ' dim' : '') }, Math.round(100 * est / total) + '%'));
+  for (const c of cats) {
+    rows.push(cells(c.cat, c.count, c.est, false));
+    c.kinds.sort((a, b) => b.est - a.est).forEach(k => rows.push(cells('· ' + k.kind, k.count, k.est, true)));
+  }
+  const wrap = h('div', null, h('table', null,
+    h('thead', null, h('tr', null,
+      h('th', null, 'Category'), h('th', { class: 'r' }, 'Count'),
+      h('th', { class: 'r' }, '~Tokens'), h('th', { class: 'r' }, 'Share'))),
+    h('tbody', null, rows)));
+  wrap.appendChild(h('div', { class: 'hint' }, 'a ~chars/4 estimate of everything sent, compacted or not — the system prompt and tool schemas live only in the measured session-start baseline'));
+  return wrap;
+  return wrap;
+}
+
 /* ---------- the detail pane ---------- */
 function scopeLabel(sc) {
   if (sc.kind === 'y') return sc.year;
   if (sc.kind === 'm') return monthLabel(sc.month);
   if (sc.kind === 'd') return sc.day;
   if (sc.kind === 'p') return projName(sc.project);
-  if (sc.kind === 's') return sc.id;
+  if (sc.kind === 's') return sessionLabel(sc);
   return 'all time';
+}
+function sessionLabel(sc) {
+  // The session's title, like the TUI's box border -- the raw id stays on the
+  // Overview dl (and in the hash) for copy/paste.
+  const t = ((sc.session && sc.session.title) || '').trim() || sc.id;
+  return t.length > 60 ? t.slice(0, 59) + '…' : t;
 }
 function renderOverview(root, sc, ws) {
   if (sc.kind === 's') { renderSessionOverview(root, sc); return; }
@@ -1050,7 +1161,7 @@ function renderSessionOverview(root, sc) {
   if (EXTRAS.id === sc.id && EXTRAS.loading)
     root.appendChild(h('div', { class: 'hint' }, 'loading turns & tools…'));
   if (!META.serve)
-    root.appendChild(h('div', { class: 'hint' }, 'the per-turn timeline and tool attribution are fetched live — run: opentab --serve'));
+    root.appendChild(h('div', { class: 'hint' }, 'the per-turn timeline, tool attribution and context curve are fetched live — run: opentab --serve'));
 }
 function renderDetail(sc, ws) {
   const root = document.getElementById('view');
@@ -1076,6 +1187,15 @@ function renderDetail(sc, ws) {
     EXTRAS.loading ? h('div', { class: 'hint' }, 'loading turns…') : turnsTable(EXTRAS.turns)));
   else if (TAB === 'Tools') root.appendChild(pane('Tools',
     EXTRAS.loading ? h('div', { class: 'hint' }, 'loading tools…') : toolsTable(EXTRAS.tools)));
+  else if (TAB === 'Context') {
+    root.appendChild(pane('Context · window usage',
+      EXTRAS.loading ? h('div', { class: 'hint' }, 'loading context…') : contextPane(EXTRAS.context)));
+    const c = EXTRAS.context;
+    if (!EXTRAS.loading && c && c.comp && c.comp.length) {
+      const total = c.comp.reduce((a, r) => a + r.est, 0);
+      root.appendChild(pane('What filled it — ~' + hTok(total) + ' of content sent', contextCompTable(c.comp)));
+    }
+  }
 }
 
 /* ---------- chrome ---------- */
@@ -1084,7 +1204,7 @@ function renderTabs(sc, tabs) {
   bar.textContent = '';
   const loading = sc.kind === 's' && EXTRAS.id === sc.id && EXTRAS.loading;
   tabs.forEach(t => {
-    const ld = loading && (t === 'Turns' || t === 'Tools'); // placeholder while fetching
+    const ld = loading && (t === 'Turns' || t === 'Tools' || t === 'Context'); // placeholder while fetching
     const cls = (t === TAB ? 'on ' : '') + (ld ? 'ld' : '');
     bar.appendChild(h('button', { class: cls.trim() || null,
       onclick: () => { TAB = t; render(false); } }, t + (ld ? ' ⋯' : '')));
@@ -1103,7 +1223,7 @@ function renderCrumbs(sc) {
   else if (sc.kind === 'm') items.push([monthLabel(sc.month), null]);
   if (sc.day && sc.kind === 's') items.push([sc.day, '#/d/' + sc.day]);
   else if (sc.kind === 'd') items.push([sc.day, null]);
-  if (sc.kind === 's') items.push([sc.id, null]);
+  if (sc.kind === 's') items.push([sessionLabel(sc), null]);
   items.forEach(([label, href], i) => {
     if (i) el.appendChild(h('span', { class: 'sep' }, '/'));
     el.appendChild(href ? h('a', { href }, label) : h('span', { class: 'here' }, label));
@@ -1143,13 +1263,13 @@ function chrome() {
 /* ---------- session extras (the --serve drill-in fetch) ---------- */
 function ensureExtras(sc) {
   if (sc.kind !== 's' || !META.serve || EXTRAS.id === sc.id) return;
-  EXTRAS = { id: sc.id, loading: true, turns: [], tools: [] };
+  EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], context: null };
   fetch('/api/session/' + encodeURIComponent(sc.id)).then(r => r.json()).then(x => {
-    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [] };
+    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], context: x.context || null };
     render(false);
   }).catch(err => {
     console.error('session extras failed:', err);
-    EXTRAS = { id: sc.id, loading: false, turns: [], tools: [] };
+    EXTRAS = { id: sc.id, loading: false, turns: [], tools: [], context: null };
     render(false);
   });
 }
