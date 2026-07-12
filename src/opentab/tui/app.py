@@ -3294,6 +3294,26 @@ class App:
             self.drill_in()  # the day's Sessions tab -> the session view
         return True
 
+    def goto_session(self, workflow_id: str) -> bool:
+        # The --goto startup jump: land straight in a session's detail view.
+        # State-only (no curses), so cli.main can call it before curses.wrapper.
+        # A restored range can hide the target; when it does, clear the range and
+        # retry so goto always lands. An ignored project stays ignored -- that's
+        # an explicit user choice, so just say why the jump didn't happen.
+        if self.drill_into_session(workflow_id):
+            return True
+        if any(w.id == workflow_id for w in self.loaded):
+            self.range_days = self.range_months = None
+            self.custom_since = self.custom_until = None
+            self._invalidate_workflow_cache()
+            if self.drill_into_session(workflow_id):
+                self.notice = "range cleared to reach the session"
+                return True
+            self.notice = "session is in an ignored project"
+            return False
+        self.notice = "session not found in this source"
+        return False
+
     def _calendar_key(self, key: int) -> bool:
         # +/- tune the heat-map granularity live (more shades = finer spend bands);
         # arrow keys walk the day cursor (←/→ = ∓1 week, ↑/↓ = ∓1 day, clamped to the

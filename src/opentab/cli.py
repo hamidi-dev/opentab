@@ -174,6 +174,19 @@ def parse_args() -> argparse.Namespace:
         "marks a list-price estimate for usage recorded at $0 (subscription models)",
     )
     parser.add_argument(
+        "--goto",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="DIR|SESSION",
+        help="open the TUI drilled straight into a session: a session id opens "
+        "exactly that session (a subagent id resolves to its root), a DIR (default: "
+        "the current directory) opens the project's most recently active session -- "
+        "resolved across every present harness backend like --status. Made for a "
+        "tmux binding: bind t run 'tmux popup -E \"opentab --goto "
+        "#{pane_current_path}\"'",
+    )
+    parser.add_argument(
         "--html",
         nargs="?",
         const="opentab-report.html",
@@ -464,6 +477,32 @@ def _status_line_all(args: argparse.Namespace, target: str | None) -> str:
     return _price_root(best_store, best[0])
 
 
+def _goto_target(args: argparse.Namespace) -> tuple[str, str] | None:
+    # Resolve --goto's target to (source key, root session id) with the --status
+    # machinery: a session id is probed via each backend's root_of (a subagent id
+    # walks up to its root), a directory takes the project's most recently active
+    # root across the backends. Returns None when nothing matches.
+    target = args.goto or os.getcwd()
+    keys = [k for k in sources.available_sources(args) if k in _STATUS_SOURCES]
+    source = getattr(args, "source", "auto")
+    if source not in ("auto", "all"):  # an explicit --source pins one backend
+        keys = [k for k in keys if k == source]
+    stores = [(k, sources._build_store(args, k)[0]) for k in keys]
+    if _is_session_target(target):
+        for key, store in stores:
+            root = store.root_of(target)
+            if root:
+                return key, root
+        return None
+    project = _project_key(target)
+    best: tuple[str, str, int] | None = None
+    for key, store in stores:
+        candidate = _status_candidate(store, project)
+        if candidate and (best is None or candidate[1] > best[2]):
+            best = (key, candidate[0], candidate[1])
+    return (best[0], best[1]) if best else None
+
+
 def status_command(args: argparse.Namespace) -> int:
     # One-shot, curses-free sibling of --refresh-models, polled from a tmux status
     # line -- so every failure mode prints nothing (an empty segment) instead of
@@ -534,6 +573,15 @@ def main() -> int:
     use_state = not args.demo and not args.no_state
     state = load_state() if use_state else {}
     source_key = resolve_source(args, state)
+    goto = None
+    if getattr(args, "goto", None) is not None:
+        # Resolve before the store is built: the target's backend must be in view,
+        # so a saved single-source preference can't hide the session it names.
+        goto = _goto_target(args)
+        if goto is None:
+            raise SystemExit(f"--goto: no session found for {args.goto or os.getcwd()!r}")
+        if source_key not in ("all", goto[0]):
+            source_key = goto[0]
     store, loading = sources.make_store(args, source_key)
     # The first load runs the recursive roll-up over the whole DB / parses every
     # transcript, which can take a beat at scale. Show a hint, then clear it before
@@ -546,6 +594,10 @@ def main() -> int:
     sys.stderr.flush()
     if use_state:
         apply_state(app, args, state)
+    if goto is not None:
+        # After apply_state (a restored range could hide the target; goto_session
+        # clears it when needed), before curses -- the jump is state-only.
+        app.goto_session(goto[1])
     curses.wrapper(app.run)
     if use_state and not app.store.demo:
         save_state(app)

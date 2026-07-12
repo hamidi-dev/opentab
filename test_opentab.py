@@ -11411,6 +11411,55 @@ def test_context_tab_flags_mixed_model_windows():
     assert "200.0k window" in joined  # header still names the live window
 
 
+# --- --goto: open the TUI drilled into a session ------------------------------
+
+
+def test_goto_flag_parses_bare_and_with_target():
+    assert _parse([]).goto is None
+    assert _parse(["--goto"]).goto == ""  # bare: the current directory
+    assert _parse(["--goto", "abc-123"]).goto == "abc-123"
+
+
+def test_goto_target_resolves_ids_and_directories_like_status():
+    # A session id routes to the backend that claims it (root_of probe); a
+    # directory takes the project's newest root across backends -- the --status
+    # semantics, returning the owning source key alongside the root id.
+    sid = "66666666-6666-6666-6666-666666666666"
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(repo)
+        db = os.path.join(tmp, "opencode.db")
+        _write_status_db(db, [("ses_oc", None, repo, 1760000000000, 1760000500000, 2.0, 10)])
+        projects = os.path.join(tmp, "projects")
+        _write_claude_status_session(projects, sid, repo, 1760000900, _usage(1000, 50))
+        args = type("A", (), {"demo": False, "db": db, "claude_dir": projects, "goto": None})()
+
+        args.goto = sid
+        assert ot.cli._goto_target(args) == ("claude", sid)
+        args.goto = "ses_oc"
+        assert ot.cli._goto_target(args) == ("opencode", "ses_oc")
+        args.goto = repo  # directory: the newest root wins (the Claude transcript)
+        assert ot.cli._goto_target(args) == ("claude", sid)
+        args.goto = "99999999-9999-9999-9999-999999999999"
+        assert ot.cli._goto_target(args) is None  # unclaimed id, never a dir fallback
+
+
+def test_goto_session_lands_in_session_view_and_clears_a_hiding_range():
+    app = app_with([workflow("a", "2026-06-01 12:00:00"), workflow("b", "2026-06-02 12:00:00")])
+    assert app.goto_session("a") is True
+    assert app.view == "session" and app.current_session().id == "a"
+    # a restored range that hides the target is cleared so the jump still lands
+    app2 = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app2.set_range_from_text("2020-01-01..2020-01-31")
+    assert app2.goto_session("a") is True
+    assert app2.view == "session" and app2.current_session().id == "a"
+    assert app2.range_days is None and app2.custom_since is None
+    # an id the source doesn't know: no jump, an honest notice
+    app3 = app_with([workflow("a", "2026-06-01 12:00:00")])
+    assert app3.goto_session("nope") is False
+    assert "not found" in app3.notice
+
+
 if __name__ == "__main__":
     import sys
 
