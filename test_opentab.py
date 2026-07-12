@@ -3187,13 +3187,21 @@ def test_tools_tab_offered_only_with_part_table():
         _write_opencode_db_with_tools(db)
         app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
         app.view = "session"
-        # An OpenCode session offers both per-session tabs (Turns then Tools).
-        assert app.current_tabs() == ("Overview", "Models", "Subagents", "Turns", "Tools")
-    # A backend without the part table / support flag never shows the tab.
+        # An OpenCode session offers every per-session tab (Turns, Tools, Context).
+        assert app.current_tabs() == (
+            "Overview",
+            "Models",
+            "Subagents",
+            "Turns",
+            "Tools",
+            "Context",
+        )
+    # A backend without the part table / support flag never shows the tabs.
     bare = ot.App(FakeStore([]), args())
     bare.view = "session"
     assert "Tools" not in bare.current_tabs()
     assert "Turns" not in bare.current_tabs()
+    assert "Context" not in bare.current_tabs()  # the curve needs turn rows
 
 
 def test_detail_tools_reprices_unpriced_under_dollar():
@@ -5108,13 +5116,14 @@ def test_pager_lines_dispatch_session_tabs_by_name():
     app = ot.App(RichStore([workflow("ses_1", "2026-06-01 12:00:00")]), args)
     app.view = "session"
     wf = app.current_session()
-    assert app.current_tabs() == ("Overview", "Models", "Subagents", "Turns", "Tools")
+    assert app.current_tabs() == ("Overview", "Models", "Subagents", "Turns", "Tools", "Context")
     for name, table in (
         ("Overview", app.renderer.detail_overview),
         ("Models", app.renderer.detail_models),
         ("Subagents", app.renderer.detail_subagents),
         ("Turns", app.renderer.detail_turns),
         ("Tools", app.renderer.detail_tools),
+        ("Context", app.renderer.detail_context),
     ):
         app.tab = app.current_tabs().index(name)
         assert app.renderer.current_pager_lines(100) == table(wf, 96)  # content = width - 4
@@ -11106,6 +11115,300 @@ def test_tool_namespace_folds_builtins_case_insensitively_and_mcp_servers():
     # Claude Code MCP names group under their server, like OpenCode's prefix form.
     assert ot.tool_namespace("mcp__chrome-devtools__evaluate_script") == "chrome-devtools"
     assert ot.tool_namespace("serena_find_symbol") == "serena"
+
+
+# --- the Context tab (window growth + composition) ---------------------------
+
+
+def test_model_context_window_reads_catalog_and_falls_back_by_family():
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        cache_dir = os.path.join(tmp, "opentab")
+        os.makedirs(cache_dir)
+        try:
+            with open(os.path.join(cache_dir, "prices.json"), "w") as fh:
+                json.dump(
+                    {
+                        "fetched_at": "9999-01-01T00:00:00Z",
+                        "providers": {
+                            "acme": {
+                                "name": "Acme",
+                                "models": {
+                                    "acme-large": {"cost": [1.0, 2.0, 0.0, 0.0], "limit": 123456}
+                                },
+                            }
+                        },
+                    },
+                    fh,
+                )
+            ot.invalidate_price_cache()
+            # catalog limit wins; the route prefix is stripped like model_price
+            assert ot.model_context_window("acme/acme-large") == 123456
+            # unknown ids fall back by hand-kept family, then the default
+            assert ot.model_context_window("x/claude-nonexistent") == 200_000
+            assert ot.model_context_window("x/gpt-5-hyper-9999") == 400_000
+            assert ot.model_context_window("x/total-mystery") == ot.DEFAULT_CONTEXT_WINDOW
+        finally:
+            ot.invalidate_price_cache()
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
+class _ContextStore(FakeStore):
+    # Turn rows whose recorded prompts grow, get compacted once, then regrow; the
+    # oversized subagent turn must never bend the main-thread curve.
+    SIZES = (40_000, 80_000, 120_000, 160_000, 60_000, 90_000)
+
+    def supports_turns(self, wid):
+        return True
+
+    def message_timeline(self, wid):
+        rows = []
+        for i, v in enumerate(self.SIZES):
+            rows.append(
+                {
+                    "time": f"2026-06-01 12:00:{i:02d}",
+                    "agent": "-",
+                    "depth": 0,
+                    "model_name": "anthropic/claude-testmodel",
+                    "cost": 0.0,
+                    "input": 1000,
+                    "output": 50,
+                    "reasoning": 0,
+                    "cache_read": v - 1000,
+                    "cache_write": 0,
+                    "tokens_total": v + 50,
+                    "prompt_id": "p1",
+                    "prompt_title": "hi",
+                }
+            )
+        rows.append(
+            {
+                "time": "2026-06-01 12:00:99",
+                "agent": "subagent",
+                "depth": 1,
+                "model_name": "anthropic/claude-testmodel",
+                "cost": 0.0,
+                "input": 900_000,
+                "output": 10,
+                "reasoning": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "tokens_total": 900_010,
+                "prompt_id": "p1",
+                "prompt_title": "hi",
+            }
+        )
+        return rows
+
+
+def test_context_tab_charts_measured_growth_and_marks_compaction():
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(_ContextStore([workflow("ses_1", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+    assert "Context" in app.current_tabs()
+    lines = app.renderer.detail_context(app.current_session(), 90)
+    joined = "\n".join(lines)
+    # measured stats: the peak is the biggest main-thread turn (not the huge
+    # subagent turn), the window comes from the family fallback (claude -> 200k)
+    assert joined.startswith("# Context — anthropic/claude-testmodel · 200.0k window")
+    assert "160.0k" in joined and "of the window" in joined
+    assert "6 turns" in joined and "900.0k" not in joined
+    # the 160k -> 60k drop is a compaction: counted, marked and itemized
+    assert "compacted 1×" in joined and "freed ~100.0k" in joined
+    assert "▼" in joined and "160.0k → 60.0k" in joined
+    # chart rows carry plain heat levels (colors resolve only at paint time)
+    heat = app.renderer._ctx_line_heat
+    assert heat and all(isinstance(lvl, int) for lvl in heat.values())
+    # one color grammar: the peak line wears the heat of the height it describes
+    # (160k of the 200k window -> the hottest band), and every ▼ compaction line
+    # shares the marker row's amber
+    peak_idx = next(i for i, ln in enumerate(lines) if ln.startswith("  peak"))
+    assert heat[peak_idx] == 4  # int(160/200 * 5)
+    for i, ln in enumerate(lines):
+        if ln.startswith(("  compacted", "  ▼")):
+            assert heat[i] == app.renderer._CTX_MARK
+    # no composition opt-in on this store -> the estimated section stays absent
+    assert "What filled it" not in joined
+
+
+def test_context_tab_no_usage_message():
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+
+    class NoUsage(FakeStore):
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            return []
+
+    app = ot.App(NoUsage([workflow("ses_1", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+    lines = app.renderer.detail_context(app.current_session(), 80)
+    assert lines[0] == "# Context"
+    assert "No per-turn context usage" in lines[1]
+
+
+def test_claude_context_breakdown_composes_split_records_and_matches_tools():
+    # One streamed assistant message = several records (same message.id/requestId,
+    # one content block each): composition must walk every record, the tool_result
+    # must resolve its tool name through the pending tool_use id, and the later
+    # records' tool calls must fold into the turn the first record opened (the
+    # Tools tab fix). Wrapper/meta/compact user messages land in their own buckets.
+    # The transcript is written under TWO project slugs (a resumed session's
+    # replay): every count below must stay single -- user records need the same
+    # record-uuid replay guard as the assistant side.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        root2 = os.path.join(tmp, "projects", "slug2")
+        os.makedirs(root)
+        os.makedirs(root2)
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        prompt = _claude_user("please fix the parser", cwd=repo, uuid="u1")
+        rec1 = _claude_msg(
+            "s1", "claude-opus-4-8", _usage(100, 50), uuid="a1", cwd=repo, mid="m1", req="r1"
+        )
+        rec1["message"]["content"] = [{"type": "thinking", "thinking": "x" * 80}]
+        rec2 = _claude_msg(
+            "s1", "claude-opus-4-8", _usage(100, 50), uuid="a2", cwd=repo, mid="m1", req="r1"
+        )
+        rec2["message"]["content"] = [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls -la"}}
+        ]
+        result = _claude_user("", cwd=repo, uuid="u2")
+        result["message"]["content"] = [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "y" * 400}
+        ]
+        reminder = _claude_user("<system-reminder>injected</system-reminder>", cwd=repo, uuid="u3")
+        compacted = _claude_user("summary " * 50, cwd=repo, uuid="u4")
+        compacted["isCompactSummary"] = True
+        rows_out = [prompt, rec1, rec2, result, reminder, compacted]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), rows_out)
+        _write_jsonl(os.path.join(root2, "s1.jsonl"), rows_out)  # the resumed copy
+
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        store.workflows()
+        rows = {(r["category"], r["kind"]): r for r in store.context_breakdown("s1")}
+        assert store.supports_context("s1")
+        assert rows[("user prompts", "")]["count"] == 1
+        assert rows[("reasoning", "")]["est_tokens"] == 20  # 80 chars / 4, replay-deduped
+        assert rows[("tool results", "Bash")]["est_tokens"] == 100  # matched via t1
+        assert rows[("tool results", "Bash")]["count"] == 1  # not doubled by the replay
+        assert ("tool call params", "Bash") in rows
+        assert ("injected context", "system reminders") in rows
+        assert ("compaction summaries", "") in rows
+        # usage is still single-counted, and the folded turn carries the tool call
+        turns = store.message_timeline("s1")
+        assert len(turns) == 1 and turns[0]["tools"] == ["Bash"]
+        assert sum(r["calls"] for r in store.tool_breakdown("s1")) == 1
+
+
+def test_zaly_context_breakdown_mirrors_its_own_estimator():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "zaly")
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        assistant = _zaly_assistant("openai-codex/gpt-5.6", 100, 50, tools=["bash"])
+        assistant["message"]["content"].append({"type": "reasoning", "text": "z" * 40})
+        # A string-content system message (e.g. a compaction summary) is injected
+        # context, never the user's words.
+        sysmsg = {
+            "type": "message",
+            "uuid": "n-sys",
+            "ts": 1783696394300,
+            "message": {
+                "role": "system",
+                "content": "compaction summary text",
+                "id": "sys1",
+                "ts": 1783696394300,
+            },
+        }
+        rows = [
+            _zaly_settings("sid-1", repo),
+            _zaly_user("hello there friend"),
+            sysmsg,
+            assistant,
+        ]
+        _zaly_write(root, "slug", "sid-1", rows)
+        store = _zaly_store(root)
+        store.workflows()
+        got = {(r["category"], r["kind"]): r for r in store.context_breakdown("sid-1")}
+        assert store.supports_context("sid-1")
+        assert got[("user prompts", "")]["est_tokens"] == 5  # 18 chars / 4, rounded up
+        assert got[("assistant text", "")]["count"] == 1  # the "ok" text part
+        assert got[("reasoning", "")]["est_tokens"] == 10  # 40 chars / 4
+        assert ("tool call params", "bash") in got
+        assert got[("injected context", "system")]["est_tokens"] == 6  # 23 chars / 4
+        assert got[("user prompts", "")]["count"] == 1  # the system text stayed out
+
+
+def test_csv_context_curve_only_with_real_session_ids():
+    # A synthetic (date, project) session interleaves unrelated conversations, so
+    # its "curve" would be noise with fake compactions -- no Context tab. Rows
+    # with a real session_id keep it.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "log.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "output_tokens", "session_id"],
+            [["2026-06-18T10:00:00Z", "gpt-4o", 5000, 300, "s1"]],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        store.workflows()
+        assert store.supports_context_curve("s1") is True
+        bare = os.path.join(tmp, "bare.csv")
+        _write_csv(
+            bare,
+            ["timestamp", "model", "input_tokens", "output_tokens"],
+            [["2026-06-18T10:00:00Z", "gpt-4o", 5000, 300]],
+        )
+        store2 = ot.CsvStore(bare, _csv_args())
+        (w,) = store2.workflows()
+        assert w.id.startswith("csv:")
+        assert store2.supports_context_curve(w.id) is False
+        assert store2.supports_turns(w.id) is True  # Turns stays
+
+
+def test_context_tab_hidden_when_curve_unsupported():
+    # A backend whose turn rows are cumulative deltas, not per-request prompt
+    # sizes (Codex), opts out of the curve -- the whole tab disappears rather
+    # than charting per-turn consumption as context. Turns/Tools stay.
+    class DeltaStore(_ContextStore):
+        def supports_context_curve(self, wid):
+            return False
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(DeltaStore([workflow("ses_1", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+    tabs = app.current_tabs()
+    assert "Turns" in tabs and "Context" not in tabs
+    # CodexStore itself is the real opt-out
+    codex = ot.CodexStore("/nonexistent", type("A", (), {"demo": False})())
+    assert codex.supports_context_curve("any") is False
+
+
+def test_context_tab_flags_mixed_model_windows():
+    # After a mid-session model switch the chart still scales to the last model's
+    # window (declared in the header), but the peak %% must use the window the
+    # peak turn actually ran in, and a "!" caveat calls out the mixed windows.
+    class SwitchStore(_ContextStore):
+        def message_timeline(self, wid):
+            rows = super().message_timeline(wid)
+            rows[0]["model_name"] = "openai/gpt-5-early"  # 400k fallback window
+            return rows
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(SwitchStore([workflow("ses_1", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+    joined = "\n".join(app.renderer.detail_context(app.current_session(), 90))
+    # peak turn (160k) ran on the claude model -> 200k window -> 80%
+    assert "(80%)" in joined
+    assert "! this session switched between models" in joined
+    assert "200.0k window" in joined  # header still names the live window
 
 
 if __name__ == "__main__":

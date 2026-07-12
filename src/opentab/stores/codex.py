@@ -451,6 +451,16 @@ class CodexStore:
         )
         return cur
 
+    def supports_context_curve(self, workflow_id: str) -> bool:
+        # The Context tab's growth curve reads a turn row's input+cacheRead as the
+        # live prompt size -- true for the per-API-request backends, but a Codex
+        # turn row is the *delta of the cumulative total* across every model
+        # request the turn made (all its tool rounds), so a tool-heavy turn sums
+        # many prompts and dwarfs the real context. No tab rather than a wrong
+        # chart. (Rollouts also log last_token_usage -- the turn's final request --
+        # which could feed a genuine curve one day.)
+        return False
+
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title_prompt"] or "(untitled)"
         s["directory"] = self._git_root(s["cwd"]) if s["cwd"] else "(unknown)"

@@ -12,7 +12,16 @@ from datetime import datetime, timezone
 from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt
 from opentab.models import Workflow
-from opentab.util import LazyStatusRoot, git_root, read_files_parallel, tool_rows_from_turns
+from opentab.util import (
+    ATTACHMENT_EST_TOKENS,
+    LazyStatusRoot,
+    context_add,
+    context_rows,
+    est_tokens,
+    git_root,
+    read_files_parallel,
+    tool_rows_from_turns,
+)
 
 
 def default_zaly_data_dir() -> str:
@@ -254,6 +263,7 @@ class ZalyStore:
             "seen_msgs": set(),  # assistant message.ids already counted (branch dedup)
             "turns": [],  # one per assistant message, for the Turns/Tools tabs
             "prompts": [],  # user messages, for the Turns tab's ▸ grouping
+            "context": {},  # (category, kind) -> [count, est_tokens], Context tab
         }
 
     # --- parsing -------------------------------------------------------------
@@ -452,15 +462,24 @@ class ZalyStore:
             rts = mts if mts is not None else ts
             if role == "user":
                 txt = self._user_text(msg.get("content"))
-                if txt.strip():
-                    if not s["title_prompt"]:
-                        s["title_prompt"] = " ".join(txt.split())[:80]
-                    if mid is None or mid not in s["seen_msgs"]:
-                        if mid is not None:
-                            s["seen_msgs"].add(mid)
+                if txt.strip() and not s["title_prompt"]:
+                    s["title_prompt"] = " ".join(txt.split())[:80]
+                if mid is None or mid not in s["seen_msgs"]:
+                    if mid is not None:
+                        s["seen_msgs"].add(mid)
+                    if txt.strip():
                         s["prompts"].append(
                             {"ts": rts or 0.0, "id": str(mid or rts or ""), "title": txt.strip()}
                         )
+                    self._ctx_content(s["context"], msg.get("content"), "user")
+                continue
+            if role == "system":
+                # zaly's compaction summaries and session-start snapshots ride in as
+                # system messages (meta parts) -- context, but never the user's words.
+                if mid is None or mid not in s["seen_msgs"]:
+                    if mid is not None:
+                        s["seen_msgs"].add(mid)
+                    self._ctx_content(s["context"], msg.get("content"), "system")
                 continue
             if role != "assistant":
                 continue
@@ -515,6 +534,7 @@ class ZalyStore:
             for c in (msg.get("content") or [])
             if isinstance(c, dict) and c.get("type") == "tool-call" and c.get("name")
         ]
+        self._ctx_content(s["context"], msg.get("content"), "assistant")
         s["turns"].append(
             {
                 "ts": ts or 0.0,  # epoch seconds; sorts numerically
@@ -531,6 +551,93 @@ class ZalyStore:
                 "tools": tools,
             }
         )
+
+    # --- context composition (the Context tab) --------------------------------
+    # Estimated at chars/4, mirroring zaly's own /context command (its
+    # estimatePart walks the same part types with the same flat attachment
+    # guesses), so opentab's Zaly composition stays comparable to zaly's. The
+    # system prompt and tool schemas are rebuilt live by zaly and never persisted,
+    # so they can't appear here -- the renderer shows the measured first-turn
+    # baseline for that.
+
+    def _ctx_content(self, ctx: dict, content, role: str) -> None:
+        if isinstance(content, str):
+            if role == "assistant":
+                context_add(ctx, "assistant text", "", est_tokens(content))
+            elif role == "system":  # e.g. a compaction summary -- never the user's words
+                context_add(ctx, "injected context", "system", est_tokens(content))
+            else:
+                context_add(ctx, "user prompts", "", est_tokens(content.strip()))
+            return
+        if isinstance(content, list):
+            for p in content:
+                if isinstance(p, dict):
+                    self._ctx_part(ctx, p, role)
+
+    def _ctx_part(self, ctx: dict, p: dict, role: str) -> None:
+        pt = p.get("type")
+        if pt == "text":
+            if role == "assistant":
+                context_add(ctx, "assistant text", "", est_tokens(p.get("text") or ""))
+            elif role == "system":
+                context_add(ctx, "injected context", "system", est_tokens(p.get("text") or ""))
+            else:
+                context_add(ctx, "user prompts", "", est_tokens((p.get("text") or "").strip()))
+        elif pt == "reasoning":
+            context_add(ctx, "reasoning", "", est_tokens(p.get("text") or ""))
+        elif pt == "tool-call":
+            name = p.get("name") or "(unknown)"
+            try:
+                params = json.dumps(p.get("params") or {})
+            except (TypeError, ValueError):
+                params = str(p.get("params") or "")
+            context_add(ctx, "tool call params", name, est_tokens(params))
+        elif pt == "tool-result":
+            name = p.get("name") or "(unknown)"
+            body = p.get("content") if p.get("content") is not None else p.get("result")
+            context_add(ctx, "tool results", name, self._est_content_tokens(body))
+        elif pt in ATTACHMENT_EST_TOKENS:
+            context_add(ctx, "attachments", pt, ATTACHMENT_EST_TOKENS[pt])
+        elif pt in ("meta", "error"):
+            kind = str(p.get("tag") or pt)
+            data = p.get("data")
+            try:
+                blob = json.dumps(data) if data is not None else (p.get("text") or "")
+            except (TypeError, ValueError):
+                blob = str(data)
+            context_add(ctx, "injected context", kind, est_tokens(blob))
+
+    @classmethod
+    def _est_content_tokens(cls, content) -> int:
+        # A tool-result body: bare string, or nested parts (zaly's estimateContent).
+        if isinstance(content, str):
+            return est_tokens(content)
+        total = 0
+        if isinstance(content, list):
+            for x in content:
+                if not isinstance(x, dict):
+                    total += est_tokens(str(x))
+                elif x.get("type") in ATTACHMENT_EST_TOKENS:
+                    total += ATTACHMENT_EST_TOKENS[x["type"]]
+                else:
+                    total += est_tokens(x.get("text") or "")
+        elif isinstance(content, dict):
+            try:
+                total += est_tokens(json.dumps(content))
+            except (TypeError, ValueError):
+                total += est_tokens(str(content))
+        return total
+
+    def context_breakdown(self, workflow_id: str) -> list[dict]:
+        # Estimated composition rows for the Context tab; the measured growth curve
+        # comes from the turn rows, not from here.
+        s = self._parse().get(workflow_id)
+        return context_rows(s["context"]) if s else []
+
+    def supports_context(self, workflow_id: str) -> bool:
+        # session.jsonl always carries full message content, so composition applies
+        # to every session.
+        return True
 
     def _finalize(self, s: dict) -> None:
         sid = s["sid"]

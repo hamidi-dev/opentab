@@ -583,6 +583,14 @@ class CsvStore:
     def supports_turns(self, workflow_id: str) -> bool:
         return True
 
+    def supports_context_curve(self, workflow_id: str) -> bool:
+        # The Context tab's growth curve needs the rows to be one *conversation's*
+        # consecutive requests. A log row with a real session_id qualifies; a
+        # synthetic (date, project) bucket (the "csv:" ids _ingest_row mints when
+        # the column is absent) interleaves unrelated conversations, so a "curve"
+        # over it would be noise and fake compactions. JsonlStore inherits.
+        return not str(workflow_id).startswith("csv:")
+
     def tool_breakdown(self, workflow_id: str) -> list[dict]:
         # Per-(tool, model) token/cost attribution for the Tools tab: each request
         # row's tokens (and recorded cost, when the log carries one) split evenly

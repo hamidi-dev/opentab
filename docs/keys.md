@@ -15,8 +15,10 @@ detail pane (remembered between runs). The session view is full-screen.
 
 Detail tabs per scope: years/months get Overview · Models · Projects · Sessions;
 days drop Models. A session adds **Turns** (per-turn cost over time, every source
-that records per-step usage) and **Tools** (per-tool / MCP spend) when its source
-supports them, and **Sources** joins in the merged `all` view.
+that records per-step usage), **Tools** (per-tool / MCP spend) and **Context** (the
+context window's growth curve, % of the model's window, compaction markers, and —
+on sources whose logs carry content — an estimated breakdown of what filled it)
+when its source supports them, and **Sources** joins in the merged `all` view.
 
 ## Move around
 

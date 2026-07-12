@@ -191,6 +191,9 @@ class App:
         # Per-turn timeline (OpenCode + Claude), same lazy/cached-per-session deal as
         # the tool rows above -- a cheap per-session scan, never loaded at startup.
         self._turns_by_session: dict[str, list[dict]] = {}
+        # Estimated context composition (Claude + Zaly), same lazy/cached deal --
+        # the Context tab's curve reads the turn rows, this is only its tree.
+        self._context_by_session: dict[str, list[dict]] = {}
         # Subagent tree per session (workflow_nodes: a recursive CTE / backend parse),
         # same lazy/cached-per-session deal -- the Subagents tab repaints every frame.
         self._nodes_by_session: dict[str, list[dict]] = {}
@@ -1110,6 +1113,42 @@ class App:
             r["cost"] = round(r.get("cost", 0) * k, 4)
         return rows
 
+    def session_supports_context(self, workflow_id: str) -> bool:
+        # Whether the Context tab's estimated composition section applies (only
+        # backends whose logs carry full message content implement the opt-in).
+        # The tab itself rides on session_supports_context_curve below.
+        check = getattr(self.store, "supports_context", None)
+        return bool(check(workflow_id)) if check else False
+
+    def session_supports_context_curve(self, workflow_id: str) -> bool:
+        # Whether the Context tab applies at all: the measured growth curve needs
+        # turn rows whose input+cacheRead are *per-API-request* prompt sizes.
+        # That's every Turns backend by default; a backend whose rows are deltas
+        # of a cumulative total (Codex -- one row can sum many requests' prompts)
+        # opts out via supports_context_curve, hiding the tab rather than
+        # charting per-turn consumption as if it were context size.
+        if not self.session_supports_turns(workflow_id):
+            return False
+        check = getattr(self.store, "supports_context_curve", None)
+        return bool(check(workflow_id)) if check else True
+
+    def session_context_rows(self, workflow_id: str) -> list[dict]:
+        # Estimated composition rows for one session, fetched once and cached (the
+        # session_turn_rows deal); the renderer aggregates on top each frame.
+        cached = self._context_by_session.get(workflow_id)
+        if cached is not None:
+            return cached
+        fetch = getattr(self.store, "context_breakdown", None)
+        rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
+        if self.store.demo:
+            # Scale the estimates by the hidden factor so they stay proportionate
+            # to the scaled turn curve; categories/tool names aren't sensitive.
+            k = self.store.demo_scale
+            for r in rows:
+                r["est_tokens"] = int(round(r["est_tokens"] * k))
+        self._context_by_session[workflow_id] = rows
+        return rows
+
     def session_data_ready(self, workflow_id: str) -> bool:
         # Whether every lazy per-session fetch (subagent tree, Turns, Tools) is
         # already memoized. When it isn't, draw_detail paints one "loading" frame
@@ -1121,6 +1160,11 @@ class App:
         if self.session_supports_turns(workflow_id) and workflow_id not in self._turns_by_session:
             return False
         if self.session_supports_tools(workflow_id) and workflow_id not in self._tool_by_session:
+            return False
+        if (
+            self.session_supports_context(workflow_id)
+            and workflow_id not in self._context_by_session
+        ):
             return False
         return True
 
@@ -1134,6 +1178,8 @@ class App:
             self.session_turn_rows(workflow_id)
         if self.session_supports_tools(workflow_id):
             self.session_tool_rows(workflow_id)
+        if self.session_supports_context(workflow_id):
+            self.session_context_rows(workflow_id)
 
     def session_node_rows(self, workflow_id: str) -> list[dict]:
         # Subagent tree for one session, fetched once and cached. The store call is the
@@ -1299,6 +1345,7 @@ class App:
         self._resolve_project_roots()
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._context_by_session.clear()
         self._nodes_by_session.clear()
         self._load_model_cache()
         self.zoom_project = None
@@ -1466,6 +1513,7 @@ class App:
         self._models_loaded = False
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._context_by_session.clear()
         self._nodes_by_session.clear()
         self._load_model_cache()
         self._invalidate_workflow_cache()
@@ -4274,6 +4322,12 @@ class App:
                 tabs += ("Turns",)
             if wf is not None and self.session_supports_tools(wf.id):
                 tabs += ("Tools",)
+            if wf is not None and self.session_supports_context_curve(wf.id):
+                # Context rides on the turn rows (the measured growth curve; Codex
+                # opts out -- its rows are cumulative deltas, not prompt sizes);
+                # the estimated composition section inside it is its own separate
+                # per-backend opt-in (session_supports_context), absent not empty.
+                tabs += ("Context",)
             return tabs
         if self.browse_mode == "projects":
             base = self.project_tabs

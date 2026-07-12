@@ -11,7 +11,15 @@ from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
 from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
 from opentab.pricing import api_equivalent_cost
-from opentab.util import git_root, read_files_parallel, tool_rows_from_turns
+from opentab.util import (
+    ATTACHMENT_EST_TOKENS,
+    context_add,
+    context_rows,
+    est_tokens,
+    git_root,
+    read_files_parallel,
+    tool_rows_from_turns,
+)
 
 
 class ClaudeStore:
@@ -106,6 +114,25 @@ class ClaudeStore:
         "<user-memory-input",
     )
 
+    # The Context tab's "injected context" sub-buckets: fold each wrapper tag to a
+    # readable kind so the composition tree shows "system reminders" instead of
+    # eleven raw tag spellings.
+    _INJECTED_KINDS = (
+        ("<system-reminder", "system reminders"),
+        ("<bash-", "bash in/output"),
+        ("<user-memory-input", "memory"),
+        ("<local-command", "slash commands"),
+        ("<command-", "slash commands"),
+    )
+
+    @classmethod
+    def _injected_kind(cls, text: str) -> str | None:
+        # The injected-context bucket for a wrapper-tagged user text, or None for a
+        # genuine prompt (the composition twin of _prompt_text's wrapper skip).
+        if not text.startswith(cls._WRAPPER_TAGS):
+            return None
+        return next((kind for tag, kind in cls._INJECTED_KINDS if text.startswith(tag)), "other")
+
     @classmethod
     def _prompt_text(cls, message) -> str | None:
         # A *real* user prompt's full text (the Turns tab can expand it; the
@@ -199,6 +226,10 @@ class ClaudeStore:
                 "side_usage": {},  # sidechain-assistant uuid -> (model_name, acc)
                 "turns": [],  # per-message rows for the Turns tab (chronological)
                 "prompts": [],  # {ts,title,id} per real user prompt, for Turns grouping
+                "context": {},  # (category, kind) -> [count, est_tokens], Context tab
+                "pending_tools": {},  # tool_use id -> name, consumed by its tool_result
+                "ctx_seen": set(),  # record uuids already composed (replay dedup)
+                "turn_by_key": {},  # (message.id, requestId) -> index into turns
             }
         cwd = o.get("cwd")
         if cwd and not s["cwd"]:
@@ -228,6 +259,16 @@ class ClaudeStore:
                 )
                 if not s["title_prompt"]:
                     s["title_prompt"] = text[:80]  # the session-title fallback stays short
+        if typ == "user" and o.get("isSidechain") is not True:
+            # Sidechain (Task) content runs in the subagent's own context window, so
+            # only main-thread content counts toward this session's composition.
+            # Same record-uuid replay guard as the assistant side: a session resumed
+            # under a second project slug replays these records verbatim, and usage
+            # dedup alone would leave the user-side composition double-counted.
+            if uuid is None or uuid not in s["ctx_seen"]:
+                if uuid is not None:
+                    s["ctx_seen"].add(uuid)
+                self._ingest_user_context(o, s)
         if typ != "assistant":
             return
         msg = o.get("message")
@@ -236,9 +277,38 @@ class ClaudeStore:
         usage, model = msg.get("usage"), msg.get("model")
         if not isinstance(usage, dict) or not model or model == "<synthetic>":
             return  # nothing priceable on this row
+        side = o.get("isSidechain") is True
+        # A streamed assistant message lands as SEVERAL records -- one content
+        # block each, same (message.id, requestId), each echoing the full usage.
+        # The `seen` dedup below keeps usage single-counted, but content must be
+        # walked on every record or later blocks (typically the tool_use after a
+        # thinking block) vanish. `fresh` is the record-uuid replay guard: a
+        # session resumed under a second project slug replays these records
+        # verbatim, and both the composition walk and the tool-name fold below
+        # must count each record exactly once.
+        fresh = uuid is None or uuid not in s["ctx_seen"]
+        if fresh and uuid is not None:
+            s["ctx_seen"].add(uuid)
+        if fresh and not side:
+            self._ingest_assistant_context(msg, s)
+        # The tool_use blocks this step invoked (duplicates kept: two Bash calls =
+        # two calls, two shares) -- tool_breakdown splits the turn's tokens across
+        # them, the Store.tool_breakdown attribution.
+        tools = [
+            c.get("name")
+            for c in (msg.get("content") or [])
+            if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name")
+        ]
         key = (msg.get("id"), o.get("requestId"))
         if all(key):
             if key in seen:
+                # A later content-block record of the same message: its usage is the
+                # echo (skip), but its tool calls belong to the turn the first record
+                # opened -- fold them in so the Tools tab sees the whole step.
+                if tools and fresh:
+                    idx = s["turn_by_key"].get(key)
+                    if idx is not None:
+                        s["turns"][idx]["tools"].extend(tools)
                 return
             seen.add(key)
         # Claude Code models are bare ("claude-opus-4-8"); prefix the provider so
@@ -256,15 +326,8 @@ class ClaudeStore:
         out_t = int(usage.get("output_tokens", 0) or 0)
         cr = int(usage.get("cache_read_input_tokens", 0) or 0)
         cw = int(usage.get("cache_creation_input_tokens", 0) or 0)
-        side = o.get("isSidechain") is True
-        # The tool_use blocks this step invoked (duplicates kept: two Bash calls =
-        # two calls, two shares) -- tool_breakdown splits the turn's tokens across
-        # them, the Store.tool_breakdown attribution.
-        tools = [
-            c.get("name")
-            for c in (msg.get("content") or [])
-            if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name")
-        ]
+        if all(key):
+            s["turn_by_key"][key] = len(s["turns"])  # later block records fold in here
         s["turns"].append(
             {
                 "ts": o.get("timestamp") or "",
@@ -287,6 +350,96 @@ class ClaudeStore:
             s["side_usage"][uuid or len(s["side_usage"])] = (model_name, acc)
         else:
             self._add_usage(entry["root"], usage)
+
+    # --- context composition (the Context tab) --------------------------------
+    # What the session's context window filled up with, estimated at chars/4
+    # (util.est_tokens) since transcripts record content but not per-block token
+    # counts. The system prompt and tool/MCP schemas are NOT in any transcript --
+    # they exist only in the live request -- so they can never appear here; the
+    # renderer surfaces them as the measured first-turn baseline instead.
+
+    def _ingest_user_context(self, o: dict, s: dict) -> None:
+        msg = o.get("message")
+        if not isinstance(msg, dict):
+            return
+        content = msg.get("content")
+        blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
+        if not isinstance(blocks, list):
+            return
+        ctx = s["context"]
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            bt = b.get("type")
+            if bt == "text":
+                text = (b.get("text") or "").strip()
+                if not text:
+                    continue
+                if o.get("isCompactSummary") is True:
+                    context_add(ctx, "compaction summaries", "", est_tokens(text))
+                    continue
+                kind = self._injected_kind(text)
+                if kind is None and o.get("isMeta") is True:
+                    kind = "other"
+                if kind is not None:
+                    context_add(ctx, "injected context", kind, est_tokens(text))
+                else:
+                    context_add(ctx, "user prompts", "", est_tokens(text))
+            elif bt == "tool_result":
+                name = s["pending_tools"].pop(b.get("tool_use_id"), "") or "(unknown)"
+                context_add(ctx, "tool results", name, self._est_result_tokens(b.get("content")))
+            elif bt == "image":
+                context_add(ctx, "attachments", "image", ATTACHMENT_EST_TOKENS["image"])
+
+    def _ingest_assistant_context(self, msg: dict, s: dict) -> None:
+        ctx = s["context"]
+        for c in msg.get("content") or []:
+            if not isinstance(c, dict):
+                continue
+            ct = c.get("type")
+            if ct == "text":
+                context_add(ctx, "assistant text", "", est_tokens(c.get("text") or ""))
+            elif ct in ("thinking", "redacted_thinking"):
+                blob = c.get("thinking") or c.get("data") or ""
+                context_add(ctx, "reasoning", "", est_tokens(blob))
+            elif ct == "tool_use":
+                name = c.get("name") or "(unknown)"
+                if c.get("id"):
+                    s["pending_tools"][c["id"]] = name
+                try:
+                    params = json.dumps(c.get("input") or {})
+                except (TypeError, ValueError):
+                    params = str(c.get("input") or "")
+                context_add(ctx, "tool call params", name, est_tokens(params))
+
+    @staticmethod
+    def _est_result_tokens(content) -> int:
+        # A tool_result's content is a bare string or a list of text/image/
+        # tool_reference blocks; an embedded image costs its flat attachment guess.
+        if isinstance(content, str):
+            return est_tokens(content)
+        total = 0
+        if isinstance(content, list):
+            for x in content:
+                if not isinstance(x, dict):
+                    total += est_tokens(str(x))
+                elif x.get("type") == "image":
+                    total += ATTACHMENT_EST_TOKENS["image"]
+                else:
+                    total += est_tokens(x.get("text") or "")
+        return total
+
+    def context_breakdown(self, workflow_id: str) -> list[dict]:
+        # Estimated composition rows for the Context tab (what filled the window),
+        # flattened by util.context_rows; the measured growth curve comes from the
+        # turn rows, not from here.
+        s = self._parse().get(workflow_id)
+        return context_rows(s["context"]) if s else []
+
+    def supports_context(self, workflow_id: str) -> bool:
+        # Transcripts always carry full message content, so composition applies to
+        # every session.
+        return True
 
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title_custom"] or s["title_ai"] or s["title_prompt"] or "(untitled)"

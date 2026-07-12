@@ -98,8 +98,10 @@ from opentab.models import (
     year_label,
 )
 from opentab.pricing import (
+    DEFAULT_CONTEXT_WINDOW,
     FALLBACK_PRICE,
     LOCAL_PROVIDERS,
+    MODEL_CONTEXT_FALLBACKS,
     MODEL_PRICE_FALLBACKS,
     MODELS_DEV_URL,
     api_equivalent_cost,
@@ -110,6 +112,7 @@ from opentab.pricing import (
     family_label,
     invalidate_price_cache,
     is_local_provider,
+    model_context_window,
     model_family,
     model_price,
     price_cache_meta,
@@ -154,11 +157,16 @@ from opentab.themes import (
 from opentab.tui.app import App
 from opentab.tui.renderer import Renderer
 from opentab.util import (
+    ATTACHMENT_EST_TOKENS,
     DATE_PATTERN,
+    EST_CHARS_PER_TOKEN,
     MONTH_PATTERN,
     OPENCODE_BUILTIN_TOOLS,
     YEAR_PATTERN,
+    context_add,
+    context_rows,
     copy_to_clipboard,
+    est_tokens,
     fuzzy_score,
     git_root,
     in_tmux,

@@ -159,6 +159,47 @@ def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
     return sorted(agg.values(), key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
 
+# --- context-composition estimation (the Context tab) ------------------------
+# No tokenizer in the stdlib, so composition sizes are chars/4 estimates -- the
+# same coarse constant zaly's own /context command uses (and labels "estimated"),
+# which keeps opentab's Zaly numbers comparable to zaly's. Attachments have no
+# text length; these are zaly's flat per-attachment guesses.
+EST_CHARS_PER_TOKEN = 4
+ATTACHMENT_EST_TOKENS = {"image": 1500, "audio": 3000, "pdf": 8000, "video": 5000}
+
+
+def est_tokens(text) -> int:
+    # Estimated token count of a text blob (never 0 for non-empty text).
+    if not text:
+        return 0
+    return max(1, (len(text) + EST_CHARS_PER_TOKEN - 1) // EST_CHARS_PER_TOKEN)
+
+
+def context_add(ctx: dict, category: str, kind: str, tokens: int, count: int = 1) -> None:
+    # Accumulate one content block into a session's composition map,
+    # {(category, kind): [count, est_tokens]} -- the shape context_rows flattens.
+    if tokens <= 0:
+        return
+    row = ctx.get((category, kind))
+    if row is None:
+        row = ctx[(category, kind)] = [0, 0]
+    row[0] += count
+    row[1] += tokens
+
+
+def context_rows(ctx: dict) -> list[dict]:
+    # Flatten a composition map into the rows store.context_breakdown returns,
+    # biggest first (the renderer nests kinds under their category itself).
+    return sorted(
+        (
+            {"category": cat, "kind": kind, "count": c, "est_tokens": t}
+            for (cat, kind), (c, t) in ctx.items()
+        ),
+        key=lambda r: r["est_tokens"],
+        reverse=True,
+    )
+
+
 class LazyStatusRoot(dict):
     """A recent_roots() row whose expensive fields resolve on first access (the
     ClaudeStore._TranscriptRoot pattern, shared by the other file backends): the

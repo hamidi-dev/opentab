@@ -36,6 +36,9 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
   provider / source rankings; every one navigable down to a single session.
 - **Turns and Tools** — per-turn cost over time inside a session, and token attribution
   per tool call.
+- **Context** — a session's context window over time: a heat-shaded growth curve with
+  compaction markers and % of the model's window (measured from recorded usage), plus
+  an estimated breakdown of what filled it — tool results, prompts, reasoning, per tool.
 - **Honest `$` what-if** — subscription usage shows its true `$0`, and `$` reprices it at
   API list rates; `P` shows the exact per-model table behind the estimate.
 - **A web twin** — the same browser as one self-contained HTML file (`--html`), or served
@@ -126,23 +129,27 @@ source** when more than one exists; **switch live with `c`**.
 Every source feeds the same browser — months, days, projects, sessions, models, trends.
 What each tool's records support on top:
 
-| Source | Cost | Subagent tree | Turns | Tools |
-|--------|------|:---:|:---:|:---:|
-| OpenCode | real recorded | ✓ | ✓ | ✓ |
-| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ |
-| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ |
-| Hermes Agent | mixed — metered real, rest estimated | ✓ | — | — |
-| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — |
-| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — |
-| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ |
-| OpenClaw | mixed — metered real, rest estimated | — | ✓ | — |
-| zaly | mixed — metered real, rest estimated | — | ✓ | ✓ |
-| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² |
+| Source | Cost | Subagent tree | Turns | Tools | Context |
+|--------|------|:---:|:---:|:---:|:---:|
+| OpenCode | real recorded | ✓ | ✓ | ✓ | curve |
+| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
+| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | — ³ |
+| Hermes Agent | mixed — metered real, rest estimated | ✓ | — | — | — |
+| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — | curve |
+| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | curve |
+| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | curve |
+| OpenClaw | mixed — metered real, rest estimated | — | ✓ | — | curve |
+| zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
+| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² | curve ⁴ |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
 **Turns** — the per-turn cost timeline inside a session · **Tools** — token attribution
-per tool call and MCP server · ¹ headerless: the OTEL export captures no prompt text ·
-² with the optional `tool` column.</sub>
+per tool call and MCP server · **Context** — the context-window growth curve (measured,
+rides on Turns) — "✓" adds the estimated what-filled-it composition tree ·
+¹ headerless: the OTEL export captures no prompt text · ² with the optional `tool`
+column · ³ Codex records per-turn deltas of a cumulative total, not per-request
+prompt sizes, so an honest curve isn't derivable · ⁴ only with a real `session_id`
+column — a synthetic per-day session interleaves unrelated conversations.</sub>
 
 **[docs/sources.md](docs/sources.md)** has the full detail per source — where each
 tool's records live, its flags and env vars, how cost is derived, quirks (Copilot's

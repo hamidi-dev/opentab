@@ -48,7 +48,13 @@ from opentab.heatmap import (
     heat_palette,
 )
 from opentab.models import ALL_YEARS, year_label
-from opentab.pricing import api_equivalent_cost, family_label, model_price, price_source_meta
+from opentab.pricing import (
+    api_equivalent_cost,
+    family_label,
+    model_context_window,
+    model_price,
+    price_source_meta,
+)
 from opentab.util import fuzzy_score, launcher_hook, tool_namespace
 
 
@@ -318,6 +324,8 @@ class Renderer:
                 return self.detail_turns(workflow, content_width)
             if current == "Tools":
                 return self.detail_tools(workflow, content_width)
+            if current == "Context":
+                return self.detail_context(workflow, content_width)
             return self.detail_overview(workflow, content_width)
 
         if self.view == "zoom":
@@ -1489,6 +1497,8 @@ class Renderer:
             lines = self.detail_turns(workflow, w - 4)
         elif current == "Tools":
             lines = self.detail_tools(workflow, w - 4)
+        elif current == "Context":
+            lines = self.detail_context(workflow, w - 4)
         else:
             lines = self.detail_overview(workflow, w - 4)
 
@@ -1501,6 +1511,15 @@ class Renderer:
                 attr = curses.color_pair(6) | curses.A_BOLD
             elif line.startswith("  │"):  # Turns tab: an unfolded prompt's full text
                 attr = curses.color_pair(1)
+            if current == "Context":
+                # The context chart's rows are heat-shaded by how full the window is
+                # at that height; detail_context stashed each line's level by index
+                # (plain data -- the color pair resolves only here, at paint time).
+                lvl = self._ctx_line_heat.get(self.scroll + offset)
+                if lvl == self._CTX_MARK:
+                    attr = curses.color_pair(2) | curses.A_BOLD
+                elif lvl is not None:
+                    attr = curses.color_pair(PRICE_HEAT_BASE_PAIR + lvl) | curses.A_BOLD
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
             self._register_line_sort_header(
                 y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
@@ -2161,6 +2180,203 @@ class Renderer:
         ]
         return lines
 
+    # The Context tab's chart geometry: enough rows for the curve's shape without
+    # eating the pane, and a right-aligned y-axis gutter ("681.7k┤").
+    _CTX_CHART_ROWS = 9
+    _CTX_GUTTER = 8
+    # A drop this sharp from a context this big is a compaction/clear, not a small
+    # prompt: heuristic, but backend-agnostic (only Codex records resets explicitly).
+    _CTX_COMPACT_FLOOR = 50_000
+    _CTX_COMPACT_RATIO = 0.6
+
+    # Marker value in _ctx_line_heat for the amber ▼ compaction rows (heat levels
+    # are >= 0); draw_detail maps levels to color pairs at paint time, keeping
+    # detail_context plain-text like every other drawing method.
+    _CTX_MARK = -1
+
+    @staticmethod
+    def _ctx_heat_level(value: float, window: int) -> int:
+        # The green→red price-heat ramp, repurposed: how full the window is at this
+        # height. Fixed pairs (PRICE_HEAT_BASE_PAIR..), so no per-frame inits.
+        frac = value / window if window > 0 else 0.0
+        return max(0, min(PRICE_HEAT_LEVELS - 1, int(frac * PRICE_HEAT_LEVELS)))
+
+    def detail_context(self, workflow: Workflow, width: int) -> list[str]:
+        # What the session's context window did over time -- the *measured* side is
+        # exact (every main-thread turn's recorded prompt = input + cacheRead +
+        # cacheWrite IS the live context size at that step), drawn as a heat-shaded
+        # area chart with ▼ compaction markers; the *estimated* side (what filled
+        # it) is the per-category composition tree the content-carrying backends
+        # opt into, chars/4 like zaly's own /context. The system prompt and tool
+        # schemas exist only in the live request -- no harness logs them -- so they
+        # can only ever appear here as the measured turn-1 baseline.
+        self._ctx_line_heat: dict[int, int] = {}
+        rows = self.session_turn_rows(workflow.id)
+        main = [r for r in rows if not r.get("depth")]
+        pts = [
+            (r, (r.get("input") or 0) + (r.get("cache_read") or 0) + (r.get("cache_write") or 0))
+            for r in main
+        ]
+        pts = [(r, v) for r, v in pts if v > 0]
+        if not pts:
+            return ["# Context", "No per-turn context usage recorded for this session."]
+        vals = [v for _r, v in pts]
+        n = len(vals)
+        model = pts[-1][0]["model_name"]  # the chart scales to the live (last) window
+        window = model_context_window(model)
+        final, peakv, start = vals[-1], max(vals), vals[0]
+        peak_i = vals.index(peakv)
+        peak_at = peak_i + 1
+        # A session can switch models mid-way: the peak % is honest to the window
+        # the peak turn actually ran in, and mixed windows get a "!" caveat --
+        # the heat rows can't re-scale per column (one attr per line), so the
+        # header declares which window the chart uses.
+        peak_window = model_context_window(pts[peak_i][0]["model_name"])
+        windows = {model_context_window(r["model_name"]) for r, _v in pts}
+        comps = [
+            (j, vals[j - 1], vals[j])
+            for j in range(1, n)
+            if vals[j - 1] > self._CTX_COMPACT_FLOOR
+            and vals[j] < vals[j - 1] * self._CTX_COMPACT_RATIO
+        ]
+        freed = sum(before - after for _j, before, after in comps)
+
+        lines = [
+            f"# Context — {shorten(model, max(16, width - 24))} · {human_tokens(window)} window"
+        ]
+        bar = cost_bar(final, window, 22)
+        lines.append(f"  end  {human_tokens(final):>7}  ▕{bar}▏ {pct(final, window)} of the window")
+        self._ctx_line_heat[len(lines) - 1] = self._ctx_heat_level(final, window)
+        lines.append(
+            f"  peak {human_tokens(peakv):>7}  ({pct(peakv, peak_window)}) at turn {peak_at} · "
+            f"session start {human_tokens(start)} · {n} turns"
+        )
+        # The peak line describes the value the chart's top row draws -- give it
+        # that height's heat color (against its own turn's window) so the stats
+        # and the chart read as one scale, like the end line above.
+        self._ctx_line_heat[len(lines) - 1] = self._ctx_heat_level(peakv, peak_window)
+        if comps:
+            lines.append(
+                f"  compacted {len(comps)}× — freed ~{human_tokens(freed)} of context along the way"
+            )
+            self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK  # ▼ amber, one grammar
+        if len(windows) > 1:
+            lines.append(
+                "! this session switched between models with different windows — the "
+                f"chart and heat scale to the last one ({human_tokens(window)})"
+            )
+        lines.append("")
+
+        # --- the growth curve: one column per turn (bucketed max when the session
+        # outgrows the pane), eighth-block resolution, rows heat-shaded by window
+        # fullness so the chart itself says how close to the limit it ran.
+        gut, chart_h = self._CTX_GUTTER, self._CTX_CHART_ROWS
+        plot_w = max(10, width - gut - 1)
+        rep = max(1, min(4, plot_w // n))  # widen the columns when turns are few
+        cols = min(plot_w, n * rep)
+        ymax = float(peakv)
+
+        def bucket(c: int) -> int:  # peak-preserving: a bucket shows its max turn
+            lo = c * n // cols
+            hi = max(lo + 1, (c + 1) * n // cols)
+            return max(vals[lo:hi])
+
+        colv = [bucket(c) for c in range(cols)]
+        if comps:
+            marker = [" "] * cols
+            for j, _b, _a in comps:
+                marker[min(cols - 1, j * cols // n)] = "▼"
+            lines.append(" " * (gut + 1) + "".join(marker))
+            self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK
+        for r in range(chart_h):
+            cells = []
+            for c in range(cols):
+                eighths = round(colv[c] / ymax * chart_h * 8)
+                filled = max(0, min(8, eighths - (chart_h - 1 - r) * 8))
+                cells.append("█" if filled >= 8 else BLOCKS_UP[filled])
+            if r == 0:
+                ylab = human_tokens(int(ymax))
+            elif r == chart_h // 2:
+                ylab = human_tokens(int(ymax * (chart_h - chart_h // 2) / chart_h))
+            else:
+                ylab = ""
+            axis = "┤" if ylab else "│"
+            lines.append(f"{ylab:>{gut}}{axis}" + "".join(cells))
+            band_mid = ymax * (chart_h - r - 0.5) / chart_h
+            self._ctx_line_heat[len(lines) - 1] = self._ctx_heat_level(band_mid, window)
+        lines.append(" " * gut + "└" + "─" * cols)
+        xl, xr = "turn 1", str(n)
+        lines.append(" " * (gut + 1) + xl + " " * max(1, cols - len(xl) - len(xr)) + xr)
+        for j, before, after in comps[:4]:
+            when = (pts[j][0].get("time") or "")[5:16]
+            lines.append(
+                f"  ▼ turn {j + 1} · {when} — {human_tokens(before)} → {human_tokens(after)}"
+            )
+            self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK  # same amber as the ▼ row
+        if len(comps) > 4:
+            lines.append(f"  ▼ … and {len(comps) - 4} more")
+            self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK
+
+        # --- what filled it (estimated), for backends whose logs carry content.
+        comp_rows = (
+            self.session_context_rows(workflow.id)
+            if self.session_supports_context(workflow.id)
+            else []
+        )
+        if comp_rows:
+            by_cat: dict[str, list[dict]] = {}
+            for cr in comp_rows:
+                by_cat.setdefault(cr["category"], []).append(cr)
+            cats = sorted(
+                by_cat.items(), key=lambda kv: sum(x["est_tokens"] for x in kv[1]), reverse=True
+            )
+            total_est = sum(cr["est_tokens"] for cr in comp_rows)
+            top = sum(x["est_tokens"] for x in cats[0][1])
+            # Kind names flex (MCP tools are long); the category column tracks them
+            # (+3: its shallower indent) so the count/token columns stay aligned.
+            kw = max(19, min(34, width - 62))
+            cw = kw + 3
+            lines += ["", f"# What filled it — ~{human_tokens(total_est)} of content sent"]
+            for cat, crs in cats:
+                ctot = sum(x["est_tokens"] for x in crs)
+                ccount = sum(x["count"] for x in crs)
+                cbar = cost_bar(ctot, top, 12)
+                lines.append(
+                    f"  {pad(cat, cw)} {ccount:>6}× {'~' + human_tokens(ctot):>8}  "
+                    f"▕{cbar}▏ {pct(ctot, total_est):>4}"
+                )
+                kinds = sorted(
+                    (x for x in crs if x["kind"]), key=lambda x: x["est_tokens"], reverse=True
+                )
+                for x in kinds[:6]:
+                    lines.append(
+                        f"    · {pad(shorten(x['kind'], kw), kw)} {x['count']:>5}× "
+                        f"{'~' + human_tokens(x['est_tokens']):>8}  {pct(x['est_tokens'], total_est):>17}"
+                    )
+                if len(kinds) > 6:
+                    rest = sum(x["est_tokens"] for x in kinds[6:])
+                    lines.append(
+                        f"    · {pad(f'… {len(kinds) - 6} more', kw)} {'':>5}  "
+                        f"{'~' + human_tokens(rest):>8}  {pct(rest, total_est):>17}"
+                    )
+            lines.append(
+                f"  {pad('fixed overhead', cw)} {'':>6}  {human_tokens(start):>8}  "
+                "measured at turn 1 (system prompt + tools + first prompt)"
+            )
+
+        # Two footnote lines, no more -- the rows explain themselves (the fixed-
+        # overhead line carries its own label, a ▼ line shows the before → after).
+        # The full story lives in docs/keys.md.
+        lines += [
+            "",
+            "· Measured per-turn prompt tokens; green → red = window fullness. Subagents excluded.",
+        ]
+        if comp_rows:
+            lines.append(
+                "· What-filled-it is a ~chars/4 estimate of everything sent, compacted or not."
+            )
+        return lines
+
     # The help overlay's keymap, grouped into sections. Each row is
     # (key, one-line summary[, note, note, ...]); notes render as dim sub-lines under
     # the description. draw_help wraps and colours these; kept as data so the content
@@ -2187,7 +2403,8 @@ class Renderer:
                         "switch detail tabs",
                         "years/months: Overview · Models · Projects · Sessions; days drop Models",
                         "a session adds Turns (per-turn cost over time; every source that "
-                        "records per-step usage) and Tools (per-tool / MCP spend, OpenCode); "
+                        "records per-step usage), Tools (per-tool / MCP spend, OpenCode) "
+                        "and Context (window growth + what filled it); "
                         "Sources joins in the merged 'all' view",
                         "on Turns, z (or clicking a ▸ header) unfolds the whole prompt text",
                     ),

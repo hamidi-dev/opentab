@@ -130,3 +130,26 @@ class CombinedStore:
     def supports_turns(self, workflow_id: str) -> bool:
         check = getattr(self._owner.get(workflow_id), "supports_turns", None)
         return bool(check(workflow_id)) if check else False
+
+    def context_breakdown(self, workflow_id: str) -> list:
+        # Route to the owning backend; a backend without the composition opt-in
+        # (everything but Claude Code and Zaly so far) contributes no rows -- the
+        # Context tab's measured curve still works off its turn rows.
+        owner = self._owner.get(workflow_id)
+        fetch = getattr(owner, "context_breakdown", None)
+        return fetch(workflow_id) if fetch else []
+
+    def supports_context(self, workflow_id: str) -> bool:
+        check = getattr(self._owner.get(workflow_id), "supports_context", None)
+        return bool(check(workflow_id)) if check else False
+
+    def supports_context_curve(self, workflow_id: str) -> bool:
+        # Mirror App.session_supports_context_curve's default for the owning
+        # backend: absent method = any Turns backend qualifies; a backend that
+        # defines it (Codex) decides for its own sessions.
+        owner = self._owner.get(workflow_id)
+        check = getattr(owner, "supports_context_curve", None)
+        if check is not None:
+            return bool(check(workflow_id))
+        turns = getattr(owner, "supports_turns", None)
+        return bool(turns(workflow_id)) if turns else False
