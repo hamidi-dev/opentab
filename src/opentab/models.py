@@ -24,6 +24,9 @@ class Workflow:
     real_root_cost: float = 0.0
     api_total_cost: float = 0.0
     api_root_cost: float = 0.0
+    # (There is no third, what-if snapshot: the `w` what-if target is SESSION-SCOPED --
+    # it reprices only the session-tree table on the Subagents tab, straight off that
+    # session's workflow_nodes rows, and never touches these app-wide figures.)
     # Which backend produced this workflow ("OpenCode" / "Claude Code"); shown in the
     # sessions list (combined view) and the session detail. Empty for in-memory rows.
     source: str = ""

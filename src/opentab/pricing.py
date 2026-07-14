@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from opentab import __version__
+from opentab.util import fuzzy_score
 
 # Providers whose models run on your own hardware. There is no per-token API bill,
 # so the "$" what-if view must price them at $0 (pricing them at cloud list rates
@@ -145,11 +147,46 @@ def display_model(bare: str) -> str:
     return _MODEL_EFFORT_SUFFIX.sub("", _MODEL_DATE_SUFFIX.sub("", str(bare)))
 
 
+def dots_to_dashes(text: str) -> str:
+    # Version dots normalized to dashes ("4.5" == "4-5"), so a query and the id it is
+    # matched against agree on spelling whichever way either was written.
+    return re.sub(r"(?<=\d)\.(?=\d)", "-", text)
+
+
 def canonical_model(name: str) -> str:
     # The alias-folding key for a model id (route prefix ignored): the display
     # spelling, lowercased, with version dots normalized to dashes ("4.5" == "4-5").
-    bare = display_model(str(name).rsplit("/", 1)[-1].lower())
-    return re.sub(r"(?<=\d)\.(?=\d)", "-", bare)
+    return dots_to_dashes(display_model(str(name).rsplit("/", 1)[-1].lower()))
+
+
+def model_matches(query: str, bare: str, routes: Iterable[str] = (), family: str = "") -> bool:
+    """Does `query` match this model? The one rule behind every model-list filter --
+    the P overlay's `f` and the `w` picker's, which ask the same question of the same
+    rows and must not answer it differently.
+
+    Matched PER FIELD, never over the joined "route/model" string, and with a
+    different rule per field because the fields are typed differently:
+
+    * the **model id** by fzf-style subsequence -- abbreviating is the whole point
+      ("opus48" -> claude-opus-4-8), and dots==dashes so "opus4.5" finds "opus-4-5";
+    * the **route** and the **vendor label** by plain substring -- these are a short
+      fixed vocabulary you type in full ("openai", "copilot"), nobody abbreviates
+      them, and a subsequence over them is a false-positive machine: "gpt" walks
+      "github-copilot" (g-ithub-co-p-ilo-t) and drags every Claude model sold through
+      Copilot into a search for GPT.
+
+    Callers keep their own row order: a filtered list still answers "which of these do
+    I lean on", so rows are never re-ranked by match quality.
+    """
+    if not query:
+        return True
+    q = dots_to_dashes(query.lower())
+    if fuzzy_score(q, dots_to_dashes(str(bare).lower())) is not None:
+        return True
+    fields = [str(r).lower() for r in routes]
+    if family:
+        fields.append(str(family).lower())
+    return any(q in f for f in fields)
 
 
 def effective_price(
@@ -416,6 +453,31 @@ def model_price(name: str) -> tuple[float, float, float, float]:
         if mid in prices:
             return prices[mid]
     return next((tuple(p) for needle, *p in MODEL_PRICE_FALLBACKS if needle in mid), FALLBACK_PRICE)
+
+
+def has_known_price(name: str) -> bool:
+    """Does this model resolve to a list price we actually know?
+
+    False for a local model (it runs on your hardware -- there is no API rate to know)
+    and for one that resolves to nothing better than the generic FALLBACK_PRICE: a
+    mid-range guess that exists so the "$" estimate degrades gracefully, NOT a rate
+    anyone charges. Anything the user is asked to *choose* -- the `w` what-if target --
+    must be priced for real, or the screen would quote "$2.00 at unknown (not recorded)
+    list rates", a number no price list contains. The same notion drives
+    App.unknown_priced_models (the models the price prompt offers to fetch).
+
+    It asks where the price CAME FROM, never what it equals. Comparing the resolved
+    tuple against FALLBACK_PRICE looks equivalent and isn't: real rate cards land on
+    those numbers by coincidence -- the bundled catalog prices openai/gpt-image-1-mini
+    at exactly (2, 8, 0.2, 0) -- and such a model would be branded unpriced, dropped
+    from the picker, and offered to a models.dev refresh that already knows it.
+    """
+    if is_local_provider(name):
+        return False
+    mid = str(name).rsplit("/", 1)[-1].lower()
+    if any(mid in prices for prices, _limits, _tree, _meta in _layers()):
+        return True  # the catalog names it outright
+    return any(needle in mid for needle, *_p in MODEL_PRICE_FALLBACKS)  # a hand-kept family
 
 
 def model_context_window(name: str) -> int:

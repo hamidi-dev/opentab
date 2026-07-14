@@ -63,7 +63,7 @@ On the Turns tab, `z` (or clicking a `▸` header) unfolds the whole prompt text
 | `T` | Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Sources. `h`/`l` tabs · `j`/`k` page months/weeks/years. On the charts and Calendar: `Enter` focuses, arrows pick a bar/day, `Enter` drills in, `Esc` back. On Models/Providers/Sources: `j`/`k` pick a row · `Enter` its sessions · `Enter` again opens one |
 | `P` | Model prices — the table behind the `$` estimate; see [Pricing](pricing.md) for the views, sorting, and pinning |
 | `$` | Toggle what-if prices — what unpriced usage would cost at API list rates |
-| `w` | What-if **model** — arm one model you've used as a comparison target (`j`/`k` move · `f` filter · `Enter` arm · `Esc` cancel): *"what if the expensive model had done the subagents' work too?"*. The selected session's **Subagents** tab then shows its whole tree (root included) with each node's cost beside what its tokens would have cost at the target's list rates — a **What-if** and a **Δ** column and a `TOTAL … routing saved …` line — and its **Overview** carries an Actual / What-if / Change summary, so a session that delegated nothing (no tree to show) still answers. A rate substitution, not a rerun: same tokens, one price list. **Session-scoped** — the sessions list, the day/month/project rollups and Trends keep showing actual spend, and `$` keeps working as always. Works in demo too; `w` again clears it |
+| `w` | What-if **model** — arm one priced model you've used as a comparison target (`j`/`k` move · `f` filter · `Enter` arm · `Esc` cancel): *"what if the expensive model had done the subagents' work too?"*. The selected session's **Subagents** tab then shows its whole tree (root included) with a **What-if** column — that node's tokens at the target's list rates — and a `TOTAL (list rates)  your models … → all at … …  saved …` line; its **Overview** carries the same session comparison (Your models / All at *target* / Change). **Both sides are priced at list rates** — the only apples-to-apples basis for a rate substitution — so a session that delegated nothing (no tree to show) still answers, and repricing a single-model session at the model it already used is exactly a $0 change. There is deliberately **no per-node Δ**: a node can mix models, so no honest per-node baseline exists; the exact comparison lives at session level, where the tokens are split per model. The Cost column keeps its ordinary meaning (recorded spend, `$`-estimated where nothing was recorded), so it does **not** add up to the TOTAL. A rate substitution, not a rerun. **Session-scoped** — the sessions list, the day/month/project rollups and Trends keep showing actual spend, and `$` keeps working as always. Works in demo too; `w` again clears it. The [web browser](web.md#w--the-what-if-model) mirrors all of it, on the same key |
 | `c` | Data-source picker (`j`/`k` move · `Enter` switch · `Esc` cancel) |
 | `C` | Colour-theme picker — `j`/`k` live-preview · `Enter` keep · `Esc` revert (themes are shared with the web browser) |
 | `D` | Toggle real / demo data (demo anonymizes titles and paths) |
@@ -78,6 +78,10 @@ The active **source, range, sort, ignored projects, bookmarks, pinned price rows
 theme, and `$` what-if view are remembered between runs**, stored in
 `~/.config/opentab/state.json`. Pass `--no-state` to disable; `--demo` never
 persists.
+
+A `w` **what-if target model is deliberately not remembered**: it's a transient
+analysis mode, and a persisted one would silently re-frame every future launch's
+Subagents tab.
 
 Two formatting rules worth knowing: sub-cent costs render as `<$0.01` so they aren't
 confused with a red `$0.00`, which specifically means *unpriced* (tokens with no

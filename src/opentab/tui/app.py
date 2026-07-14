@@ -5,7 +5,6 @@ import argparse
 import copy
 import csv
 import os
-import re
 import shlex
 import sys
 import time
@@ -33,7 +32,6 @@ from opentab.heatmap import (
 )
 from opentab.models import ALL_YEARS, DaySummary, MonthSummary, ProjectSummary, YearSummary
 from opentab.pricing import (
-    FALLBACK_PRICE,
     LOCAL_PROVIDERS,
     api_equivalent_cost,
     canonical_model,
@@ -41,9 +39,11 @@ from opentab.pricing import (
     display_model,
     effective_price,
     family_label,
+    has_known_price,
     invalidate_price_cache,
     is_local_provider,
     model_family,
+    model_matches,
     model_price,
     price_cache_meta,
     refresh_model_prices,
@@ -54,6 +54,7 @@ from opentab.util import (
     fuzzy_score,
     in_tmux,
     launcher_hook,
+    model_row_split,
     month_bounds,
     month_window_start,
     open_path,
@@ -158,6 +159,14 @@ class App:
     # deterministic expiry tests; the live `toasts` list is lazily materialised below.
     _toast_clock = staticmethod(time.monotonic)
     _toast_shown = True  # has the newest toast been painted at least once?
+    # Same reason: the footer chip and the Subagents tab read the what-if target on
+    # every frame, so a __new__-built App must have one. Off is the only sane default
+    # -- the target is transient and never restored from state (see __init__).
+    whatif_model: str | None = None
+    whatif_menu = False
+    whatif_menu_index = 0
+    whatif_query = ""
+    whatif_filter_active = False
 
     def __init__(self, store: Store, args: argparse.Namespace, source_key: str = ""):
         self.store = store
@@ -175,6 +184,18 @@ class App:
         # is a wall of $0.00, so start in the estimate view; an explicit saved pref
         # (apply_state) or the $ key takes over from there.
         self.show_api_prices = not getattr(store, "records_cost", True) and not store.demo
+        # The `w` what-if target: one model, armed to answer a SESSION-scoped question
+        # ("I ran the main agent on the expensive model and delegated the grunt work --
+        # what if that model had done all of it?"). Its only effect is the session tree
+        # table on a session's Subagents tab; every other panel, and "$" itself, carry
+        # on showing real/estimated spend. Deliberately NOT persisted to state.json:
+        # it's a transient analysis mode, and a remembered one would silently falsify
+        # every future launch's Subagents tab.
+        self.whatif_model: str | None = None
+        self.whatif_menu = False  # the `w` target-model picker overlay
+        self.whatif_menu_index = 0  # highlighted row in that picker
+        self.whatif_query = ""  # its live `f` filter (fzf-style, like the P overlay's)
+        self.whatif_filter_active = False  # keys are editing that query
         self._snapshot_real_costs()
         self._resolve_project_roots()
         # The per-model breakdown is the one heavy scan of the (huge) message
@@ -928,6 +949,19 @@ class App:
             self._compute_api_costs()
         self._models_loaded = True
         self._apply_price_mode()  # re-assert the active ($/API) view onto fresh rows
+        self._revalidate_whatif()  # the target may not exist in this dataset
+
+    def _revalidate_whatif(self) -> None:
+        # The model rows just changed under an armed target (reload, `c` source switch,
+        # `D` demo toggle -- all land here). A target the new dataset never used, or
+        # can't price, is one a fresh App would refuse to arm; leaving it armed would
+        # quietly answer a question about models this data has never seen. Drop it.
+        if not self.whatif_model:
+            return
+        if any(name == self.whatif_model for name, _tokens in self.whatif_candidates()):
+            return
+        stale, self.whatif_model = self.whatif_model, None
+        self.notify(f"what-if cleared — {stale} is not used in this data", "warn")
 
     def _ensure_models(self) -> None:
         # Run the deferred model-breakdown load once, on demand. Idempotent so the
@@ -1249,6 +1283,9 @@ class App:
 
     def _apply_price_mode(self) -> None:
         # Point every panel's cost at either the real or the API-equivalent figure.
+        # The `w` what-if target has no say here -- it is session-scoped (it reprices
+        # the Subagents tab's tree table and nothing else), so "$" keeps owning every
+        # app-wide figure whether or not a target is armed.
         api = self.show_api_prices and not self.store.demo
         for w in self.loaded:
             w.total_cost = w.api_total_cost if api else w.real_total_cost
@@ -1256,6 +1293,232 @@ class App:
         for rows in self._model_by_root.values():
             for m in rows:
                 m["cost"] = m.get("api_cost", m["cost"]) if api else m.get("real_cost", m["cost"])
+
+    # --- What-if model, the `w` key (session-scoped) ---------------------------
+    def whatif_candidates(self) -> list[tuple[str, int]]:
+        # The `w` picker's rows: every model you have actually used, most-used first,
+        # with the tokens it burned. Same source as priced_model_entries (the loaded
+        # model rows), minus the ones with no list price to substitute in
+        # (pricing.has_known_price): a local model has no API rate at all (it would
+        # price a whole tree at $0 and call it a saving), and an unpriced one -- an id
+        # too new for the catalog, or the literal "unknown (not recorded)" some backends
+        # log -- resolves only to the generic FALLBACK_PRICE, so arming it would quote
+        # "$2.00 at unknown (not recorded) list rates", a rate that exists nowhere.
+        # A target you can choose must be a target we can actually price.
+        totals: dict[str, int] = defaultdict(int)
+        for rows in self._model_by_root.values():
+            for m in rows:
+                name = str(m.get("model_name") or "")
+                if not name or not has_known_price(name):
+                    continue
+                totals[name] += int(m.get("tokens_total") or 0)
+        # A model row can carry zero tokens -- OpenCode emits one for an assistant record
+        # whose usage never landed (an aborted turn). It names a model but is not usage,
+        # so it must not float a model into the picker, and above all must not keep a
+        # stale target alive through _revalidate_whatif on a dataset that never really
+        # used it.
+        return sorted(
+            ((name, tok) for name, tok in totals.items() if tok > 0),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+
+    def whatif_session_totals(self, workflow: Workflow) -> tuple[float, float] | None:
+        """The armed target's two figures for ONE session: (your models, all at target),
+        BOTH at list prices. None when no target is armed, or the session has no
+        per-model rows to price (nothing to compare).
+
+        Both sides are computed from that session's per-model breakdown rows
+        (`_model_by_root`), the one place its tokens are split PER MODEL:
+
+        * your models = sum over those rows of each model's own tokens at its own list
+          rates -- every token, exactly, whatever mix of models produced it;
+        * all at target = the session's summed token split at the target's list rates.
+
+        Two things follow, and they are the whole point. **Both bases are list rates**,
+        so the comparison is apples-to-apples: a subscription backend records $0, and
+        measuring a real counterfactual against that unrecorded $0 would report a 100%
+        saving that never happened; a *partially* metered session (some turns billed,
+        most on a subscription) is the same bug in miniature and is common in real data.
+        And **arming a model a single-model session already used lands on exactly $0
+        change**, because both sides then price the same tokens at the same rates.
+
+        The session's *node* rows can't do this: `workflow_nodes` labels each node with
+        its one dominant model, so pricing a node's whole token split at that label is
+        wrong for any node that switched model mid-flight (measured against real data:
+        73 of 147 multi-model sessions, worst case 47% off), and a node's recorded cost
+        keeps a partially-billed node's few cents as its entire baseline. A per-node
+        baseline is not computable from what the stores expose -- so the Subagents tab
+        shows no per-node baseline and no per-node delta, only this exact session total.
+
+        (The Subagents tab's per-node What-if column IS exact per node and normally sums
+        to the counterfactual here, since both count the same tokens. In the rare session
+        whose node rollup disagrees with its message-level aggregate -- 2 of 1006 on real
+        data, an OpenCode session-column vs message-table drift that predates this
+        feature and already splits its Models and Subagents tabs -- the column adds up to
+        slightly less than the TOTAL. The per-model split is the one that prices tokens
+        correctly, so the total is taken from it and the column is left alone.)
+        """
+        target = self.whatif_model
+        if not target:
+            return None
+        rows = self._model_by_root.get(workflow.id) or []
+        if not rows:
+            return None
+        baseline = 0.0
+        tokens = [0.0, 0.0, 0.0, 0.0, 0.0]  # input, output, reasoning, cache_read, cache_write
+        for m in rows:
+            split = model_row_split(m)
+            baseline += api_equivalent_cost(str(m.get("model_name") or ""), *split)
+            tokens = [a + b for a, b in zip(tokens, split)]
+        return baseline, api_equivalent_cost(target, *tokens)
+
+    def whatif_baseline_is_estimated(self, workflow: Workflow) -> bool:
+        # Does the baseline lean on a model we have no real rate for? Every token is
+        # priced, so an unpriceable model in the mix doesn't skew the count -- it gets
+        # FALLBACK_PRICE, a mid-range guess, and the "your models" figure quietly stops
+        # being a list price. Cheap to say so (a `~`, the same marker the P overlay's
+        # eff column uses for an approximated rate) and dishonest not to.
+        # Zero-token rows are skipped: a model named by an aborted turn contributes nothing
+        # to the baseline, so it cannot make it an estimate -- flagging one would put a `~`
+        # on a figure that is exact.
+        return any(
+            int(m.get("tokens_total") or 0) > 0
+            and not has_known_price(str(m.get("model_name") or ""))
+            and not is_local_provider(str(m.get("model_name") or ""))
+            for m in self._model_by_root.get(workflow.id) or []
+        )
+
+    def whatif_node_price(self, row: dict, target: str) -> float:
+        # One node's tokens at the target's list rates -- exact (one model, one rate
+        # card, the node's own token split), and the per-node What-if column on the
+        # Subagents tab. Nothing else about a node is repriced: its Cost column keeps
+        # the ordinary "$"-gated meaning (_priced_nodes), and no per-node baseline or
+        # delta is shown, because a node that mixed models has none we can compute.
+        return api_equivalent_cost(
+            target,
+            row["tokens_input"],
+            row["tokens_output"],
+            row["tokens_reasoning"],
+            row["tokens_cache_read"],
+            row["tokens_cache_write"],
+        )
+
+    def toggle_whatif(self) -> None:
+        # `w`: with a target armed, disarm it; otherwise open the picker. Unlike "$",
+        # what-if is allowed in demo mode -- demo already scales every token by a hidden
+        # per-process factor, so pricing scaled tokens at list rates can't be multiplied
+        # back into real dollars, while the ratio the feature exists to show (cheap
+        # subagents vs one expensive model) is a ratio of scaled numbers and stays real.
+        if self.whatif_model:
+            self.clear_whatif_model()
+            return
+        self._ensure_models()  # needs the per-model token breakdown
+        if not self.whatif_candidates():
+            self.notify("no priced model usage to reprice", "error")
+            return
+        self.whatif_menu_index = 0
+        self.whatif_query = ""  # each open starts from the full list
+        self.whatif_filter_active = False
+        self.whatif_menu = True
+
+    def whatif_rows(self) -> list[tuple[str, int]]:
+        # The picker's visible rows: whatif_candidates() narrowed by the live `f` query,
+        # through the one shared rule (pricing.model_matches -- id by subsequence, route
+        # by substring, dots==dashes). The P overlay's filter is the same call: two model
+        # lists asking the same question must not answer it differently.
+        #
+        # Rows keep their most-used-first order: a filtered list should still answer
+        # "which of these do I lean on", never re-rank by match quality.
+        rows = self.whatif_candidates()
+        if not self.whatif_query:
+            return rows
+        out = []
+        for name, tokens in rows:
+            route, _, bare = name.rpartition("/")
+            if model_matches(self.whatif_query, bare, (route,) if route else ()):
+                out.append((name, tokens))
+        return out
+
+    def select_whatif_model(self, name: str) -> None:
+        # Arming a target changes NO app-wide number: not a session's cost, not a day,
+        # month or project rollup, not Trends, not the session header -- and "$" keeps
+        # toggling exactly as it does with no target armed. The target's only effect is
+        # the session tree table on the Subagents tab (Renderer._subagents_whatif),
+        # which reprices that ONE session's nodes off its own workflow_nodes rows. An
+        # app-wide reprice would leave "$" nothing to move (every token already priced
+        # at one model's rates) and silently invert the saved preference behind it.
+        self.whatif_model = name
+        self.notice = f"what-if {name}: see a session's Subagents tab"
+
+    def clear_whatif_model(self) -> None:
+        self.whatif_model = None
+        self.notice = "what-if off"
+
+    def _whatif_pick(self, rows: list[tuple[str, int]]) -> None:
+        # Commit the highlighted row. A query that matches nothing selects nothing --
+        # the menu just stays open so the next keystroke can widen it again.
+        if not rows:
+            return
+        self.whatif_menu = False
+        self.select_whatif_model(rows[self.whatif_menu_index % len(rows)][0])
+
+    def handle_whatif_menu_key(self, key: int) -> bool:
+        # The `w` model picker: j/k move, Enter selects, Esc/q cancels, `f` (or `/`)
+        # starts the live filter -- the same fzf-style narrowing, on the same keys, as
+        # the P overlay's model list, because it is the same question asked of the same
+        # rows. Mirrors handle_source_menu_key otherwise, `w` advancing the highlight
+        # like `c` does.
+        if key == 3:  # Ctrl-C still quits
+            return False
+        if not self.whatif_candidates():
+            self.whatif_menu = False
+            return True
+        rows = self.whatif_rows()
+        if self.whatif_filter_active:
+            return self._handle_whatif_filter_key(key, rows)
+        if key in (ord("f"), ord("/")):
+            self.whatif_filter_active = True
+        elif key in (ord("j"), curses.KEY_DOWN, ord("w")) and rows:
+            self.whatif_menu_index = (self.whatif_menu_index + 1) % len(rows)
+        elif key in (ord("k"), curses.KEY_UP) and rows:
+            self.whatif_menu_index = (self.whatif_menu_index - 1) % len(rows)
+        elif key == ord("g"):
+            self.whatif_menu_index = 0
+        elif key == ord("G") and rows:
+            self.whatif_menu_index = len(rows) - 1
+        elif key in (10, 13, curses.KEY_ENTER):
+            self._whatif_pick(rows)
+        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+            self.whatif_menu = False  # cancel, pricing unchanged
+        # any other key: ignore and keep the menu open
+        return True
+
+    def _handle_whatif_filter_key(self, key: int, rows: list[tuple[str, int]]) -> bool:
+        # Filter-edit mode inside the picker: printable keys narrow the list live,
+        # arrows still move the highlight so you can land on a match without leaving
+        # the mode, and Enter selects it outright -- type, arrow, done. Esc drops the
+        # query and hands the keys back to j/k rather than closing the picker: losing
+        # a mistyped query should not cost you the menu.
+        if key == 27:
+            self.whatif_query = ""
+            self.whatif_filter_active = False
+            self.whatif_menu_index = 0
+        elif key in (10, 13, curses.KEY_ENTER):
+            self._whatif_pick(rows)
+        elif key in (curses.KEY_BACKSPACE, 127, 8):
+            self.whatif_query = self.whatif_query[:-1]
+            self.whatif_menu_index = 0
+        elif key == 21:  # Ctrl-U clears the query
+            self.whatif_query = ""
+            self.whatif_menu_index = 0
+        elif key in (curses.KEY_DOWN, 14) and rows:  # Ctrl-N
+            self.whatif_menu_index = (self.whatif_menu_index + 1) % len(rows)
+        elif key in (curses.KEY_UP, 16) and rows:  # Ctrl-P
+            self.whatif_menu_index = (self.whatif_menu_index - 1) % len(rows)
+        elif 32 <= key <= 126:
+            self.whatif_query += chr(key)
+            self.whatif_menu_index = 0
+        return True
 
     def toggle_api_prices(self) -> None:
         if self.store.demo:
@@ -1287,8 +1550,10 @@ class App:
         self.notify(f"refreshed {count} model prices from models.dev", "success")
 
     def unknown_priced_models(self) -> list[str]:
-        # Used, non-local models with no built-in price (resolve to the generic
-        # fallback) -- the ones whose $ estimate is a guess until --refresh-models.
+        # Used, non-local models with no built-in price (they resolve to nothing better
+        # than the generic FALLBACK_PRICE) -- the ones whose $ estimate is a guess until
+        # --refresh-models. One rule, pricing.has_known_price, shared with the `w`
+        # picker, which refuses to offer these as a target for the same reason.
         out: list[str] = []
         seen: set[str] = set()
         for rows in self._model_by_root.values():
@@ -1297,9 +1562,7 @@ class App:
                 if not name or name in seen:
                     continue
                 seen.add(name)
-                if is_local_provider(name):
-                    continue
-                if model_price(name) == FALLBACK_PRICE:
+                if not is_local_provider(name) and not has_known_price(name):
                     out.append(name)
         return sorted(out)
 
@@ -1657,14 +1920,9 @@ class App:
                 name = m.get("model_name")
                 if not name or is_local_provider(name):
                     continue
-                out = float(m.get("output") or 0) + float(m.get("reasoning") or 0)
-                cr = float(m.get("cache_read") or 0)
-                cw = float(m.get("cache_write") or 0)
-                inp = m.get("input")
-                if inp is None:
-                    inp = max(0.0, float(m.get("tokens_total") or 0) - out - cr - cw)
-                sums[0] += float(inp)
-                sums[1] += out
+                inp, out, reasoning, cr, cw = model_row_split(m)
+                sums[0] += inp
+                sums[1] += out + reasoning
                 sums[2] += cr
                 sums[3] += cw
         total = sums[0] + sums[1] + sums[2] + sums[3]
@@ -1755,25 +2013,18 @@ class App:
         return self._order_price_entries(self._filter_price_entries(entries))
 
     def _filter_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
-        # The active filter: the same fzf-style subsequence match as the session
-        # filter (util.fuzzy_score, per field so a query can't straddle fields), over
-        # the model id, vendor family, and access route(s) -- "opus8" narrows to the
-        # claude-opus-4-8 rows. The dots==dashes canonical id is matched too, so
-        # "opus-4.8" finds providers that spell it "claude-opus-4-8" and vice versa.
+        # The active `f` filter, through the one shared rule (pricing.model_matches):
+        # the model id by subsequence, the route and vendor label by substring. The `w`
+        # picker's filter asks the same question of the same rows and goes through the
+        # same call -- they must never answer it differently.
         # Rows keep the active column sort (a filtered catalog should stay
         # cheapest-first, not re-rank by match quality -- the columns are the point).
         if not self.query:
             return entries
-        q = self.query
-        qc = re.sub(r"(?<=\d)\.(?=\d)", "-", q.lower())
         return [
             e
             for e in entries
-            if fuzzy_score(qc, e.canon) is not None
-            or any(
-                fuzzy_score(q, field) is not None
-                for field in (e.bare, family_label(e.family), *e.routes)
-            )
+            if model_matches(self.query, e.bare, e.routes, family_label(e.family))
         ]
 
     def _catalog_price_entries(self, shares: tuple) -> list[PriceEntry]:
@@ -3506,6 +3757,8 @@ class App:
             return self.handle_theme_menu_key(key)
         if self.source_menu:
             return self.handle_source_menu_key(key)
+        if self.whatif_menu:  # the `w` target picker floats above everything too
+            return self.handle_whatif_menu_key(key)
         if self.help:
             # A pager like the price overlay: j/k/arrows, page keys and g/G scroll;
             # any other key closes it.
@@ -3747,6 +4000,9 @@ class App:
             return True
         if key == ord("$"):
             self.toggle_api_prices()
+            return True
+        if key == ord("w"):
+            self.toggle_whatif()  # pick a target model, or clear the active one
             return True
         if key == ord("\t"):
             self.cycle_focus(1)
@@ -4030,6 +4286,15 @@ class App:
                 self.source_menu_index = (self.source_menu_index + 1) % len(order)
             elif click or double:
                 self.source_menu = False  # click cancels, source unchanged
+            return True
+        if self.whatif_menu:
+            rows = self.whatif_rows()  # the wheel walks what's on screen, filter included
+            if rows and up:
+                self.whatif_menu_index = (self.whatif_menu_index - 1) % len(rows)
+            elif rows and down:
+                self.whatif_menu_index = (self.whatif_menu_index + 1) % len(rows)
+            elif click or double:
+                self.whatif_menu = False  # click cancels, pricing unchanged
             return True
         if self.sort_menu:
             options = self.sort_menu_options()
@@ -4429,6 +4694,13 @@ class App:
         # node is wholly unpriced, so its full token columns are the unpriced part.
         # Returns plain dicts (sqlite Rows are read-only) so sort/render/CSV all see
         # one effective cost.
+        # This is exactly what the Cost column means everywhere, including under an
+        # armed `w` target: what was recorded, estimated only where nothing was. It is
+        # NOT the what-if's comparison baseline -- that has to price every token at its
+        # own model's rates and is computed per MODEL, not per node
+        # (App.whatif_session_totals). A node whose few metered cents sit beside a
+        # subscription's unrecorded $0 would otherwise pass its cents off as the whole
+        # baseline, and 20 of 48 metered nodes in real data are shaped exactly that way.
         api = self.show_api_prices and not self.store.demo
         out = []
         for row in rows:

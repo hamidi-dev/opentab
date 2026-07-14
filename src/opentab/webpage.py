@@ -11,7 +11,7 @@ Selection is hash-routed (deep-linkable, browser back = step out); the active
 tab is transient UI state. The $ what-if toggle swaps which of the two embedded
 cost fields every view reads -- the exact analogue of App._apply_price_mode().
 `w` arms a what-if *model*: a session-scoped rate substitution (its Subagents tree
-and its Overview, nothing else) computed client-side off the nodes' token splits --
+and its Overview, nothing else) computed client-side off the per-model token splits --
 so it, unlike $, is a reprice, and one the payload can only ship the ingredients for.
 
 Assembly uses token replacement (never str.format: the CSS/JS are full of braces).
@@ -348,8 +348,8 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 /* an armed target: the chip is the page's twin of the TUI's lit `w model` footer key --
    "a target is set", never a claim that the numbers on screen are counterfactual */
 .chip.wi{color:var(--accent);border-color:var(--accent);cursor:pointer}
-.wi-up{color:var(--bad)}    /* the target would have cost more */
-.wi-down{color:var(--good)} /* ...and less: what the routing saved */
+.wi-up{color:var(--bad)}    /* the target would have cost more than your models did */
+.wi-down{color:var(--good)} /* ...and less: what running it all on the target would save */
 .wi-total{margin-top:10px;font-size:13px;color:var(--ink)}
 .wi-total b{color:var(--accent)}
 
@@ -444,8 +444,13 @@ let PRICES = { open: false, view: 'flat', sort: 'eff', desc: false, q: '' };
 // TRANSIENT: never localStorage, never the hash -- unlike the theme and the price pins,
 // which do persist. A remembered target would silently re-frame every later visit.
 let WHATIF = { model: null, open: false, q: '', i: 0 };
-const WI_MODELS = (DATA.whatif && DATA.whatif.models) || [];   // used models, most-used first
-const WI_PRICE = new Map(WI_MODELS.map(m => [m.model, m.price]));  // list rates $/M
+const WI_MODELS = (DATA.whatif && DATA.whatif.models) || [];   // armable targets, most-used first
+// List rates ($/M) for EVERY model you used -- not just the armable ones: the baseline
+// prices each model's own tokens at its own rates, and a session can well contain a model
+// you cannot arm (an unpriced id has no real rate card to substitute in, but its tokens
+// still have to be counted, or the baseline would quietly drop them).
+const WI_PRICE = new Map(Object.entries((DATA.whatif && DATA.whatif.rates) || {}));
+const WI_UNPRICED = new Set((DATA.whatif && DATA.whatif.unpriced) || []);
 
 /* ---------- formatting (mirrors opentab.formatting) ---------- */
 const money = v => (v > 0 && v < 0.005) ? '<$0.01'
@@ -615,24 +620,41 @@ function whatifCost(tok, rates) {
   const [inp, out, reason, cr, cw] = tok, [ir, orr, crr, cwr] = rates;
   return (inp * ir + (out + reason) * orr + cr * crr + cw * cwr) / 1e6;
 }
-// A node's baseline is ALWAYS its `api` figure -- every token at its OWN model's list
-// rates -- and never `real`, never mCost: the comparison must not depend on the $
-// toggle. On a subscription backend recorded cost is $0, so a $-gated baseline would
-// measure a real counterfactual against nothing and report a 100% saving that never
-// happened. (This is the TUI's _priced_nodes(always=True), served precomputed.)
-const wiBase = n => n.api;
-// The ONE place a session's two what-if figures come from: the Subagents tree and the
-// Overview summary both read it, so they can never drift into quoting different
-// what-ifs for the same session (the TUI's whatif_session_totals discipline). Null when
-// no target is armed, or the session has no nodes to price.
+// The ONE place a session's two what-if figures come from -- the Subagents tree's TOTAL
+// and the Overview summary both read it, so they cannot drift (the TUI's
+// App.whatif_session_totals, mirrored). Null when no target is armed, or the session has
+// no per-model rows to price.
+//
+// Both sides are computed from the session's PER-MODEL rows (DATA.models[id]), the only
+// place its tokens are split per model, and both at LIST rates:
+//   * actual = each model's own tokens at its own list rates -- every token, exactly;
+//   * whatif = the session's summed token split at the target's list rates.
+// Apples-to-apples on purpose, and independent of the $ toggle: recorded cost is $0 on a
+// subscription route and a few cents on a partially-metered one, so a recorded baseline
+// would report savings that never happened. It also means arming a model a single-model
+// session already used lands on exactly $0 change -- same tokens, same rates.
+//
+// NOT the node rows: workflow_nodes labels a node with its single dominant model, so
+// pricing a node's whole split at that one label is wrong for any session that switched
+// model mid-flight, and no per-node baseline is computable from what the stores expose.
 function whatifTotals(id) {
   if (!WHATIF.model) return null;
-  const nodes = DATA.nodes[id];
-  if (!nodes || !nodes.length) return null;
-  const rates = WI_PRICE.get(WHATIF.model);
-  const actual = nodes.reduce((a, n) => a + wiBase(n), 0);
-  const whatif = nodes.reduce((a, n) => a + whatifCost(n.tok, rates), 0);
-  return { target: WHATIF.model, actual, whatif, delta: whatif - actual };
+  const rows = DATA.models[id];
+  if (!rows || !rows.length) return null;
+  const tot = [0, 0, 0, 0, 0];
+  let actual = 0;
+  rows.forEach(r => {
+    actual += whatifCost(r.tok, WI_PRICE.get(r.model));
+    r.tok.forEach((v, i) => { tot[i] += v; });
+  });
+  const whatif = whatifCost(tot, WI_PRICE.get(WHATIF.model));
+  // `est`: one of this session's models has no real list rate, so its tokens are priced
+  // at a generic guess and the baseline stops being a list price. Mirrors
+  // App.whatif_baseline_is_estimated -- both frontends mark it `~` rather than quote it.
+  // Zero-token rows don't count (an aborted turn names a model but contributes nothing,
+  // so it cannot turn an exact baseline into an estimate) -- same rule as the Python.
+  const est = rows.some(r => r.tokens > 0 && WI_UNPRICED.has(r.model));
+  return { target: WHATIF.model, actual, whatif, delta: whatif - actual, est };
 }
 
 /* ---------- cells ---------- */
@@ -1190,40 +1212,51 @@ function contextCompTable(comp) {
 }
 
 /* ---------- the `w` what-if views: a session's tree + its Overview summary ---------- */
-// Signed outside the money glyph -- "+$4.12" / "-$0.30" -- and coloured by direction:
-// red = the target would have cost more, green = what routing away from it saved.
-function wiDelta(d) {
-  return h('span', { class: d >= 0 ? 'wi-up' : 'wi-down' }, (d >= 0 ? '+' : '-') + money(Math.abs(d)));
-}
+// A share with its direction glued on -- except when there is no share to sign: pct()
+// answers '-' for a zero denominator (undefined), and '+-' is not a percentage.
+const signedPct = (part, whole, sign) => { const s = pct(Math.abs(part), whole); return s === '-' ? s : sign + s; };
 // The payoff table (the Subagents pane with a target armed): the WHOLE tree -- root row
-// included, because the question is about the whole session and the root is the model
-// the delegation was made from -- each node's cost beside what its tokens would have
-// cost had the target produced them, and the delta. The Cost column is the
-// $-independent `api` baseline (wiBase), never the mode-swapped mCost, so both columns
-// cover the same tokens. Nothing outside this pane and the Overview summary moves.
-function whatifTree(nodes) {
-  const target = WHATIF.model, rates = WI_PRICE.get(target);
-  const rows = nodes.map(n => Object.assign({}, n, { base: wiBase(n), wi: whatifCost(n.tok, rates) }));
-  const actual = rows.reduce((a, r) => a + r.base, 0);
-  const total = rows.reduce((a, r) => a + r.wi, 0);
-  const saved = total - actual;
-  const t = table('t-s-whatif', [
+// included, because the question is about the whole session and the root is the model the
+// delegation was made from -- each node's cost beside what its tokens would have cost had
+// the target produced them.
+//
+// Two columns, not three. The per-node What-if is exact (one model, one rate card, that
+// node's own tokens); a per-node BASELINE is not (a node's label is its dominant model
+// only), so there is no per-node Δ -- nothing honest to subtract from. The exact
+// comparison lives at session level, in the TOTAL line (whatifTotals, per-model rows,
+// both sides at list rates). The Cost column keeps its ordinary meaning everywhere --
+// recorded spend, $-estimated where nothing was recorded -- which is exactly why it does
+// not add up to the TOTAL, and says so.
+function whatifTree(nodes, t) {
+  const rates = WI_PRICE.get(t.target);
+  const rows = nodes.map(n => Object.assign({}, n, { wi: whatifCost(n.tok, rates) }));
+  const saved = t.actual - t.whatif;   // signed from the target's side: what it would save
+  const tbl = table('t-s-whatif', [
     { key: 'title', label: 'Title', asc: true, cls: 'grow', fmt: r => [r.depth ? h('span', { class: 'mut' }, '└ '.padStart(r.depth * 2 + 2, ' ')) : null, r.title] },
     { key: 'date', label: 'Started', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },
     { key: 'agent', label: 'Agent', asc: true, fmt: r => h('span', { class: 'dim' }, r.agent) },
     { key: 'model', label: 'Model', asc: true, fmt: r => modelCell(r.model) },
-    { key: 'base', label: 'Cost', align: 'r', fmt: r => moneyCell(r.base) },
+    { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => moneyCell(mCost(r)) },
     { key: 'wi', label: 'What-if', align: 'r', fmt: r => h('span', { class: 'm' }, money(r.wi)) },
-    { key: 'delta', label: 'Δ', align: 'r', sortVal: r => r.wi - r.base, fmt: r => wiDelta(r.wi - r.base) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
   ], rows, { defaultSort: { key: 'date', desc: false } });
-  // The point of the whole feature: what did routing the grunt work to cheaper models
-  // actually save?
-  return h('div', null, t,
-    h('div', { class: 'wi-total' }, 'TOTAL ', money(actual), ' → ', h('b', null, money(total)), '   routing ',
-      (saved >= 0 ? 'saved ' : 'cost '), h('b', null, money(Math.abs(saved))), ' (' + pct(Math.abs(saved), total) + ')'),
-    h('div', { class: 'hint' }, 'this session’s tokens repriced at ' + target + ' list rates — a rate substitution, not a rerun. Every other view keeps showing actual spend.'),
-    h('div', { class: 'hint' }, 'Cost prices unrecorded ($0) usage at its own model’s list rates, so both columns cover the same tokens.'));
+  // The What-if column normally sums to the counterfactual (same tokens, same rate). It
+  // won't when a session's node rollup disagrees with its message-level totals -- rare,
+  // and not this feature's doing, but an unexplained mismatch reads as a bug, so it is
+  // named only on the sessions where it is actually true. (The TUI does the same.)
+  // Which way it drifts is not fixed -- a node rollup can overshoot the message totals as
+  // easily as undershoot them -- so say the direction, don't assume it.
+  const wiColumn = rows.reduce((a, r) => a + r.wi, 0);
+  const drift = Math.abs(wiColumn - t.whatif) > 0.01 ? (wiColumn > t.whatif ? 'more' : 'less') : '';
+  return h('div', null, tbl,
+    h('div', { class: 'wi-total' }, 'TOTAL (list rates)  your models ', (t.est ? '~' : '') + money(t.actual), ' → all at ' + t.target + ' ',
+      h('b', null, money(t.whatif)), '   ', (saved >= 0 ? 'saved ' : 'cost '),
+      h('span', { class: saved >= 0 ? 'wi-down' : 'wi-up' }, money(Math.abs(saved))),
+      ' (' + pct(Math.abs(saved), t.actual) + ')'),
+    h('div', { class: 'hint' }, 'both sides priced at list rates — the only apples-to-apples basis. The Cost column is what was actually recorded ($0 where a subscription recorded none), so it does not add up to these.'),
+    h('div', { class: 'hint' }, 'no per-node Δ: a node can mix models, so its baseline isn’t computable — the exact comparison exists at session level, where the tokens are split per model.'),
+    t.est ? h('div', { class: 'hint' }, '~ your models include one with no known list rate — its tokens are priced at a generic estimate, so the baseline is not a real list price.') : null,
+    drift ? h('div', { class: 'hint' }, 'this session’s node totals disagree with its message totals, so the What-if column adds up to slightly ' + drift + ' than the TOTAL. The TOTAL is the exact one.') : null);
 }
 // The armed target's effect on THIS session, in three figures, on the Overview -- where
 // it exists because the Subagents pane cannot answer for a session that delegated
@@ -1235,11 +1268,13 @@ function whatifSummary(t) {
   const sign = t.delta >= 0 ? '+' : '-';
   return pane('What-if · ' + t.target,
     tiles([
-      ['actual', money(t.actual), 'every token at its own model’s list rates', true],
-      ['what-if', money(t.whatif), 'at ' + t.target + '’s rates', true],
-      ['change', sign + money(Math.abs(t.delta)), sign + pct(Math.abs(t.delta), t.actual) + ' vs actual'],
+      ['your models', (t.est ? '~' : '') + money(t.actual), 'every token at its own model’s list rates', true],
+      ['all at ' + t.target, money(t.whatif), 'the same tokens, one rate card', true],
+      ['change', h('span', { class: t.delta >= 0 ? 'wi-up' : 'wi-down' }, sign + money(Math.abs(t.delta))),
+        signedPct(t.delta, t.actual, sign) + ' vs your models'],
     ]),
-    h('div', { class: 'hint' }, 'this session’s tokens at ' + t.target + ' list rates — a rate substitution, not a rerun. Every other view keeps showing actual spend.'));
+    h('div', { class: 'hint' }, 'both sides priced at list rates — the only apples-to-apples basis for a rate substitution, not a rerun. Recorded spend is unchanged, here and everywhere else.'),
+    t.est ? h('div', { class: 'hint' }, '~ your models include one with no known list rate — its tokens are priced at a generic estimate, so the baseline is not a real list price.') : null);
 }
 
 /* ---------- the `w` target picker (the TUI's draw_whatif_menu) ---------- */
@@ -1393,14 +1428,16 @@ function renderDetail(sc, ws) {
   else if (TAB === 'Sessions') root.appendChild(pane('Sessions · ' + scopeLabel(sc), sessionsTable('t-tab-sessions', ws)));
   else if (TAB === 'Sources') root.appendChild(pane('Sources · ' + scopeLabel(sc), sourcesTable('t-tab-sources', ws)));
   else if (TAB === 'Subagents') {
-    // Nodes ride along for every session now, so "did this session delegate?" is a depth
-    // test, not the presence of the array. A solo session still says "no subagents" with
-    // a target armed -- it has no tree to table, which is exactly why its what-if lives
-    // on the Overview instead (the TUI makes the same split).
+    // Nodes ride along only for a session that delegated. A solo session says "no
+    // subagents" even with a target armed -- it has no tree to table, which is exactly
+    // why its what-if lives on the Overview instead (the TUI makes the same split). A
+    // session with no per-model rows has no computable baseline (whatifTotals is null),
+    // so it keeps the ordinary tree rather than quoting half a comparison.
     const nodes = DATA.nodes[sc.id];
     const tree = nodes && nodes.some(n => n.depth > 0);
+    const wi = tree ? whatifTotals(sc.id) : null;
     if (!tree) root.appendChild(pane('Session tree', h('div', { class: 'hint' }, 'no subagents in this session')));
-    else if (WHATIF.model) root.appendChild(pane('Session tree · what-if ' + WHATIF.model, whatifTree(nodes)));
+    else if (wi) root.appendChild(pane('Session tree · what-if ' + wi.target, whatifTree(nodes, wi)));
     else root.appendChild(pane('Session tree', table('t-s-nodes', [
       { key: 'title', label: 'Title', asc: true, cls: 'grow', fmt: r => [r.depth ? h('span', { class: 'mut' }, '└ '.padStart(r.depth * 2 + 2, ' ')) : null, r.title] },
       { key: 'date', label: 'Started', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },

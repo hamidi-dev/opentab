@@ -461,6 +461,8 @@ class Renderer:
             self.draw_theme_menu(stdscr, height, width)
         elif self.source_menu:
             self.draw_source_menu(stdscr, height, width)
+        elif self.whatif_menu:
+            self.draw_whatif_menu(stdscr, height, width)
         elif self.sort_menu:
             self.draw_sort_menu(stdscr, height, width)
         elif self.launch_menu is not None:
@@ -485,6 +487,9 @@ class Renderer:
         # this data comes from — OpenCode / Claude Code / both.
         chip = f" {self.store.source_name} "
         self.write(stdscr, 0, len(title), chip, curses.color_pair(7) | curses.A_BOLD)
+        # No what-if tag here on purpose: an armed `w` target changes nothing the header
+        # counts (it reprices one session's tree on its Subagents tab, which titles and
+        # caveats itself), so tagging the header would call recorded spend counterfactual.
         if self.store.demo:
             tag = " DEMO — synthetic "
         elif self.show_api_prices:
@@ -722,6 +727,10 @@ class Renderer:
             parts.append(("D real" if self.store.demo else "D demo", False))
         if not self.store.demo:
             parts.append(("$ what-if", self.show_api_prices))
+        # `w` lights up while a target model is armed -- an honest "this is set", not a
+        # claim about the numbers on screen: the target only reprices a session's
+        # Subagents tab. It works in demo too, unlike `$` (scaled tokens leak nothing).
+        parts.append(("w model", bool(self.whatif_model)))
         parts += [("? help", self.help), ("q quit", False)]
         self.hline(stdscr, height - 2, 0, width)
         # Version in the bottom-right corner, lazygit-style: a quiet chrome label.
@@ -1944,6 +1953,11 @@ class Renderer:
             f"Root:     {money(workflow.root_cost)}",
             f"Subagent: {money(workflow.total_cost - workflow.root_cost)}",
             f"Share:    {pct(workflow.total_cost, self.range_cost_total())} of range",
+        ]
+        # An armed `w` target answers for THIS session right here -- including a solo one,
+        # which has no subagent tree for the Subagents tab to show.
+        lines += self.detail_whatif_summary(workflow)
+        lines += [
             "",
             "# Shape",
             f"Subagents:       {workflow.subagents}",
@@ -1974,12 +1988,28 @@ class Renderer:
         return lines
 
     def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
-        rows = self._priced_nodes(
-            [row for row in self.session_node_rows(workflow.id) if row["depth"] > 0]
-        )
-        if not rows:
+        nodes = self.session_node_rows(workflow.id)
+        if not any(row["depth"] > 0 for row in nodes):
             return ["# Subagents", "No subagents used in this workflow."]
-        rows = self.sorted_subagent_rows(rows)
+        totals = self.whatif_session_totals(workflow)
+        if self.whatif_model and totals:
+            # With a what-if target the root (depth 0) joins the table. Normally it's
+            # excluded because it isn't an execution *under* the session -- but the
+            # question here ("what if the expensive model had done the delegated work
+            # too?") is about the whole tree, and the root is the model the delegation
+            # was made from. Without a target the table is exactly what it always was.
+            # A session with no per-model rows has no computable baseline (totals is
+            # None), so it keeps the ordinary table rather than quoting half a
+            # comparison.
+            return self._subagents_whatif(
+                self.sorted_subagent_rows(self._priced_nodes(nodes)),
+                self.whatif_model,
+                totals,
+                workflow,
+            )
+        rows = self.sorted_subagent_rows(
+            self._priced_nodes([row for row in nodes if row["depth"] > 0])
+        )
         lines = [
             "# Subagent Executions",
             f"{self.subagent_sort_heading('date', 'Started'):<16} "
@@ -2000,6 +2030,128 @@ class Renderer:
                 f"{money(row['cost']):>8} "
                 f"{human_tokens(row['tokens_total']):>9}  "
                 f"{row['title']}"
+            )
+        return lines
+
+    @staticmethod
+    def signed_pct(part: float, whole: float, sign: str) -> str:
+        # A share with its direction glued on -- except when there is no share to sign:
+        # pct() answers "-" for a zero denominator (undefined), and "+-" is not a
+        # percentage. An undefined change stays bare.
+        share = pct(abs(part), whole)
+        return share if share == "-" else f"{sign}{share}"
+
+    def detail_whatif_summary(self, workflow: Workflow) -> list[str]:
+        # The armed target's effect on THIS session, in three figures. It lives on the
+        # Overview because the Subagents tab can't answer for a session that delegated
+        # nothing: a solo session has no tree to table, and "routing saved $X" would be
+        # crediting a routing decision that was never made. So the summary stays neutral
+        # -- the two list-price totals and the change between them -- and the Subagents
+        # tab keeps the routing narrative for the sessions that actually routed.
+        # Both figures come from App.whatif_session_totals (per-MODEL rows, both sides at
+        # list rates), so the two views cannot drift into quoting different numbers.
+        totals = self.whatif_session_totals(workflow)
+        if not totals:
+            return []
+        target = self.whatif_model
+        actual, whatif = totals
+        delta = whatif - actual
+        sign = "+" if delta >= 0 else "-"
+        approx = "~" if self.whatif_baseline_is_estimated(workflow) else ""
+        lines = [
+            "",
+            f"# What-if · {target}",
+            f"Your models:  {approx}{money(actual)}   (list rates, each model its own)",
+            f"All at {target}:  {money(whatif)}",
+            f"Change:       {sign}{money(abs(delta))} "
+            f"({self.signed_pct(delta, actual, sign)} vs your models)",
+            "! Both sides priced at list rates — the only apples-to-apples basis for a rate "
+            "substitution. Recorded spend is unchanged, here and everywhere else.",
+        ]
+        if approx:
+            lines.append(
+                "! ~ your models include one with no known list rate — its tokens are priced at a "
+                "generic estimate, so the baseline is not a real list price."
+            )
+        return lines
+
+    def _subagents_whatif(
+        self, rows: list[dict], target: str, totals: tuple[float, float], workflow: Workflow
+    ) -> list[str]:
+        # The what-if payoff table -- the feature's ONE visible effect, scoped to this
+        # session: the whole tree (root + every subagent), each node's cost beside what
+        # that node's tokens would have cost had `target` produced them. Nothing outside
+        # this table and the Overview summary moves; "$" keeps owning every app-wide
+        # figure (an app-wide reprice would leave "$" nothing to toggle).
+        #
+        # Two columns, not three. The per-node What-if is exact (one model, one rate
+        # card, that node's own tokens). A per-node *baseline* is not: workflow_nodes
+        # labels a node with its single dominant model, so pricing its whole token split
+        # at that one label is wrong for every node that switched model mid-flight -- so
+        # there is no per-node Δ, because there is no honest per-node figure to subtract
+        # from. The exact comparison exists only at session level, where the per-model
+        # rows split the tokens properly (App.whatif_session_totals), and that is what
+        # the TOTAL line reports -- both sides at list rates, the only apples-to-apples
+        # basis. The Cost column stays what it is everywhere else: recorded spend,
+        # "$"-estimated where nothing was recorded -- which is why it does NOT add up to
+        # the TOTAL, and says so.
+        priced = [(row, self.whatif_node_price(row, target)) for row in rows]
+        lines = [
+            f"# Session Tree · what-if {target}",
+            f"{self.subagent_sort_heading('date', 'Started'):<16} "
+            f"{self.subagent_sort_heading('depth', 'D'):<3} "
+            f"{self.subagent_sort_heading('agent', 'Agent'):14} "
+            f"{self.subagent_sort_heading('model', 'Model'):26} "
+            f"{self.subagent_sort_heading('cost', 'Cost'):>9} "
+            f"{'What-if':>9} "
+            f"{self.subagent_sort_heading('tokens', 'Tokens'):>9}  "
+            f"{self.subagent_sort_heading('title', 'Title')}",
+        ]
+        self._line_sort_headers[1] = (self.SUBAGENT_SORT_COLUMNS, "subagent")
+        for row, wi in priced:
+            lines.append(
+                f"{str(row.get('created_at') or '')[:16]:<16} "
+                f"{row['depth']:<3} "
+                f"{pad(shorten(row['agent'], 14), 14)} "
+                f"{pad(shorten(row['model_name'], 26), 26)} "
+                f"{money(row['cost']):>9} "
+                f"{money(wi):>9} "
+                f"{human_tokens(row['tokens_total']):>9}  "
+                f"{row['title']}"
+            )
+        actual, total = totals
+        # Signed from the TARGET's point of view: what running all of it on the target
+        # would have saved (or cost extra) against the models that actually ran it.
+        saved = actual - total
+        verb = "saved" if saved >= 0 else "cost more"
+        approx = "~" if self.whatif_baseline_is_estimated(workflow) else ""
+        lines += [
+            "",
+            f"TOTAL (list rates)  your models {approx}{money(actual)} → all at {target} {money(total)}   "
+            f"{verb} {money(abs(saved))} ({pct(abs(saved), actual)})",
+            "! Both sides priced at list rates — the only apples-to-apples basis. The Cost column is "
+            "what was actually recorded ($0 where a subscription recorded none), so it does not add "
+            "up to these.",
+            "· No per-node Δ: a node can mix models, so its baseline isn't computable — the exact "
+            "comparison exists at session level, where the tokens are split per model.",
+        ]
+        if approx:
+            lines.append(
+                "! ~ your models include one with no known list rate — its tokens are priced at a "
+                "generic estimate, so the baseline is not a real list price."
+            )
+        # Normally the What-if column sums to the counterfactual (same tokens, same rate).
+        # It won't when a session's node rollup disagrees with its message-level totals --
+        # rare, and not this feature's doing, but an unexplained mismatch on screen reads
+        # as a bug, so name it only on the sessions where it is actually true.
+        column = sum(wi for _row, wi in priced)
+        if abs(column - total) > 0.01:
+            # Which way it drifts is not fixed -- a node rollup can overshoot the message
+            # totals as easily as undershoot them -- so say the direction, don't assume it.
+            direction = "more" if column > total else "less"
+            lines.append(
+                "! This session's node totals disagree with its message totals, so the What-if "
+                f"column adds up to slightly {direction} than the TOTAL. The TOTAL is the exact one."
             )
         return lines
 
@@ -2486,6 +2638,17 @@ class Renderer:
                         "C theme · c source · D demo · $ what-if · ? help keep working inside",
                     ),
                     ("$", "toggle what-if prices — what unpriced usage would cost at API list"),
+                    (
+                        "w",
+                        "what-if model — arm ONE model as a comparison target "
+                        "(j/k move · f filter · Enter select · Esc cancel); w again clears it",
+                        '"what if the expensive model had done the subagents\' work too?" '
+                        "— a session's Subagents tab then adds a What-if column pricing each "
+                        "node's tokens at the target's rates, and its Overview the session "
+                        "total: your models vs all at the target, both at list rates",
+                        "session-scoped: no other view changes, $ keeps working as always "
+                        "— a rate substitution, not a rerun. Works in demo too",
+                    ),
                     (
                         "c",
                         "data-source picker (j/k move · Enter switch · Esc cancel) — OpenCode "
@@ -3060,6 +3223,50 @@ class Renderer:
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {label}{suffix}", attr))
         self.draw_modal(stdscr, scr_h, scr_w, "Switch source · j/k · Enter · Esc", lines)
+
+    def draw_whatif_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # The `w` picker: arm ONE model you've used as a comparison target -- "what if
+        # this model had done all of a session's work?" -- and a session's Subagents tab
+        # prices that session's tree at its list rates. j/k moves the highlight, Enter
+        # arms, `f` narrows the list (fzf-style, the P overlay's filter), Esc cancels
+        # (handle_whatif_menu_key); `w` again with a target set clears it. Scrolled around
+        # the selection like the theme picker -- a heavy month can carry a lot of models,
+        # which is what the filter is for.
+        entries = self.whatif_rows()
+        idx = self.whatif_menu_index % len(entries) if entries else 0
+        max_rows = max(4, scr_h - 14)
+        start = 0
+        if len(entries) > max_rows:
+            start = min(max(0, idx - max_rows // 2), len(entries) - max_rows)
+        visible = entries[start : start + max_rows]
+        lines = [
+            ("Compare a session's tree against one model's list rates:", curses.color_pair(4)),
+            ("(the Subagents tab; every other view keeps its actual cost)", curses.A_DIM),
+            ("", 0),
+        ]
+        if self.whatif_query or self.whatif_filter_active:
+            # A block cursor while the query is live, so it reads as an input, not a label.
+            cursor = "█" if self.whatif_filter_active else ""
+            lines.append((f" filter: {self.whatif_query}{cursor}", curses.color_pair(4)))
+            lines.append(("", 0))
+        if start:
+            lines.append((f"    ↑ {start} more", curses.A_DIM))
+        for offset, (name, tok) in enumerate(visible, start=start):
+            marker = "●" if name == self.whatif_model else "○"
+            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
+            lines.append((f" {marker}  {pad(shorten(name, 34), 34)} {human_tokens(tok):>9}", attr))
+        if not entries:
+            lines.append(("    no model matches — backspace to widen", curses.color_pair(2)))
+        below = len(entries) - (start + len(visible))
+        if below:
+            lines.append((f"    ↓ {below} more", curses.A_DIM))
+        hint = (
+            "Enter selects · Esc drops the filter"
+            if self.whatif_filter_active
+            else "f filter · w again clears it · Esc cancels"
+        )
+        lines += [("", 0), (hint, curses.color_pair(1))]
+        self.draw_modal(stdscr, scr_h, scr_w, "What-if model · j/k · f · Enter · Esc", lines)
 
     def draw_theme_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `C` (Colours) picker: a modal list of the themes (shared with the web

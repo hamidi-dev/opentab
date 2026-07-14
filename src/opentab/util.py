@@ -159,6 +159,29 @@ def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
     return sorted(agg.values(), key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
 
+def model_row_split(row) -> tuple[float, float, float, float, float]:
+    # One model-breakdown row's tokens as (input, output, reasoning, cache_read,
+    # cache_write) -- pricing.api_equivalent_cost's argument order, so a row can be
+    # priced with `api_equivalent_cost(name, *model_row_split(row))`.
+    #
+    # These rows are the ONE place a session's tokens are split per model (a node row
+    # carries only its single dominant model label), which is what makes them the exact
+    # basis for the `w` what-if's baseline and for the P overlay's token mix. Old stores
+    # and in-memory test rows may carry no `input` column, so the total's remainder
+    # stands in for it -- the same rule in both callers, in one place, because a baseline
+    # and the mix it is compared against must count the same tokens.
+    out = float(row.get("output") or 0)
+    reasoning = float(row.get("reasoning") or 0)
+    cache_read = float(row.get("cache_read") or 0)
+    cache_write = float(row.get("cache_write") or 0)
+    inp = row.get("input")
+    if inp is None:
+        inp = max(
+            0.0, float(row.get("tokens_total") or 0) - out - reasoning - cache_read - cache_write
+        )
+    return float(inp), out, reasoning, cache_read, cache_write
+
+
 # --- context-composition estimation (the Context tab) ------------------------
 # No tokenizer in the stdlib, so composition sizes are chars/4 estimates -- the
 # same coarse constant zaly's own /context command uses (and labels "estimated"),

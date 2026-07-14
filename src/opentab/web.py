@@ -13,10 +13,9 @@ field swap, not a reprice).
 per-session extras (Turns/Tools) as JSON endpoints — the exact per-session
 drill-in trade-off the TUI makes, which is why the static export omits those two
 tabs: embedding them would mean the startup-wide scan the TUI deliberately avoids.
-Subagent trees are cheap per-session queries and *are* embedded -- for every
-session, since the `w` what-if has to answer for a solo one too (see build_payload).
-`--web` is `--serve` plus popping the browser open in the user's default web
-browser (stdlib `webbrowser`, so cross-platform).
+Subagent trees are cheap per-session queries and *are* embedded (only for sessions
+that have subagents). `--web` is `--serve` plus popping the browser open in the
+user's default web browser (stdlib `webbrowser`, so cross-platform).
 
 Everything here is read-only on the data sources; the one file written is the
 --html browser the user asked for.
@@ -33,9 +32,16 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 from opentab import __version__
-from opentab.pricing import api_equivalent_cost, family_label, model_context_window, model_price
+from opentab.pricing import (
+    api_equivalent_cost,
+    family_label,
+    has_known_price,
+    is_local_provider,
+    model_context_window,
+    model_price,
+)
 from opentab.themes import DEFAULT_THEME
-from opentab.util import tool_namespace
+from opentab.util import model_row_split, tool_namespace
 from opentab.webpage import render_html
 
 if TYPE_CHECKING:
@@ -74,6 +80,7 @@ def _model_row(r: dict) -> dict:
     # real_cost/api_cost are stamped by App._compute_api_costs; demo rows skip that
     # pass (their cost is already synthetic), so both sides fall back to `cost`.
     real = r.get("real_cost", r.get("cost", 0))
+    inp, out, reasoning, cr, cw = model_row_split(r)
     return {
         "model": r.get("model_name") or "unknown",
         "runs": int(r.get("runs") or 0),
@@ -83,6 +90,13 @@ def _model_row(r: dict) -> dict:
         "cacheRead": int(r.get("cache_read") or 0),
         "cacheWrite": int(r.get("cache_write") or 0),
         "output": int(r.get("output") or 0),
+        # The row's FULL token split, in api_equivalent_cost's argument order
+        # ([input, output, reasoning, cacheRead, cacheWrite], the nodes' `tok` shape).
+        # These per-model rows are the only place a session's tokens are split per
+        # model, which makes them the exact -- and the only exact -- basis for the `w`
+        # what-if's baseline (whatifTotals). A node row carries one dominant model
+        # label, so it cannot answer for a session that switched models mid-flight.
+        "tok": [int(inp), int(out), int(reasoning), int(cr), int(cw)],
     }
 
 
@@ -95,17 +109,18 @@ def _node_row(row) -> dict:
         "model": d.get("model_name") or "",
         "date": d.get("created_at") or "",
         "real": _money6(d.get("cost")),
-        # `api` is the node's own-model list price for EVERY token (_node_api_cost ==
-        # App._priced_nodes(always=True)), which is what makes it the `w` what-if's
-        # baseline -- always, independent of the $ toggle. A $-gated baseline would
-        # compare a real counterfactual against a subscription backend's unrecorded $0
-        # and claim a 100% saving that never happened.
+        # `api` is the node's $-mode cost (the mirror of App._priced_nodes): recorded
+        # spend, or its tokens at its own model's list rates when nothing was recorded.
+        # It is NOT the what-if's baseline -- that is computed per MODEL, over the
+        # session's model rows, because this row knows only its one dominant model
+        # label and keeps a partially-billed node's few cents as its whole cost.
         "api": _money6(_node_api_cost(d)),
         "tokens": int(d.get("tokens_total") or 0),
         # The full token split, in api_equivalent_cost's argument order:
         # [input, output, reasoning, cacheRead, cacheWrite]. The `w` what-if cannot
         # travel precomputed (the target model is picked at view time), so the page
-        # gets the ingredients and reprices each node itself.
+        # gets the ingredients and prices each node's tokens at the target itself --
+        # exact per node, since the target is one model.
         "tok": [
             int(d.get("tokens_input") or 0),
             int(d.get("tokens_output") or 0),
@@ -117,21 +132,39 @@ def _node_row(row) -> dict:
 
 
 def _whatif_payload(app: App) -> dict:
-    # The `w` picker's rows: the models you have actually used, most-used first, local
-    # ones dropped (App.whatif_candidates -- they have no API rate, so substituting one
-    # in would price a whole tree at $0 and call it a saving), each with its list rates
-    # [in, out, cacheRead, cacheWrite] in $/M. That is everything the page needs to price
-    # any node's tokens at any target's rates -- the client mirrors
-    # pricing.api_equivalent_cost over the nodes' `tok` splits.
+    # Everything the page needs to price any session at any target's rates -- the `w`
+    # what-if can't travel precomputed (the target is picked at view time), so it travels
+    # as ingredients and the client mirrors pricing.api_equivalent_cost over the `tok`
+    # splits.
+    #
+    # `models` are the picker's ARMABLE rows: the models you actually used, most-used
+    # first, minus the ones with no list price to substitute in (App.whatif_candidates --
+    # local models have no API rate, and an unpriced id resolves only to the generic
+    # fallback, which is a guess, not a rate anyone charges).
+    #
+    # `rates` covers EVERY model you used, armable or not, because the baseline prices
+    # each model's tokens at its own rates and a session may well contain a model you
+    # cannot arm. Without them that session's baseline would silently drop those tokens.
+    rates = {}
+    for rows in app._model_by_root.values():
+        for m in rows:
+            name = str(m.get("model_name") or "")
+            if name and name not in rates:
+                rates[name] = [round(float(v), 6) for v in model_price(name)]
+    # `unpriced` are the used models whose "rate" above is really FALLBACK_PRICE -- a
+    # generic guess, not a rate anyone charges. A session containing one still gets every
+    # token priced (dropping them would understate the baseline), but the figure stops
+    # being a list price, so both frontends mark it with a `~` rather than quote a
+    # made-up rate as fact. Mirrors App.whatif_baseline_is_estimated.
     return {
         "models": [
-            {
-                "model": name,
-                "tokens": int(tokens),
-                "price": [round(float(v), 6) for v in model_price(name)],
-            }
+            {"model": name, "tokens": int(tokens), "price": rates[name]}
             for name, tokens in app.whatif_candidates()
-        ]
+        ],
+        "rates": rates,
+        "unpriced": sorted(
+            name for name in rates if not has_known_price(name) and not is_local_provider(name)
+        ),
     }
 
 
@@ -233,26 +266,22 @@ def build_payload(app: App) -> dict:
                 "source": w.source,
             }
         )
+        # The per-model rows are what the `w` what-if reduces over (whatifTotals): they
+        # carry the session's tokens split PER MODEL, the only exact basis for "what did
+        # your models cost at list rates" -- and they ship for every session with usage,
+        # so a *solo* session's Overview what-if answers without any node row at all.
         mix = app.model_mix(w.id)
         if mix:
             models[w.id] = [_model_row(r) for r in mix]
-        # Nodes travel for EVERY session, not just the ones with a subagent tree: the
-        # `w` what-if's two views (a session's Subagents tree and its Overview summary)
-        # must read one source, and the Overview has to answer for a *solo* session --
-        # the one case with no tree to table, and the reason the summary exists at all.
-        # Every backend's workflow_nodes returns at least the root row, so a solo
-        # session ships exactly that (the same rows, and therefore the same figures, the
-        # TUI's whatif_session_totals reads). The alternative -- reusing models[w.id] --
-        # was measured against real data and drifts: message-level model rows reprice
-        # partially-priced/multi-model sessions differently from the session-level node,
-        # so the page would quote what-ifs the TUI never shows. The cost is one cheap
-        # per-session query per solo session at export time (~0.4 ms).
-        # Store-level call on purpose: workflow_nodes handles demo transforms itself.
-        # One malformed session must not kill the whole export.
-        try:
-            nodes[w.id] = [_node_row(r) for r in store.workflow_nodes(w.id)]
-        except Exception:  # noqa: BLE001 -- backend-specific errors, all non-fatal
-            continue
+        if w.subagents:
+            # Nodes are the Subagents tree (and, with a target armed, its per-node
+            # What-if column), so they ride along only for a session that has a tree.
+            # Store-level call on purpose: workflow_nodes handles demo transforms
+            # itself. One malformed session must not kill the whole export.
+            try:
+                nodes[w.id] = [_node_row(r) for r in store.workflow_nodes(w.id)]
+            except Exception:  # noqa: BLE001 -- backend-specific errors, all non-fatal
+                continue
     meta = {
         "version": __version__,
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

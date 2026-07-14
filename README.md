@@ -173,6 +173,7 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | Mouse | Wheel scrolls, click selects, double-click drills, a column-header click sorts |
 | `T` | Trends — cost charts, the calendar heatmap, model/provider/source rankings; every tab drills down to a session |
 | `$` / `P` | What-if pricing at API list rates, and the price table behind it |
+| `w` | What-if **model** — arm one model as a comparison target ("what if the expensive model had done the subagents' work too?"); the selected session's Subagents tab then adds a What-if column pricing each node's tokens at that model's rates, and its Overview the whole session: *your models* vs *all at the target*, **both at list rates** — the only apples-to-apples basis, so a session that delegated nothing still answers. Session-scoped: every other view keeps its actual cost, and `$` keeps working. `w` again clears it |
 | `R` / `a` | Scope to a date range (`30d`, `2026-05`, `start..end`, …) / back to all time |
 | `f` | Live fuzzy filter, fzf-style |
 | `c` / `C` / `D` | Switch data source · colour theme · demo mode — from anywhere, overlays included |
@@ -182,7 +183,9 @@ single session — cost split, model mix, subagent tree — and step back out wi
 
 The active **source, range, sort, ignored projects, and `$` what-if view are
 remembered between runs** (stored in `~/.config/opentab/state.json`; pass `--no-state`
-to disable, and `--demo` does not persist). The complete keymap — bookmarks, ignore
+to disable, and `--demo` does not persist). A `w` **target model is not** — it's a
+transient analysis mode, and a remembered one would quietly re-frame the next run's
+Subagents tab. The complete keymap — bookmarks, ignore
 lists, the sort picker, overlay keys, custom launcher hooks — is in
 **[docs/keys.md](docs/keys.md)**.
 

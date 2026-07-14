@@ -25,26 +25,34 @@ static host.
 
 ## `w` — the what-if model
 
-`w` opens a picker over the models you've actually used (`j`/`k` move · `f` filters,
-fzf-style · `Enter` arms · `Esc` cancels) and **arms one as a comparison target**:
-*"what if the expensive model had done the subagents' work too?"*.
+`w` opens a picker over the models you've actually used — the ones with a real list
+price (`j`/`k` move · `f` filters, fzf-style · `Enter` arms · `Esc` cancels) — and
+**arms one as a comparison target**: *"what if the expensive model had done the
+subagents' work too?"*.
 
 It is **session-scoped**, exactly as in the TUI. Open a session and:
 
 - its **Subagents** tab shows the whole tree — root row included — with each node's
-  cost beside what that node's tokens would have cost at the target's list rates, a
-  **Δ** per node, and a `TOTAL $1.94 → $6.06   routing saved $4.12 (68%)` footer;
-- its **Overview** carries an Actual / What-if / Change summary — so a session that
-  delegated nothing (no tree to table) still answers. Both read the same numbers, so
-  they can't disagree.
+  Cost beside a **What-if** column: that node's tokens at the target's list rates.
+  Under it, the session comparison:
+  `TOTAL (list rates)  your models $310.46 → all at anthropic/claude-opus-4-5 $104.34   saved $206.12 (66%)`;
+- its **Overview** carries the same three figures (Your models / All at *target* /
+  Change) — so a session that delegated nothing (no tree to table) still answers.
+  Both read one reducer, so they can't disagree.
+
+**Both sides are priced at list rates** — the only apples-to-apples basis for a rate
+substitution — and the baseline is computed from the session's *per-model* token
+splits, so every token is priced at the model that actually produced it. That is why
+arming a model a single-model session already used is exactly a **$0 change**, and
+why a subscription backend (which records $0) never reports a 100% saving. The Cost
+column keeps its ordinary meaning — recorded spend, `$`-estimated where nothing was
+recorded — so it does **not** add up to the TOTAL. There is deliberately **no
+per-node Δ**: a node can mix models, so it has no honest baseline of its own.
 
 Everything else on the page — the sidebar, the rollups, Trends, Prices — keeps
-showing your actual spend, and `$` keeps working as always. The comparison is a
-**rate substitution, not a rerun** (same tokens, one price list), and its baseline
-prices *every* token at its own model's list rates regardless of `$` — otherwise a
-subscription backend, which records $0, would report a 100% saving that never
-happened. `w` again clears the target; it works in `--demo` too, and it is never
-remembered between visits (unlike the theme and the price pins).
+showing your actual spend, and `$` keeps working as always. `w` again clears the
+target; it works in `--demo` too, and it is never remembered between visits (unlike
+the theme and the price pins).
 
 The static file omits the per-session Turns/Tools/Context tabs (embedding them would
 mean scanning every session up front) — that's what the server is for.
