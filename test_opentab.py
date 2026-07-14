@@ -3328,6 +3328,75 @@ def test_showing_ignored_rows_agrees_between_preview_and_picker():
     assert any("/tmp/beta" in ln for ln in lines)  # the ignored project, "×"-marked
 
 
+def test_sources_tab_counts_the_sessions_it_opens():
+    # A Sources row must count exactly what Enter on it opens: it took neither the
+    # `i` widening nor a Projects-tab drill, so a row read "1 session · $3" and then
+    # produced two sessions and $5.
+    class MergedStore(FakeStore):
+        combined = True
+
+    a = workflow("a", "2026-06-01 12:00:00", cost=3)
+    a.source = "OpenCode"
+    b = workflow("b", "2026-06-02 12:00:00", cost=2)
+    b.source = "OpenCode"
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(MergedStore([a, b]), args)
+    app.focus = "months"
+    app.view = "zoom"
+    app.ignored_sessions = {"b"}
+    app.show_ignored_projects = True
+    app._invalidate_workflow_cache()
+
+    rows = app.zoom_source_rows()
+    assert [w.id for w in app.current_sessions()] == ["a", "b"]  # what Enter opens
+    assert rows[0][0] == "OpenCode"
+    assert int(rows[0][1]["sessions"]) == 2 and float(rows[0][1]["cost"]) == 5.0
+    # ...and the browse preview of the same tab agrees.
+    lines = app.renderer.month_sources(app.selected_month_summary, 96)
+    assert any("$5.00" in ln for ln in lines)
+
+
+def test_source_rows_follow_a_project_drill():
+    class MergedStore(FakeStore):
+        combined = True
+
+    a = workflow("a", "2026-06-01 12:00:00", cost=3, directory="/tmp/alpha")
+    a.source = "OpenCode"
+    b = workflow("b", "2026-06-02 12:00:00", cost=2, directory="/tmp/beta")
+    b.source = "Claude Code"
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(MergedStore([a, b]), args)
+    app.focus = "months"
+    app.view = "zoom"
+    app.zoom_project = "/tmp/alpha"  # drilled in from the Projects tab
+
+    assert [s for s, _it in app.zoom_source_rows()] == ["OpenCode"]  # not Claude's
+    assert [w.id for w in app.current_sessions()] == ["a"]
+
+
+def test_sources_rows_honour_the_committed_filter():
+    # The `f` query narrows the sessions list, so a Sources row that aggregates past
+    # it would advertise spend Enter then refuses to open.
+    class MergedStore(FakeStore):
+        combined = True
+
+    a = workflow("a", "2026-06-01 12:00:00", title="alpha work", cost=3)
+    a.source = "OpenCode"
+    b = workflow("b", "2026-06-02 12:00:00", title="beta work", cost=7)
+    b.source = "OpenCode"
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(MergedStore([a, b]), args)
+    app.focus = "months"
+    app.view = "zoom"
+    app.query = "alpha"  # committed filter
+
+    rows = app.zoom_source_rows()
+    assert [w.id for w in app.current_sessions()] == ["a"]  # what Enter opens
+    assert int(rows[0][1]["sessions"]) == 1 and float(rows[0][1]["cost"]) == 3.0
+    lines = app.renderer.month_sources(app.selected_month_summary, 96)
+    assert any("$3.00" in ln for ln in lines) and not any("$10.00" in ln for ln in lines)
+
+
 def test_sessions_sort_by_project_groups_sessions_by_root():
     app = app_with(
         [

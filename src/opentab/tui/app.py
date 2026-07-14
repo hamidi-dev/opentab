@@ -2727,7 +2727,10 @@ class App:
 
     def zoom_source_rows(self) -> list[tuple[str, dict[str, float | int]]]:
         # Source rows within the zoomed scope — the navigable Sources tab (merged
-        # view). Same slice the plain Sources tables render for this scope.
+        # view). It must count exactly the sessions Enter then opens
+        # (current_sessions), so it takes the same two widenings: `i` (ignored rows
+        # in view) and a Projects-tab drill. Counting a scope you can't open is how a
+        # row reads "1 session · $3" and produces two sessions and $5.
         if self.browse_mode == "projects":
             item = self.selected_project_summary
             rows = (
@@ -2739,8 +2742,13 @@ class App:
                 else []
             )
         else:
-            rows = self.zoom_scope_workflows()
-        return self.source_rows(rows)
+            rows = self.zoom_scope_workflows(include_ignored=self._showing_ignored_workflows())
+            if self.zoom_project:
+                rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
+        # ...and the committed `f` query, which current_sessions applies too: a row
+        # that counts sessions the query hides would open fewer than it advertises
+        # (possibly none).
+        return self.source_rows(self.filtered_sessions(rows))
 
     def zoom_selected_source(self) -> str | None:
         rows = self.zoom_source_rows()

@@ -963,6 +963,13 @@ class Renderer:
         # keeps the ignored rows, which it marks "×") -- so the preview must too.
         return self.ranged_workflows if self.show_ignored_projects else None
 
+    def scoped_sessions(self, rows: list[Workflow]) -> list[Workflow]:
+        # The sessions a scope actually shows, for the tables that COUNT them (the
+        # Sources tab) rather than list them: the committed `f` query narrows the
+        # sessions list, so a Sources row aggregating past it would advertise spend
+        # that Enter on it then refuses to open.
+        return self.filtered_sessions(rows)
+
     def session_table(self, rows: list[Workflow], width: int) -> list[str]:
         # The browse preview of a Sessions tab: the picker's table minus the cursor.
         # No "# ... Sessions" heading -- the tab strip above already names it, and the
@@ -1782,7 +1789,12 @@ class Renderer:
         return self._models_tab(self._agg_rows(agg), "# Monthly Model Spend", width)
 
     def month_sources(self, month: MonthSummary, width: int) -> list[str]:
-        return self.source_table(self.workflows_for_month(month.month), width)
+        return self.source_table(
+            self.scoped_sessions(
+                self.workflows_for_month(month.month, self.preview_session_source())
+            ),
+            width,
+        )
 
     def month_workflows(self, month: MonthSummary, width: int) -> list[str]:
         return self.session_table(
@@ -1836,7 +1848,10 @@ class Renderer:
         return self._models_tab(self._agg_rows(agg), "# Yearly Model Spend", width)
 
     def year_sources(self, year: YearSummary, width: int) -> list[str]:
-        return self.source_table(self.workflows_for_year(year.year), width)
+        return self.source_table(
+            self.scoped_sessions(self.workflows_for_year(year.year, self.preview_session_source())),
+            width,
+        )
 
     def year_projects(self, year: YearSummary, width: int) -> list[str]:
         return self.project_table(
@@ -1881,7 +1896,10 @@ class Renderer:
         return lines
 
     def day_sources(self, day: DaySummary, width: int) -> list[str]:
-        return self.source_table(self.workflows_for_day(day.day), width)
+        return self.source_table(
+            self.scoped_sessions(self.workflows_for_day(day.day, self.preview_session_source())),
+            width,
+        )
 
     def day_workflows(self, day: DaySummary, width: int) -> list[str]:
         return self.session_table(
@@ -1933,9 +1951,11 @@ class Renderer:
 
     def project_sources(self, project: ProjectSummary, width: int) -> list[str]:
         return self.source_table(
-            self.workflows_for_project(
-                project.directory,
-                include_ignored=self.include_ignored_for_project(project),
+            self.scoped_sessions(
+                self.workflows_for_project(
+                    project.directory,
+                    include_ignored=self.include_ignored_for_project(project),
+                )
             ),
             width,
         )
