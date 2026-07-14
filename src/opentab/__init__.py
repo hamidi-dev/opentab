@@ -56,6 +56,7 @@ from opentab.formatting import (
     MONEY_PATTERN,
     TOKEN_PATTERN,
     clip,
+    clip_tail,
     cost_bar,
     display_width,
     human_tokens,
@@ -67,6 +68,7 @@ from opentab.formatting import (
     short_path,
     shorten,
     tokens,
+    wrap_cells,
 )
 from opentab.heatmap import (
     BLOCKS_UP,
@@ -96,6 +98,14 @@ from opentab.models import (
     Workflow,
     YearSummary,
     year_label,
+)
+from opentab.notes import (
+    NOTES_VERSION,
+    load_notes,
+    notes_path,
+    read_notes,
+    save_notes,
+    update_note,
 )
 from opentab.pricing import (
     DEFAULT_CONTEXT_WINDOW,

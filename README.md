@@ -178,6 +178,7 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | `f` | Live fuzzy filter, fzf-style |
 | `c` / `C` / `D` | Switch data source · colour theme · demo mode — from anywhere, overlays included |
 | `L` | Relaunch the session in its own tool — tmux window/split/popup, or [your own launcher](docs/keys.md#custom-launchers) |
+| `n` | Note ✎ the selected session — why it cost what it did. Searchable, exported, kept in its own file |
 | `e` / `o` | Export the current view to CSV / open the project's directory |
 | `?` / `q` | Help / quit |
 
@@ -185,7 +186,9 @@ The active **source, range, sort, ignored projects, and `$` what-if view are
 remembered between runs** (stored in `~/.config/opentab/state.json`; pass `--no-state`
 to disable, and `--demo` does not persist). A `w` **target model is not** — it's a
 transient analysis mode, and a remembered one would quietly re-frame the next run's
-Subagents tab. The complete keymap — bookmarks, ignore
+Subagents tab. Session **notes (`n`) live apart**, in `~/.config/opentab/notes.json` —
+they're the one thing here you wrote rather than opentab derived, so they're saved the
+moment you write them and never pruned. The complete keymap — bookmarks, notes, ignore
 lists, the sort picker, overlay keys, custom launcher hooks — is in
 **[docs/keys.md](docs/keys.md)**.
 

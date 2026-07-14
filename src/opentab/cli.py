@@ -590,10 +590,17 @@ def main() -> int:
     sys.stderr.flush()
     app = App(store, args, source_key=source_key)
     app.allow_price_prompt = use_state  # no startup prompt under --no-state/--demo
+    # Session notes are authored data, so they live in their own file and carry their own
+    # gate: --no-state turns them off for the run, while demo is re-checked live (`D`
+    # toggles it) inside App.allow_notes. refresh_notes applies both.
+    app.notes_enabled = not args.no_state
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()
     if use_state:
         apply_state(app, args, state)
+    # After apply_state, which ends by clearing the notice -- and so would wipe the
+    # "your notes.json is unreadable" warning this can raise.
+    app.refresh_notes()
     if goto is not None:
         # After apply_state (a restored range could hide the target; goto_session
         # clears it when needed), before curses -- the jump is state-only.

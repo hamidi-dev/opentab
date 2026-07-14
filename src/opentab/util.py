@@ -543,11 +543,18 @@ def fuzzy_score(query: str, text: str) -> int | None:
     return score
 
 
-def workflow_fuzzy_score(query: str, workflow: Workflow) -> int | None:
+def workflow_fuzzy_score(query: str, workflow: Workflow, note: str = "") -> int | None:
     # Best match across the fields people aim for, nudged so a title hit
-    # outranks an equally good directory or id hit.
+    # outranks an equally good directory, note, or id hit. The note (`n`) is
+    # searchable on purpose: it's the field you wrote *because* the title
+    # wouldn't lead you back here.
     best = None
-    for bonus, text in ((2, workflow.title), (1, workflow.directory), (0, workflow.id)):
+    for bonus, text in (
+        (2, workflow.title),
+        (1, workflow.directory),
+        (1, note),
+        (0, workflow.id),
+    ):
         s = fuzzy_score(query, text)
         if s is not None and (best is None or s + bonus > best):
             best = s + bonus

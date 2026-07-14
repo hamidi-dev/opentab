@@ -35,6 +35,7 @@ from opentab.formatting import (
     short_path,
     shorten,
     tokens,
+    wrap_cells,
 )
 from opentab.heatmap import (
     BLOCKS_UP,
@@ -700,6 +701,10 @@ class Renderer:
             parts.append(("b mark", target.id in self.bookmarks))
         if self.bookmarks or self.show_bookmarks_only:
             parts.append(("B marked", self.show_bookmarks_only))
+        # `n` is offered on the same selected session, and lights up once it has a
+        # note (so the chip doubles as "there's something written here").
+        if target is not None and self.allow_notes:
+            parts.append(("n note", bool(self.note_for(target.id))))
         if self.can_switch_source():
             # `c` opens the source picker (lights up while it's open); the active source
             # is the header chip, so the key just advertises the menu, not a destination.
@@ -844,6 +849,16 @@ class Renderer:
         # shows session titles, so bookmarks are spottable wherever they surface.
         return "★ " if workflow.id in self.bookmarks else ""
 
+    def note_tag(self, workflow: Workflow) -> str:
+        # "✎ " for a session carrying a note (`n`) — the note itself is too long
+        # for a list row, but *that there is one* is exactly what a list must say.
+        return "✎ " if self.note_for(workflow.id) else ""
+
+    def session_marks(self, workflow: Workflow) -> str:
+        # The user-authored marks that ride in front of a session title, wherever
+        # one is listed: starred, annotated.
+        return self.bookmark_tag(workflow) + self.note_tag(workflow)
+
     def ignored_session_tag(self, workflow: Workflow) -> str:
         return "ignored: " if workflow.id in self.ignored_sessions else ""
 
@@ -987,7 +1002,7 @@ class Renderer:
             text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>11}  "
             if proj_w:
                 text += f"{pad(shorten(self.session_project(wf), proj_w), proj_w)}  "
-            text += f"{self.source_tag(wf)}{self.bookmark_tag(wf)}{self.ignored_session_tag(wf)}{wf.title}"
+            text += f"{self.source_tag(wf)}{self.session_marks(wf)}{self.ignored_session_tag(wf)}{wf.title}"
             if start + off == idx:
                 self.write(
                     stdscr,
@@ -1471,7 +1486,7 @@ class Renderer:
         title = (
             "Detail"
             if workflow is None
-            else shorten(self.bookmark_tag(workflow) + workflow.title, max(10, w - 12))
+            else shorten(self.session_marks(workflow) + workflow.title, max(10, w - 12))
         )
         self.box(stdscr, y, x, h, w, title, active=True)
         if workflow is None:
@@ -1685,7 +1700,7 @@ class Renderer:
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, month.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"subagents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 40))}"
+                f"{shorten(self.source_tag(workflow) + self.session_marks(workflow) + workflow.title, max(20, width - 40))}"
             )
         return lines
 
@@ -1713,7 +1728,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>11} "
                 f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
+                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}"
             )
         return lines
 
@@ -1755,7 +1770,7 @@ class Renderer:
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, year.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"subagents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 40))}"
+                f"{shorten(self.source_tag(workflow) + self.session_marks(workflow) + workflow.title, max(20, width - 40))}"
             )
         return lines
 
@@ -1787,7 +1802,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>11} "
                 f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
+                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}"
             )
         return lines
 
@@ -1815,7 +1830,7 @@ class Renderer:
                 f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, day.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"subagents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 40))}"
+                f"{shorten(self.source_tag(workflow) + self.session_marks(workflow) + workflow.title, max(20, width - 40))}"
             )
         return lines
 
@@ -1839,7 +1854,7 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>11} "
                 f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
+                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}"
             )
         return lines
 
@@ -1873,7 +1888,7 @@ class Renderer:
                 f"{workflow.created_at[:10]:<10} {money(workflow.total_cost):>10} "
                 f"{pct(workflow.total_cost, project.cost):>5} "
                 f"{human_tokens(workflow.total_tokens):>8} subagents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.bookmark_tag(workflow) + workflow.title, max(20, width - 53))}"
+                f"{shorten(self.source_tag(workflow) + self.session_marks(workflow) + workflow.title, max(20, width - 53))}"
             )
         return lines
 
@@ -1932,9 +1947,22 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} "
                 f"{workflow.subagents:>11} "
                 f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{self.bookmark_tag(workflow)}{workflow.title}"
+                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}"
             )
         return lines
+
+    def note_lines(self, workflow: Workflow, width: int) -> list[str]:
+        # The note sits in the Session block, wrapped to the pane and hanging-indented
+        # under its label like every other field there. It's above Money on purpose:
+        # it's the one line on this screen that says what the money was *for*.
+        note = self.note_for(workflow.id)
+        if not note:
+            return []
+        # Wrapped by display cells, not codepoints: a note with CJK or an emoji wrapped
+        # by len() overflows the pane, and the pane then clips the overflow away -- the
+        # note would lose text on screen that it still has on disk.
+        wrapped = wrap_cells(note, max(20, width - 12)) or [note]
+        return [f"Note:     {wrapped[0]}"] + [f"          {line}" for line in wrapped[1:]]
 
     def detail_overview(self, workflow: Workflow, width: int) -> list[str]:
         lines = [
@@ -1946,6 +1974,7 @@ class Renderer:
         ]
         if workflow.source:
             lines.append(f"Source:   {workflow.source}")
+        lines += self.note_lines(workflow, width)
         lines += [
             "",
             "# Money",
@@ -2602,6 +2631,12 @@ class Renderer:
                         "bookmark ★ the selected session (remembered between runs); B shows "
                         "only bookmarks, within the active range",
                     ),
+                    (
+                        "n",
+                        "note ✎ on the selected session — why it cost what it did",
+                        "Enter saves · Ctrl-U clears · Ctrl-W kills a word · Esc cancels",
+                        "shown in its Overview, searched by f, exported by e",
+                    ),
                     ("o", "open the selected session's / project's directory"),
                     (
                         "L",
@@ -3098,7 +3133,7 @@ class Renderer:
         for w, cost, tok in rows:
             lines.append(
                 f"{w.created_at[:10]:<10} {money(cost):>9} {human_tokens(tok):>8}  "
-                f"{self.src_col(w)}{w.title}"
+                f"{self.src_col(w)}{self.session_marks(w)}{w.title}"
             )
         return lines
 
@@ -4126,7 +4161,7 @@ class Renderer:
         for w, cost, tok in shown:
             lines.append(
                 f"{w.created_at[:10]:<10} {money(cost):>9} {human_tokens(tok):>8}  "
-                f"{self.src_col(w)}{shorten(w.title, max(8, width - 34))}"
+                f"{self.src_col(w)}{shorten(self.session_marks(w) + w.title, max(8, width - 34))}"
             )
         return lines
 

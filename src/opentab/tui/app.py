@@ -22,7 +22,7 @@ except ImportError:  # native Windows has no stdlib curses
 
 from opentab import sources, themes, util
 from opentab.demo import demo_cost, demo_model, demo_title
-from opentab.formatting import short_path, shorten
+from opentab.formatting import clip, clip_tail, display_width, short_path, shorten
 from opentab.heatmap import (
     HEAT_DEFAULT_LEVELS,
     HEAT_MAX_LEVELS,
@@ -31,6 +31,7 @@ from opentab.heatmap import (
     week_key,
 )
 from opentab.models import ALL_YEARS, DaySummary, MonthSummary, ProjectSummary, YearSummary
+from opentab.notes import notes_path, read_notes, update_note
 from opentab.pricing import (
     LOCAL_PROVIDERS,
     api_equivalent_cost,
@@ -327,6 +328,12 @@ class App:
         # every view narrows to just the starred sessions.
         self.bookmarks: set[str] = set()
         self.show_bookmarks_only = False
+        # `n` annotates the selected session: {session id: note}, loaded from and
+        # saved to its own notes.json (opentab.notes) rather than state.json --
+        # this is authored data, not a pref. Written on every edit, not at exit.
+        self.notes: dict[str, str] = {}
+        self.notes_enabled = True  # --no-state turns notes off entirely (set in main)
+        self._notes_ok = True  # False once a reload found notes.json there but unreadable
         # When set (in a month/day zoom), the Sessions list is narrowed to this
         # project's sessions within the zoomed scope. Drilled into from the
         # Projects tab; cleared on step-out or any scope change.
@@ -484,7 +491,9 @@ class App:
         rows = self.sorted_workflows(rows)
         if not self.query:
             return rows
-        scored = [(workflow_fuzzy_score(self.query, w), w) for w in rows]
+        # The note is a search field too — annotating a session is half of how you
+        # find it again months later ("that one where the migration went sideways").
+        scored = [(workflow_fuzzy_score(self.query, w, self.note_for(w.id)), w) for w in rows]
         ranked = [(s, w) for s, w in scored if s is not None]
         ranked.sort(key=lambda pair: -pair[0])
         return [w for _, w in ranked]
@@ -803,11 +812,96 @@ class App:
             self.project_index = min(self.project_index, max(0, len(rows) - 1))
 
     def bookmark_target(self) -> Workflow | None:
-        # `b` works wherever one session is selected: a zoom's Sessions tab or the
-        # drilled-in session detail — the same contexts as `L` (launch_session).
+        # `b` (and `n`) work wherever one session is selected: a zoom's Sessions tab
+        # or the drilled-in session detail — the same contexts as `L` (launch_session).
         if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
             return self.current_session()
         return None
+
+    # A note is a sentence about a session, not an essay: long enough to say why the
+    # money was spent (and to wrap over a few lines in the Overview), short enough to
+    # stay one field in a CSV row. The prompt scrolls to reach it (prompt_text).
+    NOTE_MAX_CHARS = 500
+
+    @property
+    def allow_notes(self) -> bool:
+        # Computed, never captured: `D` toggles demo *live*. Demo fakes every title and
+        # path but the session ids stay real, so a note loaded from disk would be the one
+        # true thing on an anonymised screen -- and worse, editable, writing real
+        # annotations while you thought you were in the safe mode.
+        return self.notes_enabled and not bool(getattr(self.store, "demo", False))
+
+    def refresh_notes(self) -> bool:
+        # Re-read on every store swap (source switch, `D`, reload): it re-applies the
+        # gate above, and picks up anything another opentab has written meanwhile.
+        # Returns False (having said so) when the file is there but unreadable, and
+        # parks that in _notes_ok: toasts set within one handler collapse onto the last,
+        # so every caller must skip its own cheerier message rather than bury this one.
+        self._notes_ok = True
+        if not self.allow_notes:
+            self.notes = {}
+            return True
+        notes, readable = read_notes()
+        if not readable:
+            # The file is broken, not empty. Keep what's loaded: blanking the ✎ marks
+            # would look exactly like the notes had been deleted -- which is the thing
+            # we refuse to do to them.
+            self.notify(f"notes: {short_path(notes_path(), 60)} is unreadable", "error")
+            self._notes_ok = False
+            return False
+        self.notes = notes
+        return True
+
+    def note_for(self, workflow_id: str) -> str:
+        return self.notes.get(workflow_id, "")
+
+    def edit_note(self, stdscr: curses.window) -> None:
+        # `n` annotates the selected session — the answer to "why was this one
+        # expensive / worth it", which no amount of token accounting records. The
+        # curses half only: prompt_text seeded with the existing note (so `n` edits
+        # rather than overwrites), then set_note does the work.
+        session = self.bookmark_target()
+        if session is None:
+            self.notify("note: select a session first", "error")
+            return
+        if not self.allow_notes:
+            self.notify("notes are off in demo / --no-state", "error")
+            return
+        value = self.prompt_text(
+            stdscr,
+            "note: ",
+            "Enter saves · ^U clears · Esc cancels",
+            self.note_for(session.id),
+            max_chars=self.NOTE_MAX_CHARS,
+        )
+        if value is None:
+            return  # Esc: the existing note stands
+        self.set_note(session, value)
+
+    def set_note(self, session: Workflow, text: str) -> None:
+        # update_note re-reads the file and merges, so the map we adopt afterwards is
+        # the truth on disk (including notes another opentab wrote while this one was
+        # open) -- never our own stale copy replayed over theirs. A refused write leaves
+        # both the file and this map untouched: an unsaved note never sits in memory
+        # pretending it was saved.
+        text = text.strip()
+        previous = self.note_for(session.id)
+        notes, error = update_note(session.id, text)
+        if error == "unreadable":
+            self.notify(
+                f"note not saved: {short_path(notes_path(), 60)} is unreadable — "
+                "move it aside and it will be rebuilt",
+                "error",
+            )
+            return
+        if error:
+            self.notify(f"note not saved: cannot write {short_path(notes_path(), 60)}", "error")
+            return
+        self.notes = notes
+        if not text:
+            self.notice = "note cleared" if previous else "no note to clear"
+        else:
+            self.notice = "note saved" if not previous else "note updated"
 
     def toggle_bookmark(self) -> None:
         session = self.bookmark_target()
@@ -1462,7 +1556,12 @@ class App:
         self.whatif_menu = False
         self.select_whatif_model(rows[self.whatif_menu_index % len(rows)][0])
 
-    def handle_whatif_menu_key(self, key: int) -> bool:
+    def handle_whatif_menu_key(self, key: int | str) -> bool:
+        if isinstance(key, str):  # a non-ASCII character: type it (see _read_key)
+            if key.isprintable():
+                self.whatif_query += key
+                self.whatif_menu_index = 0
+            return True
         # The `w` model picker: j/k move, Enter selects, Esc/q cancels, `f` (or `/`)
         # starts the live filter -- the same fzf-style narrowing, on the same keys, as
         # the P overlay's model list, because it is the same question asked of the same
@@ -1606,6 +1705,7 @@ class App:
         self.loaded = self.store.workflows()
         self._snapshot_real_costs()
         self._resolve_project_roots()
+        notes_ok = self.refresh_notes()  # `r` picks up notes another opentab wrote too
         self._tool_by_session.clear()
         self._turns_by_session.clear()
         self._context_by_session.clear()
@@ -1617,7 +1717,11 @@ class App:
         self.day_index = min(self.day_index, max(0, len(self.days) - 1))
         self.month_index = min(self.month_index, max(0, len(self.months) - 1))
         self.project_index = min(self.project_index, max(0, len(self.projects) - 1))
-        self.notify("reloaded", "success")
+        if notes_ok:
+            # Toasts set within one handler collapse onto the last one, so a cheery
+            # "reloaded" here would swallow refresh_notes' warning. The warning wins:
+            # you pressed `r`, you know it reloaded.
+            self.notify("reloaded", "success")
 
     # --- Live source switching (the `c` key) ---------------------------------
     def can_switch_source(self) -> bool:
@@ -1732,7 +1836,8 @@ class App:
         self.source_key = key
         self.store = self._store_cache[cache_key]
         self._reload_for_source()
-        self.notice = f"source: {SOURCE_LABELS.get(key, key)}"
+        if self._notes_ok:  # else keep _reload_for_source's warning (toasts collapse)
+            self.notice = f"source: {SOURCE_LABELS.get(key, key)}"
 
     def toggle_demo(self) -> None:
         if not self.source_key:
@@ -1751,7 +1856,15 @@ class App:
                 return
         self.store = self._store_cache[cache_key]
         self._reload_for_source(snapshot)
-        self.notice = "demo mode" if demo else "real data"
+        if demo and self.query:
+            # The query is text YOU typed -- out of a real title, path, or note -- and the
+            # header paints it. Demo exists so the screen can be shared, and the snapshot
+            # would restore "filter: Acme acquisition" right onto the anonymised view. It
+            # also filters against fake titles now, so it isn't even doing anything.
+            self.query = ""
+            self._filter_edited()
+        if self._notes_ok:  # else keep _reload_for_source's warning (toasts collapse)
+            self.notice = "demo mode" if demo else "real data"
 
     def ui_snapshot(self) -> dict:
         tabs = self.current_tabs()
@@ -1773,6 +1886,7 @@ class App:
         self.loaded = self.store.workflows()
         self._snapshot_real_costs()
         self._resolve_project_roots()
+        self.refresh_notes()  # the new store may be a demo one: re-apply the notes gate
         self._models_loaded = False
         self._tool_by_session.clear()
         self._turns_by_session.clear()
@@ -1828,7 +1942,8 @@ class App:
         self.tab = self.scroll = 0
         self.workflow_index = self.month_index = self.day_index = self.project_index = 0
         self._anchor_default_selection()
-        self.notice = f"source: {self.store.source_name}"
+        if self._notes_ok:  # a broken notes.json outranks "which source am I on"
+            self.notice = f"source: {self.store.source_name}"
 
     # --- Export / clipboard / open -------------------------------------------
     def _sessions_dataset(self, sessions: list[Workflow]) -> tuple[str, list[str], list[list]]:
@@ -1844,6 +1959,10 @@ class App:
             "models",
             "total_tokens",
             "unpriced_tokens",
+            # Your own annotation rides along — the export is what you take to a
+            # spreadsheet (or an invoice), and "why did this session cost that"
+            # is exactly the column a spreadsheet can't reconstruct.
+            "note",
         ]
         rows = [
             [
@@ -1858,6 +1977,7 @@ class App:
                 w.model_count,
                 w.total_tokens,
                 w.unpriced_tokens,
+                self.note_for(w.id),
             ]
             for w in sessions
         ]
@@ -3284,11 +3404,31 @@ class App:
                 self.prefetch_session_data(wf_id)
                 continue
             stdscr.timeout(self._input_timeout_ms())
-            key = stdscr.getch()
+            key = self._read_key(stdscr)
             if key == -1:
                 continue  # idle wake while a toast fades: just re-expire and repaint
             if not self.handle_key(stdscr, key):
                 break
+
+    @staticmethod
+    def _read_key(stdscr: curses.window) -> int | str:
+        # get_wch reads a *character* where getch hands back raw bytes -- so a note (or a
+        # title, or a project path) holding ä or 界 can be typed into the filter that
+        # searches it. ASCII comes back as an int, keeping every `key == ord("x")`
+        # binding downstream exactly as it was; only a non-ASCII character stays a str,
+        # which nothing but the text fields accept. Special keys are ints either way --
+        # and that is the whole reason to read wide: getch's byte stream cannot be told
+        # apart from the KEY_* constants once it climbs past 255.
+        read = getattr(stdscr, "get_wch", None)
+        if read is None:  # a screen double without wide reads
+            return stdscr.getch()
+        try:
+            key = read()
+        except curses.error:
+            return -1  # idle timeout: get_wch raises where getch returns -1
+        if isinstance(key, str) and len(key) == 1 and key.isascii():
+            return ord(key)
+        return key
 
     @staticmethod
     def _step_trend_index(index: int, count: int, older: bool) -> int:
@@ -3740,13 +3880,22 @@ class App:
             self.trends = False
             self.trend_drill = None
 
-    def handle_key(self, stdscr: curses.window, key: int) -> bool:
+    def handle_key(self, stdscr: curses.window, key: int | str) -> bool:
         if key == curses.KEY_MOUSE:
             return self.handle_mouse()
         if key == curses.KEY_RESIZE:
             # A SIGWINCH (terminal/font resize) surfaces as a keystroke; it is not one.
             # The next paint reads getmaxyx() fresh, so just swallow it -- otherwise it
             # falls through to an overlay's "any other key closes" path and shuts it.
+            return True
+        if isinstance(key, str):
+            # A non-ASCII character (_read_key keeps only those as str). The text fields
+            # take it; nothing else can -- every other binding is an ASCII key, and the
+            # "32 <= key <= 126" tests below would raise on a str rather than ignore it.
+            if self.filter_active:
+                return self.handle_filter_key(key)
+            if self.whatif_menu:
+                return self.handle_whatif_menu_key(key)
             return True
         if self.price_prompt:
             return self.handle_price_prompt_key(key)
@@ -3961,6 +4110,9 @@ class App:
             return True
         if key == ord("B"):
             self.toggle_bookmarks_view()
+            return True
+        if key == ord("n"):
+            self.edit_note(stdscr)
             return True
         if key in (ord("f"), ord("/")):
             if not self.can_filter_current_view():
@@ -4209,7 +4361,12 @@ class App:
             # Any other key is swallowed -- it must not tear down the list.
         return True
 
-    def handle_filter_key(self, key: int) -> bool:
+    def handle_filter_key(self, key: int | str) -> bool:
+        if isinstance(key, str):  # a non-ASCII character: type it (see _read_key)
+            if key.isprintable():
+                self.query += key
+                self._filter_edited()
+            return True
         # Live fuzzy filter mode (`/`): printable keys edit the query and every
         # list re-ranks on the very next paint. Arrows still move the selection,
         # so you can land on a match without leaving the mode.
@@ -4541,12 +4698,24 @@ class App:
             self.notify(f"range error: {exc}", "error")
 
     def prompt_text(
-        self, stdscr: curses.window, label: str, hint: str = "", initial: str = ""
+        self,
+        stdscr: curses.window,
+        label: str,
+        hint: str = "",
+        initial: str = "",
+        max_chars: int | None = None,
     ) -> str | None:
         # Modal bottom command line, laid out exactly like the `/` filter so input
         # never drifts: a short "<label>: " + the value you type is the input field
         # (orange) at the far LEFT, and the format hint sits to its right in plain
         # slate -- never a whole-orange line. The real cursor sits at the value's end.
+        #
+        # How much you may TYPE (max_chars) and how much FITS on the line (max_len)
+        # are two different limits. A range or filter query is short by nature, so
+        # they coincide by default -- but a note is prose, and capping it at the
+        # visible field would silently truncate it at ~26 chars on an 80-column
+        # terminal. With max_chars set, the value scrolls instead: the field shows
+        # the tail (where the cursor is), "…"-marked at the left when there's more.
         head = " " + label
         field = curses.color_pair(6) | curses.A_BOLD
         value = initial
@@ -4556,26 +4725,33 @@ class App:
                 # Re-measure every pass and guard the writes (like Renderer.write):
                 # shrinking the terminal mid-prompt must repaint, never raise.
                 height, width = stdscr.getmaxyx()
-                max_len = max(1, width - len(head) - len(hint) - 6)
-                shown = shorten(value, max_len)
-                left = head + shown
+                shown, hx, max_len = self.prompt_layout(value, width, head, hint)
+                limit = max_chars if max_chars is not None else max_len
                 try:
                     stdscr.addstr(height - 1, 0, " " * (width - 1))
-                    stdscr.addstr(height - 1, 0, left[: width - 1], field)
-                    hx = len(left)
+                    stdscr.addstr(height - 1, 0, clip(head + shown, width - 1), field)
                     if hint and hx < width - 1:  # format hint in plain slate, to the right
                         stdscr.addstr(
-                            height - 1, hx, ("   " + hint)[: width - hx - 1], curses.color_pair(4)
+                            height - 1, hx, clip("   " + hint, width - hx - 1), curses.color_pair(4)
                         )
-                    stdscr.move(height - 1, max(0, min(width - 2, len(left))))
+                    stdscr.move(height - 1, max(0, min(width - 2, hx)))
                 except curses.error:
                     pass  # a resize can invalidate any coordinate; next pass re-measures
                 stdscr.refresh()
 
-                key = stdscr.getch()
+                # get_wch reads a *character*, so a multi-byte key (ä, é, —) arrives as
+                # one str instead of the raw bytes getch would hand back. A note is
+                # prose -- dropping every non-ASCII character out of it would be a bug
+                # you only notice after you typed it. Special keys still come back as
+                # ints, and a screen without get_wch (a test double) falls back.
+                read = getattr(stdscr, "get_wch", None) or stdscr.getch
+                try:
+                    key = read()
+                except curses.error:
+                    continue  # interrupted read (resize/signal): repaint and wait again
                 if key == curses.KEY_RESIZE:
                     continue  # repaint against the new size
-                value, done, cancelled = self.filter_prompt_step(value, key, max_len)
+                value, done, cancelled = self.filter_prompt_step(value, key, limit)
                 if cancelled:
                     return None
                 if done:
@@ -4584,14 +4760,54 @@ class App:
             curses.curs_set(0)
 
     @staticmethod
-    def filter_prompt_step(value: str, key: int, max_len: int) -> tuple[str, bool, bool]:
-        if key == 27:  # Esc cancels without changing the current filter.
+    def prompt_layout(value: str, width: int, head: str, hint: str) -> tuple[str, int, int]:
+        # The input line's geometry, in terminal CELLS rather than codepoints -- a note
+        # can hold 界 or an emoji, each of which eats two of them, and sizing the field
+        # with len() would run the text under the hint and leave the cursor mid-glyph.
+        # Split out of prompt_text (like filter_prompt_step) so it's testable headless.
+        # Returns (the field text to paint, the x the hint/cursor sits at, the field's
+        # cell budget): a value that doesn't fit scrolls, showing its cursor end with
+        # the hidden head marked "…".
+        max_len = max(1, width - display_width(head) - display_width(hint) - 6)
+        if display_width(value) <= max_len:
+            shown = value
+        elif max_len > 1:
+            shown = "…" + clip_tail(value, max_len - 1)
+        else:
+            shown = ""
+        return shown, display_width(head + shown), max_len
+
+    @staticmethod
+    def filter_prompt_step(value: str, key: int | str, max_len: int) -> tuple[str, bool, bool]:
+        # One edit step of the modal input line. `key` is an int (getch / special keys)
+        # or a str (get_wch: any character the user actually typed, ASCII or not).
+        # Returns the new value + (done, cancelled).
+        if isinstance(key, str):
+            if not key:
+                return value, False, False
+            code = ord(key) if len(key) == 1 else -1
+            if code in (27, 10, 13, 127, 8, 21, 23) or (0 <= code < 32):
+                key = code  # a control character: fall through to the int handling
+            elif len(value) < max_len and key.isprintable():
+                return value + key, False, False
+            else:
+                return value, False, False
+        if key == 27:  # Esc cancels without changing the current value.
             return value, False, True
         if key in (10, 13, curses.KEY_ENTER):
             return value, True, False
         if key in (curses.KEY_BACKSPACE, 127, 8):
             return value[:-1], False, False
-        if 32 <= key <= 126 and len(value) < max_len:
+        # A note is long enough that erasing it one key at a time is a chore, so the
+        # readline reflexes work: Ctrl-U kills the line, Ctrl-W the last word. (Ctrl-U
+        # is what the live `/` filter already binds -- same muscle memory.)
+        if key == 21:  # Ctrl-U
+            return "", False, False
+        if key == 23:  # Ctrl-W: back to the previous word boundary (bash keeps the space)
+            stripped = value.rstrip()
+            cut = stripped.rfind(" ")
+            return (stripped[: cut + 1] if cut >= 0 else ""), False, False
+        if isinstance(key, int) and 32 <= key <= 126 and len(value) < max_len:
             return value + chr(key), False, False
         return value, False, False
 

@@ -138,6 +138,58 @@ def clip(value: str, width: int) -> str:
     return "".join(out)
 
 
+def clip_tail(value: str, width: int) -> str:
+    # clip()'s mirror: the longest *suffix* within `width` cells. What a scrolling input
+    # field needs — you look at the end you're typing, not the start.
+    if width <= 0:
+        return ""
+    if value.isascii():
+        return value[-width:] if len(value) > width else value
+    if display_width(value) <= width:
+        return value
+    out = []
+    used = 0
+    for ch in reversed(value):
+        cells = _char_cells(ch)
+        if used + cells > width:
+            break
+        out.append(ch)
+        used += cells
+    return "".join(reversed(out))
+
+
+def wrap_cells(value: str, width: int) -> list[str]:
+    # textwrap.wrap counts codepoints, so a CJK/emoji line it "wrapped" to 60 can still
+    # be 100 cells wide -- and the pane then clips half of every line away. This wraps on
+    # what the terminal actually spends: cells.
+    if width <= 0:
+        return []
+    lines: list[str] = []
+    current = ""
+    for word in value.split():
+        while display_width(word) > width:  # one word wider than the whole line: split it
+            if current:
+                lines.append(current)
+                current = ""
+            # A single glyph wider than the whole line (界 in a 1-cell pane) can't be
+            # clipped to fit -- emit it whole and overflow by a cell rather than emit an
+            # empty line and stall. Never drop it: this is someone's text.
+            head = clip(word, width) or word[0]
+            lines.append(head)
+            word = word[len(head) :]
+        if not word:
+            continue
+        candidate = f"{current} {word}" if current else word
+        if display_width(candidate) > width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
 def pad(value: str, width: int) -> str:
     # ljust by display cells, so a padded wide-char row still fills exactly `width`.
     return value + " " * max(0, width - display_width(value))

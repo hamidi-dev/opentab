@@ -43,7 +43,7 @@ On the Turns tab, `z` (or clicking a `▸` header) unfolds the whole prompt text
 | `R` | Set the date range — `all` · `30d` (or `30`) · `2m` · `1y` · `2026` · `2026-05` · `start..end` |
 | `a` | Back to all time, keeping the current selection where possible |
 | `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`) |
-| `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id), projects, and Models; substring over Prices. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
+| `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id/**note**), projects, and Models; substring over Prices. Non-ASCII (`ä`, `界`) can be typed. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
 | `x` | Clear the filter |
 
 ## Sessions & projects
@@ -52,6 +52,7 @@ On the Turns tab, `z` (or clicking a `▸` header) unfolds the whole prompt text
 |-----|--------|
 | `i` / `I` | Ignore / unignore the selection; `I` reveals hidden rows so they can be unignored |
 | `b` / `B` | Bookmark ★ the selected session (remembered between runs); `B` shows only bookmarks, within the active range |
+| `n` | Note ✎ on the selected session — *why* it cost what it did, which no token count records. Opens a prompt seeded with the existing note (`Enter` saves · `Ctrl-U` clears · `Ctrl-W` kills a word · `Esc` cancels); saving an empty note removes it. An annotated session shows a `✎` in every list and the note in its **Overview**; `f`/`/` searches note text too, and `e` exports it as a `note` column. Notes live in their own `~/.config/opentab/notes.json` and are written the moment you save. Off under `--demo` / `--no-state` |
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the session in its own tool — `opencode --session` / `claude --resume` / `codex resume`. Then `w` window · `s` split · `v` vsplit · `p` popup · `y` copy the command (`w`/`s`/`v`/`p` need tmux or a [launcher hook](#custom-launchers); `y` copies anywhere) |
 | `e` | Export the current list to a CSV in the working directory |
@@ -78,6 +79,12 @@ The active **source, range, sort, ignored projects, bookmarks, pinned price rows
 theme, and `$` what-if view are remembered between runs**, stored in
 `~/.config/opentab/state.json`. Pass `--no-state` to disable; `--demo` never
 persists.
+
+**Session notes (`n`) are kept apart**, in `~/.config/opentab/notes.json`. Everything
+in `state.json` is a preference opentab can regenerate or shrug off; a note is the one
+thing you wrote, so it gets its own file, is saved on the edit rather than at quit, and
+a note whose session has since disappeared (a rotated transcript, a source you didn't
+merge in this run) is **kept, never pruned**.
 
 A `w` **what-if target model is deliberately not remembered**: it's a transient
 analysis mode, and a persisted one would silently re-frame every future launch's
