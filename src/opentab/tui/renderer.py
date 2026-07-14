@@ -199,12 +199,16 @@ class Renderer:
         visible = h - 4
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
-            self.write_rich(
-                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
+            index = self.scroll + offset
+            # A column header reads as one (accent, bold) wherever it is drawn -- the
+            # pickers paint theirs that way, and these are the same headers.
+            attr = (
+                curses.color_pair(4) | curses.A_BOLD
+                if index in self._line_sort_headers
+                else self.line_attr(line)
             )
-            self._register_line_sort_header(
-                y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
-            )
+            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+            self._register_line_sort_header(y + 3 + offset, x + 2, index, line, w - 4)
 
     def year_row_text(self, year: YearSummary, marker: str) -> str:
         return (
@@ -806,15 +810,11 @@ class Renderer:
     def session_date_label(self) -> str:
         return "Started" if self.browse_mode == "projects" or self.focus != "days" else "Time"
 
-    def _mark_session_header(self, lines: list[str]) -> None:
+    def _mark_session_header(self, lines: list[str], columns: tuple) -> None:
         # The just-appended line is a session-list column header (browse preview);
-        # record it in _line_sort_headers so the paint loop makes it click-sortable.
-        # The date column's label varies (Started/Time), so read it off the header.
-        date_label = "Time" if lines[-1].startswith("Time") else "Started"
-        self._line_sort_headers[len(lines) - 1] = (
-            (("date", date_label), *self.SESSION_SORT_COLUMNS),
-            "session",
-        )
+        # record it in _line_sort_headers so the paint loop makes it click-sortable
+        # (and paints it like the pickers' headers).
+        self._line_sort_headers[len(lines) - 1] = (columns, "session")
 
     def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
         return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
@@ -883,6 +883,100 @@ class Renderer:
             return "Src "
         return f"{self._source_abbrev(workflow):<3} "
 
+    # --- The session table: one builder, two frames -------------------------------
+    # The browse preview (lines) and the zoom picker (navigable) render the SAME
+    # table through session_columns/session_header_text/session_row_text, so Enter
+    # only lights up a row -- it never re-shapes the columns under you. They were two
+    # hand-written tables once, and drifted: different columns (Models/Src vs
+    # Project), a stray heading line, a 2-column indent shift, a different header
+    # colour. Add a column here and both frames get it. (The project list already
+    # worked this way: project_header_text/project_row_text.)
+    SESSION_TITLE_MIN = 24  # room the title keeps before an optional column earns its cells
+    SESSION_PROJECT_MAX = 20
+
+    def session_columns(self, sessions: list[Workflow], width: int) -> tuple[bool, int]:
+        # The optional cells this pane can afford: (Models, Project width). Both
+        # frames measure the same pane, so a column can't appear on Enter and vanish
+        # on Esc. A squeezed pane drops Models first (a bare count), the Project
+        # column second, and never the title -- a session list is read by its titles.
+        proj_w = 0
+        if self.sessions_span_projects():
+            # Only where the list can mix projects; sized to the longest name on show
+            # (the _model_table pattern), capped so one deep path can't own the row.
+            head = self.sort_heading("project", "Project")
+            longest = max((display_width(self.session_project(wf)) for wf in sessions), default=0)
+            proj_w = max(len(head), min(self.SESSION_PROJECT_MAX, longest))
+        title = self.sort_heading("title", "Title")
+        for models, proj in ((True, proj_w), (False, proj_w), (False, 0)):
+            prefix = len(self.session_header_text(models, proj)) - len(title)
+            if width - prefix >= self.SESSION_TITLE_MIN:
+                return models, proj
+        return False, 0
+
+    def session_header_text(self, models: bool, proj_w: int) -> str:
+        header = (
+            f"  {self.sort_heading('date', self.session_date_label()):<10} "
+            f"{self.sort_heading('cost', 'Cost'):>9} "
+            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{self.sort_heading('subagents', 'Subagents'):>11} "
+        )
+        if models:
+            header += f"{'Models':>6}  "
+        header += self.src_col()
+        if proj_w:
+            header += f"{self.sort_heading('project', 'Project'):<{proj_w}}  "
+        return header + self.sort_heading("title", "Title")
+
+    def session_row_text(self, workflow: Workflow, marker: str, models: bool, proj_w: int) -> str:
+        text = (
+            f"{marker} {self.session_started(workflow):<10} "
+            f"{money(workflow.total_cost):>9} "
+            f"{human_tokens(workflow.total_tokens):>8} "
+            f"{workflow.subagents:>11} "
+        )
+        if models:
+            text += f"{workflow.model_count:>6}  "
+        text += self.src_col(workflow)
+        if proj_w:
+            text += f"{pad(shorten(self.session_project(workflow), proj_w), proj_w)}  "
+        return (
+            f"{text}{self.session_marks(workflow)}"
+            f"{self.ignored_session_tag(workflow)}{workflow.title}"
+        )
+
+    def session_sort_columns(self, proj_w: int) -> tuple:
+        # (sort_key, label) in drawn order, for the clickable headers of both frames.
+        columns = [("date", self.session_date_label()), *self.SESSION_SORT_COLUMNS]
+        if proj_w:
+            columns.insert(-1, ("project", "Project"))  # between Subagents and Title
+        return tuple(columns)
+
+    def preview_session_source(self) -> list[Workflow] | None:
+        # Same rows the picker will show, not just the same columns: with `i` on and
+        # ignored sessions about, App.current_sessions widens from all_workflows to
+        # ranged_workflows, and a preview that didn't would drop a row that Enter then
+        # conjures back. None = the default (all_workflows).
+        return self.ranged_workflows if self._showing_ignored_workflows() else None
+
+    def preview_project_source(self) -> list[Workflow] | None:
+        # The same, for the project lists: App.zoom_projects widens under `i` (and
+        # keeps the ignored rows, which it marks "×") -- so the preview must too.
+        return self.ranged_workflows if self.show_ignored_projects else None
+
+    def session_table(self, rows: list[Workflow], width: int) -> list[str]:
+        # The browse preview of a Sessions tab: the picker's table minus the cursor.
+        # No "# ... Sessions" heading -- the tab strip above already names it, and the
+        # extra line would shift every row when the picker takes over on Enter.
+        sessions = self.filtered_sessions(rows)
+        models, proj_w = self.session_columns(sessions, width)
+        lines = [self.session_header_text(models, proj_w)]
+        self._mark_session_header(lines, self.session_sort_columns(proj_w))
+        if not sessions:
+            lines.append("No sessions.")
+            return lines
+        lines.extend(self.session_row_text(wf, " ", models, proj_w) for wf in sessions)
+        return lines
+
     def unpriced_hint(self) -> str:
         # Trails any block whose totals include $0.00 subscription tokens. Worded
         # per price mode so it never says "not billed" beside estimated dollars.
@@ -946,26 +1040,12 @@ class Renderer:
             )
 
     def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        # Navigable session list on the Sessions tab of a zoomed month/day/project.
+        # Navigable session list on the Sessions tab of a zoomed month/day/project:
+        # the browse preview's table (session_table), made selectable.
         sessions = self.current_sessions()
         cy = y + 3
-        date_label = self.session_date_label()
-        # The Project column only where the list can mix projects; sized to the
-        # longest name on show (the _model_table pattern), capped so titles keep room.
-        proj_w = 0
-        if self.sessions_span_projects():
-            proj_head = self.sort_heading("project", "Project")
-            longest = max((display_width(self.session_project(wf)) for wf in sessions), default=0)
-            proj_w = max(len(proj_head), min(20, longest))
-        header = (
-            f"  {self.sort_heading('date', date_label):<10} "
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Subagents'):>11}  "
-        )
-        if proj_w:
-            header += f"{self.sort_heading('project', 'Project'):<{proj_w}}  "
-        header += self.sort_heading("title", "Title")
+        models, proj_w = self.session_columns(sessions, w - 4)
+        header = self.session_header_text(models, proj_w)
         self.write(
             stdscr,
             cy,
@@ -973,14 +1053,11 @@ class Renderer:
             shorten(header, w - 4),
             curses.color_pair(4) | curses.A_BOLD,
         )
-        sort_columns = [("date", date_label), *self.SESSION_SORT_COLUMNS]
-        if proj_w:
-            sort_columns.insert(-1, ("project", "Project"))  # between Subagents and Title
         self._register_sort_header(
             cy,
             x + 2,
             header,
-            sort_columns,
+            self.session_sort_columns(proj_w),
             "session",
             w - 4,
         )
@@ -996,13 +1073,9 @@ class Renderer:
         for off, wf in enumerate(sessions[start : start + visible]):
             ry = cy + 1 + off
             marker = ">" if start + off == idx else " "
-            started = self.session_started(wf)
             cost = money(wf.total_cost)
             tok = human_tokens(wf.total_tokens)
-            text = f"{marker} {started:<10} {cost:>9} {tok:>8} {wf.subagents:>11}  "
-            if proj_w:
-                text += f"{pad(shorten(self.session_project(wf), proj_w), proj_w)}  "
-            text += f"{self.source_tag(wf)}{self.session_marks(wf)}{self.ignored_session_tag(wf)}{wf.title}"
+            text = self.session_row_text(wf, marker, models, proj_w)
             if start + off == idx:
                 self.write(
                     stdscr,
@@ -1712,25 +1785,9 @@ class Renderer:
         return self.source_table(self.workflows_for_month(month.month), width)
 
     def month_workflows(self, month: MonthSummary, width: int) -> list[str]:
-        lines = [
-            "# Monthly Sessions",
-            f"{self.sort_heading('date', 'Started'):<10} "
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Subagents'):>11} Models  "
-            f"{self.src_col()}{self.sort_heading('title', 'Title')}",
-        ]
-        self._mark_session_header(lines)
-        for workflow in self.filtered_sessions(self.workflows_for_month(month.month)):
-            lines.append(
-                f"{workflow.created_at[:10]:<10} "
-                f"{money(workflow.total_cost):>9} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>11} "
-                f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}"
-            )
-        return lines
+        return self.session_table(
+            self.workflows_for_month(month.month, self.preview_session_source()), width
+        )
 
     def year_overview(self, year: YearSummary, width: int) -> list[str]:
         lines = [
@@ -1782,29 +1839,18 @@ class Renderer:
         return self.source_table(self.workflows_for_year(year.year), width)
 
     def year_projects(self, year: YearSummary, width: int) -> list[str]:
-        projects = self.projects_for_workflows(self.workflows_for_year(year.year))
-        return self.project_table(projects, "# Yearly Projects", width)
+        return self.project_table(
+            self.projects_for_workflows(
+                self.workflows_for_year(year.year, self.preview_project_source()),
+                include_ignored=self.show_ignored_projects,
+            ),
+            width,
+        )
 
     def year_workflows(self, year: YearSummary, width: int) -> list[str]:
-        lines = [
-            "# Yearly Sessions",
-            f"{self.sort_heading('date', 'Started'):<10} "
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Subagents'):>11} Models  "
-            f"{self.src_col()}{self.sort_heading('title', 'Title')}",
-        ]
-        self._mark_session_header(lines)
-        for workflow in self.filtered_sessions(self.workflows_for_year(year.year)):
-            lines.append(
-                f"{workflow.created_at[:10]:<10} "
-                f"{money(workflow.total_cost):>9} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>11} "
-                f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}"
-            )
-        return lines
+        return self.session_table(
+            self.workflows_for_year(year.year, self.preview_session_source()), width
+        )
 
     def day_overview(self, day: DaySummary, width: int) -> list[str]:
         lines = [
@@ -1838,25 +1884,9 @@ class Renderer:
         return self.source_table(self.workflows_for_day(day.day), width)
 
     def day_workflows(self, day: DaySummary, width: int) -> list[str]:
-        lines = [
-            "# Day Sessions",
-            f"{self.sort_heading('date', 'Time'):<10} "
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Subagents'):>11} Models  "
-            f"{self.src_col()}{self.sort_heading('title', 'Title')}",
-        ]
-        self._mark_session_header(lines)
-        for workflow in self.filtered_sessions(self.workflows_for_day(day.day)):
-            lines.append(
-                f"{workflow.created_at[11:16]:<10} "
-                f"{money(workflow.total_cost):>9} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>11} "
-                f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}"
-            )
-        return lines
+        return self.session_table(
+            self.workflows_for_day(day.day, self.preview_session_source()), width
+        )
 
     def project_overview(self, project: ProjectSummary, width: int) -> list[str]:
         include_ignored = self.include_ignored_for_project(project)
@@ -1910,8 +1940,12 @@ class Renderer:
             width,
         )
 
-    def project_table(self, rows: list[ProjectSummary], title: str, width: int) -> list[str]:
-        lines = [title, self.project_header_text(width)]
+    def project_table(self, rows: list[ProjectSummary], width: int) -> list[str]:
+        # The browse preview of a Projects tab: draw_projects_picker's table minus the
+        # cursor — same builders, same header line, no heading above it (see
+        # session_table), so the picker takes over in place on Enter.
+        lines = [self.project_header_text(width)]
+        self._line_sort_headers[0] = (self.PROJECT_SORT_COLUMNS, "project")
         if not rows:
             lines.append("No projects.")
             return lines
@@ -1919,37 +1953,31 @@ class Renderer:
         return lines
 
     def month_projects(self, month: MonthSummary, width: int) -> list[str]:
-        projects = self.projects_for_workflows(self.workflows_for_month(month.month))
-        return self.project_table(projects, "# Monthly Projects", width)
+        return self.project_table(
+            self.projects_for_workflows(
+                self.workflows_for_month(month.month, self.preview_project_source()),
+                include_ignored=self.show_ignored_projects,
+            ),
+            width,
+        )
 
     def day_projects(self, day: DaySummary, width: int) -> list[str]:
-        projects = self.projects_for_workflows(self.workflows_for_day(day.day))
-        return self.project_table(projects, "# Day Projects", width)
+        return self.project_table(
+            self.projects_for_workflows(
+                self.workflows_for_day(day.day, self.preview_project_source()),
+                include_ignored=self.show_ignored_projects,
+            ),
+            width,
+        )
 
     def project_workflows(self, project: ProjectSummary, width: int) -> list[str]:
-        lines = [
-            "# Project Sessions",
-            f"{self.sort_heading('date', 'Started'):<10} "
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
-            f"{self.sort_heading('subagents', 'Subagents'):>11} Models  "
-            f"{self.src_col()}{self.sort_heading('title', 'Title')}",
-        ]
-        self._mark_session_header(lines)
-        workflows = self.workflows_for_project(
-            project.directory,
-            include_ignored=self.include_ignored_for_project(project),
+        return self.session_table(
+            self.workflows_for_project(
+                project.directory,
+                include_ignored=self.include_ignored_for_project(project),
+            ),
+            width,
         )
-        for workflow in self.filtered_sessions(workflows):
-            lines.append(
-                f"{workflow.created_at[:10]:<10} "
-                f"{money(workflow.total_cost):>9} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"{workflow.subagents:>11} "
-                f"{workflow.model_count:>6}  "
-                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}"
-            )
-        return lines
 
     def note_lines(self, workflow: Workflow, width: int) -> list[str]:
         # The note sits in the Session block, wrapped to the pane and hanging-indented

@@ -3265,6 +3265,69 @@ def test_sessions_picker_hides_the_project_column_when_project_scoped():
     assert "Project" not in header2
 
 
+def test_browse_preview_and_zoom_picker_are_the_same_session_table():
+    # Enter (browse -> zoom) must light up a row, never re-shape the table. The
+    # preview and the picker were two hand-written tables and had drifted: the
+    # preview had Models + Src columns and a "# Monthly Sessions" heading, the
+    # picker had a Project column, an inline [oc] tag and a 2-column indent. They
+    # build from one set of helpers now, so the frames can't diverge again.
+    app = app_with(
+        [
+            workflow("s1", "2026-06-01 12:00:00", title="first", directory="/tmp/alpha"),
+            workflow("s2", "2026-06-02 12:00:00", title="second", directory="/tmp/beta"),
+        ]
+    )
+    app.focus = "months"
+    app.tab = app.month_tabs.index("Sessions")
+    # The picker draws into a 100-wide pane, i.e. a content width of w - 4.
+    preview = app.renderer.month_workflows(app.selected_month_summary, 96)
+    assert not preview[0].startswith("#")  # no heading line to shift the rows down
+
+    app.view = "zoom"
+    painted = _paint_sessions_picker(app, 100)
+
+    header = next(ln for ln in painted if "Title" in ln)
+    assert header.strip() == preview[0].strip()  # same columns, same sort arrows
+    rows = [ln.strip() for ln in painted if "first" in ln or "second" in ln]
+    assert rows and len(rows) == len(preview) - 1
+    # The cursor is the only difference: strip it and the rows are identical.
+    assert [r.lstrip(">").strip() for r in rows] == [p.strip() for p in preview[1:]]
+
+
+def test_showing_ignored_rows_agrees_between_preview_and_picker():
+    # The preview must show the same ROWS the picker will, not just the same columns:
+    # under `i` (show ignored) the pickers widen to ranged_workflows, and the previews
+    # used to stay on all_workflows -- so an ignored session/project was missing until
+    # Enter conjured it back.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", title="kept"),
+            workflow("b", "2026-06-02 12:00:00", title="ignored-one"),
+        ]
+    )
+    app.focus = "months"
+    app.ignored_sessions = {"b"}
+    app.show_ignored_projects = True
+    app._invalidate_workflow_cache()
+    preview = app.renderer.month_workflows(app.selected_month_summary, 96)
+    assert [w.id for w in app.current_sessions()] == ["a", "b"]  # the picker's rows
+    assert any("ignored-one" in ln for ln in preview)  # ...and the preview's
+
+    proj = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", directory="/tmp/alpha"),
+            workflow("b", "2026-06-02 12:00:00", directory="/tmp/beta"),
+        ]
+    )
+    proj.focus = "months"
+    proj.ignored_projects = {"/tmp/beta"}
+    proj.show_ignored_projects = True
+    proj._invalidate_workflow_cache()
+    lines = proj.renderer.month_projects(proj.selected_month_summary, 96)
+    assert [p.directory for p in proj.zoom_projects()] == ["/tmp/alpha", "/tmp/beta"]
+    assert any("/tmp/beta" in ln for ln in lines)  # the ignored project, "×"-marked
+
+
 def test_sessions_sort_by_project_groups_sessions_by_root():
     app = app_with(
         [
@@ -5545,11 +5608,11 @@ def test_preview_session_lists_register_clickable_sort_headers():
     rnd = app.renderer
     rnd._line_sort_headers = {}
     lines = rnd.month_workflows(app.selected_month_summary, 100)
-    cols, target = rnd._line_sort_headers[1]
+    cols, target = rnd._line_sort_headers[0]  # the header is the pane's first line
     assert target == "session"
     assert ("date", "Started") in cols and ("subagents", "Subagents") in cols
     rnd.sort_regions = []
-    rnd._register_line_sort_header(5, 2, 1, lines[1], 96)
+    rnd._register_line_sort_header(5, 2, 0, lines[0], 96)
     keys = {(k, t) for _y, _x0, _x1, k, t in rnd.sort_regions}
     assert ("date", "session") in keys and ("subagents", "session") in keys
 
@@ -5648,8 +5711,8 @@ def test_month_projects_are_scoped_and_sortable():
 
     lines = app.renderer.month_projects(app.selected_month_summary, 100)
 
-    assert "/tmp/a" in lines[2]
-    assert "/tmp/b" in lines[3]
+    assert "/tmp/a" in lines[1]  # lines[0] is the column header (no heading above it)
+    assert "/tmp/b" in lines[2]
     assert all("/tmp/old" not in line for line in lines)
     assert app.handle_key(None, ord("s"))  # opens the project-sort picker
     assert app.sort_menu and app.sort_menu_index == 1  # current is tokens
@@ -6699,7 +6762,7 @@ def test_codex_in_combined_view_carries_a_cx_source_tag():
     app = ot.App(MergedStore([a, b]), args)
     month = app.months[0]
     lines = app.renderer.month_workflows(month, 120)
-    assert any("cx  codex session" in ln for ln in lines)  # Src column abbreviation
+    assert any("cx " in ln and "codex session" in ln for ln in lines)  # Src column abbrev
     over = app.renderer.month_overview(month, 120)
     assert any("[cx] codex session" in ln for ln in over)  # Top Sessions bracket tag
 
@@ -7090,15 +7153,15 @@ def test_combined_sessions_tables_get_a_src_column():
     app = ot.App(MergedStore([a, b]), args)
     month = app.months[0]
     lines = app.renderer.month_workflows(month, 120)
-    assert "Src" in lines[1]  # header gains the column
-    assert any("oc  opencode session" in ln for ln in lines)
-    assert any("cc  claude session" in ln for ln in lines)
+    assert "Src" in lines[0]  # header gains the column
+    assert any("oc " in ln and "opencode session" in ln for ln in lines)
+    assert any("cc " in ln and "claude session" in ln for ln in lines)
     # Top Sessions in the overview carries the bracket tag instead
     over = app.renderer.month_overview(month, 120)
     assert any("[cc] claude session" in ln for ln in over)
     # single-source views stay untouched (origin is implied by the header chip)
     plain = app_with([workflow("a", "2026-06-01 12:00:00")])
-    assert "Src" not in plain.renderer.month_workflows(plain.months[0], 120)[1]
+    assert "Src" not in plain.renderer.month_workflows(plain.months[0], 120)[0]
 
 
 def test_unpriced_hint_matches_price_mode():
