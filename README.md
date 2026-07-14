@@ -45,8 +45,10 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
   live with per-session drill-in (`--serve`, `--web`).
 - **Lazygit-style driving** — keyboard and mouse: scroll, click to select, double-click to
   drill, click a column header to sort.
-- **Themes** — Catppuccin, Tokyo Night, Gruvbox, Nord, Dracula, Rosé Pine and more, light
-  and dark, shared by the TUI (`C`) and the web page.
+- **Themes** — 30 bundled: Tokyo Night, Catppuccin, Kanagawa, Everforest, Gruvbox, Nord,
+  Dracula, Rosé Pine, Solarized, One, Ayu, GitHub, Night Owl, Vitesse, Poimandres,
+  Monokai, Synthwave '84, Vesper and more, light and dark, shared by the TUI (`C`) and
+  the web page.
 - **Quality of life** — git worktrees fold into their repo, CSV export of any view, and
   your source, range, sort, and `$` view are remembered between runs.
 - **Private by construction** — local-only, read-only, no telemetry, no accounts; a demo

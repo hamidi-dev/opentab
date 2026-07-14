@@ -3067,12 +3067,25 @@ class Renderer:
         # Esc reverts to the theme active on open. Colours re-map via init_theme_colors.
         entries = self.theme_menu_entries()
         idx = self.theme_menu_index % len(entries) if entries else 0
+        # The list outgrew small terminals: scroll a window around the selection so
+        # j/k live-preview never walks the highlight off the modal's visible rows
+        # (draw_modal itself just truncates; ↑/↓ counts show what's clipped).
+        max_rows = max(4, scr_h - 12)
+        start = 0
+        if len(entries) > max_rows:
+            start = min(max(0, idx - max_rows // 2), len(entries) - max_rows)
+        visible = entries[start : start + max_rows]
         lines = [("Colour theme (also the web browser's):", curses.color_pair(4)), ("", 0)]
-        for offset, (_tid, name, is_current) in enumerate(entries):
+        if start:
+            lines.append((f"    ↑ {start} more", curses.A_DIM))
+        for offset, (_tid, name, is_current) in enumerate(visible, start=start):
             marker = "●" if is_current else "○"
             suffix = "  (current)" if is_current else ""
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {name}{suffix}", attr))
+        below = len(entries) - (start + len(visible))
+        if below:
+            lines.append((f"    ↓ {below} more", curses.A_DIM))
         self.draw_modal(
             stdscr, scr_h, scr_w, "Theme · j/k preview · Enter keep · Esc revert", lines
         )

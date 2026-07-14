@@ -33,6 +33,7 @@ from urllib.parse import unquote
 
 from opentab import __version__
 from opentab.pricing import api_equivalent_cost, family_label, model_context_window
+from opentab.themes import DEFAULT_THEME
 from opentab.util import tool_namespace
 from opentab.webpage import render_html
 
@@ -214,7 +215,7 @@ def build_payload(app: App) -> dict:
         "recordsCost": bool(getattr(store, "records_cost", True)),
         "demo": bool(store.demo),
         "range": app.range_label(),
-        "theme": getattr(app.args, "theme", "opentab") or "opentab",
+        "theme": getattr(app.args, "theme", DEFAULT_THEME) or DEFAULT_THEME,
         "startApi": bool(app.show_api_prices and not store.demo),
         "home": os.path.expanduser("~"),
         "serve": False,  # flipped by ReportServer so the page knows extras exist

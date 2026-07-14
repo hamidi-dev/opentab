@@ -10497,7 +10497,7 @@ def test_web_meta_carries_the_baked_theme():
     assert meta["theme"] == "gruvbox"
     # Absent (older args) falls back to the default, never crashes.
     del app.args.theme
-    assert ot.build_payload(app)["meta"]["theme"] == "opentab"
+    assert ot.build_payload(app)["meta"]["theme"] == ot.DEFAULT_THEME
 
 
 # --- Shared themes (one source for the web browser + the TUI) ----------------
@@ -10540,7 +10540,7 @@ def test_cli_theme_choices_match_the_theme_registry():
     args = ot.parse_args.__wrapped__ if hasattr(ot.parse_args, "__wrapped__") else None
     del args  # parse_args builds its own parser; assert the registry instead
     assert ot.THEME_IDS == tuple(ot.THEMES)
-    assert "opentab" in ot.THEME_IDS and "tokyo-night" in ot.THEME_IDS
+    assert "kanagawa-wave" in ot.THEME_IDS and "tokyo-night" in ot.THEME_IDS
 
 
 def test_web_payload_embeds_the_price_reference():

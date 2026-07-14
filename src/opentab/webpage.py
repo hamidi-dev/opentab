@@ -26,9 +26,9 @@ from opentab import themes
 
 _FAVICON = (
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E"
-    "%3Crect width='16' height='16' rx='3' fill='%23e0a458'/%3E"
+    "%3Crect width='16' height='16' rx='3' fill='%237aa2f7'/%3E"
     "%3Ctext x='8' y='12.5' font-size='11' text-anchor='middle' font-family='monospace' "
-    "font-weight='bold' fill='%230b0c0f'%3E%24%3C/text%3E%3C/svg%3E"
+    "font-weight='bold' fill='%231a1b26'%3E%24%3C/text%3E%3C/svg%3E"
 )
 
 _SHELL = """<!DOCTYPE html>
@@ -69,13 +69,13 @@ _SHELL = """<!DOCTYPE html>
 
 _CSS = r"""
 /* Role tokens (not hues): a theme fills these slots. The values here are the
-   default "opentab" theme so the page renders before the theme JS runs; applyTheme
+   default "tokyo-night" theme so the page renders before the theme JS runs; applyTheme
    overrides them on :root at load. See the THEMES map in the script. */
 :root{
-  --bg:#0b0c0f; --bg-glow:#151823; --panel:#12141a; --panel2:#181b23;
-  --line:#242836; --line2:#1b1e28; --axis:#383c48;
-  --ink:#dcdad2; --ink2:#9b998f; --mut:#6a695f;
-  --accent:#e0a458; --accent-bright:#ffc06e; --good:#62d391; --bad:#e07070;
+  --bg:#1a1b26; --bg-glow:#24283b; --panel:#1f2335; --panel2:#292e42;
+  --line:#414868; --line2:#2a2e42; --axis:#545c7e;
+  --ink:#c0caf5; --ink2:#a9b1d6; --mut:#565f89;
+  --accent:#7aa2f7; --accent-bright:#9cb8ff; --good:#9ece6a; --bad:#f7768e;
   --scan:rgba(255,255,255,.014); --scrim:rgba(6,7,9,.72);
   --mono:ui-monospace,"SF Mono",Menlo,"Cascadia Code","JetBrains Mono",Consolas,"DejaVu Sans Mono",monospace;
 }
@@ -363,11 +363,11 @@ let MODE = META.startApi ? 'api' : 'real';
 // via CSS vars), `heat`/`priceHeat` are the ramps the SVG charts read through TH,
 // and `dark` drives the scanline/scrim/color-scheme.
 const THEMES = __THEMES__;
-let TH = THEMES.opentab;             // the active theme object (charts read it)
+let TH = THEMES['tokyo-night'];      // the active theme object (charts read it)
 const thc = k => TH.css[k];          // theme color for an SVG chart slot
-const CUR = { theme: 'opentab' };
+const CUR = { theme: 'tokyo-night' };
 function applyTheme(id) {
-  const t = THEMES[id] ? id : 'opentab';
+  const t = THEMES[id] ? id : 'tokyo-night';
   TH = THEMES[t]; CUR.theme = t;
   const r = document.documentElement, st = r.style;
   for (const k in TH.css) st.setProperty('--' + k, TH.css[k]);
@@ -1841,8 +1841,8 @@ document.getElementById('themepick').addEventListener('click', closeTheme);
 // so month->month on the Sessions tab stays on Sessions.
 window.addEventListener('hashchange', () => { FILTER = ''; EXPANDED.clear(); render(); });
 // Theme precedence: the viewer's saved choice, else the page's baked-in default
-// (--theme / meta), else opentab. Applied before the first paint so charts pick it up.
-applyTheme((function () { try { return localStorage.getItem('opentab-theme'); } catch (e) { return null; } })() || META.theme || 'opentab');
+// (--theme / meta), else tokyo-night. Applied before the first paint so charts pick it up.
+applyTheme((function () { try { return localStorage.getItem('opentab-theme'); } catch (e) { return null; } })() || META.theme || 'tokyo-night');
 render();
 """
 
