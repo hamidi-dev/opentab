@@ -191,7 +191,8 @@ lists, the sort picker, overlay keys, custom launcher hooks — is in
 `opentab --html` writes the whole browser as **one self-contained HTML file** — no
 server, no dependencies, works from disk or any static host. It's the TUI in the
 browser: the same sidebar, detail tabs, Trends and price-table overlays, live range
-scoping and colour themes, driven by the same keys or the mouse, with every view a
+scoping and colour themes, the same `$` and `w` what-if pricing, driven by the same
+keys or the mouse, with every view a
 shareable deep link. `opentab --serve` serves it live on `http://localhost:8321`
 and adds the per-session Turns/Tools drill-in; `opentab --web` also opens it in
 your default browser. Details, deep links, and security notes:

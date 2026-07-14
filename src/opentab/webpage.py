@@ -6,10 +6,13 @@ assets, so the file works from disk, from GitHub Pages (`--demo --html`), or fro
 `--serve` unchanged. The page deliberately mirrors the TUI: a lazygit-style
 sidebar (Months / Days, or Projects -- with the same eighth-block cost bars) next
 to a tabbed detail pane whose tabs are the TUI's own per-scope tab tuples, TUI
-box borders, and the TUI keymap (`j`/`k`, `Tab`, `h`/`l`, `Esc`, `$`, `p`/`t`).
+box borders, and the TUI keymap (`j`/`k`, `Tab`, `h`/`l`, `Esc`, `$`, `w`, `p`/`t`).
 Selection is hash-routed (deep-linkable, browser back = step out); the active
 tab is transient UI state. The $ what-if toggle swaps which of the two embedded
 cost fields every view reads -- the exact analogue of App._apply_price_mode().
+`w` arms a what-if *model*: a session-scoped rate substitution (its Subagents tree
+and its Overview, nothing else) computed client-side off the nodes' token splits --
+so it, unlike $, is a reprice, and one the payload can only ship the ingredients for.
 
 Assembly uses token replacement (never str.format: the CSS/JS are full of braces).
 __PAYLOAD__ is substituted last so user-controlled strings (session titles) can
@@ -59,6 +62,7 @@ _SHELL = """<!DOCTYPE html>
 <div id="trends" hidden></div>
 <div id="prices" hidden></div>
 <div id="rangepick" hidden></div>
+<div id="whatifpick" hidden></div>
 <div id="themepick" hidden></div>
 <div id="tip" hidden></div>
 <script type="application/json" id="opentab-data">__PAYLOAD__</script>
@@ -327,6 +331,28 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .rp-custom button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--accent);border-radius:4px;background:var(--accent);color:#141009;font-weight:700;cursor:pointer}
 .chip.click{cursor:pointer}
 .chip.click:hover{border-color:var(--accent);color:var(--ink)}
+/* what-if model picker (w) -- one model armed as a SESSION-scoped comparison target */
+#whatifpick{position:fixed;inset:0;z-index:200;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
+#whatifpick[hidden]{display:none}
+.wi-list{display:grid;gap:4px;margin-top:6px;max-height:54vh;overflow-y:auto}
+.wi-row{display:flex;align-items:center;gap:10px;font:inherit;font-size:12.5px;padding:6px 11px;border:1px solid var(--line);
+  border-radius:6px;background:var(--panel2);color:var(--ink);cursor:pointer;text-align:left}
+.wi-row:hover{border-color:var(--accent)}
+.wi-row.cur{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 14%,var(--panel2))}
+.wi-row.on{color:var(--accent)}
+.wi-row .wi-n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wi-row .wi-t{color:var(--mut);font-size:11px;flex:none}
+#wi-filter{font:inherit;font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);
+  border-radius:6px;padding:5px 10px;width:170px;outline:none;margin-left:auto}
+#wi-filter:focus{border-color:var(--accent)}
+/* an armed target: the chip is the page's twin of the TUI's lit `w model` footer key --
+   "a target is set", never a claim that the numbers on screen are counterfactual */
+.chip.wi{color:var(--accent);border-color:var(--accent);cursor:pointer}
+.wi-up{color:var(--bad)}    /* the target would have cost more */
+.wi-down{color:var(--good)} /* ...and less: what the routing saved */
+.wi-total{margin-top:10px;font-size:13px;color:var(--ink)}
+.wi-total b{color:var(--accent)}
+
 /* theme picker */
 #themepick{position:fixed;inset:0;z-index:200;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
 #themepick[hidden]{display:none}
@@ -410,6 +436,16 @@ let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, d
 // never range-scoped -- like the TUI). eff sorts cheapest-first; others high→low.
 const PRICE_VIEWS = [['flat', 'flat list'], ['family', 'by vendor'], ['provider', 'by provider'], ['all', 'models.dev']];
 let PRICES = { open: false, view: 'flat', sort: 'eff', desc: false, q: '' };
+// The `w` what-if model: ONE model armed as a comparison target -- "what if the
+// expensive model had done the subagents' work too?". SESSION-scoped, exactly like the
+// TUI: its only effects are the selected session's Subagents tree and its Overview
+// summary. The sidebar, the rollups, Trends, Prices and the $ toggle are all untouched
+// by an armed target (an app-wide reprice would leave $ nothing to toggle). Deliberately
+// TRANSIENT: never localStorage, never the hash -- unlike the theme and the price pins,
+// which do persist. A remembered target would silently re-frame every later visit.
+let WHATIF = { model: null, open: false, q: '', i: 0 };
+const WI_MODELS = (DATA.whatif && DATA.whatif.models) || [];   // used models, most-used first
+const WI_PRICE = new Map(WI_MODELS.map(m => [m.model, m.price]));  // list rates $/M
 
 /* ---------- formatting (mirrors opentab.formatting) ---------- */
 const money = v => (v > 0 && v < 0.005) ? '<$0.01'
@@ -539,6 +575,64 @@ function modelAgg(ws) {
     }
   }
   return [...m.values()];
+}
+
+/* ---------- model matching (mirrors pricing.model_matches) ---------- */
+// The ONE rule behind every model-list filter -- the P overlay's `f` and the `w`
+// picker's, which ask the same question of the same rows and must not answer it
+// differently. Matched PER FIELD, with a different rule per field because the fields
+// are typed differently:
+//   * the model id by fzf-style subsequence -- abbreviating is the whole point
+//     ("opus48" -> claude-opus-4-8), and dots==dashes so "opus4.5" finds "opus-4-5";
+//   * the route and the vendor label by plain SUBSTRING -- a short fixed vocabulary you
+//     type in full ("openai", "copilot"); nobody abbreviates them, and a subsequence
+//     over them is a false-positive machine: "gpt" walks "github-copilot"
+//     (g-ithub-co-p-ilo-t) and drags every Claude model sold through Copilot into a
+//     search for GPT.
+// Callers keep their own row order: a filtered list still answers "which of these do I
+// lean on", so rows are never re-ranked by match quality.
+const dashDots = t => String(t).toLowerCase().replace(/(\d)\.(?=\d)/g, '$1-');
+const subseq = (q, t) => { let i = 0; for (let j = 0; j < t.length && i < q.length; j++) if (t[j] === q[i]) i++; return i === q.length; };
+function modelMatches(q, model, routes, familyLabel) {
+  if (!q) return true;
+  const qq = dashDots(q);
+  if (subseq(qq, dashDots(model || ''))) return true;
+  const fields = (routes || []).map(r => String(r).toLowerCase());
+  if (familyLabel) fields.push(String(familyLabel).toLowerCase());
+  return fields.some(f => f.includes(qq));
+}
+
+/* ---------- the `w` what-if model (mirrors pricing.api_equivalent_cost) ---------- */
+// One node's tokens at a target model's list rates: tok = [input, output, reasoning,
+// cacheRead, cacheWrite] (the payload's split), rates = [in, out, cacheR, cacheW] in
+// $/M. Reasoning bills as output; cache reads/writes at their own rates. NO
+// missing-cache-read fallback -- api_equivalent_cost doesn't do one either (that's the
+// eff $/M blend's rule, and applying it here would quietly inflate a target whose
+// cache-read rate models.dev doesn't carry). A pure rate substitution: same tokens,
+// one price list, not a simulated rerun.
+function whatifCost(tok, rates) {
+  if (!tok || !rates) return 0;
+  const [inp, out, reason, cr, cw] = tok, [ir, orr, crr, cwr] = rates;
+  return (inp * ir + (out + reason) * orr + cr * crr + cw * cwr) / 1e6;
+}
+// A node's baseline is ALWAYS its `api` figure -- every token at its OWN model's list
+// rates -- and never `real`, never mCost: the comparison must not depend on the $
+// toggle. On a subscription backend recorded cost is $0, so a $-gated baseline would
+// measure a real counterfactual against nothing and report a 100% saving that never
+// happened. (This is the TUI's _priced_nodes(always=True), served precomputed.)
+const wiBase = n => n.api;
+// The ONE place a session's two what-if figures come from: the Subagents tree and the
+// Overview summary both read it, so they can never drift into quoting different
+// what-ifs for the same session (the TUI's whatif_session_totals discipline). Null when
+// no target is armed, or the session has no nodes to price.
+function whatifTotals(id) {
+  if (!WHATIF.model) return null;
+  const nodes = DATA.nodes[id];
+  if (!nodes || !nodes.length) return null;
+  const rates = WI_PRICE.get(WHATIF.model);
+  const actual = nodes.reduce((a, n) => a + wiBase(n), 0);
+  const whatif = nodes.reduce((a, n) => a + whatifCost(n.tok, rates), 0);
+  return { target: WHATIF.model, actual, whatif, delta: whatif - actual };
 }
 
 /* ---------- cells ---------- */
@@ -1095,6 +1189,127 @@ function contextCompTable(comp) {
   return wrap;
 }
 
+/* ---------- the `w` what-if views: a session's tree + its Overview summary ---------- */
+// Signed outside the money glyph -- "+$4.12" / "-$0.30" -- and coloured by direction:
+// red = the target would have cost more, green = what routing away from it saved.
+function wiDelta(d) {
+  return h('span', { class: d >= 0 ? 'wi-up' : 'wi-down' }, (d >= 0 ? '+' : '-') + money(Math.abs(d)));
+}
+// The payoff table (the Subagents pane with a target armed): the WHOLE tree -- root row
+// included, because the question is about the whole session and the root is the model
+// the delegation was made from -- each node's cost beside what its tokens would have
+// cost had the target produced them, and the delta. The Cost column is the
+// $-independent `api` baseline (wiBase), never the mode-swapped mCost, so both columns
+// cover the same tokens. Nothing outside this pane and the Overview summary moves.
+function whatifTree(nodes) {
+  const target = WHATIF.model, rates = WI_PRICE.get(target);
+  const rows = nodes.map(n => Object.assign({}, n, { base: wiBase(n), wi: whatifCost(n.tok, rates) }));
+  const actual = rows.reduce((a, r) => a + r.base, 0);
+  const total = rows.reduce((a, r) => a + r.wi, 0);
+  const saved = total - actual;
+  const t = table('t-s-whatif', [
+    { key: 'title', label: 'Title', asc: true, cls: 'grow', fmt: r => [r.depth ? h('span', { class: 'mut' }, '└ '.padStart(r.depth * 2 + 2, ' ')) : null, r.title] },
+    { key: 'date', label: 'Started', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },
+    { key: 'agent', label: 'Agent', asc: true, fmt: r => h('span', { class: 'dim' }, r.agent) },
+    { key: 'model', label: 'Model', asc: true, fmt: r => modelCell(r.model) },
+    { key: 'base', label: 'Cost', align: 'r', fmt: r => moneyCell(r.base) },
+    { key: 'wi', label: 'What-if', align: 'r', fmt: r => h('span', { class: 'm' }, money(r.wi)) },
+    { key: 'delta', label: 'Δ', align: 'r', sortVal: r => r.wi - r.base, fmt: r => wiDelta(r.wi - r.base) },
+    { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
+  ], rows, { defaultSort: { key: 'date', desc: false } });
+  // The point of the whole feature: what did routing the grunt work to cheaper models
+  // actually save?
+  return h('div', null, t,
+    h('div', { class: 'wi-total' }, 'TOTAL ', money(actual), ' → ', h('b', null, money(total)), '   routing ',
+      (saved >= 0 ? 'saved ' : 'cost '), h('b', null, money(Math.abs(saved))), ' (' + pct(Math.abs(saved), total) + ')'),
+    h('div', { class: 'hint' }, 'this session’s tokens repriced at ' + target + ' list rates — a rate substitution, not a rerun. Every other view keeps showing actual spend.'),
+    h('div', { class: 'hint' }, 'Cost prices unrecorded ($0) usage at its own model’s list rates, so both columns cover the same tokens.'));
+}
+// The armed target's effect on THIS session, in three figures, on the Overview -- where
+// it exists because the Subagents pane cannot answer for a session that delegated
+// nothing: a solo session has no tree to table, and `w` would otherwise silently do
+// nothing on it. The wording stays neutral (change, never "routing saved"): with no
+// delegation there is no routing decision to credit. Same whatifTotals as the tree, so
+// the two can't disagree.
+function whatifSummary(t) {
+  const sign = t.delta >= 0 ? '+' : '-';
+  return pane('What-if · ' + t.target,
+    tiles([
+      ['actual', money(t.actual), 'every token at its own model’s list rates', true],
+      ['what-if', money(t.whatif), 'at ' + t.target + '’s rates', true],
+      ['change', sign + money(Math.abs(t.delta)), sign + pct(Math.abs(t.delta), t.actual) + ' vs actual'],
+    ]),
+    h('div', { class: 'hint' }, 'this session’s tokens at ' + t.target + ' list rates — a rate substitution, not a rerun. Every other view keeps showing actual spend.'));
+}
+
+/* ---------- the `w` target picker (the TUI's draw_whatif_menu) ---------- */
+// The picker's rows: the models you have actually used, most-used first, narrowed by the
+// live filter through the one shared rule (modelMatches -- id by subsequence, route by
+// substring). The P overlay's filter is the same call: two model lists asking the same
+// question must not answer it differently.
+function whatifRows() {
+  return WI_MODELS.filter(m => {
+    const i = m.model.lastIndexOf('/');
+    const route = i < 0 ? '' : m.model.slice(0, i), bare = i < 0 ? m.model : m.model.slice(i + 1);
+    return modelMatches(WHATIF.q, bare, route ? [route] : [], '');
+  });
+}
+function toggleWhatif() {   // `w`: with a target armed, disarm it; otherwise open the picker
+  if (WHATIF.model) { WHATIF.model = null; render(false); return; }
+  openWhatif();
+}
+function armWhatif(model) { WHATIF.model = model; WHATIF.open = false; WHATIF.q = ''; render(false); }
+function openWhatif() {
+  if (!WI_MODELS.length) return;   // no priced model usage to reprice
+  WHATIF.open = true; WHATIF.q = '';   // each open starts from the full list...
+  const i = WI_MODELS.findIndex(m => m.model === WHATIF.model);   // ...on the armed row, if any
+  WHATIF.i = i < 0 ? 0 : i;
+  renderWhatif();
+}
+function closeWhatif() { WHATIF.open = false; renderWhatif(); }   // cancel: pricing unchanged
+function renderWhatif() {
+  const host = document.getElementById('whatifpick');
+  if (!WHATIF.open) { host.hidden = true; host.textContent = ''; return; }
+  host.hidden = false; host.textContent = '';
+  const rows = whatifRows();
+  if (rows.length) WHATIF.i = ((WHATIF.i % rows.length) + rows.length) % rows.length;
+  const list = rows.map((m, i) => h('button', {
+    class: 'wi-row' + (i === WHATIF.i ? ' cur' : '') + (m.model === WHATIF.model ? ' on' : ''),
+    onclick: () => armWhatif(m.model),
+  }, h('span', { class: 'wi-n' }, (m.model === WHATIF.model ? '● ' : '○ ') + m.model),
+     h('span', { class: 'wi-t' }, hTok(m.tokens))));
+  // Not autofocused: j/k/Enter drive the list straight away (the TUI's picker), `f` (or a
+  // click) starts the filter. Typing re-renders, so the caret is restored afterwards.
+  const filter = h('input', { id: 'wi-filter', type: 'search', placeholder: 'f filter…', value: WHATIF.q,
+    oninput: e => { WHATIF.q = e.target.value; WHATIF.i = 0; renderWhatif();
+      const el = document.getElementById('wi-filter');
+      if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } });
+  filter.addEventListener('keydown', e => {   // the picker owns its keys while the input has focus
+    if (e.key === 'Escape') { WHATIF.q = ''; WHATIF.i = 0; renderWhatif(); e.preventDefault(); }
+    else if (e.key === 'Enter') { const r = whatifRows(); if (r.length) armWhatif(r[WHATIF.i % r.length].model); e.preventDefault(); }
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { stepWhatif(e.key === 'ArrowDown' ? 1 : -1); e.preventDefault(); }
+    e.stopPropagation();
+  });
+  const panel = h('div', { class: 'tr-panel rp-panel' },
+    h('div', { class: 'tr-head' }, h('h3', null, 'What-if model'), filter,
+      h('button', { class: 'tr-close', onclick: closeWhatif }, 'esc ✕')),
+    h('div', { class: 'pr-intro' }, 'Compare a session’s tree against one model’s list rates — ',
+      h('b', null, '“what if this model had done all of it?”'),
+      ' The session’s Subagents tab and Overview reprice; every other view keeps its actual cost.'),
+    rows.length ? h('div', { class: 'wi-list' }, list)
+      : h('div', { class: 'hint' }, 'no model matches — clear the filter to widen'),
+    h('div', { class: 'tr-nav', style: 'margin-top:12px' },
+      h('span', { class: 'tr-note' }, 'j/k move · f filter · Enter arms · w again clears it · esc cancels')));
+  panel.addEventListener('click', e => e.stopPropagation());
+  host.appendChild(panel);
+}
+function stepWhatif(dir) {
+  const n = whatifRows().length;
+  if (!n) return;
+  WHATIF.i = ((WHATIF.i + dir) % n + n) % n;
+  renderWhatif();
+}
+
 /* ---------- the detail pane ---------- */
 function scopeLabel(sc) {
   if (sc.kind === 'y') return sc.year;
@@ -1158,6 +1373,10 @@ function renderSessionOverview(root, sc) {
     ['subagents', String(w.subagents)],
     ['tokens', hTok(w.tokens)],
   ]));
+  // An armed `w` target answers for THIS session right here -- including a solo one,
+  // which has no subagent tree for the Subagents tab to show.
+  const wi = whatifTotals(sc.id);
+  if (wi) root.appendChild(whatifSummary(wi));
   if (EXTRAS.id === sc.id && EXTRAS.loading)
     root.appendChild(h('div', { class: 'hint' }, 'loading turns & tools…'));
   if (!META.serve)
@@ -1174,15 +1393,22 @@ function renderDetail(sc, ws) {
   else if (TAB === 'Sessions') root.appendChild(pane('Sessions · ' + scopeLabel(sc), sessionsTable('t-tab-sessions', ws)));
   else if (TAB === 'Sources') root.appendChild(pane('Sources · ' + scopeLabel(sc), sourcesTable('t-tab-sources', ws)));
   else if (TAB === 'Subagents') {
+    // Nodes ride along for every session now, so "did this session delegate?" is a depth
+    // test, not the presence of the array. A solo session still says "no subagents" with
+    // a target armed -- it has no tree to table, which is exactly why its what-if lives
+    // on the Overview instead (the TUI makes the same split).
     const nodes = DATA.nodes[sc.id];
-    root.appendChild(pane('Session tree', nodes ? table('t-s-nodes', [
+    const tree = nodes && nodes.some(n => n.depth > 0);
+    if (!tree) root.appendChild(pane('Session tree', h('div', { class: 'hint' }, 'no subagents in this session')));
+    else if (WHATIF.model) root.appendChild(pane('Session tree · what-if ' + WHATIF.model, whatifTree(nodes)));
+    else root.appendChild(pane('Session tree', table('t-s-nodes', [
       { key: 'title', label: 'Title', asc: true, cls: 'grow', fmt: r => [r.depth ? h('span', { class: 'mut' }, '└ '.padStart(r.depth * 2 + 2, ' ')) : null, r.title] },
       { key: 'date', label: 'Started', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },
       { key: 'agent', label: 'Agent', asc: true, fmt: r => h('span', { class: 'dim' }, r.agent) },
       { key: 'model', label: 'Model', asc: true, fmt: r => modelCell(r.model) },
       { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => moneyCell(mCost(r)) },
       { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
-    ], nodes) : h('div', { class: 'hint' }, 'no subagents in this session')));
+    ], nodes)));
   } else if (TAB === 'Turns') root.appendChild(pane('Turns · cost over time',
     EXTRAS.loading ? h('div', { class: 'hint' }, 'loading turns…') : turnsTable(EXTRAS.turns)));
   else if (TAB === 'Tools') root.appendChild(pane('Tools',
@@ -1236,6 +1462,12 @@ function chrome() {
   chips.appendChild(h('span', { class: 'chip click', title: 'Set range (R)', onclick: openRange }, 'range ', h('b', null, rangeLabel())));
   chips.appendChild(h('span', { class: 'chip' }, META.serve ? 'live · ' + META.generated : META.generated));
   if (META.demo) chips.appendChild(h('span', { class: 'chip demo' }, 'demo data'));
+  // An armed what-if target gets a chip, not a header badge: the header's numbers aren't
+  // counterfactual anywhere (the target only reprices a session's Subagents tab and its
+  // Overview), so tagging them would call recorded money a what-if. This is the page's
+  // twin of the TUI's lit `w model` footer key -- an honest "a target is set".
+  if (WHATIF.model) chips.appendChild(h('span', { class: 'chip wi click', title: 'what-if target (w changes it, w again clears it)',
+    onclick: openWhatif }, 'what-if ', h('b', null, WHATIF.model)));
   const right = document.getElementById('hright');
   right.textContent = '';
   if (!META.demo) {
@@ -1253,7 +1485,7 @@ function chrome() {
     onclick: () => fetch('/api/reload', { method: 'POST' }).then(() => location.reload()) }, '↻ refresh'));
   const hints = document.getElementById('hints');
   hints.textContent = '';
-  [['j/k', 'move'], ['Tab', 'panel'], ['h/l', 'tabs'], ['Esc', 'back'], ['$', 'what-if'], ['p/t', 'projects/time'], ['T', 'trends'], ['P', 'prices'], ['C', 'theme'], ['R', 'range']]
+  [['j/k', 'move'], ['Tab', 'panel'], ['h/l', 'tabs'], ['Esc', 'back'], ['$', 'what-if'], ['w', 'what-if model'], ['p/t', 'projects/time'], ['T', 'trends'], ['P', 'prices'], ['C', 'theme'], ['R', 'range']]
     .forEach(([k, lbl]) => hints.append(h('kbd', null, k), ' ' + lbl + '   '));
   document.getElementById('stamp').textContent =
     'generated by OpenTab v' + META.version + ' · ' + META.range + ' · ' + META.generated
@@ -1570,15 +1802,12 @@ function renderPrices() {
   if (!PRICES.open) { host.hidden = true; host.textContent = ''; return; }
   host.hidden = false; host.textContent = '';
   let rows = priceRows().slice();
-  if (PRICES.q) {
-    // fzf-style subsequence (like the TUI's f filter): "opus8" narrows to the
-    // claude-opus-4-8 rows; dots==dashes against the canonical spelling so
-    // "opus-4.8" also finds providers that write "claude-opus-4-8".
-    const fz = (q, s) => { s = s.toLowerCase(); let i = 0; for (let j = 0; j < s.length && i < q.length; j++) if (s[j] === q[i]) i++; return i === q.length; };
-    const canon = s => s.toLowerCase().replace(/(\d)\.(?=\d)/g, '$1-');
-    const q = PRICES.q.toLowerCase(), qc = canon(PRICES.q);
-    rows = rows.filter(r => fz(q, r.model) || fz(qc, canon(r.model)) || fz(q, r.familyLabel || '') || r.routes.some(rt => fz(q, rt)));
-  }
+  // The one shared rule (modelMatches, the mirror of pricing.model_matches): the model id
+  // by fzf-style subsequence ("opus8" narrows to the claude-opus-4-8 rows, dots==dashes),
+  // the route and the vendor label by substring. The `w` picker's filter is the same
+  // call. Subsequencing the route -- what this filter used to do -- made "gpt" match
+  // every Claude model sold through github-copilot.
+  if (PRICES.q) rows = rows.filter(r => modelMatches(PRICES.q, r.model, r.routes, r.familyLabel));
   const ASC = new Set(['model', 'eff']);  // natural order per column (else high→low)
   const key = PRICES.sort;
   const val = { model: r => r.model.toLowerCase(), eff: r => r.eff, use: r => r.share,
@@ -1733,9 +1962,23 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  // Overlay stacking order = DOM order (theme picker above prices above trends),
-  // so the keyboard checks run top-down: whatever floats highest owns the keys.
+  // Overlay stacking order = DOM order (theme picker above the w picker above prices
+  // above trends), so the keyboard checks run top-down: whatever floats highest owns the
+  // keys. Mirrors the TUI, where handle_key checks theme_menu, then whatif_menu, then the
+  // overlay branches.
   if (THEMEPICK) { if (e.key === 'Escape' || e.key === 'C') closeTheme(); e.preventDefault(); return; }
+  // The `w` target picker: j/k move, Enter arms, `f` starts the filter, Esc/q cancels
+  // (pricing unchanged). `w` advances the highlight like j, exactly as in the TUI.
+  if (WHATIF.open) {
+    const rows = whatifRows();
+    if (e.key === 'Escape' || e.key === 'q') closeWhatif();
+    else if (e.key === 'j' || e.key === 'ArrowDown' || e.key === 'w') stepWhatif(1);
+    else if (e.key === 'k' || e.key === 'ArrowUp') stepWhatif(-1);
+    else if (e.key === 'Enter') { if (rows.length) armWhatif(rows[WHATIF.i % rows.length].model); }
+    else if (e.key === 'f' || e.key === '/') { const el = document.getElementById('wi-filter'); if (el) el.focus(); }
+    else if (e.key === 'C') openTheme();
+    e.preventDefault(); return;
+  }
   if (PRICES.open) {
     if (e.key === 'Escape' || e.key === 'P') closePrices();
     else if (e.key === 'p') { const i = PRICE_VIEWS.findIndex(v => v[0] === PRICES.view); PRICES.view = PRICE_VIEWS[(i + 1) % PRICE_VIEWS.length][0]; renderPrices(); }
@@ -1801,6 +2044,12 @@ document.addEventListener('keydown', e => {
   } else if (e.key === '$' && !META.demo) {
     MODE = MODE === 'api' ? 'real' : 'api';
     render(false);
+  } else if (e.key === 'w') {
+    // Arm a target model, or clear the armed one. Allowed in demo (unlike $): demo
+    // already scales every token by a hidden per-process factor, so list rates on scaled
+    // tokens recover no real dollars, while the ratio the feature exists to show stays
+    // real.
+    toggleWhatif();
   } else if (e.key === 'p' && BROWSE !== 'projects') {
     setBrowse('projects');
   } else if (e.key === 't' && BROWSE !== 'time') {
@@ -1829,12 +2078,14 @@ function render(scrollTop = true) {
   renderTrends();  // keep the overlays in sync with a live $/range/theme/data change
   renderPrices();
   renderRange();
+  renderWhatif();
   renderTheme();
   if (scrollTop) window.scrollTo(0, 0);
 }
 document.getElementById('trends').addEventListener('click', closeTrends);  // click the backdrop to close
 document.getElementById('prices').addEventListener('click', closePrices);
 document.getElementById('rangepick').addEventListener('click', closeRange);
+document.getElementById('whatifpick').addEventListener('click', closeWhatif);
 document.getElementById('themepick').addEventListener('click', closeTheme);
 // Navigation resets the scoped table state, but keeps the active tab when it
 // still exists in the new scope (render() falls back to Overview otherwise) --

@@ -13,14 +13,38 @@ static host.
 - The same sidebar (Years appear with >1 year of data), the same per-scope detail
   tabs, Trends (`T`) and the price table (`P`) as overlays, live range scoping (`R`)
   and colour themes (`C`).
-- Driven by the TUI keys (`j`/`k`, `Tab`, `h`/`l`, `Esc`, `$`, `p`/`t`, `T`, `P`,
+- Driven by the TUI keys (`j`/`k`, `Tab`, `h`/`l`, `Esc`, `$`, `w`, `p`/`t`, `T`, `P`,
   `R`) or the mouse; every table sorts on a header click.
 - Every view is a **shareable deep link** (`#/m/2026-06`, `#/s/<session>`, …) and the
   browser's back button steps out.
 - `$` toggles the what-if estimate instantly — both cost snapshots travel in the
   page, so it's a client-side swap, never a reprice.
+- `w` arms a what-if **model** — the TUI's `w`, mirrored (see below).
 - Combine with `--demo` for a page you can publish:
   `opentab --demo --html demo.html`.
+
+## `w` — the what-if model
+
+`w` opens a picker over the models you've actually used (`j`/`k` move · `f` filters,
+fzf-style · `Enter` arms · `Esc` cancels) and **arms one as a comparison target**:
+*"what if the expensive model had done the subagents' work too?"*.
+
+It is **session-scoped**, exactly as in the TUI. Open a session and:
+
+- its **Subagents** tab shows the whole tree — root row included — with each node's
+  cost beside what that node's tokens would have cost at the target's list rates, a
+  **Δ** per node, and a `TOTAL $1.94 → $6.06   routing saved $4.12 (68%)` footer;
+- its **Overview** carries an Actual / What-if / Change summary — so a session that
+  delegated nothing (no tree to table) still answers. Both read the same numbers, so
+  they can't disagree.
+
+Everything else on the page — the sidebar, the rollups, Trends, Prices — keeps
+showing your actual spend, and `$` keeps working as always. The comparison is a
+**rate substitution, not a rerun** (same tokens, one price list), and its baseline
+prices *every* token at its own model's list rates regardless of `$` — otherwise a
+subscription backend, which records $0, would report a 100% saving that never
+happened. `w` again clears the target; it works in `--demo` too, and it is never
+remembered between visits (unlike the theme and the price pins).
 
 The static file omits the per-session Turns/Tools/Context tabs (embedding them would
 mean scanning every session up front) — that's what the server is for.

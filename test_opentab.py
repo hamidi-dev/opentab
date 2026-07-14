@@ -10560,6 +10560,127 @@ def test_web_payload_embeds_the_price_reference():
     assert "eff" not in row and "approx" not in row
 
 
+def _js_source():
+    # The page's script, read back from a rendered page: the JS can't be executed here,
+    # so the invariants that live in it are asserted against its source.
+    page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-05-01 10:00:00")])))
+    return page.rsplit("<script>", 1)[1].split("</script>", 1)[0]
+
+
+def _js_whatif_cost(tok, rates):
+    # The page's whatifCost(), transcribed: the client mirrors pricing.api_equivalent_cost
+    # over a node's [input, output, reasoning, cacheRead, cacheWrite] split. Written out
+    # here so the serialized numbers can be repriced exactly the way the page reprices
+    # them -- and so a drift between the two formulas fails a test.
+    inp, out, reason, cr, cw = tok
+    ir, orr, crr, cwr = rates
+    return (inp * ir + (out + reason) * orr + cr * crr + cw * cwr) / 1e6
+
+
+def test_web_payload_ships_the_whatif_ingredients():
+    # The `w` what-if can't travel precomputed (the target model is picked at view time),
+    # so the payload ships the ingredients: every node's full token split, and the list
+    # rates of every model you've used. That is enough to price anything client-side.
+    with tempfile.TemporaryDirectory() as tmp:
+        payload = ot.build_payload(_whatif_db(tmp))
+    root, kid = payload["nodes"]["root"]
+    assert root["tok"] == [1_000_000, 0, 0, 0, 0]  # [in, out, reasoning, cacheR, cacheW]
+    assert kid["tok"] == [2_000_000, 0, 0, 0, 0]
+    models = payload["whatif"]["models"]
+    # The picker's rows: models actually used, most-used first (the haiku subagent burned
+    # 2M tokens, the opus root 1M), each with its four list rates in $/M.
+    assert [m["model"] for m in models] == [
+        "anthropic/claude-haiku-4.5",
+        "anthropic/claude-opus-4.5",
+    ]
+    assert [m["tokens"] for m in models] == [2_000_000, 1_000_000]
+    for m in models:
+        assert m["price"] == [round(float(v), 6) for v in ot.model_price(m["model"])]
+        assert len(m["price"]) == 4 and m["price"][0] > 0
+
+
+def test_web_whatif_reprices_the_serialized_tokens_to_the_tui_figure():
+    # The page's arithmetic, run over the page's own numbers: each node's shipped token
+    # split at the target's shipped rates must land on api_equivalent_cost -- and the
+    # session's total on the exact figure the TUI's whatif_session_totals quotes.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        payload = ot.build_payload(app)
+        target = "anthropic/claude-opus-4.5"
+        rates = next(m["price"] for m in payload["whatif"]["models"] if m["model"] == target)
+        nodes = payload["nodes"]["root"]
+        priced = [_js_whatif_cost(n["tok"], rates) for n in nodes]
+        # 1M + 2M input tokens, all repriced at the Opus rate.
+        assert abs(priced[0] - ot.api_equivalent_cost(target, 1_000_000, 0, 0, 0, 0)) < 1e-9
+        assert abs(priced[1] - ot.api_equivalent_cost(target, 2_000_000, 0, 0, 0, 0)) < 1e-9
+        app.select_whatif_model(target)
+        wf = next(w for w in app.loaded if w.id == "root")
+        tui_actual, tui_whatif = app.renderer.whatif_session_totals(wf)
+        # The page's two panes both reduce over these nodes (whatifTotals), so this is the
+        # figure the Subagents tree AND the session Overview quote -- one source, no drift.
+        assert abs(sum(priced) - tui_whatif) < 1e-6
+        assert abs(sum(n["api"] for n in nodes) - tui_actual) < 1e-6
+
+
+def test_web_whatif_baseline_is_the_api_figure_never_the_recorded_cost():
+    # CRITICAL: the comparison baseline prices EVERY token (each node at its own model's
+    # list rates), independent of the $ toggle -- so `api`, never `real`. A subscription
+    # backend records $0, and a $-gated baseline would measure a real counterfactual
+    # against nothing and report a 100% saving that never happened.
+    with tempfile.TemporaryDirectory() as tmp:
+        payload = ot.build_payload(_whatif_db(tmp, costs=(0, 0)))  # nothing recorded
+    nodes = payload["nodes"]["root"]
+    assert [n["real"] for n in nodes] == [0.0, 0.0]  # $0 recorded...
+    assert all(n["api"] > 0 for n in nodes)  # ...but every token still priced
+    js = _js_source()
+    assert "const wiBase = n => n.api;" in js  # the page reads that field, not `real`
+    assert "(inp * ir + (out + reason) * orr + cr * crr + cw * cwr) / 1e6" in js
+
+
+def test_web_payload_ships_nodes_and_rates_for_a_solo_session_too():
+    # A session that delegated nothing has no tree for the Subagents pane to table, so its
+    # what-if lives on the Overview -- which needs its root node. Nodes therefore travel
+    # for EVERY session, not just the ones with subagents (both panes then reduce over one
+    # source, so they can't quote different figures).
+    with tempfile.TemporaryDirectory() as tmp:
+        payload = ot.build_payload(_whatif_db(tmp, costs=(0, 0), solo=True))
+    nodes = payload["nodes"]["root"]
+    assert [n["depth"] for n in nodes] == [0]  # the root, and only the root
+    assert nodes[0]["tok"] == [1_000_000, 0, 0, 0, 0] and nodes[0]["api"] > 0
+    assert payload["whatif"]["models"]  # ...and a target to reprice it against
+
+
+def test_web_page_matches_models_through_one_shared_rule():
+    # One JS helper (modelMatches, the mirror of pricing.model_matches) behind BOTH model
+    # filters: the P overlay's and the `w` picker's. Model ids match by subsequence, routes
+    # and vendor labels by plain substring -- subsequencing the route is what made "gpt"
+    # walk "github-copilot" and drag every Claude model sold through it into a GPT search.
+    js = _js_source()
+    assert js.count("function modelMatches(") == 1  # exactly one matcher, not two
+    assert "rows = rows.filter(r => modelMatches(PRICES.q, r.model, r.routes, r.familyLabel))" in js
+    assert "return modelMatches(WHATIF.q, bare, route ? [route] : [], '');" in js
+    assert "fz(q, rt)" not in js  # the route-subsequence false-positive machine is gone
+    assert "fields.some(f => f.includes(qq))" in js  # routes/labels: substring
+
+
+def test_web_whatif_target_is_transient_and_app_wide_costs_never_move():
+    # The target is deliberately NOT persisted -- not to localStorage (unlike the theme and
+    # the price pins), not to the hash: a remembered what-if would silently falsify every
+    # later look. And it is session-scoped, so no app-wide figure moves while it's armed.
+    js = _js_source()
+    keys = set(re.findall(r"localStorage\.setItem\('([^']+)'", js))
+    assert keys == {"opentab-theme", "opentab-pins"}  # nothing what-if shaped
+    assert "let WHATIF = { model: null, open: false, q: '', i: 0 };" in js
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        before = sum(w.total_cost for w in app.loaded)
+        app.select_whatif_model("anthropic/claude-opus-4.5")
+        payload = ot.build_payload(app)
+        assert sum(w.total_cost for w in app.loaded) == before
+        # ...and the serialized rollups are the same numbers with a target armed.
+        assert [w["real"] for w in payload["workflows"]] == [1.94]
+
+
 def test_web_report_server_serves_page_extras_and_404():
     import threading
     import urllib.error
