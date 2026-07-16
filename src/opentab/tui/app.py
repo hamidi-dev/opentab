@@ -4829,23 +4829,23 @@ class App:
                 # Re-measure every pass and guard the writes (like Renderer.write):
                 # shrinking the terminal mid-prompt must repaint, never raise.
                 height, width = stdscr.getmaxyx()
-                # This is the one place App itself paints, so it's also the one place
-                # that has to inset itself into the app frame by hand (the renderer's
-                # primitives do it for everything else): the command line takes the
-                # footer's row *inside* the border, not the border's own bottom row.
+                # This is the one place App itself paints. Go through the renderer's
+                # primitives anyway, so the app frame's origin (and its clipping) applies
+                # here too: the command line takes the footer's row *inside* the border,
+                # never the border's own bottom row. Coordinates below are content cells.
                 oy, ox = self.renderer.oy, self.renderer.ox
-                row = height - 1 - oy
                 width -= 2 * ox
+                row = height - 2 * oy - 1
                 shown, hx, max_len = self.prompt_layout(value, width, head, hint)
                 limit = max_chars if max_chars is not None else max_len
+                self.renderer.write(stdscr, row, 0, " " * width)
+                self.renderer.write(stdscr, row, 0, clip(head + shown, width - 1), field)
+                if hint and hx < width - 1:  # format hint in plain slate, to the right
+                    self.renderer.write(
+                        stdscr, row, hx, clip("   " + hint, width - hx - 1), curses.color_pair(4)
+                    )
                 try:
-                    stdscr.addstr(row, ox, " " * (width - 1))
-                    stdscr.addstr(row, ox, clip(head + shown, width - 1), field)
-                    if hint and hx < width - 1:  # format hint in plain slate, to the right
-                        stdscr.addstr(
-                            row, ox + hx, clip("   " + hint, width - hx - 1), curses.color_pair(4)
-                        )
-                    stdscr.move(row, ox + max(0, min(width - 2, hx)))
+                    stdscr.move(row + oy, ox + max(0, min(width - 2, hx)))
                 except curses.error:
                     pass  # a resize can invalidate any coordinate; next pass re-measures
                 stdscr.refresh()
