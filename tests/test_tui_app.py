@@ -61,8 +61,9 @@ def test_page_keys_stride_lists_by_half_a_screen():
     assert app.workflow_index == 4
     app.handle_key(None, 21)  # floored at the top
     assert app.workflow_index == 0
-    # with a real screen the stride is half the pager height (height - 9)
-    assert app._page_step(FakeScreen(29, 80)) == 10
+    # with a real screen the stride is half the pager height (the window minus
+    # Renderer.CHROME_ROWS: app frame + header + footer + the detail box's own border)
+    assert app._page_step(FakeScreen(31, 80)) == 10
     assert app._page_step(FakeScreen(5, 80)) == 1  # never 0 on a tiny window
 
 
@@ -308,6 +309,32 @@ def test_handle_mouse_wheel_scrolls_the_list():
         ot.curses.getmouse = lambda: (0, 0, 0, 0, ot.curses.BUTTON4_PRESSED)  # wheel up
         app.handle_mouse()
         assert app.month_index == 0  # scrolled back up
+    finally:
+        ot.curses.getmouse = orig
+
+
+def test_clicks_are_translated_out_of_the_app_frame():
+    # getmouse reports screen cells; regions are content cells inside the app frame.
+    # handle_mouse takes the frame's origin off the click once -- get this wrong and
+    # every click silently lands one row/column away from the row you aimed at.
+    app = app_with(
+        [
+            workflow("jun", "2026-06-01 12:00:00"),
+            workflow("may", "2026-05-01 12:00:00"),
+        ]
+    )
+    app.focus = "months"
+    app.renderer.oy = app.renderer.ox = 1  # what draw() sets once the frame is up
+    app.renderer.regions = [("rows", "month", 5, 6, 0, 30, 0)]  # content rows 5..6
+    orig = ot.curses.getmouse
+    try:
+        # A click on screen row 7 is content row 6 -- the second month, not the first.
+        ot.curses.getmouse = lambda: (0, 5, 7, 0, ot.curses.BUTTON1_CLICKED)
+        app.handle_mouse()
+        assert app.month_index == 1
+        ot.curses.getmouse = lambda: (0, 5, 6, 0, ot.curses.BUTTON1_CLICKED)
+        app.handle_mouse()
+        assert app.month_index == 0
     finally:
         ot.curses.getmouse = orig
 

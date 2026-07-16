@@ -3313,12 +3313,12 @@ class App:
                 self.day_index = max(0, min(self.day_index + delta, n - 1))
 
     def _page_step(self, stdscr: curses.window | None) -> int:
-        # Half the visible pager height (the window minus chrome, mirroring
-        # Renderer.max_scroll) -- the PgDn/PgUp and Ctrl-D/Ctrl-U stride.
+        # Half the visible pager height (the window minus chrome, measured by the
+        # renderer so it can't drift from max_scroll) -- the PgDn/PgUp, Ctrl-D/Ctrl-U
+        # stride.
         if stdscr is None:
             return 10
-        height, _width = stdscr.getmaxyx()
-        return max(1, (height - 9) // 2)
+        return max(1, self.renderer.pager_height(stdscr) // 2)
 
     def jump(self, to_end: bool, stdscr: curses.window | None = None) -> None:
         if self.view == "browse":
@@ -4514,6 +4514,12 @@ class App:
             _id, mx, my, _z, bstate = curses.getmouse()
         except curses.error:
             return True
+        # getmouse reports screen cells; everything the renderer registered (regions,
+        # sort headers, the trend bar geometry) is in content cells, inside the app
+        # frame. Take the frame off the click once, here, and the rest of this file
+        # never has to know the border exists.
+        my -= self.renderer.oy
+        mx -= self.renderer.ox
         up = bool(bstate & curses.BUTTON4_PRESSED)
         down = bool(bstate & getattr(self, "_wheel_down", 0))
         click = bool(bstate & curses.BUTTON1_CLICKED)
@@ -4823,16 +4829,23 @@ class App:
                 # Re-measure every pass and guard the writes (like Renderer.write):
                 # shrinking the terminal mid-prompt must repaint, never raise.
                 height, width = stdscr.getmaxyx()
+                # This is the one place App itself paints, so it's also the one place
+                # that has to inset itself into the app frame by hand (the renderer's
+                # primitives do it for everything else): the command line takes the
+                # footer's row *inside* the border, not the border's own bottom row.
+                oy, ox = self.renderer.oy, self.renderer.ox
+                row = height - 1 - oy
+                width -= 2 * ox
                 shown, hx, max_len = self.prompt_layout(value, width, head, hint)
                 limit = max_chars if max_chars is not None else max_len
                 try:
-                    stdscr.addstr(height - 1, 0, " " * (width - 1))
-                    stdscr.addstr(height - 1, 0, clip(head + shown, width - 1), field)
+                    stdscr.addstr(row, ox, " " * (width - 1))
+                    stdscr.addstr(row, ox, clip(head + shown, width - 1), field)
                     if hint and hx < width - 1:  # format hint in plain slate, to the right
                         stdscr.addstr(
-                            height - 1, hx, clip("   " + hint, width - hx - 1), curses.color_pair(4)
+                            row, ox + hx, clip("   " + hint, width - hx - 1), curses.color_pair(4)
                         )
-                    stdscr.move(height - 1, max(0, min(width - 2, hx)))
+                    stdscr.move(row, ox + max(0, min(width - 2, hx)))
                 except curses.error:
                     pass  # a resize can invalidate any coordinate; next pass re-measures
                 stdscr.refresh()

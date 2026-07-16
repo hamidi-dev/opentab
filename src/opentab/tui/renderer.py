@@ -110,10 +110,21 @@ class Renderer:
 
     def __init__(self, app: App) -> None:
         self.app = app
+        # The app frame (lazygit's outer border) is a *viewport*, not a layout change:
+        # draw() paints the frame in screen coordinates, then sets this origin and hands
+        # every drawer the inner (height - 2, width - 2) box. The three primitives that
+        # actually touch curses -- write/hline/frame -- add it, so every drawer, region
+        # and modal below keeps addressing cell (0, 0) as the top-left of the *content*
+        # and no geometry had to learn about the border. It stays (0, 0) until draw()
+        # frames a real screen, so a drawer called on its own (the suite does this a
+        # lot) paints exactly where it's told.
+        self.oy = 0
+        self.ox = 0
         # Clickable hit regions, rebuilt every draw() so they always match what is
         # on screen. Each is ("rows", kind, y0, y_last, x0, x1, start) for a list
         # (click row y selects index start + (y - y0)) or (kind, y, x0, x1, index)
-        # for a tab label where kind is "tab"/"trend". hit() resolves a click.
+        # for a tab label where kind is "tab"/"trend". hit() resolves a click. They are
+        # content coordinates: App.handle_mouse subtracts the origin once, at getmouse().
         self.regions: list[tuple] = []
         # Clickable column-header zones for sortable lists: (y, x0, x1, key, target).
         # Rebuilt every draw() alongside regions; sort_hit() resolves a click.
@@ -306,11 +317,20 @@ class Renderer:
             return 0, w - 2
         return BAR_CELLS, (w - 2) - (BAR_CELLS + 2)
 
+    # What the chrome eats out of the window before a pager's first line: the app frame
+    # (2 rows / 2 columns), the header strip, the footer strip, and the detail box's own
+    # border and tabs. One constant, because App._page_step strides by the same height.
+    CHROME_ROWS = 11
+    CHROME_COLS = 2
+
+    def pager_height(self, stdscr: curses.window) -> int:
+        height, _width = stdscr.getmaxyx()
+        return max(1, height - self.CHROME_ROWS)
+
     def max_scroll(self, stdscr: curses.window) -> int:
-        height, width = stdscr.getmaxyx()
-        visible = max(1, height - 9)
-        lines = self.current_pager_lines(width)
-        return max(0, len(lines) - visible)
+        _height, width = stdscr.getmaxyx()
+        lines = self.current_pager_lines(width - self.CHROME_COLS)
+        return max(0, len(lines) - self.pager_height(stdscr))
 
     def current_pager_lines(self, width: int) -> list[str]:
         content_width = max(1, width - 4)
@@ -398,6 +418,7 @@ class Renderer:
         self.regions = []  # rebuilt below as panels draw, for this frame's clicks
         self.sort_regions = []  # column-header sort zones, same lifecycle as regions
         self._line_sort_headers = {}  # refilled by the line-based drawers below
+        self.oy = self.ox = 0  # screen coordinates until the app frame is up
         height, width = stdscr.getmaxyx()
         if height < 20 or width < 80:
             self.write(
@@ -405,6 +426,16 @@ class Renderer:
             )
             stdscr.refresh()
             return
+
+        # The app frame: one border around the whole UI (lazygit's outer box), painted
+        # in screen coordinates. Everything after this draws inside it -- the origin
+        # shifts by one cell and the drawers are handed the inner box, so they lay
+        # themselves out exactly as they did full-screen, two rows and two columns
+        # smaller. Active, so the frame reads as chrome the panels can highlight against.
+        self.frame_app(stdscr, height, width)
+        self.oy = self.ox = 1
+        height -= 2
+        width -= 2
 
         self.draw_header(stdscr, width)
         self.draw_footer(stdscr, height, width)
@@ -4031,6 +4062,13 @@ class Renderer:
     _HEAVY_FRAME = ("┏", "┓", "┗", "┛", "━", "┃")
     _heavy_frame = True
 
+    def frame_app(self, stdscr: curses.window, height: int, width: int) -> None:
+        # The border around the whole UI, drawn in screen coordinates before draw()
+        # shifts the origin into it. Structural grey (pair 4, the keybar's colour), never
+        # the focus accent: it is chrome, not a panel that can take focus -- the active
+        # panel has to stay the brightest border on screen.
+        self.draw_frame(stdscr, 0, 0, height, width, curses.color_pair(4))
+
     def box(
         self,
         stdscr: curses.window,
@@ -4045,27 +4083,30 @@ class Renderer:
             return
         border_attr = curses.color_pair(6) | curses.A_BOLD if active else curses.A_NORMAL
         title_attr = border_attr if active else curses.color_pair(1) | curses.A_BOLD
+        self.draw_frame(stdscr, y, x, h, w, border_attr)
+        self.write(stdscr, y, x + 2, f" {shorten(title, w - 6)} ", title_attr)
+
+    def draw_frame(self, stdscr: curses.window, y: int, x: int, h: int, w: int, attr: int) -> None:
         if self._heavy_frame:
             try:
-                self.frame(stdscr, y, x, h, w, border_attr, *self._HEAVY_FRAME)
+                self.frame(stdscr, y, x, h, w, attr, *self._HEAVY_FRAME)
+                return
             except UnicodeEncodeError:  # non-UTF-8 screen: fall back, once, for good
                 Renderer._heavy_frame = False
-        if not self._heavy_frame:
-            self.frame(
-                stdscr,
-                y,
-                x,
-                h,
-                w,
-                border_attr,
-                curses.ACS_ULCORNER,
-                curses.ACS_URCORNER,
-                curses.ACS_LLCORNER,
-                curses.ACS_LRCORNER,
-                curses.ACS_HLINE,
-                curses.ACS_VLINE,
-            )
-        self.write(stdscr, y, x + 2, f" {shorten(title, w - 6)} ", title_attr)
+        self.frame(
+            stdscr,
+            y,
+            x,
+            h,
+            w,
+            attr,
+            curses.ACS_ULCORNER,
+            curses.ACS_URCORNER,
+            curses.ACS_LLCORNER,
+            curses.ACS_LRCORNER,
+            curses.ACS_HLINE,
+            curses.ACS_VLINE,
+        )
 
     def frame(
         self,
@@ -4082,10 +4123,19 @@ class Renderer:
         horiz: int | str,
         vert: int | str,
     ) -> None:
+        y += self.oy
+        x += self.ox
         stdscr.addch(y, x, ul, attr)
         stdscr.addch(y, x + w - 1, ur, attr)
         stdscr.addch(y + h - 1, x, ll, attr)
-        stdscr.addch(y + h - 1, x + w - 1, lr, attr)
+        # The app frame's lower-right corner is the screen's very last cell: curses puts
+        # the glyph there and then reports an error because it cannot advance the cursor
+        # past it. The cell is drawn; only the cursor move failed, so swallow it. (insch,
+        # the usual escape hatch, is no good here -- it takes a chtype, i.e. one byte.)
+        try:
+            stdscr.addch(y + h - 1, x + w - 1, lr, attr)
+        except curses.error:
+            pass
         if isinstance(horiz, str):
             # hline/vline take a chtype -- a single *byte* -- so a multibyte glyph
             # raises OverflowError there. Run them through addstr/addch instead, the
@@ -4104,15 +4154,22 @@ class Renderer:
             stdscr.vline(y + 1, x + w - 1, vert, h - 2, attr)
 
     def hline(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
-        stdscr.hline(y, x, curses.ACS_HLINE, max(0, w - 1))
+        # A light rule across w content cells (the header/footer separators). Inside the
+        # app frame the last content column is an ordinary cell, so the rule runs the
+        # full width and meets the border instead of stopping a column short of it.
+        stdscr.hline(y + self.oy, x + self.ox, curses.ACS_HLINE, max(0, w))
 
     def write(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
         height, width = stdscr.getmaxyx()
+        y += self.oy
+        x += self.ox
         if y < 0 or y >= height or x < 0 or x >= width:
             return
         try:
             # Clip by display cells, not codepoints, so wide (CJK) text never
-            # overflows the row and wraps.
+            # overflows the row and wraps. The clip is against the *screen* edge, so
+            # inside the app frame it stops one cell short of the right border --
+            # which is the cell the border itself occupies.
             stdscr.addstr(y, x, clip(text, max(0, width - x - 1)), attr)
         except curses.error:
             pass
