@@ -668,7 +668,9 @@ class Renderer:
         parts: list = []
         if self.view == "browse" and self.browse_mode == "time":
             # The focused panel's own token lights up, so "where am I?" is answered
-            # by the same hint that says how to move (Tab).
+            # by the same hint that says how to move (Tab). The jump keys aren't
+            # named here -- each panel wears its own number in its title, lazygit's
+            # way, so the footer stays about motion.
             parts.append(
                 [
                     ("Tab ", False),
@@ -1215,10 +1217,17 @@ class Renderer:
             cx += len(text)
             remaining -= len(text)
 
+    @staticmethod
+    def panel_title(number: int, title: str, active: bool = False) -> str:
+        # lazygit's numbered panels: the key that jumps here is written into the box
+        # title, so the keymap is on screen instead of in the footer. The sidebar is
+        # numbered top to bottom (1/2/3) and the detail pane on the right is 0.
+        return f"[{number}] {title}" + (" ▸" if active else "")
+
     def draw_year_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
     ) -> None:
-        self.box(stdscr, y, x, h, w, "Years" + (" ▸" if active else ""), active=active)
+        self.box(stdscr, y, x, h, w, self.panel_title(1, "Years", active), active=active)
         rows = self.years
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No years in range.", curses.color_pair(1))
@@ -1269,7 +1278,7 @@ class Renderer:
     def draw_month_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
     ) -> None:
-        self.box(stdscr, y, x, h, w, "Months" + (" ▸" if active else ""), active=active)
+        self.box(stdscr, y, x, h, w, self.panel_title(2, "Months", active), active=active)
         rows = self.months
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No months in range.", curses.color_pair(1))
@@ -1318,7 +1327,8 @@ class Renderer:
     def draw_project_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
     ) -> None:
-        self.box(stdscr, y, x, h, w, "Projects" + (" ▸" if active else ""), active=active)
+        # Projects mode has a single left panel, so it is panel 1 here.
+        self.box(stdscr, y, x, h, w, self.panel_title(1, "Projects", active), active=active)
         rows = self.projects
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(1))
@@ -1371,7 +1381,7 @@ class Renderer:
             if project is None
             else f"Project {short_path(project.directory, max(10, w - 14))}"
         )
-        self.box(stdscr, y, x, h, w, title, active=active)
+        self.box(stdscr, y, x, h, w, self.panel_title(0, title), active=active)
         if project is None:
             self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(1))
             return
@@ -1407,7 +1417,7 @@ class Renderer:
             if year.year == ALL_YEARS
             else f"Year {year.year}"
         )
-        self.box(stdscr, y, x, h, w, title, active=active)
+        self.box(stdscr, y, x, h, w, self.panel_title(0, title), active=active)
         if year is None:
             self.write(stdscr, y + 2, x + 2, "No year selected.", curses.color_pair(1))
             return
@@ -1442,7 +1452,7 @@ class Renderer:
     ) -> None:
         month = self.selected_month_summary
         title = "Month" if month is None else f"Month {month.month}"
-        self.box(stdscr, y, x, h, w, title, active=active)
+        self.box(stdscr, y, x, h, w, self.panel_title(0, title), active=active)
         if month is None:
             self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(1))
             return
@@ -1482,7 +1492,7 @@ class Renderer:
             x,
             h,
             w,
-            (f"Days · {month}" if month else "Days") + (" ▸" if active else ""),
+            self.panel_title(3, f"Days · {month}" if month else "Days", active),
             active=active,
         )
         rows = self.panel_days
@@ -1533,7 +1543,7 @@ class Renderer:
     ) -> None:
         day = self.selected_day_summary
         title = "Day" if day is None else f"Day {day.day}"
-        self.box(stdscr, y, x, h, w, title, active=active)
+        self.box(stdscr, y, x, h, w, self.panel_title(0, title), active=active)
         if day is None:
             self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(1))
             return
@@ -2618,6 +2628,15 @@ class Renderer:
                     ("p / t", "switch to the Projects / Time browse mode"),
                     ("Tab", "cycle focus Years → Months → Days (Time mode)"),
                     ("Shift-Tab", "cycle focus backward; at the top level, step back out"),
+                    (
+                        "1 / 2 / 3 / 0",
+                        "jump straight to a panel — each wears its number in its title",
+                        "the sidebar is numbered top to bottom (Years / Months / Days; "
+                        "in Projects mode 1 is the Projects list) and 0 is the detail "
+                        "pane on the right, what Enter drills into",
+                        "a digit jumps from anywhere — it steps out of a zoomed detail "
+                        "or an open session to get there",
+                    ),
                     (
                         "Enter / +",
                         "drill into the selected year / month / day / project; on a "

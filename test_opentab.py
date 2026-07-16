@@ -3374,6 +3374,100 @@ def test_source_rows_follow_a_project_drill():
     assert [w.id for w in app.current_sessions()] == ["a"]
 
 
+def test_digit_keys_jump_to_a_panel_lazygit_style():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", directory="/tmp/alpha"),
+            workflow("b", "2026-06-02 12:00:00", directory="/tmp/beta"),
+        ]
+    )
+    assert app.focus == "days"  # the default panel
+    app.handle_key(None, ord("1"))
+    assert app.focus == "years" and app.view == "browse"
+    app.handle_key(None, ord("2"))
+    assert app.focus == "months"
+    app.handle_key(None, ord("3"))
+    assert app.focus == "days"
+
+    # 0 is the pane on the right: it makes the detail active, exactly like Enter.
+    app.handle_key(None, ord("0"))
+    assert app.view == "zoom"
+    app.handle_key(None, ord("0"))
+    assert app.view == "zoom"  # already there; not a toggle
+
+    # A digit jumps from anywhere: it steps out of the zoom to reach the panel...
+    app.handle_key(None, ord("2"))
+    assert app.view == "browse" and app.focus == "months"
+    # ...and out of an open session, dropping the drill state with it.
+    app.tab = app.month_tabs.index("Sessions")
+    app.handle_key(None, 10)  # zoom
+    app.zoom_project = "/tmp/alpha"
+    app.handle_key(None, 10)  # session
+    assert app.view == "session"
+    app.handle_key(None, ord("3"))
+    assert app.view == "browse" and app.focus == "days" and app.zoom_project is None
+
+    # The detail tab is carried across the jump, like Tab does (Models stays Models).
+    app.handle_key(None, ord("2"))
+    app.tab = app.month_tabs.index("Models")
+    app.handle_key(None, ord("1"))
+    assert app.current_tabs()[app.tab] == "Models"
+
+
+def _panel_titles(app):
+    # The titles the panels hand to box() (box itself draws ACS glyphs, which need a
+    # real curses screen -- the titles are what this is about).
+    screen = FakeScreen(30, 120)
+    titles: list[str] = []
+    real_box = app.renderer.box
+    app.renderer.box = lambda s, y, x, h, w, title, active=False: titles.append(title)
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        if app.browse_mode == "projects":
+            app.renderer.draw_project_list(screen, 0, 0, 27, 40)
+            app.renderer.draw_project_detail(screen, 0, 40, 27, 80, active=False)
+        else:
+            app.renderer.draw_time_panels(screen, 0, 27, 40, focus=app.focus)
+            app.renderer.draw_month_detail(screen, 0, 40, 27, 80, active=False)
+    finally:
+        app.renderer.box = real_box
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    return titles
+
+
+def test_a_panel_jump_never_carries_a_tab_index_across_scopes():
+    # A tab index means nothing outside the scope that produced it: a session's tab 2
+    # is Subagents, a month's is Projects. Jumping out of a session used to reinterpret
+    # the index against the browse tabs and land on an unrelated tab -- including when
+    # the target panel was the one already focused (the carry was skipped entirely).
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.focus = "months"
+    app.tab = app.month_tabs.index("Sessions")
+    app.handle_key(None, 10)  # zoom
+    app.handle_key(None, 10)  # open the session
+    app.tab = app.current_tabs().index("Subagents")
+
+    app.handle_key(None, ord("1"))  # jump to Years, which has no Subagents tab
+    assert app.view == "browse" and app.focus == "years"
+    assert app.current_tabs()[app.tab] == "Overview"
+
+    # The same, jumping back to the panel we came from.
+    app.tab = app.month_tabs.index("Sessions")
+    app.handle_key(None, 10)
+    app.handle_key(None, 10)
+    app.tab = app.current_tabs().index("Subagents")
+    app.handle_key(None, ord("2"))  # months: the panel the session belongs to
+    assert app.view == "browse" and app.focus == "months"
+    assert app.current_tabs()[app.tab] == "Overview"
+
+    # A tab the target scope *does* have is still carried, like Tab does.
+    app.tab = app.month_tabs.index("Models")
+    app.handle_key(None, ord("1"))
+    assert app.current_tabs()[app.tab] == "Models"
+
+
 def test_sources_rows_honour_the_committed_filter():
     # The `f` query narrows the sessions list, so a Sources row that aggregates past
     # it would advertise spend Enter then refuses to open.
@@ -3395,6 +3489,37 @@ def test_sources_rows_honour_the_committed_filter():
     assert int(rows[0][1]["sessions"]) == 1 and float(rows[0][1]["cost"]) == 3.0
     lines = app.renderer.month_sources(app.selected_month_summary, 96)
     assert any("$3.00" in ln for ln in lines) and not any("$10.00" in ln for ln in lines)
+
+
+def test_each_panel_wears_its_jump_key_in_its_title():
+    # lazygit's affordance: the key that jumps to a panel is written in its box
+    # title, so the keymap is on screen (and the footer stays about motion).
+    # Sidebar top to bottom = 1/2/3, the detail pane on the right = 0.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/alpha")])
+    app.focus = "months"
+    titles = _panel_titles(app)
+    assert titles[0] == "[1] Years"
+    assert titles[1] == "[2] Months ▸"  # the focused panel keeps its ▸ marker
+    assert titles[2].startswith("[3] Days")
+    assert titles[3] == "[0] Month 2026-06"
+
+    app.set_browse_mode("projects")  # one left panel here, so it is 1
+    titles = _panel_titles(app)
+    assert titles[0] == "[1] Projects ▸"
+    assert titles[1].startswith("[0] Project ")
+
+
+def test_digit_keys_in_projects_mode_name_the_one_left_panel():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/alpha")])
+    app.set_browse_mode("projects")
+    app.handle_key(None, 10)  # zoom into the project
+    assert app.view == "zoom"
+    app.handle_key(None, ord("1"))  # 1 is the Projects list
+    assert app.view == "browse" and app.browse_mode == "projects"
+    app.handle_key(None, 10)
+    assert app.view == "zoom"
+    app.handle_key(None, ord("2"))  # no second panel here: nothing happens
+    assert app.view == "zoom" and app.browse_mode == "projects"
 
 
 def test_sessions_sort_by_project_groups_sessions_by_root():

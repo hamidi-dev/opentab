@@ -169,6 +169,7 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | Key | Action |
 |-----|--------|
 | `j`/`k` · `h`/`l` · `Enter` · `Esc` | Move · switch tabs · drill in · step back out (`Tab` flips the sidebar panels) |
+| `1`/`2`/`3` · `0` | Jump to a panel — each wears its number in its title (`[1] Years` … `[0]` the detail pane) |
 | `+` | Maximize / restore the drilled-in detail pane (the sidebar stays clickable beside it) |
 | Mouse | Wheel scrolls, click selects, double-click drills, a column-header click sorts |
 | `T` | Trends — cost charts, the calendar heatmap, model/provider/source rankings; every tab drills down to a session |

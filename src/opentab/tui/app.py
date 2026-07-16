@@ -3032,26 +3032,93 @@ class App:
 
     FOCUS_CYCLE = ("years", "months", "days")
 
+    def active_tab_name(self) -> str:
+        # The selected tab as a NAME. Every carry goes through this, never through the
+        # raw index: the tab sets differ per scope, so an index means nothing outside
+        # the scope that produced it (a session's tab 2 is Subagents; a month's is
+        # Projects).
+        tabs = self.current_tabs()
+        return tabs[self.tab % len(tabs)] if tabs else "Overview"
+
+    def _carry_tab(self, name: str) -> None:
+        # Land on the same tab where the new scope has one (Models stays on Models),
+        # else on its Overview -- e.g. Days has no Models tab, and no browse scope has
+        # a session's Subagents/Turns.
+        tabs = self.current_tabs()
+        self.tab = tabs.index(name) if name in tabs else 0
+
+    def set_focus(self, name: str) -> None:
+        active_tab = self.active_tab_name()
+        self.focus = name
+        self._carry_tab(active_tab)
+        self.scroll = 0
+        self.zoom_project = None
+        self.zoom_source = None
+
     def cycle_focus(self, step: int = 1) -> None:
         # Tab walks the three stacked time panels (Years -> Months -> Days); Shift-Tab
         # walks back. No-op in session view and projects mode (no left-panel focus).
         if self.view == "session" or self.browse_mode == "projects":
             return
-        # Keep the same detail tab across the switch (Models stays on Models). Carry it
-        # by name since the levels differ; fall back to Overview when the target level
-        # lacks it (e.g. Days has no Models tab).
-        tabs = self.current_tabs()
-        active_tab = tabs[self.tab % len(tabs)]
         i = self.FOCUS_CYCLE.index(self.focus) if self.focus in self.FOCUS_CYCLE else 1
-        self.focus = self.FOCUS_CYCLE[(i + step) % len(self.FOCUS_CYCLE)]
-        new_tabs = self.current_tabs()
-        self.tab = new_tabs.index(active_tab) if active_tab in new_tabs else 0
-        self.scroll = 0
-        self.zoom_project = None
-        self.zoom_source = None
+        self.set_focus(self.FOCUS_CYCLE[(i + step) % len(self.FOCUS_CYCLE)])
 
     def toggle_focus(self) -> None:
         self.cycle_focus(1)
+
+    # lazygit's numbered panels: a digit is a jump, not a walk. 1/2/3 are the stacked
+    # sidebar panels top to bottom (Years/Months/Days -- in projects mode there is only
+    # one left panel, so 1 is the Projects list and 2/3 have nothing to focus), and 0 is
+    # the pane on the right, the way lazygit numbers its main view 0. The digits are
+    # position-based, not scope-based: what you press is where you look.
+    PANEL_KEYS = {ord("1"): "years", ord("2"): "months", ord("3"): "days"}
+    DETAIL_KEY = ord("0")
+
+    def focus_panel(self, name: str) -> bool:
+        # Jump to a sidebar panel. A digit is a jump from *anywhere* (lazygit's rule),
+        # so it steps out of a zoom or an open session first -- it always lands you in
+        # that panel rather than beside an active detail pane.
+        #
+        # Read the tab name BEFORE leaving the view, and re-map it after: current_tabs()
+        # answers for the view we are in, so reading it afterwards would reinterpret a
+        # session's tab index against the browse tabs (Subagents -> Projects). The
+        # re-map runs even when the target panel is the one already focused -- that is
+        # exactly the jump-out-of-a-session case, where the stale index is wrong.
+        active_tab = self.active_tab_name()
+        if self.browse_mode == "projects":
+            # One left panel here; only 1 (the Projects list) names it. 2/3 have
+            # nothing to focus -- leave the view alone rather than half-obeying.
+            if name != "years":
+                return False
+            self._return_to_browse()
+            self._carry_tab(active_tab)
+            return True
+        self._return_to_browse()
+        self.focus = name
+        self._carry_tab(active_tab)
+        self.scroll = 0
+        self.zoom_project = None
+        self.zoom_source = None
+        return True
+
+    def focus_detail(self) -> bool:
+        # 0: the pane on the right. In browse that means making the detail the active
+        # pane -- which is exactly what zoom is (drill_in), same as Enter. In a zoom
+        # (or a session, itself full-screen) it is already the pane you are in.
+        if self.view != "browse":
+            return False
+        self.drill_in()
+        return True
+
+    def _return_to_browse(self) -> None:
+        # Back to the split with the sidebar active, dropping a Projects/Sources drill
+        # with it (those scope the detail pane we are leaving).
+        if self.view == "browse":
+            return
+        self.view = "browse"
+        self.zoom_project = None
+        self.zoom_source = None
+        self.scroll = 0
 
     def toggle_zoom_maximized(self) -> None:
         # `+` in a zoomed detail: full-screen vs the lazygit split. A pref, not a
@@ -4166,6 +4233,12 @@ class App:
             return True
         if key == ord("\t"):
             self.cycle_focus(1)
+            return True
+        if key in self.PANEL_KEYS:
+            self.focus_panel(self.PANEL_KEYS[key])  # 1/2/3: jump to a sidebar panel
+            return True
+        if key == self.DETAIL_KEY:
+            self.focus_detail()  # 0: the pane on the right
             return True
         if key in (10, 13, curses.KEY_ENTER):
             self.drill_in()
