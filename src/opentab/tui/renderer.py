@@ -964,8 +964,13 @@ class Renderer:
             return curses.color_pair(2)
         if line.startswith("· "):
             return curses.color_pair(1)
-        if line.startswith("TOTAL"):  # the tables' closing sum row (and the w footer)
-            return curses.A_BOLD
+        if line.startswith("TOTAL"):
+            # The tables' closing sum row (and the w footer): a solid accent bar,
+            # the active-tab pair (bg on accent). Monochrome keeps the inverse
+            # look via A_REVERSE -- pair 7 without start_color paints nothing.
+            if self.colors_ok:
+                return curses.color_pair(7) | curses.A_BOLD
+            return curses.A_REVERSE | curses.A_BOLD
         return curses.A_NORMAL
 
     def money_attr(self, cost_text: str) -> int:
@@ -1674,9 +1679,11 @@ class Renderer:
             else:
                 tail = f"{human_tokens(tcr):>9} {human_tokens(tcw):>9} {human_tokens(tout):>8}"
             lines.append("")  # a breath between the rows and their sum
-            lines.append(  # bolded by line_attr's TOTAL prefix rule
-                f"{pad('TOTAL', mw)} {truns:>{cw_}} {money(total_cost):>10} {'':>5} "
-                f"{human_tokens(ttok):>9} {tail}"
+            lines.append(  # padded to the pane so line_attr's accent bar spans it
+                (
+                    f"{pad('TOTAL', mw)} {truns:>{cw_}} {money(total_cost):>10} {'':>5} "
+                    f"{human_tokens(ttok):>9} {tail}"
+                ).ljust(width)
             )
         if any(str(name).startswith("unknown") for name, *_ in rows):
             lines.extend(
@@ -4272,6 +4279,8 @@ class Renderer:
         self.write(stdscr, y, x, text, attr)
         if attr & curses.A_BOLD and text.startswith("# "):
             return
+        if text.startswith("TOTAL"):
+            return  # the sum bar paints as one solid accent block; no span recolors
         if text.lstrip().startswith("ID:"):
             return  # session ids can contain money/token-like runs; don't recolor them
         for match in MONEY_PATTERN.finditer(text):

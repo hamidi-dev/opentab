@@ -123,7 +123,17 @@ def test_model_table_total_row_sums_every_column():
     assert "1.5M" in total  # tokens
     assert "1.2M" in total and "150.0k" in total and "75.0k" in total
     assert lines[-2] == ""  # a breath between the rows and their sum
-    assert app.renderer.line_attr(total) & ot.curses.A_BOLD  # painted distinguished
+    # Painted distinguished: the accent bar (the active-tab pair 7) when colors
+    # exist, the plain inverse on a monochrome terminal -- bold either way.
+    orig_cp = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: 0  # headless: no initscr behind line_attr
+    try:
+        assert app.renderer.line_attr(total) & ot.curses.A_BOLD
+    finally:
+        ot.curses.color_pair = orig_cp
+    app.colors_ok = False
+    mono = app.renderer.line_attr(total)
+    assert mono & ot.curses.A_BOLD and mono & ot.curses.A_REVERSE
 
 
 def test_model_table_total_row_sums_attributed_dollars_at_each_rows_rates():
