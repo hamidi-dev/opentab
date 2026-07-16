@@ -202,6 +202,8 @@ th.sorted{color:var(--accent)}
 td{padding:4.5px 10px;border-bottom:1px solid var(--line2);white-space:nowrap;vertical-align:baseline}
 tr:last-child td{border-bottom:0}
 th.r,td.r{text-align:right}
+tfoot td{border-top:1px solid var(--line);border-bottom:0;font-weight:600;padding-top:9px;color:var(--ink)}
+tfoot td.dim{color:var(--ink)}
 td.grow{white-space:normal;overflow-wrap:anywhere;min-width:160px}
 tbody tr.rowlink{cursor:pointer}
 tbody tr.rowlink:hover{background:var(--panel2)}
@@ -703,8 +705,16 @@ function table(id, cols, rows, opts = {}) {
     ? h('button', { class: 'showall', onclick: () => { open ? EXPANDED.delete(id) : EXPANDED.add(id); render(false); } },
         open ? '▴ show top ' + collapse : '▾ show all ' + sorted.length)
     : null;
+  /* opts.totals (key -> cell content) closes a multi-row table with a TOTAL row.
+     It sums ALL rows, not the collapsed slice, and sits outside tbody so sorting
+     and row clicks never touch it; a one-row table is its own total. */
+  const foot = opts.totals && rows.length > 1
+    ? h('tfoot', null, h('tr', null,
+        cols.map(c => h('td', { class: [c.align === 'r' ? 'r' : '', c.cls || ''].join(' ').trim() || null },
+          opts.totals[c.key] != null ? opts.totals[c.key] : ''))))
+    : null;
   return h('div', null,
-    h('div', { class: 'scroll' }, h('table', null, h('thead', null, head), h('tbody', null, body))),
+    h('div', { class: 'scroll' }, h('table', null, h('thead', null, head), h('tbody', null, body), foot)),
     toggle);
 }
 
@@ -990,7 +1000,10 @@ function modelsTable(id, rows, collapse) {
     { key: 'cacheRead', label: 'CacheR', align: 'r', fmt: r => hTok(r.cacheRead), cls: 'dim' },
     { key: 'cacheWrite', label: 'CacheW', align: 'r', fmt: r => hTok(r.cacheWrite), cls: 'dim' },
     { key: 'output', label: 'Output', align: 'r', fmt: r => hTok(r.output), cls: 'dim' },
-  ], rows, { defaultSort: { key: 'cost', desc: true }, collapse: collapse || 25 });
+  ], rows, { defaultSort: { key: 'cost', desc: true }, collapse: collapse || 25,
+    totals: { model: 'TOTAL', runs: String(sum(rows, r => r.runs)), cost: moneyCell(totalCost),
+      tokens: hTok(totalTok), cacheRead: hTok(sum(rows, r => r.cacheRead)),
+      cacheWrite: hTok(sum(rows, r => r.cacheWrite)), output: hTok(sum(rows, r => r.output)) } });
 }
 function projectsTable(id, ws, collapse) {
   const rows = projectRows(ws);
@@ -1104,7 +1117,8 @@ function toolsTable(toolRows) {
     { key: 'ns', label: 'Server', asc: true, fmt: r => h('span', { class: 'dim' }, r.ns) },
     { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => barCell(mCost(r), peak) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
-  ], rows, { defaultSort: { key: 'cost', desc: true } });
+  ], rows, { defaultSort: { key: 'cost', desc: true },
+    totals: { tool: 'TOTAL', cost: moneyCell(sum(rows, mCost)), tokens: hTok(sum(rows, r => r.tokens)) } });
 }
 
 /* ---------- the Context tab (the TUI's detail_context, in SVG) ---------- */
