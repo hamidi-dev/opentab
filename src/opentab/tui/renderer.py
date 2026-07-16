@@ -964,6 +964,8 @@ class Renderer:
             return curses.color_pair(2)
         if line.startswith("· "):
             return curses.color_pair(1)
+        if line.startswith("TOTAL"):  # the tables' closing sum row (and the w footer)
+            return curses.A_BOLD
         return curses.A_NORMAL
 
     def money_attr(self, cost_text: str) -> int:
@@ -1654,6 +1656,28 @@ class Renderer:
                 f"{pct(float(cost), total_cost):>5} "
                 f"{human_tokens(int(tok)):>9} {tail}"
             )
+        if len(rows) > 1:
+            # A TOTAL row closes every multi-row table: the count/token columns
+            # summed, and in split mode the attributed dollars summed per row at
+            # each row's OWN rates -- so "what did cache writes cost me this
+            # year" is one glance, not per-model mental math. A single-row table
+            # is its own total; Share is definitionally 100%, so it stays blank.
+            truns, ttok, tcr, tcw, tout = (sum(int(r[i]) for r in rows) for i in (1, 3, 4, 5, 6))
+            if split:
+                dollars = (0.0, 0.0, 0.0)
+                for name, _, cost, tok, cr, cw, out in rows:
+                    row_d = self._price_split_dollars(
+                        str(name), float(cost), int(tok), int(cr), int(cw), int(out)
+                    )
+                    dollars = tuple(a + b for a, b in zip(dollars, row_d))
+                tail = " ".join(self._split_cell(n, d) for n, d in zip((tcr, tcw, tout), dollars))
+            else:
+                tail = f"{human_tokens(tcr):>9} {human_tokens(tcw):>9} {human_tokens(tout):>8}"
+            lines.append("")  # a breath between the rows and their sum
+            lines.append(  # bolded by line_attr's TOTAL prefix rule
+                f"{pad('TOTAL', mw)} {truns:>{cw_}} {money(total_cost):>10} {'':>5} "
+                f"{human_tokens(ttok):>9} {tail}"
+            )
         if any(str(name).startswith("unknown") for name, *_ in rows):
             lines.extend(
                 [
@@ -1664,29 +1688,43 @@ class Renderer:
         return lines
 
     @staticmethod
-    def _price_split_cells(
+    def _price_split_dollars(
         name: str, cost: float, tok: int, cr: int, cw: int, out: int
-    ) -> tuple[str, str, str]:
-        # "tokens(dollars)" cells: each category's attributed share of the row's
-        # Cost. The split weighs tokens by the same list rates api_equivalent_cost
-        # bills them at, then scales so the three cells plus the implicit input
-        # remainder sum to the Cost column -- exact for $-estimated rows (same
-        # math), honest attribution for recorded costs that predate today's rates.
-        # A row with no dollars, or a model with no rates at all, stays bare.
-        # Every cell is 14 wide with fixed sub-columns -- tokens right-aligned in
-        # 6, then the whole "($13)" group right-aligned in 8 so the parens hug the
-        # amount (no inner gap) while the amounts stay flush right row to row.
+    ) -> tuple[float, float, float]:
+        # The (cacheR, cacheW, output) dollar attribution behind the split cells:
+        # tokens weighed at the same list rates api_equivalent_cost bills them at,
+        # then scaled so the three shares plus the implicit input remainder sum to
+        # the row's Cost -- exact for $-estimated rows (same math), honest
+        # attribution for recorded costs that predate today's rates. A row with no
+        # dollars, or a model with no rates at all, attributes nothing.
         ir, orr, crr, cwr = model_price(name)
         inp = max(0, tok - cr - cw - out)
         raw = (inp * ir, cr * crr, cw * cwr, out * orr)
         total = sum(raw)
         scale = cost / total if cost > 0 and total > 0 else 0.0
-        cells = []
-        for tokens_n, share in ((cr, raw[1]), (cw, raw[2]), (out, raw[3])):
-            dollars = share * scale
-            label = f"({money_label(dollars)})" if dollars > 0 else ""
-            cells.append(f"{human_tokens(tokens_n):>6}{label:>8}")
-        return (cells[0], cells[1], cells[2])
+        return (raw[1] * scale, raw[2] * scale, raw[3] * scale)
+
+    @staticmethod
+    def _split_cell(tokens_n: int, dollars: float) -> str:
+        # One "tokens(dollars)" cell, 14 wide with fixed sub-columns -- tokens
+        # right-aligned in 6, then the whole "($13)" group right-aligned in 8 so
+        # the parens hug the amount (no inner gap) while the amounts stay flush
+        # right row to row.
+        label = f"({money_label(dollars)})" if dollars > 0 else ""
+        return f"{human_tokens(tokens_n):>6}{label:>8}"
+
+    @staticmethod
+    def _price_split_cells(
+        name: str, cost: float, tok: int, cr: int, cw: int, out: int
+    ) -> tuple[str, str, str]:
+        # "tokens(dollars)" cells: each category's attributed share of the row's
+        # Cost (_price_split_dollars), rendered in the fixed _split_cell shape.
+        d = Renderer._price_split_dollars(name, cost, tok, cr, cw, out)
+        return (
+            Renderer._split_cell(cr, d[0]),
+            Renderer._split_cell(cw, d[1]),
+            Renderer._split_cell(out, d[2]),
+        )
 
     def _models_tab(self, rows: list[tuple], title: str, width: int) -> list[str]:
         # The Models tab body, with the live `f` filter applied to model names.

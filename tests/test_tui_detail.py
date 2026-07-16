@@ -107,6 +107,79 @@ def test_model_table_split_needs_width_dollars_and_models():
     assert not any("(" in ln for ln in tools[1:])
 
 
+def test_model_table_total_row_sums_every_column():
+    # A multi-row table closes with a TOTAL row -- runs, cost, and every token
+    # column summed -- so "what did cache writes cost me this year" is one
+    # glance. Share stays blank (definitionally 100%).
+    app = app_with([])
+    rows = [
+        ("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000),
+        ("anthropic/claude-opus-4-8", 5, 2.00, 500_000, 400_000, 50_000, 25_000),
+    ]
+    lines = app.renderer._model_table(rows, "# Top Models", 80)  # narrow: plain counts
+    total = lines[-1]
+    assert total.startswith("TOTAL")
+    assert "15" in total.split() and "$7.05" in total
+    assert "1.5M" in total  # tokens
+    assert "1.2M" in total and "150.0k" in total and "75.0k" in total
+    assert lines[-2] == ""  # a breath between the rows and their sum
+    assert app.renderer.line_attr(total) & ot.curses.A_BOLD  # painted distinguished
+
+
+def test_model_table_total_row_sums_attributed_dollars_at_each_rows_rates():
+    # In split mode the TOTAL's (dollar) parts are the per-row attributions
+    # summed -- each row priced at its own model's rates, never the summed
+    # tokens at one model's rates. Two fable rows keep the math checkable:
+    # each attributes cacheR $0.80, cacheW $1.25, output $2.50 (the split test
+    # above), so TOTAL carries exactly double.
+    app = app_with([])
+    row = ("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)
+    lines = app.renderer._model_table([row, row], "# Top Models", 120)
+    total = lines[-1]
+    assert total.startswith("TOTAL")
+    assert "$10.10" in total
+    assert "1.6M ($1.60)" in total
+    assert "200.0k ($2.50)" in total
+    assert "100.0k ($5.00)" in total
+
+
+def test_model_table_total_split_dollars_keep_the_compact_label_convention():
+    # The parenthetical attributions are approximations by construction (scaled
+    # shares), rendered through money_label -- which drops cents at >=$10. So a
+    # TOTAL crossing the threshold shows "($10)" while its <$10 rows keep cents;
+    # pinned deliberately: the exact figure lives in the Cost column (full
+    # money()), and widening the 14-char cells would break the fixed grid.
+    app = app_with([])
+    row = ("anthropic/claude-fable-5", 10, 5.05, 100_000, 0, 0, 100_000)
+    lines = app.renderer._model_table([row, row], "# Top Models", 120)
+    assert "($5.05)" in lines[2] and "($5.05)" in lines[3]
+    assert "($10)" in lines[-1] and "$10.10" in lines[-1]  # cells compact, Cost exact
+
+
+def test_model_table_single_row_has_no_total():
+    # A one-row table IS its own total; a TOTAL row would just repeat it.
+    app = app_with([])
+    rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
+    lines = app.renderer._model_table(rows, "# Top Models", 120)
+    assert not any(ln.startswith("TOTAL") for ln in lines)
+
+
+def test_tools_table_total_row_stays_unsplit():
+    # The Tools-tab reuse gets the TOTAL row too (rows partition the session's
+    # tool-using turns, so the sum is real), but never the (dollar) split.
+    app = app_with([])
+    rows = [
+        ("Bash", 10, 1.00, 1_000_000, 800_000, 100_000, 50_000),
+        ("Read", 5, 0.50, 500_000, 400_000, 50_000, 25_000),
+    ]
+    lines = app.renderer._model_table(
+        rows, "# Tools — this session", 120, "Tool", "Calls", price_split=False
+    )
+    total = lines[-1]
+    assert total.startswith("TOTAL")
+    assert "$1.50" in total and "(" not in total
+
+
 def test_projects_merge_across_windows_slash_styles():
     # Pi records the cwd with backslashes; OpenCode records the same directory with
     # forward slashes. They must group as ONE project, not two (issue #4).
