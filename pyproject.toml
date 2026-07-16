@@ -57,7 +57,8 @@ packages = ["src/opentab"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/src",
-  "/test_opentab.py",
+  "/tests",
+  "/run_tests.py",
   "/scripts",
   "/README.md",
   "/LICENSE",

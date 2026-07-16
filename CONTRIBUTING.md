@@ -26,27 +26,30 @@ git config core.hooksPath hooks  # run the same checks on every push
 
 ## Tests & checks
 
-`test_opentab.py` is a custom runner (not pytest) — it runs every `test_*` function in
-order and prepends `src/` to `sys.path`, so it works without an install:
+The suite lives in `tests/`, one module per module under test (`tests/test_pricing.py`,
+`tests/test_stores_codex.py`, `tests/test_tui_app.py`, …), with the shared fakes and the
+per-backend builders in `tests/_support.py`. `run_tests.py` is a custom runner (not
+pytest); `tests/__init__.py` prepends `src/` to `sys.path`, so it works without an install:
 
 ```sh
-python3 test_opentab.py          # whole suite
+python3 run_tests.py             # whole suite
+python3 run_tests.py pricing     # only modules/tests matching a substring
 ```
 
-To run a single test, import and call it (`python3 -c "import test_opentab as t; t.test_NAME()"`),
-or use a local `pytest test_opentab.py -k NAME`.
+Add a test next to its module's other tests; the runner discovers `tests/test_*.py` by
+glob, so there is no list to register it in. A local `pytest tests -k NAME` also works.
 
 The pre-push hook (and CI) run:
 
 ```sh
-ruff check src/opentab test_opentab.py
-ruff format --check src/opentab test_opentab.py
+ruff check src/opentab tests run_tests.py
+ruff format --check src/opentab tests run_tests.py
 python3 -m compileall -q src/opentab
-python3 test_opentab.py
+python3 run_tests.py
 shellcheck install.sh hooks/pre-push   # when shellcheck is installed
 ```
 
-Fix formatting with `ruff format src/opentab test_opentab.py`. Note that `ruff.toml`
+Fix formatting with `ruff format src/opentab tests run_tests.py`. Note that `ruff.toml`
 deliberately ignores `E501` (long lines): the TUI f-strings build fixed-width columns, so
 don't wrap them to satisfy line length.
 

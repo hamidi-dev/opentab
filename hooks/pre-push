@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-set -- src/opentab test_opentab.py
+set -- src/opentab tests run_tests.py
 
 if command -v python3 >/dev/null 2>&1; then
   python_cmd=python3
@@ -27,7 +27,7 @@ printf '%s\n' "pre-push: compile"
 "$python_cmd" -m compileall -q src/opentab
 
 printf '%s\n' "pre-push: unit tests"
-"$python_cmd" test_opentab.py
+"$python_cmd" run_tests.py
 
 if command -v shellcheck >/dev/null 2>&1; then
   printf '%s\n' "pre-push: shellcheck"
