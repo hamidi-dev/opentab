@@ -14,7 +14,7 @@ except ImportError:  # native Windows has no stdlib curses
     curses = None
 
 from opentab import __version__, sources, themes
-from opentab.formatting import cost_bar, money
+from opentab.formatting import cost_bar, money, short_path
 from opentab.pricing import (
     MODELS_DEV_URL,
     api_equivalent_cost,
@@ -503,6 +503,16 @@ def _goto_target(args: argparse.Namespace) -> tuple[str, str] | None:
     return (best[0], best[1]) if best else None
 
 
+def _goto_hint(target: str) -> str:
+    # The toast shown when --goto resolves to nothing -- typically a project whose
+    # agent was just launched and hasn't recorded a turn yet. The flag was made
+    # for a tmux popup binding, where exiting would flash the error and close, so
+    # main opens the ordinary TUI and this says why it didn't jump.
+    if _is_session_target(target):
+        return f"--goto: session {target} not found in any source"
+    return f"--goto: no session yet in {short_path(target, 40)}"
+
+
 def status_command(args: argparse.Namespace) -> int:
     # One-shot, curses-free sibling of --refresh-models, polled from a tmux status
     # line -- so every failure mode prints nothing (an empty segment) instead of
@@ -574,13 +584,16 @@ def main() -> int:
     state = load_state() if use_state else {}
     source_key = resolve_source(args, state)
     goto = None
+    goto_hint = None
     if getattr(args, "goto", None) is not None:
         # Resolve before the store is built: the target's backend must be in view,
         # so a saved single-source preference can't hide the session it names.
         goto = _goto_target(args)
         if goto is None:
-            raise SystemExit(f"--goto: no session found for {args.goto or os.getcwd()!r}")
-        if source_key not in ("all", goto[0]):
+            # Nothing to land in. Don't exit -- that just flash-closes the tmux
+            # popup this flag was made for; open the plain TUI with a hint.
+            goto_hint = _goto_hint(args.goto or os.getcwd())
+        elif source_key not in ("all", goto[0]):
             source_key = goto[0]
     store, loading = sources.make_store(args, source_key)
     # The first load runs the recursive roll-up over the whole DB / parses every
@@ -605,6 +618,8 @@ def main() -> int:
         # After apply_state (a restored range could hide the target; goto_session
         # clears it when needed), before curses -- the jump is state-only.
         app.goto_session(goto[1])
+    elif goto_hint:
+        app.notify(goto_hint, "error")
     curses.wrapper(app.run)
     if use_state and not app.store.demo:
         save_state(app)

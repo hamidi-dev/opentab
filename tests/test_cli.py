@@ -573,3 +573,57 @@ def test_goto_session_lands_in_session_view_and_clears_a_hiding_range():
     app3 = app_with([workflow("a", "2026-06-01 12:00:00")])
     assert app3.goto_session("nope") is False
     assert "not found" in app3.notice
+
+
+def test_goto_hint_distinguishes_a_fresh_directory_from_an_unknown_id():
+    with tempfile.TemporaryDirectory() as tmp:
+        assert "no session yet" in ot.cli._goto_hint(tmp)
+    hint = ot.cli._goto_hint("99999999-9999-9999-9999-999999999999")
+    assert "not found" in hint and "99999999" in hint
+
+
+def test_goto_miss_opens_the_plain_tui_with_a_hint_instead_of_exiting():
+    # A --goto that resolves to nothing (agent just launched, no turn recorded
+    # yet) must not exit -- that flash-closes the tmux popup the flag was made
+    # for. main opens the ordinary browse view and toasts why it didn't jump.
+    import contextlib
+    import io
+    import sys as _sys
+
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(repo)
+        db = os.path.join(tmp, "opencode.db")
+        _write_status_db(
+            db,
+            [("ses_oc", None, os.path.join(tmp, "other"), 1760000000000, 1760000500000, 2.0, 10)],
+        )
+        captured = {}
+
+        class _FakeCurses:
+            @staticmethod
+            def wrapper(fn):
+                captured["app"] = fn.__self__
+
+        argv, real_curses = _sys.argv, ot.cli.curses
+        _sys.argv = [
+            "opentab",
+            "--source",
+            "opencode",
+            "--db",
+            db,
+            "--goto",
+            repo,
+            "--no-state",
+            "--no-cache",
+        ]
+        ot.cli.curses = _FakeCurses
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):  # the loading hint
+                assert ot.cli.main() == 0
+        finally:
+            _sys.argv, ot.cli.curses = argv, real_curses
+        app = captured["app"]
+        assert app.view == "browse"
+        assert "no session yet" in app.notice
+        assert app.toasts[-1].kind == "error"
