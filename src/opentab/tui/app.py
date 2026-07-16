@@ -814,6 +814,15 @@ class App:
     def bookmark_target(self) -> Workflow | None:
         # `b` (and `n`) work wherever one session is selected: a zoom's Sessions tab
         # or the drilled-in session detail — the same contexts as `L` (launch_session).
+        #
+        # Deliberately NOT memoized. The keymap asks a few times per paint (b and n each
+        # ask "is there a target?" and "is it already marked?"), and a cache keyed on the
+        # state it reads has to enumerate every input current_sessions() touches --
+        # bookmarks (B narrows the list *by* them), ignored_sessions, the notes (the
+        # fuzzy filter searches them), show_api_prices (it moves the costs a cost sort
+        # orders by)... Miss one and `b` acts on the session the cursor ISN'T on, which
+        # is far worse than re-sorting a list the draw already re-sorts anyway (the
+        # sessions picker calls current_sessions() every frame regardless).
         if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
             return self.current_session()
         return None
@@ -3984,8 +3993,10 @@ class App:
         if self.whatif_menu:  # the `w` target picker floats above everything too
             return self.handle_whatif_menu_key(key)
         if self.help:
-            # A pager like the price overlay: j/k/arrows, page keys and g/G scroll;
-            # any other key closes it.
+            # A pager like the price overlay: j/k/arrows, page keys and g/G scroll.
+            # Closing is explicit (Esc/q/?) and every other key is swallowed -- it lists
+            # the keys that work here, so it is read *while deciding what to press*, and
+            # a mistyped one must not tear it down (the Trends/P convention).
             if key in (ord("j"), curses.KEY_DOWN):
                 self.help_scroll += 1
             elif key in (ord("k"), curses.KEY_UP):
@@ -4000,7 +4011,13 @@ class App:
                 self.help_scroll = 10_000  # clamped to the last page on draw
             elif key == ord("C"):
                 self.open_theme_menu()  # the Colours picker floats above help too
-            else:
+            elif key == ord("c") and self.can_switch_source():
+                self.open_source_menu()  # ...and so does the source picker: the key list
+                # names both, and a list that names a key it then eats is the very thing
+                # this table exists to prevent.
+            elif key == 3:  # Ctrl-C still quits
+                return False
+            elif key in (27, ord("q"), ord("?")):
                 self.help = False
             return True
         if self.show_prices:

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from opentab import __version__
 from opentab.models import DaySummary, MonthSummary, ProjectSummary, Workflow, YearSummary
 from opentab.themes import hex_rgb1000, nearest_256, ramp
+from opentab.tui import keymap
 
 if TYPE_CHECKING:
     from opentab.tui.app import App
@@ -411,9 +412,10 @@ class Renderer:
         top = 3
         bottom = height - 2
         avail = bottom - top
-        if self.help:
-            self.draw_help(stdscr, top, bottom, width)
-        elif self.show_prices:
+        # The key list is NOT a view: it floats over whatever you were looking at (drawn
+        # after the body, below the pickers), because it answers "what can I press *from
+        # here*" and the answer is only legible with `here` still on screen.
+        if self.show_prices:
             self.draw_prices(stdscr, top, bottom, width)
         elif self.trends:
             self.draw_trends(stdscr, top, bottom, width)
@@ -458,8 +460,11 @@ class Renderer:
                 self.draw_day_detail(stdscr, top, rx, avail, rw, active=False)
             self._add_rows_region("detail", top, rx, width - 1, 0, avail)
 
+        if self.help:
+            self.draw_help(stdscr, top, bottom, width)
+
         # Small centered modals float on top of the current view (so context stays
-        # visible behind them), unlike the full-body help/prices/trends overlays.
+        # visible behind them), unlike the full-body prices/trends overlays.
         if self.price_prompt:
             self.draw_price_prompt(stdscr, height, width)
         elif self.theme_menu:
@@ -660,89 +665,14 @@ class Renderer:
                 width,
             )
             return
-        # Each entry is (label, active) -- or a list of such pairs painted as one
-        # contiguous segment, so a single token inside a hint can light up. An active
-        # toggle -- its overlay or mode is currently ON -- renders in the orange
-        # accent so the footer reflects state at a glance (e.g. hitting T highlights
-        # "T trends" while the overlay is open).
-        parts: list = []
-        if self.view == "browse" and self.browse_mode == "time":
-            # The focused panel's own token lights up, so "where am I?" is answered
-            # by the same hint that says how to move (Tab). The jump keys aren't
-            # named here -- each panel wears its own number in its title, lazygit's
-            # way, so the footer stays about motion.
-            parts.append(
-                [
-                    ("Tab ", False),
-                    ("yr", self.focus == "years"),
-                    ("/", False),
-                    ("mo", self.focus == "months"),
-                    ("/", False),
-                    ("day", self.focus == "days"),
-                ]
-            )
-        parts.append(("Enter in", False))
-        if self.view != "browse":
-            parts.append(("Esc out", False))
-        if self.view == "zoom":
-            parts.append(("+ max", self.zoom_maximized))
-        if self.view != "session":
-            # Like yr/mo/day: the active browse mode's own letter lights up.
-            parts.append(
-                [
-                    ("p", self.browse_mode == "projects"),
-                    ("/", False),
-                    ("t", self.browse_mode == "time"),
-                    (" mode", False),
-                ]
-            )
-        if self.can_toggle_ignore():
-            parts.append(("i ignore", False))
-        if self.ignored_projects or self.ignored_sessions:
-            parts.append(("I ignored", self.show_ignored_projects))
-        # `b` lights up while the selected session is starred; `B` while the
-        # bookmarks-only view is on (and is offered only once something is starred).
-        target = self.bookmark_target()
-        if target is not None:
-            parts.append(("b mark", target.id in self.bookmarks))
-        if self.bookmarks or self.show_bookmarks_only:
-            parts.append(("B marked", self.show_bookmarks_only))
-        # `n` is offered on the same selected session, and lights up once it has a
-        # note (so the chip doubles as "there's something written here").
-        if target is not None and self.allow_notes:
-            parts.append(("n note", bool(self.note_for(target.id))))
-        if self.can_switch_source():
-            # `c` opens the source picker (lights up while it's open); the active source
-            # is the header chip, so the key just advertises the menu, not a destination.
-            parts.append(("c source", self.source_menu))
-        # active/non-default modifiers light up too, matching the header chips: a
-        # range that isn't "all time", a committed filter query. Range narrows every
-        # view so it's always offered; "f" only filters session/project lists, so it
-        # appears only where it does something.
-        parts.append(("R range", self.range_label() != "all time"))
-        if self.can_filter_current_view():
-            parts.append(("f,/ filter", bool(self.query)))
-        # `s` shows only where a sortable list is on screen (like f); it lights up
-        # while its picker is open.
-        if self.can_sort_current_view():
-            parts.append(("s sort", self.sort_menu))
-        # e export / o open live in the help overlay -- the footer keeps only
-        # navigation, toggles with visible state, and the overlay openers.
-        parts += [
-            ("T trends", self.trends),
-            ("P prices", self.show_prices),
-        ]
-        if self.can_launch_current():
-            parts.append(("L launch", self.launch_menu is not None))
-        if self.source_key:
-            parts.append(("D real" if self.store.demo else "D demo", False))
-        if not self.store.demo:
-            parts.append(("$ what-if", self.show_api_prices))
-        # `w` lights up while a target model is armed -- an honest "this is set", not a
-        # claim about the numbers on screen: the target only reprices a session's
-        # Subagents tab. It works in demo too, unlike `$` (scaled tokens leak nothing).
-        parts.append(("w model", bool(self.whatif_model)))
-        parts += [("? help", self.help), ("q quit", False)]
+        # The chips come from the keymap table (keymap.KEYS), the same one the `?`
+        # overlay lists -- so a key can never be offered down here and go unexplained up
+        # there, nor be offered in a context that swallows it. Each entry is one or more
+        # (label, active) segments; an active toggle -- its overlay or mode is ON, its
+        # session bookmarked -- renders in the orange accent, so the strip reflects state
+        # at a glance. e export / o open stay help-only: the footer keeps navigation,
+        # toggles with visible state, and the overlay openers.
+        parts: list = keymap.footer_parts(self.app)
         self.hline(stdscr, height - 2, 0, width)
         # Version in the bottom-right corner, lazygit-style: a quiet chrome label.
         # Reserve its slot so the key strip truncates before it instead of colliding;
@@ -2616,238 +2546,100 @@ class Renderer:
             )
         return lines
 
-    # The help overlay's keymap, grouped into sections. Each row is
-    # (key, one-line summary[, note, note, ...]); notes render as dim sub-lines under
-    # the description. draw_help wraps and colours these; kept as data so the content
-    # is one flat list to edit and is unit-testable without a screen.
-    def help_sections(self) -> list[tuple[str, list[tuple]]]:
-        return [
-            (
-                "Move around",
-                [
-                    ("p / t", "switch to the Projects / Time browse mode"),
-                    ("Tab", "cycle focus Years → Months → Days (Time mode)"),
-                    ("Shift-Tab", "cycle focus backward; at the top level, step back out"),
-                    (
-                        "1 / 2 / 3 / 0",
-                        "jump straight to a panel — each wears its number in its title",
-                        "the sidebar is numbered top to bottom (Years / Months / Days; "
-                        "in Projects mode 1 is the Projects list) and 0 is the detail "
-                        "pane on the right, what Enter drills into",
-                        "a digit jumps from anywhere — it steps out of a zoomed detail "
-                        "or an open session to get there",
-                    ),
-                    (
-                        "Enter / +",
-                        "drill into the selected year / month / day / project; on a "
-                        "Sessions, Projects or Sources tab, open that session / "
-                        "project's / source's sessions in this scope",
-                        "the detail opens beside the sidebar, which stays clickable "
-                        "to re-scope; + maximizes / restores it (remembered)",
-                    ),
-                    ("Esc", "step back out — session → zoom → browse"),
-                    (
-                        "h / l",
-                        "switch detail tabs",
-                        "years/months: Overview · Models · Projects · Sessions; days drop Models",
-                        "a session adds Turns (per-turn cost over time; every source that "
-                        "records per-step usage), Tools (per-tool / MCP spend, OpenCode) "
-                        "and Context (window growth + what filled it); "
-                        "Sources joins in the merged 'all' view",
-                        "on Turns, z (or clicking a ▸ header) unfolds the whole prompt text",
-                    ),
-                    ("j / k", "move in the list (↑/↓ too), or scroll the detail pane"),
-                    ("PgDn/PgUp", "move / scroll by half a page (Ctrl-D / Ctrl-U too)"),
-                    ("g / G", "jump to the top / bottom"),
-                    (
-                        "mouse",
-                        "wheel scrolls · click selects (anywhere in the preview pane "
-                        "focuses it) · double-click drills · click a tab "
-                        "or a column header to sort by it (again to reverse)",
-                    ),
-                ],
-            ),
-            (
-                "Scope & filter",
-                [
-                    (
-                        "R",
-                        "set the range — all · 30d (or 30) · 2m · 1y · 2026 · 2026-05 · start..end",
-                    ),
-                    ("a", "show all time, keeping the current selection where possible"),
-                    ("s", "open the sort picker for the visible list (j/k move · Enter · Esc)"),
-                    (
-                        "f or /",
-                        "live filter — fuzzy over sessions (title/project/id), projects and "
-                        "Models; substring over Prices",
-                        "while filtering: ↑/↓ select · Enter keep · Esc cancel · Ctrl-U clear",
-                    ),
-                    ("x", "clear the filter"),
-                ],
-            ),
-            (
-                "Sessions & projects",
-                [
-                    (
-                        "i / I",
-                        "ignore / unignore the selection; I reveals hidden rows so they can "
-                        "be unignored",
-                    ),
-                    (
-                        "b / B",
-                        "bookmark ★ the selected session (remembered between runs); B shows "
-                        "only bookmarks, within the active range",
-                    ),
-                    (
-                        "n",
-                        "note ✎ on the selected session — why it cost what it did",
-                        "Enter saves · Ctrl-U clears · Ctrl-W kills a word · Esc cancels",
-                        "shown in its Overview, searched by f, exported by e",
-                    ),
-                    ("o", "open the selected session's / project's directory"),
-                    (
-                        "L",
-                        "launch the session in its tool — opencode --session / claude "
-                        "--resume / codex resume",
-                        "w window · s split · v vsplit · p popup · y copy command",
-                        "w/s/v/p need tmux (or a launcher hook); y copies anywhere",
-                    ),
-                    ("e", "export the current list to a CSV in the working directory"),
-                ],
-            ),
-            (
-                "Views & overlays",
-                [
-                    (
-                        "T",
-                        "Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Sources",
-                        "h/l tabs · j/k page months / weeks / years · $ what-if prices",
-                        "charts (and the Calendar heat map): Enter focuses, ↑↓←→ pick a "
-                        "bar / day, Enter drills into it, Esc back; +/- calendar shades",
-                        "Models/Providers/Sources: j/k pick a row · Enter its sessions "
-                        "· Enter again opens one · Esc backs out",
-                        "C theme · c source · D demo · ? help keep working inside",
-                    ),
-                    (
-                        "P",
-                        "model prices — eff $/M blends each model's list rates at your token "
-                        "mix (cheapest first), beside your usage share and raw rates",
-                        "h/l (or p, or a tab click) switch the view — flat / by vendor / "
-                        "by provider / models.dev (the whole catalog at your mix)",
-                        "j/k select · space pins the selected row (★ shortlist floats "
-                        "first — just that route, never every reseller) · Enter its "
-                        "sessions · s sort · f/r/e as usual",
-                        "C theme · c source · D demo · $ what-if · ? help keep working inside",
-                    ),
-                    ("$", "toggle what-if prices — what unpriced usage would cost at API list"),
-                    (
-                        "w",
-                        "what-if model — arm ONE model as a comparison target "
-                        "(j/k move · f filter · Enter select · Esc cancel); w again clears it",
-                        '"what if the expensive model had done the subagents\' work too?" '
-                        "— a session's Subagents tab then adds a What-if column pricing each "
-                        "node's tokens at the target's rates, and its Overview the session "
-                        "total: your models vs all at the target, both at list rates",
-                        "session-scoped: no other view changes, $ keeps working as always "
-                        "— a rate substitution, not a rerun. Works in demo too",
-                    ),
-                    (
-                        "c",
-                        "data-source picker (j/k move · Enter switch · Esc cancel) — OpenCode "
-                        "/ Claude / Codex / Copilot / pi / OpenClaw / all when present",
-                    ),
-                    (
-                        "C",
-                        "colour-theme picker — j/k live-preview · Enter keep · Esc revert "
-                        "(also the web browser's)",
-                    ),
-                    ("D", "toggle real / demo data (demo anonymizes titles and paths)"),
-                ],
-            ),
-            (
-                "Reload & quit",
-                [
-                    ("r", "reload the database"),
-                    ("q", "quit"),
-                ],
-            ),
-        ]
+    def help_sections(self) -> list[tuple[str, list]]:
+        # What the `?` overlay lists, straight off the keymap table: the keys that work
+        # HERE (this view, this tab, this overlay) first, then how to move, then the
+        # globals. draw_footer reads the same table, so the two can't disagree about
+        # what is available.
+        return keymap.sections(self.app)
 
-    _HELP_CAVEAT = (
-        "Cost is each tool's own local attribution. Subscription or credit plans "
-        "(Claude Code, Codex, Copilot) aren't priced per token, so their usage shows as "
-        "unpriced $0.00 — check your provider for the real total.",
-        "Press $ for the what-if view: that usage priced at models.dev API list — an "
-        "estimate of what you'd have paid without the subscription.",
-        "Sub-cent costs show as <$0.01; a red $0.00 means unpriced (no local price). "
-        "Range, sort and the $ view persist between runs (unless --no-state). Git "
-        "worktrees fold into their main repo (--no-worktrees to keep them split).",
-    )
+    # No prose block here any more. A keymap lists keys; what a $0.00 means is a fact
+    # about the numbers, and it is already said where the numbers are (unpriced_hint,
+    # under the tables that carry them) and in full in docs/keys.md. A paragraph nobody
+    # reads is worse than no paragraph -- it makes the panel scroll.
 
-    def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
-        self.box(stdscr, y, 0, bottom - y, width, "Help · j/k scroll · any other key closes")
-        key_x = 2
-        key_w = 11
-        desc_x = key_x + key_w + 1
-        desc_w = max(12, width - desc_x - 2)
-        rule_end = width - 3
+    def help_lines(self, inner_w: int) -> list[list[tuple[int, str, int]]]:
+        # The key list as paint-ready segment lists ([(dx, text, attr), …] per line, a
+        # blank line being []), laid out inside a panel `inner_w` wide. One short line
+        # per key, keys right-aligned in their own column (lazygit's shape) so the eye
+        # runs down the keys and stops at the one it wants -- anything that needs a
+        # paragraph belongs in docs/keys.md, not here.
+        sections = self.help_sections()
+        key_w = max((len(e.label(self.app)) for _t, rows in sections for e in rows), default=9)
+        desc_x = key_w + 2
 
         head = curses.color_pair(6) | curses.A_BOLD
         rule = curses.color_pair(4)
         key_attr = curses.color_pair(2) | curses.A_BOLD
-        dim = curses.color_pair(1)
 
-        # Flatten the sections into per-line segment lists ([(x, text, attr), …]); a
-        # blank line is []. Scrolling then just slices this list.
-        render: list[list[tuple[int, str, int]]] = []
-
-        def header(title: str) -> None:
+        lines: list[list[tuple[int, str, int]]] = []
+        for title, rows in sections:
             # Centered section title with a rule filling both sides.
-            span = rule_end - key_x
             label = f" {title} "
-            left = (span - len(label)) // 2
-            if left < 1:  # a panel too narrow to center: plain left-aligned title
-                render.append([(key_x, title, head)])
-                return
-            render.append(
+            left = max(1, (inner_w - len(label)) // 2)
+            lines.append(
                 [
-                    (key_x, "─" * left, rule),
-                    (key_x + left, label, head),
-                    (key_x + left + len(label), "─" * max(1, span - len(label) - left), rule),
+                    (0, "─" * left, rule),
+                    (left, label, head),
+                    (left + len(label), "─" * max(0, inner_w - left - len(label)), rule),
                 ]
             )
+            for entry in rows:
+                keys = entry.label(self.app)
+                lines.append(
+                    [
+                        (key_w - len(keys), keys, key_attr),
+                        (desc_x, shorten(entry.text(self.app), max(8, inner_w - desc_x)), 0),
+                    ]
+                )
+            lines.append([])
+        if lines and not lines[-1]:
+            lines.pop()  # no trailing blank inside the panel
+        return lines
 
-        def dim_wrapped(text: str) -> None:
-            for piece in textwrap.wrap(text, desc_w) or [""]:
-                render.append([(desc_x, piece, dim)])
+    def help_width(self) -> int:
+        # Sized to the longest line it has to print -- the panel is as big as the keys
+        # need and no bigger.
+        sections = self.help_sections()
+        key_w = max((len(e.label(self.app)) for _t, rows in sections for e in rows), default=9)
+        desc = max((len(e.text(self.app)) for _t, rows in sections for e in rows), default=20)
+        titles = max((len(t) + 4 for t, _rows in sections), default=12)
+        return max(key_w + 2 + desc, titles, 52)
 
-        render.append(
-            [(key_x, "OpenTab — browse AI-coding spend by month / day / project / session.", 0)]
-        )
-        render.append([])
-        for title, rows in self.help_sections():
-            header(title)
-            for row in rows:
-                key, desc, notes = row[0], row[1], row[2:]
-                wrapped = textwrap.wrap(desc, desc_w) or [""]
-                render.append([(key_x, key, key_attr), (desc_x, wrapped[0], 0)])
-                for cont in wrapped[1:]:
-                    render.append([(desc_x, cont, dim)])
-                for note in notes:
-                    dim_wrapped("· " + note)
-            render.append([])
-        header("Reading the numbers")
-        for para in self._HELP_CAVEAT:
-            for piece in textwrap.wrap(para, width - key_x - 3) or [""]:
-                render.append([(key_x, piece, dim)])
+    def draw_help(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
+        # A panel, not a view: it floats centered over whatever is behind it (draw()
+        # paints the body first), sized to its own content -- a full-screen box holding
+        # six lines is what a manual looks like, not a cheat sheet.
+        inner_w = max(20, min(self.help_width(), width - 8))
+        lines = self.help_lines(inner_w)
+        box_w = inner_w + 4
+        box_x = max(0, (width - box_w) // 2)
+        avail_h = bottom - y
+        box_h = min(avail_h, len(lines) + 3)
+        box_y = y + max(0, (avail_h - box_h) // 2)
 
-        visible = max(1, bottom - y - 3)
-        scroll = max(0, min(self.app.help_scroll, max(0, len(render) - visible)))
+        # Clear the footprint first (draw_modal's rule) so the view behind doesn't bleed
+        # through the gaps between segments.
+        for row in range(box_y, box_y + box_h):
+            self.write(stdscr, row, box_x, " " * box_w)
+        self.box(stdscr, box_y, box_x, box_h, box_w, "Keys · Esc close", active=True)
+
+        visible = max(1, box_h - 3)
+        scroll = max(0, min(self.app.help_scroll, max(0, len(lines) - visible)))
         self.app.help_scroll = scroll
-        for offset, segments in enumerate(render[scroll : scroll + visible]):
-            row_y = y + 2 + offset
-            for sx, text, attr in segments:
-                self.write(stdscr, row_y, sx, text, attr)
+        for offset, segments in enumerate(lines[scroll : scroll + visible]):
+            row_y = box_y + 1 + offset
+            for dx, text, attr in segments:
+                self.write(stdscr, row_y, box_x + 2 + dx, text, attr)
+        if len(lines) > visible:  # only then is there anything to scroll
+            hint = " j/k scroll "
+            self.write(
+                stdscr,
+                box_y + box_h - 1,
+                box_x + max(2, box_w - len(hint) - 2),
+                hint,
+                curses.color_pair(1),
+            )
 
     def price_intro_lines(self) -> list[str]:
         # ONE dim context line above the P overlay's price table (plus a spacer):

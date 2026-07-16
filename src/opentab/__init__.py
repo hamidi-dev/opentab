@@ -166,6 +166,7 @@ from opentab.themes import (
     resolve_theme,
     web_payload,
 )
+from opentab.tui import keymap
 from opentab.tui.app import App
 from opentab.tui.renderer import Renderer
 from opentab.util import (

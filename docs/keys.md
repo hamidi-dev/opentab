@@ -4,7 +4,13 @@ OpenTab opens on a stacked **Months / Days** (or Projects) sidebar, lazygit-styl
 drill from a month or day into its detail tabs, from the Sessions tab into a single
 session — cost split, model mix, subagent tree — and step back out with `Esc`.
 
-Everything below is also in the app itself — press **`?`** for the built-in help.
+Press **`?`** in the app for the cheat sheet: a small panel that floats over what you
+were looking at and lists, lazygit-style, the keys that work **where you are** (this
+view, this tab, this overlay — Trends, the price table and a model's session list each
+have their own), then Navigation, then the Global keys. One short line per key; the long
+form is *this* page. The footer strip reads the same table, so it can only ever offer a
+key that does something here — and `j/k` in Trends says whether it is paging a month or
+walking a list, because there it depends on the tab.
 
 ## How the views nest
 
