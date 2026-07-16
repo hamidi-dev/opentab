@@ -4024,6 +4024,13 @@ class Renderer:
             )
         return lines
 
+    # The frame every panel/overlay/modal is drawn with: heavy box-drawing glyphs.
+    # They are Unicode, so they need the same UTF-8 screen the block-glyph charts do
+    # (cli.enable_unicode_locale forces one). Where curses can't encode them, the
+    # locale-independent ACS line set is drawn instead -- a light frame beats none.
+    _HEAVY_FRAME = ("┏", "┓", "┗", "┛", "━", "┃")
+    _heavy_frame = True
+
     def box(
         self,
         stdscr: curses.window,
@@ -4038,15 +4045,63 @@ class Renderer:
             return
         border_attr = curses.color_pair(6) | curses.A_BOLD if active else curses.A_NORMAL
         title_attr = border_attr if active else curses.color_pair(1) | curses.A_BOLD
-        stdscr.addch(y, x, curses.ACS_ULCORNER, border_attr)
-        stdscr.addch(y, x + w - 1, curses.ACS_URCORNER, border_attr)
-        stdscr.addch(y + h - 1, x, curses.ACS_LLCORNER, border_attr)
-        stdscr.addch(y + h - 1, x + w - 1, curses.ACS_LRCORNER, border_attr)
-        stdscr.hline(y, x + 1, curses.ACS_HLINE, w - 2, border_attr)
-        stdscr.hline(y + h - 1, x + 1, curses.ACS_HLINE, w - 2, border_attr)
-        stdscr.vline(y + 1, x, curses.ACS_VLINE, h - 2, border_attr)
-        stdscr.vline(y + 1, x + w - 1, curses.ACS_VLINE, h - 2, border_attr)
+        if self._heavy_frame:
+            try:
+                self.frame(stdscr, y, x, h, w, border_attr, *self._HEAVY_FRAME)
+            except UnicodeEncodeError:  # non-UTF-8 screen: fall back, once, for good
+                Renderer._heavy_frame = False
+        if not self._heavy_frame:
+            self.frame(
+                stdscr,
+                y,
+                x,
+                h,
+                w,
+                border_attr,
+                curses.ACS_ULCORNER,
+                curses.ACS_URCORNER,
+                curses.ACS_LLCORNER,
+                curses.ACS_LRCORNER,
+                curses.ACS_HLINE,
+                curses.ACS_VLINE,
+            )
         self.write(stdscr, y, x + 2, f" {shorten(title, w - 6)} ", title_attr)
+
+    def frame(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        h: int,
+        w: int,
+        attr: int,
+        ul: int | str,
+        ur: int | str,
+        ll: int | str,
+        lr: int | str,
+        horiz: int | str,
+        vert: int | str,
+    ) -> None:
+        stdscr.addch(y, x, ul, attr)
+        stdscr.addch(y, x + w - 1, ur, attr)
+        stdscr.addch(y + h - 1, x, ll, attr)
+        stdscr.addch(y + h - 1, x + w - 1, lr, attr)
+        if isinstance(horiz, str):
+            # hline/vline take a chtype -- a single *byte* -- so a multibyte glyph
+            # raises OverflowError there. Run them through addstr/addch instead, the
+            # same wide-character path every other Unicode glyph on screen takes. The
+            # horizontal run stops one cell short of the right border, so it never
+            # writes the last column of the screen (which addstr can't).
+            stdscr.addstr(y, x + 1, horiz * (w - 2), attr)
+            stdscr.addstr(y + h - 1, x + 1, horiz * (w - 2), attr)
+            for row in range(y + 1, y + h - 1):
+                stdscr.addch(row, x, vert, attr)
+                stdscr.addch(row, x + w - 1, vert, attr)
+        else:
+            stdscr.hline(y, x + 1, horiz, w - 2, attr)
+            stdscr.hline(y + h - 1, x + 1, horiz, w - 2, attr)
+            stdscr.vline(y + 1, x, vert, h - 2, attr)
+            stdscr.vline(y + 1, x + w - 1, vert, h - 2, attr)
 
     def hline(self, stdscr: curses.window, y: int, x: int, w: int) -> None:
         stdscr.hline(y, x, curses.ACS_HLINE, max(0, w - 1))

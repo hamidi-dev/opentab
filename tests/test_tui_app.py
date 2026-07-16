@@ -27,6 +27,22 @@ def test_terminal_resize_does_not_close_overlays():
     assert app.help
 
 
+def test_frame_draws_the_heavy_box_without_hline():
+    # Every panel/overlay/modal is framed through this one method (box() adds only the
+    # colors and the title, which need a real initscr). The frame is heavy box-drawing,
+    # i.e. multibyte -- so it must go through addch/addstr, never hline/vline, whose
+    # chtype is a single byte (FakeScreen raises OverflowError there, as curses does).
+    renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
+    screen = FakeScreen(height=10, width=20)
+    renderer.frame(screen, 0, 0, 4, 12, 0, *renderer._HEAVY_FRAME)
+    assert screen_text(screen).splitlines() == [
+        "┏━━━━━━━━━━┓",
+        "┃          ┃",  # the pane's own rows are painted by the caller
+        "┃          ┃",
+        "┗━━━━━━━━━━┛",
+    ]
+
+
 def test_page_keys_stride_lists_by_half_a_screen():
     # PgDn/PgUp and Ctrl-D/Ctrl-U move by half the visible pager height; headless
     # (no screen to measure) the stride is a fixed 10 rows.

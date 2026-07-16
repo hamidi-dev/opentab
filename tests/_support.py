@@ -53,8 +53,9 @@ def app_with(workflows, since=None, until=None, days=None):
 
 class FakeScreen:
     # Just enough curses surface for the self-painting draw_* methods (which only
-    # addstr onto a sized grid). Records every glyph by (y, x) so a test can read
-    # back what was painted; ignores attributes (color is irrelevant to text checks).
+    # addstr onto a sized grid) plus the addch/hline/vline the box frame is drawn
+    # with. Records every glyph by (y, x) so a test can read back what was painted;
+    # ignores attributes (color is irrelevant to text checks).
     def __init__(self, height=24, width=80):
         self.height, self.width = height, width
         self.cells = {}
@@ -65,6 +66,25 @@ class FakeScreen:
     def addstr(self, y, x, text, attr=0):
         for i, ch in enumerate(text):
             self.cells[(y, x + i)] = ch
+
+    def addch(self, y, x, ch, attr=0):
+        self.cells[(y, x)] = ch
+
+    def hline(self, y, x, ch, n, attr=0):
+        self._line(y, x, ch, n, 0)
+
+    def vline(self, y, x, ch, n, attr=0):
+        self._line(y, x, ch, n, 1)
+
+    def _line(self, y, x, ch, n, down):
+        # Real hline/vline take a chtype -- a single *byte* -- and raise OverflowError
+        # on a multibyte glyph (addch/addstr take the wide-character path instead). Keep
+        # that limit here, so a Unicode frame drawn through the wrong call fails in the
+        # suite the way it does on a real screen.
+        if isinstance(ch, str) and len(ch.encode()) > 1:
+            raise OverflowError("byte doesn't fit in chtype")
+        for i in range(n):
+            self.cells[(y + i * down, x + i * (1 - down))] = ch
 
 
 class AttrScreen(FakeScreen):
