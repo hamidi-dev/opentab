@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import csv
 import os
@@ -288,6 +289,7 @@ class App:
         self._turns_expanded: set[str] = set()  # individually expanded prompts (click)
         self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
         self.has256 = False  # set in run() once curses knows the terminal's color depth
+        self.colors_ok = True  # run() clears it on a monochrome terminal (no start_color)
         self._cal_geom: tuple | None = None  # last calendar grid geometry, for mouse hit-testing
         self._trend_bar_geom: tuple | None = None  # last bar-chart geometry, for mouse hit-testing
         # Scope drilled into from the Trends overlay; Esc out of it returns there.
@@ -3433,14 +3435,24 @@ class App:
     def run(self, stdscr: curses.window) -> None:
         if hasattr(curses, "set_escdelay"):
             curses.set_escdelay(25)
-        curses.curs_set(0)
-        curses.use_default_colors()
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass  # vt220 and kin can't hide the cursor; a visible one beats a crash
         # Colours come from the active theme (opentab/themes.py, shared with the web
         # browser). The renderer maps its role hexes onto the fixed color-pair layout --
         # exact via init_color on true-colour terminals, nearest-256 otherwise, and the
         # generated ANSI ramp on 8-colour. Foreground-only: a TUI paints over the
         # terminal's own background. Live theme switches re-run init_theme_colors().
-        self.has256 = curses.COLORS >= 256  # draw_calendar regenerates its ramp against this
+        # On a monochrome terminal (vt220) start_color *succeeds* but reports
+        # curses.COLORS == 0 (measured; has_colors() is False and COLOR_PAIRS is 0,
+        # so even init_pair(1, ...) raises). colors_ok False skips every init_pair
+        # and use_default_colors -- the pairs then all mean "terminal default",
+        # which is monochrome rendered honestly: bold/reverse still work.
+        self.colors_ok = getattr(curses, "COLORS", 0) > 0
+        if self.colors_ok:
+            curses.use_default_colors()
+        self.has256 = getattr(curses, "COLORS", 0) >= 256  # draw_calendar's ramp granularity
         self.renderer.init_theme_colors()
         stdscr.keypad(True)
         # Wheel-down is BUTTON5, but some curses builds (notably macOS system
@@ -4823,7 +4835,8 @@ class App:
         head = " " + label
         field = curses.color_pair(6) | curses.A_BOLD
         value = initial
-        curses.curs_set(1)
+        with contextlib.suppress(curses.error):
+            curses.curs_set(1)  # a terminal with no cursor styling still takes input
         try:
             while True:
                 # Re-measure every pass and guard the writes (like Renderer.write):
@@ -4868,7 +4881,8 @@ class App:
                 if done:
                     return value
         finally:
-            curses.curs_set(0)
+            with contextlib.suppress(curses.error):
+                curses.curs_set(0)
 
     @staticmethod
     def prompt_layout(value: str, width: int, head: str, hint: str) -> tuple[str, int, int]:

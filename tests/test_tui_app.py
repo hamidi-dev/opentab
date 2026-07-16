@@ -1,5 +1,6 @@
 """The App state machine: views, keys, mouse, filter, bookmarks, ignores, menus (tui/app.py)."""
 
+import contextlib
 import os
 
 import opentab as ot
@@ -41,6 +42,69 @@ def test_frame_draws_the_heavy_box_without_hline():
         "┃          ┃",
         "┗━━━━━━━━━━┛",
     ]
+
+
+@contextlib.contextmanager
+def _acs_constants():
+    # curses defines the ACS_* line constants only after initscr(), so a headless test of
+    # the fallback frame has to supply them. Yields {name: value} to assert against, and
+    # resets the tri-state _heavy_frame so one test's verdict can't leak into the next.
+    names = ("ULCORNER", "URCORNER", "LLCORNER", "LRCORNER", "HLINE", "VLINE")
+    saved_curses = {n: getattr(ot.curses, f"ACS_{n}", None) for n in names}
+    saved_heavy = ot.Renderer._heavy_frame
+    for i, name in enumerate(names):
+        setattr(ot.curses, f"ACS_{name}", i)
+    try:
+        yield {name: i for i, name in enumerate(names)}
+    finally:
+        ot.Renderer._heavy_frame = saved_heavy
+        for name, value in saved_curses.items():
+            if value is None:
+                delattr(ot.curses, f"ACS_{name}")
+            else:
+                setattr(ot.curses, f"ACS_{name}", value)
+
+
+def test_frame_falls_back_to_acs_on_a_non_unicode_screen():
+    # The heavy glyphs are multibyte: on a non-UTF-8 screen curses paints a garbage byte
+    # and raises NOTHING (it hands the str to the wide-character path, which consults no
+    # encoding), so the choice is made from the locale BEFORE drawing -- never from an
+    # exception. Where the answer is no, the frame is the ACS line set: locale-independent,
+    # and the only thing that renders there.
+    renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
+    screen = FakeScreen(height=10, width=20)
+    with _acs_constants() as acs:
+        ot.Renderer._heavy_frame = False
+        renderer.draw_frame(screen, 0, 0, 4, 12, 0)
+        # ACS ints, not glyphs -- and via hline/vline, which a single byte fits.
+        assert screen.cells[(0, 0)] == acs["ULCORNER"]
+        assert screen.cells[(3, 11)] == acs["LRCORNER"]
+        assert screen.cells[(0, 5)] == acs["HLINE"]
+        assert screen.cells[(1, 0)] == acs["VLINE"]
+
+
+def test_frame_falls_back_when_a_narrow_curses_build_rejects_the_glyphs():
+    # The other half of the fallback, and the only one an exception can carry: a narrow
+    # (non-ncursesw) build encodes the str itself, so a multibyte glyph either isn't in
+    # the window's encoding (UnicodeEncodeError) or is but doesn't fit a chtype's single
+    # byte (OverflowError, on a UTF-8 window). Nothing we ship on is narrow today
+    # (windows-curses is PDC_WIDE), so this guards the build we don't control: either
+    # error must land on ACS rather than propagate, which would kill the first frame.
+    renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
+
+    class NarrowScreen(FakeScreen):
+        def addch(self, y, x, ch, attr=0):
+            if isinstance(ch, str) and len(ch.encode()) > 1:
+                raise OverflowError("byte doesn't fit in chtype")
+            super().addch(y, x, ch, attr)
+
+    screen = NarrowScreen(height=10, width=20)
+    with _acs_constants() as acs:
+        ot.Renderer._heavy_frame = True  # what a UTF-8 locale resolves to
+        renderer.draw_frame(screen, 0, 0, 4, 12, 0)
+        assert ot.Renderer._heavy_frame is False  # and stays down for the whole run
+        assert screen.cells[(0, 0)] == acs["ULCORNER"]
+        assert screen.cells[(1, 0)] == acs["VLINE"]
 
 
 def test_page_keys_stride_lists_by_half_a_screen():
@@ -93,6 +157,29 @@ def test_page_keys_scroll_the_detail_help_and_prices_pagers():
     assert app.show_prices and app.prices_index == 2  # clamped to the last of 3 rows
     app.handle_key(None, 21)
     assert app.show_prices and app.prices_index == 0
+
+
+def test_color_index_never_exceeds_an_8_color_palette():
+    # On an 8-color terminal (TERM=linux, real serial terminals) init_pair raises
+    # ValueError for any color index >= COLORS, so _color_index must resolve every
+    # role hex within the terminal's actual palette -- nearest-of-8 there, never the
+    # xterm-256 index that crashed init_theme_colors on the Linux console.
+    renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
+    renderer._theme_color_cache = {}
+    renderer._can_change = False  # what init_theme_colors resolves on a dumb palette
+    saved = getattr(ot.curses, "COLORS", None)
+    try:
+        ot.curses.COLORS = 8
+        for hexval in renderer.app.theme["roles"].values():
+            assert 0 <= renderer._color_index(hexval) <= 7
+        renderer._theme_color_cache = {}
+        ot.curses.COLORS = 256  # a 256-color terminal keeps the finer mapping
+        assert renderer._color_index("#c0caf5") > 7
+    finally:
+        if saved is None:
+            delattr(ot.curses, "COLORS")
+        else:
+            ot.curses.COLORS = saved
 
 
 def test_theme_picker_opens_from_inside_overlays():

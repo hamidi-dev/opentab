@@ -772,6 +772,30 @@ def nearest_256(color: str) -> int:
     return grey_i if grey_d < cube_d else ci
 
 
+# The 8 basic ANSI colors at xterm's default RGB, index == the curses COLOR_* constant.
+_ANSI8 = (
+    (0, 0, 0),  # black
+    (205, 0, 0),  # red
+    (0, 205, 0),  # green
+    (205, 205, 0),  # yellow
+    (0, 0, 205),  # blue
+    (205, 0, 205),  # magenta
+    (0, 205, 205),  # cyan
+    (229, 229, 229),  # white
+)
+
+
+def nearest_8(color: str) -> int:
+    """The basic ANSI color (0..7) closest to a hex, for 8-color terminals -- the
+    Linux console, real serial terminals -- whose palette init_pair refuses anything
+    past. The heat ramps have their own generated ANSI path; this is for the roles."""
+    r, g, b = hex_rgb(color)
+    return min(
+        range(8),
+        key=lambda i: (_ANSI8[i][0] - r) ** 2 + (_ANSI8[i][1] - g) ** 2 + (_ANSI8[i][2] - b) ** 2,
+    )
+
+
 def ramp(hexes: list[str], n: int) -> list[str]:
     """Resample a hex ramp to exactly `n` colors by linear RGB interpolation, so the
     calendar heat map can render at any granularity from a theme's fixed ramp."""

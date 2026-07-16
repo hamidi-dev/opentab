@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from opentab import __version__
 from opentab.models import DaySummary, MonthSummary, ProjectSummary, Workflow, YearSummary
-from opentab.themes import hex_rgb1000, nearest_256, ramp
+from opentab.themes import hex_rgb1000, nearest_8, nearest_256, ramp
 from opentab.tui import keymap
 
 if TYPE_CHECKING:
@@ -57,7 +57,7 @@ from opentab.pricing import (
     model_price,
     price_source_meta,
 )
-from opentab.util import fuzzy_score, launcher_hook, tool_namespace
+from opentab.util import fuzzy_score, launcher_hook, tool_namespace, unicode_screen
 
 
 class Renderer:
@@ -3795,12 +3795,17 @@ class Renderer:
 
     def _color_index(self, hexcolor: str) -> int:
         # A curses color index for a hex: a fresh init_color slot on truecolor
-        # terminals (cached per hex), else the nearest xterm-256. Falls back to the
-        # nearest-256 if init_color is refused, so a partial terminal never crashes.
+        # terminals (cached per hex), else the nearest xterm-256 -- but never past
+        # what the terminal has: on an 8-color screen (TERM=linux) init_pair raises
+        # ValueError for any index >= COLORS, so there the nearest basic ANSI color
+        # is the whole palette. Falls back to the nearest lookup if init_color is
+        # refused, so a partial terminal never crashes.
         cache = self._theme_color_cache
         if hexcolor in cache:
             return cache[hexcolor]
-        idx = nearest_256(hexcolor)
+        idx = (
+            nearest_256(hexcolor) if getattr(curses, "COLORS", 256) >= 256 else nearest_8(hexcolor)
+        )
         if self._can_change and self._next_color < curses.COLORS:
             try:
                 curses.init_color(self._next_color, *hex_rgb1000(hexcolor))
@@ -3825,17 +3830,20 @@ class Renderer:
         # dark -- so we colour every cell instead.)
         self._theme_color_cache = {}
         self._next_color = self._THEME_COLOR_BASE
+        self._themed_bg = False
+        self._can_change = False
+        if not self.colors_ok:  # monochrome: every pair stays "terminal default"
+            return
         self._can_change = bool(
             self.has256 and getattr(curses, "can_change_color", lambda: False)()
         )
         roles = self.app.theme["roles"]
         r = self._color_index
         bg = self._bg_index = r(roles["bg"])
-        self._themed_bg = False
         try:  # the window-background pair; if the terminal is too small for it, skip the fill
             curses.init_pair(self._BASE_PAIR, r(roles["ink"]), bg)
             self._themed_bg = True
-        except curses.error:
+        except (curses.error, ValueError):  # ValueError: pair 32 is past COLOR_PAIRS
             self._bg_index = bg = -1  # no themed fill -> role pairs fall back to terminal bg
         curses.init_pair(1, r(roles["ink2"]), bg)  # secondary text
         curses.init_pair(2, r(roles["accent"]), bg)  # warm accent / title / M-tokens
@@ -3887,6 +3895,10 @@ class Renderer:
         # Re-init the calendar heat pairs (8..) for the current granularity so +/-
         # restyles live. Colours come from the active theme's ramp, resampled to
         # cal_levels; 8-colour terminals keep the generated ANSI ramp + glyphs.
+        # Also reached at runtime (a +/- granularity change), so it carries its own
+        # monochrome guard -- there is no pair to init without start_color.
+        if not self.colors_ok:
+            return
         if self.has256:
             for i, hx in enumerate(ramp(self.app.theme["heat"], self.cal_levels)):
                 curses.init_pair(
@@ -4057,10 +4069,13 @@ class Renderer:
 
     # The frame every panel/overlay/modal is drawn with: heavy box-drawing glyphs.
     # They are Unicode, so they need the same UTF-8 screen the block-glyph charts do
-    # (cli.enable_unicode_locale forces one). Where curses can't encode them, the
-    # locale-independent ACS line set is drawn instead -- a light frame beats none.
+    # (cli.enable_unicode_locale forces one). Where they don't, the locale-independent
+    # ACS line set is drawn instead -- a light frame beats a frame of garbage bytes,
+    # which is what curses silently paints there (see util.unicode_screen: it does not
+    # raise, so this has to be *asked* rather than caught). Resolved once, on the first
+    # frame: a screen does not change its encoding mid-run.
     _HEAVY_FRAME = ("┏", "┓", "┗", "┛", "━", "┃")
-    _heavy_frame = True
+    _heavy_frame: bool | None = None
 
     def frame_app(self, stdscr: curses.window, height: int, width: int) -> None:
         # The border around the whole UI, drawn in screen coordinates before draw()
@@ -4087,11 +4102,21 @@ class Renderer:
         self.write(stdscr, y, x + 2, f" {shorten(title, w - 6)} ", title_attr)
 
     def draw_frame(self, stdscr: curses.window, y: int, x: int, h: int, w: int, attr: int) -> None:
+        if Renderer._heavy_frame is None:
+            Renderer._heavy_frame = unicode_screen()
         if self._heavy_frame:
             try:
                 self.frame(stdscr, y, x, h, w, attr, *self._HEAVY_FRAME)
                 return
-            except UnicodeEncodeError:  # non-UTF-8 screen: fall back, once, for good
+            except (UnicodeEncodeError, OverflowError):
+                # Only a NARROW (non-ncursesw) curses build can get here: it encodes the
+                # str itself, and complains either way -- UnicodeEncodeError when the
+                # window's encoding has no such character, OverflowError when it has one
+                # that doesn't fit a chtype's single byte (any multibyte glyph on a UTF-8
+                # window). No build we ship on is narrow (windows-curses is PDC_WIDE +
+                # HAVE_NCURSESW), and a wide one never raises here -- unicode_screen()
+                # already ruled. Kept because the cost of being wrong is a crash on the
+                # first frame, on a platform CI only smoke-tests the import of.
                 Renderer._heavy_frame = False
         self.frame(
             stdscr,

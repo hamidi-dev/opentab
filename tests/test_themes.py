@@ -27,3 +27,17 @@ def test_theme_color_math():
     assert len(r) == 5 and r[0] == "#000000" and r[-1] == "#ffffff"
     assert r[2] in ("#808080", "#7f7f7f")  # halfway grey
     assert ot.ramp(["#123456"], 4) == ["#123456"] * 4  # single stop repeats
+
+
+def test_nearest_8_maps_roles_onto_the_basic_ansi_palette():
+    # The 8-color path (TERM=linux, real terminals): every hex must land in 0..7,
+    # because init_pair raises ValueError for any index past COLORS-1 there -- the
+    # crash this function exists to prevent. Obvious hexes hit their obvious colors.
+    assert ot.nearest_8("#000000") == 0  # black
+    assert ot.nearest_8("#cc0000") == 1  # red
+    assert ot.nearest_8("#00cc00") == 2  # green
+    assert ot.nearest_8("#0000cc") == 4  # blue
+    assert ot.nearest_8("#c0caf5") == 7  # Tokyo Night's ink -> white
+    for theme in ot.THEMES.values():  # every bundled role resolves in-palette
+        for hexval in theme["roles"].values():
+            assert 0 <= ot.nearest_8(hexval) <= 7

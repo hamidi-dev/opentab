@@ -1,6 +1,7 @@
 """Clipboard, launchers, git roots, fuzzy match, date/range parsing, tool labels."""
 from __future__ import annotations
 
+import locale
 import os
 import re
 import shutil
@@ -10,6 +11,43 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from opentab.models import Workflow
+
+_UNICODE_SCREEN: bool | None = None
+
+
+def unicode_screen() -> bool:
+    """Can curses actually put a multibyte glyph on the screen, legibly?
+
+    Only in a UTF-8 locale (cli.enable_unicode_locale forces one wherever it can).
+    Anywhere else this has to be answered *before* drawing, because curses will not
+    tell you afterwards: CPython hands a str to the wide-character path (add_wch /
+    addwstr), which never consults an encoding, so an unencodable glyph raises
+    nothing -- it just leaves a garbage byte in the cell (measured in a US-ASCII
+    locale: `┏` lands as 0x0f). Only the locale-independent ACS line set survives
+    there, which is why the frame asks this before choosing its glyphs. (A legacy
+    CJK codeset like EUC-JP *can* encode box drawing, but renders it ambiguous-width
+    -- two cells -- which breaks every frame's geometry: UTF-8 is the right gate,
+    not "can encode".)
+
+    The Linux virtual console is the one terminal that pairs a UTF-8 locale with a
+    font that cannot show the glyphs: console fonts carry CP437's *light* box
+    drawing only, so a heavy `┏` goes out as valid UTF-8 and comes up a replacement
+    blob -- rendered client-side, invisible to curses, no error to catch. TERM is
+    the only tell. ACS is what terminfo knows how to draw there.
+
+    No nl_langinfo means Windows, where windows-curses renders the wide glyphs the
+    whole UI already draws -- so it is a yes.
+    """
+    global _UNICODE_SCREEN
+    if _UNICODE_SCREEN is None:
+        if os.environ.get("TERM") == "linux":
+            _UNICODE_SCREEN = False
+        else:
+            try:
+                _UNICODE_SCREEN = "utf" in locale.nl_langinfo(locale.CODESET).lower()
+            except (AttributeError, ValueError):
+                _UNICODE_SCREEN = True
+    return _UNICODE_SCREEN
 
 
 def _read_text(path: str) -> str | None:

@@ -161,6 +161,7 @@ from opentab.themes import (
     DEFAULT_THEME,
     THEME_IDS,
     THEMES,
+    nearest_8,
     nearest_256,
     ramp,
     resolve_theme,
@@ -195,6 +196,7 @@ from opentab.util import (
     tmux_launch,
     tmux_launch_argv,
     tool_namespace,
+    unicode_screen,
     validate_date,
     workflow_fuzzy_score,
 )

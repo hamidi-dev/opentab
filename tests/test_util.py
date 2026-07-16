@@ -317,3 +317,33 @@ def test_tool_namespace_folds_builtins_case_insensitively_and_mcp_servers():
     # Claude Code MCP names group under their server, like OpenCode's prefix form.
     assert ot.tool_namespace("mcp__chrome-devtools__evaluate_script") == "chrome-devtools"
     assert ot.tool_namespace("serena_find_symbol") == "serena"
+
+
+def test_unicode_screen_prefers_acs_on_the_linux_console():
+    # The Linux virtual console pairs a UTF-8 locale with a font that lacks the heavy
+    # glyphs (console fonts carry CP437's light lines only), and the miss is invisible
+    # to curses -- the console renders the replacement blob client-side, no error comes
+    # back. TERM is the only tell, so the gate must read it before the locale.
+    import locale
+
+    from opentab import util
+
+    saved_cache = util._UNICODE_SCREEN
+    saved_term = os.environ.get("TERM")
+    try:
+        util._UNICODE_SCREEN = None
+        os.environ["TERM"] = "linux"
+        assert ot.unicode_screen() is False
+        util._UNICODE_SCREEN = None  # any other TERM falls through to the locale
+        os.environ["TERM"] = "xterm-256color"
+        try:
+            expected = "utf" in locale.nl_langinfo(locale.CODESET).lower()
+        except (AttributeError, ValueError):
+            expected = True
+        assert ot.unicode_screen() is expected
+    finally:
+        util._UNICODE_SCREEN = saved_cache
+        if saved_term is None:
+            os.environ.pop("TERM", None)
+        else:
+            os.environ["TERM"] = saved_term
