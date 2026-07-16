@@ -159,6 +159,30 @@ def test_page_keys_scroll_the_detail_help_and_prices_pagers():
     assert app.show_prices and app.prices_index == 0
 
 
+def test_theme_pairs_respect_a_pair_starved_terminal():
+    # A terminal can be color-capable and still pair-starved: minitel1 reports
+    # COLORS=8 with COLOR_PAIRS=8, so pairs 1..7 fit but the heat ramps (8+, 20+)
+    # and the bg pair (32) don't -- and init_pair raises ValueError there, which
+    # killed startup. _set_pair must skip what doesn't fit and init the rest.
+    renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
+    made = []
+    saved = {k: getattr(ot.curses, k, None) for k in ("COLORS", "COLOR_PAIRS", "init_pair")}
+    try:
+        ot.curses.COLORS = 8
+        ot.curses.COLOR_PAIRS = 8
+        ot.curses.init_pair = lambda pair, fg, bg: made.append(pair)
+        renderer.app.colors_ok = True
+        renderer.app.has256 = False
+        renderer.init_theme_colors()  # the exact call that crashed on minitel1
+        assert made and max(made) <= 7  # roles landed, nothing past the terminal's 8
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                delattr(ot.curses, key)
+            else:
+                setattr(ot.curses, key, value)
+
+
 def test_color_index_never_exceeds_an_8_color_palette():
     # On an 8-color terminal (TERM=linux, real serial terminals) init_pair raises
     # ValueError for any color index >= COLORS, so _color_index must resolve every

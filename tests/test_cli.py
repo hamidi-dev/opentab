@@ -627,3 +627,49 @@ def test_goto_miss_opens_the_plain_tui_with_a_hint_instead_of_exiting():
         assert app.view == "browse"
         assert "no session yet" in app.notice
         assert app.toasts[-1].kind == "error"
+
+
+def test_goto_miss_hint_never_buries_the_notes_warning():
+    # refresh_notes' contract: a broken notes.json outranks any caller's own
+    # message -- toasts set before the first frame collapse onto the last, so
+    # the miss hint must be skipped, leaving the warning on screen.
+    import contextlib
+    import io
+    import sys as _sys
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = os.path.join(tmp, "xdg")
+        os.makedirs(os.path.join(cfg, "opentab"))
+        with open(os.path.join(cfg, "opentab", "notes.json"), "w") as fh:
+            fh.write("{this is not json")
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(repo)
+        db = os.path.join(tmp, "opencode.db")
+        _write_status_db(
+            db,
+            [("ses_oc", None, os.path.join(tmp, "other"), 1760000000000, 1760000500000, 2.0, 10)],
+        )
+        captured = {}
+
+        class _FakeCurses:
+            @staticmethod
+            def wrapper(fn):
+                captured["app"] = fn.__self__
+
+        argv, real_curses = _sys.argv, ot.cli.curses
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        _sys.argv = ["opentab", "--source", "opencode", "--db", db, "--goto", repo, "--no-cache"]
+        ot.cli.curses = _FakeCurses
+        os.environ["XDG_CONFIG_HOME"] = cfg  # notes/state live here, not the suite's dir
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                assert ot.cli.main() == 0
+        finally:
+            _sys.argv, ot.cli.curses = argv, real_curses
+            if xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = xdg
+        app = captured["app"]
+        assert "unreadable" in app.notice  # the warning is what survived
+        assert not any("no session yet" in t.text for t in app.toasts)

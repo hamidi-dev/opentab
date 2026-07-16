@@ -3840,20 +3840,36 @@ class Renderer:
         roles = self.app.theme["roles"]
         r = self._color_index
         bg = self._bg_index = r(roles["bg"])
-        try:  # the window-background pair; if the terminal is too small for it, skip the fill
-            curses.init_pair(self._BASE_PAIR, r(roles["ink"]), bg)
+        # The window-background pair: if the terminal can't hold pair 32, skip the fill.
+        if self._set_pair(self._BASE_PAIR, r(roles["ink"]), bg):
             self._themed_bg = True
-        except (curses.error, ValueError):  # ValueError: pair 32 is past COLOR_PAIRS
+        else:
             self._bg_index = bg = -1  # no themed fill -> role pairs fall back to terminal bg
-        curses.init_pair(1, r(roles["ink2"]), bg)  # secondary text
-        curses.init_pair(2, r(roles["accent"]), bg)  # warm accent / title / M-tokens
-        curses.init_pair(3, r(roles["good"]), bg)  # money
-        curses.init_pair(4, r(roles["mut"]), bg)  # structural: headers, keybar, '#'
-        curses.init_pair(5, r(roles["bad"]), bg)  # alerts
-        curses.init_pair(6, r(roles["accent_bright"]), bg)  # focus / active border
-        curses.init_pair(7, bg, r(roles["accent"]))  # active tab (inverse: bg on accent)
+        self._set_pair(1, r(roles["ink2"]), bg)  # secondary text
+        self._set_pair(2, r(roles["accent"]), bg)  # warm accent / title / M-tokens
+        self._set_pair(3, r(roles["good"]), bg)  # money
+        self._set_pair(4, r(roles["mut"]), bg)  # structural: headers, keybar, '#'
+        self._set_pair(5, r(roles["bad"]), bg)  # alerts
+        self._set_pair(6, r(roles["accent_bright"]), bg)  # focus / active border
+        self._set_pair(7, bg, r(roles["accent"]))  # active tab (inverse: bg on accent)
         self._init_price_heat()
         self._sync_heat_palette()
+
+    @staticmethod
+    def _set_pair(pair: int, fg: int, bg: int) -> bool:
+        # Every init_pair goes through here: a terminal can be color-capable and still
+        # pair-starved (minitel1: COLORS=8, COLOR_PAIRS=8 -- pairs 1..7 fit, the heat
+        # ramps at 8+/20+ and the bg pair at 32 don't, and init_pair raises ValueError
+        # for those, not curses.error). A pair that doesn't fit is skipped: reading it
+        # via color_pair() is still legal and renders as the terminal default, so the
+        # UI degrades to fewer colors instead of crashing at startup.
+        if pair >= getattr(curses, "COLOR_PAIRS", 0):
+            return False
+        try:
+            curses.init_pair(pair, fg, bg)
+            return True
+        except (curses.error, ValueError):
+            return False
 
     def apply_background(self, stdscr) -> None:
         # Point the window background at the theme's base pair (ink on bg) so erase()
@@ -3871,14 +3887,14 @@ class Renderer:
         hexes = self.app.theme["price_heat"]
         if self._can_change or self.has256:
             for i, hx in enumerate(hexes):
-                curses.init_pair(
+                self._set_pair(
                     PRICE_HEAT_BASE_PAIR + i,
                     self._heat_index(self._PRICE_COLOR_BASE + i, hx),
                     self._bg_index,
                 )
         else:
             for i, col in enumerate(heat_palette(PRICE_HEAT_LEVELS, False)):
-                curses.init_pair(PRICE_HEAT_BASE_PAIR + i, col, self._bg_index)
+                self._set_pair(PRICE_HEAT_BASE_PAIR + i, col, self._bg_index)
 
     def _heat_index(self, slot: int, hexcolor: str) -> int:
         # A reusable fixed-slot heat colour: re-init_color the slot on truecolor
@@ -3901,12 +3917,12 @@ class Renderer:
             return
         if self.has256:
             for i, hx in enumerate(ramp(self.app.theme["heat"], self.cal_levels)):
-                curses.init_pair(
+                self._set_pair(
                     8 + i, self._heat_index(self._HEAT_COLOR_BASE + i, hx), self._bg_index
                 )
         else:
             for i, col in enumerate(heat_palette(self.cal_levels, False)):
-                curses.init_pair(8 + i, col, self._bg_index)
+                self._set_pair(8 + i, col, self._bg_index)
 
     def _heat_cell(self, level: int, levels: int) -> tuple[str, int]:
         # (glyph, attr) for one heat level: a distinct color per level, plus a glyph that

@@ -613,12 +613,14 @@ def main() -> int:
         apply_state(app, args, state)
     # After apply_state, which ends by clearing the notice -- and so would wipe the
     # "your notes.json is unreadable" warning this can raise.
-    app.refresh_notes()
+    notes_ok = app.refresh_notes()
     if goto is not None:
         # After apply_state (a restored range could hide the target; goto_session
         # clears it when needed), before curses -- the jump is state-only.
         app.goto_session(goto[1])
-    elif goto_hint:
+    elif goto_hint and notes_ok:
+        # a broken notes.json outranks the miss hint: no frame paints between the
+        # two notify calls, so this one would collapse onto and bury the warning
         app.notify(goto_hint, "error")
     curses.wrapper(app.run)
     if use_state and not app.store.demo:
