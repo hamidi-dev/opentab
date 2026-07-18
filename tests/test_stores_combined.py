@@ -24,7 +24,7 @@ def test_trend_sources_row_drills_into_that_sources_sessions():
     a.source, b.source = "opencode", "claude"
     app = app_with([a, b])
     app.handle_key(None, ord("T"))
-    while app.trend_tabs[app.trend_tab] != "Sources":
+    while app.trend_tabs[app.trend_tab] != "Harnesses":
         app.handle_key(None, ord("l"))
     assert app.trend_ranked_keys() == ["opencode", "claude"]
     app.handle_key(None, ord("j"))
@@ -43,7 +43,7 @@ def test_zoom_sources_tab_navigates_and_drills():
     app.store.combined = True  # the merged view injects the Sources tab
     app.handle_key(None, 10)  # zoom the selected day
     tabs = app.current_tabs()
-    app.tab = tabs.index("Sources")
+    app.tab = tabs.index("Harnesses")
     assert [s for s, _ in app.zoom_source_rows()] == ["OpenCode", "Claude Code"]
     app.handle_key(None, ord("j"))  # j/k drive the source cursor
     assert app.source_index == 1
@@ -53,7 +53,7 @@ def test_zoom_sources_tab_navigates_and_drills():
     assert [w.id for w in app.current_sessions()] == ["b"]
     app.handle_key(None, 27)  # Esc pops the source drill, back to the Sources tab
     assert app.view == "zoom" and app.zoom_source is None
-    assert app.current_tabs()[app.tab] == "Sources"
+    assert app.current_tabs()[app.tab] == "Harnesses"
     app._apply_click(("zoomsource", 0), drill=True)  # double-click a source row
     assert app.zoom_source == "OpenCode"
     assert [w.id for w in app.current_sessions()] == ["a"]
@@ -195,7 +195,7 @@ def test_codex_in_combined_view_carries_a_cx_source_tag():
     app = ot.App(MergedStore([a, b]), args)
     month = app.months[0]
     lines = app.renderer.month_workflows(month, 120)
-    assert any("cx " in ln and "codex session" in ln for ln in lines)  # Src column abbrev
+    assert any("cx " in ln and "codex session" in ln for ln in lines)  # Hns column abbrev
     over = app.renderer.month_overview(month, 120)
     assert any("[cx] codex session" in ln for ln in over)  # Top Sessions bracket tag
 
@@ -214,16 +214,16 @@ def test_sources_tab_appears_in_combined_view_and_aggregates_by_source():
 
     # The tab joins right after Overview in every aggregate detail view.
     app.focus = "months"
-    assert app.current_tabs()[:2] == ("Overview", "Sources")
+    assert app.current_tabs()[:2] == ("Overview", "Harnesses")
     app.focus = "days"
-    assert app.current_tabs()[:2] == ("Overview", "Sources")
+    assert app.current_tabs()[:2] == ("Overview", "Harnesses")
     app.set_browse_mode("projects")
-    assert app.current_tabs()[:2] == ("Overview", "Sources")
+    assert app.current_tabs()[:2] == ("Overview", "Harnesses")
 
     # It renders a per-source breakdown scoped to that slice.
     month = app.months[0]
     lines = app.renderer.month_sources(month, 120)
-    assert lines[0].startswith("# Spend by source")
+    assert lines[0].startswith("# Spend by harness")
     assert any("OpenCode" in ln for ln in lines)
     assert any("Codex" in ln for ln in lines)
 
@@ -232,11 +232,11 @@ def test_sources_tab_is_hidden_with_a_single_backend():
     # One backend -> every row is the same source (a 100% bar), so the tab is noise.
     app = app_with([workflow("a", "2026-06-01 12:00:00")])  # FakeStore: not combined
     app.focus = "months"
-    assert "Sources" not in app.current_tabs()
+    assert "Harnesses" not in app.current_tabs()
     app.focus = "days"
-    assert "Sources" not in app.current_tabs()
+    assert "Harnesses" not in app.current_tabs()
     app.set_browse_mode("projects")
-    assert "Sources" not in app.current_tabs()
+    assert "Harnesses" not in app.current_tabs()
 
 
 def test_year_sources_tab_appears_in_combined_view():
@@ -251,9 +251,9 @@ def test_year_sources_tab_appears_in_combined_view():
     args = type("Args", (), {"since": None, "until": None, "days": None})()
     app = ot.App(MergedStore([a, b]), args)
     app.focus = "years"
-    assert app.current_tabs()[:2] == ("Overview", "Sources")
+    assert app.current_tabs()[:2] == ("Overview", "Harnesses")
     lines = app.renderer.year_sources(app.selected_year_summary, 100)
-    assert lines[0].startswith("# Spend by source")
+    assert lines[0].startswith("# Spend by harness")
     assert any("OpenCode" in ln for ln in lines) and any("Codex" in ln for ln in lines)
 
 
@@ -328,7 +328,7 @@ def test_combined_sessions_tables_get_a_src_column():
     app = ot.App(MergedStore([a, b]), args)
     month = app.months[0]
     lines = app.renderer.month_workflows(month, 120)
-    assert "Src" in lines[0]  # header gains the column
+    assert "Hns" in lines[0]  # header gains the column
     assert any("oc " in ln and "opencode session" in ln for ln in lines)
     assert any("cc " in ln and "claude session" in ln for ln in lines)
     # Top Sessions in the overview carries the bracket tag instead
@@ -336,4 +336,4 @@ def test_combined_sessions_tables_get_a_src_column():
     assert any("[cc] claude session" in ln for ln in over)
     # single-source views stay untouched (origin is implied by the header chip)
     plain = app_with([workflow("a", "2026-06-01 12:00:00")])
-    assert "Src" not in plain.renderer.month_workflows(plain.months[0], 120)[0]
+    assert "Hns" not in plain.renderer.month_workflows(plain.months[0], 120)[0]

@@ -20,11 +20,11 @@ sidebar, which stays clickable to re-scope in place; `+` maximizes/restores the
 detail pane (remembered between runs). The session view is full-screen.
 
 Detail tabs per scope: years/months get Overview · Models · Projects · Sessions;
-days drop Models. A session adds **Turns** (per-turn cost over time, every source
+days drop Models. A session adds **Turns** (per-turn cost over time, every harness
 that records per-step usage), **Tools** (per-tool / MCP spend) and **Context** (the
 context window's growth curve, % of the model's window, compaction markers, and —
-on sources whose logs carry content — an estimated breakdown of what filled it)
-when its source supports them, and **Sources** joins in the merged `all` view.
+on harnesses whose logs carry content — an estimated breakdown of what filled it)
+when its harness supports them, and **Harnesses** joins in the merged `all` view.
 
 ## Move around
 
@@ -33,7 +33,7 @@ when its source supports them, and **Sources** joins in the merged `all` view.
 | `p` / `t` | Switch to the Projects / Time browse mode |
 | `Tab` / `Shift-Tab` | Cycle focus Years → Months → Days (Time mode); Shift-Tab at the top steps back out |
 | `1` / `2` / `3` / `0` | Jump straight to a panel — **each panel wears its number in its title**, lazygit-style: the sidebar top to bottom (`[1] Years`, `[2] Months`, `[3] Days`; in Projects mode `[1] Projects`) and `[0]` the detail pane on the right, what `Enter` drills into. A digit jumps from anywhere: it steps out of a zoomed detail or an open session to get there |
-| `Enter` / `+` | Drill into the selection; on a Sessions / Projects / Sources tab, open it in this scope |
+| `Enter` / `+` | Drill into the selection; on a Sessions / Projects / Harnesses tab, open it in this scope |
 | `Esc` | Step back out — session → zoom → browse |
 | `h` / `l` | Switch detail tabs |
 | `j` / `k` | Move in the list (`↑`/`↓` too), or scroll the detail pane |
@@ -68,11 +68,11 @@ On the Turns tab, `z` (or clicking a `▸` header) unfolds the whole prompt text
 
 | Key | Action |
 |-----|--------|
-| `T` | Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Sources. `h`/`l` tabs · `j`/`k` page months/weeks/years. On the charts and Calendar: `Enter` focuses, arrows pick a bar/day, `Enter` drills in, `Esc` back. On Models/Providers/Sources: `j`/`k` pick a row · `Enter` its sessions · `Enter` again opens one |
+| `T` | Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Harnesses. `h`/`l` tabs · `j`/`k` page months/weeks/years. On the charts and Calendar: `Enter` focuses, arrows pick a bar/day, `Enter` drills in, `Esc` back. On Models/Providers/Harnesses: `j`/`k` pick a row · `Enter` its sessions · `Enter` again opens one |
 | `P` | Model prices — the table behind the `$` estimate; see [Pricing](pricing.md) for the views, sorting, and pinning |
 | `$` | Toggle what-if prices — what unpriced usage would cost at API list rates |
 | `w` | What-if **model** — arm one priced model as a comparison target (`j`/`k` move · `f` filter · `h`/`l` (or `Tab`, or a click) switch the tier tabs between the models **you've used** and the **whole models.dev catalog**, cheapest-for-your-mix first · `Enter` arm · `Esc` cancel): *"what if the expensive model had done the subagents' work too?"*. Used few models? The catalog tier is the point — it offers every model with a list price, and opens directly when nothing you've used is priceable. The selected session's **Subagents** tab then shows its whole tree (root included) with a **What-if** column — that node's tokens at the target's list rates — and a `TOTAL (list rates)  your models … → all at … …  saved …` line; its **Overview** carries the same session comparison (Your models / All at *target* / Change). **Both sides are priced at list rates** — the only apples-to-apples basis for a rate substitution — so a session that delegated nothing (no tree to show) still answers, and repricing a single-model session at the model it already used is exactly a $0 change. There is deliberately **no per-node Δ**: a node can mix models, so no honest per-node baseline exists; the exact comparison lives at session level, where the tokens are split per model. The Cost column keeps its ordinary meaning (recorded spend, `$`-estimated where nothing was recorded), so it does **not** add up to the TOTAL. A rate substitution, not a rerun. **Session-scoped** — the sessions list, the day/month/project rollups and Trends keep showing actual spend, and `$` keeps working as always. Works in demo too; `w` again clears it. The [web browser](web.md#w--the-what-if-model) mirrors all of it, on the same key |
-| `c` | Data-source picker (`j`/`k` move · `Enter` switch · `Esc` cancel) |
+| `c` | Harness picker (`j`/`k` move · `Enter` switch · `Esc` cancel) |
 | `C` | Colour-theme picker — `j`/`k` live-preview · `Enter` keep · `Esc` revert (themes are shared with the web browser) |
 | `D` | Toggle real / demo data (demo anonymizes titles and paths) |
 | `r` / `q` / `?` | Reload the data · quit · help |
@@ -82,7 +82,7 @@ anywhere, Trends and Prices included.
 
 ## What persists between runs
 
-The active **source, range, sort, ignored projects, bookmarks, pinned price rows,
+The active **harness, range, sort, ignored projects, bookmarks, pinned price rows,
 theme, and `$` what-if view are remembered between runs**, stored in
 `~/.config/opentab/state.json`. Pass `--no-state` to disable; `--demo` never
 persists.
@@ -90,7 +90,7 @@ persists.
 **Session notes (`n`) are kept apart**, in `~/.config/opentab/notes.json`. Everything
 in `state.json` is a preference opentab can regenerate or shrug off; a note is the one
 thing you wrote, so it gets its own file, is saved on the edit rather than at quit, and
-a note whose session has since disappeared (a rotated transcript, a source you didn't
+a note whose session has since disappeared (a rotated transcript, a harness you didn't
 merge in this run) is **kept, never pruned**.
 
 A `w` **what-if target model is deliberately not remembered**: it's a transient

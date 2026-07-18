@@ -1,39 +1,40 @@
-# Data sources
+# Data harnesses
 
 OpenTab reads the local records each AI coding tool keeps. This page covers every
-source in detail: where its data lives, how cost is derived, and the quirks of each
+harness in detail: where its data lives, how cost is derived, and the quirks of each
 tool's records.
 
-## Picking a source
+## Picking a harness
 
-Pick one with `--source`, point its flag at a non-default location, or just pass a
-file path (`opentab requests.csv`, `opentab path/to/opencode.db`) and the source is
+Pick one with `--harness`, point its flag at a non-default location, or just pass a
+file path (`opentab requests.csv`, `opentab path/to/opencode.db`) and the harness is
 inferred from the extension:
 
 ```sh
-opentab --source opencode                    # OpenCode only
-opentab --source claude --claude-dir /path   # Claude Code (default ~/.claude/projects)
-opentab --source codex --codex-dir /path     # Codex (default ~/.codex/sessions)
-opentab --source hermes                      # Hermes Agent (default ~/.hermes/state.db)
-opentab --source copilot                     # GitHub Copilot CLI (default ~/.copilot/otel)
-opentab --source vscode                      # Copilot Chat in VS Code (every installed variant)
-opentab --source pi                          # pi-agent (default ~/.pi/agent/sessions)
-opentab --source openclaw                    # OpenClaw gateway (default ~/.openclaw)
-opentab --source zaly                        # zaly (default ~/.local/share/zaly)
+opentab --harness opencode                   # OpenCode only
+opentab --harness claude --claude-dir /path  # Claude Code (default ~/.claude/projects)
+opentab --harness codex --codex-dir /path    # Codex (default ~/.codex/sessions)
+opentab --harness hermes                     # Hermes Agent (default ~/.hermes/state.db)
+opentab --harness copilot                    # GitHub Copilot CLI (default ~/.copilot/otel)
+opentab --harness vscode                     # Copilot Chat in VS Code (every installed variant)
+opentab --harness pi                         # pi-agent (default ~/.pi/agent/sessions)
+opentab --harness openclaw                   # OpenClaw gateway (default ~/.openclaw)
+opentab --harness zaly                       # zaly (default ~/.local/share/zaly)
 opentab --csv requests.csv                   # a CSV of logged API requests (or --jsonl)
-opentab --source all                         # all present sources, merged
+opentab --harness all                        # all present harnesses, merged
 ```
 
-`--source auto` (the default) restores your last-used source, else **merges every
-present source** when more than one exists. The active source shows as a header chip;
-**switch live with `c`** from anywhere, overlays included.
+`--harness auto` (the default) restores your last-used harness, else **merges every
+present harness** when more than one exists. The active harness shows as a header chip;
+**switch live with `c`** from anywhere, overlays included. (`--source` still works as a
+deprecated alias.)
 
-## What each source supports
+## What each harness supports
 
-Every source feeds the same browser — months, days, projects, sessions, models,
+Every harness feeds the same browser — months, days, projects, sessions, models,
 trends. What each tool's records support on top:
 
-| Source | Cost | Subagent tree | Turns | Tools |
+| Harness | Cost | Subagent tree | Turns | Tools |
 |--------|------|:---:|:---:|:---:|
 | OpenCode | real recorded | ✓ | ✓ | ✓ |
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ |
@@ -51,7 +52,7 @@ trends. What each tool's records support on top:
 per tool call and MCP server · ¹ headerless: the OTEL export captures no prompt text ·
 ² with the optional `tool` column.</sub>
 
-### Token-only sources
+### Token-only harnesses
 
 The whole TUI works the same everywhere — with two differences for the token-only
 tools (Claude Code, Codex, and Copilot, CLI and VS Code alike):
@@ -144,7 +145,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   tool round, so long agentic turns under-count input. Projects come from each
   workspace's folder and roll up to the git root; empty-window sessions group under
   "(no workspace)". Sessions the panel merely opened (no tokens) are ignored — merely
-  installing VS Code never surfaces the source.
+  installing VS Code never surfaces the harness.
 
 ## pi-agent
 
@@ -191,7 +192,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 - **Reads** any CSV (`--csv`) or NDJSON (`--jsonl`) of logged API requests, one request
   per row/line — auto-discovered at `~/.config/opentab/requests.csv` /
   `requests.jsonl` if present. Log your own gateway or proxy traffic and browse it
-  like any other source.
+  like any other harness.
 - **Cost**: per row — a populated cost column is real spend; rows without one are
   estimated under `$`.
 - **Notes**: each request is one turn on the Turns tab, grouped under its `prompt`;
@@ -222,15 +223,15 @@ are a timestamp, a model, and input/output token counts; everything else is opti
 
 Models are provider-prefixed by inferred family (`claude-*` → `anthropic/`, `gpt-*`/
 `o3` → `openai/`, `gemini-*` → `google/`) so they price and group like every other
-source's.
+harness's.
 
-## The merged view (`--source all`)
+## The merged view (`--harness all`)
 
-`--source all` merges every present source: the same repo across tools rolls up into
-one project row, every session row shows its origin (a `Src` column,
+`--harness all` merges every present harness: the same repo across tools rolls up into
+one project row, every session row shows its origin (a `Hns` column,
 `[oc]`/`[cc]`/`[cx]`/`[cp]`/`[vs]`/`[pi]`/`[ocl]`/`[csv]`/`[jl]` tags elsewhere), and
-Trends gains a **Sources** tab. `$` reprices the unpriced usage across all of them.
+Trends gains a **Harnesses** tab. `$` reprices the unpriced usage across all of them.
 
-With more than one source present, `--demo` **defaults to this merged view** and
+With more than one harness present, `--demo` **defaults to this merged view** and
 anonymizes every backend under one shared scale, so the cross-tool proportion stays
 truthful.

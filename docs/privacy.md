@@ -1,6 +1,6 @@
 # Privacy — what it touches
 
-Local-only, no telemetry, no accounts — OpenTab opens every source file
+Local-only, no telemetry, no accounts — OpenTab opens every harness file
 **read-only**, so it doesn't modify any of them. Your tools already keep the ledger;
 OpenTab is just the reader.
 
@@ -22,7 +22,7 @@ To fold git worktrees into their main repo it also reads project `.git` files (n
 
 Nothing near your tools' data — only its own files:
 
-- `~/.config/opentab/state.json` — a small preferences file (your last source,
+- `~/.config/opentab/state.json` — a small preferences file (your last harness,
   range, and sort; disable with `--no-state`).
 - `~/.config/opentab/prices.json` — the optional model-price cache, written **only**
   when you run `--refresh-models` or press `r` in the `P` overlay.

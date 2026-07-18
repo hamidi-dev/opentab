@@ -129,7 +129,7 @@ def test_export_sources_tab_exports_the_source_breakdown():
     app.store.combined = True  # the Sources tab only appears in the merged view
     app.view = "zoom"
     app.focus = "months"
-    app.tab = app.current_tabs().index("Sources")
+    app.tab = app.current_tabs().index("Harnesses")
     scope, header, rows = app._export_dataset()
     assert scope == "sources"
     assert header == ["source", "cost", "tokens", "sessions"]

@@ -5,7 +5,7 @@ These pages hold the full detail:
 
 | Page | What's in it |
 |------|--------------|
-| [Data sources](sources.md) | Every supported tool — where its records live, how cost is derived, quirks, the CSV/JSONL schema, and the merged `all` view |
+| [Data harnesses](sources.md) | Every supported tool — where its records live, how cost is derived, quirks, the CSV/JSONL schema, and the merged `all` view |
 | [Keys & navigation](keys.md) | The complete keymap, the browse → zoom → session model, overlays, custom launcher hooks, and what persists between runs |
 | [Pricing & the `$` view](pricing.md) | How costs are attributed, the `$` what-if estimate, the `P` price table and models.dev catalog, pinning, and refreshing rates |
 | [The web browser](web.md) | `--html`, `--serve`, and `--web` — the self-contained page, the live server, deep links, and security notes |

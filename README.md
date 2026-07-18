@@ -33,7 +33,7 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
 - **Drill, don't scroll** — month → day → project → session → model, down the recursive
   subagent tree, with a live fuzzy filter (fzf-style) and live date-range scoping.
 - **Trends** — daily / weekly / monthly charts, a calendar spend heatmap, and model /
-  provider / source rankings; every one navigable down to a single session.
+  provider / harness rankings; every one navigable down to a single session.
 - **Turns and Tools** — per-turn cost over time inside a session, and token attribution
   per tool call.
 - **Context** — a session's context window over time: a heat-shaded growth curve with
@@ -50,7 +50,7 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
   Monokai, Synthwave '84, Vesper and more, light and dark, shared by the TUI (`C`) and
   the web page.
 - **Quality of life** — git worktrees fold into their repo, CSV export of any view, and
-  your source, range, sort, and `$` view are remembered between runs.
+  your harness, range, sort, and `$` view are remembered between runs.
 - **Private by construction** — local-only, read-only, no telemetry, no accounts; a demo
   mode anonymizes everything for screenshots and live demos.
 
@@ -111,27 +111,28 @@ pipx install .        # or `pip install -e .` for a live-editable checkout
 opentab                          # open the browser, all time
 opentab --days 30                # start within a window (rescope live with R)
 opentab --since 2026-05-01 --until 2026-05-31
-opentab --source claude          # one tool only (switch live with c)
+opentab --harness claude         # one tool only (switch live with c)
 opentab --demo                   # safe for live demos / screenshots
 opentab --web                    # the same browser, in your web browser
 ```
 
 Everything is discoverable in-app — **`?` shows the full keymap**, every panel and
 overlay documented. The full reference lives in **[docs/](docs/README.md)**: data
-sources, keys, pricing, the web browser, Windows/WSL, and privacy.
+harnesses, keys, pricing, the web browser, Windows/WSL, and privacy.
 
-## Data sources
+## Data harnesses
 
-OpenTab reads the local records each AI coding tool keeps. Pick one with `--source`,
-point its flag at a non-default location, or just pass a file path (`opentab
-requests.csv`, `opentab path/to/opencode.db`) and the source is inferred. `--source
-auto` (the default) restores your last-used source, else **merges every present
-source** when more than one exists; **switch live with `c`**.
+OpenTab reads the local records each AI coding tool keeps. Pick one with `--harness`
+(`--source` still works as a deprecated alias), point its flag at a non-default
+location, or just pass a file path (`opentab requests.csv`, `opentab
+path/to/opencode.db`) and the harness is inferred. `--harness auto` (the default)
+restores your last-used harness, else **merges every present harness** when more than
+one exists; **switch live with `c`**.
 
-Every source feeds the same browser — months, days, projects, sessions, models, trends.
+Every harness feeds the same browser — months, days, projects, sessions, models, trends.
 What each tool's records support on top:
 
-| Source | Cost | Subagent tree | Turns | Tools | Context |
+| Harness | Cost | Subagent tree | Turns | Tools | Context |
 |--------|------|:---:|:---:|:---:|:---:|
 | OpenCode | real recorded | ✓ | ✓ | ✓ | curve |
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
@@ -153,11 +154,11 @@ column · ³ Codex records per-turn deltas of a cumulative total, not per-reques
 prompt sizes, so an honest curve isn't derivable · ⁴ only with a real `session_id`
 column — a synthetic per-day session interleaves unrelated conversations.</sub>
 
-**[docs/sources.md](docs/sources.md)** has the full detail per source — where each
+**[docs/sources.md](docs/sources.md)** has the full detail per harness — where each
 tool's records live, its flags and env vars, how cost is derived, quirks (Copilot's
 opt-in OTEL export, Codex's cumulative counters, the pi/OpenClaw/zaly
 metered-vs-subscription split, …), the CSV/JSONL schema, and the merged
-`--source all` view.
+`--harness all` view.
 
 ## Keys
 
@@ -172,18 +173,18 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | `1`/`2`/`3` · `0` | Jump to a panel — each wears its number in its title (`[1] Years` … `[0]` the detail pane) |
 | `+` | Maximize / restore the drilled-in detail pane (the sidebar stays clickable beside it) |
 | Mouse | Wheel scrolls, click selects, double-click drills, a column-header click sorts |
-| `T` | Trends — cost charts, the calendar heatmap, model/provider/source rankings; every tab drills down to a session |
+| `T` | Trends — cost charts, the calendar heatmap, model/provider/harness rankings; every tab drills down to a session |
 | `$` / `P` | What-if pricing at API list rates, and the price table behind it |
 | `w` | What-if **model** — arm one model as a comparison target ("what if the expensive model had done the subagents' work too?"); the selected session's Subagents tab then adds a What-if column pricing each node's tokens at that model's rates, and its Overview the whole session: *your models* vs *all at the target*, **both at list rates** — the only apples-to-apples basis, so a session that delegated nothing still answers. Session-scoped: every other view keeps its actual cost, and `$` keeps working. `w` again clears it |
 | `R` / `a` | Scope to a date range (`30d`, `2026-05`, `start..end`, …) / back to all time |
 | `f` | Live fuzzy filter, fzf-style |
-| `c` / `C` / `D` | Switch data source · colour theme · demo mode — from anywhere, overlays included |
+| `c` / `C` / `D` | Switch data harness · colour theme · demo mode — from anywhere, overlays included |
 | `L` | Relaunch the session in its own tool — tmux window/split/popup, or [your own launcher](docs/keys.md#custom-launchers) |
 | `n` | Note ✎ the selected session — why it cost what it did. Searchable, exported, kept in its own file |
 | `e` / `o` | Export the current view to CSV / open the project's directory |
 | `?` / `q` | Help / quit |
 
-The active **source, range, sort, ignored projects, and `$` what-if view are
+The active **harness, range, sort, ignored projects, and `$` what-if view are
 remembered between runs** (stored in `~/.config/opentab/state.json`; pass `--no-state`
 to disable, and `--demo` does not persist). A `w` **target model is not** — it's a
 transient analysis mode, and a remembered one would quietly re-frame the next run's
@@ -256,7 +257,7 @@ How the estimate is priced, the `P` views, pinning, and refreshing rates
 
 ## What it touches
 
-Local-only, no network, no telemetry, no accounts — it opens every source file
+Local-only, no network, no telemetry, no accounts — it opens every harness file
 **read-only**, so it doesn't modify any of them. It writes only its own files (prefs
 and caches under `~/.config/opentab/`, plus the CSV/HTML exports you explicitly ask
 for), and runs external programs only on the key you press. The full list of

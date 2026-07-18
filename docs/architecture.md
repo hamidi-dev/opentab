@@ -9,7 +9,7 @@ for contributions (runtime constraints, tests, commit conventions) live in
 - **Standard library only at runtime.** `curses` + `sqlite3` + stdlib. The only
   third-party runtime dependency is `windows-curses` (Windows-only, providing the
   missing stdlib `curses`); never add another. ruff/hatchling are dev/build tooling.
-- **Read-only on user data.** The stores open every source read-only and must not
+- **Read-only on user data.** The stores open every harness read-only and must not
   write to it. The only files OpenTab writes are its own — prefs, price cache,
   rollup cache, and the exports you explicitly ask for (see
   [Privacy](privacy.md#everything-it-writes)).
@@ -51,7 +51,7 @@ back-references go under `if TYPE_CHECKING:`.
 
 ### Stores
 
-One store per data source (see [Data sources](sources.md) for what each reads).
+One store per data harness (see [Data harnesses](sources.md) for what each reads).
 Every store implements the same four-method contract:
 
 | Method | Returns |
@@ -81,7 +81,7 @@ Notable store internals:
 - **`Store` (OpenCode)** is schema-adaptive: OpenCode's schema varies by version, so
   it probes columns and builds cost/token SQL dynamically — always go through those
   helpers, never hard-code column names.
-- **`CombinedStore`** wraps several backends for `--source all`: workflow ids are
+- **`CombinedStore`** wraps several backends for `--harness all`: workflow ids are
   globally unique, so it routes the per-session methods by an `id → backend` map;
   `records_cost` is the AND of its backends; `combined=True` turns on the per-session
   origin markers.
@@ -99,12 +99,12 @@ Notable store internals:
 the modal prompt line. `self.view` walks `"browse"` → `"zoom"` → `"session"`; zoom
 is lazygit-style (same split, roles swapped), the session view full-screen. Overlays
 (`trends`, `help`, `show_prices`) are booleans on top of any view, and the theme/
-source pickers float above the overlays — `handle_key` checks the pickers first,
+harness pickers float above the overlays — `handle_key` checks the pickers first,
 which is what lets an open overlay act as the live preview behind them.
 
 `current_tabs()` is the source of truth for detail tabs (never index a class tab
 tuple directly): it appends Turns/Tools per the selected session's `supports_*`
-gates and injects Sources in the merged view, so `draw_detail` dispatches session
+gates and injects Harnesses in the merged view, so `draw_detail` dispatches session
 tabs by name, not index.
 
 ### Renderer
@@ -124,7 +124,7 @@ by regex at paint time.
   per session/day/month — never re-queried per workflow.
 - The Turns and Tools tabs are the opposite trade-off: cheap per-session fetches on
   drill-in, memoized (`_turns_by_session`, `_tool_by_session`) and cleared on
-  reload/source switch. Drilling into a session never freezes mid-draw — a
+  reload/harness switch. Drilling into a session never freezes mid-draw — a
   "Loading session…" frame paints first and the prefetch tick does the blocking work.
 - `ranged_workflows` → `all_workflows` are cached properties; anything that mutates
   range/ignored state must call `_invalidate_workflow_cache()`.
@@ -174,7 +174,7 @@ creating thread — and binds localhost by default.
 
 Stores transform rows in memory on load: deterministic fake titles/paths/models,
 synthetic prices for `$0.00` rows, and one hidden per-process factor scaling every
-cost/token so list-price math can't recover real dollars. Under `--source all` the
+cost/token so list-price math can't recover real dollars. Under `--harness all` the
 `CombinedStore` forces one shared factor so cross-tool proportions stay truthful.
 Demo never persists state and disables clipboard/file-opener side effects.
 

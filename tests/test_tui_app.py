@@ -1906,7 +1906,7 @@ def test_source_menu_not_opened_with_single_source():
     try:
         app.open_source_menu()
         assert app.source_menu is False
-        assert app.notice == "only one data source available"
+        assert app.notice == "only one harness available"
     finally:
         ot.sources.source_cycle = app._orig_cycle
 

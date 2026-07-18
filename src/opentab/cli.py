@@ -39,7 +39,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="opentab", description="OpenTab — OpenCode spend TUI")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
-        "--source",
+        "--harness",
+        "--source",  # deprecated alias, kept working; dest stays `source` internally
+        dest="source",
+        metavar="HARNESS",
         choices=(
             "auto",
             "opencode",
@@ -56,50 +59,51 @@ def parse_args() -> argparse.Namespace:
             "all",
         ),
         default="auto",
-        help="data source: opencode (SQLite), claude (Claude Code transcripts), codex "
-        "(Codex CLI rollouts), hermes (Hermes Agent DB), csv (a CSV of logged API "
-        "requests, e.g. GitHub Copilot), jsonl (an NDJSON of logged API requests), "
-        "copilot (GitHub Copilot CLI via its OTEL export), vscode (Copilot Chat sessions "
-        "in VS Code), pi (pi-agent sessions), openclaw (OpenClaw gateway sessions), "
-        "zaly (Zaly sessions), or all (merged); auto merges every present "
-        "source (default: auto). Or just pass a file path -- e.g. `opentab requests.csv`",
+        help="which harness's spend to browse: opencode (SQLite), claude (Claude Code "
+        "transcripts), codex (Codex CLI rollouts), hermes (Hermes Agent DB), csv (a CSV of "
+        "logged API requests, e.g. GitHub Copilot), jsonl (an NDJSON of logged API "
+        "requests), copilot (GitHub Copilot CLI via its OTEL export), vscode (Copilot Chat "
+        "sessions in VS Code), pi (pi-agent sessions), openclaw (OpenClaw gateway "
+        "sessions), zaly (Zaly sessions), or all (merged); auto merges every present "
+        "harness (default: auto). Or just pass a file path -- e.g. `opentab requests.csv` "
+        "(--source is a deprecated alias for --harness)",
     )
     parser.add_argument(
         "path",
         nargs="?",
         default=None,
         metavar="PATH",
-        help="a CSV file, an OpenCode .db, etc. to view -- its source is picked "
+        help="a CSV file, an OpenCode .db, etc. to view -- its harness is picked "
         "automatically (e.g. `opentab requests.csv`). Same as passing the matching "
-        "--csv/--db flag; with --source it fills that source's path.",
+        "--csv/--db flag; with --harness it fills that harness's path.",
     )
     parser.add_argument("--db", default=os.path.expanduser("~/.local/share/opencode/opencode.db"))
     parser.add_argument(
         "--claude-dir",
         default=os.path.expanduser("~/.claude/projects"),
-        help="Claude Code projects directory (for --source claude)",
+        help="Claude Code projects directory (for --harness claude)",
     )
     parser.add_argument(
         "--codex-dir",
         default=os.path.expanduser("~/.codex/sessions"),
-        help="Codex CLI sessions directory (for --source codex)",
+        help="Codex CLI sessions directory (for --harness codex)",
     )
     parser.add_argument(
         "--hermes-db",
         default=os.path.expanduser("~/.hermes/state.db"),
-        help="Hermes Agent database path (for --source hermes)",
+        help="Hermes Agent database path (for --harness hermes)",
     )
     parser.add_argument(
         "--copilot-dir",
         default=os.path.expanduser("~/.copilot/otel"),
-        help="GitHub Copilot CLI OpenTelemetry export directory (for --source copilot); "
+        help="GitHub Copilot CLI OpenTelemetry export directory (for --harness copilot); "
         "the file named by $COPILOT_OTEL_FILE_EXPORTER_PATH is also read",
     )
     parser.add_argument(
         "--vscode-dir",
         default=None,
         help="a VS Code User directory (or chatSessions directory) holding Copilot Chat "
-        "sessions (for --source vscode); by default every installed variant (Code, "
+        "sessions (for --harness vscode); by default every installed variant (Code, "
         "Code - Insiders, VSCodium) is scanned. From WSL, point it at the Windows-side "
         "store (not scanned by default -- reading through /mnt/c slows startup), e.g. "
         "alias opentab='opentab --vscode-dir \"/mnt/c/Users/<you>/AppData/Roaming/Code/User\"'",
@@ -107,19 +111,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pi-dir",
         default=_default_pi_dir(),
-        help="pi-agent sessions directory (for --source pi); honors $PI_AGENT_DIR, "
+        help="pi-agent sessions directory (for --harness pi); honors $PI_AGENT_DIR, "
         "default ~/.pi/agent/sessions",
     )
     parser.add_argument(
         "--openclaw-dir",
         default=_default_openclaw_dir(),
-        help="OpenClaw gateway home holding agents/ and openclaw.json (for --source "
+        help="OpenClaw gateway home holding agents/ and openclaw.json (for --harness "
         "openclaw); honors $OPENCLAW_DIR, default ~/.openclaw",
     )
     parser.add_argument(
         "--zaly-dir",
         default=_default_zaly_dir(),
-        help="Zaly data directory holding sessions/ (for --source zaly); honors "
+        help="Zaly data directory holding sessions/ (for --harness zaly); honors "
         "$ZALY_DATA and $ZALY_ROOT, default ~/.local/share/zaly",
     )
     parser.add_argument(
@@ -169,7 +173,7 @@ def parse_args() -> argparse.Namespace:
         "(OpenCode, Claude Code, Codex, Hermes, pi, OpenClaw, Zaly); with DIR only "
         "sessions of that project count, with a session id (ses_... or a UUID -- the "
         "id is matched to its own backend) exactly that session is priced, and "
-        "--source pins one backend. Made for a tmux status line: set -g "
+        "--harness pins one backend. Made for a tmux status line: set -g "
         "status-right '#(opentab --status \"#{pane_current_path}\")'. A leading ~ "
         "marks a list-price estimate for usage recorded at $0 (subscription models)",
     )

@@ -360,7 +360,7 @@ class Renderer:
                 current = self.current_tabs()[self.tab % len(self.current_tabs())]
                 if current == "Overview":
                     return self.project_overview(project, content_width)
-                if current == "Sources":
+                if current == "Harnesses":
                     return self.project_sources(project, content_width)
                 if current == "Models":
                     return self.project_models(project, content_width)
@@ -373,7 +373,7 @@ class Renderer:
                 current = self.current_tabs()[self.tab % len(self.current_tabs())]
                 if current == "Overview":
                     return self.year_overview(year, content_width)
-                if current == "Sources":
+                if current == "Harnesses":
                     return self.year_sources(year, content_width)
                 if current == "Models":
                     return self.year_models(year, content_width)
@@ -388,7 +388,7 @@ class Renderer:
                 current = self.current_tabs()[self.tab % len(self.current_tabs())]
                 if current == "Overview":
                     return self.month_overview(month, content_width)
-                if current == "Sources":
+                if current == "Harnesses":
                     return self.month_sources(month, content_width)
                 if current == "Models":
                     return self.month_models(month, content_width)
@@ -402,7 +402,7 @@ class Renderer:
             current = self.current_tabs()[self.tab % len(self.current_tabs())]
             if current == "Overview":
                 return self.day_overview(day, content_width)
-            if current == "Sources":
+            if current == "Harnesses":
                 return self.day_sources(day, content_width)
             if current == "Projects":
                 return self.day_projects(day, content_width)
@@ -836,12 +836,12 @@ class Renderer:
         return self.browse_mode != "projects" and not self.zoom_project
 
     def src_col(self, workflow: Workflow | None = None) -> str:
-        # The "Src" column in the session tables (None = the header cell), only
-        # when sources are merged — the one view where a row's origin isn't implied.
+        # The "Hns" (harness) column in the session tables (None = the header cell), only
+        # when harnesses are merged — the one view where a row's origin isn't implied.
         if not getattr(self.store, "combined", False):
             return ""
         if workflow is None:
-            return "Src "
+            return "Hns "
         return f"{self._source_abbrev(workflow):<3} "
 
     # --- The session table: one builder, two frames -------------------------------
@@ -1133,7 +1133,7 @@ class Renderer:
         peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
         namew = min(max(len(s) for s, _ in rows), max(10, w - 48))
         barw = max(3, min(20, w - namew - 44))
-        header = f"  {'Source':<{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}"
+        header = f"  {'Harness':<{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}"
         self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
         visible = max(1, h - 5)
         idx = max(0, min(self.source_index, len(rows) - 1))
@@ -1379,12 +1379,12 @@ class Renderer:
         if current == "Sessions" and self.view == "zoom":
             self.draw_sessions_picker(stdscr, y, x, h, w)
             return
-        if current == "Sources" and self.view == "zoom":
+        if current == "Harnesses" and self.view == "zoom":
             self.draw_sources_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.project_overview(project, w - 4)
-        elif current == "Sources":
+        elif current == "Harnesses":
             lines = self.project_sources(project, w - 4)
         elif current == "Models":
             lines = self.project_models(project, w - 4)
@@ -1418,12 +1418,12 @@ class Renderer:
         if current == "Projects" and self.view == "zoom":
             self.draw_projects_picker(stdscr, y, x, h, w)
             return
-        if current == "Sources" and self.view == "zoom":
+        if current == "Harnesses" and self.view == "zoom":
             self.draw_sources_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.year_overview(year, w - 4)
-        elif current == "Sources":
+        elif current == "Harnesses":
             lines = self.year_sources(year, w - 4)
         elif current == "Models":
             lines = self.year_models(year, w - 4)
@@ -1453,12 +1453,12 @@ class Renderer:
         if current == "Projects" and self.view == "zoom":
             self.draw_projects_picker(stdscr, y, x, h, w)
             return
-        if current == "Sources" and self.view == "zoom":
+        if current == "Harnesses" and self.view == "zoom":
             self.draw_sources_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.month_overview(month, w - 4)
-        elif current == "Sources":
+        elif current == "Harnesses":
             lines = self.month_sources(month, w - 4)
         elif current == "Models":
             lines = self.month_models(month, w - 4)
@@ -1544,12 +1544,12 @@ class Renderer:
         if current == "Projects" and self.view == "zoom":
             self.draw_projects_picker(stdscr, y, x, h, w)
             return
-        if current == "Sources" and self.view == "zoom":
+        if current == "Harnesses" and self.view == "zoom":
             self.draw_sources_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.day_overview(day, w - 4)
-        elif current == "Sources":
+        elif current == "Harnesses":
             lines = self.day_sources(day, w - 4)
         elif current == "Projects":
             lines = self.day_projects(day, w - 4)
@@ -2225,7 +2225,7 @@ class Renderer:
             f"Title:    {workflow.title}",
         ]
         if workflow.source:
-            lines.append(f"Source:   {workflow.source}")
+            lines.append(f"Harness:  {workflow.source}")
         lines += self.note_lines(workflow, width)
         lines.append("")
         lines += self._money_overview(workflow, width)
@@ -3343,13 +3343,13 @@ class Renderer:
         # highlight, Enter switches, Esc cancels (handled in handle_source_menu_key).
         entries = self.source_menu_entries()
         idx = self.source_menu_index % len(entries) if entries else 0
-        lines = [("Browse spend recorded by which tool:", curses.color_pair(4)), ("", 0)]
+        lines = [("Browse spend recorded by which harness:", curses.color_pair(4)), ("", 0)]
         for offset, (_key, label, is_current) in enumerate(entries):
             marker = "●" if is_current else "○"
             suffix = "  (current)" if is_current else ""
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {label}{suffix}", attr))
-        self.draw_modal(stdscr, scr_h, scr_w, "Switch source · j/k · Enter · Esc", lines)
+        self.draw_modal(stdscr, scr_h, scr_w, "Switch harness · j/k · Enter · Esc", lines)
 
     WHATIF_TIERS = ("your models", "models.dev")  # the picker's two row sets, Tab-flipped
 
@@ -3590,7 +3590,7 @@ class Renderer:
             lines = self.trend_monthly(inner_w, content_h)
         elif current == "Providers":
             lines = self.trend_providers(inner_w, content_h)
-        elif current == "Sources":
+        elif current == "Harnesses":
             lines = self.trend_sources(inner_w, content_h)
         else:
             lines = self.trend_models(inner_w, content_h)
@@ -4256,13 +4256,13 @@ class Renderer:
         selectable: bool = False,
     ) -> list[str]:
         # Spend grouped by the *tool* it came from (OpenCode / Claude Code / Codex).
-        # Shared by the Trends "Sources" tab (whole range, selectable: the rows get
-        # the trend cursor + Enter drill) and the per-month/day/project "Sources"
+        # Shared by the Trends "Harnesses" tab (whole range, selectable: the rows get
+        # the trend cursor + Enter drill) and the per-month/day/project "Harnesses"
         # detail tabs (a scoped slice, plain). Subscription rows (Claude Code,
         # Codex) cost $0 until "$" reprices their tokens, so the bar reacts live.
         all_rows = self.source_rows(workflows)
         if not all_rows:
-            return ["# Spend by source", "", "No sessions in the active range."]
+            return ["# Spend by harness", "", "No sessions in the active range."]
         if selectable and limit is not None:
             _idx, start, shown = self._trend_cursor_window(len(all_rows), limit)
             rows = all_rows[start : start + shown]
@@ -4278,9 +4278,9 @@ class Renderer:
         namew = min(max(len(s) for s, _ in rows), max(10, width - 44))
         barw = max(3, min(20, width - namew - 38))
         lines = [
-            "# Spend by source",
+            "# Spend by harness",
             "",
-            f"{'Source':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}",
+            f"{'Harness':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}",
         ]
         if selectable:
             self._trend_rows_at = (len(lines), len(rows), start)

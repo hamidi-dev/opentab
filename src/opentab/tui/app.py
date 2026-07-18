@@ -138,7 +138,7 @@ class App:
     # Columns whose natural order is ascending (a->z / shallow-first / cheap-first);
     # every other column sorts high->low by default. A header re-click flips it.
     ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth", "eff"})
-    trend_tabs = ("Daily", "Weekly", "Monthly", "Calendar", "Models", "Providers", "Sources")
+    trend_tabs = ("Daily", "Weekly", "Monthly", "Calendar", "Models", "Providers", "Harnesses")
     # The `L` launch picker's targets: (shortcut key, kind, label). "copy" hands the
     # resume command to the clipboard and is always offered; the tmux window/split/
     # popup spawns need tmux or a launcher hook (launch_targets filters them out).
@@ -1850,7 +1850,7 @@ class App:
         # and Enter to switch (Esc cancels). With a single source there's nothing to pick.
         order = sources.source_cycle(self.args)
         if len(order) < 2:
-            self.notify("only one data source available", "error")
+            self.notify("only one harness available", "error")
             return
         cur = self.source_key if self.source_key in order else order[0]
         self.source_menu_index = order.index(cur)
@@ -1910,7 +1910,7 @@ class App:
         # Relative hop (kept for completeness); the menu uses select_source directly.
         order = sources.source_cycle(self.args)
         if len(order) < 2:
-            self.notify("only one data source available", "error")
+            self.notify("only one harness available", "error")
             return
         cur = self.source_key if self.source_key in order else order[0]
         self.select_source(order[(order.index(cur) + step) % len(order)])
@@ -2410,7 +2410,7 @@ class App:
             return self._projects_dataset(self.zoom_projects())
         if tab == "Models":
             return self._models_dataset(self.aggregate_models(self._active_scope_workflows()))
-        if tab == "Sources":
+        if tab == "Harnesses":
             return self._sources_dataset(self._active_scope_workflows())
         # Overview / Sessions both sit over the same scoped session list.
         return self._sessions_dataset(self.current_sessions())
@@ -2927,7 +2927,7 @@ class App:
     @property
     def on_sources_tab(self) -> bool:
         tabs = self.current_tabs()
-        return tabs[self.tab % len(tabs)] == "Sources"
+        return tabs[self.tab % len(tabs)] == "Harnesses"
 
     def in_project_sort_context(self) -> bool:
         return (self.view == "browse" and self.browse_mode == "projects") or (
@@ -3300,7 +3300,7 @@ class App:
                 # (popped before a project drill: it was layered on top of one).
                 self.zoom_source = None
                 tabs = self.current_tabs()
-                self.tab = tabs.index("Sources") if "Sources" in tabs else 0
+                self.tab = tabs.index("Harnesses") if "Harnesses" in tabs else 0
             elif self.zoom_project and self.browse_mode != "projects":
                 # Leave a project's sessions, back to the Projects list of this zoom.
                 self.zoom_project = None
@@ -3322,7 +3322,7 @@ class App:
         tab = ret[0]
         if tab == "drill":
             _tag, kind, key, row = ret
-            ranked = {"model": "Models", "provider": "Providers", "source": "Sources"}[kind]
+            ranked = {"model": "Models", "provider": "Providers", "source": "Harnesses"}[kind]
             self.trends = True
             self.trend_tab = self.trend_tabs.index(ranked)
             keys = self.trend_ranked_keys()
@@ -3772,7 +3772,7 @@ class App:
             return [name for name, _cost in self.trend_model_rows()]
         if current == "Providers":
             return [p for p, _it in self.trend_provider_rows()]
-        if current == "Sources":
+        if current == "Harnesses":
             return [s for s, _it in self.source_rows(self.all_workflows)]
         return []
 
@@ -3971,7 +3971,7 @@ class App:
         keys = self.trend_ranked_keys()
         if not keys:
             return
-        kind = {"Models": "model", "Providers": "provider", "Sources": "source"}[current]
+        kind = {"Models": "model", "Providers": "provider", "Harnesses": "source"}[current]
         self.trend_drill = (kind, keys[max(0, min(self.trend_row_index, len(keys) - 1))])
         self.trend_drill_index = 0
 
@@ -5063,7 +5063,7 @@ class App:
         # after Overview. With one backend every row is the same source (a 100%
         # bar), so the tab would be noise -- omit it unless sources are combined.
         if getattr(self.store, "combined", False):
-            return base[:1] + ("Sources",) + base[1:]
+            return base[:1] + ("Harnesses",) + base[1:]
         return base
 
     def current_sort_options(self) -> tuple[str, ...]:

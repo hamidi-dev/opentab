@@ -15,7 +15,7 @@ opentab
 
 `windows-curses` is just an OS-level provider for the stdlib `curses` module — the
 lone runtime dependency, and only on Windows. Confirmed working against the
-**OpenCode** source; the file-based backends read plain JSON and should behave the
+**OpenCode** harness; the file-based backends read plain JSON and should behave the
 same, but are less exercised on native Windows. The `o` key opens the selected
 directory in Explorer (via `os.startfile`), so reveal-in-folder works natively too.
 If `curses` is missing, OpenTab prints a short hint (install `windows-curses`)

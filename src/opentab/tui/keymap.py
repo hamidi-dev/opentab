@@ -129,8 +129,8 @@ def trend_tab(app: App) -> str:
 
 
 def _ranked_trend(app: App) -> bool:
-    # The Models / Providers / Sources tabs: rows, not bars.
-    return trend_tab(app) in ("Models", "Providers", "Sources")
+    # The Models / Providers / Harnesses tabs: rows, not bars.
+    return trend_tab(app) in ("Models", "Providers", "Harnesses")
 
 
 def _trend_jk(app: App) -> str:
@@ -168,7 +168,7 @@ def _enter_opens_something(app: App) -> bool:
     if app.view == "browse":
         return True
     if app.view == "zoom":
-        return app.active_tab_name() in ("Sessions", "Projects", "Sources")
+        return app.active_tab_name() in ("Sessions", "Projects", "Harnesses")
     return False
 
 
@@ -582,10 +582,10 @@ KEYS: tuple[Key, ...] = (
     Key(
         id="source",
         keys="c",
-        summary="switch data source",
+        summary="switch harness",
         section="global",
         when=lambda app: app.can_switch_source(),
-        chip="c source",
+        chip="c harness",
         active=lambda app: app.source_menu,
         binds=("c",),
     ),

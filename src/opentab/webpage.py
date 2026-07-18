@@ -434,7 +434,7 @@ const EXPANDED = new Set(); // table ids whose "show all" is open (reset per vie
 const VIEW = { calYear: null };
 let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null }; // per-session Turns/Tools/Context (serve)
 // The Trends overlay (T) -- mirrors the TUI's 7-tab Trends over the whole range.
-const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Sources'];
+const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Harnesses'];
 let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null };
 // The P prices overlay: the models.dev list-price reference behind $ (app-wide,
 // never range-scoped -- like the TUI). eff sorts cheapest-first; others high→low.
@@ -968,7 +968,7 @@ function tabsFor(sc) {
     m: ['Overview', 'Models', 'Projects', 'Sessions'],
     d: ['Overview', 'Projects', 'Sessions'],
     p: ['Overview', 'Models', 'Sessions'] }[sc.kind].slice();
-  if (META.combined) base.splice(1, 0, 'Sources');
+  if (META.combined) base.splice(1, 0, 'Harnesses');
   return base;
 }
 
@@ -1096,7 +1096,7 @@ function sessionCols() {
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
     { key: 'subagents', label: 'Subagents', align: 'r', fmt: r => r.subagents || h('span', { class: 'mut' }, '·') },
   ];
-  if (META.combined) cols.push({ key: 'source', label: 'Src', asc: true, fmt: r => h('span', { class: 'mut' }, r.source) });
+  if (META.combined) cols.push({ key: 'source', label: 'Hns', asc: true, fmt: r => h('span', { class: 'mut' }, r.source) });
   return cols;
 }
 function sessionsTable(id, ws) {
@@ -1119,7 +1119,7 @@ function sourcesTable(id, ws) {
   const rows = sourceRows(ws);
   const peak = Math.max(...rows.map(r => r.cost), 0);
   return table(id, [
-    { key: 'source', label: 'Source', asc: true },
+    { key: 'source', label: 'Harness', asc: true },
     { key: 'sessions', label: 'Sessions', align: 'r' },
     { key: 'cost', label: 'Cost', align: 'r', fmt: r => barCell(r.cost, peak) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
@@ -1534,7 +1534,7 @@ function renderDetail(sc, ws) {
     root.appendChild(pane('Models · ' + scopeLabel(sc), modelsTable('t-tab-models', rows)));
   } else if (TAB === 'Projects') root.appendChild(pane('Projects · ' + scopeLabel(sc), projectsTable('t-tab-projects', ws)));
   else if (TAB === 'Sessions') root.appendChild(pane('Sessions · ' + scopeLabel(sc), sessionsTable('t-tab-sessions', ws)));
-  else if (TAB === 'Sources') root.appendChild(pane('Sources · ' + scopeLabel(sc), sourcesTable('t-tab-sources', ws)));
+  else if (TAB === 'Harnesses') root.appendChild(pane('Harnesses · ' + scopeLabel(sc), sourcesTable('t-tab-sources', ws)));
   else if (TAB === 'Subagents') {
     // Nodes ride along only for a session that delegated. A solo session says "no
     // subagents" even with a target armed -- it has no tree to table, which is exactly
@@ -1847,7 +1847,7 @@ function trendSources() {
   const rows = sourceRows(W).map(r => ({ name: r.source, cost: r.cost, sessions: r.sessions, tokens: r.tokens }))
     .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
   if (!rows.length) return h('div', { class: 'hint' }, 'No sessions in the active range.');
-  return rankedBars(rows, { nameLabel: 'Source',
+  return rankedBars(rows, { nameLabel: 'Harness',
     onRow: r => { TRENDS.drill = { kind: 'source', key: r.name }; renderTrends(); },
     extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
 }
@@ -1860,7 +1860,7 @@ function renderTrends() {
   const tab = TRENDS.tab;
   const body = TRENDS.drill ? trendDrill()
     : ({ Daily: trendDaily, Weekly: trendWeekly, Monthly: trendMonthly, Calendar: trendCalendar,
-        Models: trendModels, Providers: trendProviders, Sources: trendSources }[tab])();
+        Models: trendModels, Providers: trendProviders, Harnesses: trendSources }[tab])();
   const footer = h('div', { class: 'tr-nav', style: 'margin-top:14px' });
   if (META.demo) footer.append(h('span', { class: 'tr-note' }, 'h/l tabs · j/k page · esc close'));
   else if (MODE === 'api') footer.append(h('span', { class: 'badge est' }, 'estimated · list prices'));
