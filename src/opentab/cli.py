@@ -372,6 +372,13 @@ def timings_command(args: argparse.Namespace) -> int:
         result = fn()
         return result, (time.perf_counter() - t0) * 1000.0
 
+    # --remote/--pull select the fleet, but their wiring in main() runs AFTER this command
+    # returns -- so honour them here too, else `opentab --remote --timings` would profile
+    # the local "all" merge and never touch the RemoteStore the user asked to measure.
+    if getattr(args, "remote", False) or getattr(args, "pull", None) is not None:
+        args.source = "remote"
+        args.remotes = getattr(args, "remotes", None) or default_remotes_dir()
+
     t_start = time.perf_counter()
     present, detect_ms = timed(lambda: sources.available_sources(args))
     source_key = resolve_source(args, {})  # no saved state -> measure a clean start
@@ -390,11 +397,11 @@ def timings_command(args: argparse.Namespace) -> int:
                 files = None
         _wf, wf_ms = timed(sub.workflows)
         _mb, mb_ms = timed(sub.model_breakdown)
-        backends.append([label, files, wf_ms + mb_ms, getattr(sub, "served_from_cache", None)])
+        backends.append([label, files, wf_ms + mb_ms, getattr(sub, "served_from_cache", None), sub])
     total_ms = (time.perf_counter() - t_start) * 1000.0
     backends.sort(key=lambda b: b[2], reverse=True)  # slowest backend first
 
-    flags = [c for _, _, _, c in backends if c is not None]
+    flags = [b[3] for b in backends if b[3] is not None]
     if flags and all(flags):
         warmth = "warm start · all cached"
     elif flags and any(flags):
@@ -416,11 +423,21 @@ def timings_command(args: argparse.Namespace) -> int:
     print(f"  build store     {fmt_ms(build_ms)}")
     print()
     print(f"  {'backend'.ljust(lbl)}  {'files':>5}  {'time':>10}")
-    for label, files, ms, cached in backends:
+    for label, files, ms, cached, sub in backends:
         fcell = str(files) if files is not None else "—"
         status = {True: "cached", False: "parsed"}.get(cached, "")
         bar = cost_bar(ms, peak, 12)
         print(f"  {label.ljust(lbl)}  {fcell:>5}  {fmt_ms(ms)}  {bar} {status}".rstrip())
+        # A fleet backend (RemoteStore) is many machines in one row -- break it down so the
+        # per-machine data volume shows (the v2 Turns/Tools/Context extras live in the file
+        # size). Biggest box first; sessions are the deduped kept count.
+        stats_fn = getattr(sub, "machine_stats", None)
+        if callable(stats_fn):
+            for m in sorted(stats_fn(), key=lambda s: s["bytes"], reverse=True):
+                kb = f"{m['bytes'] / 1024:,.0f} KB"
+                print(
+                    f"  {('  ↳ ' + str(m['label'])).ljust(lbl)}  {'':>5}  {m['sessions']:>5} sess  {kb:>10}"
+                )
     print()
     print(f"  {'total'.ljust(lbl)}  {'':>5}  {fmt_ms(total_ms)}")
     return 0

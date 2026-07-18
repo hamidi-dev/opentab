@@ -289,6 +289,7 @@ class RemoteStore:
         self._tools: dict[str, list[dict]] = {}
         self._context: dict[str, list[dict]] = {}
         self._curve_ok: set[str] = set()
+        self._file_sizes: dict[str, int] = {}  # label -> summary file bytes (for --timings)
         self.machines: list[str] = []  # labels loaded, in file order
         # Per-machine niceties for the Machines mode: the label -> {exported_at,
         # opentab_version, key}. `key` is the remotes.json name (decoded from the summary
@@ -320,6 +321,7 @@ class RemoteStore:
         curve_ok: set[str] = set()
         machines: list[str] = []
         info: dict[str, dict] = {}
+        sizes: dict[str, int] = {}  # label -> summary file size on disk, for --timings
         records: list[bool] = []
         # Seed with the excluded (live-local) ids so a summary re-stating one is dropped,
         # then dedup ids across machines (a rotated/synced session) on top.
@@ -335,6 +337,10 @@ class RemoteStore:
             stem = os.path.splitext(os.path.basename(path))[0]
             label = str(data.get("label") or stem)
             machines.append(label)
+            try:
+                sizes[label] = os.path.getsize(path)
+            except OSError:
+                sizes[label] = 0
             # The remotes.json key is the summary filename decoded (unquote reverses
             # _summary_filename's percent-encoding, incl. the leading-dot %2E guard) --
             # the handle an in-TUI refresh re-pulls this box by.
@@ -418,6 +424,7 @@ class RemoteStore:
         self._tools = tools
         self._context = context
         self._curve_ok = curve_ok
+        self._file_sizes = sizes
         self.machines = machines
         self._machine_info = info
 
@@ -433,6 +440,27 @@ class RemoteStore:
             name = demo_machine(label) if self.demo else label
             out[name] = {"live": False, **meta}
         return out
+
+    def _files(self) -> list[str]:
+        # The summary files backing this store -- the --timings "files" count (one per box).
+        return list(self._paths)
+
+    def machine_stats(self) -> list[dict]:
+        # Per-machine volume for the --timings breakdown: sessions kept (deduped, so a
+        # session re-stated by two boxes counts once on the box it was kept for) and the
+        # summary file's size on disk -- which is where the v2 extras show up. Read off the
+        # loaded state, no re-parse; raw labels (timings never runs the demo rename).
+        counts: dict[str, int] = {}
+        for w in self._wf:
+            counts[w.machine] = counts.get(w.machine, 0) + 1
+        return [
+            {
+                "label": label,
+                "sessions": counts.get(label, 0),
+                "bytes": self._file_sizes.get(label, 0),
+            }
+            for label in self.machines
+        ]
 
     def _apply_demo(self, wfs: list[Workflow]) -> None:
         # Anonymize the WORKFLOW rows (ids stay real, as everywhere in demo) and scale

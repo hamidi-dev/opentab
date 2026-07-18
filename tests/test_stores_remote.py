@@ -180,6 +180,20 @@ def test_malformed_extras_rows_normalize_instead_of_crashing():
         assert rs.context_breakdown("s1")[0]["est_tokens"] == 0
 
 
+def test_machine_stats_reports_per_machine_sessions_and_bytes():
+    # Feeds --timings' per-machine breakdown: sessions kept (deduped) + summary file size on
+    # disk, read off the loaded state with no re-parse. Bytes are where the v2 extras show up.
+    big = [workflow("a", "2026-07-15 10:00:00", cost=2.0), workflow("b", "2026-07-16 10:00:00")]
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, "big.json", _summary("big", big))
+        _write(d, "small.json", _summary("small", [workflow("c", "2026-07-15 10:00:00", cost=0.5)]))
+        rs = ot.RemoteStore(d, _parse([]))
+        stats = {s["label"]: s for s in rs.machine_stats()}
+        assert stats["big"]["sessions"] == 2 and stats["small"]["sessions"] == 1
+        assert stats["big"]["bytes"] > stats["small"]["bytes"] > 0
+        assert set(rs._files()) == {os.path.join(d, "big.json"), os.path.join(d, "small.json")}
+
+
 def test_v1_summary_still_loads_without_the_extras():
     # A v1 summary (no turns/tools/context) loads fine; those tabs just stay hidden.
     wfs = [workflow("s1", "2026-07-15 10:00:00", cost=1.0)]
