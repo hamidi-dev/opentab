@@ -13,14 +13,15 @@ reverse. Because the raw per-model rows travel too, the "$" what-if and the "w"
 model-target comparison recompute against list prices on remote data exactly as
 they do locally, with no special-casing.
 
-Only the cheap rollup travels. The subagent TREE rides along too (workflow_nodes,
-for the sessions that delegated) -- a small per-session structure, so the remote
-Subagents tab and its $/w what-if are real. But the transcript-scale drill-in
-(Turns/Tools/Context) is deliberately NOT exported: those return nothing and the
-supports_* gates hide their tabs for remote sessions, so a remote session shows its
-money, model mix, and subagent tree but not its turn-by-turn detail. That is the
-summaries-only contract -- exporting the full transcripts would ship megabytes per
-machine and defeat the point.
+The rollup travels, and so does the drill-in: the subagent TREE (workflow_nodes, for
+the sessions that delegated) and, as of export v2, the lazy per-session extras --
+Turns (message_timeline), Tools (tool_breakdown) and the estimated Context
+composition (context_breakdown) -- so a pulled session's tabs are as real as a local
+one's. That makes the extras the heavy part of an export (transcript-scale, fetched
+per session), a cost paid once at ``--export`` time; the summaries themselves grow
+accordingly. A v1 summary carried none of the extras, so RemoteStore's supports_*
+gates simply hide those tabs for it -- older exports still load, just without the
+turn-by-turn detail.
 """
 from __future__ import annotations
 
@@ -40,7 +41,7 @@ from opentab.models import Workflow
 # purpose: a summary is a portable interface between machines that may run different
 # opentab versions, so it evolves on its own cadence (and RemoteStore stays
 # tolerant of unknown keys -- see _load). Bump only on an incompatible shape change.
-EXPORT_VERSION = 1
+EXPORT_VERSION = 2  # v2 adds the per-session Turns/Tools/Context extras (see build_export)
 
 _WF_FIELDS = {f.name for f in fields(Workflow)}
 
@@ -65,6 +66,71 @@ def _coerce_int(value) -> int:
         return 0
 
 
+def _coerce_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# The v2 extras are normalized on load just like _clean_node: a summary is an untrusted
+# file (corrupt, hand-edited, or from a future version), and the Turns/Tools/Context
+# renderers read these fields with [] -- so a partial row like {} must render as zeros,
+# never KeyError the drill-in. Each cleaner emits exactly the fields its renderer reads.
+_TURN_INT_FIELDS = (
+    "depth",
+    "tokens_total",
+    "input",
+    "output",
+    "reasoning",
+    "cache_read",
+    "cache_write",
+)
+_TOOL_INT_FIELDS = (
+    "calls",
+    "tokens_total",
+    "input",
+    "output",
+    "reasoning",
+    "cache_read",
+    "cache_write",
+)
+
+
+def _clean_turn(row: dict) -> dict:
+    turn = {
+        "time": str(row.get("time") or ""),
+        "model_name": str(row.get("model_name") or "unknown"),
+        "agent": str(row.get("agent") or "-"),
+        "prompt_id": str(row.get("prompt_id") or ""),
+        "prompt_title": str(row.get("prompt_title") or ""),
+        "prompt_full": str(row.get("prompt_full") or row.get("prompt_title") or ""),
+        "cost": _coerce_float(row.get("cost")),
+    }
+    for field in _TURN_INT_FIELDS:
+        turn[field] = _coerce_int(row.get(field))
+    return turn
+
+
+def _clean_tool(row: dict) -> dict:
+    tool = {
+        "tool": str(row.get("tool") or "?"),
+        "model_name": str(row.get("model_name") or "unknown"),
+        "cost": _coerce_float(row.get("cost")),
+    }
+    for field in _TOOL_INT_FIELDS:
+        tool[field] = _coerce_int(row.get(field))
+    return tool
+
+
+def _clean_context(row: dict) -> dict:
+    return {
+        "category": str(row.get("category") or "other"),
+        "kind": str(row.get("kind") or ""),
+        "est_tokens": _coerce_int(row.get("est_tokens")),
+    }
+
+
 def _clean_node(row: dict) -> dict:
     node = {
         "depth": _coerce_int(row.get("depth")),
@@ -82,6 +148,43 @@ def _clean_node(row: dict) -> dict:
     return node
 
 
+def _export_supports(store, name: str, sid: str) -> bool:
+    # Per-session opt-in gate (supports_turns/tools/context), tolerant of a backend that
+    # doesn't implement it or raises on a bad session.
+    fn = getattr(store, name, None)
+    if not fn:
+        return False
+    try:
+        return bool(fn(sid))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _export_curve_ok(store, sid: str) -> bool:
+    # Whether the measured Context growth curve applies -- App.session_supports_context_curve's
+    # rule, shipped from the source so the remote view doesn't have to re-derive it: any turns
+    # backend supports it UNLESS it explicitly opts out (Codex's cumulative deltas, CSV/JSONL).
+    fn = getattr(store, "supports_context_curve", None)
+    if fn is None:
+        return True
+    try:
+        return bool(fn(sid))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _export_rows(store, name: str, sid: str) -> list[dict]:
+    # One session's extra rows (message_timeline/tool_breakdown/context_breakdown/workflow_nodes)
+    # as plain dicts. One bad session must not sink the whole export.
+    fn = getattr(store, name, None)
+    if not fn:
+        return []
+    try:
+        return [dict(r) for r in fn(sid)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
 def build_export(
     store,
     label: str,
@@ -95,30 +198,46 @@ def build_export(
     machine tag on load. model_breakdown() rows may be sqlite3.Row (OpenCode) --
     ``dict(row)`` normalizes both, matching CachedStore._write.
 
-    The subagent TREE (workflow_nodes) rides along too, but ONLY for the sessions that
-    delegated (``w.subagents``) -- a small per-session structure (agent/model/tokens/cost
-    per node, no transcript), the same cheap fetch build_payload embeds for the web. It
-    makes the remote Subagents tab real (and its $/w what-if) instead of an empty tab.
-    Turns/Tools/Context stay out: those are per-message rollups an order of magnitude
-    larger (and Turns leaks prompt titles), so they remain the deliberately-excluded,
-    transcript-scale part of the summaries-only contract. Nodes cost one workflow_nodes()
-    call per subagent session at export time (the scan the TUI defers) -- fine for a
-    one-shot ``--export``; a backend with its own thread-bound connection can't parallelise
-    those safely, so they run serially.
+    The subagent TREE (workflow_nodes, for the sessions that delegated) and the lazy
+    per-session extras -- Turns (``message_timeline``), Tools (``tool_breakdown``) and the
+    estimated Context composition (``context_breakdown``), plus the ``curve_ok`` set naming
+    the sessions whose measured Context growth curve applies -- ride along too, so a pulled
+    session's tabs are as real as a local one's. The extras are the HEAVY part of an export:
+    transcript-scale (an order of magnitude larger than the rollup), fetched per session --
+    the scan the TUI defers to drill-in, paid up front here for every session. Fetched
+    SERIALLY: a backend's sqlite/file connection is thread-bound, so a session-parallel
+    export isn't safe from here. The raw rows travel; a demo view re-anonymises them lazily
+    (App._scale_demo_turns et al.), exactly as it does for a local store -- RemoteStore never
+    demos the extras itself, so there's no double-scaling.
     """
     wf_objs = store.workflows()
     workflows = [asdict(w) for w in wf_objs]
     model_breakdown = [dict(row) for row in store.model_breakdown()]
     nodes: dict[str, list[dict]] = {}
+    turns: dict[str, list[dict]] = {}
+    tools: dict[str, list[dict]] = {}
+    context: dict[str, list[dict]] = {}
+    curve_ok: list[str] = []
     for w in wf_objs:
-        if not w.subagents:
-            continue
-        try:
-            rows = store.workflow_nodes(w.id)
-        except Exception:  # noqa: BLE001 -- one bad session must not sink the whole export
-            continue
-        if rows:
-            nodes[w.id] = [dict(r) for r in rows]
+        sid = w.id
+        if w.subagents:
+            rows = _export_rows(store, "workflow_nodes", sid)
+            if rows:
+                nodes[sid] = rows
+        if _export_supports(store, "supports_turns", sid):
+            rows = _export_rows(store, "message_timeline", sid)
+            if rows:
+                turns[sid] = rows
+                if _export_curve_ok(store, sid):
+                    curve_ok.append(sid)
+        if _export_supports(store, "supports_tools", sid):
+            rows = _export_rows(store, "tool_breakdown", sid)
+            if rows:
+                tools[sid] = rows
+        if _export_supports(store, "supports_context", sid):
+            rows = _export_rows(store, "context_breakdown", sid)
+            if rows:
+                context[sid] = rows
     return {
         "opentab_export": EXPORT_VERSION,
         "label": label,
@@ -128,6 +247,10 @@ def build_export(
         "workflows": workflows,
         "model_breakdown": model_breakdown,
         "nodes": nodes,
+        "turns": turns,
+        "tools": tools,
+        "context": context,
+        "curve_ok": curve_ok,
     }
 
 
@@ -159,6 +282,13 @@ class RemoteStore:
         # session id -> its subagent tree (workflow_nodes rows), for the sessions that
         # exported one. Raw; demo is applied lazily in workflow_nodes (like _wf).
         self._nodes: dict[str, list[dict]] = {}
+        # v2 per-session extras: session id -> Turns / Tools / Context-composition rows,
+        # and the set of ids whose measured Context curve applies. Raw -- the App demos
+        # them lazily (App._scale_demo_turns et al.), never RemoteStore, so no double-scale.
+        self._turns: dict[str, list[dict]] = {}
+        self._tools: dict[str, list[dict]] = {}
+        self._context: dict[str, list[dict]] = {}
+        self._curve_ok: set[str] = set()
         self.machines: list[str] = []  # labels loaded, in file order
         # Per-machine niceties for the Machines mode: the label -> {exported_at,
         # opentab_version, key}. `key` is the remotes.json name (decoded from the summary
@@ -182,6 +312,12 @@ class RemoteStore:
         wfs: list[Workflow] = []
         models: list[dict] = []
         nodes: dict[str, list[dict]] = {}
+        # The v2 per-session extras (Turns/Tools/Context) and the ids whose measured
+        # Context curve applies -- absent in a v1 summary, leaving those tabs hidden.
+        turns: dict[str, list[dict]] = {}
+        tools: dict[str, list[dict]] = {}
+        context: dict[str, list[dict]] = {}
+        curve_ok: set[str] = set()
         machines: list[str] = []
         info: dict[str, dict] = {}
         records: list[bool] = []
@@ -254,11 +390,34 @@ class RemoteStore:
                     kept_rows = [_clean_node(r) for r in rows if isinstance(r, dict)]
                     if kept_rows:
                         nodes[sid] = kept_rows
+            # The Turns/Tools/Context extras, same per-file `kept` dedup as nodes: each is a
+            # {session id -> [rows]} map, every row normalized (a hostile/partial summary must
+            # not crash drill-in -- see the cleaners). A v1 summary omits them entirely, so
+            # the tabs just stay hidden there.
+            for src_key, target, cleaner in (
+                ("turns", turns, _clean_turn),
+                ("tools", tools, _clean_tool),
+                ("context", context, _clean_context),
+            ):
+                src = data.get(src_key)
+                for sid, rows in src.items() if isinstance(src, dict) else ():
+                    if isinstance(sid, str) and sid in kept and isinstance(rows, list):
+                        clean = [cleaner(r) for r in rows if isinstance(r, dict)]
+                        if clean:
+                            target[sid] = clean
+            cok = data.get("curve_ok")
+            for sid in cok if isinstance(cok, list) else ():
+                if isinstance(sid, str) and sid in kept:
+                    curve_ok.add(sid)
         self.records_cost = all(records) if records else True
         wfs.sort(key=lambda w: (w.total_cost, w.total_tokens), reverse=True)
         self._wf = wfs  # RAW, unscaled -- demo is applied lazily in workflows()
         self._models = models
         self._nodes = nodes
+        self._turns = turns
+        self._tools = tools
+        self._context = context
+        self._curve_ok = curve_ok
         self.machines = machines
         self._machine_info = info
 
@@ -355,26 +514,30 @@ class RemoteStore:
             if field in node:
                 node[field] = int(round((node.get(field) or 0) * self.demo_scale))
 
+    # The v2 per-session extras -- Turns/Tools/Context. Fresh dict copies each call (the
+    # App owns and may demo-mutate the list it gets); demo scaling is the App's job, so
+    # these return the raw exported rows. A v1 summary shipped none, so the maps are empty
+    # and supports_* is False -- the tab hides rather than shows blank.
     def tool_breakdown(self, workflow_id: str) -> list:
-        return []
+        return [dict(r) for r in self._tools.get(workflow_id, ())]
 
     def message_timeline(self, workflow_id: str) -> list:
-        return []
+        return [dict(r) for r in self._turns.get(workflow_id, ())]
 
     def context_breakdown(self, workflow_id: str) -> list:
-        return []
+        return [dict(r) for r in self._context.get(workflow_id, ())]
 
     def supports_turns(self, workflow_id: str) -> bool:
-        return False
+        return workflow_id in self._turns
 
     def supports_tools(self, workflow_id: str) -> bool:
-        return False
+        return workflow_id in self._tools
 
     def supports_context(self, workflow_id: str) -> bool:
-        return False
+        return workflow_id in self._context
 
     def supports_context_curve(self, workflow_id: str) -> bool:
-        return False
+        return workflow_id in self._curve_ok
 
 
 class MachineTaggedStore:

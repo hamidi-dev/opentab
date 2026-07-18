@@ -67,6 +67,144 @@ def _node(depth, agent, title, model, cost, tot):
     }
 
 
+class _FakeExtrasStore(_FakeExportStore):
+    # A backend that also implements the lazy per-session extras, so build_export ships
+    # them (export v2) and RemoteStore reads them back.
+    def __init__(self, workflows, model_breakdown, turns=None, tools=None, context=None, curve=()):
+        super().__init__(workflows, model_breakdown)
+        self._turns = turns or {}
+        self._tools = tools or {}
+        self._ctx = context or {}
+        self._curve = set(curve)
+
+    def message_timeline(self, wid):
+        return list(self._turns.get(wid, ()))
+
+    def tool_breakdown(self, wid):
+        return list(self._tools.get(wid, ()))
+
+    def context_breakdown(self, wid):
+        return list(self._ctx.get(wid, ()))
+
+    def supports_turns(self, wid):
+        return wid in self._turns
+
+    def supports_tools(self, wid):
+        return wid in self._tools
+
+    def supports_context(self, wid):
+        return wid in self._ctx
+
+    def supports_context_curve(self, wid):
+        return wid in self._curve
+
+
+def _turn(prompt="do the port", pid="p1"):
+    return {
+        "time": "2026-07-15 10:00:00",
+        "model_name": "openai/gpt-5.6",
+        "prompt_title": prompt,
+        "prompt_full": prompt,
+        "prompt_id": pid,
+        "cost": 6.5,
+        "tokens_total": 1000,
+        "input": 500,
+        "output": 250,
+        "reasoning": 0,
+        "cache_read": 250,
+        "cache_write": 0,
+    }
+
+
+def test_v2_export_round_trips_turns_tools_and_context():
+    # The v2 addition: the lazy per-session extras travel too, so a pulled session's
+    # Turns/Tools/Context tabs are real rather than hidden.
+    wfs = [workflow("s1", "2026-07-15 10:00:00", title="port", cost=6.5, tokens=1000)]
+    turns = {"s1": [_turn()]}
+    tools = {
+        "s1": [{"tool": "Bash", "model_name": "openai/gpt-5.6", "cost": 3.0, "tokens_total": 500}]
+    }
+    context = {"s1": [{"category": "tool_result", "kind": "Bash", "est_tokens": 400}]}
+    store = _FakeExtrasStore(wfs, [], turns=turns, tools=tools, context=context, curve={"s1"})
+    payload = ot.build_export(store, "laptop", "2026-07-18T00:00:00", "9.9")
+    assert payload["opentab_export"] == 2
+    assert payload["turns"]["s1"] and payload["tools"]["s1"] and payload["context"]["s1"]
+    assert payload["curve_ok"] == ["s1"]
+
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, "laptop.json", payload)
+        rs = ot.RemoteStore(d, _parse([]))
+        assert rs.supports_turns("s1") and rs.supports_tools("s1")
+        assert rs.supports_context("s1") and rs.supports_context_curve("s1")
+        assert rs.message_timeline("s1")[0]["prompt_title"] == "do the port"
+        assert rs.tool_breakdown("s1")[0]["tool"] == "Bash"
+        assert rs.context_breakdown("s1")[0]["est_tokens"] == 400
+        assert not rs.supports_turns("nope")  # a session the export never carried stays hidden
+
+
+def test_malformed_extras_rows_normalize_instead_of_crashing():
+    # Codex: a hostile/partial summary -- {"turns": {"s1": [{}]}} -- makes supports_turns
+    # true, so drill-in must render zeros, not KeyError. Every extras row is cleaned on load
+    # (the _clean_node treatment), so the renderers' bracket-accessed fields always exist.
+    wfs = [workflow("s1", "2026-07-15 10:00:00", cost=1.0)]
+    payload = _summary("box", wfs)
+    payload["opentab_export"] = 2
+    payload["turns"] = {"s1": [{}, {"cost": "oops", "tokens_total": None, "prompt_title": 5}]}
+    payload["tools"] = {"s1": [{}]}
+    payload["context"] = {"s1": [{}]}
+    payload["curve_ok"] = ["s1"]
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, "box.json", payload)
+        rs = ot.RemoteStore(d, _parse([]))
+        assert rs.supports_turns("s1") and rs.supports_tools("s1") and rs.supports_context("s1")
+        turns = rs.message_timeline("s1")
+        assert len(turns) == 2
+        for r in turns:  # every field the Turns renderer brackets, with a safe default
+            assert isinstance(r["cost"], float) and isinstance(r["tokens_total"], int)
+            for f in (
+                "time",
+                "model_name",
+                "agent",
+                "depth",
+                "input",
+                "output",
+                "reasoning",
+                "cache_read",
+                "cache_write",
+                "prompt_id",
+                "prompt_title",
+            ):
+                assert f in r
+        tool = rs.tool_breakdown("s1")[0]
+        assert tool["calls"] == 0 and tool["tool"] == "?" and isinstance(tool["cost"], float)
+        assert rs.context_breakdown("s1")[0]["est_tokens"] == 0
+
+
+def test_v1_summary_still_loads_without_the_extras():
+    # A v1 summary (no turns/tools/context) loads fine; those tabs just stay hidden.
+    wfs = [workflow("s1", "2026-07-15 10:00:00", cost=1.0)]
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, "old.json", _summary("old-box", wfs))  # _summary emits v1
+        rs = ot.RemoteStore(d, _parse([]))
+        assert [w.id for w in rs.workflows()] == ["s1"]
+        assert not rs.supports_turns("s1") and not rs.supports_tools("s1")
+        assert rs.message_timeline("s1") == [] and rs.context_breakdown("s1") == []
+
+
+def test_remote_store_leaves_extras_raw_for_the_app_to_demo():
+    # RemoteStore returns raw Turns rows even in demo mode -- the App re-anonymises them
+    # lazily (App._scale_demo_turns), so demoing here too would double-scale / it's the
+    # App's job. The raw prompt survives the store; the App is what hides it.
+    wfs = [workflow("s1", "2026-07-15 10:00:00", cost=1.0)]
+    store = _FakeExtrasStore(wfs, [], turns={"s1": [_turn(prompt="secret plan")]}, curve={"s1"})
+    payload = ot.build_export(store, "laptop")
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, "laptop.json", payload)
+        rs = ot.RemoteStore(d, _parse(["--demo"]))
+        assert rs.demo is True
+        assert rs.message_timeline("s1")[0]["prompt_title"] == "secret plan"
+
+
 def test_build_export_round_trips_through_remote_store():
     # build_export serializes a machine's rollup; RemoteStore reads it back with the
     # same sessions, model rows, and records_cost -- it is the cache payload reversed.
@@ -77,7 +215,7 @@ def test_build_export_round_trips_through_remote_store():
     models = [{"root_id": "s1", "model_name": "openai/gpt-5.6", "cost": 6.5, "tokens_total": 1000}]
     payload = ot.build_export(_FakeExportStore(wfs, models), "laptop", "2026-07-18T00:00:00", "9.9")
 
-    assert payload["opentab_export"] == 1
+    assert payload["opentab_export"] == 2
     assert payload["label"] == "laptop" and payload["opentab_version"] == "9.9"
     assert payload["records_cost"] is False
 
@@ -408,7 +546,7 @@ def test_export_command_writes_a_summary_to_stdout():
             rc = ot.export_command(args)
         assert rc == 0
         payload = json.loads(buf.getvalue())
-        assert payload["label"] == "laptop" and payload["opentab_export"] == 1
+        assert payload["label"] == "laptop" and payload["opentab_export"] == 2
         assert len(payload["workflows"]) == 2
         assert payload["exported_at"]  # a timestamp was stamped
 
@@ -440,7 +578,7 @@ def test_export_command_emits_an_empty_summary_when_no_sources_present():
             rc = ot.export_command(args)
         assert rc == 0
         payload = json.loads(buf.getvalue())
-        assert payload["label"] == "fresh-box" and payload["opentab_export"] == 1
+        assert payload["label"] == "fresh-box" and payload["opentab_export"] == 2
         assert payload["workflows"] == [] and payload["model_breakdown"] == []
     finally:
         ot.sources.available_sources = orig
