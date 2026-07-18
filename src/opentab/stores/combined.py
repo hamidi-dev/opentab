@@ -145,6 +145,18 @@ class CombinedStore:
         check = getattr(self._owner.get(workflow_id), "supports_turns", None)
         return bool(check(workflow_id)) if check else False
 
+    def message_timeline_all(self) -> dict:
+        # Whole-corpus Turns for `--export`: merge each backend's batch (the sub-store's
+        # message_timeline_all, where it has one -- OpenCode does, to dodge its
+        # per-session recursive-CTE scan). Backends without a batch contribute nothing
+        # here; build_export falls back to their cheap per-session path for those.
+        out: dict = {}
+        for store in self.stores:
+            fn = getattr(store, "message_timeline_all", None)
+            if fn:
+                out.update(fn())
+        return out
+
     def context_breakdown(self, workflow_id: str) -> list:
         # Route to the owning backend; a backend without the composition opt-in
         # (everything but Claude Code and Zaly so far) contributes no rows -- the

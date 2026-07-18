@@ -130,6 +130,20 @@ def test_message_timeline_orders_by_time_and_marks_subagent_turns():
         assert rows[0]["prompt_id"] == "u1" and rows[2]["prompt_id"] == "u2"
 
 
+def test_message_timeline_all_matches_the_per_session_path():
+    # The whole-corpus batch (used by --export to dodge OpenCode's per-session
+    # recursive-CTE scan) must return BYTE-IDENTICAL rows to message_timeline, keyed by
+    # ROOT session -- a subagent's turns fold under its root, not a key of their own.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_turns(db)
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        batch = store.message_timeline_all()
+        assert set(batch) == {"s1"}  # s2 is a subagent -> folded under root s1, not keyed
+        assert batch["s1"] == store.message_timeline("s1")  # exact, incl. the s2 depth-1 turn
+        assert [r["depth"] for r in batch["s1"]] == [0, 1, 0]
+
+
 def _write_opencode_db_with_long_prompt(path, long_prompt):
     conn = sqlite3.connect(path)
     conn.executescript(

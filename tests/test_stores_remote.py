@@ -142,6 +142,42 @@ def test_v2_export_round_trips_turns_tools_and_context():
         assert not rs.supports_turns("nope")  # a session the export never carried stays hidden
 
 
+class _BatchTurnsStore(_FakeExtrasStore):
+    # A backend exposing the whole-corpus Turns batch (like OpenCode's
+    # message_timeline_all) alongside the per-session path, so a test can prove
+    # build_export prefers the batch and never runs the slow per-session query for a
+    # session the batch already covers.
+    def __init__(self, *a, batch=None, **k):
+        super().__init__(*a, **k)
+        self._batch = batch or {}
+        self.per_session_calls = []
+
+    def message_timeline(self, wid):
+        self.per_session_calls.append(wid)
+        return super().message_timeline(wid)
+
+    def message_timeline_all(self):
+        return {k: list(v) for k, v in self._batch.items()}
+
+
+def test_build_export_prefers_the_turns_batch_and_skips_covered_sessions():
+    # The export uses a backend's whole-corpus Turns batch (OpenCode's
+    # message_timeline_all, ~100x cheaper than its per-session recursive-CTE scan) and
+    # must NOT re-run the slow per-session query for any session the batch owns -- even an
+    # all-aborted one the batch yields no rows for (else it re-pays the very cost it dodged).
+    wfs = [
+        workflow("s1", "2026-07-15 10:00:00", cost=1.0),
+        workflow("s2", "2026-07-15 11:00:00", cost=0.0),  # aborted: not in the batch result
+    ]
+    store = _BatchTurnsStore(
+        wfs, [], turns={"s1": [_turn()], "s2": [_turn()]}, batch={"s1": [_turn()]}
+    )
+    payload = ot.build_export(store, "box")
+    assert set(payload["turns"]) == {"s1"}  # from the batch; s2 empty -> absent
+    assert payload["turns"]["s1"][0]["prompt_title"] == "do the port"
+    assert store.per_session_calls == []  # the slow per-session path never ran
+
+
 def test_malformed_extras_rows_normalize_instead_of_crashing():
     # Codex: a hostile/partial summary -- {"turns": {"s1": [{}]}} -- makes supports_turns
     # true, so drill-in must render zeros, not KeyError. Every extras row is cleaned on load

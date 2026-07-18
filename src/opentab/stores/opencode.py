@@ -41,6 +41,40 @@ MSG_TOKEN_TOTAL_EXPR = " + ".join(
         "coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)",
     ]
 )
+# The per-message wall-clock timestamp, shared by the Turns queries (per-session and
+# the whole-corpus batch); epoch ms in the message JSON, present whether or not the
+# table carries a time_created column.
+_TL_TS = "json_extract(m.data, '$.time.created')"
+
+
+def _process_timeline(rows: list[dict]) -> list[dict]:
+    # Turn the time-ordered (user + assistant) rows of ONE session into the Turns tab's
+    # assistant-turn rows, each tagged with the prompt that triggered it: the most recent
+    # user message owns every assistant turn until the next one. Shared by
+    # message_timeline (one session) and message_timeline_all (per group). `rows` must be
+    # a single session's messages in chronological order.
+    out: list[dict] = []
+    cur_id, cur_title, cur_full = "", "", ""
+    for d in rows:
+        if d["role"] == "user":  # opens/owns the following assistant turns
+            cur_id = d["mid"] or ""
+            cur_title = _clean_prompt(d["summary_title"] or d["prompt_text"])
+            # The expandable full text is the raw prompt itself (uncapped, line breaks
+            # kept); the generated summary only stands in when no text part was recorded.
+            cur_full = str(d["prompt_text"] or d["summary_title"] or "").strip()
+            continue
+        # A turn that recorded neither tokens nor cost (an aborted/errored step) is noise
+        # on a "how the money accrued" timeline -- drop it.
+        if not (d["tokens_total"] or d["cost"]):
+            continue
+        d["time"] = d["time"] or ""
+        d["prompt_id"] = cur_id
+        d["prompt_title"] = cur_title
+        d["prompt_full"] = cur_full
+        for k in ("role", "mid", "summary_title", "prompt_text"):
+            del d[k]
+        out.append(d)
+    return out
 
 
 class Store:
@@ -532,6 +566,44 @@ class Store:
         # only OpenCode sessions in a merged view offer the tab.
         return self.supports_tool_breakdown
 
+    def _timeline_columns(self) -> str:
+        # The SELECT column list shared by message_timeline (one session) and
+        # message_timeline_all (whole corpus). The per-message wall-clock time lives in
+        # the JSON ($.time.created, epoch ms), present regardless of whether the message
+        # table carries a time_created column, so sort/format off that. Return the full
+        # localtime datetime and let the renderer pick the display width -- a session can
+        # span days, so the date matters.
+        agent_expr = self._session_text_expr("s", ["agent"], "'-'")
+        summary_title = "nullif(json_extract(m.data, '$.summary.title'), '')"
+        if self.supports_tool_breakdown:  # the raw prompt text lives in the part table
+            part_text = (
+                "(select json_extract(p.data, '$.text') from part p "
+                "where p.message_id = m.id and json_extract(p.data, '$.type') = 'text' "
+                "order by p.rowid limit 1)"
+            )
+        else:
+            part_text = "null"
+        # Summary title and raw prompt as separate columns: the one-line group title
+        # prefers the generated summary, the expandable full text the raw prompt.
+        title_expr = f"case when json_extract(m.data, '$.role') = 'user' then {summary_title} end"
+        prompt_expr = f"case when json_extract(m.data, '$.role') = 'user' then {part_text} end"
+        return f"""
+          json_extract(m.data, '$.role') as role,
+          m.id as mid,
+          datetime({_TL_TS} / 1000, 'unixepoch', 'localtime') as time,
+          tree.depth as depth,
+          {agent_expr} as agent,
+          {MSG_MODEL_EXPR} as model_name,
+          coalesce(json_extract(m.data, '$.cost'), 0) as cost,
+          coalesce(json_extract(m.data, '$.tokens.input'), 0) as input,
+          coalesce(json_extract(m.data, '$.tokens.output'), 0) as output,
+          coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) as reasoning,
+          coalesce(json_extract(m.data, '$.tokens.cache.read'), 0) as cache_read,
+          coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) as cache_write,
+          ({MSG_TOKEN_TOTAL_EXPR}) as tokens_total,
+          {title_expr} as summary_title,
+          {prompt_expr} as prompt_text"""
+
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # Every assistant message (one LLM step = one "turn") in the session tree,
         # ordered chronologically -- the raw material for the Turns tab's
@@ -549,26 +621,6 @@ class Store:
         # to its first text part (the raw prompt) when that's empty.
         if not self.supports_message_timeline:
             return []
-        agent_expr = self._session_text_expr("s", ["agent"], "'-'")
-        # The per-message wall-clock time lives in the JSON ($.time.created, epoch ms),
-        # present regardless of whether the message table carries a time_created
-        # column, so sort/format off that and fall back to rowid for untimed rows.
-        # Return the full localtime datetime (like created_at) and let the renderer
-        # pick the display width -- a session can span days, so the date matters.
-        ts_expr = "json_extract(m.data, '$.time.created')"
-        summary_title = "nullif(json_extract(m.data, '$.summary.title'), '')"
-        if self.supports_tool_breakdown:  # the raw prompt text lives in the part table
-            part_text = (
-                "(select json_extract(p.data, '$.text') from part p "
-                "where p.message_id = m.id and json_extract(p.data, '$.type') = 'text' "
-                "order by p.rowid limit 1)"
-            )
-        else:
-            part_text = "null"
-        # Summary title and raw prompt as separate columns: the one-line group title
-        # prefers the generated summary, the expandable full text the raw prompt.
-        title_expr = f"case when json_extract(m.data, '$.role') = 'user' then {summary_title} end"
-        prompt_expr = f"case when json_extract(m.data, '$.role') = 'user' then {part_text} end"
         sql = f"""
         with recursive tree(id, depth) as (
           select id, 0 from session where id = ?
@@ -576,51 +628,47 @@ class Store:
           select child.id, tree.depth + 1
           from session child join tree on child.parent_id = tree.id
         )
-        select
-          json_extract(m.data, '$.role') as role,
-          m.id as mid,
-          datetime({ts_expr} / 1000, 'unixepoch', 'localtime') as time,
-          tree.depth as depth,
-          {agent_expr} as agent,
-          {MSG_MODEL_EXPR} as model_name,
-          coalesce(json_extract(m.data, '$.cost'), 0) as cost,
-          coalesce(json_extract(m.data, '$.tokens.input'), 0) as input,
-          coalesce(json_extract(m.data, '$.tokens.output'), 0) as output,
-          coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) as reasoning,
-          coalesce(json_extract(m.data, '$.tokens.cache.read'), 0) as cache_read,
-          coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) as cache_write,
-          ({MSG_TOKEN_TOTAL_EXPR}) as tokens_total,
-          {title_expr} as summary_title,
-          {prompt_expr} as prompt_text
+        select {self._timeline_columns()}
         from message m
         join tree on tree.id = m.session_id
         join session s on s.id = m.session_id
         where json_extract(m.data, '$.role') in ('user', 'assistant')
-        order by {ts_expr}, m.rowid
+        order by {_TL_TS}, m.rowid
         """
-        out = []
-        cur_id, cur_title, cur_full = "", "", ""
-        for r in self.conn.execute(sql, [workflow_id]):
+        return _process_timeline([dict(r) for r in self.conn.execute(sql, [workflow_id])])
+
+    def message_timeline_all(self) -> dict[str, list[dict]]:
+        # The whole-corpus Turns for `--export`: every root session's timeline in ONE
+        # grouped scan, keyed by root id. The per-session message_timeline restricts to
+        # one subtree via a recursive CTE and re-scans the message table each call, so an
+        # export that walks every session is O(sessions x messages) -- measured at
+        # ~200ms/session, 138s over 689 sessions. This maps every session to its root in
+        # a single recursive CTE (the workflows() `roots`/`tree` shape) and scans the
+        # message table once, then groups in Python -- ~100x faster on a big DB. The TUI
+        # keeps the lazy per-session path (drill-in pays for the one session you open).
+        if not self.supports_message_timeline:
+            return {}
+        sql = f"""
+        with recursive roots(id) as (
+          select id from session where parent_id is null
+        ), tree(root_id, id, depth) as (
+          select id, id, 0 from roots
+          union all
+          select tree.root_id, child.id, tree.depth + 1
+          from session child join tree on child.parent_id = tree.id
+        )
+        select tree.root_id as root_id, {self._timeline_columns()}
+        from message m
+        join tree on tree.id = m.session_id
+        join session s on s.id = m.session_id
+        where json_extract(m.data, '$.role') in ('user', 'assistant')
+        order by tree.root_id, {_TL_TS}, m.rowid
+        """
+        groups: dict[str, list[dict]] = {}
+        for r in self.conn.execute(sql):
             d = dict(r)
-            if d["role"] == "user":  # opens/owns the following assistant turns
-                cur_id = d["mid"] or ""
-                cur_title = _clean_prompt(d["summary_title"] or d["prompt_text"])
-                # The expandable full text is the raw prompt itself (uncapped, line
-                # breaks kept); the generated summary only stands in when no text
-                # part was recorded.
-                cur_full = str(d["prompt_text"] or d["summary_title"] or "").strip()
-                continue
-            # A turn that recorded neither tokens nor cost (an aborted/errored step) is
-            # noise on a "how the money accrued" timeline -- drop it.
-            if not (d["tokens_total"] or d["cost"]):
-                continue
-            d["time"] = d["time"] or ""
-            d["prompt_id"] = cur_id
-            d["prompt_title"] = cur_title
-            d["prompt_full"] = cur_full
-            del d["role"], d["mid"], d["summary_title"], d["prompt_text"]
-            out.append(d)
-        return out
+            groups.setdefault(d.pop("root_id"), []).append(d)
+        return {rid: _process_timeline(rows) for rid, rows in groups.items()}
 
     def supports_turns(self, workflow_id: str) -> bool:
         # Per-session gate for the Turns tab. Like supports_tools, a single OpenCode DB

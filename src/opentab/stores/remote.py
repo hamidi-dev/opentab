@@ -185,6 +185,46 @@ def _export_rows(store, name: str, sid: str) -> list[dict]:
         return []
 
 
+def _collect_timeline(store, wf_objs) -> dict[str, list[dict]]:
+    # {session id: Turns rows} for every session, using a backend's whole-corpus batch
+    # (message_timeline_all) where it offers one and the per-session path otherwise.
+    # OpenCode's per-session Turns query re-scans the message table under a recursive CTE
+    # (~200ms/session; 138s over 689 sessions in a real export) -- its batch collapses
+    # that to one grouped scan, ~100x. File backends (Claude/Codex/pi/Zaly) parse once and
+    # slice, so their per-session path is already cheap and needs no batch.
+    batch_fn = getattr(store, "message_timeline_all", None)
+    batched: dict[str, list[dict]] = {}
+    if batch_fn:
+        try:
+            batched = batch_fn() or {}
+        except Exception:  # noqa: BLE001 -- a batch failure must fall back, not sink the export
+            batched = {}
+    owner = getattr(store, "_owner", None)
+
+    def batch_covers(sid: str) -> bool:
+        # True when a batch OWNS this session (so an all-aborted session it returned no
+        # rows for is not re-fetched by the slow per-session query). For the merged store
+        # that's "the owning backend has a batch"; for a leaf export, "the store does".
+        if owner is not None:
+            return bool(getattr(owner.get(sid), "message_timeline_all", None))
+        return batch_fn is not None
+
+    out: dict[str, list[dict]] = {}
+    for w in wf_objs:
+        sid = w.id
+        if sid in batched:
+            rows = [dict(r) for r in batched[sid]]
+            if rows:
+                out[sid] = rows
+        elif batch_covers(sid):
+            continue  # covered by a batch that yielded nothing for it -- don't re-query
+        elif _export_supports(store, "supports_turns", sid):
+            rows = _export_rows(store, "message_timeline", sid)
+            if rows:
+                out[sid] = rows
+    return out
+
+
 def build_export(
     store,
     label: str,
@@ -203,18 +243,21 @@ def build_export(
     estimated Context composition (``context_breakdown``), plus the ``curve_ok`` set naming
     the sessions whose measured Context growth curve applies -- ride along too, so a pulled
     session's tabs are as real as a local one's. The extras are the HEAVY part of an export:
-    transcript-scale (an order of magnitude larger than the rollup), fetched per session --
-    the scan the TUI defers to drill-in, paid up front here for every session. Fetched
-    SERIALLY: a backend's sqlite/file connection is thread-bound, so a session-parallel
-    export isn't safe from here. The raw rows travel; a demo view re-anonymises them lazily
-    (App._scale_demo_turns et al.), exactly as it does for a local store -- RemoteStore never
-    demos the extras itself, so there's no double-scaling.
+    transcript-scale (an order of magnitude larger than the rollup), the scan the TUI defers
+    to drill-in, paid up front here for every session. Turns go through the whole-corpus
+    batch (``_collect_timeline``) -- OpenCode's per-session Turns query is a recursive-CTE
+    message-table re-scan that dominates a big export (measured 138s over 689 sessions),
+    which one grouped scan cuts ~100x. The other extras stay per-session: a file backend
+    parses once and slices (cheap), and OpenCode's nodes/tools are already ~per-session
+    scans over the smaller session/part tables. The raw rows travel; a demo view
+    re-anonymises them lazily (App._scale_demo_turns et al.), exactly as it does for a local
+    store -- RemoteStore never demos the extras itself, so there's no double-scaling.
     """
     wf_objs = store.workflows()
     workflows = [asdict(w) for w in wf_objs]
     model_breakdown = [dict(row) for row in store.model_breakdown()]
+    turns = _collect_timeline(store, wf_objs)
     nodes: dict[str, list[dict]] = {}
-    turns: dict[str, list[dict]] = {}
     tools: dict[str, list[dict]] = {}
     context: dict[str, list[dict]] = {}
     curve_ok: list[str] = []
@@ -224,12 +267,8 @@ def build_export(
             rows = _export_rows(store, "workflow_nodes", sid)
             if rows:
                 nodes[sid] = rows
-        if _export_supports(store, "supports_turns", sid):
-            rows = _export_rows(store, "message_timeline", sid)
-            if rows:
-                turns[sid] = rows
-                if _export_curve_ok(store, sid):
-                    curve_ok.append(sid)
+        if sid in turns and _export_curve_ok(store, sid):
+            curve_ok.append(sid)
         if _export_supports(store, "supports_tools", sid):
             rows = _export_rows(store, "tool_breakdown", sid)
             if rows:
