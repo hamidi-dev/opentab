@@ -44,7 +44,7 @@ from opentab.sources import (
 )
 from opentab.state import apply_state, load_state, save_state
 from opentab.tui.app import App
-from opentab.util import git_root, resolve_project_root
+from opentab.util import git_root, resolve_project_root, unicode_screen
 
 
 def parse_args() -> argparse.Namespace:
@@ -385,6 +385,12 @@ def timings_command(args: argparse.Namespace) -> int:
     if getattr(args, "remote", False) or getattr(args, "pull", None) is not None:
         args.source = "remote"
         args.remotes = getattr(args, "remotes", None) or default_remotes_dir()
+        # --pull means "refresh from the machines first". main()'s pull step runs AFTER
+        # this command returns and so never fires under --timings -- without this the
+        # summaries stay stale and the fleet ages read "Nh ago" despite the --pull. Fetch
+        # here (progress on stderr) so the timings profile a freshly pulled fleet.
+        if getattr(args, "pull", None) is not None:
+            pull_command(args)
 
     t_start = time.perf_counter()
     present, detect_ms = timed(lambda: sources.available_sources(args))
@@ -465,36 +471,61 @@ def _human_bytes(n: int) -> str:
     return f"{n:,} B"
 
 
-def _col_table(
+# Light box-drawing for the --timings tables, with the ASCII set the frame falls back
+# to where the locale can't encode the glyphs (util.unicode_screen -- the same gate the
+# TUI's panels use). Multibyte, so these only ever go to a UTF-8 stdout.
+_BOX_GLYPHS = {
+    True: dict(
+        tl="┌", tm="┬", tr="┐", ml="├", mm="┼", mr="┤", bl="└", bm="┴", br="┘", h="─", v="│"
+    ),
+    False: dict(
+        tl="+", tm="+", tr="+", ml="+", mm="+", mr="+", bl="+", bm="+", br="+", h="-", v="|"
+    ),
+}
+
+
+def _box_table(
+    title: str,
     headers: list[str],
     rows: list[list[str]],
     aligns: str,
     indent: str = "  ",
     rule_before_last: bool = False,
+    uni: bool = True,
 ) -> list[str]:
-    # A plain fixed-width table for the --timings fleet breakdown: pad every column to the
-    # widest cell, "l"/"r"-align per the aligns string, 2-space gutters. rule_before_last
-    # draws a horizontal rule above the final row (the TOTAL). Returns lines; the caller
-    # prints them. E501 is off here (fixed-width columns), same as the TUI f-strings.
+    # A ruled box-drawing table for the --timings fleet breakdown, matching the TUI's
+    # ruled panels: a bordered grid with the title set into the top rule, every column
+    # padded to its widest value and l/r-aligned per `aligns`, and an inner rule above the
+    # final (TOTAL) row. `uni` picks light box drawing vs the ASCII +-| fallback.
+    g = _BOX_GLYPHS[uni]
     cols = len(headers)
     widths = [len(headers[i]) for i in range(cols)]
     for r in rows:
         for i in range(cols):
             widths[i] = max(widths[i], len(r[i]))
 
-    def fmt(cells: list[str]) -> str:
+    def rule(left: str, mid: str, right: str) -> str:
+        return indent + left + mid.join(g["h"] * (w + 2) for w in widths) + right
+
+    def line(cells: list[str]) -> str:
         parts = [
-            cells[i].rjust(widths[i]) if aligns[i] == "r" else cells[i].ljust(widths[i])
+            f" {cells[i].rjust(widths[i]) if aligns[i] == 'r' else cells[i].ljust(widths[i])} "
             for i in range(cols)
         ]
-        return (indent + "  ".join(parts)).rstrip()
+        return indent + g["v"] + g["v"].join(parts) + g["v"]
 
-    body_w = sum(widths) + 2 * (cols - 1)
-    lines = [fmt(headers)]
+    top = rule(g["tl"], g["tm"], g["tr"])
+    if title:  # set the caption into the top rule, just past the corner
+        cap = f"{g['h']} {title} "
+        pos = len(indent) + 1
+        if pos + len(cap) < len(top) - 1:
+            top = top[:pos] + cap + top[pos + len(cap) :]
+    lines = [top, line(headers), rule(g["ml"], g["mm"], g["mr"])]
     for idx, r in enumerate(rows):
         if rule_before_last and idx == len(rows) - 1:
-            lines.append(indent + "─" * body_w)
-        lines.append(fmt(r))
+            lines.append(rule(g["ml"], g["mm"], g["mr"]))
+        lines.append(line(r))
+    lines.append(rule(g["bl"], g["bm"], g["br"]))
     return lines
 
 
@@ -521,16 +552,22 @@ def _fleet_aggregate(workflows: list) -> tuple[dict, dict, dict]:
     return by_machine, by_harness, cell
 
 
-def _fleet_timing_tables(store, backends: list) -> list[str]:
+def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list[str]:
     # Build the fleet breakdown printed after the per-backend load table: By machine, By
-    # harness, and the machine x harness session grid. Returns the lines to print (empty
-    # when there's nothing worth breaking down -- one box AND one tool).
+    # harness, and the machine x harness session grid, each as a ruled box-drawing table.
+    # Returns the lines to print (empty when there's nothing worth breaking down -- one
+    # box AND one tool). `uni` overrides the UTF-8 gate (for tests); production reads it
+    # from the locale, so a non-UTF-8 terminal gets the ASCII glyph set throughout.
+    if uni is None:
+        uni = unicode_screen()
+    live_mark, pull_mark = ("● ", "○ ") if uni else ("* ", "- ")
+    dot = "·" if uni else "."  # an empty grid cell
+    sig = "Σ" if uni else "sum"  # the totals row/column label
+    times = "×" if uni else "x"
+    dash = "—" if uni else "-"  # a not-applicable cell (live box has no summary file)
+
     all_wf = [w for row in backends for w in (row[5] or [])]
     by_machine, by_harness, cell = _fleet_aggregate(all_wf)
-    multi_machine = len(by_machine) >= 2
-    multi_harness = len(by_harness) >= 2
-    if not (multi_machine or multi_harness):
-        return []
 
     meta = getattr(store, "machine_meta", {}) or {}
     live_label = next((n for n, m in meta.items() if m.get("live")), None)
@@ -552,6 +589,19 @@ def _fleet_timing_tables(store, backends: list) -> list[str]:
             if wf:
                 harness_time[wf[0].source] = harness_time.get(wf[0].source, 0.0) + ms
     total_bytes = sum(byte_by_machine.values())
+
+    # A box in the fleet with zero KEPT sessions (a valid empty export, or one whose every
+    # session the live box already has) never appears in the workflow rollup -- seed it
+    # from machine_meta / machine_stats so it still shows as an idle member (and doesn't
+    # drop the machine count below the "it's a fleet" threshold). Labels here already agree
+    # with w.machine: both machine_meta and machine_stats scramble under demo.
+    for name in list(meta) + list(byte_by_machine):
+        by_machine.setdefault(name, [0, 0, 0.0])
+
+    multi_machine = len(by_machine) >= 2
+    multi_harness = len(by_harness) >= 2
+    if not (multi_machine or multi_harness):
+        return []
 
     def machine_load(name: str) -> float:
         if name == live_label:
@@ -579,8 +629,8 @@ def _fleet_timing_tables(store, backends: list) -> list[str]:
         for name in order:
             sess, toks, cost = by_machine[name]
             live = name == live_label
-            mark = "● " if live else "○ "
-            size = "—" if live else _human_bytes(byte_by_machine.get(name, 0))
+            mark = live_mark if live else pull_mark
+            size = dash if live else _human_bytes(byte_by_machine.get(name, 0))
             age = "live" if live else relative_age(meta.get(name, {}).get("exported_at", ""))
             rows.append(
                 [
@@ -606,13 +656,14 @@ def _fleet_timing_tables(store, backends: list) -> list[str]:
             ]
         )
         out.append("")
-        out.append("  By machine")
         out.extend(
-            _col_table(
+            _box_table(
+                "By machine",
                 ["machine", "sess", "tokens", "cost", "size", "load", "age"],
                 rows,
                 aligns="lrrrrrl",
                 rule_before_last=True,
+                uni=uni,
             )
         )
 
@@ -625,7 +676,7 @@ def _fleet_timing_tables(store, backends: list) -> list[str]:
             row = [SOURCE_LABELS.get(key, key), f"{sess:,}", human_tokens(toks), money(cost)]
             if multi_machine:  # a "boxes" count is only informative once there's a fleet
                 row.append(str(sum(1 for m in cell if key in cell[m])))
-            row.append(_fmt_ms(t) if t is not None else "—")
+            row.append(_fmt_ms(t) if t is not None else dash)
             rows.append(row)
         tsess, ttoks, tcost = _totals(by_harness)
         total_row = ["all", f"{tsess:,}", human_tokens(ttoks), money(tcost)]
@@ -636,48 +687,52 @@ def _fleet_timing_tables(store, backends: list) -> list[str]:
             ["harness", "sess", "tokens", "cost"] + (["boxes"] if multi_machine else []) + ["load"]
         )
         out.append("")
-        note = (
-            "   (load = this machine's parse; pulled boxes arrive pre-rolled)"
-            if multi_machine
-            else ""
-        )
-        out.append("  By harness" + note)
         out.extend(
-            _col_table(
+            _box_table(
+                "By harness",
                 headers,
                 [*rows, total_row],
                 aligns="lrrr" + ("r" if multi_machine else "") + "r",
                 rule_before_last=True,
+                uni=uni,
             )
         )
+        if multi_machine:  # a footnote, since load means something different per box
+            out.append("  load = this machine's parse; pulled boxes arrive pre-rolled")
 
     if multi_machine and multi_harness:
         m_order = sorted(by_machine, key=lambda n: (n != live_label, -by_machine[n][0]))
         h_order = sorted(by_harness, key=lambda h: (-by_harness[h][0], h))
-        headers = ["machine"] + [SOURCE_LABELS.get(h, h) for h in h_order] + ["Σ"]
+        headers = ["machine"] + [SOURCE_LABELS.get(h, h) for h in h_order] + [sig]
         grid = []
         for name in m_order:
-            cells = [("● " if name == live_label else "○ ") + name]
+            cells = [(live_mark if name == live_label else pull_mark) + name]
             for h in h_order:
                 n = cell.get(name, {}).get(h, [0])[0]
-                cells.append(f"{n:,}" if n else "·")
+                cells.append(f"{n:,}" if n else dot)
             cells.append(f"{by_machine[name][0]:,}")
             grid.append(cells)
-        foot = ["Σ"]
+        foot = [sig]
         for h in h_order:
             foot.append(f"{by_harness[h][0]:,}")
         foot.append(f"{sum(v[0] for v in by_machine.values()):,}")
         grid.append(foot)
         aligns = "l" + "r" * (len(h_order) + 1)
-        table = _col_table(headers, grid, aligns=aligns, rule_before_last=True)
+        table = _box_table(
+            f"Sessions by machine {times} harness",
+            headers,
+            grid,
+            aligns=aligns,
+            rule_before_last=True,
+            uni=uni,
+        )
         width = max((len(line) for line in table), default=0)
         out.append("")
         if width <= 118:  # a grid too wide to read is worse than none -- the flat tables have it
-            out.append("  Sessions by machine × harness")
             out.extend(table)
         else:
             out.append(
-                f"  (machine × harness grid omitted -- {len(h_order)} harnesses too wide for one row)"
+                f"  (machine {times} harness grid omitted -- {len(h_order)} harnesses too wide)"
             )
 
     return out

@@ -922,19 +922,26 @@ def test_fleet_aggregate_rolls_up_by_machine_and_harness():
     assert cell["omv"]["opencode"] == [1, 500, 2.0]
 
 
-def test_col_table_aligns_and_rules_the_total_row():
-    lines = ot.cli._col_table(
-        ["name", "n"], [["x", "1"], ["total", "9"]], aligns="lr", rule_before_last=True
+def test_box_table_is_a_bordered_grid_with_a_titled_top_rule():
+    lines = ot.cli._box_table(
+        "Cap", ["name", "n"], [["x", "1"], ["total", "9"]], aligns="lr", rule_before_last=True
     )
-    assert lines[0].split() == ["name", "n"]
-    assert any(ln.strip() and set(ln.strip()) == {"─"} for ln in lines)  # a rule before total
-    assert lines[-1].split() == ["total", "9"]
+    assert lines[0].startswith("  ┌") and lines[0].endswith("┐") and "Cap" in lines[0]  # titled top
+    assert lines[-1].startswith("  └") and lines[-1].endswith("┘")  # bottom border
+    assert any(ln.startswith("  ├") for ln in lines)  # a mid rule (header + before total)
+    body = [ln for ln in lines if ln.startswith("  │")]
+    assert body[0].split("│")[1].strip() == "name"  # header cell
+    assert body[-1].split("│")[1].strip() == "total"  # total row last
+    # the ASCII fallback swaps the glyphs for a non-UTF-8 terminal
+    ascii_lines = ot.cli._box_table("Cap", ["name"], [["x"]], aligns="l", uni=False)
+    assert ascii_lines[0].startswith("  +") and "│" not in "\n".join(ascii_lines)
 
 
 def test_fleet_timings_break_down_by_machine_harness_and_grid():
     # The --timings fleet breakdown: By machine (live box first, pulled boxes with size),
     # By harness (across the fleet), and the machine x harness session grid. Load time is
-    # the live machine's parse (300 + 1500 ms) -- pulled boxes arrive pre-rolled.
+    # the live machine's parse (300 + 1500 ms) -- pulled boxes arrive pre-rolled. uni=True
+    # pins the UTF-8 glyph set so the assertions don't depend on the test host's locale.
     laptop_oc = [_fleet_wf("a", "laptop", "opencode", cost=5.0, tokens=1000)]
     laptop_cc = [_fleet_wf("b", "laptop", "claude", cost=0.0, tokens=2000)]
     omv_oc = [_fleet_wf("c", "omv", "opencode", cost=2.0, tokens=500)]
@@ -945,16 +952,141 @@ def test_fleet_timings_break_down_by_machine_harness_and_grid():
         ["Claude Code", 5, 1500.0, False, object(), laptop_cc],
         ["remote", 1, 0.1, False, remote, omv_oc],
     ]
-    text = "\n".join(ot.cli._fleet_timing_tables(store, backends))
+    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=True))
     assert "By machine" in text and "By harness" in text and "machine × harness" in text
     assert "● laptop" in text and "○ omv" in text  # live vs pulled markers
     assert "OpenCode" in text and "Claude Code" in text
     assert "1800.0 ms" in text  # the live box's summed harness parse
     assert "2 KB" in text  # omv's summary size
     assert "Σ" in text  # the grid's totals row/column
+    assert "┌" in text and "├" in text and "└" in text  # rendered as ruled boxes
+
+
+def test_fleet_timings_include_a_zero_session_pulled_box():
+    # A valid empty export (a box with opentab but no usage yet) has no workflow rows, so
+    # it never reaches the rollup -- seed it from machine_meta/machine_stats so it still
+    # shows as an idle member and doesn't collapse the whole breakdown below the fleet
+    # threshold (here: live box + one empty pulled box, a single harness).
+    laptop = [_fleet_wf("a", "laptop", "opencode", cost=5.0, tokens=1000)]
+    store = _MetaStore({"laptop": {"live": True}, "idle": {"live": False, "exported_at": ""}})
+    remote = _RemoteSub([{"label": "idle", "sessions": 0, "bytes": 512}])
+    backends = [
+        ["OpenCode", 3, 300.0, False, object(), laptop],
+        ["remote", 1, 0.1, False, remote, []],  # idle contributed no workflows
+    ]
+    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=True))
+    assert "By machine" in text  # the breakdown didn't collapse to nothing
+    assert "idle" in text and "512 B" in text  # the empty box still appears, with its size
+
+
+def test_fleet_timings_use_ascii_glyphs_on_a_non_utf8_terminal():
+    # A non-UTF-8 locale gets the ASCII fallback everywhere -- borders AND the content
+    # glyphs (markers/dot/sigma/times), so nothing lands as a garbage byte.
+    laptop_oc = [_fleet_wf("a", "laptop", "opencode", cost=5.0)]
+    omv_oc = [_fleet_wf("c", "omv", "claude", cost=0.0)]
+    store = _MetaStore({"laptop": {"live": True}, "omv": {"live": False, "exported_at": ""}})
+    remote = _RemoteSub([{"label": "omv", "sessions": 1, "bytes": 2048}])
+    backends = [
+        ["OpenCode", 3, 300.0, False, object(), laptop_oc],
+        ["remote", 1, 0.1, False, remote, omv_oc],
+    ]
+    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=False))
+    assert text.isascii()  # not a single multibyte glyph slips through
+    assert "* laptop" in text and "- omv" in text and "machine x harness" in text
 
 
 def test_fleet_timings_are_empty_for_a_single_source_local_run():
     # One box, one harness -> nothing to break down; --timings prints only its usual table.
     backends = [["OpenCode", 3, 300.0, False, object(), [_fleet_wf("a", "", "opencode")]]]
     assert ot.cli._fleet_timing_tables(_MetaStore({}), backends) == []
+
+
+def test_pull_with_timings_refreshes_the_fleet_before_profiling():
+    # main() returns from the --timings branch BEFORE it reaches the --pull step, so
+    # `opentab --pull --timings` would profile a stale fleet and the machine ages never
+    # move off "Nh ago". timings_command must run the pull itself. The heavy store build
+    # is stubbed -- the point is only that the pull fetched and rewrote the summaries.
+    def fetch(name, entry, timeout=60.0):
+        return _fake_summary_text(name, [name + "-s1"])
+
+    class _Stub:
+        source_name = "stub"
+
+        def workflows(self):
+            return []
+
+        def model_breakdown(self):
+            return []
+
+    saved = (
+        ot.cli.sources.available_sources,
+        ot.cli.resolve_source,
+        ot.cli.sources.make_store,
+        ot.cli._fleet_timing_tables,
+    )
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        rdir = os.path.join(d, "remotes")
+        with _remotes_env(cfg):
+            ot.cli._save_remotes({"omv": {"ssh": "omv"}})
+        ot.cli.sources.available_sources = lambda args: []
+        ot.cli.resolve_source = lambda args, state: "remote"
+        ot.cli.sources.make_store = lambda args, key: (_Stub(), "")
+        ot.cli._fleet_timing_tables = lambda *a, **k: []
+        try:
+            args = _parse(["--pull", "--timings", "--remotes", rdir])
+            with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    assert ot.cli.timings_command(args) == 0
+        finally:
+            (
+                ot.cli.sources.available_sources,
+                ot.cli.resolve_source,
+                ot.cli.sources.make_store,
+                ot.cli._fleet_timing_tables,
+            ) = saved
+        assert os.listdir(rdir) == ["omv.json"]  # the pull fetched and wrote the summary
+
+
+def test_remote_timings_without_pull_never_fetches():
+    # Without --pull, `opentab --remote --timings` must only READ the cached summaries --
+    # profiling shouldn't trigger a network fetch. A fetch here would raise and fail.
+    def fetch(name, entry, timeout=60.0):
+        raise AssertionError("--remote --timings must not pull")
+
+    class _Stub:
+        source_name = "stub"
+
+        def workflows(self):
+            return []
+
+        def model_breakdown(self):
+            return []
+
+    saved = (
+        ot.cli.sources.available_sources,
+        ot.cli.resolve_source,
+        ot.cli.sources.make_store,
+        ot.cli._fleet_timing_tables,
+    )
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        rdir = os.path.join(d, "remotes")
+        with _remotes_env(cfg):
+            ot.cli._save_remotes({"omv": {"ssh": "omv"}})
+        ot.cli.sources.available_sources = lambda args: []
+        ot.cli.resolve_source = lambda args, state: "remote"
+        ot.cli.sources.make_store = lambda args, key: (_Stub(), "")
+        ot.cli._fleet_timing_tables = lambda *a, **k: []
+        try:
+            args = _parse(["--remote", "--timings", "--remotes", rdir])
+            with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    assert ot.cli.timings_command(args) == 0  # no fetch, no raise
+        finally:
+            (
+                ot.cli.sources.available_sources,
+                ot.cli.resolve_source,
+                ot.cli.sources.make_store,
+                ot.cli._fleet_timing_tables,
+            ) = saved
