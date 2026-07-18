@@ -191,6 +191,22 @@ button.showall:hover{color:var(--accent);border-color:var(--accent)}
 .tile .v{font-size:22px;font-weight:700;margin-top:2px;color:var(--ink)}
 .tile .v.money{color:var(--good)}
 .tile .n{font-size:11px;color:var(--mut)}
+/* the session Overview money card (mirrors the TUI's Money box: donut + stats, with the
+   armed what-if as accent-highlighted rows below a rule) */
+.money{display:flex;flex-wrap:wrap;gap:14px 28px;align-items:center;margin:8px 0 2px}
+.money-legend{display:flex;gap:14px;font-size:11px;color:var(--mut);margin-bottom:8px}
+.money-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.money-legend .lg-root{background:var(--accent)}
+.money-legend .lg-sub{background:var(--good)}
+.money-stats{flex:1;min-width:200px;display:grid;grid-template-columns:1fr auto;gap:3px 18px;font-size:13px}
+.money-stats .ms-k{color:var(--mut)}
+.money-stats .ms-v{text-align:right;font-variant-numeric:tabular-nums;color:var(--ink)}
+.money-stats .ms-v.money{color:var(--good)}
+.wi-rows{display:grid;grid-template-columns:1fr auto;gap:4px 18px;margin-top:12px;padding-top:11px;
+  border-top:1px solid color-mix(in srgb,var(--accent) 45%,var(--line));font-size:13px}
+.wi-rows .wi-k{color:var(--accent);font-weight:600}
+.wi-rows .wi-v{text-align:right;font-variant-numeric:tabular-nums;color:var(--accent);font-weight:700}
+.wi-rows .wi-v.wi-up{color:var(--bad)} .wi-rows .wi-v.wi-down{color:var(--good)}
 
 /* tables */
 .scroll{overflow-x:auto}
@@ -1342,17 +1358,57 @@ function whatifTree(nodes, t) {
 // nothing on it. The wording stays neutral (change, never "routing saved"): with no
 // delegation there is no routing decision to credit. Same whatifTotals as the tree, so
 // the two can't disagree.
-function whatifSummary(t) {
-  const sign = t.delta >= 0 ? '+' : '-';
-  return pane('What-if · ' + t.target,
-    tiles([
-      ['your models', (t.est ? '~' : '') + money(t.actual), 'every token at its own model’s list rates', true],
-      ['all at ' + t.target, money(t.whatif), 'the same tokens, one rate card', true],
-      ['change', h('span', { class: t.delta >= 0 ? 'wi-up' : 'wi-down' }, sign + money(Math.abs(t.delta))),
-        signedPct(t.delta, t.actual, sign) + ' vs your models'],
-    ]),
-    h('div', { class: 'hint' }, 'both sides priced at list rates — the only apples-to-apples basis for a rate substitution, not a rerun. Recorded spend is unchanged, here and everywhere else.'),
-    t.est ? h('div', { class: 'hint' }, '~ your models include one with no known list rate — its tokens are priced at a generic estimate, so the baseline is not a real list price.') : null);
+// A two-arc donut: root cost (accent) vs subagents (good), the root share in the middle.
+// The TUI's proportion bar as an SVG; only drawn when there is a real split to show.
+function donut(root, sub) {
+  const R = 30, SW = 11, SZ = 84, c = SZ / 2, C = 2 * Math.PI * R;
+  const t = root + sub, rf = t > 0 ? root / t : 1;
+  const arc = (frac, off, col) => s('circle', { cx: c, cy: c, r: R, fill: 'none', stroke: col,
+    'stroke-width': SW, 'stroke-dasharray': (frac * C).toFixed(2) + ' ' + C.toFixed(2),
+    'stroke-dashoffset': (-off * C).toFixed(2) });
+  return s('svg', { class: 'donut', width: SZ, height: SZ, viewBox: '0 0 ' + SZ + ' ' + SZ,
+      role: 'img', 'aria-label': 'root vs subagents cost split' },
+    s('g', { transform: 'rotate(-90 ' + c + ' ' + c + ')' },
+      s('circle', { cx: c, cy: c, r: R, fill: 'none', stroke: 'var(--line)', 'stroke-width': SW }),
+      arc(rf, 0, thc('accent')),
+      sub > 0 ? arc(1 - rf, rf, thc('good')) : null),
+    s('text', { x: c, y: c - 1, 'text-anchor': 'middle', 'font-size': 15, 'font-weight': 700,
+      fill: 'var(--ink)', text: pct(root, t) }),
+    s('text', { x: c, y: c + 13, 'text-anchor': 'middle', 'font-size': 9, fill: 'var(--mut)', text: 'root' }));
+}
+
+// The Overview Money card (the TUI's Money box): the cost split + shape stats, a root-vs-
+// subagents donut, and -- when a `w` target is armed -- the what-if comparison as accent
+// rows below a rule. Both what-if sides are list rates (whatifTotals), so the recorded
+// rows above and the comparison below never quote the same number for different things.
+function moneyCard(w, wi) {
+  const total = cost(w), root = rootCost(w), sub = Math.max(0, total - root);
+  const rangeTotal = W.reduce((a, x) => a + cost(x), 0);
+  const nModels = (DATA.models[w.id] || []).length;
+  const stat = (k, v, mon) => [h('span', { class: 'ms-k' }, k),
+    h('span', { class: 'ms-v' + (mon ? ' money' : '') }, v)];
+  const stats = h('div', { class: 'money-stats' },
+    stat('Root', money(root), true), stat('Subagents', money(sub), true), stat('Total', money(total), true),
+    stat('Share of range', pct(total, rangeTotal)), stat('Tokens', hTok(w.tokens)),
+    stat('Models · Subagents', (nModels || w.subagents ? nModels : '·') + ' · ' + w.subagents));
+  const left = (sub > 0 && total > 0) ? h('div', null,
+    h('div', { class: 'money-legend' }, h('span', null, h('i', { class: 'lg lg-root' }), 'Root'),
+      h('span', null, h('i', { class: 'lg lg-sub' }), 'Subagents')),
+    donut(root, sub)) : null;
+  const kids = [h('div', { class: 'money' }, left, stats)];
+  if (wi) {
+    const sign = wi.delta >= 0 ? '+' : '-';
+    kids.push(h('div', { class: 'wi-rows' },
+      h('span', { class: 'wi-k' }, '★ Your models (list)'),
+      h('span', { class: 'wi-v' }, (wi.est ? '~' : '') + money(wi.actual)),
+      h('span', { class: 'wi-k' }, '★ All at ' + wi.target), h('span', { class: 'wi-v' }, money(wi.whatif)),
+      h('span', { class: 'wi-k' }, '★ Change'),
+      h('span', { class: 'wi-v ' + (wi.delta >= 0 ? 'wi-up' : 'wi-down') },
+        sign + money(Math.abs(wi.delta)) + ' (' + signedPct(wi.delta, wi.actual, sign) + ')')));
+    kids.push(h('div', { class: 'hint' }, 'both sides at list rates — recorded spend is unchanged, here and everywhere else.'));
+    if (wi.est) kids.push(h('div', { class: 'hint' }, '~ a model in your mix has no known list rate — its tokens use a generic estimate.'));
+  }
+  return pane('Money' + (wi ? ' · what-if ' + wi.target : ''), ...kids);
 }
 
 /* ---------- the `w` target picker (the TUI's draw_whatif_menu) ---------- */
@@ -1508,18 +1564,12 @@ function renderSessionOverview(root, sc) {
   root.appendChild(h('dl', { class: 'meta' },
     h('dt', null, 'project'), h('dd', null, h('a', { href: '#/p/' + encodeURIComponent(w.project) }, shortPath(w.project))),
     h('dt', null, 'date'), h('dd', null, dt(w.date)),
-    META.combined && w.source ? [h('dt', null, 'source'), h('dd', null, w.source)] : null,
+    META.combined && w.source ? [h('dt', null, 'harness'), h('dd', null, w.source)] : null,
     h('dt', null, 'id'), h('dd', null, w.id)));
-  root.appendChild(tiles([
-    ['total' + (MODE === 'api' ? ' (est.)' : ''), money(cost(w)), 'subagent subtree included', true],
-    ['root only', money(rootCost(w)), null, true],
-    ['subagents', String(w.subagents)],
-    ['tokens', hTok(w.tokens)],
-  ]));
-  // An armed `w` target answers for THIS session right here -- including a solo one,
-  // which has no subagent tree for the Subagents tab to show.
-  const wi = whatifTotals(sc.id);
-  if (wi) root.appendChild(whatifSummary(wi));
+  // The Money card mirrors the TUI's Money box: cost split + shape + a root/subagents
+  // donut, and an armed `w` target answers for THIS session right here (a solo session
+  // has no subagent tree for the Subagents tab, so its what-if lives here too).
+  root.appendChild(moneyCard(w, whatifTotals(sc.id)));
   if (EXTRAS.id === sc.id && EXTRAS.loading)
     root.appendChild(h('div', { class: 'hint' }, 'loading turns & tools…'));
   if (!META.serve)
@@ -1603,7 +1653,7 @@ function renderCrumbs(sc) {
 function chrome() {
   const chips = document.getElementById('hchips');
   chips.textContent = '';
-  chips.appendChild(h('span', { class: 'chip' }, 'source ', h('b', null, META.source)));
+  chips.appendChild(h('span', { class: 'chip' }, 'harness ', h('b', null, META.source)));
   chips.appendChild(h('span', { class: 'chip click', title: 'Set range (R)', onclick: openRange }, 'range ', h('b', null, rangeLabel())));
   chips.appendChild(h('span', { class: 'chip' }, META.serve ? 'live · ' + META.generated : META.generated));
   if (META.demo) chips.appendChild(h('span', { class: 'chip demo' }, 'demo data'));
