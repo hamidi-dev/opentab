@@ -3198,7 +3198,7 @@ class Renderer:
         # The `w` picker: arm ONE model you've used as a comparison target -- "what if
         # this model had done all of a session's work?" -- and a session's Subagents tab
         # prices that session's tree at its list rates. j/k moves the highlight, Enter
-        # arms, `f` narrows the list (fzf-style, the P overlay's filter), Esc cancels
+        # arms, `f` narrows the list (word-anchored, the P overlay's filter), Esc cancels
         # (handle_whatif_menu_key); `w` again with a target set clears it. Scrolled around
         # the selection like the theme picker -- a heavy month can carry a lot of models,
         # which is what the filter is for.

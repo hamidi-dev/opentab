@@ -270,6 +270,40 @@ def test_fuzzy_score_matches_subsequences():
     assert ot.fuzzy_score("tv", "trend view") > ot.fuzzy_score("tv", "octave")
 
 
+def test_anchored_fuzzy_match_only_enters_words_at_their_start():
+    # The strict cousin fuzzy_score's binary consumers use (pricing.model_matches):
+    # letters may scatter INSIDE a word, but a new word only joins at its first
+    # character. fuzzy_score would accept all the rejections below as subsequences --
+    # fzf does too, but fzf ranks them out of sight, and the model filters keep the
+    # column sort, so over the ~5k-row catalog a bare subsequence floated the junk
+    # to the top (filtering "opus" showed qwen3-coder-plus above claude-opus-4-8).
+    m = ot.anchored_fuzzy_match
+    assert m("", "anything")  # empty query matches everything
+    assert m("OPUS", "claude-Opus-4-8")  # case-insensitive
+    assert m("opus48", "claude-opus-4-8")  # chunks chain word starts...
+    assert m("snt45", "claude-sonnet-4-5")  # ...and may scatter inside a word
+    assert m("opus4-5", "claude-opus-4-5")  # a typed boundary matches a boundary
+    # ...and a separator is not a word: it needs no anchoring of its own, only
+    # order, so a leading/floating "-" narrows instead of matching nothing.
+    assert m("-48", "claude-opus-4-8")
+    assert m("a-b", "a/x-b")
+    assert m("cs45", "claude-sonnet-4-5")  # initials alone work too
+    assert m("net", "claude-sonnet-4-5")  # a plain substring always matches
+    # Every alignment is tracked, not a greedy scan: the dead-end o-p of "openai"
+    # must not eat the match.
+    assert m("opus", "openai-opus-clone")
+    # The junk the pure subsequence let through (real rows from the catalog).
+    assert not m("opus", "qwen3-coder-plus")  # o enters "coder" mid-word
+    assert not m("opus", "gemini-3.1-pro-preview-customtools")
+    assert not m("opus", "phi-4-reasoning-plus")
+    assert not m("opus", "anthropic.claude-sonnet-5")
+    assert not m("gtex", "gpt-5-codex")  # e enters "codex" mid-word
+    # A near-miss over a repeated-letter id must return, fast: a backtracking-regex
+    # implementation of this rule enumerated the alignments here (exponential -- a
+    # single row froze the keystroke for seconds), which is why the walk is a DP.
+    assert not m("a" * 25 + "z", "aaa-" * 12 + "bz")
+
+
 def test_wsl_mount_root_and_windows_path_mapping():
     with tempfile.TemporaryDirectory() as tmp:
         # wsl.conf parsing: [automount] root= wins, comments stripped, missing -> /mnt.

@@ -50,7 +50,7 @@ On the Turns tab, `z` (or clicking a `▸` header) unfolds the whole prompt text
 | `R` | Set the date range — `all` · `30d` (or `30`) · `2m` · `1y` · `2026` · `2026-05` · `start..end` |
 | `a` | Back to all time, keeping the current selection where possible |
 | `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`) |
-| `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id/**note**), projects, and Models; substring over Prices. Non-ASCII (`ä`, `界`) can be typed. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
+| `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id/**note**) and projects; model lists (`P`, `w`) match word-anchored (letters may scatter inside a word, a new word only joins at its first letter — `opus48` works, `opus` no longer drags in `qwen3-c`**`o`**`der-`**`p`**`l`**`us`**), routes by substring. Non-ASCII (`ä`, `界`) can be typed. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
 | `x` | Clear the filter |
 
 ## Sessions & projects

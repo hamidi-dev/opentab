@@ -196,7 +196,7 @@ class App:
         self.whatif_model: str | None = None
         self.whatif_menu = False  # the `w` target-model picker overlay
         self.whatif_menu_index = 0  # highlighted row in that picker
-        self.whatif_query = ""  # its live `f` filter (fzf-style, like the P overlay's)
+        self.whatif_query = ""  # its live `f` filter (word-anchored, like the P overlay's)
         self.whatif_filter_active = False  # keys are editing that query
         self._snapshot_real_costs()
         self._resolve_project_roots()
@@ -1528,9 +1528,10 @@ class App:
 
     def whatif_rows(self) -> list[tuple[str, int]]:
         # The picker's visible rows: whatif_candidates() narrowed by the live `f` query,
-        # through the one shared rule (pricing.model_matches -- id by subsequence, route
-        # by substring, dots==dashes). The P overlay's filter is the same call: two model
-        # lists asking the same question must not answer it differently.
+        # through the one shared rule (pricing.model_matches -- id by word-anchored
+        # fuzzy match, route by substring, dots==dashes). The P overlay's filter is the
+        # same call: two model lists asking the same question must not answer it
+        # differently.
         #
         # Rows keep their most-used-first order: a filtered list should still answer
         # "which of these do I lean on", never re-rank by match quality.
@@ -1574,9 +1575,9 @@ class App:
                 self.whatif_menu_index = 0
             return True
         # The `w` model picker: j/k move, Enter selects, Esc/q cancels, `f` (or `/`)
-        # starts the live filter -- the same fzf-style narrowing, on the same keys, as
-        # the P overlay's model list, because it is the same question asked of the same
-        # rows. Mirrors handle_source_menu_key otherwise, `w` advancing the highlight
+        # starts the live filter -- the same word-anchored narrowing, on the same keys,
+        # as the P overlay's model list, because it is the same question asked of the
+        # same rows. Mirrors handle_source_menu_key otherwise, `w` advancing the highlight
         # like `c` does.
         if key == 3:  # Ctrl-C still quits
             return False
@@ -2145,9 +2146,9 @@ class App:
 
     def _filter_price_entries(self, entries: list[PriceEntry]) -> list[PriceEntry]:
         # The active `f` filter, through the one shared rule (pricing.model_matches):
-        # the model id by subsequence, the route and vendor label by substring. The `w`
-        # picker's filter asks the same question of the same rows and goes through the
-        # same call -- they must never answer it differently.
+        # the model id by word-anchored fuzzy match, the route and vendor label by
+        # substring. The `w` picker's filter asks the same question of the same rows
+        # and goes through the same call -- they must never answer it differently.
         # Rows keep the active column sort (a filtered catalog should stay
         # cheapest-first, not re-rank by match quality -- the columns are the point).
         if not self.query:

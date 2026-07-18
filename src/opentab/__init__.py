@@ -177,6 +177,7 @@ from opentab.util import (
     MONTH_PATTERN,
     OPENCODE_BUILTIN_TOOLS,
     YEAR_PATTERN,
+    anchored_fuzzy_match,
     context_add,
     context_rows,
     copy_to_clipboard,

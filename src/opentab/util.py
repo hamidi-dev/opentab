@@ -581,6 +581,76 @@ def fuzzy_score(query: str, text: str) -> int | None:
     return score
 
 
+_WORD_BOUNDS = " -_/."
+
+
+def anchored_fuzzy_match(query: str, text: str) -> bool:
+    """The strict cousin of fuzzy_score, for identifier fields (model ids): a
+    plain substring, or a subsequence that may scatter INSIDE a word but only
+    enters a word at its first character. "opus48" still abbreviates
+    claude-OPUS-4-8 and "snt45" claude-SoNneT-4-5, but "opus" no longer counts
+    qwen3-cOder-PlUS as a match -- that `o` starts mid-word. The binary model
+    filters need this strictness because they keep the caller's row order: fzf
+    accepts those scattered subsequences too but ranks them out of sight, and
+    with no re-ranking the junk lands wherever the column sort puts it -- over
+    the 5k-row models.dev catalog, right at the top."""
+    if not query:
+        return True
+    q = query.lower()
+    t = text.lower()
+    if q in t:
+        return True
+    # Cheap necessary condition first: a plain-subsequence scan (C-speed find)
+    # rejects most of the catalog before the anchored walk below has to run.
+    pos = 0
+    for ch in q:
+        pos = t.find(ch, pos) + 1
+        if pos == 0:
+            return False
+    # The anchored walk, one pass over the text tracking every viable alignment
+    # at once -- NOT a backtracking regex, which this replaced: on a near-miss
+    # (many same-letter words, the last query char unreachable) the regex
+    # enumerated the alignments instead and a single row froze the keystroke
+    # for seconds. Tracking all prefixes together is linear and, unlike a
+    # greedy scan, still lets "opus" over "openai-opus" abandon the dead-end
+    # o-p of "openai" for the real "opus".
+    #   done[i]   -- q[:i] fully matched somewhere before this point
+    #   in_word[i] -- ...with its last char inside the CURRENT word, so q[i]
+    #                 may scatter onto any later char of the same word; a new
+    #                 word admits q[i] only as its first char (start + done).
+    n = len(q)
+    prefix_at: dict = {}
+    for i in range(n, 0, -1):  # descending, so one text char never chains two query chars
+        prefix_at.setdefault(q[i - 1], []).append(i)
+    done = [True] + [False] * n
+    in_word = [False] * (n + 1)
+    start = True
+    for c in t:
+        boundary = c in _WORD_BOUNDS
+        for i in prefix_at.get(c, ()):
+            # A boundary char typed in the query ("opus4-5", "-48") matches any
+            # later text boundary: a separator is not a word, so it carries no
+            # anchoring of its own -- order (done) is the whole requirement --
+            # and done-without-in_word is exactly "the next query char may enter
+            # the following word at its head". Letters keep the anchored rule.
+            if boundary:
+                ok = done[i - 1]
+            else:
+                ok = in_word[i - 1] or (start and done[i - 1])
+            if ok:
+                if i == n:
+                    return True
+                done[i] = True
+                if not boundary:
+                    in_word[i] = True
+        if boundary:
+            in_word = [False] * (n + 1)
+            start = True
+        else:
+            start = False
+    return False
+
+
 def workflow_fuzzy_score(query: str, workflow: Workflow, note: str = "") -> int | None:
     # Best match across the fields people aim for, nudged so a title hit
     # outranks an equally good directory, note, or id hit. The note (`n`) is

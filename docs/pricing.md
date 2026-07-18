@@ -63,7 +63,7 @@ Inside `P`:
 | `Space` | Pin the selected row to a ★ shortlist that floats first in every view — pinning one gateway's catalog row pins just that route, never every reseller of the same model. Persisted between runs |
 | `Enter` | Drill into the sessions that used the model (aggregated across routes and alias spellings) |
 | `s` (or a header click) | Sort by model / eff / use / a rate column |
-| `f` | Fuzzy filter (fzf-style, over model/vendor/route) — what tames the catalog's ~5k rows |
+| `f` | Fuzzy filter over model/vendor/route — word-anchored, so `opus48` and `snt45` match while mid-word scatter (`opus` → `qwen3-c`**`o`**`der-`**`p`**`l`**`us`**) doesn't — what tames the catalog's ~5k rows |
 | `r` | Refresh rates from models.dev in place (see below) |
 | `p` / `h` / `l` | Cycle / switch the four views |
 

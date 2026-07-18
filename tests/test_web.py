@@ -389,14 +389,18 @@ def test_web_whatif_answers_for_a_solo_session_with_no_nodes():
 
 def test_web_page_matches_models_through_one_shared_rule():
     # One JS helper (modelMatches, the mirror of pricing.model_matches) behind BOTH model
-    # filters: the P overlay's and the `w` picker's. Model ids match by subsequence, routes
-    # and vendor labels by plain substring -- subsequencing the route is what made "gpt"
-    # walk "github-copilot" and drag every Claude model sold through it into a GPT search.
+    # filters: the P overlay's and the `w` picker's. Model ids match by word-anchored
+    # fuzzy (the mirror of util.anchored_fuzzy_match -- a bare subsequence filled a
+    # filter for "opus" with qwen3-cOder-PlUS junk), routes and vendor labels by plain
+    # substring -- subsequencing the route is what made "gpt" walk "github-copilot" and
+    # drag every Claude model sold through it into a GPT search.
     js = _js_source()
     assert js.count("function modelMatches(") == 1  # exactly one matcher, not two
     assert "rows = rows.filter(r => modelMatches(PRICES.q, r.model, r.routes, r.familyLabel))" in js
     assert "return modelMatches(WHATIF.q, bare, route ? [route] : [], '');" in js
     assert "fz(q, rt)" not in js  # the route-subsequence false-positive machine is gone
+    assert "const subseq" not in js  # ...and so is the id one
+    assert "anchoredFuzzy(qq, dashDots(model || ''))" in js  # ids: word-anchored fuzzy
     assert "fields.some(f => f.includes(qq))" in js  # routes/labels: substring
 
 

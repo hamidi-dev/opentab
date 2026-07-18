@@ -415,16 +415,21 @@ def test_prices_filter_is_fuzzy():
             _model_row("gpt-5-codex", 2.0, 10),
         ]
     }
-    # The P filter is the same fzf-style subsequence match as the session filter:
-    # a scattered-letter query narrows without needing the exact substring.
-    app.query = "gtex"
-    assert app.priced_model_names() == ["gpt-5-codex"]
+    # The P filter is word-anchored fuzzy (pricing.model_matches): letters may
+    # scatter inside a word, but a new word only joins at its first character.
     app.query = "snt45"
     assert app.priced_model_names() == ["claude-sonnet-4-5"]
+    app.query = "gpt5c"
+    assert app.priced_model_names() == ["gpt-5-codex"]
     # A literal substring still matches; garbage still yields nothing.
     app.query = "codex"
     assert app.priced_model_names() == ["gpt-5-codex"]
     app.query = "zzz"
+    assert app.priced_model_names() == []
+    # The bare subsequence is gone: entering a word mid-letter no longer counts
+    # ("gtex" used to walk gpt-5-codEX -- the rule that filled a filter for "opus"
+    # with qwen3-cOder-PlUS and half the catalog).
+    app.query = "gtex"
     assert app.priced_model_names() == []
 
 

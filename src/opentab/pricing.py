@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from opentab import __version__
-from opentab.util import fuzzy_score
+from opentab.util import anchored_fuzzy_match
 
 # Providers whose models run on your own hardware. There is no per-token API bill,
 # so the "$" what-if view must price them at $0 (pricing them at cloud list rates
@@ -167,13 +167,19 @@ def model_matches(query: str, bare: str, routes: Iterable[str] = (), family: str
     Matched PER FIELD, never over the joined "route/model" string, and with a
     different rule per field because the fields are typed differently:
 
-    * the **model id** by fzf-style subsequence -- abbreviating is the whole point
-      ("opus48" -> claude-opus-4-8), and dots==dashes so "opus4.5" finds "opus-4-5";
+    * the **model id** by word-anchored fuzzy match (util.anchored_fuzzy_match):
+      a substring, or a subsequence that may scatter inside a word but only enters
+      a word at its first character. Abbreviating is the whole point ("opus48" ->
+      claude-opus-4-8, "snt45" -> claude-sonnet-4-5), and dots==dashes so "opus4.5"
+      finds "opus-4-5" -- but a BARE subsequence is a false-positive machine over
+      the 5k-row catalog: "opus" walks qwen3-cOder-PlUS, and with rows kept in
+      column order (below) instead of fzf's match-ranking, that junk sorts to the
+      top instead of out of sight;
     * the **route** and the **vendor label** by plain substring -- these are a short
       fixed vocabulary you type in full ("openai", "copilot"), nobody abbreviates
-      them, and a subsequence over them is a false-positive machine: "gpt" walks
-      "github-copilot" (g-ithub-co-p-ilo-t) and drags every Claude model sold through
-      Copilot into a search for GPT.
+      them, and the bare subsequence over them was the same machine: "gpt" walked
+      "github-copilot" (g-ithub-co-p-ilo-t) and dragged every Claude model sold
+      through Copilot into a search for GPT.
 
     Callers keep their own row order: a filtered list still answers "which of these do
     I lean on", so rows are never re-ranked by match quality.
@@ -181,7 +187,7 @@ def model_matches(query: str, bare: str, routes: Iterable[str] = (), family: str
     if not query:
         return True
     q = dots_to_dashes(query.lower())
-    if fuzzy_score(q, dots_to_dashes(str(bare).lower())) is not None:
+    if anchored_fuzzy_match(q, dots_to_dashes(str(bare).lower())):
         return True
     fields = [str(r).lower() for r in routes]
     if family:

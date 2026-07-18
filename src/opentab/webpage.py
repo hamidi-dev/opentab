@@ -590,21 +590,65 @@ function modelAgg(ws) {
 // picker's, which ask the same question of the same rows and must not answer it
 // differently. Matched PER FIELD, with a different rule per field because the fields
 // are typed differently:
-//   * the model id by fzf-style subsequence -- abbreviating is the whole point
-//     ("opus48" -> claude-opus-4-8), and dots==dashes so "opus4.5" finds "opus-4-5";
+//   * the model id by word-anchored fuzzy match (the mirror of
+//     util.anchored_fuzzy_match): a substring, or a subsequence that may scatter
+//     inside a word but only enters a word at its first character -- "opus48" ->
+//     claude-opus-4-8, "snt45" -> claude-sonnet-4-5, dots==dashes so "opus4.5" finds
+//     "opus-4-5"; a BARE subsequence let "opus" walk qwen3-cOder-PlUS, and with rows
+//     kept in column order (below) instead of fzf's match-ranking, that junk sorted
+//     to the top of the 5k-row catalog instead of out of sight;
 //   * the route and the vendor label by plain SUBSTRING -- a short fixed vocabulary you
-//     type in full ("openai", "copilot"); nobody abbreviates them, and a subsequence
-//     over them is a false-positive machine: "gpt" walks "github-copilot"
-//     (g-ithub-co-p-ilo-t) and drags every Claude model sold through Copilot into a
+//     type in full ("openai", "copilot"); nobody abbreviates them, and the bare
+//     subsequence over them was the same machine: "gpt" walked "github-copilot"
+//     (g-ithub-co-p-ilo-t) and dragged every Claude model sold through Copilot into a
 //     search for GPT.
 // Callers keep their own row order: a filtered list still answers "which of these do I
 // lean on", so rows are never re-ranked by match quality.
 const dashDots = t => String(t).toLowerCase().replace(/(\d)\.(?=\d)/g, '$1-');
-const subseq = (q, t) => { let i = 0; for (let j = 0; j < t.length && i < q.length; j++) if (t[j] === q[i]) i++; return i === q.length; };
+// The anchored walk, the line-for-line mirror of util.anchored_fuzzy_match: one pass
+// over the text tracking every viable alignment at once (NOT a backtracking regex --
+// a near-miss over a repeated-letter id made one enumerate alignments for seconds).
+// done[i] = q[:i] fully matched before this point; inWord[i] = ...with its last char
+// inside the CURRENT word, so q[i] may scatter onto any later char of that word; a
+// new word admits q[i] only as its first char (start + done). A plain-subsequence
+// pre-scan rejects most rows before the walk runs.
+const anchoredFuzzy = (q, t) => {
+  if (!q || t.includes(q)) return true;
+  let pos = 0;
+  for (const ch of q) { pos = t.indexOf(ch, pos) + 1; if (!pos) return false; }
+  const qa = Array.from(q), n = qa.length;
+  const prefixAt = new Map();
+  for (let i = n; i >= 1; i--) {  // descending, so one text char never chains two query chars
+    if (!prefixAt.has(qa[i - 1])) prefixAt.set(qa[i - 1], []);
+    prefixAt.get(qa[i - 1]).push(i);
+  }
+  const done = new Array(n + 1).fill(false); done[0] = true;
+  let inWord = new Array(n + 1).fill(false);
+  let start = true;
+  for (const c of t) {
+    const boundary = ' -_/.'.includes(c);
+    for (const i of (prefixAt.get(c) || [])) {
+      // A boundary char typed in the query ("opus4-5", "-48") matches any later
+      // text boundary: a separator is not a word, so it carries no anchoring of
+      // its own -- order (done) is the whole requirement -- and done-without-inWord
+      // is exactly "the next query char may enter the following word at its head".
+      // Letters keep the anchored rule.
+      const ok = boundary ? done[i - 1] : (inWord[i - 1] || (start && done[i - 1]));
+      if (ok) {
+        if (i === n) return true;
+        done[i] = true;
+        if (!boundary) inWord[i] = true;
+      }
+    }
+    if (boundary) { inWord = new Array(n + 1).fill(false); start = true; }
+    else start = false;
+  }
+  return false;
+};
 function modelMatches(q, model, routes, familyLabel) {
   if (!q) return true;
   const qq = dashDots(q);
-  if (subseq(qq, dashDots(model || ''))) return true;
+  if (anchoredFuzzy(qq, dashDots(model || ''))) return true;
   const fields = (routes || []).map(r => String(r).toLowerCase());
   if (familyLabel) fields.push(String(familyLabel).toLowerCase());
   return fields.some(f => f.includes(qq));
@@ -1294,9 +1338,9 @@ function whatifSummary(t) {
 
 /* ---------- the `w` target picker (the TUI's draw_whatif_menu) ---------- */
 // The picker's rows: the models you have actually used, most-used first, narrowed by the
-// live filter through the one shared rule (modelMatches -- id by subsequence, route by
-// substring). The P overlay's filter is the same call: two model lists asking the same
-// question must not answer it differently.
+// live filter through the one shared rule (modelMatches -- id by word-anchored fuzzy
+// match, route by substring). The P overlay's filter is the same call: two model lists
+// asking the same question must not answer it differently.
 function whatifRows() {
   return WI_MODELS.filter(m => {
     const i = m.model.lastIndexOf('/');
@@ -1855,10 +1899,11 @@ function renderPrices() {
   host.hidden = false; host.textContent = '';
   let rows = priceRows().slice();
   // The one shared rule (modelMatches, the mirror of pricing.model_matches): the model id
-  // by fzf-style subsequence ("opus8" narrows to the claude-opus-4-8 rows, dots==dashes),
-  // the route and the vendor label by substring. The `w` picker's filter is the same
-  // call. Subsequencing the route -- what this filter used to do -- made "gpt" match
-  // every Claude model sold through github-copilot.
+  // by word-anchored fuzzy match ("opus8" narrows to the claude-opus-4-8 rows,
+  // dots==dashes), the route and the vendor label by substring. The `w` picker's filter
+  // is the same call. Bare-subsequencing either field -- what this filter used to do --
+  // made "gpt" match every Claude model sold through github-copilot, and "opus" match
+  // half the catalog (qwen3-cOder-PlUS).
   if (PRICES.q) rows = rows.filter(r => modelMatches(PRICES.q, r.model, r.routes, r.familyLabel));
   const ASC = new Set(['model', 'eff']);  // natural order per column (else high→low)
   const key = PRICES.sort;

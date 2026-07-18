@@ -26,7 +26,7 @@ static host.
 ## `w` — the what-if model
 
 `w` opens a picker over the models you've actually used — the ones with a real list
-price (`j`/`k` move · `f` filters, fzf-style · `Enter` arms · `Esc` cancels) — and
+price (`j`/`k` move · `f` filters, word-anchored fuzzy · `Enter` arms · `Esc` cancels) — and
 **arms one as a comparison target**: *"what if the expensive model had done the
 subagents' work too?"*.
 

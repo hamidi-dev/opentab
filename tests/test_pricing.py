@@ -75,10 +75,17 @@ def test_model_matches_is_the_one_rule_behind_every_model_filter():
     # The P overlay's `f` and the `w` picker both go through pricing.model_matches, so
     # the rules are asserted once, here.
     m = ot.model_matches
-    # Model id: fzf-style subsequence, and dots == dashes in both directions.
+    # Model id: word-anchored fuzzy (util.anchored_fuzzy_match), and dots == dashes
+    # in both directions.
     assert m("opus48", "claude-opus-4-8")
     assert m("opus4.5", "claude-opus-4-5") and m("opus4-5", "claude-opus-4.5")
     assert not m("opus", "claude-sonnet-4-5")
+    # A bare subsequence over the id was a false-positive machine too: over the 5k-row
+    # catalog "opus" matched every id carrying o-p-u-s scattered mid-word, and the
+    # no-re-ranking rule (below) sorted that junk to the top instead of out of sight.
+    assert not m("opus", "qwen3-coder-plus")
+    assert not m("opus", "gemini-3.1-pro-preview-customtools")
+    assert m("opus", "gemma-4-31b-claude-4.6-opus-reasoning-distilled")  # a real opus row
     # Route and vendor label: substring, so typing them in full works...
     assert m("copilot", "claude-sonnet-4.5", ("github-copilot",))
     assert m("anthropic", "claude-opus-4-5", ("github-copilot",), "Anthropic")
