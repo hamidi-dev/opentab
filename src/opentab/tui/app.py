@@ -1806,6 +1806,7 @@ class App:
         notes_ok = self.refresh_notes()  # `r` picks up notes another opentab wrote too
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._turns_expanded.clear()  # cleared with the turn cache it indexes into
         self._context_by_session.clear()
         self._nodes_by_session.clear()
         self._load_model_cache()
@@ -1988,6 +1989,7 @@ class App:
         self._models_loaded = False
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._turns_expanded.clear()  # cleared with the turn cache it indexes into
         self._context_by_session.clear()
         self._nodes_by_session.clear()
         self._load_model_cache()
@@ -3288,6 +3290,10 @@ class App:
             self.view = "session"
             self.tab = 0
             self.scroll = 0
+            # Individually expanded Turns prompts are this session's; a leftover set from
+            # the last one would spuriously light the turn-column header (any_open) and,
+            # on a prompt-id collision, auto-expand a group that was never opened here.
+            self._turns_expanded.clear()
 
     def drill_out(self) -> None:
         if self.view == "session":

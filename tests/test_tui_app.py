@@ -1567,6 +1567,22 @@ def test_drilling_into_a_year_zooms_and_lists_its_sessions():
     assert {w.id for w in app.current_sessions()} == {"a", "b"}
 
 
+def test_opening_a_session_clears_leftover_turn_expansions():
+    # _turns_expanded holds the Turns prompts expanded (by click) in ONE session. Opening
+    # another must not inherit them: a non-empty set lights the turn-column header even
+    # when every group is folded, and a prompt-id collision would auto-expand a group the
+    # user never opened here. Reload / source-switch clear it alongside the turn cache.
+    app = app_with([workflow("a", "2026-06-01 12:00:00"), workflow("b", "2026-06-02 12:00:00")])
+    app._turns_expanded = {"p1"}
+    assert app.goto_session("b")  # -> drill_into_session -> drill_in -> session view
+    assert app.view == "session" and app.current_session().id == "b"
+    assert app._turns_expanded == set()
+    # reload clears it too (it indexes into the turn cache that reload rebuilds)
+    app._turns_expanded = {"q1"}
+    app.reload()
+    assert app._turns_expanded == set()
+
+
 def test_toasts_coalesce_within_a_frame_cap_and_expire():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     clock = [0.0]
