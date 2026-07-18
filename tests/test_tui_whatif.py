@@ -17,6 +17,12 @@ from tests._support import (
 )
 
 
+def _wi_row(lines, label):
+    # The Overview's Money box renders the what-if as accent "★"-marked rows inside a
+    # ruled box; a test reads the row carrying a given label (value is right-aligned).
+    return next((ln for ln in lines if label in ln), "")
+
+
 def test_local_usage_stays_zero_in_what_if_view():
     # A local-only session: $0 recorded, real tokens. The "$" what-if must not turn
     # those tokens into cloud dollars.
@@ -50,16 +56,15 @@ def test_whatif_overview_answers_for_a_solo_session_that_has_no_subagents():
 
         app.select_whatif_model("anthropic/claude-haiku-4.5")
         lines = app.renderer.detail_overview(wf, 100)
-        assert "# What-if · anthropic/claude-haiku-4.5" in lines
+        assert any("Money · what-if anthropic/claude-haiku-4.5" in ln for ln in lines)
         # BOTH sides at list rates -- the baseline is its 1M Opus tokens at Opus rates,
         # NOT the $1.50 that happened to be recorded (that would compare a list-price
         # counterfactual against a metered bill and call the difference a saving).
-        assert f"Your models:  {ot.money(opus_in)}   (list rates, each model its own)" in lines
-        assert f"All at anthropic/claude-haiku-4.5:  {ot.money(haiku_in)}" in lines
+        assert ot.money(opus_in) in _wi_row(lines, "★ Your models (list)")
+        assert ot.money(haiku_in) in _wi_row(lines, "★ All at anthropic/claude-haiku-4.5")
         # Cheaper than the models that ran it, so the change is negative -- and never
         # phrased as "routing": nothing was routed.
-        change = next(ln for ln in lines if ln.startswith("Change:"))
-        assert change.startswith(f"Change:       -{ot.money(opus_in - haiku_in)}")
+        assert f"-{ot.money(opus_in - haiku_in)}" in _wi_row(lines, "★ Change")
         assert not any("routing" in ln for ln in lines)
         # The Subagents tab still, correctly, has nothing to show.
         assert "No subagents used" in app.renderer.detail_subagents(wf, 100)[1]
@@ -75,8 +80,8 @@ def test_whatif_overview_and_subagents_tab_never_quote_different_totals():
         assert abs(actual - _whatif_baseline(app, "root")) < 1e-9
 
         overview = app.renderer.detail_overview(wf, 100)
-        assert f"Your models:  {ot.money(actual)}   (list rates, each model its own)" in overview
-        assert f"All at anthropic/claude-opus-4.5:  {ot.money(whatif)}" in overview
+        assert ot.money(actual) in _wi_row(overview, "★ Your models (list)")
+        assert ot.money(whatif) in _wi_row(overview, "★ All at anthropic/claude-opus-4.5")
         total = next(ln for ln in app.renderer.detail_subagents(wf, 200) if ln.startswith("TOTAL"))
         assert f"your models {ot.money(actual)} → " in total
         assert f"all at anthropic/claude-opus-4.5 {ot.money(whatif)}" in total
@@ -103,7 +108,7 @@ def test_whatif_target_a_single_model_session_already_used_is_a_zero_change():
         assert round(actual, 9) == round(whatif, 9) == round(3 * opus_in, 9)
 
         lines = app.renderer.detail_overview(wf, 100)
-        assert f"Change:       +{ot.money(0)} (+0% vs your models)" in lines
+        assert f"+{ot.money(0)} (+0%)" in _wi_row(lines, "★ Change")
         # The old baseline was the node's recorded cost, which kept the one billed turn's
         # $1.50 as the whole of it and reported a +$13.50 "saving" that never existed.
         assert round(app.session_node_rows("root")[0]["cost"], 6) == 1.5
@@ -200,7 +205,7 @@ def test_whatif_baseline_is_marked_estimated_when_a_model_has_no_list_rate():
         app.select_whatif_model("anthropic/claude-opus-4.5")
         assert app.whatif_baseline_is_estimated(wf)
         lines = app.renderer.detail_overview(wf, 100)
-        assert any(ln.startswith("Your models:  ~$") for ln in lines)
+        assert "~$" in _wi_row(lines, "★ Your models (list)")  # the estimate marker
         assert any("no known list rate" in ln for ln in lines)
 
     # A session priced end to end carries no marker.
@@ -213,9 +218,8 @@ def test_whatif_baseline_is_marked_estimated_when_a_model_has_no_list_rate():
         w2 = clean.loaded[0]
         clean.select_whatif_model("anthropic/claude-opus-4.5")
         assert not clean.whatif_baseline_is_estimated(w2)
-        assert any(
-            ln.startswith("Your models:  $") for ln in clean.renderer.detail_overview(w2, 100)
-        )
+        wi = _wi_row(clean.renderer.detail_overview(w2, 100), "★ Your models (list)")
+        assert "$" in wi and "~$" not in wi  # priced end to end -- no estimate marker
 
 
 def test_whatif_target_survives_a_dataset_that_never_used_it():
@@ -309,11 +313,9 @@ def test_whatif_change_of_a_zero_baseline_is_never_a_plus_dash():
         app.select_whatif_model("anthropic/claude-opus-4.5")
         actual, whatif = app.whatif_session_totals(wf)
         assert actual == 0 and whatif > 0  # local tokens have no list price to bill
-        change = next(
-            ln for ln in app.renderer.detail_overview(wf, 100) if ln.startswith("Change:")
-        )
+        change = _wi_row(app.renderer.detail_overview(wf, 100), "★ Change")
         assert "+-" not in change
-        assert change.endswith("(- vs your models)")
+        assert "(-)" in change  # undefined % of a zero baseline prints bare, never "+-"
         assert ot.Renderer.signed_pct(1.0, 0, "+") == "-"  # ...the rule itself
         assert ot.Renderer.signed_pct(1.0, 4.0, "+") == "+25%"
 

@@ -235,8 +235,9 @@ def test_note_marks_the_session_in_lists_and_shows_in_the_overview():
 
     lines = renderer.detail_overview(session, 80)
     assert any(line.startswith("Note:     the expensive one") for line in lines)
-    # It sits in the Session block, above Money -- it says what the money was for.
-    assert next(i for i, ln in enumerate(lines) if ln.startswith("Note:")) < lines.index("# Money")
+    # It sits in the Session block, above the Money box -- it says what the money was for.
+    money_i = next(i for i, ln in enumerate(lines) if "Money" in ln and ln[:1] in ("┌", "+"))
+    assert next(i for i, ln in enumerate(lines) if ln.startswith("Note:")) < money_i
 
 
 def test_note_wraps_to_the_pane_with_a_hanging_indent():

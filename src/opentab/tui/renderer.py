@@ -981,10 +981,17 @@ class Renderer:
         if first in ("├", "└", "+"):
             return curses.A_NORMAL
         if first in ("│", "|"):
+            content = line[2:].lstrip()
+            # The Money box's armed what-if rows are marked with a leading ★ and painted
+            # in the orange accent (pair 6 -- the same state-emphasis colour as the Turns
+            # ▸ headers and the narrowed-view chip), so the counterfactual pops off the
+            # white recorded-cost rows above it (money spans keep their own colour on top).
+            if content.startswith("★"):
+                return curses.color_pair(6) | curses.A_BOLD
             # The boxed TOTAL row -- "TOTAL" as a whole word (it is always followed by the
             # count column's separator), so a model/tool named "TOTALizer" isn't mistaken
             # for it.
-            return curses.A_BOLD if line[2:].lstrip().startswith("TOTAL ") else curses.A_NORMAL
+            return curses.A_BOLD if content.startswith("TOTAL ") else curses.A_NORMAL
         return curses.A_NORMAL
 
     def money_attr(self, cost_text: str) -> int:
@@ -1777,6 +1784,35 @@ class Renderer:
         lines.extend(notes)
         return lines
 
+    def _sectioned_box(
+        self, title: str, groups: list[list[str]], width: int, notes: list[str]
+    ) -> list[str]:
+        # A ruled box like _ruled_box, but its body is several row GROUPS separated by
+        # rules -- the Overview's Money table stacks the cost breakdown and, below a rule,
+        # the armed what-if rows. Same glyphs, same titled top border (line_attr paints it
+        # in the accent), same "! ..." notes riding outside the box below it. Empty groups
+        # are dropped so a rule never opens onto nothing.
+        g = self._TABLE_GLYPHS if unicode_screen() else self._TABLE_GLYPHS_ASCII
+        width = max(5, width)
+        inner = width - 4
+        heading = shorten(title[2:] if title.startswith("# ") else title, max(1, width - 6))
+
+        def content(s: str) -> str:
+            return f"{g['v']} {pad(shorten(s, inner), inner)} {g['v']}"
+
+        def rule(left: str, right: str) -> str:
+            return left + g["h"] * max(0, width - 2) + right
+
+        prefix = f"{g['tl']} {heading} "
+        lines = [prefix + g["h"] * max(0, width - display_width(prefix) - 1) + g["tr"]]
+        for i, group in enumerate(g2 for g2 in groups if g2):
+            if i:
+                lines.append(rule(g["lt"], g["rt"]))
+            lines.extend(content(row) for row in group)
+        lines.append(rule(g["bl"], g["br"]))
+        lines.extend(notes)
+        return lines
+
     @staticmethod
     def _price_split_dollars(
         name: str, cost: float, tok: int, cr: int, cw: int, out: int
@@ -2111,6 +2147,79 @@ class Renderer:
         wrapped = wrap_cells(note, max(20, width - 12)) or [note]
         return [f"Note:     {wrapped[0]}"] + [f"          {line}" for line in wrapped[1:]]
 
+    def _money_overview(self, workflow: Workflow, width: int) -> list[str]:
+        # The Overview's Money table (a _sectioned_box): one box that carries the cost
+        # split, the shape stats folded in (so there is no separate "# Shape" block to
+        # crowd the pane), a root-vs-subagents proportion bar -- the TUI's pie stand-in --
+        # and, when a `w` target is armed, the what-if comparison as accent-highlighted
+        # rows below a rule. Both sides of the what-if are list rates (whatif_session_totals),
+        # so the recorded-cost rows above and the comparison rows below never quote the same
+        # number for different things by accident.
+        root, total = workflow.root_cost, workflow.total_cost
+        sub = total - root
+        # A summary card, not a full-width table: capped so a wide pane doesn't strand the
+        # values a hundred columns from their labels (the model table below fills the pane
+        # with real columns; this one is label/value and reads best compact).
+        width = min(width, 76)
+        inner = max(10, width - 4)
+
+        def kv(label: str, value: str) -> str:
+            # A left label and a right-aligned value, filling the box's inner width.
+            return f"{label}{value:>{max(1, inner - display_width(label))}}"
+
+        money_rows = []
+        # The root-vs-subagents "pie" -- a two-glyph proportion bar (filled = root,
+        # light = subagents), one color but readable by glyph. Only when the split is
+        # real: a solo session (no subagents) or a $0 subscription session in normal mode
+        # has nothing to divide, so the bar would be a solid or undefined block.
+        if workflow.subagents and total > 0:
+            cells = max(8, min(28, inner - 26))
+            rc = max(0, min(cells, round(cells * root / total)))
+            bar = "█" * rc + "░" * (cells - rc)
+            money_rows.append(kv(f"Root {bar} Sub", f"{pct(root, total)} / {pct(sub, total)}"))
+        money_rows += [
+            kv("Root", money(root)),
+            kv("Subagents", money(sub)),
+            kv("Total", money(total)),
+            kv("Share of range", pct(total, self.range_cost_total())),
+            kv("Tokens", tokens(workflow.total_tokens)),
+            kv("Models · Subagents", f"{workflow.model_count} · {workflow.subagents}"),
+        ]
+        title = "# Money"
+        notes: list[str] = []
+        # An armed `w` target answers for THIS session right here -- including a solo one,
+        # which has no subagent tree for the Subagents tab to show. The ★ marks the rows
+        # line_attr paints in the accent (the "highlight").
+        whatif_rows: list[str] = []
+        totals = self.whatif_session_totals(workflow)
+        if self.whatif_model and totals:
+            target = self.whatif_model
+            actual, whatif = totals
+            delta = whatif - actual
+            sign = "+" if delta >= 0 else "-"
+            approx = "~" if self.whatif_baseline_is_estimated(workflow) else ""
+            title = f"# Money · what-if {target}"
+            whatif_rows = [
+                kv("★ Your models (list)", f"{approx}{money(actual)}"),
+                kv(f"★ All at {shorten(target, max(4, inner - 22))}", money(whatif)),
+                kv(
+                    "★ Change",
+                    f"{sign}{money(abs(delta))} ({self.signed_pct(delta, actual, sign)})",
+                ),
+            ]
+            notes.append(
+                "! What-if sides are list rates — the apples-to-apples basis; recorded "
+                "spend above and everywhere else is unchanged."
+            )
+            if approx:
+                notes.append(
+                    "! ~ a model in your mix has no known list rate — its tokens use a "
+                    "generic estimate, so that baseline is not a real list price."
+                )
+        if workflow.unpriced_tokens and not whatif_rows:
+            notes.append(self.unpriced_hint())
+        return self._sectioned_box(title, [money_rows, whatif_rows], width, notes)
+
     def detail_overview(self, workflow: Workflow, width: int) -> list[str]:
         lines = [
             "# Session",
@@ -2122,27 +2231,8 @@ class Renderer:
         if workflow.source:
             lines.append(f"Source:   {workflow.source}")
         lines += self.note_lines(workflow, width)
-        lines += [
-            "",
-            "# Money",
-            f"Total:    {money(workflow.total_cost)}",
-            f"Root:     {money(workflow.root_cost)}",
-            f"Subagent: {money(workflow.total_cost - workflow.root_cost)}",
-            f"Share:    {pct(workflow.total_cost, self.range_cost_total())} of range",
-        ]
-        # An armed `w` target answers for THIS session right here -- including a solo one,
-        # which has no subagent tree for the Subagents tab to show.
-        lines += self.detail_whatif_summary(workflow)
-        lines += [
-            "",
-            "# Shape",
-            f"Subagents:       {workflow.subagents}",
-            f"Distinct models: {workflow.model_count}",
-            f"Tokens:          {tokens(workflow.total_tokens)}",
-            f"Unpriced tokens: {tokens(workflow.unpriced_tokens)}",
-        ]
-        if workflow.unpriced_tokens:
-            lines.extend(["", self.unpriced_hint()])
+        lines.append("")
+        lines += self._money_overview(workflow, width)
         lines.append("")
         model_rows = self.model_mix(workflow.id)
         lines.extend(self._model_table(self._mix_rows(model_rows), "# Top Models", width))
