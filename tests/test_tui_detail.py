@@ -21,14 +21,24 @@ from tests._support import (
 )
 
 
-def test_top_models_has_full_model_columns():
-    # The "Top Models" overview section reuses the Models-tab table, so it carries
-    # the cache/output columns too (name, runs, cost, tokens, cacheR, cacheW, output).
+def _cells(lines):
+    # The content rows of a _ruled_box model/tool table (header, data rows, and the
+    # TOTAL row), with the "| ... |" frame gutters stripped -- so a test can read the
+    # columns regardless of the box's Unicode/ASCII glyphs or where the rules land.
+    return [ln[2:-2] for ln in lines if ln[:1] in ("│", "|")]
+
+
+def test_top_models_is_a_ruled_box_with_full_model_columns():
+    # The "Top Models" overview section reuses the Models-tab table, now drawn as a
+    # ruled box: the title rides the top border and the row carries the cache/output
+    # columns too (name, runs, cost, tokens, cacheR, cacheW, output).
     app = app_with([])
     rows = [("m", 3648, 1.0, 205_600_000, 1_000_000, 2_000_000, 5_000_000)]
     lines = app.renderer._model_table(rows, "# Top Models", 120)
-    assert lines[0] == "# Top Models"
-    assert lines[1].split() == [
+    assert "Top Models" in lines[0] and lines[0][:1] in ("┌", "+")  # title on the top border
+    assert lines[-1][:1] in ("└", "+")  # closed by a bottom border
+    header, first = _cells(lines)
+    assert header.split() == [
         "Model",
         "Msgs",
         "Cost",
@@ -38,9 +48,9 @@ def test_top_models_has_full_model_columns():
         "CacheW",
         "Output",
     ]
-    assert "$1.00" in lines[2]
-    assert "205.6M" in lines[2]
-    assert "3648" in lines[2]
+    assert "$1.00" in first
+    assert "205.6M" in first
+    assert "3648" in first
 
 
 def test_model_table_splits_cost_across_token_categories_in_wide_panes():
@@ -50,10 +60,10 @@ def test_model_table_splits_cost_across_token_categories_in_wide_panes():
     # plain token counts hide.
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
-    lines = app.renderer._model_table(rows, "# Top Models", 120)
-    assert "800.0k ($0.80)" in lines[2]
-    assert "100.0k ($1.25)" in lines[2]
-    assert "50.0k ($2.50)" in lines[2]
+    row = _cells(app.renderer._model_table(rows, "# Top Models", 120))[1]
+    assert "800.0k ($0.80)" in row
+    assert "100.0k ($1.25)" in row
+    assert "50.0k ($2.50)" in row
 
 
 def test_model_table_split_scales_to_the_recorded_cost():
@@ -62,10 +72,10 @@ def test_model_table_split_scales_to_the_recorded_cost():
     # sums to the Cost column.
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 10.10, 1_000_000, 800_000, 100_000, 50_000)]
-    lines = app.renderer._model_table(rows, "# Top Models", 120)
-    assert "800.0k ($1.60)" in lines[2]
-    assert "100.0k ($2.50)" in lines[2]
-    assert "50.0k ($5.00)" in lines[2]
+    row = _cells(app.renderer._model_table(rows, "# Top Models", 120))[1]
+    assert "800.0k ($1.60)" in row
+    assert "100.0k ($2.50)" in row
+    assert "50.0k ($5.00)" in row
 
 
 def test_model_table_split_cells_align_under_their_labels():
@@ -77,8 +87,7 @@ def test_model_table_split_cells_align_under_their_labels():
         ("anthropic/claude-fable-5", 92, 20.60, 13_400_000, 13_100_000, 194_700, 99_200),
         ("anthropic/claude-opus-4-8", 1, 0.05, 23_500, 15_000, 1_900, 57),
     ]
-    lines = app.renderer._model_table(rows, "# Model Mix", 120)
-    header, first, second = lines[1], lines[2], lines[3]
+    header, first, second = _cells(app.renderer._model_table(rows, "# Model Mix", 120))[:3]
     for label in ("CacheR", "CacheW", "Output"):
         i = header.index(label)
         assert first[i + 5] != " " and second[i + 5] != " "  # tokens end under the label
@@ -89,26 +98,26 @@ def test_model_table_split_cells_align_under_their_labels():
 def test_model_table_split_needs_width_dollars_and_models():
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
-    # Narrow pane: plain token counts, exactly the classic layout.
-    narrow = app.renderer._model_table(rows, "# Top Models", 80)
-    assert not any("(" in ln for ln in narrow[1:])
-    assert "800.0k" in narrow[2]
+    # Narrow pane: plain token counts, exactly the classic layout (still fits the box).
+    narrow = app.renderer._model_table(rows, "# Top Models", 90)
+    assert not any("(" in ln for ln in narrow)
+    assert "800.0k" in _cells(narrow)[1]
     # Unpriced rows ($0.00): nothing to attribute even in a wide pane.
     unpriced = app.renderer._model_table(
         [("anthropic/claude-fable-5", 10, 0.0, 1_000_000, 800_000, 100_000, 50_000)],
         "# Top Models",
         120,
     )
-    assert not any("(" in ln for ln in unpriced[1:])
+    assert not any("(" in ln for ln in unpriced)
     # The Tools tab reuse: tool names aren't models, so no split there either.
     tools = app.renderer._model_table(
         rows, "# Tools — this session", 120, "Tool", "Calls", price_split=False
     )
-    assert not any("(" in ln for ln in tools[1:])
+    assert not any("(" in ln for ln in tools)
 
 
 def test_model_table_total_row_sums_every_column():
-    # A multi-row table closes with a TOTAL row -- runs, cost, and every token
+    # A multi-row table closes with a rule + TOTAL row -- runs, cost, and every token
     # column summed -- so "what did cache writes cost me this year" is one
     # glance. Share stays blank (definitionally 100%).
     app = app_with([])
@@ -116,24 +125,23 @@ def test_model_table_total_row_sums_every_column():
         ("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000),
         ("anthropic/claude-opus-4-8", 5, 2.00, 500_000, 400_000, 50_000, 25_000),
     ]
-    lines = app.renderer._model_table(rows, "# Top Models", 80)  # narrow: plain counts
-    total = lines[-1]
-    assert total.startswith("TOTAL")
+    lines = app.renderer._model_table(rows, "# Top Models", 90)  # narrow: plain counts
+    total = _cells(lines)[-1]
+    assert total.split()[0] == "TOTAL"
     assert "15" in total.split() and "$7.05" in total
     assert "1.5M" in total  # tokens
     assert "1.2M" in total and "150.0k" in total and "75.0k" in total
-    assert lines[-2] == ""  # a breath between the rows and their sum
-    # Painted distinguished: the accent bar (the active-tab pair 7) when colors
-    # exist, the plain inverse on a monochrome terminal -- bold either way.
+    # No coloured sum bar any more: the boxed TOTAL row is bold ink, and the title
+    # rides the accented top border. (line_attr is glyph-keyed, so mock color_pair.)
+    total_row = next(ln for ln in lines if ln.lstrip("│| ").startswith("TOTAL"))
     orig_cp = ot.curses.color_pair
     ot.curses.color_pair = lambda n: 0  # headless: no initscr behind line_attr
     try:
-        assert app.renderer.line_attr(total) & ot.curses.A_BOLD
+        assert app.renderer.line_attr(total_row) & ot.curses.A_BOLD
+        assert not (app.renderer.line_attr(total_row) & ot.curses.A_REVERSE)
+        assert app.renderer.line_attr(lines[0]) & ot.curses.A_BOLD  # accented top border
     finally:
         ot.curses.color_pair = orig_cp
-    app.colors_ok = False
-    mono = app.renderer.line_attr(total)
-    assert mono & ot.curses.A_BOLD and mono & ot.curses.A_REVERSE
 
 
 def test_model_table_total_row_sums_attributed_dollars_at_each_rows_rates():
@@ -144,9 +152,8 @@ def test_model_table_total_row_sums_attributed_dollars_at_each_rows_rates():
     # above), so TOTAL carries exactly double.
     app = app_with([])
     row = ("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)
-    lines = app.renderer._model_table([row, row], "# Top Models", 120)
-    total = lines[-1]
-    assert total.startswith("TOTAL")
+    total = _cells(app.renderer._model_table([row, row], "# Top Models", 120))[-1]
+    assert total.split()[0] == "TOTAL"
     assert "$10.10" in total
     assert "1.6M ($1.60)" in total
     assert "200.0k ($2.50)" in total
@@ -161,9 +168,9 @@ def test_model_table_total_split_dollars_keep_the_compact_label_convention():
     # money()), and widening the 14-char cells would break the fixed grid.
     app = app_with([])
     row = ("anthropic/claude-fable-5", 10, 5.05, 100_000, 0, 0, 100_000)
-    lines = app.renderer._model_table([row, row], "# Top Models", 120)
-    assert "($5.05)" in lines[2] and "($5.05)" in lines[3]
-    assert "($10)" in lines[-1] and "$10.10" in lines[-1]  # cells compact, Cost exact
+    _, first, second, total = _cells(app.renderer._model_table([row, row], "# Top Models", 120))
+    assert "($5.05)" in first and "($5.05)" in second
+    assert "($10)" in total and "$10.10" in total  # cells compact, Cost exact
 
 
 def test_model_table_single_row_has_no_total():
@@ -171,7 +178,7 @@ def test_model_table_single_row_has_no_total():
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
     lines = app.renderer._model_table(rows, "# Top Models", 120)
-    assert not any(ln.startswith("TOTAL") for ln in lines)
+    assert not any("TOTAL" in ln for ln in lines)
 
 
 def test_tools_table_total_row_stays_unsplit():
@@ -185,8 +192,8 @@ def test_tools_table_total_row_stays_unsplit():
     lines = app.renderer._model_table(
         rows, "# Tools — this session", 120, "Tool", "Calls", price_split=False
     )
-    total = lines[-1]
-    assert total.startswith("TOTAL")
+    total = _cells(lines)[-1]
+    assert total.split()[0] == "TOTAL"
     assert "$1.50" in total and "(" not in total
 
 
@@ -345,15 +352,15 @@ def test_detail_tools_reprices_unpriced_under_dollar():
         wf = app.loaded[0]
         normal = rnd.detail_tools(wf, 92)
         joined = "\n".join(normal)
-        assert "# Tools" in joined
-        assert "# By server / namespace" in joined
+        assert "Tools — this session" in joined  # the title rides the box's top border
+        assert "By server / namespace" in joined
         assert "(built-in)" in joined  # the server rollup labels built-in vs MCP
         # The subscription session records $0; under "$" the wholly-unpriced serena
         # row picks up its list-price estimate (1M Haiku input @ $1/M = $1.00).
         app.show_api_prices = True
         app._ensure_models()
         serena_line = next(
-            line for line in rnd.detail_tools(wf, 92) if line.startswith("serena_read_file")
+            c for c in _cells(rnd.detail_tools(wf, 92)) if c.startswith("serena_read_file")
         )
         assert "$1.00" in serena_line
 

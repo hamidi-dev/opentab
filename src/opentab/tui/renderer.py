@@ -965,12 +965,26 @@ class Renderer:
         if line.startswith("· "):
             return curses.color_pair(1)
         if line.startswith("TOTAL"):
-            # The tables' closing sum row (and the w footer): a solid accent bar,
-            # the active-tab pair (bg on accent). Monochrome keeps the inverse
-            # look via A_REVERSE -- pair 7 without start_color paints nothing.
-            if self.colors_ok:
-                return curses.color_pair(7) | curses.A_BOLD
-            return curses.A_REVERSE | curses.A_BOLD
+            # A totals line that is NOT inside a ruled table -- the w tab's
+            # "TOTAL (list rates)" footer. Bold ink, no background bar (the model
+            # tables carry their own boxed TOTAL row now, and the bar read as mud).
+            return curses.A_BOLD
+        # The ruled model/tool tables (_ruled_box): the title rides the top border in
+        # the accent (matching its "# " sibling headings), the header/total rules and
+        # bottom border stay plain, and the boxed TOTAL row is bold. Keyed on the leading
+        # glyph -- ASCII "+" is a top border only when it carries a title (has letters),
+        # else a plain rule/bottom. Model/tool cells never contain box glyphs, so a data
+        # row never trips these.
+        first = line[:1]
+        if first == "┌" or (first == "+" and line.strip("+- ") != ""):
+            return curses.color_pair(4) | curses.A_BOLD
+        if first in ("├", "└", "+"):
+            return curses.A_NORMAL
+        if first in ("│", "|"):
+            # The boxed TOTAL row -- "TOTAL" as a whole word (it is always followed by the
+            # count column's separator), so a model/tool named "TOTALizer" isn't mistaken
+            # for it.
+            return curses.A_BOLD if line[2:].lstrip().startswith("TOTAL ") else curses.A_NORMAL
         return curses.A_NORMAL
 
     def money_attr(self, cost_text: str) -> int:
@@ -1620,22 +1634,25 @@ class Renderer:
         count_label: str = "Msgs",
         price_split: bool = True,
     ) -> list[str]:
-        # rows: (name, count, cost, tokens, cache_read, cache_write, output). The
-        # name column fits the longest entry (so the numbers sit right after it),
-        # capped by the available width so long names aren't cut when there's room.
-        # name_label/count_label let the Tools tab reuse this as Tool/Calls (which
-        # also turns price_split off -- tool names don't resolve to model rates).
+        # rows: (name, count, cost, tokens, cache_read, cache_write, output). Built as a
+        # ruled box (_ruled_box): the title rides the top border, the columns sit inside,
+        # and a multi-row table closes with a rule + TOTAL row -- no coloured sum bar. The
+        # name column fits the longest entry (so the numbers sit right after it), capped by
+        # the box-reduced width so long names aren't cut when there's room. name_label/
+        # count_label let the Tools tab reuse this as Tool/Calls (which also turns
+        # price_split off -- tool names don't resolve to model rates).
         cw_ = max(4, len(count_label))
         longest = max([len(str(r[0])) for r in rows] + [len(name_label)])
+        inner = max(1, width - 4)  # the box frame eats "| " on the left and " |" on the right
         # In wide panes the CacheR/CacheW/Output cells carry the tokens' attributed
         # share of the Cost column too -- "811.6k($10)" -- because counts alone hide
         # how skewed the money is (cache writes bill at 12.5x the cache-read rate on
         # current Anthropic models). Costs 16 more columns than the plain layout, so
         # it only kicks in when the name column still gets its 20-char floor; with
         # no dollars anywhere ($0.00 unpriced rows) there is nothing to attribute.
-        split = price_split and any(float(r[2]) > 0 for r in rows) and width - 73 - cw_ >= 20
+        split = price_split and any(float(r[2]) > 0 for r in rows) and inner - 73 - cw_ >= 20
         block = 73 if split else 57
-        mw = min(longest, max(20, width - block - cw_))
+        mw = min(longest, max(20, inner - block - cw_))
         total_cost = sum(float(r[2]) for r in rows)
         if split:
             # Each split cell is two fixed sub-columns -- tokens right-aligned in 6,
@@ -1644,10 +1661,8 @@ class Renderer:
             tail_head = f"{'CacheR':>6}{'':8} {'CacheW':>6}{'':8} {'Output':>6}{'':8}"
         else:
             tail_head = f"{'CacheR':>9} {'CacheW':>9} {'Output':>8}"
-        lines = [
-            title,
-            f"{name_label:{mw}} {count_label:>{cw_}} {'Cost':>10} {'Share':>5} {'Tokens':>9} {tail_head}",
-        ]
+        header = f"{name_label:{mw}} {count_label:>{cw_}} {'Cost':>10} {'Share':>5} {'Tokens':>9} {tail_head}"
+        body = []
         for name, runs, cost, tok, cr, cw, out in rows:
             if split:
                 c1, c2, c3 = self._price_split_cells(
@@ -1656,13 +1671,14 @@ class Renderer:
                 tail = f"{c1} {c2} {c3}"
             else:
                 tail = f"{human_tokens(int(cr)):>9} {human_tokens(int(cw)):>9} {human_tokens(int(out)):>8}"
-            lines.append(
+            body.append(
                 f"{pad(shorten(name, mw), mw)} {int(runs):>{cw_}} {money(float(cost)):>10} "
                 f"{pct(float(cost), total_cost):>5} "
                 f"{human_tokens(int(tok)):>9} {tail}"
             )
+        total = None
         if len(rows) > 1:
-            # A TOTAL row closes every multi-row table: the count/token columns
+            # A rule + TOTAL row closes every multi-row table: the count/token columns
             # summed, and in split mode the attributed dollars summed per row at
             # each row's OWN rates -- so "what did cache writes cost me this
             # year" is one glance, not per-model mental math. A single-row table
@@ -1678,20 +1694,87 @@ class Renderer:
                 tail = " ".join(self._split_cell(n, d) for n, d in zip((tcr, tcw, tout), dollars))
             else:
                 tail = f"{human_tokens(tcr):>9} {human_tokens(tcw):>9} {human_tokens(tout):>8}"
-            lines.append("")  # a breath between the rows and their sum
-            lines.append(  # padded to the pane so line_attr's accent bar spans it
-                (
-                    f"{pad('TOTAL', mw)} {truns:>{cw_}} {money(total_cost):>10} {'':>5} "
-                    f"{human_tokens(ttok):>9} {tail}"
-                ).ljust(width)
+            total = (
+                f"{pad('TOTAL', mw)} {truns:>{cw_}} {money(total_cost):>10} {'':>5} "
+                f"{human_tokens(ttok):>9} {tail}"
             )
+        notes = []
         if any(str(name).startswith("unknown") for name, *_ in rows):
-            lines.extend(
-                [
-                    "",
-                    "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
-                ]
-            )
+            notes = [
+                "",
+                "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
+            ]
+        return self._ruled_box(title, header, body, total, notes, width)
+
+    # The ruled-box glyphs. Unicode on a UTF-8 screen; the locale-independent ASCII set
+    # where a multibyte glyph would land as a garbage byte (util.unicode_screen: a
+    # question asked, never caught -- see draw_frame). These are content strings, not the
+    # ACS line set frame() draws its panels with, so they take the ASCII fallback instead.
+    _TABLE_GLYPHS = {
+        "tl": "┌",
+        "tr": "┐",
+        "bl": "└",
+        "br": "┘",
+        "lt": "├",
+        "rt": "┤",
+        "h": "─",
+        "v": "│",
+    }
+    _TABLE_GLYPHS_ASCII = {
+        "tl": "+",
+        "tr": "+",
+        "bl": "+",
+        "br": "+",
+        "lt": "+",
+        "rt": "+",
+        "h": "-",
+        "v": "|",
+    }
+
+    def _ruled_box(
+        self,
+        title: str,
+        header: str,
+        body: list[str],
+        total: str | None,
+        notes: list[str],
+        width: int,
+    ) -> list[str]:
+        # Wrap a column-aligned model/tool table in a ruled box: the title on the top
+        # border, a rule under the header, the data rows, an optional rule + TOTAL row,
+        # then the bottom border. width is the OUTER width; the "| " + " |" gutters eat 4,
+        # so each content string is padded/clipped to `inner` -- keeping the frame square
+        # even on a narrow pane, at the cost of the rightmost column there (the pre-box
+        # table just overflowed the pane and was clipped at paint). line_attr colours the
+        # pieces by their leading glyph: the titled top in the accent, the TOTAL row bold.
+        # Any "! ..." caveat rides OUTSIDE the box, below it, as its own amber line.
+        g = self._TABLE_GLYPHS if unicode_screen() else self._TABLE_GLYPHS_ASCII
+        # A titled box needs at least "| x |" (5 cells); below that the frame can't be
+        # square. Clamp so every emitted line is exactly `width` wide (a real pane is never
+        # this narrow -- the paint then clips the clamped box to the actual pane).
+        width = max(5, width)
+        inner = width - 4
+        heading = shorten(title[2:] if title.startswith("# ") else title, max(1, width - 6))
+
+        def content(s: str) -> str:
+            return f"{g['v']} {pad(shorten(s, inner), inner)} {g['v']}"
+
+        def rule(left: str, right: str) -> str:
+            return left + g["h"] * max(0, width - 2) + right
+
+        prefix = f"{g['tl']} {heading} "
+        lines = [
+            prefix + g["h"] * max(0, width - display_width(prefix) - 1) + g["tr"],
+            content(header),
+        ]
+        if body:
+            lines.append(rule(g["lt"], g["rt"]))
+            lines.extend(content(b) for b in body)
+            if total is not None:
+                lines.append(rule(g["lt"], g["rt"]))
+                lines.append(content(total))
+        lines.append(rule(g["bl"], g["br"]))
+        lines.extend(notes)
         return lines
 
     @staticmethod
@@ -4279,8 +4362,6 @@ class Renderer:
         self.write(stdscr, y, x, text, attr)
         if attr & curses.A_BOLD and text.startswith("# "):
             return
-        if text.startswith("TOTAL"):
-            return  # the sum bar paints as one solid accent block; no span recolors
         if text.lstrip().startswith("ID:"):
             return  # session ids can contain money/token-like runs; don't recolor them
         for match in MONEY_PATTERN.finditer(text):

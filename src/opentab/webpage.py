@@ -202,9 +202,7 @@ th.sorted{color:var(--accent)}
 td{padding:4.5px 10px;border-bottom:1px solid var(--line2);white-space:nowrap;vertical-align:baseline}
 tr:last-child td{border-bottom:0}
 th.r,td.r{text-align:right}
-tfoot td{border-top:6px solid var(--panel);border-bottom:0;font-weight:700;padding-top:6px;padding-bottom:6px;
-  background:var(--accent);color:#141009}
-tfoot td.dim,tfoot .m,tfoot .m-zero{color:#141009}
+tfoot td{border-top:2px solid var(--line);border-bottom:0;font-weight:700;padding-top:7px;padding-bottom:6px}
 td.grow{white-space:normal;overflow-wrap:anywhere;min-width:160px}
 tbody tr.rowlink{cursor:pointer}
 tbody tr.rowlink:hover{background:var(--panel2)}
