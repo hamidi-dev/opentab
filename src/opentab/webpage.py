@@ -1144,8 +1144,11 @@ function sourcesTable(id, ws) {
 
 /* turns stay chronological on purpose: the tab answers *when* the money went. */
 function turnsTable(turns) {
+  // Folded to prompts by default (the TUI's Turns fold): one ▸ row per user prompt with
+  // its subtotal, the per-turn rows (and the full prompt text) hidden until you click the
+  // header. A clean overview of every prompt without the per-turn noise.
   const rows = [];
-  let cum = 0, lastPrompt = null;
+  let cum = 0, lastPrompt = null, body = null, marker = null;
   const groups = new Map();
   for (const t of turns) {
     const key = t.promptId || '';
@@ -1157,31 +1160,37 @@ function turnsTable(turns) {
       lastPrompt = key;
       const title = (t.promptTitle || '(prompt)').slice(0, 160) + ((t.promptTitle || '').length > 160 ? '…' : '');
       const full = (t.promptFull || t.promptTitle || '').trim();
-      // The header folds open to the whole prompt: hover previews it, a click
-      // toggles the full-text row beneath (mirrors the TUI's z / header click).
-      const marker = h('span', null, '▸ ');
-      const fullRow = h('tr', { class: 'prompt-full-row', hidden: '' },
-        h('td', { colspan: 6 }, h('div', { class: 'prompt-full' }, full)));
-      rows.push(h('tr', { class: 'prompt-row' + (full ? ' rowlink' : ''), title: full || null,
-        onclick: full ? (() => { fullRow.hidden = !fullRow.hidden; marker.textContent = fullRow.hidden ? '▸ ' : '▾ '; }) : null },
+      body = [];   // this group's collapsible rows (full text + turns), hidden by default
+      marker = h('span', null, '▸ ');
+      const grp = body, mk = marker;   // capture for the toggle closure
+      rows.push(h('tr', { class: 'prompt-row rowlink', title: full || null,
+        onclick: () => { const open = !grp.length || grp[0].hidden;
+          grp.forEach(r => r.hidden = !open); mk.textContent = open ? '▾ ' : '▸ '; } },
         h('td', { colspan: 3 }, marker, title),
         h('td', { class: 'r' }, moneyCell(groups.get(key))),
         h('td', null, ''), h('td', null, '')));
-      if (full) rows.push(fullRow);
+      if (full) {
+        const fr = h('tr', { class: 'turn-fold', hidden: '' },
+          h('td', { colspan: 6 }, h('div', { class: 'prompt-full' }, full)));
+        body.push(fr); rows.push(fr);
+      }
     }
     cum += mCost(t);
-    rows.push(h('tr', null,
+    const tr = h('tr', { class: 'turn-fold', hidden: '' },
       h('td', { class: 'dim' }, t.time.slice(5, 19).replace('T', ' ')),
       h('td', { class: 'indent' }, t.depth ? '↳ ' + t.agent : t.agent),
       h('td', { class: 'grow' }, modelCell(t.model)),
       h('td', { class: 'r' }, moneyCell(mCost(t))),
       h('td', { class: 'r' }, hTok(t.tokens)),
-      h('td', { class: 'r dim' }, money(cum))));
+      h('td', { class: 'r dim' }, money(cum)));
+    body.push(tr); rows.push(tr);
   }
-  return h('div', { class: 'scroll' }, h('table', null,
-    h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Agent'), h('th', null, 'Model'),
-      h('th', { class: 'r' }, 'Cost'), h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cumulative'))),
-    h('tbody', null, rows)));
+  return h('div', null,
+    h('div', { class: 'hint' }, groups.size + ' prompts — click a ▸ row to expand its turns'),
+    h('div', { class: 'scroll' }, h('table', null,
+      h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Agent'), h('th', null, 'Model'),
+        h('th', { class: 'r' }, 'Cost'), h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cumulative'))),
+      h('tbody', null, rows))));
 }
 function toolsTable(toolRows) {
   const agg = new Map();

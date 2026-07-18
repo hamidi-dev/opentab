@@ -373,25 +373,31 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
         rnd = ot.Renderer(app)
         wf = app.loaded[0]
-        # Normal mode: only the priced step counts -> $3.00 total, ends at 100%.
+        # Folded by default: a clean overview -- one ▸ header per prompt with its subtotal,
+        # the per-turn rows hidden (no clock stamps, no Cumulative column).
+        folded = rnd.detail_turns(wf, 96)
+        fj = "\n".join(folded)
+        assert folded[0] == "# Turns — 2 prompts · 3 turns · $3.00"
+        assert "▸ Add feature X" in fj and "▸ Fix the bug" in fj
+        assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in folded)  # no turn rows
+        assert "Folded to prompts by default" in fj
+        # Expanded (z): the per-turn rows appear, chronological, ending at $3.00 · 100%.
+        app.turns_full = True
         normal = rnd.detail_turns(wf, 96)
         joined = "\n".join(normal)
-        assert normal[0] == "# Turns — 3 turns, $3.00 total"
-        assert "· Grouped by the user prompt" in joined
+        assert normal[0] == "# Turns — 2 prompts · 3 turns · $3.00"
         assert "$3.00 · 100%" in joined  # last turn's cumulative cell
-        # turns are grouped under their owning user prompt (▸ header), m2 under u2
-        assert "▸ Add feature X" in joined and "▸ Fix the bug" in joined
         # each row shows the date + clock ("MM-DD HH:MM:SS"), not just the time
         assert any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in normal)
         # Under "$" the two $0 haiku turns estimate at list price (1M+2M @ $1/M),
         # so the total grows to $1 + $2 + $3 = $6.00 and each shows its estimate.
         app.show_api_prices = True
         priced = rnd.detail_turns(wf, 96)
-        assert priced[0] == "# Turns — 3 turns, $6.00 total"
+        assert priced[0] == "# Turns — 2 prompts · 3 turns · $6.00"
         pjoined = "\n".join(priced)
         assert "$1.00" in pjoined and "$2.00" in pjoined and "$6.00 · 100%" in pjoined
         # the per-prompt subtotal sits on the group header (u1 = $1+$2 estimate = $3.00)
-        assert "▸ Add feature X" in pjoined
+        assert "Add feature X" in pjoined
 
 
 def test_subagents_tab_reprices_unpriced_node_in_api_mode():

@@ -201,6 +201,9 @@ def test_opencode_turns_carry_the_full_prompt_uncapped():
         app._apply_click(("turnline", idx), drill=False)
         assert pid in app._turns_expanded
         assert any(ln.startswith("▾ ") for ln in rnd.detail_turns(wf, 96))
+        # Expanding added the column-header line, so the header moved -- re-read its index
+        # from the fresh paint, exactly as a real mouse click does (getmouse → regions).
+        idx = next(i for i, p in rnd._turn_header_at.items() if p == pid)
         app._apply_click(("turnline", idx), drill=False)  # toggles back off
         assert pid not in app._turns_expanded
 

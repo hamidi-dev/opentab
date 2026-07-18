@@ -289,7 +289,7 @@ class App:
         # Drilled into a ranked row's sessions: ("model"|"provider"|"source", key).
         self.trend_drill: tuple[str, str] | None = None
         self.trend_drill_index = 0  # cursor within that sessions list
-        self.turns_full = False  # Turns tab: expand every ▸ prompt to its full text (z)
+        self.turns_full = False  # Turns tab: expand every ▸ prompt group — text + turns (z)
         self._turns_expanded: set[str] = set()  # individually expanded prompts (click)
         self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
         self.has256 = False  # set in run() once curses knows the terminal's color depth
@@ -4324,13 +4324,13 @@ class App:
                 self.notify("no active filter", "error")
             return True
         if key == ord("z") and self.view == "session":
-            # On the Turns tab, z folds/unfolds every ▸ prompt header to its full
-            # text (vim's fold key); a click on one header toggles just that group.
+            # On the Turns tab, z expands/folds every ▸ prompt group — its full text and
+            # per-turn rows (vim's fold key); a click on one header toggles just that group.
             tabs = self.current_tabs()
             if tabs and tabs[self.tab % len(tabs)] == "Turns":
                 self.turns_full = not self.turns_full
                 self._turns_expanded.clear()
-                self.notice = "full prompts" if self.turns_full else "prompt titles"
+                self.notice = "turns expanded" if self.turns_full else "folded to prompts"
                 return True
         if key == ord("e"):
             self.export_current()

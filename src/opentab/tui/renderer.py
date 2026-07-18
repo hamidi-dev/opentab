@@ -2539,32 +2539,40 @@ class Renderer:
         idx_w = max(2, len(str(len(rows))))
         agent_w = min(10, max(5, max((len(r["agent"]) for r in rows), default=5)))
         mw = max(16, min(34, width - (idx_w + agent_w + time_w + 42)))  # model flexes
-        lines = [
-            f"# Turns — {len(rows)} turns, {money(total)} total",
-            f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Model':<{mw}} {'Agent':<{agent_w}} "
-            f"{'Tokens':>9} {'Cost':>9} {'Cumulative':>16}",
-        ]
+        # Folded by default to a clean overview of the prompts: one ▸ header per prompt
+        # with its subtotal, the per-turn rows hidden until a group is expanded (z toggles
+        # all, a click one). The column header only earns its line when a group is open.
+        any_open = self.turns_full or bool(self._turns_expanded)
+        lines = [f"# Turns — {len(subtotal)} prompts · {len(rows)} turns · {money(total)}"]
+        if any_open:
+            lines.append(
+                f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Model':<{mw}} {'Agent':<{agent_w}} "
+                f"{'Tokens':>9} {'Cost':>9} {'Cumulative':>16}"
+            )
         cum = 0.0
         last_pid = object()  # sentinel: the first row always opens a group
+        group_open = False
         self._turn_header_at = {}  # line index -> prompt_id, for the click toggle
         for n, (r, cost) in enumerate(zip(rows, costs), start=1):
             pid = r.get("prompt_id", "")
             if pid != last_pid:
                 last_pid = pid
                 gc = money(subtotal[pid])
-                opened = self.turns_full or pid in self._turns_expanded
+                group_open = self.turns_full or pid in self._turns_expanded
                 title = (r.get("prompt_title") or "").strip() or "(no preceding prompt)"
                 title = shorten(title, max(10, width - len(gc) - 5))
-                head = ("▾ " if opened else "▸ ") + title
+                head = ("▾ " if group_open else "▸ ") + title
                 self._turn_header_at[len(lines)] = pid
                 lines.append(head + " " * max(1, width - display_width(head) - len(gc)) + gc)
-                if opened:
+                if group_open:
                     # The whole prompt, its own line breaks kept, wrapped to the pane.
                     full = (r.get("prompt_full") or r.get("prompt_title") or "").strip()
                     for para in full.splitlines() or [""]:
                         for piece in textwrap.wrap(para, max(20, width - 4)) or [""]:
                             lines.append("  │ " + piece)
-            cum += cost
+            cum += cost  # accumulate across every turn, shown or not, so an expanded
+            if not group_open:  # group's Cumulative column stays correct
+                continue
             agent = r["agent"] if r["depth"] else "-"
             cumlabel = f"{money(cum)} · {pct(cum, total)}"
             lines.append(
@@ -2574,8 +2582,8 @@ class Renderer:
             )
         lines += [
             "",
-            "· Grouped by the user prompt (▸) that triggered each run — time order, not cost.",
-            "· z (or a click on a ▸ header) unfolds the whole prompt.",
+            "· One ▸ line per user prompt, its subtotal on the right — time order, not cost.",
+            "· Folded to prompts by default: z expands all · click a ▸ header for its turns.",
         ]
         return lines
 
