@@ -884,3 +884,77 @@ def test_pull_repairs_a_cmd_only_saved_entry():
         assert calls and calls[0][1].get("ssh") == "box"
         saved = json.load(open(cfg, encoding="utf-8"))["machines"]["box"]
         assert saved.get("ssh") == "box" and saved.get("cmd") == "/opt/opentab --export -"
+
+
+def _fleet_wf(id, machine, source, cost=1.0, tokens=100):
+    # A workflow tagged with a machine + harness, for the --timings fleet breakdown.
+    w = workflow(id, "2026-07-15 10:00:00", cost=cost, tokens=tokens)
+    w.machine = machine
+    w.source = source
+    return w
+
+
+class _RemoteSub:
+    # Stands in for RemoteStore in a --timings backend row: the one sub-store that
+    # answers machine_stats() (per-box bytes), so _fleet_timing_tables treats it as the
+    # pulled read and everything else as a live-machine harness.
+    def __init__(self, stats):
+        self._stats = stats
+
+    def machine_stats(self):
+        return list(self._stats)
+
+
+class _MetaStore:
+    def __init__(self, meta):
+        self.machine_meta = meta
+
+
+def test_fleet_aggregate_rolls_up_by_machine_and_harness():
+    wfs = [
+        _fleet_wf("a", "laptop", "opencode", cost=5.0, tokens=1000),
+        _fleet_wf("b", "laptop", "claude", cost=0.0, tokens=2000),
+        _fleet_wf("c", "omv", "opencode", cost=2.0, tokens=500),
+    ]
+    by_machine, by_harness, cell = ot.cli._fleet_aggregate(wfs)
+    assert by_machine["laptop"] == [2, 3000, 5.0]  # sessions, tokens, cost
+    assert by_harness["opencode"] == [2, 1500, 7.0]  # spans two machines
+    assert cell["omv"]["opencode"] == [1, 500, 2.0]
+
+
+def test_col_table_aligns_and_rules_the_total_row():
+    lines = ot.cli._col_table(
+        ["name", "n"], [["x", "1"], ["total", "9"]], aligns="lr", rule_before_last=True
+    )
+    assert lines[0].split() == ["name", "n"]
+    assert any(ln.strip() and set(ln.strip()) == {"─"} for ln in lines)  # a rule before total
+    assert lines[-1].split() == ["total", "9"]
+
+
+def test_fleet_timings_break_down_by_machine_harness_and_grid():
+    # The --timings fleet breakdown: By machine (live box first, pulled boxes with size),
+    # By harness (across the fleet), and the machine x harness session grid. Load time is
+    # the live machine's parse (300 + 1500 ms) -- pulled boxes arrive pre-rolled.
+    laptop_oc = [_fleet_wf("a", "laptop", "opencode", cost=5.0, tokens=1000)]
+    laptop_cc = [_fleet_wf("b", "laptop", "claude", cost=0.0, tokens=2000)]
+    omv_oc = [_fleet_wf("c", "omv", "opencode", cost=2.0, tokens=500)]
+    store = _MetaStore({"laptop": {"live": True}, "omv": {"live": False, "exported_at": ""}})
+    remote = _RemoteSub([{"label": "omv", "sessions": 1, "bytes": 2048}])
+    backends = [
+        ["OpenCode", 3, 300.0, False, object(), laptop_oc],
+        ["Claude Code", 5, 1500.0, False, object(), laptop_cc],
+        ["remote", 1, 0.1, False, remote, omv_oc],
+    ]
+    text = "\n".join(ot.cli._fleet_timing_tables(store, backends))
+    assert "By machine" in text and "By harness" in text and "machine × harness" in text
+    assert "● laptop" in text and "○ omv" in text  # live vs pulled markers
+    assert "OpenCode" in text and "Claude Code" in text
+    assert "1800.0 ms" in text  # the live box's summed harness parse
+    assert "2 KB" in text  # omv's summary size
+    assert "Σ" in text  # the grid's totals row/column
+
+
+def test_fleet_timings_are_empty_for_a_single_source_local_run():
+    # One box, one harness -> nothing to break down; --timings prints only its usual table.
+    backends = [["OpenCode", 3, 300.0, False, object(), [_fleet_wf("a", "", "opencode")]]]
+    assert ot.cli._fleet_timing_tables(_MetaStore({}), backends) == []

@@ -18,7 +18,13 @@ except ImportError:  # native Windows has no stdlib curses
     curses = None
 
 from opentab import __version__, sources, themes
-from opentab.formatting import cost_bar, money, short_path
+from opentab.formatting import (
+    cost_bar,
+    human_tokens,
+    money,
+    relative_age,
+    short_path,
+)
 from opentab.pricing import (
     MODELS_DEV_URL,
     api_equivalent_cost,
@@ -28,6 +34,7 @@ from opentab.pricing import (
 from opentab.sources import (
     DEFAULT_CSV_PATH,
     DEFAULT_JSONL_PATH,
+    SOURCE_LABELS,
     _default_openclaw_dir,
     _default_pi_dir,
     _default_zaly_dir,
@@ -385,7 +392,10 @@ def timings_command(args: argparse.Namespace) -> int:
     (store, _loading), build_ms = timed(lambda: sources.make_store(args, source_key))
 
     # One row per backend: its whole parse+scan cost and whether it came from the cache.
-    backends: list[list] = []  # [label, files, ms, cached]
+    # We keep the rolled-up workflows too (row[5]) -- they're already in memory, and the
+    # fleet breakdown below re-aggregates them per machine and per harness rather than
+    # re-parsing anything.
+    backends: list[list] = []  # [label, files, ms, cached, sub, workflows]
     for sub in getattr(store, "stores", None) or [store]:
         label = getattr(sub, "source_name", type(sub).__name__)
         files = None
@@ -395,9 +405,10 @@ def timings_command(args: argparse.Namespace) -> int:
                 files = len(files_fn())
             except OSError:
                 files = None
-        _wf, wf_ms = timed(sub.workflows)
+        wf, wf_ms = timed(sub.workflows)
         _mb, mb_ms = timed(sub.model_breakdown)
-        backends.append([label, files, wf_ms + mb_ms, getattr(sub, "served_from_cache", None), sub])
+        cached = getattr(sub, "served_from_cache", None)
+        backends.append([label, files, wf_ms + mb_ms, cached, sub, wf])
     total_ms = (time.perf_counter() - t_start) * 1000.0
     backends.sort(key=lambda b: b[2], reverse=True)  # slowest backend first
 
@@ -423,24 +434,253 @@ def timings_command(args: argparse.Namespace) -> int:
     print(f"  build store     {fmt_ms(build_ms)}")
     print()
     print(f"  {'backend'.ljust(lbl)}  {'files':>5}  {'time':>10}")
-    for label, files, ms, cached, sub in backends:
+    for label, files, ms, cached, _sub, _wf in backends:
         fcell = str(files) if files is not None else "—"
         status = {True: "cached", False: "parsed"}.get(cached, "")
         bar = cost_bar(ms, peak, 12)
         print(f"  {label.ljust(lbl)}  {fcell:>5}  {fmt_ms(ms)}  {bar} {status}".rstrip())
-        # A fleet backend (RemoteStore) is many machines in one row -- break it down so the
-        # per-machine data volume shows (the v2 Turns/Tools/Context extras live in the file
-        # size). Biggest box first; sessions are the deduped kept count.
-        stats_fn = getattr(sub, "machine_stats", None)
-        if callable(stats_fn):
-            for m in sorted(stats_fn(), key=lambda s: s["bytes"], reverse=True):
-                kb = f"{m['bytes'] / 1024:,.0f} KB"
-                print(
-                    f"  {('  ↳ ' + str(m['label'])).ljust(lbl)}  {'':>5}  {m['sessions']:>5} sess  {kb:>10}"
-                )
     print()
     print(f"  {'total'.ljust(lbl)}  {'':>5}  {fmt_ms(total_ms)}")
+
+    # The fleet breakdown: the same rolled-up sessions re-aggregated per machine and per
+    # harness (sessions / tokens / cost), the machine x harness grid, and where the load
+    # time went. Only meaningful once there's more than one box or more than one tool in
+    # the mix -- a single-source local run prints nothing extra.
+    for line in _fleet_timing_tables(store, backends):
+        print(line)
     return 0
+
+
+def _fmt_ms(ms: float) -> str:
+    return f"{ms:.1f} ms"
+
+
+def _human_bytes(n: int) -> str:
+    # Compact on-disk size for the --timings machine table -- the summary file is where
+    # the v2 Turns/Tools/Context extras land, so its size is a real signal.
+    if n >= 1024 * 1024:
+        return f"{n / 1024 / 1024:,.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:,.0f} KB"
+    return f"{n:,} B"
+
+
+def _col_table(
+    headers: list[str],
+    rows: list[list[str]],
+    aligns: str,
+    indent: str = "  ",
+    rule_before_last: bool = False,
+) -> list[str]:
+    # A plain fixed-width table for the --timings fleet breakdown: pad every column to the
+    # widest cell, "l"/"r"-align per the aligns string, 2-space gutters. rule_before_last
+    # draws a horizontal rule above the final row (the TOTAL). Returns lines; the caller
+    # prints them. E501 is off here (fixed-width columns), same as the TUI f-strings.
+    cols = len(headers)
+    widths = [len(headers[i]) for i in range(cols)]
+    for r in rows:
+        for i in range(cols):
+            widths[i] = max(widths[i], len(r[i]))
+
+    def fmt(cells: list[str]) -> str:
+        parts = [
+            cells[i].rjust(widths[i]) if aligns[i] == "r" else cells[i].ljust(widths[i])
+            for i in range(cols)
+        ]
+        return (indent + "  ".join(parts)).rstrip()
+
+    body_w = sum(widths) + 2 * (cols - 1)
+    lines = [fmt(headers)]
+    for idx, r in enumerate(rows):
+        if rule_before_last and idx == len(rows) - 1:
+            lines.append(indent + "─" * body_w)
+        lines.append(fmt(r))
+    return lines
+
+
+def _fleet_aggregate(workflows: list) -> tuple[dict, dict, dict]:
+    # Roll the fleet's sessions up two ways and cross-tabbed, from the already-parsed
+    # Workflow rows (each carries .machine, .source, .total_cost, .total_tokens): per
+    # machine, per harness, and machine -> harness -> [sessions, tokens, cost]. Pure over
+    # the rows so it's testable without a store.
+    by_machine: dict[str, list] = {}
+    by_harness: dict[str, list] = {}
+    cell: dict[str, dict[str, list]] = {}
+    for w in workflows:
+        m = w.machine or "(this machine)"
+        h = w.source or "?"
+        for table, key in ((by_machine, m), (by_harness, h)):
+            e = table.setdefault(key, [0, 0, 0.0])
+            e[0] += 1
+            e[1] += w.total_tokens
+            e[2] += w.total_cost
+        c = cell.setdefault(m, {}).setdefault(h, [0, 0, 0.0])
+        c[0] += 1
+        c[1] += w.total_tokens
+        c[2] += w.total_cost
+    return by_machine, by_harness, cell
+
+
+def _fleet_timing_tables(store, backends: list) -> list[str]:
+    # Build the fleet breakdown printed after the per-backend load table: By machine, By
+    # harness, and the machine x harness session grid. Returns the lines to print (empty
+    # when there's nothing worth breaking down -- one box AND one tool).
+    all_wf = [w for row in backends for w in (row[5] or [])]
+    by_machine, by_harness, cell = _fleet_aggregate(all_wf)
+    multi_machine = len(by_machine) >= 2
+    multi_harness = len(by_harness) >= 2
+    if not (multi_machine or multi_harness):
+        return []
+
+    meta = getattr(store, "machine_meta", {}) or {}
+    live_label = next((n for n, m in meta.items() if m.get("live")), None)
+
+    # Where the load time went: the RemoteStore row is the pulled read (per box via its
+    # byte share); every other backend row is a harness parsed on THIS machine.
+    byte_by_machine: dict[str, int] = {}
+    remote_ms = 0.0
+    live_load_ms = 0.0
+    harness_time: dict[str, float] = {}
+    for _label, _files, ms, _cached, sub, wf in backends:
+        stats_fn = getattr(sub, "machine_stats", None)
+        if callable(stats_fn):  # the RemoteStore -- pulled summaries, one file per box
+            remote_ms += ms
+            for s in stats_fn():
+                byte_by_machine[s["label"]] = s["bytes"]
+        else:
+            live_load_ms += ms
+            if wf:
+                harness_time[wf[0].source] = harness_time.get(wf[0].source, 0.0) + ms
+    total_bytes = sum(byte_by_machine.values())
+
+    def machine_load(name: str) -> float:
+        if name == live_label:
+            return live_load_ms
+        if total_bytes:  # pulled: byte-proportional share of the (tiny) summary read
+            return remote_ms * byte_by_machine.get(name, 0) / total_bytes
+        return 0.0
+
+    out: list[str] = []
+
+    def _totals(table: dict) -> list:
+        return [
+            sum(v[0] for v in table.values()),
+            sum(v[1] for v in table.values()),
+            sum(v[2] for v in table.values()),
+        ]
+
+    if multi_machine:
+        # live box first, then heaviest spend, then most sessions
+        order = sorted(
+            by_machine,
+            key=lambda n: (n != live_label, -by_machine[n][2], -by_machine[n][0]),
+        )
+        rows = []
+        for name in order:
+            sess, toks, cost = by_machine[name]
+            live = name == live_label
+            mark = "● " if live else "○ "
+            size = "—" if live else _human_bytes(byte_by_machine.get(name, 0))
+            age = "live" if live else relative_age(meta.get(name, {}).get("exported_at", ""))
+            rows.append(
+                [
+                    mark + name,
+                    f"{sess:,}",
+                    human_tokens(toks),
+                    money(cost),
+                    size,
+                    _fmt_ms(machine_load(name)),
+                    age,
+                ]
+            )
+        tsess, ttoks, tcost = _totals(by_machine)
+        rows.append(
+            [
+                "fleet",
+                f"{tsess:,}",
+                human_tokens(ttoks),
+                money(tcost),
+                _human_bytes(total_bytes),
+                _fmt_ms(live_load_ms + remote_ms),
+                "",
+            ]
+        )
+        out.append("")
+        out.append("  By machine")
+        out.extend(
+            _col_table(
+                ["machine", "sess", "tokens", "cost", "size", "load", "age"],
+                rows,
+                aligns="lrrrrrl",
+                rule_before_last=True,
+            )
+        )
+
+    if multi_harness:
+        order = sorted(by_harness, key=lambda h: (-by_harness[h][0], h))
+        rows = []
+        for key in order:
+            sess, toks, cost = by_harness[key]
+            t = harness_time.get(key)
+            row = [SOURCE_LABELS.get(key, key), f"{sess:,}", human_tokens(toks), money(cost)]
+            if multi_machine:  # a "boxes" count is only informative once there's a fleet
+                row.append(str(sum(1 for m in cell if key in cell[m])))
+            row.append(_fmt_ms(t) if t is not None else "—")
+            rows.append(row)
+        tsess, ttoks, tcost = _totals(by_harness)
+        total_row = ["all", f"{tsess:,}", human_tokens(ttoks), money(tcost)]
+        if multi_machine:
+            total_row.append(str(len(cell)))
+        total_row.append(_fmt_ms(live_load_ms))
+        headers = (
+            ["harness", "sess", "tokens", "cost"] + (["boxes"] if multi_machine else []) + ["load"]
+        )
+        out.append("")
+        note = (
+            "   (load = this machine's parse; pulled boxes arrive pre-rolled)"
+            if multi_machine
+            else ""
+        )
+        out.append("  By harness" + note)
+        out.extend(
+            _col_table(
+                headers,
+                [*rows, total_row],
+                aligns="lrrr" + ("r" if multi_machine else "") + "r",
+                rule_before_last=True,
+            )
+        )
+
+    if multi_machine and multi_harness:
+        m_order = sorted(by_machine, key=lambda n: (n != live_label, -by_machine[n][0]))
+        h_order = sorted(by_harness, key=lambda h: (-by_harness[h][0], h))
+        headers = ["machine"] + [SOURCE_LABELS.get(h, h) for h in h_order] + ["Σ"]
+        grid = []
+        for name in m_order:
+            cells = [("● " if name == live_label else "○ ") + name]
+            for h in h_order:
+                n = cell.get(name, {}).get(h, [0])[0]
+                cells.append(f"{n:,}" if n else "·")
+            cells.append(f"{by_machine[name][0]:,}")
+            grid.append(cells)
+        foot = ["Σ"]
+        for h in h_order:
+            foot.append(f"{by_harness[h][0]:,}")
+        foot.append(f"{sum(v[0] for v in by_machine.values()):,}")
+        grid.append(foot)
+        aligns = "l" + "r" * (len(h_order) + 1)
+        table = _col_table(headers, grid, aligns=aligns, rule_before_last=True)
+        width = max((len(line) for line in table), default=0)
+        out.append("")
+        if width <= 118:  # a grid too wide to read is worse than none -- the flat tables have it
+            out.append("  Sessions by machine × harness")
+            out.extend(table)
+        else:
+            out.append(
+                f"  (machine × harness grid omitted -- {len(h_order)} harnesses too wide for one row)"
+            )
+
+    return out
 
 
 def _project_key(directory: str) -> str:
