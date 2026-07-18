@@ -26,7 +26,7 @@ opentab --harness all                        # all present harnesses, merged
 
 `--harness auto` (the default) restores your last-used harness, else **merges every
 present harness** when more than one exists. The active harness shows as a header chip;
-**switch live with `c`** from anywhere, overlays included. (`--source` still works as a
+**switch live with `H`** from anywhere, overlays included. (`--source` still works as a
 deprecated alias.)
 
 ## What each harness supports

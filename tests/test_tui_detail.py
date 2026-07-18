@@ -8,6 +8,7 @@ import tempfile
 import opentab as ot
 
 from tests._support import (
+    AttrScreen,
     FakeScreen,
     FakeStore,
     _claude_msg,
@@ -1050,3 +1051,82 @@ def test_context_tab_flags_mixed_model_windows():
     assert "(80%)" in joined
     assert "! this session switched between models" in joined
     assert "200.0k window" in joined  # header still names the live window
+
+
+def test_machine_overview_shows_live_pulled_and_freshness_niceties():
+    # The Machines-mode main view carries what the plain rollup can't: live vs pulled,
+    # the pull time + version, and (for a pulled box) the summary-only caveat.
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00", cost=3.0)],
+            "omv": [workflow("b", "2026-05-02 10:00:00", cost=9.0)],
+        }
+    )
+    app.set_browse_mode("machines")
+    # laptop (live) is first: full drill-in, no export stamp.
+    live = "\n".join(app.renderer.machine_overview(app.machines[0], 100))
+    assert "● live" in live and "Summary only" not in live
+    # omv (pulled): the pulled-summary niceties + the re-pull hint.
+    pulled = "\n".join(app.renderer.machine_overview(app.machines[1], 100))
+    assert "○ pulled" in pulled
+    assert "opentab:      1.6.0" in pulled
+    assert "Pulled:" in pulled
+    assert "Summary only" in pulled and "F to re-pull" in pulled
+
+
+def test_machine_detail_dispatches_its_tabs():
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00")],
+            "omv": [workflow("b", "2026-05-02 10:00:00")],
+        }
+    )
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # omv
+    r = app.renderer
+    machine = app.selected_machine_summary
+    assert r.machine_workflows(machine, 100)  # its sessions table
+    assert any("Spend by harness" in ln for ln in r.machine_sources(machine, 100))
+    assert r.machine_projects(machine, 100)  # its projects table
+    assert any("Model" in ln for ln in r.machine_models(machine, 100))
+
+
+def test_section_headings_use_the_accent_not_structural_grey():
+    # The "# ..." pane titles read as headings (the accent pair), not the muted structural
+    # pair they used to share with the keybar/frame -- the "grey on black" complaint.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    orig = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n  # identity: read the pair number off the attr
+    try:
+        assert app.renderer.line_attr("# Money") == (2 | ot.curses.A_BOLD)  # pair 2 == accent
+        assert app.renderer.line_attr("# Top Models") == (2 | ot.curses.A_BOLD)
+        # a ruled-box title (top border with a title) matches its "# " siblings
+        assert app.renderer.line_attr("┌ Top Models ──────┐") == (2 | ot.curses.A_BOLD)
+    finally:
+        ot.curses.color_pair = orig
+
+
+def test_detail_tabs_center_as_accent_and_chip_pairs():
+    # Every tab is a chip: the active one filled with the accent (pair 7), the inactive
+    # ones a raised panel2 chip (_TAB_PAIR) so they don't vanish into the background; the
+    # detail strip is centered, so the first tab starts past the left edge.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    r = app.renderer
+    orig = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n
+    try:
+        r.oy = r.ox = 0
+        r.regions = []
+        scr = AttrScreen(6, 80)
+        r.draw_tabs(scr, 0, 0, 80, ("Overview", "Models", "Sessions"), 0, center=True)
+        tabregs = [rg for rg in r.regions if rg[0] == "tab"]
+        assert [rg[-1] for rg in tabregs] == [0, 1, 2]  # all three clickable
+        assert tabregs[0][2] > 0  # centered: leading slack before the first tab
+        assert scr.attrs[(0, tabregs[0][2])] == (7 | ot.curses.A_BOLD)  # active = accent fill
+        assert scr.attrs[(0, tabregs[1][2])] == r._TAB_PAIR  # inactive = the chip pair
+    finally:
+        ot.curses.color_pair = orig

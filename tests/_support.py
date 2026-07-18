@@ -51,6 +51,51 @@ def app_with(workflows, since=None, until=None, days=None):
     return ot.App(FakeStore(workflows), args)
 
 
+class FleetStore(FakeStore):
+    # A merged fleet view (--source remote): combined, machine-tagged workflows, and the
+    # per-machine niceties the Machines mode reads. `meta` maps machine name -> the
+    # {live, exported_at, opentab_version, key} dict RemoteStore/CombinedStore expose.
+    combined = True
+    source_name = "all"
+
+    def __init__(self, workflows, meta):
+        super().__init__(workflows)
+        self.machine_meta = dict(meta)
+
+    def workflow_nodes(self, wid):
+        return []
+
+    def supports_turns(self, wid):
+        return False
+
+    def supports_tools(self, wid):
+        return False
+
+
+def fleet_app(rows_by_machine, meta=None):
+    # rows_by_machine: {machine name: [Workflow, ...]} (each row gets w.machine stamped).
+    # meta defaults to one live box (the first named) + pulled for the rest.
+    wfs = []
+    for machine, rows in rows_by_machine.items():
+        for w in rows:
+            w.machine = machine
+            w.source = w.source or "OpenCode"
+            wfs.append(w)
+    if meta is None:
+        names = list(rows_by_machine)
+        meta = {
+            name: {
+                "live": i == 0,
+                "exported_at": "" if i == 0 else "2026-07-18T09:00:00+00:00",
+                "opentab_version": "" if i == 0 else "1.6.0",
+                "key": "" if i == 0 else name,
+            }
+            for i, name in enumerate(names)
+        }
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    return ot.App(FleetStore(wfs, meta), args)
+
+
 class FakeScreen:
     # Just enough curses surface for the self-painting draw_* methods (which only
     # addstr onto a sized grid) plus the addch/hline/vline the box frame is drawn

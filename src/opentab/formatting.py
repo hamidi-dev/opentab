@@ -89,6 +89,34 @@ def iso_to_local(ts: str) -> str:
     return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def relative_age(ts: str, now: datetime | None = None) -> str:
+    # "2h ago" / "3d ago" / "just now" for a machine summary's export time. `now` is
+    # injectable so the Machines-mode freshness line is testable without pinning the
+    # clock. Empty (blank) for the live box or an unparseable stamp.
+    if not ts:
+        return ""
+    try:
+        dt = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    secs = (now - dt.astimezone(timezone.utc)).total_seconds()
+    if secs < 0:
+        return "just now"  # a clock-skewed future stamp reads better than "-2h ago"
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{int(secs // 60)}m ago"
+    if secs < 86400:
+        return f"{int(secs // 3600)}h ago"
+    return f"{int(secs // 86400)}d ago"
+
+
 def tokens(value: int) -> str:
     return f"{value:,}"
 

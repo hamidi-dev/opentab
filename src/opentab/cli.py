@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import locale
 import os
 import sqlite3
+import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 
 try:
     import curses
@@ -28,6 +32,7 @@ from opentab.sources import (
     _default_pi_dir,
     _default_zaly_dir,
     _route_path_arg,
+    default_remotes_dir,
     resolve_source,
 )
 from opentab.state import apply_state, load_state, save_state
@@ -57,6 +62,7 @@ def parse_args() -> argparse.Namespace:
             "openclaw",
             "zaly",
             "all",
+            "remote",
         ),
         default="auto",
         help="which harness's spend to browse: opencode (SQLite), claude (Claude Code "
@@ -64,9 +70,10 @@ def parse_args() -> argparse.Namespace:
         "logged API requests, e.g. GitHub Copilot), jsonl (an NDJSON of logged API "
         "requests), copilot (GitHub Copilot CLI via its OTEL export), vscode (Copilot Chat "
         "sessions in VS Code), pi (pi-agent sessions), openclaw (OpenClaw gateway "
-        "sessions), zaly (Zaly sessions), or all (merged); auto merges every present "
-        "harness (default: auto). Or just pass a file path -- e.g. `opentab requests.csv` "
-        "(--source is a deprecated alias for --harness)",
+        "sessions), zaly (Zaly sessions), all (merged), or remote (other machines' "
+        "exported summaries, gathered by --pull/--export). auto merges every present "
+        "local harness (default: auto). Or just pass a file path -- e.g. `opentab "
+        "requests.csv` (--source is a deprecated alias for --harness)",
     )
     parser.add_argument(
         "path",
@@ -189,6 +196,59 @@ def parse_args() -> argparse.Namespace:
         "resolved across every present harness backend like --status. Made for a "
         "tmux binding: bind t run 'tmux popup -E \"opentab --goto "
         "#{pane_current_path}\"'",
+    )
+    parser.add_argument(
+        "--export",
+        nargs="?",
+        const="-",
+        default=None,
+        metavar="FILE",
+        help="write this machine's spend summary (every present harness, merged) as a "
+        "portable JSON file and exit -- totals + per-model breakdown, no transcripts. "
+        "Default FILE is stdout, so `ssh box opentab --export - > box.json` works. "
+        "Gather these from several machines and browse them merged with `opentab "
+        "--source remote` (see --remotes); pairs with --demo for a shareable summary",
+    )
+    parser.add_argument(
+        "--remotes",
+        default=None,
+        metavar="DIR",
+        help="directory of exported machine summaries for --source remote "
+        f"(default: {default_remotes_dir()}); one *.json per machine, from --export/--pull",
+    )
+    parser.add_argument(
+        "--label",
+        default=None,
+        metavar="NAME",
+        help="machine name recorded in --export (default: this host's name); how the "
+        "session shows up under --source remote when several machines are merged",
+    )
+    parser.add_argument(
+        "--pull",
+        nargs="*",
+        default=None,
+        metavar="HOST",
+        help="fetch other machines' spend summaries over SSH (all in parallel) and open "
+        "them merged (--source remote). HOST is an ssh target -- `box`, `user@host`, "
+        "`name=user@host`, or `http://host:port` for an `opentab --serve` box; each is "
+        "remembered in remotes.json, so a later bare `opentab --pull` refreshes them all. "
+        "Needs opentab on the remote (it runs `opentab --export -` there via SSH -- "
+        "nothing has to be listening); set a machine's `cmd` in remotes.json if opentab "
+        "isn't on its non-interactive PATH",
+    )
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="open the already-pulled machine summaries (--source remote) without "
+        "re-fetching -- the offline twin of --pull",
+    )
+    parser.add_argument(
+        "--forget",
+        nargs="+",
+        default=None,
+        metavar="NAME",
+        help="remove machines from remotes.json (and delete their cached summaries under "
+        "--remotes), then exit",
     )
     parser.add_argument(
         "--html",
@@ -530,6 +590,282 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def export_command(args: argparse.Namespace) -> int:
+    # --export: write this machine's spend summary (the warm-start rollup -- totals +
+    # per-model breakdown, no transcripts) as portable JSON and exit. Curses-free like
+    # --status/--html. Defaults to the whole machine (every present harness, merged);
+    # --harness pins one. Made for `ssh box opentab --export - > box.json`, then browse
+    # the gathered files with `opentab --source remote`.
+    import socket
+
+    from opentab.stores.remote import EXPORT_VERSION, build_export
+
+    key = args.source if args.source not in ("auto", "remote") else "all"
+    label = args.label or socket.gethostname() or "machine"
+    exported_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    if key == "all" and not sources.available_sources(args):
+        # A machine with no agent data yet still exports a valid, empty summary, so
+        # `opentab --pull` reports "0 sessions" for it instead of failing outright.
+        payload = {
+            "opentab_export": EXPORT_VERSION,
+            "label": label,
+            "exported_at": exported_at,
+            "opentab_version": __version__,
+            "records_cost": True,
+            "workflows": [],
+            "model_breakdown": [],
+        }
+    else:
+        store, _loading = sources.make_store(args, key)
+        payload = build_export(store, label, exported_at, __version__)
+    text = json.dumps(payload)
+    dest = args.export
+    if dest in (None, "-", ""):
+        sys.stdout.write(text + "\n")
+    else:
+        try:
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        except OSError as exc:
+            raise SystemExit(f"could not write {dest}: {exc}") from exc
+        sys.stderr.write(
+            f"Wrote {label} summary — {len(payload['workflows'])} sessions — to {dest}\n"
+        )
+    return 0
+
+
+REMOTES_VERSION = 1
+
+
+def remotes_config_path() -> str:
+    # The learned machine list for --pull/--remote (an ssh target or url per machine),
+    # beside the remotes/ directory of summaries it fetches into.
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "opentab", "remotes.json")
+
+
+def _load_remotes() -> dict:
+    try:
+        with open(remotes_config_path(), encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    machines = data.get("machines") if isinstance(data, dict) else None
+    if not isinstance(machines, dict):
+        return {}
+    # Drop malformed entries (a hand-edited `"box": null`) so a fetch never trips over
+    # a non-dict value -- see _fetch_summary / _pull_one.
+    return {k: v for k, v in machines.items() if isinstance(k, str) and isinstance(v, dict)}
+
+
+def _save_remotes(machines: dict) -> None:
+    # Atomic (temp + replace) and best-effort, like the notes/cache writers: a config
+    # we can't write must never break a launch.
+    path = remotes_config_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(
+                {"version": REMOTES_VERSION, "machines": machines}, fh, indent=2, sort_keys=True
+            )
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _remote_entry(spec: str) -> tuple[str, dict]:
+    # Parse a --pull token into (machine name, entry):
+    #   host / user@host        -> {"ssh": ...}, name = the host part
+    #   http(s)://addr[:port]   -> {"url": ...}, name = the host
+    #   name=<any of the above> -> that target, under the explicit name
+    name, sep, rest = spec.partition("=")
+    if not sep:
+        rest, name = spec, ""
+    if rest.startswith(("http://", "https://")):
+        entry = {"url": rest}
+        host = rest.split("://", 1)[1]
+    else:
+        entry = {"ssh": rest}
+        host = rest
+    if not name:
+        name = host.split("@")[-1].split("/")[0].split(":")[0] or rest
+    return name, entry
+
+
+def _summary_filename(name: str) -> str:
+    # The name is a label, not a path -- percent-encode it so distinct names never
+    # collide (`a/b` vs `a_b`) and no separator can escape the remotes directory.
+    from urllib.parse import quote
+
+    safe = quote(name, safe="")
+    if safe.startswith("."):
+        # RemoteStore reads the remotes dir with glob("*.json"), which skips dotfiles --
+        # so a name like ".box" must not produce a hidden summary the view can't see.
+        safe = "%2E" + safe[1:]
+    return safe + ".json"
+
+
+def _fetch_summary(name: str, entry: dict, timeout: float = 60.0) -> str:
+    # Fetch one machine's summary. SSH (the default) runs the exporter on the remote
+    # over the user's existing ssh config -- nothing has to be listening there. A `url`
+    # entry GETs it instead (an `opentab --serve` box on a trusted/VPN interface).
+    if not isinstance(entry, dict):
+        raise RuntimeError("invalid machine entry (expected an object with 'ssh' or 'url')")
+    if entry.get("url"):
+        import urllib.request
+
+        with urllib.request.urlopen(entry["url"], timeout=timeout) as resp:
+            return resp.read().decode("utf-8", "replace")
+    target = entry.get("ssh")
+    if not target:
+        raise RuntimeError("machine has neither an 'ssh' target nor a 'url'")
+    cmd = entry.get("cmd") or "opentab --export -"
+    proc = subprocess.run(
+        ["ssh", target, cmd],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = [ln for ln in (proc.stderr or "").strip().splitlines() if ln]
+        raise RuntimeError(detail[-1] if detail else f"ssh exited {proc.returncode}")
+    return proc.stdout
+
+
+def _pull_one(name: str, entry: dict, remotes_dir: str) -> tuple[int, str]:
+    # Fetch, validate, and save one machine's summary. Returns (session_count, "") on
+    # success or (0, error). Never raises -- so one unreachable machine can't sink the
+    # whole parallel pull; its slot just reports the failure.
+    try:
+        text = _fetch_summary(name, entry)
+        payload = json.loads(text)
+        if not isinstance(payload, dict) or not isinstance(payload.get("workflows"), list):
+            return 0, "not an opentab summary (is opentab installed on that machine?)"
+    except subprocess.TimeoutExpired:
+        return 0, "timed out"
+    except FileNotFoundError:
+        return 0, "ssh not found on this machine"
+    except (OSError, ValueError, RuntimeError, AttributeError, TypeError) as exc:
+        # Broad on purpose: this runs in a worker thread, and any escape would abort the
+        # whole parallel pull at fut.result(). A malformed entry becomes this machine's
+        # failure line, never everyone's.
+        return 0, str(exc) or exc.__class__.__name__
+    try:
+        with open(os.path.join(remotes_dir, _summary_filename(name)), "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError as exc:
+        return 0, f"could not save: {exc}"
+    return len(payload["workflows"]), ""
+
+
+def pull_command(args: argparse.Namespace) -> None:
+    # --pull: fetch machine summaries over SSH/HTTP in parallel, showing each machine's
+    # progress as it lands, and learn the targets into remotes.json. Not a terminal
+    # command -- main() then opens the merged view (--source remote).
+    machines = _load_remotes()
+    tokens = args.pull or []
+    if tokens:  # explicit hosts: add/refresh (learn) them
+        targets: dict = {}
+        for spec in tokens:
+            name, entry = _remote_entry(spec)
+            saved = machines.get(name)
+            if spec == name and isinstance(saved, dict) and (saved.get("ssh") or saved.get("url")):
+                targets[name] = saved  # bare name of a known, usable machine: reuse it
+            else:
+                # Learn a new machine, or repair a saved entry that has no reachable
+                # target (a hand-edited cmd-only entry) by folding in the derived ssh.
+                merged = {**(saved or {}), **entry}
+                # ssh and url are mutually exclusive target types -- a re-learn that
+                # switches type must drop the old one (else _fetch_summary keeps using
+                # the stale url); orthogonal fields like a custom `cmd` are preserved.
+                if "ssh" in entry:
+                    merged.pop("url", None)
+                elif "url" in entry:
+                    merged.pop("ssh", None)
+                machines[name] = merged
+                targets[name] = merged
+        _save_remotes(machines)
+    else:  # no hosts named: refresh every saved machine
+        targets = dict(machines)
+    if not targets:
+        sys.stderr.write(
+            "opentab --pull: no machines configured. Add one, e.g. "
+            "`opentab --pull user@host` (or name=user@host, or http://host:port).\n"
+        )
+        return
+    remotes_dir = args.remotes or default_remotes_dir()
+    try:
+        os.makedirs(remotes_dir, exist_ok=True)
+    except OSError as exc:
+        sys.stderr.write(f"opentab --pull: cannot write {remotes_dir}: {exc}\n")
+        return
+    sys.stderr.write(
+        f"Pulling {len(targets)} machine(s) in parallel: {', '.join(sorted(targets))}\n"
+    )
+    ok = 0
+    with ThreadPoolExecutor(
+        max_workers=min(len(targets), 8), thread_name_prefix="opentab-pull"
+    ) as ex:
+        futures = {ex.submit(_pull_one, n, e, remotes_dir): n for n, e in targets.items()}
+        for fut in as_completed(futures):  # report each machine the moment it finishes
+            name = futures[fut]
+            count, error = fut.result()
+            if error:
+                sys.stderr.write(f"  ✗ {name} — {error}\n")
+            else:
+                ok += 1
+                sys.stderr.write(f"  ✓ {name} — {count} sessions\n")
+    sys.stderr.write(f"Pulled {ok}/{len(targets)} machine(s) into {remotes_dir}\n")
+
+
+def _make_refresh_fn(args: argparse.Namespace):
+    # A closure the TUI/web App calls to re-pull specific machines from inside opentab
+    # (the `F` key / the web refresh button). Takes remotes.json keys, returns
+    # [(name, session_count, error)] -- the same _pull_one workers as `--pull`, in
+    # parallel. Bound to the run's --remotes dir so an in-app refresh writes where the
+    # fleet reads.
+    remotes_dir = args.remotes or default_remotes_dir()
+
+    def refresh(keys: list) -> list:
+        machines = _load_remotes()
+        targets = {k: machines[k] for k in keys if k in machines}
+        if not targets:
+            return []
+        try:
+            os.makedirs(remotes_dir, exist_ok=True)
+        except OSError as exc:
+            return [(k, 0, f"cannot write {remotes_dir}: {exc}") for k in targets]
+        results = []
+        with ThreadPoolExecutor(
+            max_workers=min(len(targets), 8), thread_name_prefix="opentab-refresh"
+        ) as ex:
+            futures = {ex.submit(_pull_one, n, e, remotes_dir): n for n, e in targets.items()}
+            for fut in as_completed(futures):
+                name = futures[fut]
+                count, error = fut.result()
+                results.append((name, count, error))
+        return results
+
+    return refresh
+
+
+def forget_command(args: argparse.Namespace) -> int:
+    # --forget: drop machines from remotes.json and delete their cached summaries.
+    machines = _load_remotes()
+    remotes_dir = args.remotes or default_remotes_dir()
+    for name in args.forget:
+        existed = machines.pop(name, None) is not None
+        try:
+            os.remove(os.path.join(remotes_dir, _summary_filename(name)))
+        except OSError:
+            pass
+        sys.stderr.write(f"{'forgot' if existed else 'no such machine:'} {name}\n")
+    _save_remotes(machines)
+    return 0
+
+
 def web_command(args: argparse.Namespace) -> int:
     # --html / --serve: the web frontend, one-shot and curses-free. Builds the same
     # headless App the TUI drives -- rollups, worktree folding, saved prefs (ignored
@@ -545,6 +881,8 @@ def web_command(args: argparse.Namespace) -> int:
     sys.stderr.flush()
     app = App(store, args, source_key=source_key)
     app.allow_price_prompt = False
+    if source_key == "remote":
+        app._refresh_backend = _make_refresh_fn(args)  # the web /api/refresh endpoint
     if use_state:
         apply_state(app, args, state)
     app._ensure_models()  # the $ what-if snapshots ride on the per-model breakdown
@@ -569,6 +907,17 @@ def main() -> int:
         return status_command(args)  # one-shot for the tmux status line; no curses
     if getattr(args, "timings", False):
         return timings_command(args)  # startup profiler; no curses
+    if getattr(args, "export", None) is not None:
+        return export_command(args)  # portable machine summary; no curses
+    if getattr(args, "forget", None):
+        return forget_command(args)  # edit remotes.json and exit; no curses
+    if getattr(args, "pull", None) is not None:
+        pull_command(args)  # fetch machine summaries over ssh/http in parallel; no curses
+    if getattr(args, "pull", None) is not None or getattr(args, "remote", False):
+        # --pull/--remote view the consolidated machines; both the TUI and the
+        # --html/--serve paths below read args.source, so set it before either.
+        args.source = "remote"
+        args.remotes = args.remotes or default_remotes_dir()
     if (
         getattr(args, "html", None) is not None
         or getattr(args, "serve", False)
@@ -606,6 +955,9 @@ def main() -> int:
     sys.stderr.write(loading)
     sys.stderr.flush()
     app = App(store, args, source_key=source_key)
+    if source_key == "remote":
+        # Let `F` in the TUI re-pull a machine over ssh (fleet view only).
+        app._refresh_backend = _make_refresh_fn(args)
     app.allow_price_prompt = use_state  # no startup prompt under --no-state/--demo
     # Session notes are authored data, so they live in their own file and carry their own
     # gate: --no-state turns them off for the run, while demo is re-checked live (`D`

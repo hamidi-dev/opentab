@@ -73,6 +73,20 @@ class CombinedStore:
         # after workflows() the warm-start cache answers this for free.
         return all(getattr(s, "records_cost", True) for s in self.stores)
 
+    @property
+    def machine_meta(self) -> dict[str, dict]:
+        # Merge every sub-store's per-machine niceties for the fleet view. The N local
+        # backends are all MachineTaggedStore under one hostname, so their identical
+        # {hostname: {live:True}} entries collapse to one; the RemoteStore adds a row per
+        # pulled box. Live wins on a name clash (a box that is both local and re-pulled is
+        # the live one you're sitting at).
+        out: dict[str, dict] = {}
+        for store in self.stores:
+            for name, meta in getattr(store, "machine_meta", {}).items():
+                if name not in out or meta.get("live"):
+                    out[name] = meta
+        return out
+
     def workflows(self) -> list[Workflow]:
         # Roll up every backend in parallel, then build the id->owner map and merge on
         # this thread (deterministic, order-preserving) -- see _gather.

@@ -130,7 +130,7 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
 .pane{position:relative;border:1px solid var(--line);border-radius:6px;background:var(--panel);
   padding:14px 14px 10px;margin:10px 0 16px}
 .pane>h3{position:absolute;top:-9px;left:10px;background:var(--bg);padding:0 7px;
-  font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--ink2);font-weight:600}
+  font-size:11px;text-transform:uppercase;letter-spacing:.14em;color:var(--accent);font-weight:700}
 .pane>h3::before{content:"\258d";color:var(--accent);margin-right:6px}
 .pane.focus{border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
 .pane.focus>h3{color:var(--accent)}
@@ -148,23 +148,31 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
 .row .cost{color:var(--good)}
 .row .cost.zero{color:var(--mut)}
 .row .tb{color:var(--accent);opacity:.9;white-space:pre;font-size:11px}
-.mode{display:flex;gap:2px;margin:0 0 12px}
-.mode button{flex:1;font:inherit;font-size:11px;padding:3px 0;border:1px solid var(--line);
-  background:var(--panel);color:var(--ink2);cursor:pointer}
-.mode button:first-child{border-radius:4px 0 0 4px}
-.mode button:last-child{border-radius:0 4px 4px 0}
-.mode button.on{border-color:var(--accent);color:var(--accent)}
+/* top-level mode switch (Time · Projects · Machines): a segmented control, the active
+   segment filled with the accent so it reads as a real tab, not just tinted text */
+.mode{display:flex;gap:0;margin:0 0 12px;border:1px solid var(--line);border-radius:6px;
+  overflow:hidden;background:var(--panel)}
+.mode button{flex:1;font:inherit;font-size:11px;padding:5px 0;border:0;
+  border-left:1px solid var(--line);background:transparent;color:var(--ink2);cursor:pointer;
+  transition:background .12s,color .12s}
+.mode button:first-child{border-left:0}
+.mode button:not(.on):hover{background:var(--panel2);color:var(--ink)}
+.mode button.on{background:var(--accent);color:var(--bg);font-weight:700}
 
-/* detail tab bar -- the TUI's Overview │ Models │ Projects │ Sessions */
-#tabbar{display:flex;gap:2px;flex-wrap:wrap;align-items:center;border:1px solid var(--line);
-  border-radius:6px;background:var(--panel);padding:4px;margin:10px 0 12px}
-#tabbar button{font:inherit;font-size:12px;padding:4px 14px;border:0;border-radius:4px;
-  background:none;color:var(--ink2);cursor:pointer}
-#tabbar button.on{background:var(--accent);color:#141009;font-weight:700}
-#tabbar button:not(.on):hover{color:var(--ink)}
-#tabbar button.ld{opacity:.45;font-style:italic;animation:tabpulse 1.2s ease-in-out infinite}
-@keyframes tabpulse{50%{opacity:.8}}
-#tabbar .note{margin-left:auto;color:var(--mut);font-size:11px;padding:0 8px}
+/* detail tab bar -- the TUI's Overview │ Models │ Projects │ Sessions. Centered pill
+   tabs: every tab is a visible raised chip (so an inactive tab reads as a clickable tab,
+   not grey text), the active one filled with the accent and lifted by a soft glow. */
+#tabbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:center;
+  padding:2px;margin:12px 0 14px}
+#tabbar button{font:inherit;font-size:12px;padding:5px 16px;border:1px solid var(--line);
+  border-radius:20px;background:var(--panel2);color:var(--ink2);cursor:pointer;
+  transition:background .13s,color .13s,border-color .13s,box-shadow .13s,transform .13s}
+#tabbar button:not(.on):hover{color:var(--ink);border-color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 13%,var(--panel2));transform:translateY(-1px)}
+#tabbar button.on{background:var(--accent);color:var(--bg);border-color:var(--accent);
+  font-weight:700;box-shadow:0 3px 12px color-mix(in srgb,var(--accent) 38%,transparent)}
+#tabbar button.ld{opacity:.5;font-style:italic;animation:tabpulse 1.2s ease-in-out infinite}
+@keyframes tabpulse{50%{opacity:.85}}
 
 /* breadcrumbs / footer */
 #crumbs{padding:0 2px 10px;color:var(--mut);min-height:16px;font-size:12px}
@@ -390,7 +398,8 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .meta{display:grid;grid-template-columns:auto 1fr;gap:2px 16px;font-size:12px;margin-bottom:2px}
 .meta dt{color:var(--mut);text-transform:uppercase;font-size:10px;letter-spacing:.1em;padding-top:2px}
 .meta dd{color:var(--ink2);overflow-wrap:anywhere}
-h2.title{font-size:15px;margin:2px 0 10px;overflow-wrap:anywhere}
+h2.title{font-size:16px;margin:2px 0 12px;overflow-wrap:anywhere;font-weight:700;
+  border-left:3px solid var(--accent);padding-left:11px;line-height:1.35}
 """
 
 _JS = r"""
@@ -442,15 +451,18 @@ function renderTheme() {
 }
 
 let TAB = 'Overview';       // active detail tab (transient, resets on scope change)
-let BROWSE = 'time';        // sidebar mode: 'time' (Months/Days) | 'projects', like the TUI
+let BROWSE = 'time';        // sidebar mode: 'time' (Months/Days) | 'projects' | 'machines', like the TUI
 let FOCUS = 'months';       // which sidebar list j/k drives
+// Per-machine niceties for the Machines mode (live vs pulled, export time/version);
+// {} off the fleet view. Keyed by machine name (== w.machine, demo-scrambled under demo).
+const MMETA = DATA.machineMeta || {};
 let FILTER = '';
 const SORT = {};
 const EXPANDED = new Set(); // table ids whose "show all" is open (reset per view)
 const VIEW = { calYear: null };
 let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null }; // per-session Turns/Tools/Context (serve)
 // The Trends overlay (T) -- mirrors the TUI's 7-tab Trends over the whole range.
-const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Harnesses'];
+const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
 let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null };
 // The P prices overlay: the models.dev list-price reference behind $ (app-wide,
 // never range-scoped -- like the TUI). eff sorts cheapest-first; others high→low.
@@ -508,6 +520,21 @@ const projName = p => { const parts = shortPath(p).split('/').filter(Boolean);
 const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const monthLabel = m => MN[+m.slice(5, 7) - 1] + ' ’' + m.slice(2, 4);
 const dt = s => (s || '').slice(0, 16).replace('T', ' ');
+// "2h ago" for a machine summary's export time -- the twin of formatting.relative_age.
+function relAge(iso) {
+  if (!iso) return '';
+  const t = Date.parse(iso); if (isNaN(t)) return '';
+  const s = (Date.now() - t) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+// Re-pull one machine over ssh (serve only), then reload the page with the fresh data.
+function refreshMachine(name) {
+  fetch('/api/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ machine: name }) }).then(() => location.reload());
+}
 // The Monday ('YYYY-MM-DD') of the ISO week a date falls in -- matches heatmap.week_key
 // so the Weekly trend buckets the same way the TUI does; '' for an undated row.
 function weekMonday(dateStr) {
@@ -605,6 +632,10 @@ function projectRows(ws) {
 function sourceRows(ws) {
   return [...groupBy(ws, w => w.source || META.source)].map(([source, g]) =>
     ({ source, cost: sum(g, cost), sessions: g.length, tokens: sum(g, w => w.tokens) }));
+}
+function machineRows(ws) {
+  return [...groupBy(ws, w => w.machine || 'unknown')].map(([machine, g]) =>
+    ({ machine, cost: sum(g, cost), sessions: g.length, tokens: sum(g, w => w.tokens) }));
 }
 function modelAgg(ws) {
   const m = new Map();
@@ -906,6 +937,7 @@ function curScope() {
   if (kind === 'm' && arg) return { kind: 'm', month: arg, year: arg.slice(0, 4) };
   if (kind === 'd' && arg) return { kind: 'd', day: arg, month: arg.slice(0, 7), year: arg.slice(0, 4) };
   if (kind === 'p' && arg) return { kind: 'p', project: arg };
+  if (kind === 'M' && arg) return { kind: 'M', machine: arg };
   if (kind === 's' && arg) {
     const w = ALL_W.find(x => x.id === arg);  // any session, even outside the active range
     return { kind: 's', id: arg, session: w, month: w ? w.date.slice(0, 7) : null,
@@ -951,9 +983,10 @@ const scopeYear = sc => sc.year || null;
 // render in place, because go('','') on an unchanged hash would be a silent no-op.
 function setBrowse(mode) {
   BROWSE = mode;
-  FOCUS = mode === 'projects' ? 'projects' : 'months';
+  FOCUS = mode === 'projects' ? 'projects' : mode === 'machines' ? 'machines' : 'months';
   const k = curScope().kind;
-  const forced = (k === 'y' || k === 'm' || k === 'd') ? 'time' : k === 'p' ? 'projects' : null;
+  const forced = (k === 'y' || k === 'm' || k === 'd') ? 'time'
+    : k === 'p' ? 'projects' : k === 'M' ? 'machines' : null;
   if (forced && forced !== mode) go('', '');
   else render(false);
 }
@@ -962,6 +995,7 @@ function scopeWorkflows(sc) {
   if (sc.kind === 'm') return W.filter(w => w.date.startsWith(sc.month));
   if (sc.kind === 'd') return W.filter(w => w.date.startsWith(sc.day));
   if (sc.kind === 'p') return W.filter(w => w.project === sc.project);
+  if (sc.kind === 'M') return W.filter(w => (w.machine || 'unknown') === sc.machine);
   if (sc.kind === 's') return sc.session ? [sc.session] : [];
   return W;
 }
@@ -983,8 +1017,15 @@ function tabsFor(sc) {
     y: ['Overview', 'Models', 'Projects', 'Sessions'],
     m: ['Overview', 'Models', 'Projects', 'Sessions'],
     d: ['Overview', 'Projects', 'Sessions'],
-    p: ['Overview', 'Models', 'Sessions'] }[sc.kind].slice();
+    p: ['Overview', 'Models', 'Sessions'],
+    M: ['Overview', 'Sessions', 'Models', 'Projects'] }[sc.kind].slice();
   if (META.combined) base.splice(1, 0, 'Harnesses');
+  // The fleet's per-scope Machines breakdown, after Harnesses -- but not in the Machines
+  // scope itself (sc.kind 'M'), which is already one box.
+  if (META.machines && sc.kind !== 'M') {
+    const cut = base.indexOf('Harnesses');
+    base.splice(cut >= 0 ? cut + 1 : 1, 0, 'Machines');
+  }
   return base;
 }
 
@@ -1003,9 +1044,22 @@ function sidePane(title, focusKey, rows) {
 function renderSidebar(sc) {
   const side = document.getElementById('side');
   side.textContent = '';
+  // The top-level browse-mode tabs (the TUI's t/p/m strip): Machines only in a fleet.
   side.appendChild(h('div', { class: 'mode' },
     h('button', { class: BROWSE === 'time' ? 'on' : null, onclick: () => setBrowse('time') }, 'time'),
-    h('button', { class: BROWSE === 'projects' ? 'on' : null, onclick: () => setBrowse('projects') }, 'projects')));
+    h('button', { class: BROWSE === 'projects' ? 'on' : null, onclick: () => setBrowse('projects') }, 'projects'),
+    META.machines ? h('button', { class: BROWSE === 'machines' ? 'on' : null, onclick: () => setBrowse('machines') }, 'machines') : null));
+  if (BROWSE === 'machines') {
+    // The live box floats first (● / ○), like App.machines.
+    const rows = machineRows(W).sort((a, b) =>
+      ((MMETA[b.machine] || {}).live ? 1 : 0) - ((MMETA[a.machine] || {}).live ? 1 : 0) || b.cost - a.cost);
+    const peak = Math.max(...rows.map(r => r.cost), 0);
+    side.appendChild(sidePane('Machines', 'machines', [
+      sideRow(sc.kind === 'all', () => go('', ''), '∑ all machines', '', sum(W, cost), sum(W, cost)),
+      rows.map(r => sideRow(sc.kind === 'M' && sc.machine === r.machine, () => go('M', r.machine),
+        ((MMETA[r.machine] || {}).live ? '● ' : '○ ') + r.machine, String(r.sessions), r.cost, peak))]));
+    return;
+  }
   if (BROWSE === 'projects') {
     const rows = projectRows(W).sort((a, b) => b.cost - a.cost);
     const peak = Math.max(...rows.map(r => r.cost), 0);
@@ -1085,9 +1139,11 @@ function modelsTable(id, rows, collapse) {
       tokens: hTok(totalTok), cacheRead: hTok(sum(rows, r => r.cacheRead)),
       cacheWrite: hTok(sum(rows, r => r.cacheWrite)), output: hTok(sum(rows, r => r.output)) } });
 }
-function projectsTable(id, ws, collapse) {
+function projectsTable(id, ws, collapse, noDrill) {
   const rows = projectRows(ws);
   const peak = Math.max(...rows.map(r => r.cost), 0);
+  // noDrill: a read-only breakdown (the Machines scope's Projects), so a row click does
+  // NOT go('p', ...) and jump out of the machine axis -- matching the TUI's read-only tab.
   return table(id, [
     { key: 'project', label: 'Project', asc: true, sortVal: r => projName(r.project).toLowerCase(),
       fmt: r => [projName(r.project), ' ', h('span', { class: 'mut' }, shortPath(r.project))], cls: 'grow' },
@@ -1096,7 +1152,7 @@ function projectsTable(id, ws, collapse) {
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
     { key: 'last', label: 'Last active', align: 'r', fmt: r => h('span', { class: 'dim' }, dt(r.last).slice(0, 10)) },
   ], rows, { defaultSort: { key: 'cost', desc: true }, collapse: collapse || 25,
-    onRow: r => { go('p', r.project); } });
+    onRow: noDrill ? null : r => { go('p', r.project); } });
 }
 function filterInput() {
   return h('input', { class: 'filter', id: 'filter-input', placeholder: 'filter sessions…', value: FILTER,
@@ -1113,6 +1169,7 @@ function sessionCols() {
     { key: 'subagents', label: 'Subagents', align: 'r', fmt: r => r.subagents || h('span', { class: 'mut' }, '·') },
   ];
   if (META.combined) cols.push({ key: 'source', label: 'Hns', asc: true, fmt: r => h('span', { class: 'mut' }, r.source) });
+  if (META.machines) cols.push({ key: 'machine', label: 'Machine', asc: true, fmt: r => h('span', { class: 'mut' }, r.machine || '?') });
   return cols;
 }
 function sessionsTable(id, ws) {
@@ -1140,6 +1197,18 @@ function sourcesTable(id, ws) {
     { key: 'cost', label: 'Cost', align: 'r', fmt: r => barCell(r.cost, peak) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
   ], rows, { defaultSort: { key: 'cost', desc: true } });
+}
+function machinesTable(id, ws) {
+  // The per-scope Machines breakdown (fleet view), the sourcesTable twin: read-only, like
+  // the web's Harnesses tab. The Machines MODE (#/M/<box>) is where a box drills in.
+  const rows = machineRows(ws);
+  const peak = Math.max(...rows.map(r => r.cost), 0);
+  return table(id, [
+    { key: 'machine', label: 'Machine', asc: true, fmt: r => [(MMETA[r.machine] || {}).live ? '● ' : '○ ', r.machine] },
+    { key: 'sessions', label: 'Sessions', align: 'r' },
+    { key: 'cost', label: 'Cost', align: 'r', fmt: r => barCell(r.cost, peak) },
+    { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
+  ], rows, { defaultSort: { key: 'cost', desc: true }, onRow: r => { go('M', r.machine); } });
 }
 
 /* turns stay chronological on purpose: the tab answers *when* the money went. */
@@ -1524,6 +1593,7 @@ function scopeLabel(sc) {
   if (sc.kind === 'm') return monthLabel(sc.month);
   if (sc.kind === 'd') return sc.day;
   if (sc.kind === 'p') return projName(sc.project);
+  if (sc.kind === 'M') return sc.machine;
   if (sc.kind === 's') return sessionLabel(sc);
   return 'all time';
 }
@@ -1557,8 +1627,29 @@ function renderOverview(root, sc, ws) {
     const months = monthRows(ws);
     if (months.length > 1) root.appendChild(pane('Spend by month', barChart(months)));
   }
+  if (sc.kind === 'M') {
+    // The niceties the plain rollup can't give: live vs pulled, when it was pulled and by
+    // which opentab, plus a re-pull button under --serve (the TUI's F key).
+    const meta = MMETA[sc.machine] || {};
+    const dl = h('dl', { class: 'meta' },
+      h('dt', null, 'status'), h('dd', null, meta.live ? '● live — full drill-in' : '○ pulled summary'));
+    if (!meta.live && meta.exportedAt) {
+      const age = relAge(meta.exportedAt);
+      dl.append(h('dt', null, 'pulled'), h('dd', null, dt(meta.exportedAt) + (age ? ' (' + age + ')' : '')));
+    }
+    if (!meta.live && meta.version) dl.append(h('dt', null, 'opentab'), h('dd', null, meta.version));
+    const card = h('section', { class: 'pane' }, h('h3', null, 'Machine · ' + sc.machine), dl);
+    // No re-pull under demo: demo must make no network side effects (the server refuses
+    // it too), so the button never appears on a shareable demo page.
+    if (META.serve && meta.refreshable && !META.demo)
+      card.appendChild(h('button', { class: 'hbtn', title: 're-pull this machine over ssh',
+        onclick: () => refreshMachine(sc.machine) }, '↻ re-pull'));
+    else if (!meta.live)
+      card.appendChild(h('div', { class: 'hint' }, 'summary only — Turns/Tools/Context aren\'t exported (opentab --serve to re-pull)'));
+    root.appendChild(card);
+  }
   const panes = [];
-  if (sc.kind !== 'p') panes.push(pane('Top projects', projectsTable('t-ov-projects', ws, 8)));
+  if (sc.kind !== 'p') panes.push(pane('Top projects', projectsTable('t-ov-projects', ws, 8, sc.kind === 'M')));
   // A day touches few models, so its Overview carries the full mix -- the day
   // scope has no Models tab (the TUI's day_overview trade-off).
   panes.push(pane(sc.kind === 'd' ? 'Model mix' : 'Top models', modelsTable('t-ov-models', modelAgg(ws), 8)));
@@ -1574,6 +1665,7 @@ function renderSessionOverview(root, sc) {
     h('dt', null, 'project'), h('dd', null, h('a', { href: '#/p/' + encodeURIComponent(w.project) }, shortPath(w.project))),
     h('dt', null, 'date'), h('dd', null, dt(w.date)),
     META.combined && w.source ? [h('dt', null, 'harness'), h('dd', null, w.source)] : null,
+    META.machines && w.machine ? [h('dt', null, 'machine'), h('dd', null, w.machine)] : null,
     h('dt', null, 'id'), h('dd', null, w.id)));
   // The Money card mirrors the TUI's Money box: cost split + shape + a root/subagents
   // donut, and an armed `w` target answers for THIS session right here (a solo session
@@ -1591,9 +1683,10 @@ function renderDetail(sc, ws) {
   else if (TAB === 'Models') {
     const rows = sc.kind === 's' ? (DATA.models[sc.id] || []).map(r => ({ ...r })) : modelAgg(ws);
     root.appendChild(pane('Models · ' + scopeLabel(sc), modelsTable('t-tab-models', rows)));
-  } else if (TAB === 'Projects') root.appendChild(pane('Projects · ' + scopeLabel(sc), projectsTable('t-tab-projects', ws)));
+  } else if (TAB === 'Projects') root.appendChild(pane('Projects · ' + scopeLabel(sc), projectsTable('t-tab-projects', ws, undefined, sc.kind === 'M')));
   else if (TAB === 'Sessions') root.appendChild(pane('Sessions · ' + scopeLabel(sc), sessionsTable('t-tab-sessions', ws)));
   else if (TAB === 'Harnesses') root.appendChild(pane('Harnesses · ' + scopeLabel(sc), sourcesTable('t-tab-sources', ws)));
+  else if (TAB === 'Machines') root.appendChild(pane('Machines · ' + scopeLabel(sc), machinesTable('t-tab-machines', ws)));
   else if (TAB === 'Subagents') {
     // Nodes ride along only for a session that delegated. A solo session says "no
     // subagents" even with a target armed -- it has no tree to table, which is exactly
@@ -1639,14 +1732,15 @@ function renderTabs(sc, tabs) {
     bar.appendChild(h('button', { class: cls.trim() || null,
       onclick: () => { TAB = t; render(false); } }, t + (ld ? ' ⋯' : '')));
   });
-  if (loading) bar.appendChild(h('span', { class: 'note' }, 'loading turns & tools…'));
-  else bar.appendChild(h('span', { class: 'note' }, scopeLabel(sc)));
+  // No trailing scope label here: it lives in the breadcrumb, and keeping it would pull
+  // the centered tab row off-center. Loading is already shown by the pulsing ⋯ tabs.
 }
 function renderCrumbs(sc) {
   const el = document.getElementById('crumbs');
   el.textContent = '';
   const items = [['all time', sc.kind === 'all' ? null : '#/']];
   if (sc.kind === 'p') items.push([projName(sc.project), null]);
+  if (sc.kind === 'M') items.push(['machines', '#/'], [sc.machine, null]);
   // year hop in the chain only when there's more than one year (else it's noise)
   if (sc.year && distinctYears(W).length > 1) items.push([sc.year, sc.kind === 'y' ? null : '#/y/' + sc.year]);
   if (sc.month && sc.kind !== 'm') items.push([monthLabel(sc.month), '#/m/' + sc.month]);
@@ -1689,7 +1783,8 @@ function chrome() {
     onclick: () => fetch('/api/reload', { method: 'POST' }).then(() => location.reload()) }, '↻ refresh'));
   const hints = document.getElementById('hints');
   hints.textContent = '';
-  [['j/k', 'move'], ['Tab', 'panel'], ['h/l', 'tabs'], ['Esc', 'back'], ['$', 'what-if'], ['w', 'what-if model'], ['p/t', 'projects/time'], ['T', 'trends'], ['P', 'prices'], ['C', 'theme'], ['R', 'range']]
+  [['j/k', 'move'], ['Tab', 'panel'], ['h/l', 'tabs'], ['Esc', 'back'], ['$', 'what-if'], ['w', 'what-if model'],
+   META.machines ? ['t/p/m', 'time/proj/machines'] : ['p/t', 'projects/time'], ['T', 'trends'], ['P', 'prices'], ['C', 'theme'], ['R', 'range']]
     .forEach(([k, lbl]) => hints.append(h('kbd', null, k), ' ' + lbl + '   '));
   document.getElementById('stamp').textContent =
     'generated by OpenTab v' + META.version + ' · ' + META.range + ' · ' + META.generated
@@ -1806,8 +1901,9 @@ function trendDrillRows() {
   const { kind, key } = TRENDS.drill, out = [];
   for (const w of W) {
     let c = 0, tok = 0;
-    if (kind === 'source') {
-      if ((w.source || META.source) !== key) continue;
+    if (kind === 'source' || kind === 'machine') {
+      const v = kind === 'machine' ? (w.machine || 'unknown') : (w.source || META.source);
+      if (v !== key) continue;
       c = cost(w); tok = w.tokens;
     } else {
       for (const r of (DATA.models[w.id] || [])) {
@@ -1910,6 +2006,14 @@ function trendSources() {
     onRow: r => { TRENDS.drill = { kind: 'source', key: r.name }; renderTrends(); },
     extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
 }
+function trendMachines() {
+  const rows = machineRows(W).map(r => ({ name: r.machine, cost: r.cost, sessions: r.sessions, tokens: r.tokens }))
+    .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+  if (!rows.length) return h('div', { class: 'hint' }, 'No sessions in the active range.');
+  return rankedBars(rows, { nameLabel: 'Machine',
+    onRow: r => { TRENDS.drill = { kind: 'machine', key: r.name }; renderTrends(); },
+    extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
+}
 function openTrends() { TRENDS.open = true; TRENDS.drill = null; if (!TREND_TABS.includes(TRENDS.tab)) TRENDS.tab = 'Daily'; renderTrends(); }
 function closeTrends() { TRENDS.open = false; TRENDS.drill = null; renderTrends(); }
 function renderTrends() {
@@ -1919,7 +2023,7 @@ function renderTrends() {
   const tab = TRENDS.tab;
   const body = TRENDS.drill ? trendDrill()
     : ({ Daily: trendDaily, Weekly: trendWeekly, Monthly: trendMonthly, Calendar: trendCalendar,
-        Models: trendModels, Providers: trendProviders, Harnesses: trendSources }[tab])();
+        Models: trendModels, Providers: trendProviders, Harnesses: trendSources, Machines: trendMachines }[tab])();
   const footer = h('div', { class: 'tr-nav', style: 'margin-top:14px' });
   if (META.demo) footer.append(h('span', { class: 'tr-note' }, 'h/l tabs · j/k page · esc close'));
   else if (MODE === 'api') footer.append(h('span', { class: 'badge est' }, 'estimated · list prices'));
@@ -2126,9 +2230,16 @@ function closeRange() { RANGE.pick = false; renderRange(); }
 // Which sidebar panels Tab cycles through, in order, given the data.
 function focusOrder() {
   if (BROWSE === 'projects') return ['projects'];
+  if (BROWSE === 'machines') return ['machines'];
   return distinctYears(W).length > 1 ? ['years', 'months', 'days'] : ['months', 'days'];
 }
 function sidebarList(sc) {
+  if (BROWSE === 'machines') {
+    const rows = machineRows(W).sort((a, b) =>
+      ((MMETA[b.machine] || {}).live ? 1 : 0) - ((MMETA[a.machine] || {}).live ? 1 : 0) || b.cost - a.cost);
+    return { rows: [{ go: () => go('', '') }, ...rows.map(r => ({ go: () => go('M', r.machine) }))],
+      index: sc.kind === 'M' ? 1 + rows.findIndex(r => r.machine === sc.machine) : 0 };
+  }
   if (BROWSE === 'projects') {
     const rows = projectRows(W).sort((a, b) => b.cost - a.cost);
     return { rows: [{ go: () => go('', '') }, ...rows.map(r => ({ go: () => go('p', r.project) }))],
@@ -2248,7 +2359,7 @@ document.addEventListener('keydown', e => {
     if (sc.kind === 's') sc.day ? go('d', sc.day) : go('', '');
     else if (sc.kind === 'd') go('m', sc.month);
     else if (sc.kind === 'm') multiYear ? go('y', sc.year) : go('', '');
-    else if (sc.kind === 'y' || sc.kind === 'p') go('', '');
+    else if (sc.kind === 'y' || sc.kind === 'p' || sc.kind === 'M') go('', '');
   } else if (e.key === '$' && !META.demo) {
     MODE = MODE === 'api' ? 'real' : 'api';
     render(false);
@@ -2262,6 +2373,8 @@ document.addEventListener('keydown', e => {
     setBrowse('projects');
   } else if (e.key === 't' && BROWSE !== 'time') {
     setBrowse('time');
+  } else if (e.key === 'm' && META.machines && BROWSE !== 'machines') {
+    setBrowse('machines');
   }
 });
 
@@ -2269,6 +2382,7 @@ document.addEventListener('keydown', e => {
 function render(scrollTop = true) {
   const sc = curScope();
   if (sc.kind === 'p') BROWSE = 'projects';
+  else if (sc.kind === 'M') BROWSE = 'machines';
   else if (sc.kind === 'y' || sc.kind === 'm' || sc.kind === 'd') BROWSE = 'time';
   // Keep FOCUS valid for the current mode/data (e.g. 'years' with only one year,
   // or a stale 'projects'/'days' after a mode switch) so Tab/j/k never wedge.

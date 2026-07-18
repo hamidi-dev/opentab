@@ -32,14 +32,18 @@ except ImportError:  # native Windows has no stdlib curses
 from opentab.cli import (
     MIN_PYTHON,
     enable_unicode_locale,
+    export_command,
+    forget_command,
     main,
     parse_args,
+    pull_command,
     refresh_models_command,
     status_command,
     status_line,
     web_command,
 )
 from opentab.demo import (
+    DEMO_MACHINES,
     DEMO_MODEL_POOL,
     DEMO_NOUNS,
     DEMO_RATE,
@@ -47,6 +51,7 @@ from opentab.demo import (
     DEMO_VERBS,
     demo_cost,
     demo_dir,
+    demo_machine,
     demo_model,
     demo_title,
 )
@@ -65,6 +70,7 @@ from opentab.formatting import (
     money_label,
     pad,
     pct,
+    relative_age,
     short_path,
     shorten,
     tokens,
@@ -93,6 +99,7 @@ from opentab.heatmap import (
 from opentab.models import (
     ALL_YEARS,
     DaySummary,
+    MachineSummary,
     MonthSummary,
     ProjectSummary,
     Workflow,
@@ -139,6 +146,7 @@ from opentab.sources import (
     RESUME_COMMANDS,
     SOURCE_LABELS,
     available_sources,
+    default_remotes_dir,
     make_store,
     resolve_source,
     source_cycle,
@@ -155,6 +163,7 @@ from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import MODEL_EXPR, MSG_MODEL_EXPR, MSG_TOKEN_TOTAL_EXPR, Store
 from opentab.stores.pi import PiStore
+from opentab.stores.remote import RemoteStore, build_export
 from opentab.stores.vscode import VscodeStore
 from opentab.stores.zaly import ZalyStore
 from opentab.themes import (

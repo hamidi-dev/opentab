@@ -463,18 +463,43 @@ KEYS: tuple[Key, ...] = (
     ),
     Key(
         id="mode",
-        keys="p  t",
-        summary="Projects / Time browse mode",
+        keys=lambda app: "t  p  m" if app.machines_present else "t  p",
+        summary=lambda app: "Time / Projects / Machines browse mode"
+        if app.machines_present
+        else "Time / Projects browse mode",
         section="nav",
         when=lambda app: in_main(app) and app.view != "session",
         segments=lambda app: [
-            ("p", app.browse_mode == "projects"),
-            ("/", False),
             ("t", app.browse_mode == "time"),
-            (" mode", False),
-        ],
-        chip="p/t mode",
-        binds=("p", "t"),
+            ("/", False),
+            ("p", app.browse_mode == "projects"),
+        ]
+        + ([("/", False), ("m", app.browse_mode == "machines")] if app.machines_present else [])
+        + [(" mode", False)],
+        chip=lambda app: "t/p/m mode" if app.machines_present else "t/p mode",
+        binds=("p", "t", "m"),
+    ),
+    Key(
+        id="refresh-machines",
+        keys="F",
+        summary="re-pull machine summaries over ssh",
+        section="nav",
+        when=lambda app: in_main(app) and app.machines_present,
+        chip="F refresh",
+        binds=("F",),
+    ),
+    Key(
+        id="machine-filter",
+        keys="M",
+        summary="filter every view to one machine",
+        section="nav",
+        # Not in_main-gated: like `H` it floats above Trends/Prices/help (handled there in
+        # the overlay-common paths), so it must advertise itself there too -- machines_present
+        # is the whole gate, matching where the handlers act.
+        when=lambda app: app.machines_present,
+        chip=lambda app: f"M {app.machine_filter}" if app.machine_filter else "M machine",
+        active=lambda app: bool(app.machine_filter) or app.machine_menu,
+        binds=("M",),
     ),
     Key(
         id="tabs",
@@ -581,13 +606,13 @@ KEYS: tuple[Key, ...] = (
     ),
     Key(
         id="source",
-        keys="c",
+        keys="H",
         summary="switch harness",
         section="global",
         when=lambda app: app.can_switch_source(),
-        chip="c harness",
+        chip="H harness",
         active=lambda app: app.source_menu,
-        binds=("c",),
+        binds=("H",),
     ),
     Key(
         id="theme",
@@ -655,6 +680,8 @@ FOOTER_ORDER = (
     "esc",
     "max",
     "mode",
+    "machine-filter",  # both fleet-gated: shown only when a fleet is in view
+    "refresh-machines",
     "ignore",
     "ignored",
     "bookmark",

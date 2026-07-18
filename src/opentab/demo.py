@@ -78,6 +78,22 @@ DEMO_MODEL_POOL = (
     "google/gemini-2.5-pro",
     "anthropic/claude-haiku-4.5",
 )
+# Fake hostnames for --demo's fleet view. A machine name is a real hostname (it can be
+# a work box, a personal handle) so the consolidated view anonymises it exactly like a
+# title or a path -- deterministically, so the same box keeps one fake across redraws and
+# the grouping stays 1:1 (the whole point of the Machines mode is which box spent what).
+DEMO_MACHINES = (
+    "workstation",
+    "laptop",
+    "build-server",
+    "dev-box",
+    "homelab",
+    "cloud-vm",
+    "render-node",
+    "sandbox",
+    "the-nas",
+    "jump-host",
+)
 
 
 def _seed(value: str) -> int:
@@ -103,3 +119,19 @@ def demo_model(name: str) -> str:
     if is_local_provider(name):
         return DEMO_MODEL_POOL[_seed(name) % len(DEMO_MODEL_POOL)]
     return name
+
+
+def demo_machine(name: str) -> str:
+    # Stable fake hostname for a machine label, so --demo's Machines mode/column/tabs
+    # never leak a real box name. Deterministic per name; "" (local, untagged) stays "".
+    # A machine name, unlike a title or a path, must NOT collide: two real boxes folding
+    # onto one fake would merge their spend (distorting the very machine-ratio the demo
+    # is meant to keep real) and could even hide the whole Machines view (machines_present
+    # needs >=2). A pool of ten names collides for any handful of boxes, so the FULL crc32
+    # rides in the suffix -- the whole hash, not a truncation (a truncation would collapse
+    # the space, since the pool index is already h % 10). Distinct names then stay distinct
+    # unless their crc32 genuinely clashes (~1 in 4.3e9), not merely agree on a few digits.
+    if not name:
+        return name
+    h = _seed(name)
+    return f"{DEMO_MACHINES[h % len(DEMO_MACHINES)]}-{h:08x}"

@@ -8,7 +8,14 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from opentab import __version__
-from opentab.models import DaySummary, MonthSummary, ProjectSummary, Workflow, YearSummary
+from opentab.models import (
+    DaySummary,
+    MachineSummary,
+    MonthSummary,
+    ProjectSummary,
+    Workflow,
+    YearSummary,
+)
 from opentab.themes import hex_rgb1000, nearest_8, nearest_256, ramp
 from opentab.tui import keymap
 
@@ -29,10 +36,12 @@ from opentab.formatting import (
     cost_bar,
     display_width,
     human_tokens,
+    iso_to_local,
     money,
     money_label,
     pad,
     pct,
+    relative_age,
     short_path,
     shorten,
     tokens,
@@ -280,7 +289,38 @@ class Renderer:
         natural = max(longest, len("Project")) + 42  # marker + Cost/Tokens/Ses/Subagents
         return max(24, min(natural, width // 2, max(24, width - 44)))
 
+    # --- Machines mode sidebar (the fleet view) ------------------------------
+    @staticmethod
+    def machine_name_width(width: int) -> int:
+        return max(8, width - 30)
+
+    @staticmethod
+    def machine_badge(machine: MachineSummary) -> str:
+        # ● the live box you're on (full drill-in), ○ a pulled snapshot. Same decorative
+        # Unicode register as the ★/✎ session marks, so it rides the same capable terminal.
+        return "●" if machine.live else "○"
+
+    def machine_row_text(self, machine: MachineSummary, marker: str, width: int) -> str:
+        name_width = self.machine_name_width(width)
+        name = shorten(f"{self.machine_badge(machine)} {machine.name}", name_width)
+        return (
+            f"{marker} {pad(name, name_width)} "
+            f"{money(machine.cost):>9} {human_tokens(machine.tokens):>7} "
+            f"{machine.workflows:>3} ses"
+        )
+
+    def machine_header_text(self, width: int) -> str:
+        name_width = self.machine_name_width(width)
+        return f"  {'Machine':{name_width}} " f"{'Cost':>9} {'Tokens':>7} {'Ses':>6}"
+
+    def machines_left_width(self, width: int) -> int:
+        longest = max((display_width(m.name) for m in self.machines), default=8)
+        natural = max(longest, len("Machine")) + 32  # badge + marker + Cost/Tokens/Ses
+        return max(24, min(natural, width // 2, max(24, width - 44)))
+
     def browse_left_width(self, width: int) -> int:
+        if self.browse_mode == "machines":
+            return self.machines_left_width(width)
         if self.browse_mode == "projects":
             return self.projects_left_width(width)
         rows = [self.year_row_text(yr, ">") for yr in self.years]
@@ -353,6 +393,20 @@ class Renderer:
             return self.detail_overview(workflow, content_width)
 
         if self.view == "zoom":
+            if self.browse_mode == "machines":
+                machine = self.selected_machine_summary
+                if machine is None:
+                    return []
+                current = self.current_tabs()[self.tab % len(self.current_tabs())]
+                if current == "Overview":
+                    return self.machine_overview(machine, content_width)
+                if current == "Harnesses":
+                    return self.machine_sources(machine, content_width)
+                if current == "Models":
+                    return self.machine_models(machine, content_width)
+                if current == "Projects":
+                    return self.machine_projects(machine, content_width)
+                return self.machine_workflows(machine, content_width)
             if self.browse_mode == "projects":
                 project = self.selected_project_summary
                 if project is None:
@@ -362,6 +416,8 @@ class Renderer:
                     return self.project_overview(project, content_width)
                 if current == "Harnesses":
                     return self.project_sources(project, content_width)
+                if current == "Machines":
+                    return self.project_machines(project, content_width)
                 if current == "Models":
                     return self.project_models(project, content_width)
                 return self.project_workflows(project, content_width)
@@ -375,6 +431,8 @@ class Renderer:
                     return self.year_overview(year, content_width)
                 if current == "Harnesses":
                     return self.year_sources(year, content_width)
+                if current == "Machines":
+                    return self.year_machines(year, content_width)
                 if current == "Models":
                     return self.year_models(year, content_width)
                 if current == "Projects":
@@ -390,6 +448,8 @@ class Renderer:
                     return self.month_overview(month, content_width)
                 if current == "Harnesses":
                     return self.month_sources(month, content_width)
+                if current == "Machines":
+                    return self.month_machines(month, content_width)
                 if current == "Models":
                     return self.month_models(month, content_width)
                 if current == "Projects":
@@ -404,6 +464,8 @@ class Renderer:
                 return self.day_overview(day, content_width)
             if current == "Harnesses":
                 return self.day_sources(day, content_width)
+            if current == "Machines":
+                return self.day_machines(day, content_width)
             if current == "Projects":
                 return self.day_projects(day, content_width)
             return self.day_workflows(day, content_width)
@@ -457,12 +519,16 @@ class Renderer:
             zx, zw = 0, width
             if not self.zoom_maximized:
                 left = self.browse_left_width(width)
-                if self.browse_mode == "projects":
+                if self.browse_mode == "machines":
+                    self.draw_machine_list(stdscr, top, 0, avail, left, active=False)
+                elif self.browse_mode == "projects":
                     self.draw_project_list(stdscr, top, 0, avail, left, active=False)
                 else:
                     self.draw_time_panels(stdscr, top, avail, left, focus=None)
                 zx, zw = left, width - left
-            if self.browse_mode == "projects":
+            if self.browse_mode == "machines":
+                self.draw_machine_detail(stdscr, top, zx, avail, zw)
+            elif self.browse_mode == "projects":
                 self.draw_project_detail(stdscr, top, zx, avail, zw)
             elif self.focus == "years":
                 self.draw_year_detail(stdscr, top, zx, avail, zw)
@@ -470,6 +536,11 @@ class Renderer:
                 self.draw_month_detail(stdscr, top, zx, avail, zw)
             else:
                 self.draw_day_detail(stdscr, top, zx, avail, zw)
+        elif self.browse_mode == "machines":
+            left = self.browse_left_width(width)
+            self.draw_machine_list(stdscr, top, 0, avail, left)
+            self.draw_machine_detail(stdscr, top, left, avail, width - left, active=False)
+            self._add_rows_region("detail", top, left, width - 1, 0, avail)
         elif self.browse_mode == "projects":
             left = self.browse_left_width(width)
             self.draw_project_list(stdscr, top, 0, avail, left)
@@ -500,6 +571,8 @@ class Renderer:
             self.draw_theme_menu(stdscr, height, width)
         elif self.source_menu:
             self.draw_source_menu(stdscr, height, width)
+        elif self.machine_menu:
+            self.draw_machine_menu(stdscr, height, width)
         elif self.whatif_menu:
             self.draw_whatif_menu(stdscr, height, width)
         elif self.sort_menu:
@@ -522,7 +595,7 @@ class Renderer:
             f"subagents {summary['subagents']} "
         )
         self.write(stdscr, 0, 0, title, curses.color_pair(2) | curses.A_BOLD)
-        # Source chip, always visible (and live-switchable with `c`): which backend
+        # Source chip, always visible (and live-switchable with `H`): which backend
         # this data comes from — OpenCode / Claude Code / both.
         chip = f" {self.store.source_name} "
         self.write(stdscr, 0, len(title), chip, curses.color_pair(7) | curses.A_BOLD)
@@ -585,12 +658,50 @@ class Renderer:
         ignored_count = len(self.ignored_projects) + len(self.ignored_sessions)
         if ignored_count:
             segs.append((f"  ·  ignored: {ignored_count}", active))
+        if self.machine_filter:  # the `M` global narrowing -- a LIMIT, so accented
+            segs.append((f"  ·  machine: {self.machine_filter}", active))
         if self.show_bookmarks_only:
             segs.append(("  ·  ★ bookmarks only", active))
         # Transient status lives in floating toasts now (draw_toasts), not the header.
         for text, attr in segs:
             x = self.write_seg(stdscr, 1, x, text, attr, width)
-        self.hline(stdscr, 2, 0, width)
+        self.draw_mode_tabs(stdscr, 2, width)
+
+    def draw_mode_tabs(self, stdscr: curses.window, y: int, width: int) -> None:
+        # The top-level browse-mode strip on the header's rule row: Time · Projects ·
+        # [Machines], the active one accented. It makes the whole navigation self-
+        # describing (the t/p/m keys were invisible) and is clickable (modetab regions);
+        # the rest of the row stays the header/body separator rule.
+        tabs = self.mode_tab_list()
+        modes = [m for _lbl, m in tabs]
+        active_index = modes.index(self.browse_mode) if self.browse_mode in modes else 0
+        labels = [
+            f"[{lbl}]" if i == active_index else f" {lbl} " for i, (lbl, _m) in enumerate(tabs)
+        ]
+        gap = 1
+        total = sum(len(lbl) for lbl in labels) + gap * (len(labels) - 1)
+        # Center the strip on the rule row: ──── [Time] Projects Machines ────. The chips
+        # carry their own panel2/accent background, so they sit on the rule as real tabs.
+        start = max(0, (width - total) // 2)
+        if start >= 2:
+            self.hline(stdscr, y, 0, start - 1)  # left rule, a blank cell before the chips
+        cx = start
+        for i, label in enumerate(labels):
+            if i > 0:
+                cx += gap
+            if cx >= width:
+                break
+            attr = (
+                curses.color_pair(7) | curses.A_BOLD
+                if i == active_index
+                else curses.color_pair(self._TAB_PAIR)
+            )
+            text = shorten(label, width - cx)
+            self.write(stdscr, y, cx, text, attr)
+            self.regions.append(("modetab", y, cx, cx + len(text) - 1, i))
+            cx += len(text)
+        if cx + 2 <= width:
+            self.hline(stdscr, y, cx + 1, width - cx - 1)  # right rule after the chips
 
     def write_seg(
         self, stdscr: curses.window, y: int, x: int, text: str, attr: int, width: int
@@ -611,6 +722,13 @@ class Renderer:
         tabs = self.current_tabs()
         tab_name = tabs[self.tab % len(tabs)]
         segs = [self.range_label()]
+        if self.browse_mode == "machines" and self.view != "session":
+            machine = self.selected_machine_summary
+            segs.append("machines")
+            if machine:
+                segs.append(machine.name)
+            segs.append(tab_name)
+            return sep.join(s for s in segs if s)
         if self.browse_mode == "projects" and self.view != "session":
             project = self.selected_project_summary
             segs.append("projects")
@@ -618,10 +736,16 @@ class Renderer:
                 segs.append(short_path(project.directory, 34))
             if self.zoom_source and self.on_sessions_tab:
                 segs.append(self.zoom_source)
+            if self.zoom_machine and self.on_sessions_tab:
+                segs.append(self.zoom_machine)
             segs.append(tab_name)
             return sep.join(s for s in segs if s)
         if self.view == "session":
-            if self.browse_mode == "projects":
+            if self.browse_mode == "machines":
+                machine = self.selected_machine_summary
+                if machine:
+                    segs.append(machine.name)
+            elif self.browse_mode == "projects":
                 project = self.selected_project_summary
                 if project:
                     segs.append(short_path(project.directory, 34))
@@ -630,12 +754,16 @@ class Renderer:
                     segs.append(self.focused_year)  # show a bare year when that's the scope
             elif self.focused_month:
                 segs.append(self.focused_month)
-            if self.browse_mode != "projects" and self.focus == "days" and self.active_day:
+            # The day/zoom_project crumbs are time-mode locators only; machines mode has
+            # neither, so it must not borrow the sidebar's inherited focused month/day.
+            if self.browse_mode == "time" and self.focus == "days" and self.active_day:
                 segs.append(self.active_day)
-            if self.browse_mode != "projects" and self.zoom_project:
+            if self.browse_mode == "time" and self.zoom_project:
                 segs.append(short_path(self.zoom_project, 24))
             if self.zoom_source:
                 segs.append(self.zoom_source)
+            if self.zoom_machine:
+                segs.append(self.zoom_machine)
             sess = self.current_session()
             segs.append(shorten(sess.title, 28) if sess else "session")
             segs.append(tab_name)
@@ -646,6 +774,8 @@ class Renderer:
                 segs.append(short_path(self.zoom_project, 24))
             if self.zoom_source and self.on_sessions_tab:
                 segs.append(self.zoom_source)
+            if self.zoom_machine and self.on_sessions_tab:
+                segs.append(self.zoom_machine)
             segs.append(tab_name)
         elif self.focus == "months":
             if self.focused_month:
@@ -654,6 +784,8 @@ class Renderer:
                 segs.append(short_path(self.zoom_project, 24))
             if self.zoom_source and self.on_sessions_tab:
                 segs.append(self.zoom_source)
+            if self.zoom_machine and self.on_sessions_tab:
+                segs.append(self.zoom_machine)
             segs.append(tab_name)
         else:
             if self.focused_month:
@@ -664,6 +796,8 @@ class Renderer:
                 segs.append(short_path(self.zoom_project, 24))
             if self.zoom_source and self.on_sessions_tab:
                 segs.append(self.zoom_source)
+            if self.zoom_machine and self.on_sessions_tab:
+                segs.append(self.zoom_machine)
             segs.append(tab_name)
         return sep.join(s for s in segs if s)
 
@@ -759,17 +893,19 @@ class Renderer:
         desc = self.sort_descending(key, self.subagent_sort_reverse)
         return f"{label} {'v' if desc else '^'}"
 
+    def _scope_spans_days(self) -> bool:
+        # True whenever the session list spans more than the one scoped day: projects and
+        # machines modes (a box's whole history), a month, a year, or "All years". Only a
+        # focused single day in time mode shares one date across every row.
+        return self.browse_mode in ("projects", "machines") or self.focus != "days"
+
     def session_started(self, workflow: Workflow) -> str:
-        # Date whenever the scope spans more than a day (projects mode, a month, a year,
-        # or "All years"); a bare clock time only when every row shares the scoped day.
-        return (
-            workflow.created_at[:10]
-            if self.browse_mode == "projects" or self.focus != "days"
-            else workflow.created_at[11:16]
-        )
+        # Date when the scope spans more than a day; a bare clock time only when every
+        # row shares the scoped day.
+        return workflow.created_at[:10] if self._scope_spans_days() else workflow.created_at[11:16]
 
     def session_date_label(self) -> str:
-        return "Started" if self.browse_mode == "projects" or self.focus != "days" else "Time"
+        return "Started" if self._scope_spans_days() else "Time"
 
     def _mark_session_header(self, lines: list[str], columns: tuple) -> None:
         # The just-appended line is a session-list column header (browse preview);
@@ -850,6 +986,19 @@ class Renderer:
             return "Hns "
         return f"{self._source_abbrev(workflow):<3} "
 
+    MACHINE_COL_W = 8
+
+    def mach_col(self, workflow: Workflow | None = None) -> str:
+        # The "Machine" column in the session tables (None = the header cell), only in
+        # the fleet view (--pull/--remote) where sessions span machines. Full-ish name
+        # (hostnames don't abbreviate to two letters the way harness names do).
+        if not self.machines_present:
+            return ""
+        w = self.MACHINE_COL_W
+        if workflow is None:
+            return f"{'Machine':<{w}} "
+        return f"{pad(shorten(workflow.machine or '?', w), w)} "
+
     # --- The session table: one builder, two frames -------------------------------
     # The browse preview (lines) and the zoom picker (navigable) render the SAME
     # table through session_columns/session_header_text/session_row_text, so Enter
@@ -890,6 +1039,7 @@ class Renderer:
         if models:
             header += f"{'Models':>6}  "
         header += self.src_col()
+        header += self.mach_col()
         if proj_w:
             header += f"{self.sort_heading('project', 'Project'):<{proj_w}}  "
         return header + self.sort_heading("title", "Title")
@@ -904,6 +1054,7 @@ class Renderer:
         if models:
             text += f"{workflow.model_count:>6}  "
         text += self.src_col(workflow)
+        text += self.mach_col(workflow)
         if proj_w:
             text += f"{pad(shorten(self.session_project(workflow), proj_w), proj_w)}  "
         return (
@@ -959,11 +1110,12 @@ class Renderer:
         return "! $0.00 = subscription tokens — press $ to estimate"
 
     def line_attr(self, line: str) -> int:
-        # Shared prefix styling for the text panes: "# " titles (accent), "! "
-        # caveats (amber -- attention without alarm; red is for errors and the
-        # error toast only), "· " explainer captions (dim).
+        # Shared prefix styling for the text panes: "# " section titles (accent -- they
+        # were structural grey and read as chrome, not headings), "! " caveats (amber --
+        # attention without alarm; red is for errors and the error toast only), "· "
+        # explainer captions (dim).
         if line.startswith("# "):
-            return curses.color_pair(4) | curses.A_BOLD
+            return curses.color_pair(2) | curses.A_BOLD
         if line.startswith("! "):
             return curses.color_pair(2)
         if line.startswith("· "):
@@ -981,7 +1133,9 @@ class Renderer:
         # row never trips these.
         first = line[:1]
         if first == "┌" or (first == "+" and line.strip("+- ") != ""):
-            return curses.color_pair(4) | curses.A_BOLD
+            # A ruled-box top border carrying a title -- the accent, matching its "# "
+            # sibling headings above.
+            return curses.color_pair(2) | curses.A_BOLD
         if first in ("├", "└", "+"):
             return curses.A_NORMAL
         if first in ("│", "|"):
@@ -1128,9 +1282,42 @@ class Renderer:
 
     def draw_sources_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # Navigable source list on the Sources tab of a zoomed scope (merged view):
-        # j/k pick a tool, Enter its sessions within this scope — the Trends
-        # Sources drill, zoom-scoped.
-        rows = self.zoom_source_rows()
+        # j/k pick a tool, Enter its sessions within this scope.
+        self._draw_dimension_picker(
+            stdscr, y, x, h, w, self.zoom_source_rows(), self.source_index, "Harness", "zoomsource"
+        )
+
+    def draw_machines_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        # The Sources picker's twin on the fleet's per-scope Machines tab: j/k pick a box,
+        # Enter its sessions within this scope. Shared body, so the two can't drift.
+        self._draw_dimension_picker(
+            stdscr,
+            y,
+            x,
+            h,
+            w,
+            self.zoom_machine_rows(),
+            self.machine_pick_index,
+            "Machine",
+            "zoommachine",
+        )
+
+    def _draw_dimension_picker(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        h: int,
+        w: int,
+        rows: list,
+        sel_index: int,
+        col: str,
+        region_kind: str,
+    ) -> None:
+        # The shared navigable ranked-spend picker behind the Sources and Machines tabs of
+        # a zoomed scope: a name column, a cost bar, Cost/Share/Tokens/Sess, and Enter to
+        # narrow the Sessions list to the selected row. `col` is the name-column header,
+        # `region_kind` the click region (zoomsource / zoommachine).
         cy = y + 3
         if not rows:
             self.write(stdscr, cy, x + 2, "No sessions in this scope.", curses.color_pair(1))
@@ -1139,13 +1326,15 @@ class Renderer:
         peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
         namew = min(max(len(s) for s, _ in rows), max(10, w - 48))
         barw = max(3, min(20, w - namew - 44))
-        header = f"  {'Harness':<{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}"
+        header = (
+            f"  {col:<{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}"
+        )
         self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
         visible = max(1, h - 5)
-        idx = max(0, min(self.source_index, len(rows) - 1))
+        idx = max(0, min(sel_index, len(rows) - 1))
         start = max(0, min(idx - visible // 2, max(0, len(rows) - visible)))
         shown = rows[start : start + visible]
-        self._add_rows_region("zoomsource", cy + 1, x, x + w - 1, start, len(shown))
+        self._add_rows_region(region_kind, cy + 1, x, x + w - 1, start, len(shown))
         for off, (source, it) in enumerate(shown):
             ry = cy + 1 + off
             marker = ">" if start + off == idx else " "
@@ -1186,23 +1375,32 @@ class Renderer:
         tabs: tuple[str, ...],
         active_index: int,
         kind: str = "tab",
+        center: bool = False,
     ) -> None:
+        # Every tab is a chip: the active one filled with the accent (pair 7) and wearing
+        # [brackets] (the monochrome/pair-starved fallback for "which is active"), the
+        # inactive ones a raised panel2 chip (_TAB_PAIR) so they read as tabs, not grey
+        # text. `center` offsets the whole strip within `width` (the detail tab bars center
+        # over their pane); the modals leave it left-aligned.
         if width <= 0 or not tabs:
             return
-        cx = x
         active_index %= len(tabs)
-        remaining = width
-        for i, tab in enumerate(tabs):
-            label = f" {tab} " if i != active_index else f"[{tab}]"
+        labels = [f"[{t}]" if i == active_index else f" {t} " for i, t in enumerate(tabs)]
+        sep = "  "
+        total = sum(len(lbl) for lbl in labels) + len(sep) * (len(labels) - 1)
+        cx = x + max(0, (width - total) // 2) if center and total <= width else x
+        remaining = max(0, width - (cx - x))
+        for i, label in enumerate(labels):
             if i > 0:
-                sep = "  "
                 self.write(stdscr, y, cx, shorten(sep, remaining), curses.A_NORMAL)
                 cx += min(len(sep), remaining)
                 remaining -= min(len(sep), remaining)
             if remaining <= 0:
                 return
             attr = (
-                curses.color_pair(7) | curses.A_BOLD if i == active_index else curses.color_pair(1)
+                curses.color_pair(7) | curses.A_BOLD
+                if i == active_index
+                else curses.color_pair(self._TAB_PAIR)
             )
             text = shorten(label, remaining)
             self.write(stdscr, y, cx, text, attr)
@@ -1379,7 +1577,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -1388,16 +1586,162 @@ class Renderer:
         if current == "Harnesses" and self.view == "zoom":
             self.draw_sources_picker(stdscr, y, x, h, w)
             return
+        if current == "Machines" and self.view == "zoom":
+            self.draw_machines_picker(stdscr, y, x, h, w)
+            return
         if current == "Overview":
             lines = self.project_overview(project, w - 4)
         elif current == "Harnesses":
             lines = self.project_sources(project, w - 4)
+        elif current == "Machines":
+            lines = self.project_machines(project, w - 4)
         elif current == "Models":
             lines = self.project_models(project, w - 4)
         else:
             lines = self.project_workflows(project, w - 4)
 
         self._paint_detail_lines(stdscr, y, x, h, w, lines)
+
+    def draw_machine_list(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
+        # The Machines-mode sidebar: one row per box, the live one first (● / ○), a spend
+        # bar-free stat line. Panel 1 (single left list, like Projects mode).
+        self.box(stdscr, y, x, h, w, self.panel_title(1, "Machines", active), active=active)
+        rows = self.machines
+        if not rows:
+            self.write(stdscr, y + 2, x + 2, "No machines in range.", curses.color_pair(1))
+            return
+        header = self.machine_header_text(w - 2)
+        self.write(
+            stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD
+        )
+        visible = h - 4
+        start = max(0, min(self.machine_index - visible // 2, max(0, len(rows) - visible)))
+        self._add_rows_region(
+            "machine", y + 3, x, x + w - 1, start, len(rows[start : start + visible])
+        )
+        for row_y, machine in enumerate(rows[start : start + visible], y + 3):
+            selected = start + row_y - (y + 3) == self.machine_index
+            text = self.machine_row_text(machine, ">" if selected else " ", w - 2)
+            if selected and active:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    pad(shorten(text, w - 2), w - 2),
+                    curses.A_REVERSE | curses.A_BOLD,
+                )
+            elif selected:
+                self.write(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    pad(shorten(text, w - 2), w - 2),
+                    curses.color_pair(1) | curses.A_BOLD,
+                )
+            else:
+                self.write_colored_summary_row(
+                    stdscr,
+                    row_y,
+                    x + 1,
+                    text,
+                    money(machine.cost),
+                    human_tokens(machine.tokens),
+                    w - 2,
+                )
+
+    def draw_machine_detail(
+        self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
+    ) -> None:
+        machine = self.selected_machine_summary
+        title = "Machine" if machine is None else f"Machine {shorten(machine.name, max(8, w - 12))}"
+        self.box(stdscr, y, x, h, w, self.panel_title(0, title), active=active)
+        if machine is None:
+            self.write(stdscr, y + 2, x + 2, "No machine selected.", curses.color_pair(1))
+            return
+
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        # Only Sessions drills (into a session); Models/Projects/Harnesses are read-only
+        # breakdowns for a box, so no pickers here.
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Overview":
+            lines = self.machine_overview(machine, w - 4)
+        elif current == "Harnesses":
+            lines = self.machine_sources(machine, w - 4)
+        elif current == "Models":
+            lines = self.machine_models(machine, w - 4)
+        elif current == "Projects":
+            lines = self.machine_projects(machine, w - 4)
+        else:
+            lines = self.machine_workflows(machine, w - 4)
+
+        self._paint_detail_lines(stdscr, y, x, h, w, lines)
+
+    def machine_overview(self, machine: MachineSummary, width: int) -> list[str]:
+        # The Machines-mode main view -- the niceties the plain rollup can't give: live vs
+        # pulled, when it was last pulled and by which opentab, plus this box's model mix
+        # and its top projects (the "different machines had different stories" cut).
+        workflows = self.workflows_for_machine(machine.name)
+        lines = [
+            "# Machine",
+            f"Machine:      {machine.name}",
+            f"Status:       {'● live — full drill-in' if machine.live else '○ pulled summary'}",
+        ]
+        if not machine.live:
+            when = iso_to_local(machine.exported_at)
+            age = relative_age(machine.exported_at)
+            if when:
+                lines.append(f"Pulled:       {when}" + (f"  ({age})" if age else ""))
+            if machine.opentab_version:
+                lines.append(f"opentab:      {machine.opentab_version}")
+        lines += [
+            f"Cost:         {money(machine.cost)}",
+            f"Share:        {pct(machine.cost, self.range_cost_total())}",
+            f"Tokens:       {tokens(machine.tokens)}",
+            f"Sessions:     {machine.workflows}",
+            f"Subagents:    {machine.subagents}",
+            f"Last active:  {machine.last_active[:16]}",
+        ]
+        if not machine.live:
+            lines += [
+                "",
+                "Summary only — Turns/Tools/Context aren't exported. Press F to re-pull.",
+            ]
+        lines.append("")
+        agg = self.aggregate_models(workflows)
+        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
+        top_projects = self.projects_for_workflows(workflows)
+        if top_projects:
+            lines.extend(["", "# Top Projects"])
+            for project in top_projects[:6]:
+                lines.append(
+                    f"{money(project.cost):>10} {pct(project.cost, machine.cost):>5} "
+                    f"{human_tokens(project.tokens):>8}  "
+                    f"{short_path(project.directory, max(10, width - 30))}"
+                )
+        return lines
+
+    def machine_models(self, machine: MachineSummary, width: int) -> list[str]:
+        agg = self.aggregate_models(self.workflows_for_machine(machine.name))
+        return self._models_tab(self._agg_rows(agg), "# Machine Model Spend", width)
+
+    def machine_sources(self, machine: MachineSummary, width: int) -> list[str]:
+        return self.source_table(
+            self.scoped_sessions(self.workflows_for_machine(machine.name)), width
+        )
+
+    def machine_projects(self, machine: MachineSummary, width: int) -> list[str]:
+        return self.project_table(
+            self.projects_for_workflows(self.workflows_for_machine(machine.name)), width
+        )
+
+    def machine_workflows(self, machine: MachineSummary, width: int) -> list[str]:
+        return self.session_table(self.workflows_for_machine(machine.name), width)
 
     def draw_year_detail(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -1415,7 +1759,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No year selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -1427,10 +1771,15 @@ class Renderer:
         if current == "Harnesses" and self.view == "zoom":
             self.draw_sources_picker(stdscr, y, x, h, w)
             return
+        if current == "Machines" and self.view == "zoom":
+            self.draw_machines_picker(stdscr, y, x, h, w)
+            return
         if current == "Overview":
             lines = self.year_overview(year, w - 4)
         elif current == "Harnesses":
             lines = self.year_sources(year, w - 4)
+        elif current == "Machines":
+            lines = self.year_machines(year, w - 4)
         elif current == "Models":
             lines = self.year_models(year, w - 4)
         elif current == "Projects":
@@ -1450,7 +1799,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -1462,10 +1811,15 @@ class Renderer:
         if current == "Harnesses" and self.view == "zoom":
             self.draw_sources_picker(stdscr, y, x, h, w)
             return
+        if current == "Machines" and self.view == "zoom":
+            self.draw_machines_picker(stdscr, y, x, h, w)
+            return
         if current == "Overview":
             lines = self.month_overview(month, w - 4)
         elif current == "Harnesses":
             lines = self.month_sources(month, w - 4)
+        elif current == "Machines":
+            lines = self.month_machines(month, w - 4)
         elif current == "Models":
             lines = self.month_models(month, w - 4)
         elif current == "Projects":
@@ -1541,7 +1895,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab)
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -1553,10 +1907,15 @@ class Renderer:
         if current == "Harnesses" and self.view == "zoom":
             self.draw_sources_picker(stdscr, y, x, h, w)
             return
+        if current == "Machines" and self.view == "zoom":
+            self.draw_machines_picker(stdscr, y, x, h, w)
+            return
         if current == "Overview":
             lines = self.day_overview(day, w - 4)
         elif current == "Harnesses":
             lines = self.day_sources(day, w - 4)
+        elif current == "Machines":
+            lines = self.day_machines(day, w - 4)
         elif current == "Projects":
             lines = self.day_projects(day, w - 4)
         else:
@@ -1593,7 +1952,7 @@ class Renderer:
             return
 
         tabs = self.current_tabs()
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab)
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab, center=True)
 
         current = tabs[self.tab % len(tabs)]
         if current == "Subagents":
@@ -2025,6 +2384,14 @@ class Renderer:
             width,
         )
 
+    def month_machines(self, month: MonthSummary, width: int) -> list[str]:
+        return self.machine_table(
+            self.scoped_sessions(
+                self.workflows_for_month(month.month, self.preview_session_source())
+            ),
+            width,
+        )
+
     def month_workflows(self, month: MonthSummary, width: int) -> list[str]:
         return self.session_table(
             self.workflows_for_month(month.month, self.preview_session_source()), width
@@ -2078,6 +2445,12 @@ class Renderer:
             width,
         )
 
+    def year_machines(self, year: YearSummary, width: int) -> list[str]:
+        return self.machine_table(
+            self.scoped_sessions(self.workflows_for_year(year.year, self.preview_session_source())),
+            width,
+        )
+
     def year_projects(self, year: YearSummary, width: int) -> list[str]:
         return self.project_table(
             self.projects_for_workflows(
@@ -2116,6 +2489,12 @@ class Renderer:
 
     def day_sources(self, day: DaySummary, width: int) -> list[str]:
         return self.source_table(
+            self.scoped_sessions(self.workflows_for_day(day.day, self.preview_session_source())),
+            width,
+        )
+
+    def day_machines(self, day: DaySummary, width: int) -> list[str]:
+        return self.machine_table(
             self.scoped_sessions(self.workflows_for_day(day.day, self.preview_session_source())),
             width,
         )
@@ -2170,6 +2549,17 @@ class Renderer:
 
     def project_sources(self, project: ProjectSummary, width: int) -> list[str]:
         return self.source_table(
+            self.scoped_sessions(
+                self.workflows_for_project(
+                    project.directory,
+                    include_ignored=self.include_ignored_for_project(project),
+                )
+            ),
+            width,
+        )
+
+    def project_machines(self, project: ProjectSummary, width: int) -> list[str]:
+        return self.machine_table(
             self.scoped_sessions(
                 self.workflows_for_project(
                     project.directory,
@@ -2314,6 +2704,8 @@ class Renderer:
         ]
         if workflow.source:
             lines.append(f"Harness:  {workflow.source}")
+        if workflow.machine:
+            lines.append(f"Machine:  {workflow.machine}")
         lines += self.note_lines(workflow, width)
         lines.append("")
         lines += self._money_overview(workflow, width)
@@ -3435,7 +3827,7 @@ class Renderer:
         return y, x, h, w
 
     def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
-        # The `c` picker: a small modal list of every present source. j/k moves the
+        # The `H` picker: a small modal list of every present source. j/k moves the
         # highlight, Enter switches, Esc cancels (handled in handle_source_menu_key).
         entries = self.source_menu_entries()
         idx = self.source_menu_index % len(entries) if entries else 0
@@ -3446,6 +3838,20 @@ class Renderer:
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {label}{suffix}", attr))
         self.draw_modal(stdscr, scr_h, scr_w, "Switch harness · j/k · Enter · Esc", lines)
+
+    def draw_machine_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # The `M` picker: narrow every view to one box (or "All machines" to clear). j/k
+        # moves the highlight, Enter arms, Esc cancels (handle_machine_menu_key). Mirrors
+        # draw_source_menu -- the machine twin of the harness narrowing.
+        options = self.machine_filter_options()
+        idx = self.machine_menu_index % len(options) if options else 0
+        lines = [("Narrow every view to which machine:", curses.color_pair(4)), ("", 0)]
+        for offset, (_value, label, is_current) in enumerate(options):
+            marker = "●" if is_current else "○"
+            suffix = "  (current)" if is_current else ""
+            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
+            lines.append((f" {marker}  {label}{suffix}", attr))
+        self.draw_modal(stdscr, scr_h, scr_w, "Filter machine · j/k · Enter · Esc", lines)
 
     WHATIF_TIERS = ("your models", "models.dev")  # the picker's two row sets, Tab-flipped
 
@@ -3688,6 +4094,8 @@ class Renderer:
             lines = self.trend_providers(inner_w, content_h)
         elif current == "Harnesses":
             lines = self.trend_sources(inner_w, content_h)
+        elif current == "Machines":
+            lines = self.trend_machines(inner_w, content_h)
         else:
             lines = self.trend_models(inner_w, content_h)
         content = lines[:content_h]
@@ -4130,6 +4538,7 @@ class Renderer:
     _HEAT_COLOR_BASE = 40  # calendar heat colours (up to HEAT_MAX_LEVELS)
     _PRICE_COLOR_BASE = 56  # price-heat colours (PRICE_HEAT_LEVELS)
     _BASE_PAIR = 32  # the window background pair (ink on theme bg); clear of heat/price
+    _TAB_PAIR = 25  # inactive-tab chip (ink2 on panel2); free slot after the price ramp
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
 
     def _color_index(self, hexcolor: str) -> int:
@@ -4191,6 +4600,10 @@ class Renderer:
         self._set_pair(5, r(roles["bad"]), bg)  # alerts
         self._set_pair(6, r(roles["accent_bright"]), bg)  # focus / active border
         self._set_pair(7, bg, r(roles["accent"]))  # active tab (inverse: bg on accent)
+        # An inactive tab is a raised chip (secondary ink on the panel2 surface), so a tab
+        # bar reads as tabs instead of grey text on the background. Pair-starved terminals
+        # skip it and fall back to plain text -- the active tab's [brackets] still show which.
+        self._set_pair(self._TAB_PAIR, r(roles["ink2"]), r(roles["panel2"]))
         self._init_price_heat()
         self._sync_heat_palette()
 
@@ -4356,9 +4769,38 @@ class Renderer:
         # the trend cursor + Enter drill) and the per-month/day/project "Harnesses"
         # detail tabs (a scoped slice, plain). Subscription rows (Claude Code,
         # Codex) cost $0 until "$" reprices their tokens, so the bar reacts live.
-        all_rows = self.source_rows(workflows)
+        return self._group_table(
+            self.source_rows(workflows), width, "harness", "Harness", limit, selectable
+        )
+
+    def machine_table(
+        self,
+        workflows: list[Workflow],
+        width: int,
+        limit: int | None = None,
+        selectable: bool = False,
+    ) -> list[str]:
+        # The source_table twin for the fleet view: spend grouped by the *machine* it
+        # ran on. Same rendering, different grouping -- the Trends "Machines" tab and
+        # (later) the per-scope Machines detail tabs.
+        return self._group_table(
+            self.machine_rows(workflows), width, "machine", "Machine", limit, selectable
+        )
+
+    def _group_table(
+        self,
+        all_rows: list,
+        width: int,
+        noun: str,
+        col: str,
+        limit: int | None = None,
+        selectable: bool = False,
+    ) -> list[str]:
+        # The shared ranked-spend table behind source_table/machine_table: a name column,
+        # a cost bar, then Cost/Share/Tokens/Sess. `noun` is the heading word, `col` the
+        # name-column header. Selectable rows carry the Trends cursor + Enter drill.
         if not all_rows:
-            return ["# Spend by harness", "", "No sessions in the active range."]
+            return [f"# Spend by {noun}", "", "No sessions in the active range."]
         if selectable and limit is not None:
             _idx, start, shown = self._trend_cursor_window(len(all_rows), limit)
             rows = all_rows[start : start + shown]
@@ -4374,16 +4816,16 @@ class Renderer:
         namew = min(max(len(s) for s, _ in rows), max(10, width - 44))
         barw = max(3, min(20, width - namew - 38))
         lines = [
-            "# Spend by harness",
+            f"# Spend by {noun}",
             "",
-            f"{'Harness':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}",
+            f"{col:{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}",
         ]
         if selectable:
             self._trend_rows_at = (len(lines), len(rows), start)
-        for source, it in rows:
+        for name, it in rows:
             bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
             lines.append(
-                f"{shorten(source, namew):{namew}}  {bar:<{barw}} "
+                f"{shorten(name, namew):{namew}}  {bar:<{barw}} "
                 f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total_cost):>5} "
                 f"{human_tokens(int(it['tokens'])):>9} {int(it['sessions']):>7}"
             )
@@ -4392,6 +4834,12 @@ class Renderer:
         ):
             lines += ["", "$ prices subscription/credit usage at API list rates"]
         return lines
+
+    def trend_machines(self, width: int, height: int) -> list[str]:
+        # The Trends overlay's fleet cut: spend by machine across the whole range.
+        return self.machine_table(
+            self.all_workflows, width, limit=max(1, height - 4), selectable=True
+        )
 
     def trend_drill_lines(self, width: int, height: int) -> list[str]:
         # A ranked row's sessions list (Enter on Models/Providers/Sources): every

@@ -80,6 +80,23 @@ def test_demo_title_and_dir_are_deterministic():
     assert ot.demo_dir("ses_1") in ot.DEMO_REPOS
 
 
+def test_demo_machine_is_stable_and_collision_free():
+    # Unlike titles/dirs, machine names must NOT collide: two boxes folding onto one fake
+    # would merge their spend and could hide the whole Machines view. Deterministic per
+    # name, "" stays "", and distinct names stay distinct (a pool word + hash suffix).
+    assert ot.demo_machine("laptop") == ot.demo_machine("laptop")
+    assert ot.demo_machine("") == ""
+    assert ot.demo_machine("laptop") != "laptop"  # never leaks the real name
+    base, _, suffix = ot.demo_machine("laptop").rpartition("-")  # "<pool word>-<crc32 hex>"
+    assert base in ot.DEMO_MACHINES and len(suffix) == 8 and int(suffix, 16) >= 0
+    # The suffix is the FULL crc32, not a truncation: a truncated `% 100000` collapsed the
+    # space (the pool index is derived from it) and collided host-89 with host-111.
+    assert ot.demo_machine("host-89") != ot.demo_machine("host-111")
+    assert ot.demo_machine("alpha") != ot.demo_machine("epsilon")
+    names = ["alpha", "epsilon", "laptop", "omv", "giant", "tiny", "host-89", "host-111", "nas-01"]
+    assert len({ot.demo_machine(n) for n in names}) == len(names)
+
+
 def test_demo_rename_merges_colliding_models():
     rows = [
         {

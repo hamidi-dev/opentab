@@ -778,3 +778,26 @@ def test_dollar_key_toggles_prices_without_closing_trends():
     assert app.trends  # and the overlay stayed open
     app.handle_key(None, ord("$"))
     assert not app.show_api_prices and app.trends
+
+
+def _fleet_app():
+    w1 = workflow("a", "2026-05-01 10:00:00", cost=2.0)
+    w1.machine = "laptop"
+    w2 = workflow("b", "2026-05-02 10:00:00", cost=9.0)
+    w2.machine = "omv"
+    return app_with([w1, w2])
+
+
+def test_machines_trend_tab_only_in_the_fleet_view():
+    assert "Machines" in _fleet_app().trend_tabs
+    assert "Machines" not in app_with([workflow("a", "2026-05-01 10:00:00")]).trend_tabs
+
+
+def test_trends_machines_drill_filters_sessions_by_machine():
+    app = _fleet_app()
+    app.trend_tab = app.trend_tabs.index("Machines")
+    assert app.trend_ranked_keys() == ["omv", "laptop"]  # cost-sorted
+    app.trend_row_index = 0
+    app._open_trend_drill()
+    assert app.trend_drill == ("machine", "omv")
+    assert [s[0].id for s in app.trend_drill_sessions()] == ["b"]

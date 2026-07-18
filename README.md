@@ -111,7 +111,7 @@ pipx install .        # or `pip install -e .` for a live-editable checkout
 opentab                          # open the browser, all time
 opentab --days 30                # start within a window (rescope live with R)
 opentab --since 2026-05-01 --until 2026-05-31
-opentab --harness claude         # one tool only (switch live with c)
+opentab --harness claude         # one tool only (switch live with H)
 opentab --demo                   # safe for live demos / screenshots
 opentab --web                    # the same browser, in your web browser
 ```
@@ -127,7 +127,7 @@ OpenTab reads the local records each AI coding tool keeps. Pick one with `--harn
 location, or just pass a file path (`opentab requests.csv`, `opentab
 path/to/opencode.db`) and the harness is inferred. `--harness auto` (the default)
 restores your last-used harness, else **merges every present harness** when more than
-one exists; **switch live with `c`**.
+one exists; **switch live with `H`**.
 
 Every harness feeds the same browser — months, days, projects, sessions, models, trends.
 What each tool's records support on top:
@@ -178,7 +178,8 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | `w` | What-if **model** — arm one model as a comparison target ("what if the expensive model had done the subagents' work too?"); the selected session's Subagents tab then adds a What-if column pricing each node's tokens at that model's rates, and its Overview the whole session: *your models* vs *all at the target*, **both at list rates** — the only apples-to-apples basis, so a session that delegated nothing still answers. Session-scoped: every other view keeps its actual cost, and `$` keeps working. `w` again clears it |
 | `R` / `a` | Scope to a date range (`30d`, `2026-05`, `start..end`, …) / back to all time |
 | `f` | Live fuzzy filter, fzf-style |
-| `c` / `C` / `D` | Switch data harness · colour theme · demo mode — from anywhere, overlays included |
+| `H` / `C` / `D` | Switch data harness · colour theme · demo mode — from anywhere, overlays included |
+| `M` | Filter every view to one **machine** (fleet only) — the harness picker's twin, for `--pull`/`--remote` boxes |
 | `L` | Relaunch the session in its own tool — tmux window/split/popup, or [your own launcher](docs/keys.md#custom-launchers) |
 | `n` | Note ✎ the selected session — why it cost what it did. Searchable, exported, kept in its own file |
 | `e` / `o` | Export the current view to CSV / open the project's directory |

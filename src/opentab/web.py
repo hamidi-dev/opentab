@@ -276,6 +276,7 @@ def build_payload(app: App) -> dict:
                 "tokens": w.total_tokens,
                 "unpriced": w.unpriced_tokens,
                 "source": w.source,
+                "machine": w.machine,
             }
         )
         # The per-model rows are what the `w` what-if reduces over (whatifTotals): they
@@ -299,6 +300,7 @@ def build_payload(app: App) -> dict:
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": getattr(store, "source_name", "") or app.source_key or "data",
         "combined": bool(getattr(store, "combined", False)),
+        "machines": bool(app.machines_present),  # the fleet view -> Machine column + tab
         "recordsCost": bool(getattr(store, "records_cost", True)),
         "demo": bool(store.demo),
         "range": app.range_label(),
@@ -314,7 +316,26 @@ def build_payload(app: App) -> dict:
         "nodes": nodes,
         "prices": _prices_payload(app),
         "whatif": _whatif_payload(app),
+        # Per-machine niceties for the Machines mode (live vs pulled, export time/version);
+        # empty off the fleet view. The page derives the machine rows from `workflows`.
+        "machineMeta": _machine_meta_payload(app),
     }
+
+
+def _machine_meta_payload(app: App) -> dict:
+    if not app.machines_present:
+        return {}
+    out = {}
+    for name, meta in app.machine_meta().items():
+        out[name] = {
+            "live": bool((meta or {}).get("live")),
+            "exportedAt": str((meta or {}).get("exported_at") or ""),
+            "version": str((meta or {}).get("opentab_version") or ""),
+            # Whether this box can be re-pulled from the page (has a remotes key AND the
+            # server can reach it): only meaningful under --serve, gated again server-side.
+            "refreshable": bool((meta or {}).get("key")),
+        }
+    return out
 
 
 def session_extras(app: App, workflow_id: str) -> dict:
@@ -487,6 +508,30 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/reload":
             server.reload()
             self._send_json({"ok": True})
+        elif path == "/api/refresh":
+            # Re-pull ONE named machine over ssh, then rebuild the fleet. POST-only like
+            # /api/reload: it makes network calls and re-reads the stores, so it must not
+            # be firable cross-origin by a GET. The body must be {"machine": "<name>"};
+            # a missing/blank/non-string name is a no-op (never "refresh every box" -- the
+            # page always names one, so a malformed body must not fan out an ssh storm),
+            # and a non-string name is rejected before it can reach _refresh_keys as an
+            # unhashable value.
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except (ValueError, TypeError):
+                length = 0
+            parsed = None
+            if length > 0:
+                try:
+                    parsed = json.loads(self.rfile.read(length).decode("utf-8"))
+                except (ValueError, OSError):
+                    parsed = None
+            name = parsed.get("machine") if isinstance(parsed, dict) else None
+            if not isinstance(name, str) or not name:
+                self._send_json({"ok": True, "results": []})
+                return
+            results = server.refresh_machine(name)
+            self._send_json({"ok": True, "results": [[n, c, e] for n, c, e in results]})
         else:
             self._send(404, "text/plain; charset=utf-8", b"not found")
 
@@ -519,6 +564,15 @@ class ReportServer(HTTPServer):
     def reload(self) -> None:
         self.app.reload()
         self._page = None
+
+    def refresh_machine(self, name: str | None) -> list:
+        # Re-pull one box (or every pulled box) over ssh and rebuild the fleet, then
+        # invalidate the cached page so the next GET reflects the fresh data. Returns
+        # [(name, count, error)] for the client toast; a no-op ([]) off the fleet view.
+        results = self.app.refresh_machines_now(name)
+        if results:
+            self._page = None
+        return results
 
 
 def open_report(url: str) -> bool:

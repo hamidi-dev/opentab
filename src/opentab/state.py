@@ -99,8 +99,13 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.subagent_sort_reverse = state["subagent_sort_reverse"]
     if isinstance(state.get("prices_sort_reverse"), bool):
         app.prices_sort_reverse = state["prices_sort_reverse"]
-    if state.get("browse_mode") in ("time", "projects"):
-        app.browse_mode = state["browse_mode"]
+    mode = state.get("browse_mode")
+    # Machines mode is restored only when the reopened source is still a fleet (>=2
+    # boxes); otherwise it would restore an empty, un-navigable list, so fall to time.
+    if mode == "machines":
+        app.browse_mode = "machines" if app.machines_present else "time"
+    elif mode in ("time", "projects"):
+        app.browse_mode = mode
     if isinstance(state.get("zoom_maximized"), bool):
         app.zoom_maximized = state["zoom_maximized"]
     pinned = state.get("pinned_models")

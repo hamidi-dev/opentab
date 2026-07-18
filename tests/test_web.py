@@ -588,3 +588,120 @@ def test_web_open_report_opens_a_browser_and_survives_a_headless_box():
         assert ot.web.open_report("http://localhost:8321/") is False
     finally:
         webbrowser.open = real_open
+
+
+def test_web_payload_carries_machine_and_the_fleet_flag():
+    w1 = workflow("a", "2026-05-01 10:00:00", cost=1.0)
+    w1.machine = "laptop"
+    w2 = workflow("b", "2026-05-02 10:00:00", cost=2.0)
+    w2.machine = "omv"
+    payload = ot.build_payload(app_with([w1, w2]))
+    assert payload["meta"]["machines"] is True
+    assert {row["machine"] for row in payload["workflows"]} == {"laptop", "omv"}
+    # A non-fleet view sets the flag off, so the page grows no Machine column/tab.
+    plain = ot.build_payload(app_with([workflow("a", "2026-05-01 10:00:00")]))
+    assert plain["meta"]["machines"] is False
+
+
+def test_web_payload_carries_machine_meta_for_the_machines_mode():
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00")],
+            "omv": [workflow("b", "2026-05-02 10:00:00")],
+        }
+    )
+    mm = ot.build_payload(app)["machineMeta"]
+    assert mm["laptop"]["live"] is True and mm["laptop"]["refreshable"] is False
+    assert mm["omv"]["live"] is False
+    assert mm["omv"]["refreshable"] is True  # a pulled box with a remotes key
+    assert mm["omv"]["exportedAt"].startswith("2026") and mm["omv"]["version"] == "1.6.0"
+    # Off the fleet view the map is empty (no Machines mode).
+    assert ot.build_payload(app_with([workflow("a", "2026-05-01 10:00:00")]))["machineMeta"] == {}
+
+
+def test_web_page_has_the_per_scope_machines_tab_machinery():
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00")],
+            "omv": [workflow("b", "2026-05-02 10:00:00")],
+        }
+    )
+    html = ot.webpage.render_html(ot.build_payload(app))
+    # the read-only per-scope Machines breakdown table + its tab dispatch, gated off the
+    # 'M' machine scope (which is already one box)
+    assert "function machinesTable(" in html
+    assert "TAB === 'Machines'" in html
+    assert "sc.kind !== 'M'" in html
+    # a non-fleet page grows no per-scope Machines tab (machines flag off)
+    plain = ot.webpage.render_html(
+        ot.build_payload(app_with([workflow("a", "2026-05-01 10:00:00")]))
+    )
+    assert '"machines":false' in plain
+
+
+def test_web_refresh_endpoint_repulls_the_named_machine():
+    import threading
+    import urllib.request
+
+    app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+    captured = {}
+
+    def fake_refresh(name=None):
+        captured["name"] = name
+        return [(name or "all", 4, "")]
+
+    app.refresh_machines_now = fake_refresh
+    server = ot.web.ReportServer(("127.0.0.1", 0), app)
+    server.page()  # prime the page cache so we can prove the refresh invalidates it
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        req = urllib.request.Request(
+            base + "/api/refresh",
+            data=json.dumps({"machine": "omv"}).encode(),
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        body = json.loads(urllib.request.urlopen(req).read().decode("utf-8"))
+        assert body["ok"] is True and body["results"] == [["omv", 4, ""]]
+        assert captured["name"] == "omv"
+        assert server._page is None  # the next GET rebuilds off the freshly pulled data
+    finally:
+        server.shutdown()
+        server.server_close()
+    thread.join(timeout=5)
+
+
+def test_web_refresh_endpoint_ignores_malformed_and_unnamed_requests():
+    # A malformed/empty/non-string machine must be a no-op -- never "refresh every box"
+    # (an ssh storm) and never crash the handler on an unhashable value.
+    import threading
+    import urllib.request
+
+    app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+    calls = []
+    app.refresh_machines_now = lambda name=None: calls.append(name) or [(name or "ALL", 1, "")]
+    server = ot.web.ReportServer(("127.0.0.1", 0), app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+
+    def post(raw):
+        req = urllib.request.Request(base + "/api/refresh", data=raw, method="POST")
+        return json.loads(urllib.request.urlopen(req).read().decode("utf-8"))
+
+    try:
+        assert post(b"{}")["results"] == []  # no machine named -> no-op, not refresh-all
+        assert post(b"{ not json")["results"] == []  # malformed body -> no-op
+        assert post(json.dumps({"machine": {"x": 1}}).encode())["results"] == []  # dict -> no crash
+        assert post(json.dumps({"machine": ""}).encode())["results"] == []  # blank name
+        assert calls == []  # none of those reached the backend
+    finally:
+        server.shutdown()
+        server.server_close()
+    thread.join(timeout=5)

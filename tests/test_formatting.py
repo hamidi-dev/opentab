@@ -5,6 +5,25 @@ import opentab as ot
 from tests._support import app_with, workflow
 
 
+def test_relative_age():
+    # The Machines-mode "pulled Nh ago" freshness. `now` is injected so it's testable
+    # without pinning the clock; empty for a blank/unparseable stamp (the live box).
+    from datetime import datetime, timedelta, timezone
+
+    from opentab.formatting import relative_age
+
+    now = datetime(2026, 7, 18, 12, 0, 0, tzinfo=timezone.utc)
+    assert relative_age("", now=now) == ""
+    assert relative_age("not-a-date", now=now) == ""
+    assert relative_age((now - timedelta(seconds=30)).isoformat(), now=now) == "just now"
+    assert relative_age((now - timedelta(minutes=5)).isoformat(), now=now) == "5m ago"
+    assert relative_age((now - timedelta(hours=2)).isoformat(), now=now) == "2h ago"
+    assert relative_age((now - timedelta(days=3)).isoformat(), now=now) == "3d ago"
+    # A naive UTC stamp (Z form) parses; a future stamp reads "just now", never "-2h".
+    assert relative_age("2026-07-18T10:00:00Z", now=now) == "2h ago"
+    assert relative_age((now + timedelta(hours=1)).isoformat(), now=now) == "just now"
+
+
 def test_human_tokens():
     assert ot.human_tokens(999) == "999"
     assert ot.human_tokens(1_500) == "1.5k"

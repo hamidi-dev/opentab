@@ -27,6 +27,43 @@ def test_prices_sort_is_persisted_in_state():
     assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
 
 
+def test_machines_browse_mode_restored_only_into_a_fleet():
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-06-01 12:00:00")],
+            "omv": [workflow("b", "2026-06-02 12:00:00")],
+        }
+    )
+    app.browse_mode = "machines"
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            state = ot.load_state()
+            assert state["browse_mode"] == "machines"  # it IS persisted
+            # Reopened as a fleet -> Machines mode is restored.
+            fleet = fleet_app(
+                {
+                    "laptop": [workflow("a", "2026-06-01 12:00:00")],
+                    "omv": [workflow("b", "2026-06-02 12:00:00")],
+                }
+            )
+            ot.apply_state(fleet, fleet.args, state)
+            assert fleet.browse_mode == "machines"
+            # Reopened as a single non-fleet source -> falls back to time (no empty list).
+            solo = app_with([workflow("a", "2026-06-01 12:00:00")])
+            ot.apply_state(solo, solo.args, state)
+            assert solo.browse_mode == "time"
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
 def test_zoom_maximized_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.zoom_maximized = True

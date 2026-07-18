@@ -31,7 +31,14 @@ from opentab.heatmap import (
     month_range,
     week_key,
 )
-from opentab.models import ALL_YEARS, DaySummary, MonthSummary, ProjectSummary, YearSummary
+from opentab.models import (
+    ALL_YEARS,
+    DaySummary,
+    MachineSummary,
+    MonthSummary,
+    ProjectSummary,
+    YearSummary,
+)
 from opentab.notes import notes_path, read_notes, update_note
 from opentab.pricing import (
     LOCAL_PROVIDERS,
@@ -114,6 +121,10 @@ class App:
     month_tabs = ("Overview", "Models", "Projects", "Sessions")
     year_tabs = ("Overview", "Models", "Projects", "Sessions")
     project_tabs = ("Overview", "Models", "Sessions")
+    # Machines mode (the fleet view): one box's Overview (the live/pulled niceties),
+    # its sessions, its model mix, and which projects ran on it. "Harnesses" is injected
+    # after Overview by current_tabs like every other scope (the fleet is always combined).
+    machine_tabs = ("Overview", "Sessions", "Models", "Projects")
     sort_options = ("cost", "tokens", "date", "subagents", "project", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "date", "title", "model", "agent", "depth")
@@ -138,7 +149,15 @@ class App:
     # Columns whose natural order is ascending (a->z / shallow-first / cheap-first);
     # every other column sorts high->low by default. A header re-click flips it.
     ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth", "eff"})
-    trend_tabs = ("Daily", "Weekly", "Monthly", "Calendar", "Models", "Providers", "Harnesses")
+    _TREND_TABS_BASE = (
+        "Daily",
+        "Weekly",
+        "Monthly",
+        "Calendar",
+        "Models",
+        "Providers",
+        "Harnesses",
+    )
     # The `L` launch picker's targets: (shortcut key, kind, label). "copy" hands the
     # resume command to the clipboard and is always offered; the tmux window/split/
     # popup spawns need tmux or a launcher hook (launch_targets filters them out).
@@ -175,7 +194,7 @@ class App:
     def __init__(self, store: Store, args: argparse.Namespace, source_key: str = ""):
         self.store = store
         self.args = args
-        # Live source switching (the `c` key). source_key is the active backend's key;
+        # Live source switching (the `H` key). source_key is the active backend's key;
         # built stores are cached so cycling back is instant. Empty when the App was
         # constructed without a key (tests / single fixed store).
         self.source_key = source_key
@@ -243,8 +262,10 @@ class App:
         self.prices_prompt_dismissed = False  # "don't ask again" pref (persisted in state)
         self.allow_price_prompt = True  # off under --no-state/--demo (set in main)
         self.unknown_models: list[str] = []  # used models with no built-in price
-        self.source_menu = False  # the `c` data-source picker overlay
+        self.source_menu = False  # the `H` data-source picker overlay
         self.source_menu_index = 0  # highlighted row in that picker
+        self.machine_menu = False  # the `M` machine-filter picker overlay (fleet view)
+        self.machine_menu_index = 0  # highlighted row in that picker
         self.sort_menu = False  # the `s` sort-order picker overlay
         self.sort_menu_index = 0  # highlighted row in that picker
         # Active colour theme (shared source with the web browser). Seeded from
@@ -260,11 +281,18 @@ class App:
         self.month_index = 0
         self.year_index = 0
         self.project_index = 0
+        self.machine_index = 0  # selected box in the Machines-mode sidebar (fleet view)
         self.workflow_index = 0  # selected session in a zoomed Sessions tab
         # Tab cycles focus across the three stacked left panels. Enter drills:
         # browse -> zoom (year/month/day detail) -> session (one session's detail).
         self.focus = "days"  # "years" | "months" | "days"
-        self.browse_mode = "time"  # "time" | "projects"
+        self.browse_mode = "time"  # "time" | "projects" | "machines"
+        # In-TUI machine refresh (R): a re-pull request handed to the run() loop so a
+        # "refreshing…" toast paints before the blocking ssh fetch (the _session_loading
+        # trick). _refresh_backend is injected by main()/web_command when a fleet is in
+        # view -- it fetches given remotes keys and returns [(key, count, error)].
+        self._refresh_request: list[str] | None = None
+        self._refresh_backend = None
         self.view = "browse"  # "browse" | "zoom" | "session"
         # lazygit-style zoom: the detail becomes the active pane in the split; `+`
         # maximizes it full-screen on demand (a saved pref, so it sticks between runs).
@@ -348,6 +376,16 @@ class App:
         # (source_index), Enter narrows the Sessions list to that source.
         self.zoom_source: str | None = None
         self.source_index = 0  # selected row on a zoomed Sources tab
+        # And the fleet's per-scope Machines tab (a month/day/project cut by box): j/k
+        # pick a machine (machine_pick_index), Enter narrows Sessions to it. Distinct from
+        # machine_index (the top-level Machines-MODE sidebar) -- a scope can carry both.
+        self.zoom_machine: str | None = None
+        self.machine_pick_index = 0
+        # The `M` GLOBAL machine filter (fleet view): a name narrows *every* view to that
+        # box, the twin of the `H` harness narrowing (which rebuilds the store to one
+        # backend). None = all machines. Distinct from zoom_machine (a per-scope drill);
+        # keyed into the workflow caches below, and revalidated on reload/source swap.
+        self.machine_filter: str | None = None
         # All screen output lives on the Renderer; the App stays curses-free
         # (aside from the modal prompt line in prompt_text).
         self.renderer = Renderer(self)
@@ -386,12 +424,17 @@ class App:
             # summaries, projects, trends, exports, even shown-ignored paths -- agrees.
             # The fingerprint keys the cache, so toggling b/B rebuilds it by itself.
             tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
+            # The `M` global machine filter narrows here too, so every downstream view
+            # (all_workflows and the shown-ignored path both read this) agrees on one box.
+            self.machine_filter,
         )
         if getattr(self, "_rw_key", None) == key:
             return self._rw_cache
         rows = self.loaded
         if self.show_bookmarks_only:
             rows = [w for w in rows if w.id in self.bookmarks]
+        if self.machine_filter is not None:
+            rows = [w for w in rows if (w.machine or "unknown") == self.machine_filter]
         if self.custom_since or self.custom_until:
             if self.custom_since:
                 rows = [w for w in rows if w.created_at[:10] >= self.custom_since]
@@ -419,9 +462,11 @@ class App:
             self.range_months,
             tuple(sorted(self.ignored_projects)),
             tuple(sorted(self.ignored_sessions)),
-            # ranged_workflows narrows to bookmarks under B; mirror its fingerprint
-            # so this cache follows along.
+            # ranged_workflows narrows to bookmarks under B and by the `M` machine filter;
+            # mirror both in this fingerprint so the cache follows along (ranged_workflows
+            # already applied them -- this key just has to change when they do).
             tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
+            self.machine_filter,
         )
         if getattr(self, "_aw_key", None) == key:
             return self._aw_cache
@@ -657,6 +702,158 @@ class App:
             return sorted(rows, key=lambda p: p.last_active, reverse=desc)
         return sorted(rows, key=lambda p: (p.cost, p.tokens), reverse=desc)
 
+    # --- Machines mode (the fleet view) --------------------------------------
+    def machine_meta(self) -> dict[str, dict]:
+        # {machine name -> {live, exported_at, opentab_version, key}} from the store,
+        # empty for a non-fleet store (so machines_present is False and the mode hides).
+        return getattr(self.store, "machine_meta", {}) or {}
+
+    @property
+    def machines(self) -> list[MachineSummary]:
+        # One row per box in view, built from the grouped workflows plus the store's
+        # per-machine niceties (live vs pulled, export time/version). The live local box
+        # floats first -- it is "you are here", and the only one with full drill-in -- then
+        # by spend; the `f`/`/` query fuzzy-ranks by name like the projects list.
+        meta = self.machine_meta()
+        grouped: dict[str, list[Workflow]] = defaultdict(list)
+        for w in self.all_workflows:
+            grouped[w.machine or "unknown"].append(w)
+        rows = [
+            MachineSummary(
+                name=name,
+                workflows=len(wfs),
+                cost=sum(w.total_cost for w in wfs),
+                tokens=sum(w.total_tokens for w in wfs),
+                subagents=sum(w.subagents for w in wfs),
+                unpriced_tokens=sum(w.unpriced_tokens for w in wfs),
+                last_active=max(w.created_at for w in wfs),
+                live=bool((meta.get(name) or {}).get("live")),
+                exported_at=str((meta.get(name) or {}).get("exported_at") or ""),
+                opentab_version=str((meta.get(name) or {}).get("opentab_version") or ""),
+            )
+            for name, wfs in grouped.items()
+        ]
+        rows.sort(key=lambda m: (m.live, m.cost, m.tokens), reverse=True)
+        # Deliberately NOT filtered by the `f`/`/` query: a fleet has a handful of boxes
+        # (no list to narrow), and a hostname isn't one of workflow_fuzzy_score's fields,
+        # so filtering the LIST by name would then empty the selected box's Sessions (the
+        # query, applied to that box's sessions, matches none of their titles/paths). The
+        # query stays a session-content filter, scoping the sessions WITHIN the box.
+        return rows
+
+    @property
+    def selected_machine_summary(self) -> MachineSummary | None:
+        rows = self.machines
+        if not rows:
+            return None
+        self.machine_index = max(0, min(self.machine_index, len(rows) - 1))
+        return rows[self.machine_index]
+
+    def workflows_for_machine(self, name: str) -> list[Workflow]:
+        return [w for w in self.all_workflows if (w.machine or "unknown") == name]
+
+    # --- The `M` global machine filter (fleet view) --------------------------
+    def machine_filter_options(self) -> list[tuple[str, str, bool]]:
+        # (value, label, is-active) for the `M` picker; "" (rendered "All machines")
+        # clears the filter. Built over ALL loaded data -- unfiltered by the armed filter
+        # or the range -- so every box stays selectable even when it is currently hidden.
+        # Live-first then by spend, matching the machines-mode list's order.
+        meta = self.machine_meta()
+        grouped: dict[str, float] = defaultdict(float)
+        for w in self.loaded:
+            grouped[w.machine or "unknown"] += w.total_cost
+        names = sorted(
+            grouped,
+            key=lambda n: (bool((meta.get(n) or {}).get("live")), grouped[n]),
+            reverse=True,
+        )
+        out: list[tuple[str, str, bool]] = [("", "All machines", self.machine_filter is None)]
+        for name in names:
+            out.append((name, name, self.machine_filter == name))
+        return out
+
+    def open_machine_menu(self) -> None:
+        # `M` opens the small machine-filter picker (j/k, Enter arms, Esc cancels). Only
+        # meaningful in a fleet; off one there is nothing to narrow.
+        if not self.machines_present:
+            self.notify("machine filter needs a fleet — see --pull", "error")
+            return
+        options = self.machine_filter_options()
+        cur = next(
+            (i for i, (value, _l, _a) in enumerate(options) if value == self.machine_filter), 0
+        )
+        self.machine_menu_index = cur
+        self.machine_menu = True
+
+    def select_machine_filter(self, name: str | None) -> None:
+        # Arm (or clear, name="" / None) the global machine filter and re-anchor the
+        # selection so the narrowed views land on a still-visible row.
+        name = name or None
+        if name == self.machine_filter:
+            return
+        anchor = self.selection_anchor()
+        self.machine_filter = name
+        self._invalidate_workflow_cache()
+        self.restore_selection(anchor)
+        self.notify(f"machine: {name}" if name else "machine filter cleared", "success")
+
+    def _revalidate_machine_filter(self) -> None:
+        # After the loaded data changes under an armed filter (reload, `H` source switch,
+        # `D` demo rename, `F` machine re-pull), keep the filter only if its box still
+        # exists -- a source swap that drops the box, or demo's rename, clears it rather
+        # than silently emptying every view.
+        if self.machine_filter is None:
+            return
+        names = {w.machine or "unknown" for w in self.loaded}
+        if self.machine_filter not in names:
+            self.machine_filter = None
+
+    def handle_machine_menu_key(self, key: int) -> bool:
+        # The `M` machine-filter picker: j/k move, Enter arms/clears, Esc/q cancels; `M`
+        # again advances the highlight (repeated taps walk the list, like the `H` menu).
+        options = self.machine_filter_options()
+        if not options:
+            self.machine_menu = False
+            return True
+        if key == 3:  # Ctrl-C still quits
+            return False
+        if key in (ord("j"), curses.KEY_DOWN, ord("M")):
+            self.machine_menu_index = (self.machine_menu_index + 1) % len(options)
+        elif key in (ord("k"), curses.KEY_UP):
+            self.machine_menu_index = (self.machine_menu_index - 1) % len(options)
+        elif key == ord("g"):
+            self.machine_menu_index = 0
+        elif key == ord("G"):
+            self.machine_menu_index = len(options) - 1
+        elif key in (10, 13, curses.KEY_ENTER):
+            self.machine_menu = False
+            self.select_machine_filter(options[self.machine_menu_index % len(options)][0])
+        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+            self.machine_menu = False  # cancel, filter unchanged
+        # any other key: ignore and keep the menu open
+        return True
+
+    def mode_tab_list(self) -> list[tuple[str, str]]:
+        # (label, mode) for the top-level browse-mode tab strip. Time/Projects always;
+        # Machines only in a fleet (>=2 boxes) -- the same gate as the `m` key.
+        tabs = [("Time", "time"), ("Projects", "projects")]
+        if self.machines_present:
+            tabs.append(("Machines", "machines"))
+        return tabs
+
+    def switch_browse_mode(self, mode: str) -> None:
+        # A mode-tab click: unlike the p/t/m keys it works from a drilled-in session too,
+        # stepping out first (set_browse_mode itself no-ops in the session view).
+        if self.view == "session":
+            self.drill_out()
+        self.set_browse_mode(mode)
+
+    def refreshable_machines(self) -> list[str]:
+        # Names of pulled boxes (they carry a remotes key); the live local box refreshes
+        # by a plain reload, not a re-pull. Empty when nothing was pulled.
+        meta = self.machine_meta()
+        return [n for n, m in meta.items() if (m or {}).get("key")]
+
     @property
     def focused_year(self) -> str | None:
         rows = self.years
@@ -718,7 +915,9 @@ class App:
     def active_project_for_toggle(self) -> ProjectSummary | None:
         if self.browse_mode == "projects":
             return self.selected_project_summary
-        if self.view == "zoom" and self.on_projects_tab:
+        # Only a time-mode zoom has a navigable Projects picker; the Machines Projects
+        # tab is a read-only breakdown, so it offers nothing to ignore.
+        if self.view == "zoom" and self.on_projects_tab and self.browse_mode == "time":
             return self.zoom_selected_project()
         return None
 
@@ -964,7 +1163,7 @@ class App:
 
     def selection_anchor(
         self,
-    ) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+    ) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None]:
         # Capture the selected row's value (not focused_year, which is None for the
         # "All years" row) so an "All years" selection survives a reload/source switch.
         sel_year = self.selected_year_summary
@@ -972,20 +1171,24 @@ class App:
         month = self.focused_month
         day = self.active_day if month else None
         project = self.selected_project_summary
+        # The machine by NAME, so a refresh that reorders the boxes (a re-pull changed
+        # their spend) re-selects the same box rather than whatever now sits at its index.
+        machine = self.selected_machine_summary if self.browse_mode == "machines" else None
         session = self.current_session()
         return (
             year,
             month,
             day,
             project.directory if project else None,
+            machine.name if machine else None,
             session.id if session else None,
         )
 
     def restore_selection(
         self,
-        anchor: tuple[str | None, str | None, str | None, str | None, str | None],
+        anchor: tuple[str | None, str | None, str | None, str | None, str | None, str | None],
     ) -> None:
-        year, month, day, project_dir, session_id = anchor
+        year, month, day, project_dir, machine_name, session_id = anchor
 
         # Restore the year first: months/days are scoped to the focused year, so the
         # month lookup below only sees the right slice once year_index is set.
@@ -1025,6 +1228,17 @@ class App:
         else:
             self.project_index = min(self.project_index, max(0, len(project_rows) - 1))
 
+        # Before current_sessions(): in machines mode that list is scoped by the selected
+        # box, so the machine index must be re-anchored first.
+        machine_rows = self.machines
+        if machine_name and machine_rows:
+            self.machine_index = next(
+                (i for i, row in enumerate(machine_rows) if row.name == machine_name),
+                min(self.machine_index, len(machine_rows) - 1),
+            )
+        else:
+            self.machine_index = min(self.machine_index, max(0, len(machine_rows) - 1))
+
         session_rows = self.current_sessions()
         if session_id and session_rows:
             self.workflow_index = next(
@@ -1062,7 +1276,7 @@ class App:
         self._revalidate_whatif()  # the target may have lost its list rate
 
     def _revalidate_whatif(self) -> None:
-        # The model rows just changed under an armed target (reload, `c` source switch,
+        # The model rows just changed under an armed target (reload, `H` source switch,
         # `D` demo toggle -- all land here). A target needs no usage in the new dataset
         # to stay meaningful -- the picker's catalog tier arms any model the price
         # catalog knows, and the comparison is "this data's tokens at that model's
@@ -1812,17 +2026,112 @@ class App:
         self._load_model_cache()
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_machine = None
+        self._revalidate_machine_filter()  # keep the `M` filter iff its box still exists
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
         self.day_index = min(self.day_index, max(0, len(self.days) - 1))
         self.month_index = min(self.month_index, max(0, len(self.months) - 1))
         self.project_index = min(self.project_index, max(0, len(self.projects) - 1))
+        self.machine_index = min(self.machine_index, max(0, len(self.machines) - 1))
         if notes_ok:
             # Toasts set within one handler collapse onto the last one, so a cheery
             # "reloaded" here would swallow refresh_notes' warning. The warning wins:
             # you pressed `r`, you know it reloaded.
             self.notify("reloaded", "success")
 
-    # --- Live source switching (the `c` key) ---------------------------------
+    # --- In-TUI machine refresh (the `R` key, fleet view) --------------------
+    def can_refresh_machines(self) -> bool:
+        # R is offered whenever a fleet is in view: the live box re-scans (a reload), a
+        # pulled box re-pulls over ssh (needs the injected backend). Off under demo.
+        return self.machines_present and not self.store.demo
+
+    def refresh_target(self) -> str | None:
+        # Which box `R` acts on: the selected one in Machines mode, else every pulled box.
+        if self.browse_mode == "machines":
+            machine = self.selected_machine_summary
+            return machine.name if machine else None
+        return None  # anywhere else in the fleet view: refresh all pulled boxes
+
+    def _refresh_keys(self, names: list[str] | None) -> list[str]:
+        # remotes.json keys for the requested boxes (None = every pulled box). The live
+        # local box carries no key -- it is refreshed by a plain reload, not a re-pull.
+        meta = self.machine_meta()
+        if names is None:
+            return [str(m["key"]) for m in meta.values() if (m or {}).get("key")]
+        return [str(k) for n in names if (k := (meta.get(n) or {}).get("key"))]
+
+    def request_machine_refresh(self, name: str | None = None) -> None:
+        # Hand a re-pull to the run() loop (so a "refreshing…" toast paints before the
+        # blocking ssh fetch); refreshing your own live box is just a reload.
+        if self.store.demo:
+            self.notify("refresh disabled in demo", "error")
+            return
+        meta = self.machine_meta()
+        if name and (meta.get(name) or {}).get("live"):
+            self.reload()  # the live box re-scans its own transcripts
+            return
+        if self._refresh_backend is None:
+            self.notify("refresh needs --pull / --remote mode", "error")
+            return
+        keys = self._refresh_keys([name] if name else None)
+        if not keys:
+            self.notify("nothing to re-pull (this is your live machine)", "error")
+            return
+        self._refresh_request = keys
+        self.notify(f"refreshing {name or 'all machines'} — ssh…")
+
+    def _rebuild_fleet_store(self) -> None:
+        # Re-build the fleet store from scratch so RemoteStore re-reads the summaries a
+        # refresh just wrote (workflows() caches _wf from construction, so a plain reload
+        # wouldn't pick them up). Rebuild at the CURRENTLY ACTIVE demo state, not the launch
+        # args' -- `D` toggles demo live, and rebuilding from self.args.demo would silently
+        # flip the refreshed store back. Busts the cached build too, so a later c/D
+        # swap-back doesn't restore stale data.
+        demo = bool(getattr(self.store, "demo", False))
+        self.store = sources.make_store(self._args_with_demo(demo), self.source_key)[0]
+        self._store_cache[(self.source_key, demo)] = self.store
+
+    def refresh_machines_now(self, name: str | None = None) -> list:
+        # Synchronous refresh for the web endpoint (no run loop to defer through): fetch,
+        # rebuild, reload; returns [(name, count, error)]. Empty when nothing is re-pullable.
+        # Gated OFF under demo like the TUI's F: demo must make no network side effects,
+        # so a re-pull button clicked on a demo page is a no-op, not a live ssh fetch.
+        if self.store.demo or self._refresh_backend is None:
+            return []
+        keys = self._refresh_keys([name] if name else None)
+        if not keys:
+            return []
+        results = self._refresh_backend(keys) or []
+        self._rebuild_fleet_store()
+        self.reload()
+        return results
+
+    def _do_refresh(self, keys: list[str]) -> None:
+        # The blocking half, run from the loop after the toast is on screen: fetch the
+        # summaries, then rebuild the fleet store so RemoteStore re-reads them.
+        try:
+            results = self._refresh_backend(keys) or []
+        except Exception as exc:  # noqa: BLE001 -- a refresh must never crash the TUI
+            self.notify(f"refresh failed: {exc}", "error")
+            return
+        snapshot = self.ui_snapshot()
+        try:
+            self._rebuild_fleet_store()
+        except SystemExit as exc:
+            self.notify(str(exc), "error")
+            return
+        self._reload_for_source(snapshot)
+        errs = [f"{key}: {err}" for key, _count, err in results if err]
+        ok = [(key, count) for key, count, err in results if not err]
+        if errs:
+            self.notify("refresh — " + "; ".join(errs), "error")
+        elif ok:
+            total = sum(count for _key, count in ok)
+            self.notify(f"refreshed {len(ok)} machine(s) · {total} sessions", "success")
+        else:
+            self.notify("nothing refreshed", "error")
+
+    # --- Live source switching (the `H` key) ---------------------------------
     def can_switch_source(self) -> bool:
         return len(sources.source_cycle(self.args)) > 1
 
@@ -1832,7 +2141,7 @@ class App:
         return args
 
     def next_source_name(self) -> str:
-        # Display name of the source `c` would switch to (for the footer).
+        # Display name of the source `H` would switch to (for the footer).
         order = sources.source_cycle(self.args)
         cur = self.source_key if self.source_key in order else order[0]
         nxt = order[(order.index(cur) + 1) % len(order)]
@@ -2011,10 +2320,19 @@ class App:
         self.prices_scroll = 0
         self.zoom_source = None  # names a source that may not exist in the new data
         self.source_index = 0
+        self.zoom_machine = None  # same: a box that may not be in the new data
+        self.machine_pick_index = 0
+        self._revalidate_machine_filter()  # drop the `M` filter if this source lacks the box
         if restore:
             self.browse_mode = restore["browse_mode"]
             self.focus = restore["focus"]
             self.view = restore["view"]
+            # A source/demo swap can drop the fleet (switch to one non-remote backend),
+            # leaving Machines mode with nothing to show. Fall back to time browse so the
+            # restored view is never an empty, un-obvious Machines list.
+            if self.browse_mode == "machines" and not self.machines_present:
+                self.browse_mode = "time"
+                self.view = "browse"
             zoom_project = restore["zoom_project"]
             self.zoom_project = (
                 zoom_project
@@ -2092,6 +2410,15 @@ class App:
         ]
         return "projects", header, rows
 
+    @staticmethod
+    def _machines_dataset(machines: list[MachineSummary]) -> tuple[str, list[str], list[list]]:
+        header = ["machine", "live", "cost", "tokens", "sessions", "subagents", "exported_at"]
+        rows = [
+            [m.name, m.live, m.cost, m.tokens, m.workflows, m.subagents, m.exported_at]
+            for m in machines
+        ]
+        return "machines", header, rows
+
     def _active_tab(self) -> str:
         tabs = self.current_tabs()
         return tabs[self.tab % len(tabs)] if tabs else ""
@@ -2106,6 +2433,8 @@ class App:
             return self._session_tab_dataset()
         if self.view == "zoom":
             return self._zoom_tab_dataset()
+        if self.browse_mode == "machines":
+            return self._machines_dataset(self.machines)
         if self.browse_mode == "projects":
             return self._projects_dataset(self.projects)
         # Time browse: the focused left list (years / months / days) is the active panel.
@@ -2126,6 +2455,18 @@ class App:
 
     _PRICE_COLUMN_INDEX = {"input": 0, "output": 1, "cache_read": 2, "cache_write": 3}
 
+    def _priced_model_roots(self) -> dict[str, list[dict]]:
+        # _model_by_root scoped to the active `M` machine filter, so the P overlay -- its
+        # mix, rows, per-model drill, and `e` export -- reflects the one box, exactly as
+        # the `H` harness picker does (it rebuilds this map for one backend). No filter
+        # armed returns the whole map, so P stays the *all-time* price reference it is for
+        # the range: the scope is by MACHINE over the full loaded set (never all_workflows,
+        # which is also range-scoped) -- an identity narrowing, not a time window.
+        if self.machine_filter is None:
+            return self._model_by_root
+        visible = {w.id for w in self.loaded if (w.machine or "unknown") == self.machine_filter}
+        return {rid: rows for rid, rows in self._model_by_root.items() if rid in visible}
+
     def price_token_mix(self) -> tuple[tuple[float, float, float, float], int] | None:
         # Your app-wide token mix -- (input, output, cache-read, cache-write) shares
         # over every non-local model row, plus the tokens they cover. This is what
@@ -2135,7 +2476,7 @@ class App:
         # row without an input split (older stores, tests) puts the total's
         # remainder on input. None until the model scan has usage to measure.
         sums = [0.0, 0.0, 0.0, 0.0]
-        for rows in self._model_by_root.values():
+        for rows in self._priced_model_roots().values():
             for m in rows:
                 name = m.get("model_name")
                 if not name or is_local_provider(name):
@@ -2188,7 +2529,7 @@ class App:
         by_route = self.prices_view == "provider"
         raw: dict[tuple[str, str], dict] = {}
         grand = 0.0
-        for rows in self._model_by_root.values():
+        for rows in self._priced_model_roots().values():
             for m in rows:
                 name = str(m["model_name"])
                 if is_local_provider(name):
@@ -2261,7 +2602,7 @@ class App:
         # plain spelling, most completely-priced first.
         usage: dict[str, list[float]] = {}
         grand = 0.0
-        for rows in self._model_by_root.values():
+        for rows in self._priced_model_roots().values():
             for m in rows:
                 name = str(m["model_name"])
                 if is_local_provider(name):
@@ -2358,7 +2699,9 @@ class App:
         target = canonical_model(bare_model)
         by_id = {w.id: w for w in self.loaded}
         per_root: dict[str, list] = {}
-        for root_id, models in self._model_by_root.items():
+        # _priced_model_roots scopes to the `M` machine filter, so the drill opens only the
+        # armed box's sessions (by_id stays over all loaded -- just a root->workflow lookup).
+        for root_id, models in self._priced_model_roots().items():
             w = by_id.get(root_id)
             if w is None:
                 continue
@@ -2414,11 +2757,16 @@ class App:
             return self._models_dataset(self.aggregate_models(self._active_scope_workflows()))
         if tab == "Harnesses":
             return self._sources_dataset(self._active_scope_workflows())
+        if tab == "Machines":
+            return self._machine_agg_dataset(self._active_scope_workflows())
         # Overview / Sessions both sit over the same scoped session list.
         return self._sessions_dataset(self.current_sessions())
 
     def _active_scope_workflows(self) -> list[Workflow]:
         # The sessions the active zoom detail summarises (for a Models/Sources export).
+        if self.browse_mode == "machines":
+            machine = self.selected_machine_summary
+            return self.workflows_for_machine(machine.name) if machine else []
         if self.browse_mode == "projects":
             project = self.selected_project_summary
             return (
@@ -2449,6 +2797,14 @@ class App:
         )
         header = ["source", "cost", "tokens", "sessions"]
         return "sources", header, [[s, it["cost"], it["tokens"], it["sessions"]] for s, it in rows]
+
+    def _machine_agg_dataset(self, workflows: list[Workflow]) -> tuple[str, list[str], list[list]]:
+        # Spend grouped by machine, mirroring the per-scope Machines tab's rollup (the
+        # _sources_dataset twin) -- so `e` on that tab exports the box aggregates it shows,
+        # not the individual sessions.
+        rows = self.machine_rows(workflows)
+        header = ["machine", "cost", "tokens", "sessions"]
+        return "machines", header, [[m, it["cost"], it["tokens"], it["sessions"]] for m, it in rows]
 
     def _session_tab_dataset(self) -> tuple[str, list[str], list[list]]:
         session = self.current_session()
@@ -2751,7 +3107,7 @@ class App:
             self.notice = f"{kind}: {shorten(command, 50)}"
 
     def handle_source_menu_key(self, key: int) -> bool:
-        # The `c` data-source picker: j/k move, Enter switches, Esc/q cancels. `c` again
+        # The `H` data-source picker: j/k move, Enter switches, Esc/q cancels. `H` again
         # advances the highlight so repeated taps still walk the list.
         order = sources.source_cycle(self.args)
         if not order:
@@ -2759,7 +3115,7 @@ class App:
             return True
         if key == 3:  # Ctrl-C still quits
             return False
-        if key in (ord("j"), curses.KEY_DOWN, ord("c")):
+        if key in (ord("j"), curses.KEY_DOWN, ord("H")):
             self.source_menu_index = (self.source_menu_index + 1) % len(order)
         elif key in (ord("k"), curses.KEY_UP):
             self.source_menu_index = (self.source_menu_index - 1) % len(order)
@@ -2825,12 +3181,15 @@ class App:
         self.project_index = max(0, min(self.project_index, len(rows) - 1))
         return rows[self.project_index]
 
-    def zoom_source_rows(self) -> list[tuple[str, dict[str, float | int]]]:
-        # Source rows within the zoomed scope — the navigable Sources tab (merged
-        # view). It must count exactly the sessions Enter then opens
-        # (current_sessions), so it takes the same two widenings: `i` (ignored rows
-        # in view) and a Projects-tab drill. Counting a scope you can't open is how a
-        # row reads "1 session · $3" and produces two sessions and $5.
+    def _zoom_picker_scope(self, exclude: str) -> list[Workflow]:
+        # The sessions a zoom's Harnesses/Machines picker ranks -- exactly the ones Enter
+        # then opens (current_sessions), so it takes the same widenings: `i` (ignored rows
+        # in view), a Projects-tab drill (zoom_project), and the committed `f` query.
+        # Counting a scope you can't open is how a row reads "1 session · $3" and produces
+        # two sessions and $5. Crucially it ALSO applies the OTHER dimension's armed drill
+        # (h/l can leave a machine/source narrowed while you move to the sibling picker) --
+        # everything except the dimension being picked (`exclude`), which the pick SETS. So
+        # the Harnesses picker shows sources within an armed box, and vice-versa.
         if self.browse_mode == "projects":
             item = self.selected_project_summary
             rows = (
@@ -2845,10 +3204,15 @@ class App:
             rows = self.zoom_scope_workflows(include_ignored=self._showing_ignored_workflows())
             if self.zoom_project:
                 rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
-        # ...and the committed `f` query, which current_sessions applies too: a row
-        # that counts sessions the query hides would open fewer than it advertises
-        # (possibly none).
-        return self.source_rows(self.filtered_sessions(rows))
+        if exclude != "source" and self.zoom_source:
+            rows = [w for w in rows if (w.source or "unknown") == self.zoom_source]
+        if exclude != "machine" and self.zoom_machine:
+            rows = [w for w in rows if (w.machine or "unknown") == self.zoom_machine]
+        return self.filtered_sessions(rows)
+
+    def zoom_source_rows(self) -> list[tuple[str, dict[str, float | int]]]:
+        # The navigable Sources tab of a zoomed scope (merged view), grouped by harness.
+        return self.source_rows(self._zoom_picker_scope("source"))
 
     def zoom_selected_source(self) -> str | None:
         rows = self.zoom_source_rows()
@@ -2857,7 +3221,23 @@ class App:
         self.source_index = max(0, min(self.source_index, len(rows) - 1))
         return rows[self.source_index][0]
 
+    def zoom_machine_rows(self) -> list[tuple[str, dict[str, float | int]]]:
+        # The navigable Machines tab of a zoomed scope (fleet view), grouped by box --
+        # the harness picker's twin, over the same scope.
+        return self.machine_rows(self._zoom_picker_scope("machine"))
+
+    def zoom_selected_machine(self) -> str | None:
+        rows = self.zoom_machine_rows()
+        if not rows:
+            return None
+        self.machine_pick_index = max(0, min(self.machine_pick_index, len(rows) - 1))
+        return rows[self.machine_pick_index][0]
+
     def current_sessions(self) -> list[Workflow]:
+        if self.browse_mode == "machines":
+            item = self.selected_machine_summary
+            rows = self.workflows_for_machine(item.name) if item else []
+            return self.filtered_sessions(rows)
         if self.browse_mode == "projects":
             item = self.selected_project_summary
             rows = (
@@ -2884,6 +3264,8 @@ class App:
             rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
         if self.zoom_source:
             rows = [w for w in rows if (w.source or "unknown") == self.zoom_source]
+        if self.zoom_machine:  # a per-scope Machines-tab drill (fleet view)
+            rows = [w for w in rows if (w.machine or "unknown") == self.zoom_machine]
         return self.filtered_sessions(rows)
 
     def _zooming_ignored_project(self) -> bool:
@@ -2930,6 +3312,13 @@ class App:
     def on_sources_tab(self) -> bool:
         tabs = self.current_tabs()
         return tabs[self.tab % len(tabs)] == "Harnesses"
+
+    @property
+    def on_machines_tab(self) -> bool:
+        # The per-scope Machines picker tab (never present in Machines MODE, which scopes
+        # to one box already -- so this is only ever the time/projects-zoom picker).
+        tabs = self.current_tabs()
+        return tabs[self.tab % len(tabs)] == "Machines"
 
     def in_project_sort_context(self) -> bool:
         return (self.view == "browse" and self.browse_mode == "projects") or (
@@ -3023,7 +3412,7 @@ class App:
 
     def open_sort_menu(self) -> None:
         # `s` no longer cycles blindly; it opens a small picker the user can j/k
-        # through and Enter to apply (Esc cancels), mirroring the `c` source menu.
+        # through and Enter to apply (Esc cancels), mirroring the `H` source menu.
         if not self.can_sort_current_view():
             self.notify("sort: only session, project, or subagent lists", "error")
             return
@@ -3154,11 +3543,13 @@ class App:
         self.scroll = 0
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_machine = None
 
     def cycle_focus(self, step: int = 1) -> None:
         # Tab walks the three stacked time panels (Years -> Months -> Days); Shift-Tab
-        # walks back. No-op in session view and projects mode (no left-panel focus).
-        if self.view == "session" or self.browse_mode == "projects":
+        # walks back. No-op in session view and projects/machines mode (one left list,
+        # nothing to cycle focus across).
+        if self.view == "session" or self.browse_mode != "time":
             return
         i = self.FOCUS_CYCLE.index(self.focus) if self.focus in self.FOCUS_CYCLE else 1
         self.set_focus(self.FOCUS_CYCLE[(i + step) % len(self.FOCUS_CYCLE)])
@@ -3185,8 +3576,8 @@ class App:
         # re-map runs even when the target panel is the one already focused -- that is
         # exactly the jump-out-of-a-session case, where the stale index is wrong.
         active_tab = self.active_tab_name()
-        if self.browse_mode == "projects":
-            # One left panel here; only 1 (the Projects list) names it. 2/3 have
+        if self.browse_mode in ("projects", "machines"):
+            # One left panel here (Projects / Machines); only 1 names it. 2/3 have
             # nothing to focus -- leave the view alone rather than half-obeying.
             if name != "years":
                 return False
@@ -3199,6 +3590,7 @@ class App:
         self.scroll = 0
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_machine = None
         return True
 
     def focus_detail(self) -> bool:
@@ -3218,6 +3610,7 @@ class App:
         self.view = "browse"
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_machine = None
         self.scroll = 0
 
     def toggle_zoom_maximized(self) -> None:
@@ -3236,13 +3629,18 @@ class App:
         self.tab = 0
         self.scroll = 0
         self.workflow_index = 0
+        if mode == "machines":
+            self.machine_index = 0
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_machine = None
 
     def drill_in(self) -> None:
         if self.view == "browse":
             item = (
-                self.selected_project_summary
+                self.selected_machine_summary
+                if self.browse_mode == "machines"
+                else self.selected_project_summary
                 if self.browse_mode == "projects"
                 else self.selected_year_summary
                 if self.focus == "years"
@@ -3257,6 +3655,8 @@ class App:
                 self.zoom_project = None
                 self.zoom_source = None
                 self.source_index = 0
+                self.zoom_machine = None
+                self.machine_pick_index = 0
                 self._trend_return = (
                     None  # a fresh drill; the Trends overlay re-arms it if it began one
                 )
@@ -3265,8 +3665,9 @@ class App:
                     # picker; reset it. In projects mode it is the selected project
                     # we are drilling into, so it must be left alone.
                     self.project_index = 0
-        elif self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
-            # Pick a project in a month/day zoom -> view its sessions in this scope.
+        elif self.view == "zoom" and self.on_projects_tab and self.browse_mode == "time":
+            # Pick a project in a month/day zoom -> view its sessions in this scope. Only
+            # in time mode: the Machines Projects tab is a read-only breakdown, not a picker.
             project = self.zoom_selected_project()
             if project is not None:
                 self.zoom_project = project.directory
@@ -3275,12 +3676,25 @@ class App:
                     self.tab = tabs.index("Sessions")
                 self.workflow_index = 0
                 self.scroll = 0
-        elif self.view == "zoom" and self.on_sources_tab:
+        elif self.view == "zoom" and self.on_sources_tab and self.browse_mode != "machines":
             # Pick a source in a zoom -> its sessions in this scope (the Trends
-            # Sources drill, scoped to the zoomed year/month/day/project).
+            # Sources drill, scoped to the zoomed year/month/day/project). The Machines
+            # Harnesses tab is a read-only breakdown, so it doesn't drill.
             source = self.zoom_selected_source()
             if source is not None:
                 self.zoom_source = source
+                tabs = self.current_tabs()
+                if "Sessions" in tabs:
+                    self.tab = tabs.index("Sessions")
+                self.workflow_index = 0
+                self.scroll = 0
+        elif self.view == "zoom" and self.on_machines_tab:
+            # Pick a box in a month/day/project zoom -> its sessions in this scope (the
+            # fleet's per-scope Machines picker). Only reachable off Machines MODE, so no
+            # extra mode guard is needed (the tab isn't injected there).
+            machine = self.zoom_selected_machine()
+            if machine is not None:
+                self.zoom_machine = machine
                 tabs = self.current_tabs()
                 if "Sessions" in tabs:
                     self.tab = tabs.index("Sessions")
@@ -3307,6 +3721,11 @@ class App:
                 self.zoom_source = None
                 tabs = self.current_tabs()
                 self.tab = tabs.index("Harnesses") if "Harnesses" in tabs else 0
+            elif self.zoom_machine:
+                # Leave a box's sessions, back to the Machines list of this zoom.
+                self.zoom_machine = None
+                tabs = self.current_tabs()
+                self.tab = tabs.index("Machines") if "Machines" in tabs else 0
             elif self.zoom_project and self.browse_mode != "projects":
                 # Leave a project's sessions, back to the Projects list of this zoom.
                 self.zoom_project = None
@@ -3316,6 +3735,7 @@ class App:
                 self.view = "browse"
                 self.zoom_project = None
                 self.zoom_source = None
+                self.zoom_machine = None
                 if self._trend_return is not None:
                     self._reopen_trends(self._trend_return)
         self.scroll = 0
@@ -3328,7 +3748,12 @@ class App:
         tab = ret[0]
         if tab == "drill":
             _tag, kind, key, row = ret
-            ranked = {"model": "Models", "provider": "Providers", "source": "Harnesses"}[kind]
+            ranked = {
+                "model": "Models",
+                "provider": "Providers",
+                "source": "Harnesses",
+                "machine": "Machines",
+            }[kind]
             self.trends = True
             self.trend_tab = self.trend_tabs.index(ranked)
             keys = self.trend_ranked_keys()
@@ -3376,16 +3801,24 @@ class App:
                 n = len(self.current_sessions())
                 if n:
                     self.workflow_index = max(0, min(self.workflow_index + delta, n - 1))
-            elif self.on_projects_tab and self.browse_mode != "projects":
+            elif self.on_projects_tab and self.browse_mode == "time":
                 n = len(self.zoom_projects())
                 if n:
                     self.project_index = max(0, min(self.project_index + delta, n - 1))
-            elif self.on_sources_tab:
+            elif self.on_sources_tab and self.browse_mode != "machines":
                 n = len(self.zoom_source_rows())
                 if n:
                     self.source_index = max(0, min(self.source_index + delta, n - 1))
+            elif self.on_machines_tab:
+                n = len(self.zoom_machine_rows())
+                if n:
+                    self.machine_pick_index = max(0, min(self.machine_pick_index + delta, n - 1))
             else:
                 self.scroll = max(0, self.scroll + delta)
+        elif self.browse_mode == "machines":
+            n = len(self.machines)
+            if n:
+                self.machine_index = max(0, min(self.machine_index + delta, n - 1))
         elif self.browse_mode == "projects":
             n = len(self.projects)
             if n:
@@ -3424,6 +3857,8 @@ class App:
             self.day_index = max(0, min(self.day_index + delta, len(self.panel_days) - 1))
         elif kind == "project" and self.projects:
             self.project_index = max(0, min(self.project_index + delta, len(self.projects) - 1))
+        elif kind == "machine" and self.machines:
+            self.machine_index = max(0, min(self.machine_index + delta, len(self.machines) - 1))
         elif kind == "session":
             n = len(self.current_sessions())
             if n:
@@ -3436,6 +3871,10 @@ class App:
             n = len(self.zoom_source_rows())
             if n:
                 self.source_index = max(0, min(self.source_index + delta, n - 1))
+        elif kind == "zoommachine":
+            n = len(self.zoom_machine_rows())
+            if n:
+                self.machine_pick_index = max(0, min(self.machine_pick_index + delta, n - 1))
         elif kind in ("detail", "turnline"):
             self.scroll = max(0, self.scroll + delta)  # scroll the detail content
         else:
@@ -3451,7 +3890,11 @@ class App:
 
     def jump(self, to_end: bool, stdscr: curses.window | None = None) -> None:
         if self.view == "browse":
-            if self.browse_mode == "projects":
+            if self.browse_mode == "machines":
+                rows = self.machines
+                if rows:
+                    self.machine_index = len(rows) - 1 if to_end else 0
+            elif self.browse_mode == "projects":
                 rows = self.projects
                 if rows:
                     self.project_index = len(rows) - 1 if to_end else 0
@@ -3478,16 +3921,22 @@ class App:
                 self.workflow_index = len(rows) - 1 if to_end else 0
             return
 
-        if self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
+        if self.view == "zoom" and self.on_projects_tab and self.browse_mode == "time":
             rows = self.zoom_projects()
             if rows:
                 self.project_index = len(rows) - 1 if to_end else 0
             return
 
-        if self.view == "zoom" and self.on_sources_tab:
+        if self.view == "zoom" and self.on_sources_tab and self.browse_mode != "machines":
             rows = self.zoom_source_rows()
             if rows:
                 self.source_index = len(rows) - 1 if to_end else 0
+            return
+
+        if self.view == "zoom" and self.on_machines_tab:
+            rows = self.zoom_machine_rows()
+            if rows:
+                self.machine_pick_index = len(rows) - 1 if to_end else 0
             return
 
         if not to_end:
@@ -3625,6 +4074,14 @@ class App:
                 wf_id, self._session_loading = self._session_loading, None
                 stdscr.refresh()  # make sure the loading frame actually hits the screen
                 self.prefetch_session_data(wf_id)
+                continue
+            if self._refresh_request is not None:
+                # The "refreshing…" toast painted above; now do the blocking ssh re-pull
+                # and store rebuild, then repaint with the result (the _session_loading
+                # trick, for a network fetch instead of a session parse).
+                keys, self._refresh_request = self._refresh_request, None
+                stdscr.refresh()
+                self._do_refresh(keys)
                 continue
             stdscr.timeout(self._input_timeout_ms())
             key = self._read_key(stdscr)
@@ -3788,6 +4245,46 @@ class App:
             reverse=True,
         )
 
+    @property
+    def trend_tabs(self) -> tuple[str, ...]:
+        # "Machines" rides on the base tabs only when the data spans machines (the fleet
+        # view); otherwise it'd be a single all-"unknown" bar. Instance-only access, so a
+        # property is safe (nothing reads App.trend_tabs at class level).
+        base = self._TREND_TABS_BASE
+        return base + ("Machines",) if self.machines_present else base
+
+    @property
+    def machines_present(self) -> bool:
+        # Whether the loaded data spans two-or-more machines -- gates the Machine column
+        # and the Machines tab. Deliberately NOT `combined`: the ordinary --source all
+        # merge is combined but single-machine (every w.machine == ""), and a lone
+        # machine's column/tab would be a 100% no-op (the src_col reasoning). Stops at
+        # the second distinct machine, so it's cheap in the fleet view.
+        seen: set[str] = set()
+        for w in self.loaded:
+            if w.machine:
+                seen.add(w.machine)
+                if len(seen) >= 2:
+                    return True
+        return False
+
+    def machine_rows(self, workflows: list[Workflow]) -> list[tuple[str, dict[str, float | int]]]:
+        # Spend grouped by the machine it ran on, cost-sorted -- the Machines tab's rows
+        # and the per-scope Machines detail tables (the source_rows twin for the fleet).
+        by_machine: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
+        )
+        for w in workflows:
+            item = by_machine[w.machine or "unknown"]
+            item["cost"] = float(item["cost"]) + w.total_cost
+            item["tokens"] = int(item["tokens"]) + w.total_tokens
+            item["sessions"] = int(item["sessions"]) + 1
+        return sorted(
+            by_machine.items(),
+            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+            reverse=True,
+        )
+
     def source_rows(self, workflows: list[Workflow]) -> list[tuple[str, dict[str, float | int]]]:
         # Spend grouped by the tool it came from, cost-sorted -- the Sources tab's
         # rows and the per-scope Sources detail tables.
@@ -3814,6 +4311,8 @@ class App:
             return [p for p, _it in self.trend_provider_rows()]
         if current == "Harnesses":
             return [s for s, _it in self.source_rows(self.all_workflows)]
+        if current == "Machines":
+            return [m for m, _it in self.machine_rows(self.all_workflows)]
         return []
 
     def trend_drill_sessions(self) -> list[tuple[Workflow, float, int]]:
@@ -3825,11 +4324,12 @@ class App:
         if self.trend_drill is None:
             return []
         kind, key = self.trend_drill
-        if kind == "source":
+        if kind in ("source", "machine"):
+            field = (lambda w: w.machine) if kind == "machine" else (lambda w: w.source)
             rows = [
                 (w, w.total_cost, w.total_tokens)
                 for w in self.all_workflows
-                if (w.source or "unknown") == key
+                if (field(w) or "unknown") == key
             ]
             rows.sort(key=lambda r: (r[1], r[2]), reverse=True)
             return rows
@@ -4011,7 +4511,12 @@ class App:
         keys = self.trend_ranked_keys()
         if not keys:
             return
-        kind = {"Models": "model", "Providers": "provider", "Harnesses": "source"}[current]
+        kind = {
+            "Models": "model",
+            "Providers": "provider",
+            "Harnesses": "source",
+            "Machines": "machine",
+        }[current]
         self.trend_drill = (kind, keys[max(0, min(self.trend_row_index, len(keys) - 1))])
         self.trend_drill_index = 0
 
@@ -4080,8 +4585,11 @@ class App:
         if key == ord("C"):
             self.open_theme_menu()  # live-previews with the charts as the swatch
             return True
-        if key == ord("c"):
+        if key == ord("H"):
             self.open_source_menu()  # switching re-scopes the charts in place
+            return True
+        if key == ord("M") and self.machines_present:
+            self.open_machine_menu()  # narrowing to one box re-scopes the charts in place
             return True
         if key == ord("D"):
             self.toggle_demo()  # anonymize before a screenshot without leaving
@@ -4122,13 +4630,15 @@ class App:
             return True
         if self.price_prompt:
             return self.handle_price_prompt_key(key)
-        # The C (Colours) and c (source) pickers float above everything -- they can
-        # be opened from inside Trends / P / help now, so they must see keys before
-        # the overlays do (draw() already paints these small modals on top).
+        # The C (Colours), H (source) and M (machine filter) pickers float above
+        # everything -- they can be opened from inside Trends / P / help now, so they must
+        # see keys before the overlays do (draw() already paints these small modals on top).
         if self.theme_menu:
             return self.handle_theme_menu_key(key)
         if self.source_menu:
             return self.handle_source_menu_key(key)
+        if self.machine_menu:
+            return self.handle_machine_menu_key(key)
         if self.whatif_menu:  # the `w` target picker floats above everything too
             return self.handle_whatif_menu_key(key)
         if self.help:
@@ -4150,10 +4660,12 @@ class App:
                 self.help_scroll = 10_000  # clamped to the last page on draw
             elif key == ord("C"):
                 self.open_theme_menu()  # the Colours picker floats above help too
-            elif key == ord("c") and self.can_switch_source():
+            elif key == ord("H") and self.can_switch_source():
                 self.open_source_menu()  # ...and so does the source picker: the key list
                 # names both, and a list that names a key it then eats is the very thing
                 # this table exists to prevent.
+            elif key == ord("M") and self.machines_present:
+                self.open_machine_menu()  # the machine filter floats above help too
             elif key == 3:  # Ctrl-C still quits
                 return False
             elif key in (27, ord("q"), ord("?")):
@@ -4297,8 +4809,11 @@ class App:
         if key == ord("r"):
             self.reload()
             return True
-        if key == ord("c"):
+        if key == ord("H"):
             self.open_source_menu()
+            return True
+        if key == ord("M"):
+            self.open_machine_menu()  # narrow every view to one box (fleet); no-op off one
             return True
         if key == ord("C"):
             self.open_theme_menu()
@@ -4326,6 +4841,23 @@ class App:
             return True
         if key == ord("t"):
             self.set_browse_mode("time")
+            return True
+        if key == ord("m"):
+            # Machines mode: only meaningful with a fleet (>=2 boxes). Off a fleet it
+            # would be a single all-"unknown" list, so say what's missing instead.
+            if self.machines_present:
+                self.set_browse_mode("machines")
+            else:
+                self.notify("machines view needs a fleet — see --pull", "error")
+            return True
+        if key == ord("F"):
+            # Fetch: re-pull the selected box (Machines mode) or every pulled box.
+            if self.can_refresh_machines():
+                self.request_machine_refresh(self.refresh_target())
+            elif self.machines_present:
+                self.notify("refresh disabled in demo", "error")
+            else:
+                self.notify("refresh needs a fleet (--pull / --remote)", "error")
             return True
         if key in (ord("s"), ord("S")):
             self.open_sort_menu()
@@ -4559,8 +5091,11 @@ class App:
         if key == ord("C"):
             self.open_theme_menu()
             return True
-        if key == ord("c"):
+        if key == ord("H"):
             self.open_source_menu()
+            return True
+        if key == ord("M") and self.machines_present:
+            self.open_machine_menu()
             return True
         if key == ord("D"):
             self.toggle_demo()
@@ -4686,6 +5221,15 @@ class App:
                 self.source_menu_index = (self.source_menu_index + 1) % len(order)
             elif click or double:
                 self.source_menu = False  # click cancels, source unchanged
+            return True
+        if self.machine_menu:
+            options = self.machine_filter_options()
+            if options and up:
+                self.machine_menu_index = (self.machine_menu_index - 1) % len(options)
+            elif options and down:
+                self.machine_menu_index = (self.machine_menu_index + 1) % len(options)
+            elif click or double:
+                self.machine_menu = False  # click cancels, filter unchanged
             return True
         if self.whatif_menu:
             rows = self.whatif_rows()  # the wheel walks what's on screen, filter included
@@ -4864,6 +5408,13 @@ class App:
 
     def _apply_click(self, target: tuple[str, int], drill: bool) -> None:
         kind, value = target
+        if kind == "modetab":
+            # The top-level Time/Projects/Machines strip: switch mode (works from a
+            # drilled session too, via switch_browse_mode).
+            tabs = self.mode_tab_list()
+            if 0 <= value < len(tabs):
+                self.switch_browse_mode(tabs[value][1])
+            return
         if kind == "tab":
             if self.view == "browse":
                 # Clicking a tab in the right preview pane moves the focus there,
@@ -4915,6 +5466,7 @@ class App:
                 # through to "open the selected session" on a Sessions tab.
                 self.zoom_project = None
                 self.zoom_source = None
+                self.zoom_machine = None
                 self.workflow_index = 0
                 self.scroll = 0
                 return
@@ -4922,6 +5474,15 @@ class App:
             self.project_index = value
             if self.view == "zoom":
                 self.zoom_source = None
+                self.zoom_machine = None
+                self.workflow_index = 0
+                self.scroll = 0
+                return
+        elif kind == "machine":
+            # The Machines sidebar: a row click re-scopes the detail (in a zoom too);
+            # a double-click drills into that box's sessions.
+            self.machine_index = value
+            if self.view == "zoom":
                 self.workflow_index = 0
                 self.scroll = 0
                 return
@@ -4931,6 +5492,8 @@ class App:
             self.project_index = value
         elif kind == "zoomsource":
             self.source_index = value
+        elif kind == "zoommachine":
+            self.machine_pick_index = value
         else:
             return
         if drill:
@@ -5093,7 +5656,9 @@ class App:
                 # per-backend opt-in (session_supports_context), absent not empty.
                 tabs += ("Context",)
             return tabs
-        if self.browse_mode == "projects":
+        if self.browse_mode == "machines":
+            base = self.machine_tabs
+        elif self.browse_mode == "projects":
             base = self.project_tabs
         elif self.focus == "years":
             base = self.year_tabs
@@ -5103,7 +5668,13 @@ class App:
         # after Overview. With one backend every row is the same source (a 100%
         # bar), so the tab would be noise -- omit it unless sources are combined.
         if getattr(self.store, "combined", False):
-            return base[:1] + ("Harnesses",) + base[1:]
+            base = base[:1] + ("Harnesses",) + base[1:]
+        # The fleet's per-scope Machines picker (this month/day/project, cut by box):
+        # right after Harnesses. Not in Machines MODE (already scoped to one box) and
+        # not with a lone machine (a 100% bar, like the Harnesses gate).
+        if self.machines_present and self.browse_mode != "machines":
+            cut = base.index("Harnesses") + 1 if "Harnesses" in base else 1
+            base = base[:cut] + ("Machines",) + base[cut:]
         return base
 
     def current_sort_options(self) -> tuple[str, ...]:

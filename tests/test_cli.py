@@ -1,5 +1,8 @@
 """parse_args, --status and --goto: session/directory resolution across backends (cli.py)."""
 
+import contextlib
+import io
+import json
 import os
 import re
 import sqlite3
@@ -673,3 +676,211 @@ def test_goto_miss_hint_never_buries_the_notes_warning():
         app = captured["app"]
         assert "unreadable" in app.notice  # the warning is what survived
         assert not any("no session yet" in t.text for t in app.toasts)
+
+
+# --- --pull / --remote / --forget: consolidating machines (cli.py) ------------
+
+
+@contextlib.contextmanager
+def _remotes_env(cfg_path, fetch=None):
+    # Point remotes.json at a temp file (the config path is XDG-global, shared across
+    # tests) and optionally stub the SSH/HTTP fetch, restoring both after.
+    o_path, o_fetch = ot.cli.remotes_config_path, ot.cli._fetch_summary
+    ot.cli.remotes_config_path = lambda: cfg_path
+    if fetch is not None:
+        ot.cli._fetch_summary = fetch
+    try:
+        yield
+    finally:
+        ot.cli.remotes_config_path, ot.cli._fetch_summary = o_path, o_fetch
+
+
+def _fake_summary_text(label, ids):
+    return json.dumps(
+        {
+            "opentab_export": 1,
+            "label": label,
+            "records_cost": True,
+            "workflows": [
+                {
+                    "id": i,
+                    "title": i,
+                    "directory": "/p",
+                    "created_at": "2026-07-15 10:00:00",
+                    "root_cost": 1.0,
+                    "total_cost": 1.0,
+                    "subagents": 0,
+                    "model_count": 1,
+                    "total_tokens": 100,
+                    "unpriced_tokens": 0,
+                }
+                for i in ids
+            ],
+            "model_breakdown": [],
+        }
+    )
+
+
+def test_pull_and_remote_flags_parse():
+    assert _parse([]).pull is None and _parse([]).remote is False and _parse([]).forget is None
+    assert _parse(["--pull"]).pull == []  # bare: refresh the saved machines
+    assert _parse(["--pull", "a", "b"]).pull == ["a", "b"]
+    assert _parse(["--remote"]).remote is True
+    assert _parse(["--forget", "x", "y"]).forget == ["x", "y"]
+
+
+def test_remote_entry_parses_hosts_urls_and_named_specs():
+    assert ot.cli._remote_entry("box") == ("box", {"ssh": "box"})
+    assert ot.cli._remote_entry("mo@host.local") == ("host.local", {"ssh": "mo@host.local"})
+    assert ot.cli._remote_entry("build=mo@10.0.0.5") == ("build", {"ssh": "mo@10.0.0.5"})
+    name, entry = ot.cli._remote_entry("http://100.64.0.5:8321")
+    assert name == "100.64.0.5" and entry == {"url": "http://100.64.0.5:8321"}
+
+
+def test_remotes_config_round_trips():
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        with _remotes_env(cfg):
+            assert ot.cli._load_remotes() == {}  # missing file is empty, never fatal
+            ot.cli._save_remotes({"box": {"ssh": "box"}})
+            assert ot.cli._load_remotes() == {"box": {"ssh": "box"}}
+
+
+def test_pull_learns_hosts_writes_summaries_and_survives_a_failure():
+    # Parallel fetch: two machines succeed, one is unreachable -- the failure is
+    # reported but never sinks the others, and all three are learned for a later retry.
+    def fetch(name, entry, timeout=60.0):
+        if name == "broken":
+            raise RuntimeError("Connection refused")
+        return _fake_summary_text(name, [name + "-s1"])
+
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        rdir = os.path.join(d, "remotes")
+        args = _parse(["--pull", "laptop", "mo@server", "broken", "--remotes", rdir])
+        err = io.StringIO()
+        with _remotes_env(cfg, fetch), contextlib.redirect_stderr(err):
+            ot.cli.pull_command(args)
+        machines = json.load(open(cfg, encoding="utf-8"))["machines"]
+        assert set(machines) == {"laptop", "server", "broken"}
+        assert machines["server"] == {"ssh": "mo@server"}  # name derived, target kept
+        assert sorted(os.listdir(rdir)) == ["laptop.json", "server.json"]  # broken wrote nothing
+        out = err.getvalue()
+        assert "✓ laptop" in out and "✗ broken" in out and "Pulled 2/3" in out
+
+
+def test_make_refresh_fn_repulls_named_machines_over_the_pull_workers():
+    # The in-app refresh (the TUI F key / the web /api/refresh) reuses the same fetch +
+    # save as --pull, but only for the requested remotes keys, and returns per-machine
+    # results the UI turns into a toast.
+    def fetch(name, entry, timeout=60.0):
+        return _fake_summary_text(name, [name + "-a", name + "-b"])
+
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        rdir = os.path.join(d, "remotes")
+        with _remotes_env(cfg, fetch):
+            ot.cli._save_remotes({"omv": {"ssh": "omv"}, "giant": {"ssh": "root@giant"}})
+            fn = ot.cli._make_refresh_fn(_parse(["--remote", "--remotes", rdir]))
+            results = dict((n, (c, e)) for n, c, e in fn(["omv"]))
+            assert results == {"omv": (2, "")}  # only omv, its 2 sessions
+            assert os.listdir(rdir) == ["omv.json"]  # giant was not touched
+            # The written summary reads straight back through RemoteStore.
+            store = ot.RemoteStore(rdir, _parse([]))
+            assert {w.id for w in store.workflows()} == {"omv-a", "omv-b"}
+
+
+def test_pull_with_no_hosts_refreshes_every_saved_machine():
+    def fetch(name, entry, timeout=60.0):
+        return _fake_summary_text(name, [name + "-s1"])
+
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        rdir = os.path.join(d, "remotes")
+        with _remotes_env(cfg):
+            ot.cli._save_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "mo@server"}})
+        args = _parse(["--pull", "--remotes", rdir])  # bare --pull
+        with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
+            ot.cli.pull_command(args)
+        assert sorted(os.listdir(rdir)) == ["laptop.json", "server.json"]
+
+
+def test_forget_removes_a_machine_and_its_cached_summary():
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        rdir = os.path.join(d, "remotes")
+        os.makedirs(rdir)
+        with open(os.path.join(rdir, "laptop.json"), "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        with _remotes_env(cfg):
+            ot.cli._save_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "server"}})
+        args = _parse(["--forget", "laptop", "--remotes", rdir])
+        with _remotes_env(cfg), contextlib.redirect_stderr(io.StringIO()):
+            assert ot.cli.forget_command(args) == 0
+        assert set(json.load(open(cfg, encoding="utf-8"))["machines"]) == {"server"}
+        assert not os.path.exists(os.path.join(rdir, "laptop.json"))
+
+
+def test_summary_filename_encodes_distinct_names_without_collision():
+    # `a/b` and `a_b` must not map to the same cache file (else a pull overwrites, and
+    # --forget deletes the wrong machine's summary).
+    assert ot.cli._summary_filename("a/b") != ot.cli._summary_filename("a_b")
+    assert "/" not in ot.cli._summary_filename("a/b")  # no separator escapes the dir
+
+
+def test_load_remotes_drops_malformed_entries_and_pull_never_sinks():
+    # A hand-edited null entry must not crash the parallel pull: _load_remotes filters
+    # it, and even reaching _fetch_summary with a bad entry is caught, not raised.
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        with open(cfg, "w", encoding="utf-8") as fh:
+            json.dump({"version": 1, "machines": {"ok": {"ssh": "ok"}, "bad": None}}, fh)
+        with _remotes_env(cfg):
+            assert set(ot.cli._load_remotes()) == {"ok"}  # null "bad" dropped
+        count, err = ot.cli._pull_one("bad", None, d)  # even if it slipped through
+        assert count == 0 and err  # a failure line, not an exception
+
+
+def test_pull_relearn_swaps_url_target_to_ssh():
+    def fetch(name, entry, timeout=60.0):
+        return _fake_summary_text(name, [name + "-s1"])
+
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        rdir = os.path.join(d, "remotes")
+        with _remotes_env(cfg):
+            ot.cli._save_remotes({"box": {"url": "http://old:8321"}})
+        args = _parse(["--pull", "box=newhost", "--remotes", rdir])
+        with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
+            ot.cli.pull_command(args)
+        entry = json.load(open(cfg, encoding="utf-8"))["machines"]["box"]
+        assert entry == {"ssh": "newhost"}  # old url dropped, not merged
+
+
+def test_summary_filename_is_never_a_hidden_file():
+    # RemoteStore globs "*.json" (skips dotfiles), so a "."-leading name must not write
+    # a hidden summary the remote view then can't see.
+    assert not ot.cli._summary_filename(".box").startswith(".")
+    assert not ot.cli._summary_filename("..").startswith(".")
+
+
+def test_pull_repairs_a_cmd_only_saved_entry():
+    # A hand-edited entry with a cmd but no ssh/url would be unreachable; a bare
+    # `--pull box` must fold in an ssh target derived from the name, not reuse it as-is.
+    calls = []
+
+    def fetch(name, entry, timeout=60.0):
+        calls.append((name, dict(entry)))
+        return _fake_summary_text(name, [name + "-s1"])
+
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        rdir = os.path.join(d, "remotes")
+        with _remotes_env(cfg):
+            ot.cli._save_remotes({"box": {"cmd": "/opt/opentab --export -"}})
+        args = _parse(["--pull", "box", "--remotes", rdir])
+        with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
+            ot.cli.pull_command(args)
+        assert calls and calls[0][1].get("ssh") == "box"
+        saved = json.load(open(cfg, encoding="utf-8"))["machines"]["box"]
+        assert saved.get("ssh") == "box" and saved.get("cmd") == "/opt/opentab --export -"

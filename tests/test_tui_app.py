@@ -242,7 +242,7 @@ def test_theme_picker_floats_above_help():
 
 
 def test_source_and_demo_toggles_route_from_inside_overlays():
-    # c and D are overlay-wide too: from inside Trends or P they open the source
+    # H and D are overlay-wide too: from inside Trends or P they open the source
     # picker / swap demo data instead of being swallowed, and the overlay stays up.
     app = app_with([workflow("a", "2026-06-10 12:00:00", cost=5)])
     app._models_loaded = True
@@ -250,12 +250,12 @@ def test_source_and_demo_toggles_route_from_inside_overlays():
     app.open_source_menu = lambda: calls.append("source")  # bare Args has no flags
     app.toggle_demo = lambda: calls.append("demo")
     app.handle_key(None, ord("T"))
-    app.handle_key(None, ord("c"))
+    app.handle_key(None, ord("H"))
     app.handle_key(None, ord("D"))
     assert calls == ["source", "demo"] and app.trends
     app.handle_key(None, ord("q"))
     app.handle_key(None, ord("P"))
-    app.handle_key(None, ord("c"))
+    app.handle_key(None, ord("H"))
     app.handle_key(None, ord("D"))
     assert calls == ["source", "demo", "source", "demo"] and app.show_prices
 
@@ -1905,7 +1905,7 @@ def _menu_app(current="opencode", cycle=("opencode", "claude", "all")):
 def test_source_menu_opens_at_current_and_navigates_then_selects():
     app, chosen = _menu_app(current="opencode")
     try:
-        app.handle_key(None, ord("c"))  # opens the picker
+        app.handle_key(None, ord("H"))  # opens the picker
         assert app.source_menu is True
         assert app.source_menu_index == 0  # highlight starts on the active source
         app.handle_source_menu_key(ord("j"))
@@ -1929,9 +1929,9 @@ def test_source_menu_c_advances_and_esc_cancels():
     try:
         app.open_source_menu()
         assert app.source_menu_index == 1  # claude is current
-        app.handle_source_menu_key(ord("c"))  # c walks the list too
+        app.handle_source_menu_key(ord("H"))  # H walks the list too
         assert app.source_menu_index == 2
-        app.handle_source_menu_key(ord("c"))
+        app.handle_source_menu_key(ord("H"))
         assert app.source_menu_index == 0  # wraps
         app.handle_source_menu_key(27)  # Esc cancels, source unchanged
         assert app.source_menu is False
@@ -1965,3 +1965,456 @@ def test_source_menu_entries_label_all_and_mark_current():
         }
     finally:
         ot.sources.source_cycle = app._orig_cycle
+
+
+# --- the machine dimension (fleet view: --pull/--remote) ----------------------
+
+
+def _machine_wf(id, machine, cost=1.0, when="2026-05-01 10:00:00"):
+    w = workflow(id, when, cost=cost)
+    w.machine = machine
+    return w
+
+
+def test_machines_present_requires_two_distinct_machines():
+    # The gate is >=2 machines, not `combined`: a lone machine's column/tab would be a
+    # 100% no-op, and the ordinary --source all merge (every machine == "") must not
+    # grow one.
+    assert app_with([workflow("a", "2026-05-01 10:00:00")]).machines_present is False
+    one = app_with(
+        [_machine_wf("a", "laptop"), _machine_wf("b", "laptop", when="2026-05-02 10:00:00")]
+    )
+    assert one.machines_present is False  # same single machine
+    two = app_with([_machine_wf("a", "laptop"), _machine_wf("b", "omv", when="2026-05-02 10:00:00")])
+    assert two.machines_present is True
+
+
+def test_machine_rows_group_by_machine_cost_sorted():
+    app = app_with(
+        [
+            _machine_wf("a", "laptop", cost=2.0),
+            _machine_wf("b", "omv", cost=9.0, when="2026-05-02 10:00:00"),
+            _machine_wf("c", "laptop", cost=1.0, when="2026-05-03 10:00:00"),
+        ]
+    )
+    rows = app.machine_rows(app.loaded)
+    assert [m for m, _ in rows] == ["omv", "laptop"]  # omv $9 outranks laptop $3
+    assert dict(rows)["laptop"]["sessions"] == 2
+
+
+def test_machine_column_shows_only_in_the_fleet_view():
+    fleet = app_with(
+        [_machine_wf("a", "laptop"), _machine_wf("b", "omv", when="2026-05-02 10:00:00")]
+    )
+    rnd = ot.Renderer(fleet)
+    assert "Machine" in rnd.session_header_text(False, 0)
+    assert "laptop" in rnd.session_row_text(fleet.loaded[0], ">", False, 0)
+    # A single-machine (or plain) view carries no Machine column.
+    plain = ot.Renderer(app_with([workflow("a", "2026-05-01 10:00:00")]))
+    assert "Machine" not in plain.session_header_text(False, 0)
+
+
+# --- Machines browse mode (the t/p/m strip) -----------------------------------
+
+
+def _fleet():
+    from tests._support import fleet_app
+
+    return fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00", cost=3.0)],
+            "omv": [
+                workflow("b", "2026-05-02 10:00:00", cost=9.0),
+                workflow("c", "2026-05-03 10:00:00", cost=1.0),
+            ],
+        }
+    )
+
+
+def test_machines_property_floats_the_live_box_first():
+    # The live box (laptop) anchors the top even though omv outspends it: it's "you are
+    # here" and the only box with full drill-in. Then by spend.
+    app = _fleet()
+    rows = app.machines
+    assert rows[0].name == "laptop" and rows[0].live is True
+    assert rows[1].name == "omv" and rows[1].live is False
+    assert rows[1].exported_at == "2026-07-18T09:00:00+00:00" and rows[1].opentab_version == "1.6.0"
+    assert rows[1].workflows == 2 and rows[1].cost == 10.0
+
+
+def test_machines_mode_scopes_sessions_to_the_selected_box():
+    app = _fleet()
+    app.set_browse_mode("machines")
+    assert app.browse_mode == "machines"
+    # laptop is selected (index 0); its sessions only.
+    assert [w.id for w in app.current_sessions()] == ["a"]
+    app.machine_index = 1  # omv
+    assert {w.id for w in app.current_sessions()} == {"b", "c"}
+    # Its detail tabs: Harnesses injected after Overview (fleet is combined), Sessions drills.
+    assert app.current_tabs() == ("Overview", "Harnesses", "Sessions", "Models", "Projects")
+
+
+def test_mode_tab_list_gates_machines_on_a_fleet():
+    assert [m for _l, m in app_with([workflow("a", "2026-05-01 10:00:00")]).mode_tab_list()] == [
+        "time",
+        "projects",
+    ]
+    assert [m for _l, m in _fleet().mode_tab_list()] == ["time", "projects", "machines"]
+
+
+def test_mode_tab_click_switches_browse_mode():
+    app = _fleet()
+    # ("modetab", index) -> the mode at that index in mode_tab_list.
+    app._apply_click(("modetab", 2), drill=False)  # Machines
+    assert app.browse_mode == "machines"
+    app._apply_click(("modetab", 0), drill=False)  # Time
+    assert app.browse_mode == "time"
+
+
+def test_machine_row_click_selects_and_double_click_drills():
+    app = _fleet()
+    app.set_browse_mode("machines")
+    app._apply_click(("machine", 1), drill=False)  # click omv
+    assert app.machine_index == 1 and app.view == "browse"
+    app._apply_click(("machine", 1), drill=True)  # double-click drills
+    assert app.view == "zoom"
+
+
+def test_m_key_needs_a_fleet():
+    plain = app_with([workflow("a", "2026-05-01 10:00:00")])
+    assert plain.handle_key(None, ord("m")) is True
+    assert plain.browse_mode == "time"  # unchanged
+    assert "fleet" in plain.notice.lower()
+
+
+def test_switch_browse_mode_steps_out_of_a_session():
+    app = _fleet()
+    app.set_browse_mode("machines")
+    app.drill_in()  # into the box
+    tabs = app.current_tabs()
+    app.tab = tabs.index("Sessions")
+    app.drill_in()  # into a session
+    assert app.view == "session"
+    app.switch_browse_mode("time")  # a mode-tab click from a session steps out first
+    assert app.view == "browse" and app.browse_mode == "time"
+
+
+def test_export_dataset_in_machines_mode():
+    app = _fleet()
+    app.set_browse_mode("machines")
+    kind, header, rows = app._export_dataset()
+    assert kind == "machines"
+    assert header[0] == "machine" and "live" in header
+    assert {r[0] for r in rows} == {"laptop", "omv"}
+
+
+def test_machines_mode_query_still_shows_the_selected_box_sessions():
+    # A committed filter must NOT empty a box's Sessions: the machine list is not filtered
+    # by the query (a hostname isn't a session field), so selecting omv and filtering by a
+    # word in its titles still lists those sessions.
+    app = _fleet()
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # omv (its sessions are "b", "c")
+    assert {w.id for w in app.current_sessions()} == {"b", "c"}
+    app.query = "omv"  # the hostname: matches no session title/path -> the OLD bug emptied it
+    assert len(app.machines) == 2  # the machine LIST stays full (not filtered by the query)
+    # The box's sessions filter by CONTENT, so "omv" (absent from titles) narrows to none --
+    # but selecting the box by clicking it still works; a title word would keep its sessions.
+    app.query = "b"
+    assert {w.id for w in app.current_sessions()} == {"b"}
+
+
+def test_refresh_reanchors_the_selected_machine_by_name():
+    # A refresh can reorder the boxes; restore_selection must re-find the SAME box by name,
+    # not keep the stale positional index.
+    app = _fleet()
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # omv
+    anchor = app.selection_anchor()
+    assert anchor[4] == "omv"  # the machine name rides in the anchor
+    # Simulate a rebuild that reordered machines: force index off, then restore by name.
+    app.machine_index = 0
+    app.restore_selection(anchor)
+    assert app.selected_machine_summary.name == "omv"
+
+
+def test_request_machine_refresh_paths():
+    app = _fleet()
+    app.set_browse_mode("machines")
+    # No backend injected -> a friendly error, no request queued.
+    app.request_machine_refresh("omv")
+    assert app._refresh_request is None and "refresh needs" in app.notice.lower()
+    # The live box (laptop) refreshes by a plain reload, never a re-pull.
+    calls = []
+    app._refresh_backend = lambda keys: calls.append(keys) or [(k, 5, "") for k in keys]
+    app.request_machine_refresh("laptop")
+    assert app._refresh_request is None and calls == []  # reload path, no backend call
+    # A pulled box queues its remotes key for the run loop.
+    app.request_machine_refresh("omv")
+    assert app._refresh_request == ["omv"]  # the meta key, ready for _do_refresh
+
+
+def test_per_scope_machines_tab_is_a_picker_that_narrows_sessions():
+    # The fleet's per-scope Machines tab (the Harnesses picker's twin): in a month zoom,
+    # pick a box -> Enter narrows Sessions to that box within the scope; Esc returns to it.
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00"), workflow("d", "2026-05-04 10:00:00")],
+            "omv": [workflow("b", "2026-05-02 10:00:00"), workflow("c", "2026-05-03 10:00:00")],
+        }
+    )
+    app.set_browse_mode("time")
+    app.focus = "months"
+    app.drill_in()
+    tabs = app.current_tabs()
+    assert "Machines" in tabs and "Harnesses" in tabs  # both dimensions, in the fleet
+    app.tab = tabs.index("Machines")
+    assert app.on_machines_tab
+    names = [m for m, _it in app.zoom_machine_rows()]
+    assert set(names) == {"laptop", "omv"}
+    app.machine_pick_index = names.index("omv")
+    app.drill_in()  # pick omv -> its sessions in this month
+    assert app.zoom_machine == "omv"
+    assert {w.id for w in app.current_sessions()} == {"b", "c"}
+    app.drill_out()  # back to the Machines list of this zoom
+    assert app.zoom_machine is None and app.current_tabs()[app.tab] == "Machines"
+
+
+def test_cross_dimension_picker_counts_what_enter_opens():
+    # With a box narrowed (zoom_machine) then h/l over to the Harnesses picker WITHOUT
+    # stepping out, that picker must count only the box's sessions -- exactly what Enter
+    # then opens. Counting the whole scope while Enter applies both filters is the
+    # "advertises 2, opens 1" bug.
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00", cost=10.0)],
+            "omv": [workflow("b", "2026-05-02 10:00:00", cost=2.0)],
+        }
+    )
+    for w in app.loaded:
+        w.source = "OpenCode"
+    app.set_browse_mode("time")
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Machines")
+    names = [m for m, _it in app.zoom_machine_rows()]
+    app.machine_pick_index = names.index("omv")
+    app.drill_in()  # zoom_machine = omv
+    app.tab = app.current_tabs().index("Harnesses")  # h/l over, machine still armed
+    advertised = sum(int(it["sessions"]) for _s, it in app.zoom_source_rows())
+    app.drill_in()  # pick the source
+    assert advertised == len(app.current_sessions()) == 1  # omv's one session, not both
+
+
+def test_export_on_the_machines_picker_gives_machine_aggregates():
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00", cost=10.0)],
+            "omv": [workflow("b", "2026-05-02 10:00:00", cost=2.0)],
+        }
+    )
+    app.set_browse_mode("time")
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Machines")
+    kind, header, rows = app._export_dataset()
+    assert kind == "machines" and header[0] == "machine"  # aggregates, not the session list
+    assert {r[0] for r in rows} == {"laptop", "omv"}
+
+
+def test_breadcrumb_shows_the_armed_per_scope_machine():
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00", cost=3.0)],
+            "omv": [workflow("b", "2026-05-02 10:00:00", cost=9.0)],
+        }
+    )
+    app.set_browse_mode("time")
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Machines")
+    names = [m for m, _it in app.zoom_machine_rows()]
+    app.machine_pick_index = names.index("omv")
+    app.drill_in()
+    assert "omv" in app.renderer.breadcrumb()  # the active machine scope is located
+
+
+def test_machines_mode_has_no_per_scope_machines_picker_tab():
+    # In Machines MODE you're already scoped to one box, so the per-scope Machines tab is
+    # not injected (that would be a box-within-a-box).
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00")],
+            "omv": [workflow("b", "2026-05-02 10:00:00")],
+        }
+    )
+    app.set_browse_mode("machines")
+    app.drill_in()
+    assert "Machines" not in app.current_tabs()
+
+
+def test_refresh_machines_now_is_a_no_op_under_demo():
+    # The web sync refresh must make NO network side effects under demo (matching the
+    # TUI's F gate), so a re-pull clicked on a demo page never fires an ssh fetch.
+    app = _fleet()
+    called = []
+    app._refresh_backend = lambda keys: called.append(keys) or [(k, 1, "") for k in keys]
+    app.store.demo = True
+    assert app.refresh_machines_now("omv") == []
+    assert called == []  # the backend was never called
+
+
+def test_machine_sessions_show_full_dates_not_a_bare_clock():
+    # A box's sessions span many days, so the Sessions column is "Started" (full date),
+    # like projects mode -- not the single-day "Time"/HH:MM of a focused day in time mode.
+    app = _fleet()
+    app.set_browse_mode("machines")
+    r = app.renderer
+    assert r.session_date_label() == "Started"
+    w = app.machines[0]  # any box; its first session
+    sess = app.workflows_for_machine(w.name)[0]
+    assert r.session_started(sess) == sess.created_at[:10]  # the date, not created_at[11:16]
+
+
+# --- The `M` global machine filter (the harness-picker twin) ------------------
+def test_machine_filter_narrows_every_view_and_clears():
+    # Arming a box narrows all_workflows -- and everything that reads it, the machines
+    # list included -- to that one box, the twin of the `H` harness narrowing. The mode
+    # stays available (machines_present reads the raw loaded set, not the filtered one).
+    app = _fleet()
+    assert {w.machine for w in app.all_workflows} == {"laptop", "omv"}
+    app.select_machine_filter("omv")
+    assert app.machine_filter == "omv"
+    assert {w.id for w in app.all_workflows} == {"b", "c"}
+    assert [m.name for m in app.machines] == ["omv"]  # the list collapses to the one box
+    assert app.machines_present is True  # ...but the `M`/mode gate stays on
+    app.select_machine_filter(None)  # "All machines" clears it
+    assert app.machine_filter is None
+    assert {w.machine for w in app.all_workflows} == {"laptop", "omv"}
+
+
+def test_machine_filter_menu_opens_selects_and_reopens_at_current():
+    app = _fleet()
+    app.handle_key(None, ord("M"))
+    assert app.machine_menu is True
+    opts = app.machine_filter_options()
+    assert opts[0] == ("", "All machines", True)  # nothing armed -> "All" is current
+    assert {v for v, _l, _a in opts} == {"", "laptop", "omv"}
+    app.machine_menu_index = next(i for i, (v, _l, _a) in enumerate(opts) if v == "omv")
+    app.handle_machine_menu_key(10)  # Enter arms omv + closes
+    assert app.machine_menu is False and app.machine_filter == "omv"
+    app.handle_key(None, ord("M"))  # reopen: omv is now current, "All" is not
+    reopened = app.machine_filter_options()
+    assert reopened[0][2] is False
+    assert next(a for v, _l, a in reopened if v == "omv") is True
+
+
+def test_machine_filter_menu_M_advances_and_esc_cancels():
+    app = _fleet()
+    app.open_machine_menu()
+    start = app.machine_menu_index
+    app.handle_machine_menu_key(ord("M"))  # M walks the list too
+    assert app.machine_menu_index == (start + 1) % len(app.machine_filter_options())
+    app.handle_machine_menu_key(27)  # Esc cancels, filter unchanged
+    assert app.machine_menu is False and app.machine_filter is None
+
+
+def test_machine_filter_key_off_a_fleet_is_a_no_op():
+    app = app_with([workflow("a", "2026-05-01 10:00:00")])
+    app.handle_key(None, ord("M"))
+    assert app.machine_menu is False
+    assert "fleet" in app.notice
+
+
+def test_machine_filter_revalidated_when_its_box_disappears():
+    # A source swap / demo rename that drops the box must clear the filter, not silently
+    # empty every view. _revalidate_machine_filter keeps it only while the box exists.
+    app = _fleet()
+    app.select_machine_filter("omv")
+    app.loaded = [w for w in app.loaded if w.machine == "laptop"]  # omv gone
+    app._revalidate_machine_filter()
+    assert app.machine_filter is None
+    # ...and it survives a change that keeps the box.
+    app2 = _fleet()
+    app2.select_machine_filter("omv")
+    app2._revalidate_machine_filter()  # omv still loaded
+    assert app2.machine_filter == "omv"
+
+
+def test_machine_filter_shows_in_the_header_as_a_narrowing_chip():
+    app = _fleet()
+    app.select_machine_filter("omv")
+    screen = FakeScreen(24, 80)
+    orig_cp = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: 0
+    app.renderer.draw_mode_tabs = lambda *a, **k: None  # ACS glyphs, irrelevant to the chip
+    try:
+        app.renderer.draw_header(screen, 80)
+    finally:
+        ot.curses.color_pair = orig_cp
+    assert "machine: omv" in screen_text(screen)
+
+
+def test_machine_filter_narrows_the_prices_overlay_like_the_harness_picker():
+    # The P overlay reads _model_by_root, which the `H` picker rebuilds per backend. `M`
+    # doesn't rebuild it, so its mix/rows/drill/export must scope to the armed box instead
+    # -- else P shows the other machine's models while the header says "machine: omv".
+    from tests._support import _model_row, fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00", cost=3.0)],
+            "omv": [workflow("b", "2026-05-02 10:00:00", cost=9.0)],
+        }
+    )
+    app._model_by_root = {
+        "a": [_model_row("anthropic/claude-sonnet-4", 3.0, 1000)],
+        "b": [_model_row("openai/gpt-5", 9.0, 2000)],
+    }
+    app._models_loaded = True
+    # No filter: both machines' models show, and each drills to its own session.
+    assert {e.canon for e in app.priced_model_entries()} == {"claude-sonnet-4", "gpt-5"}
+    assert [w.id for w, _c, _t in app.price_model_sessions("claude-sonnet-4")] == ["a"]
+    # Arm omv: laptop's model vanishes from the table and its drill goes empty; omv stays.
+    app.select_machine_filter("omv")
+    assert {e.canon for e in app.priced_model_entries()} == {"gpt-5"}
+    assert app.price_model_sessions("claude-sonnet-4") == []
+    assert [w.id for w, _c, _t in app.price_model_sessions("gpt-5")] == ["b"]
+    # ...but the filter is an IDENTITY narrowing, not a time window: it scopes by machine
+    # over all loaded (P stays all-time), so clearing it restores the full app-wide table.
+    app.select_machine_filter(None)
+    assert {e.canon for e in app.priced_model_entries()} == {"claude-sonnet-4", "gpt-5"}
+
+
+def test_machine_filter_key_is_advertised_wherever_it_is_handled():
+    # Regression: `M` floats above Trends/Prices (handled in the overlay-common paths), so
+    # its keymap entry must be shown there too -- footer chips can't advertise what help
+    # omits, nor vice versa. Exercised across the same contexts as the disagree invariant.
+    app = _fleet()
+    orig_cycle = ot.sources.source_cycle  # a full keymap sweep evaluates `H`'s when, which
+    ot.sources.source_cycle = lambda args: ["opencode", "claude"]  # probes the filesystem
+    try:
+        for setup in (lambda: None, lambda: setattr(app, "trends", True), None):
+            if setup is None:
+                app.trends = False
+                app.show_prices = True
+            else:
+                setup()
+            shown = {
+                e.id for e in ot.keymap.KEYS if e.id in ot.keymap.FOOTER_ORDER and e.shown(app)
+            }
+            listed = {e.id for _t, rows in app.renderer.help_sections() for e in rows}
+            assert "machine-filter" in shown  # a fleet, in every context M is handled
+            assert ("machine-filter" in shown) == ("machine-filter" in listed)
+    finally:
+        ot.sources.source_cycle = orig_cycle

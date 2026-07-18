@@ -17,11 +17,19 @@ from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import Store
 from opentab.stores.pi import PiStore
+from opentab.stores.remote import RemoteStore
 from opentab.stores.vscode import VscodeStore
 from opentab.stores.zaly import ZalyStore, default_zaly_data_dir
 
 DEFAULT_CSV_PATH = os.path.expanduser("~/.config/opentab/requests.csv")
 DEFAULT_JSONL_PATH = os.path.expanduser("~/.config/opentab/requests.jsonl")
+
+
+def default_remotes_dir() -> str:
+    # Where `opentab --pull` drops (and `--source remote` reads) other machines'
+    # exported summaries -- one *.json per machine. Beside the warm-start cache.
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "opentab", "remotes")
 
 
 def _default_pi_dir() -> str:
@@ -309,7 +317,7 @@ def available_sources(args: argparse.Namespace) -> list[str]:
 
 
 def source_cycle(args: argparse.Namespace) -> list[str]:
-    # The order the `c` key cycles through: each present source, plus "all" (merged)
+    # The order the `H` key cycles through: each present source, plus "all" (merged)
     # when at least two exist. Demo merges too -- CombinedStore shares one hidden scale.
     keys = available_sources(args)
     if len(keys) >= 2:
@@ -363,6 +371,36 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
         if len(subs) == 1:
             return subs[0], "OpenTab: loading…\r"
         return CombinedStore(subs), "OpenTab: loading all sources…\r"
+    if key == "remote":
+        import socket
+
+        from opentab.stores.remote import MachineTaggedStore
+
+        remotes = getattr(args, "remotes", None) or default_remotes_dir()
+        # The fleet view = THIS machine (live, full drill-in, tagged by hostname) + every
+        # pulled summary. Including local is what makes `opentab --remote` show the box
+        # you're on, not just the ones you pulled.
+        hostname = socket.gethostname() or "this-machine"
+        local_subs = [make_store(args, k)[0] for k in available_sources(args)]
+        # Live-local sessions win over any pulled summary that re-states them (this
+        # machine's own summary left in the remotes dir, or a session synced between
+        # boxes): excluding those ids from the remote store stops the double-count and
+        # keeps drill-in pointed at the live copy. cache_inputs makes this cheap on a warm
+        # start; the App's own workflows() call then hits the same cache.
+        local_ids = {w.id for sub in local_subs for w in sub.workflows()}
+        remote = RemoteStore(remotes, args, exclude_ids=local_ids)
+        subs = [MachineTaggedStore(sub, hostname) for sub in local_subs]
+        if remote.machines:  # any summary FILE present (even a valid zero-session export)
+            subs.append(remote)
+        if not subs:
+            raise SystemExit(
+                f"No machine summaries found in {remotes} and no local data on this "
+                "machine. On each other machine run `opentab --pull HOST` to fetch its "
+                "spend over SSH (or `opentab --export -` and gather the files there)."
+            )
+        if len(subs) == 1:
+            return subs[0], "OpenTab: loading fleet…\r"
+        return CombinedStore(subs), "OpenTab: loading fleet (this machine + pulled)…\r"
     if key == "claude":
         if not os.path.isdir(args.claude_dir):
             raise SystemExit(f"Claude Code projects directory not found: {args.claude_dir}")
