@@ -178,6 +178,33 @@ def test_build_export_prefers_the_turns_batch_and_skips_covered_sessions():
     assert store.per_session_calls == []  # the slow per-session path never ran
 
 
+class _RaisingBatchStore(_FakeExtrasStore):
+    # A backend whose Turns batch RAISES (a mid-export sqlite error). build_export must
+    # fall back to the per-session path, not silently drop the session's Turns.
+    def message_timeline_all(self):
+        raise RuntimeError("batch blew up")
+
+
+def test_build_export_falls_back_to_per_session_when_the_batch_raises():
+    wfs = [workflow("s1", "2026-07-15 10:00:00", cost=1.0)]
+    store = _RaisingBatchStore(wfs, [], turns={"s1": [_turn()]})
+    payload = ot.build_export(store, "box")
+    assert payload["turns"]["s1"][0]["prompt_title"] == "do the port"  # recovered, not dropped
+
+
+def test_machine_stats_scrambles_labels_under_demo():
+    # --timings joins per-box bytes to a machine by LABEL; under --demo the workflow rows
+    # carry demo-scrambled machine names, so machine_stats must scramble to match (else a
+    # pulled box shows 0 B). The label agrees with what workflows() stamps.
+    wfs = [workflow("a", "2026-07-15 10:00:00", cost=1.0)]
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, "box.json", _summary("realbox", wfs))
+        rs = ot.RemoteStore(d, _parse(["--demo"]))
+        labels = {s["label"] for s in rs.machine_stats()}
+        assert "realbox" not in labels and labels == {ot.demo_machine("realbox")}
+        assert {w.machine for w in rs.workflows()} == labels  # joins cleanly in the table
+
+
 def test_malformed_extras_rows_normalize_instead_of_crashing():
     # Codex: a hostile/partial summary -- {"turns": {"s1": [{}]}} -- makes supports_turns
     # true, so drill-in must render zeros, not KeyError. Every extras row is cleaned on load

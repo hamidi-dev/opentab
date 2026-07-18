@@ -194,17 +194,24 @@ def _collect_timeline(store, wf_objs) -> dict[str, list[dict]]:
     # slice, so their per-session path is already cheap and needs no batch.
     batch_fn = getattr(store, "message_timeline_all", None)
     batched: dict[str, list[dict]] = {}
+    batch_ok = False
     if batch_fn:
         try:
             batched = batch_fn() or {}
+            batch_ok = True
         except Exception:  # noqa: BLE001 -- a batch failure must fall back, not sink the export
-            batched = {}
+            batch_ok = False  # so batch_covers() sends every session down the slow path
     owner = getattr(store, "_owner", None)
 
     def batch_covers(sid: str) -> bool:
-        # True when a batch OWNS this session (so an all-aborted session it returned no
-        # rows for is not re-fetched by the slow per-session query). For the merged store
-        # that's "the owning backend has a batch"; for a leaf export, "the store does".
+        # True when a batch DEFINITIVELY owns this session (so an all-aborted session it
+        # returned no rows for is not re-fetched by the slow per-session query). Only when
+        # the batch actually SUCCEEDED -- if message_timeline_all raised, batched is empty
+        # and every session must fall back, or the export would silently drop all its
+        # Turns. For the merged store "owns" is "the owning backend has a batch"; for a
+        # leaf export, "the store does".
+        if not batch_ok:
+            return False
         if owner is not None:
             return bool(getattr(owner.get(sid), "message_timeline_all", None))
         return batch_fn is not None
@@ -488,13 +495,16 @@ class RemoteStore:
         # Per-machine volume for the --timings breakdown: sessions kept (deduped, so a
         # session re-stated by two boxes counts once on the box it was kept for) and the
         # summary file's size on disk -- which is where the v2 extras show up. Read off the
-        # loaded state, no re-parse; raw labels (timings never runs the demo rename).
+        # loaded state, no re-parse. Under demo the label is scrambled (demo_machine, as in
+        # machine_meta) so it MATCHES the demo-scrambled w.machine that workflows() stamps
+        # -- the --timings table joins bytes to a machine by label, so a raw label here
+        # would miss under demo and show every pulled box as 0 B.
         counts: dict[str, int] = {}
-        for w in self._wf:
+        for w in self._wf:  # _wf is raw -- w.machine is the real label
             counts[w.machine] = counts.get(w.machine, 0) + 1
         return [
             {
-                "label": label,
+                "label": demo_machine(label) if self.demo else label,
                 "sessions": counts.get(label, 0),
                 "bytes": self._file_sizes.get(label, 0),
             }
