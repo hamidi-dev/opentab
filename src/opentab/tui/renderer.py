@@ -1888,6 +1888,26 @@ class Renderer:
             for r in model_rows
         ]
 
+    def _top_sessions_box(
+        self, workflows: list[Workflow], scope_cost: float, width: int
+    ) -> list[str]:
+        # The Overview's "Top Sessions" preview as a ruled box, matching the Top Models
+        # table above it: Cost · Share · Tokens · Subs · Title. A top-N slice, so no
+        # TOTAL row (it would sum only the shown few, not the scope).
+        rows = self.top_sessions(workflows)
+        if not rows:
+            return self._ruled_box("# Top Sessions", "no sessions in range", [], None, [], width)
+        inner = max(1, width - 4)
+        header = f"{'Cost':>10} {'Share':>5} {'Tokens':>8} {'Subs':>4}  Title"
+        title_w = max(10, inner - 32)  # the columns before Title eat 32
+        body = [
+            f"{money(w.total_cost):>10} {pct(w.total_cost, scope_cost):>5} "
+            f"{human_tokens(w.total_tokens):>8} {w.subagents:>4}  "
+            f"{shorten(self.source_tag(w) + self.session_marks(w) + w.title, title_w)}"
+            for w in rows
+        ]
+        return self._ruled_box("# Top Sessions", header, body, None, [], width)
+
     def month_overview(self, month: MonthSummary, width: int) -> list[str]:
         lines = [
             "# Monthly Insight",
@@ -1905,14 +1925,8 @@ class Renderer:
         lines.append("")
         agg = self.aggregate_models(month_ws)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
-        lines.extend(["", "# Top Sessions"])
-        for workflow in self.top_sessions(month_ws):
-            lines.append(
-                f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, month.cost):>5} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"subagents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.session_marks(workflow) + workflow.title, max(20, width - 40))}"
-            )
+        lines.append("")
+        lines.extend(self._top_sessions_box(month_ws, month.cost, width))
         return lines
 
     def month_models(self, month: MonthSummary, width: int) -> list[str]:
@@ -1964,14 +1978,8 @@ class Renderer:
         lines.append("")
         agg = self.aggregate_models(year_ws)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
-        lines.extend(["", "# Top Sessions"])
-        for workflow in self.top_sessions(year_ws):
-            lines.append(
-                f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, year.cost):>5} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"subagents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.session_marks(workflow) + workflow.title, max(20, width - 40))}"
-            )
+        lines.append("")
+        lines.extend(self._top_sessions_box(year_ws, year.cost, width))
         return lines
 
     def year_models(self, year: YearSummary, width: int) -> list[str]:
@@ -2016,14 +2024,8 @@ class Renderer:
         agg = self.aggregate_models(self.workflows_for_day(day.day))
         lines.append("")
         lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
-        lines.extend(["", "# Top Sessions"])
-        for workflow in self.top_sessions(self.workflows_for_day(day.day)):
-            lines.append(
-                f"{money(workflow.total_cost):>10} {pct(workflow.total_cost, day.cost):>5} "
-                f"{human_tokens(workflow.total_tokens):>8} "
-                f"subagents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.session_marks(workflow) + workflow.title, max(20, width - 40))}"
-            )
+        lines.append("")
+        lines.extend(self._top_sessions_box(self.workflows_for_day(day.day), day.cost, width))
         return lines
 
     def day_sources(self, day: DaySummary, width: int) -> list[str]:
