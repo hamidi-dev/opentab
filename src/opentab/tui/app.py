@@ -3401,6 +3401,40 @@ class App:
             if n:
                 self.day_index = max(0, min(self.day_index + delta, n - 1))
 
+    def _wheel(self, my: int, mx: int, delta: int) -> None:
+        # Scroll the panel the cursor is over -- active or not. The wheel used to always
+        # move the active pane, so hovering a non-focused panel scrolled the wrong one.
+        # Route by the region kind under the cursor (a sidebar list, a zoom picker, or the
+        # detail content); a gap or the tab strip falls back to the active pane.
+        hit = self.renderer.hit(my, mx)
+        kind = hit[0] if hit else None
+        if kind == "year" and self.years:
+            self.year_index = max(0, min(self.year_index + delta, len(self.years) - 1))
+            self.month_index = self.day_index = 0  # the months list rebuilds under it
+        elif kind == "month" and self.months:
+            self.month_index = max(0, min(self.month_index + delta, len(self.months) - 1))
+            self.day_index = 0  # re-anchor the day panel when the month changes
+        elif kind == "day" and self.panel_days:
+            self.day_index = max(0, min(self.day_index + delta, len(self.panel_days) - 1))
+        elif kind == "project" and self.projects:
+            self.project_index = max(0, min(self.project_index + delta, len(self.projects) - 1))
+        elif kind == "session":
+            n = len(self.current_sessions())
+            if n:
+                self.workflow_index = max(0, min(self.workflow_index + delta, n - 1))
+        elif kind == "zoomproject":
+            n = len(self.zoom_projects())
+            if n:
+                self.project_index = max(0, min(self.project_index + delta, n - 1))
+        elif kind == "zoomsource":
+            n = len(self.zoom_source_rows())
+            if n:
+                self.source_index = max(0, min(self.source_index + delta, n - 1))
+        elif kind in ("detail", "turnline"):
+            self.scroll = max(0, self.scroll + delta)  # scroll the detail content
+        else:
+            self.move(delta)  # a gap or the tab strip: the active pane, as before
+
     def _page_step(self, stdscr: curses.window | None) -> int:
         # Half the visible pager height (the window minus chrome, measured by the
         # renderer so it can't drift from max_scroll) -- the PgDn/PgUp, Ctrl-D/Ctrl-U
@@ -4718,7 +4752,7 @@ class App:
         if self.trends:
             return self._mouse_trends(my, mx, up, down, click, double)
         if up or down:
-            self.move(-3 if up else 3)
+            self._wheel(my, mx, -3 if up else 3)
             return True
         if not (click or double):
             return True

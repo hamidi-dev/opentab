@@ -424,6 +424,29 @@ def test_handle_mouse_wheel_scrolls_the_list():
         ot.curses.getmouse = orig
 
 
+def test_mouse_wheel_scrolls_the_panel_under_the_cursor():
+    # The wheel scrolls whichever panel the cursor is over -- even a non-active one:
+    # hovering the Days list while Months is focused scrolls Days, not Months.
+    app = app_with(
+        [workflow(f"d{i}", f"2026-06-{i + 1:02d} 12:00:00") for i in range(6)]
+        + [workflow("m", "2026-05-10 12:00:00")]
+    )
+    app.focus = "months"  # Months is the active panel
+    app._wheel_down = getattr(ot.curses, "BUTTON5_PRESSED", 0) or ot.curses.REPORT_MOUSE_POSITION
+    # A "day" rows region at content y 10..20, as draw() would register for the Days panel.
+    app.renderer.oy = app.renderer.ox = 0
+    app.renderer.regions = [("rows", "day", 10, 20, 0, 30, 0)]
+    orig = ot.curses.getmouse
+    try:
+        mo_before = app.month_index
+        ot.curses.getmouse = lambda: (0, 5, 12, 0, app._wheel_down)  # wheel down over Days
+        app.handle_mouse()
+        assert app.month_index == mo_before  # the active Months panel did NOT move
+        assert app.day_index == 3  # the hovered Days panel scrolled by +3
+    finally:
+        ot.curses.getmouse = orig
+
+
 def test_clicks_are_translated_out_of_the_app_frame():
     # getmouse reports screen cells; regions are content cells inside the app frame.
     # handle_mouse takes the frame's origin off the click once -- get this wrong and
