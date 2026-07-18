@@ -777,8 +777,14 @@ class Renderer:
         # (and paints it like the pickers' headers).
         self._line_sort_headers[len(lines) - 1] = (columns, "session")
 
+    TOP_SESSIONS_LIMIT = 20  # the Overview previews are leaderboards, not the full list
+
     def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
-        return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
+        ranked = sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
+        # A top-N slice: the Sessions tab is the full, navigable list -- the Overview
+        # box (month/year/day/project) only wants the headline few, or a busy month
+        # spills hundreds of rows past the pane.
+        return ranked[: self.TOP_SESSIONS_LIMIT]
 
     @staticmethod
     def _source_abbrev(workflow: Workflow) -> str:
@@ -1644,40 +1650,59 @@ class Renderer:
         # the box-reduced width so long names aren't cut when there's room. name_label/
         # count_label let the Tools tab reuse this as Tool/Calls (which also turns
         # price_split off -- tool names don't resolve to model rates).
-        cw_ = max(4, len(count_label))
+        # The count column fits its widest value -- the TOTAL row's sum, which is >= any
+        # single row -- so a 5-digit Msgs count (10,484) doesn't overflow a 4-wide field
+        # and cascade a 1-char shove that clips the rightmost column.
+        cw_ = max(4, len(count_label), len(str(sum(int(r[1]) for r in rows))) if rows else 0)
         longest = max([len(str(r[0])) for r in rows] + [len(name_label)])
         inner = max(1, width - 4)  # the box frame eats "| " on the left and " |" on the right
         # In wide panes the CacheR/CacheW/Output cells carry the tokens' attributed
-        # share of the Cost column too -- "811.6k($10)" -- because counts alone hide
+        # share of the Cost column too -- "811.6k ($10)" -- because counts alone hide
         # how skewed the money is (cache writes bill at 12.5x the cache-read rate on
         # current Anthropic models). Costs 16 more columns than the plain layout, so
         # it only kicks in when the name column still gets its 20-char floor; with
         # no dollars anywhere ($0.00 unpriced rows) there is nothing to attribute.
-        split = price_split and any(float(r[2]) > 0 for r in rows) and inner - 73 - cw_ >= 20
-        block = 73 if split else 57
+        split = price_split and any(float(r[2]) > 0 for r in rows) and inner - 80 - cw_ >= 20
+        # The split layout gets a two-space gutter between columns: single-spacing packed
+        # the "($1.1k)" cells so tight they butted against the next column while the wide
+        # pane stranded empty space on the right (the "crowded" look). The plain fallback
+        # is the narrow-pane layout, where a one-space gutter keeps the rightmost column
+        # from clipping -- so `sep` threads header, body, and TOTAL identically per mode,
+        # and the split cells stay aligned under their labels.
+        sep = "  " if split else " "
+        block = 80 if split else 57
         mw = min(longest, max(20, inner - block - cw_))
         total_cost = sum(float(r[2]) for r in rows)
         if split:
             # Each split cell is two fixed sub-columns -- tokens right-aligned in 6,
-            # dollars right-aligned in 6 inside the parens -- so the numbers line up
+            # dollars right-aligned in 8 inside the parens -- so the numbers line up
             # row to row and the label sits exactly over the token half.
-            tail_head = f"{'CacheR':>6}{'':8} {'CacheW':>6}{'':8} {'Output':>6}{'':8}"
+            tail_head = sep.join(f"{h:>6}{'':8}" for h in ("CacheR", "CacheW", "Output"))
         else:
-            tail_head = f"{'CacheR':>9} {'CacheW':>9} {'Output':>8}"
-        header = f"{name_label:{mw}} {count_label:>{cw_}} {'Cost':>10} {'Share':>5} {'Tokens':>9} {tail_head}"
+            tail_head = sep.join((f"{'CacheR':>9}", f"{'CacheW':>9}", f"{'Output':>8}"))
+        header = (
+            f"{name_label:{mw}}{sep}{count_label:>{cw_}}{sep}{'Cost':>10}{sep}"
+            f"{'Share':>5}{sep}{'Tokens':>9}{sep}{tail_head}"
+        )
         body = []
         for name, runs, cost, tok, cr, cw, out in rows:
             if split:
                 c1, c2, c3 = self._price_split_cells(
                     str(name), float(cost), int(tok), int(cr), int(cw), int(out)
                 )
-                tail = f"{c1} {c2} {c3}"
+                tail = sep.join((c1, c2, c3))
             else:
-                tail = f"{human_tokens(int(cr)):>9} {human_tokens(int(cw)):>9} {human_tokens(int(out)):>8}"
+                tail = sep.join(
+                    (
+                        f"{human_tokens(int(cr)):>9}",
+                        f"{human_tokens(int(cw)):>9}",
+                        f"{human_tokens(int(out)):>8}",
+                    )
+                )
             body.append(
-                f"{pad(shorten(name, mw), mw)} {int(runs):>{cw_}} {money(float(cost)):>10} "
-                f"{pct(float(cost), total_cost):>5} "
-                f"{human_tokens(int(tok)):>9} {tail}"
+                f"{pad(shorten(name, mw), mw)}{sep}{int(runs):>{cw_}}{sep}{money(float(cost)):>10}{sep}"
+                f"{pct(float(cost), total_cost):>5}{sep}"
+                f"{human_tokens(int(tok)):>9}{sep}{tail}"
             )
         total = None
         if len(rows) > 1:
@@ -1694,12 +1719,18 @@ class Renderer:
                         str(name), float(cost), int(tok), int(cr), int(cw), int(out)
                     )
                     dollars = tuple(a + b for a, b in zip(dollars, row_d))
-                tail = " ".join(self._split_cell(n, d) for n, d in zip((tcr, tcw, tout), dollars))
+                tail = sep.join(self._split_cell(n, d) for n, d in zip((tcr, tcw, tout), dollars))
             else:
-                tail = f"{human_tokens(tcr):>9} {human_tokens(tcw):>9} {human_tokens(tout):>8}"
+                tail = sep.join(
+                    (
+                        f"{human_tokens(tcr):>9}",
+                        f"{human_tokens(tcw):>9}",
+                        f"{human_tokens(tout):>8}",
+                    )
+                )
             total = (
-                f"{pad('TOTAL', mw)} {truns:>{cw_}} {money(total_cost):>10} {'':>5} "
-                f"{human_tokens(ttok):>9} {tail}"
+                f"{pad('TOTAL', mw)}{sep}{truns:>{cw_}}{sep}{money(total_cost):>10}{sep}{'':>5}{sep}"
+                f"{human_tokens(ttok):>9}{sep}{tail}"
             )
         notes = []
         if any(str(name).startswith("unknown") for name, *_ in rows):
@@ -1898,15 +1929,46 @@ class Renderer:
         if not rows:
             return self._ruled_box("# Top Sessions", "no sessions in range", [], None, [], width)
         inner = max(1, width - 4)
-        header = f"{'Cost':>10} {'Share':>5} {'Tokens':>8} {'Subs':>4}  Title"
-        title_w = max(10, inner - 32)  # the columns before Title eat 32
+        header = f"{'Cost':>10}  {'Share':>5}  {'Tokens':>8}  {'Subs':>4}  Title"
+        title_w = max(10, inner - 35)  # the columns before Title eat 35 (four cols + 2-space gaps)
         body = [
-            f"{money(w.total_cost):>10} {pct(w.total_cost, scope_cost):>5} "
-            f"{human_tokens(w.total_tokens):>8} {w.subagents:>4}  "
+            f"{money(w.total_cost):>10}  {pct(w.total_cost, scope_cost):>5}  "
+            f"{human_tokens(w.total_tokens):>8}  {w.subagents:>4}  "
             f"{shorten(self.source_tag(w) + self.session_marks(w) + w.title, title_w)}"
             for w in rows
         ]
         return self._ruled_box("# Top Sessions", header, body, None, [], width)
+
+    def _top_projects_box(
+        self, workflows: list[Workflow], scope_cost: float, width: int
+    ) -> list[str]:
+        # The Overview's "Top Projects" as a ruled box, matching Top Sessions/Top Models:
+        # Cost · Share · Tokens · Sess · Project. Cost-ranked (never the Projects-tab
+        # sort/filter -- this is an at-a-glance leaderboard), a top-N slice so no TOTAL row.
+        grouped: dict[str, list[Workflow]] = defaultdict(list)
+        for w in workflows:
+            grouped[self.project_root(w.directory)].append(w)
+        ranked = sorted(
+            grouped.items(),
+            key=lambda kv: (
+                sum(w.total_cost for w in kv[1]),
+                sum(w.total_tokens for w in kv[1]),
+            ),
+            reverse=True,
+        )[: self.TOP_SESSIONS_LIMIT]
+        if not ranked:
+            return self._ruled_box("# Top Projects", "no projects in range", [], None, [], width)
+        inner = max(1, width - 4)
+        header = f"{'Cost':>10}  {'Share':>5}  {'Tokens':>8}  {'Sess':>4}  Project"
+        path_w = max(10, inner - 35)  # the columns before Project eat 35 (four cols + 2-space gaps)
+        body = [
+            f"{money(sum(w.total_cost for w in ws)):>10}  "
+            f"{pct(sum(w.total_cost for w in ws), scope_cost):>5}  "
+            f"{human_tokens(sum(w.total_tokens for w in ws)):>8}  {len(ws):>4}  "
+            f"{short_path(directory, path_w)}"
+            for directory, ws in ranked
+        ]
+        return self._ruled_box("# Top Projects", header, body, None, [], width)
 
     def month_overview(self, month: MonthSummary, width: int) -> list[str]:
         lines = [
@@ -1925,6 +1987,8 @@ class Renderer:
         lines.append("")
         agg = self.aggregate_models(month_ws)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
+        lines.append("")
+        lines.extend(self._top_projects_box(month_ws, month.cost, width))
         lines.append("")
         lines.extend(self._top_sessions_box(month_ws, month.cost, width))
         return lines
@@ -1978,6 +2042,8 @@ class Renderer:
         lines.append("")
         agg = self.aggregate_models(year_ws)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
+        lines.append("")
+        lines.extend(self._top_projects_box(year_ws, year.cost, width))
         lines.append("")
         lines.extend(self._top_sessions_box(year_ws, year.cost, width))
         return lines

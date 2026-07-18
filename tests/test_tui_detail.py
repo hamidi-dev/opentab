@@ -197,6 +197,46 @@ def test_tools_table_total_row_stays_unsplit():
     assert "$1.50" in total and "(" not in total
 
 
+def test_model_table_split_gives_columns_a_two_space_gutter():
+    # The wide split layout separates columns with two spaces (was one) so a
+    # "($0.80)" attribution cell stops butting against the next column.
+    app = app_with([])
+    rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
+    row = _cells(app.renderer._model_table(rows, "# Top Models", 120))[1]
+    assert ")  " in row  # a "(...)" cell is followed by a two-space gutter, not one
+
+
+def test_top_sessions_overview_box_caps_the_leaderboard_at_twenty():
+    # A busy month spills hundreds of sessions; the Overview's Top Sessions box is a
+    # leaderboard (the full, navigable list is the Sessions tab), so it caps at 20 and
+    # ranks by cost -- the priciest first.
+    ws = [workflow(f"s{i}", "2026-06-01 12:00:00", cost=float(i + 1)) for i in range(25)]
+    app = app_with(ws)
+    assert len(app.renderer.top_sessions(ws)) == 20
+    box = app.renderer._top_sessions_box(ws, sum(w.total_cost for w in ws), 120)
+    data = [ln for ln in box if "$" in ln]  # the cost column marks every data row
+    assert len(data) == 20
+    assert "$25.00" in data[0]  # highest cost leads
+    assert not any("$5.00" in ln for ln in data)  # the bottom five fall off the cap
+
+
+def test_top_projects_box_ranks_projects_by_cost_in_the_overview():
+    # The Overview grows a "# Top Projects" ruled box beside Top Models/Top Sessions,
+    # aggregating the scope's sessions by project directory, cost-ranked.
+    ws = [
+        workflow("a", "2026-06-01 12:00:00", cost=10.0, directory="/repo/big"),
+        workflow("b", "2026-06-02 12:00:00", cost=1.0, directory="/repo/small"),
+        workflow("c", "2026-06-03 12:00:00", cost=5.0, directory="/repo/big"),
+    ]
+    app = app_with(ws)
+    over = app.renderer.month_overview(app.months[0], 120)
+    assert any("Top Projects" in ln for ln in over)
+    box = app.renderer._top_projects_box(ws, sum(w.total_cost for w in ws), 120)
+    data = [ln for ln in box if "$" in ln]
+    assert "big" in data[0] and "$15.00" in data[0]  # two sessions summed, leads
+    assert "small" in data[1] and "$1.00" in data[1]
+
+
 def test_projects_merge_across_windows_slash_styles():
     # Pi records the cwd with backslashes; OpenCode records the same directory with
     # forward slashes. They must group as ONE project, not two (issue #4).
