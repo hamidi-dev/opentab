@@ -322,6 +322,7 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .pr-use .hb i{position:absolute;inset:0;right:auto;width:var(--w);background:var(--accent);border-radius:2px}
 /* range picker */
 .rp-panel{max-width:520px}
+.wi-panel{max-width:760px}  /* wider than the range/price panels: catalog model ids are long */
 .rp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin:6px 0 14px}
 .rp-grid button{font:inherit;font-size:12px;padding:7px 6px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--ink);cursor:pointer}
 .rp-grid button.on{border-color:var(--accent);color:var(--accent)}
@@ -343,6 +344,8 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .wi-row.on{color:var(--accent)}
 .wi-row .wi-n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wi-row .wi-t{color:var(--mut);font-size:11px;flex:none}
+.wi-tier{display:flex;align-items:center;gap:8px;margin-top:10px}
+.wi-tier .tr-note{margin-left:auto}
 #wi-filter{font:inherit;font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);
   border-radius:6px;padding:5px 10px;width:170px;outline:none;margin-left:auto}
 #wi-filter:focus{border-color:var(--accent)}
@@ -444,7 +447,7 @@ let PRICES = { open: false, view: 'flat', sort: 'eff', desc: false, q: '' };
 // by an armed target (an app-wide reprice would leave $ nothing to toggle). Deliberately
 // TRANSIENT: never localStorage, never the hash -- unlike the theme and the price pins,
 // which do persist. A remembered target would silently re-frame every later visit.
-let WHATIF = { model: null, open: false, q: '', i: 0 };
+let WHATIF = { model: null, open: false, q: '', i: 0, cat: false };
 const WI_MODELS = (DATA.whatif && DATA.whatif.models) || [];   // armable targets, most-used first
 // List rates ($/M) for EVERY model you used -- not just the armable ones: the baseline
 // prices each model's own tokens at its own rates, and a session can well contain a model
@@ -452,6 +455,24 @@ const WI_MODELS = (DATA.whatif && DATA.whatif.models) || [];   // armable target
 // still have to be counted, or the baseline would quietly drop them).
 const WI_PRICE = new Map(Object.entries((DATA.whatif && DATA.whatif.rates) || {}));
 const WI_UNPRICED = new Set((DATA.whatif && DATA.whatif.unpriced) || []);
+// The picker's second tier (Tab): the whole models.dev catalog, in the TUI's own rows and
+// order (cheapest-for-your-mix first) so both frontends arm identical names at identical
+// rates. The rates merge into WI_PRICE up front -- whatifTotals prices a catalog-armed
+// target through the same map as a used one. eff/~ expand lazily like catalogRows().
+((DATA.whatif && DATA.whatif.catalog) || []).forEach(c => { if (!WI_PRICE.has(c.m)) WI_PRICE.set(c.m, c.p); });
+let WI_CATALOG = null;
+function whatifCatalog() {
+  if (!WI_CATALOG) {
+    const mix = (DATA.prices && DATA.prices.mix) || [1, 0, 0, 0];
+    WI_CATALOG = ((DATA.whatif && DATA.whatif.catalog) || []).map(c => {
+      const [ir, orr, cr, cw] = c.p;
+      const approx = cr <= 0 && ir > 0;
+      const eff = mix[0] * ir + mix[1] * orr + mix[2] * (approx ? ir : cr) + mix[3] * cw;
+      return { model: c.m, price: c.p, eff, approx };
+    });
+  }
+  return WI_CATALOG;
+}
 
 /* ---------- formatting (mirrors opentab.formatting) ---------- */
 const money = v => (v > 0 && v < 0.005) ? '<$0.01'
@@ -1335,16 +1356,26 @@ function whatifSummary(t) {
 }
 
 /* ---------- the `w` target picker (the TUI's draw_whatif_menu) ---------- */
-// The picker's rows: the models you have actually used, most-used first, narrowed by the
-// live filter through the one shared rule (modelMatches -- id by word-anchored fuzzy
-// match, route by substring). The P overlay's filter is the same call: two model lists
-// asking the same question must not answer it differently.
+// The picker's rows: the active tier -- the models you have actually used, most-used
+// first, or (after Tab) the whole models.dev catalog, cheapest-for-your-mix first --
+// narrowed by the live filter through the one shared rule (modelMatches -- id by
+// word-anchored fuzzy match, route by substring). The P overlay's filter is the same
+// call: two model lists asking the same question must not answer it differently.
 function whatifRows() {
-  return WI_MODELS.filter(m => {
+  return (WHATIF.cat ? whatifCatalog() : WI_MODELS).filter(m => {
     const i = m.model.lastIndexOf('/');
     const route = i < 0 ? '' : m.model.slice(0, i), bare = i < 0 ? m.model : m.model.slice(i + 1);
     return modelMatches(WHATIF.q, bare, route ? [route] : [], '');
   });
+}
+// The DOM cap, like the P catalog's: the full catalog would mean thousands of buttons
+// per keystroke. Everything keys and clicks act on is the same capped list, so the
+// cursor can never land on an unrendered row -- the filter is the navigation.
+const WI_CAP = 400;
+function whatifShown() { const r = whatifRows(); return r.length > WI_CAP ? r.slice(0, WI_CAP) : r; }
+function whatifFlip() {   // Tab: your models <-> the whole catalog; the query survives
+  if (WHATIF.cat ? !WI_MODELS.length : !whatifCatalog().length) return;   // no empty tier
+  WHATIF.cat = !WHATIF.cat; WHATIF.i = 0; renderWhatif();
 }
 function toggleWhatif() {   // `w`: with a target armed, disarm it; otherwise open the picker
   if (WHATIF.model) { WHATIF.model = null; render(false); return; }
@@ -1352,9 +1383,15 @@ function toggleWhatif() {   // `w`: with a target armed, disarm it; otherwise op
 }
 function armWhatif(model) { WHATIF.model = model; WHATIF.open = false; WHATIF.q = ''; render(false); }
 function openWhatif() {
-  if (!WI_MODELS.length) return;   // no priced model usage to reprice
+  if (!WI_MODELS.length && !whatifCatalog().length) return;   // nothing anywhere to arm
   WHATIF.open = true; WHATIF.q = '';   // each open starts from the full list...
-  const i = WI_MODELS.findIndex(m => m.model === WHATIF.model);   // ...on the armed row, if any
+  // ...on your own models -- unless there are none (straight to the catalog: having used
+  // few models is exactly when you need more to compare against), or the armed target
+  // lives only there (reopen on the armed row, whichever tier holds it).
+  WHATIF.cat = !WI_MODELS.length ||
+    (!!WHATIF.model && !WI_MODELS.some(m => m.model === WHATIF.model) &&
+     whatifCatalog().some(m => m.model === WHATIF.model));
+  const i = whatifShown().findIndex(m => m.model === WHATIF.model);
   WHATIF.i = i < 0 ? 0 : i;
   renderWhatif();
 }
@@ -1363,13 +1400,16 @@ function renderWhatif() {
   const host = document.getElementById('whatifpick');
   if (!WHATIF.open) { host.hidden = true; host.textContent = ''; return; }
   host.hidden = false; host.textContent = '';
-  const rows = whatifRows();
+  const rows = whatifShown(), all = whatifRows();
   if (rows.length) WHATIF.i = ((WHATIF.i % rows.length) + rows.length) % rows.length;
   const list = rows.map((m, i) => h('button', {
     class: 'wi-row' + (i === WHATIF.i ? ' cur' : '') + (m.model === WHATIF.model ? ' on' : ''),
     onclick: () => armWhatif(m.model),
   }, h('span', { class: 'wi-n' }, (m.model === WHATIF.model ? '● ' : '○ ') + m.model),
-     h('span', { class: 'wi-t' }, hTok(m.tokens))));
+     h('span', { class: 'wi-t' }, WHATIF.cat ? (m.approx ? '~' : '') + '$' + m.eff.toFixed(2) + '/M'
+       : hTok(m.tokens))));
+  if (all.length > rows.length)
+    list.push(h('div', { class: 'hint' }, '… ' + (all.length - rows.length) + ' more — filter to narrow'));
   // Not autofocused: j/k/Enter drive the list straight away (the TUI's picker), `f` (or a
   // click) starts the filter. Typing re-renders, so the caret is restored afterwards.
   const filter = h('input', { id: 'wi-filter', type: 'search', placeholder: 'f filter…', value: WHATIF.q,
@@ -1378,28 +1418,39 @@ function renderWhatif() {
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } });
   filter.addEventListener('keydown', e => {   // the picker owns its keys while the input has focus
     if (e.key === 'Escape') { WHATIF.q = ''; WHATIF.i = 0; renderWhatif(); e.preventDefault(); }
-    else if (e.key === 'Enter') { const r = whatifRows(); if (r.length) armWhatif(r[WHATIF.i % r.length].model); e.preventDefault(); }
+    else if (e.key === 'Enter') { const r = whatifShown(); if (r.length) armWhatif(r[WHATIF.i % r.length].model); e.preventDefault(); }
+    else if (e.key === 'Tab') { whatifFlip(); const el = document.getElementById('wi-filter'); if (el) el.focus(); e.preventDefault(); }
     else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { stepWhatif(e.key === 'ArrowDown' ? 1 : -1); e.preventDefault(); }
     e.stopPropagation();
   });
-  const panel = h('div', { class: 'tr-panel rp-panel' },
+  // The tier switch: the two lists the picker can show, Tab (or a click) flips --
+  // rendered as the P overlay's segmented view switcher (.pr-views), same look.
+  const tier = h('div', { class: 'wi-tier' },
+    h('div', { class: 'pr-views' },
+      h('button', { class: WHATIF.cat ? null : 'on', onclick: () => { if (WHATIF.cat) whatifFlip(); } }, 'your models'),
+      h('button', { class: WHATIF.cat ? 'on' : null, onclick: () => { if (!WHATIF.cat) whatifFlip(); } }, 'models.dev')),
+    h('span', { class: 'tr-note' }, WHATIF.cat ? 'eff $/M at your mix — cheapest first' : 'tokens you ran through each'));
+  const panel = h('div', { class: 'tr-panel rp-panel wi-panel' },
     h('div', { class: 'tr-head' }, h('h3', null, 'What-if model'), filter,
       h('button', { class: 'tr-close', onclick: closeWhatif }, 'esc ✕')),
     h('div', { class: 'pr-intro' }, 'Compare a session’s tree against one model’s list rates — ',
       h('b', null, '“what if this model had done all of it?”'),
       ' The session’s Subagents tab and Overview reprice; every other view keeps its actual cost.'),
+    tier,
     rows.length ? h('div', { class: 'wi-list' }, list)
       : h('div', { class: 'hint' }, 'no model matches — clear the filter to widen'),
     h('div', { class: 'tr-nav', style: 'margin-top:12px' },
-      h('span', { class: 'tr-note' }, 'j/k move · f filter · Enter arms · w again clears it · esc cancels')));
+      h('span', { class: 'tr-note' }, 'j/k move · h/l/Tab tier · f filter · Enter arms · w again clears it · esc cancels')));
   panel.addEventListener('click', e => e.stopPropagation());
   host.appendChild(panel);
 }
 function stepWhatif(dir) {
-  const n = whatifRows().length;
+  const n = whatifShown().length;
   if (!n) return;
   WHATIF.i = ((WHATIF.i + dir) % n + n) % n;
   renderWhatif();
+  const cur = document.querySelector('#whatifpick .wi-row.cur');
+  if (cur) cur.scrollIntoView({ block: 'nearest' });
 }
 
 /* ---------- the detail pane ---------- */
@@ -2062,13 +2113,16 @@ document.addEventListener('keydown', e => {
   // keys. Mirrors the TUI, where handle_key checks theme_menu, then whatif_menu, then the
   // overlay branches.
   if (THEMEPICK) { if (e.key === 'Escape' || e.key === 'C') closeTheme(); e.preventDefault(); return; }
-  // The `w` target picker: j/k move, Enter arms, `f` starts the filter, Esc/q cancels
-  // (pricing unchanged). `w` advances the highlight like j, exactly as in the TUI.
+  // The `w` target picker: j/k move, Enter arms, `f` starts the filter, Tab flips to
+  // the models.dev catalog and back, Esc/q cancels (pricing unchanged). `w` advances
+  // the highlight like j, exactly as in the TUI.
   if (WHATIF.open) {
-    const rows = whatifRows();
+    const rows = whatifShown();
     if (e.key === 'Escape' || e.key === 'q') closeWhatif();
     else if (e.key === 'j' || e.key === 'ArrowDown' || e.key === 'w') stepWhatif(1);
     else if (e.key === 'k' || e.key === 'ArrowUp') stepWhatif(-1);
+    else if (e.key === 'Tab' || e.key === 'h' || e.key === 'l' ||
+             e.key === 'ArrowLeft' || e.key === 'ArrowRight') whatifFlip();  // tabs: h/l, like everywhere
     else if (e.key === 'Enter') { if (rows.length) armWhatif(rows[WHATIF.i % rows.length].model); }
     else if (e.key === 'f' || e.key === '/') { const el = document.getElementById('wi-filter'); if (el) el.focus(); }
     else if (e.key === 'C') openTheme();

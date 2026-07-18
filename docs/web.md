@@ -25,10 +25,13 @@ static host.
 
 ## `w` — the what-if model
 
-`w` opens a picker over the models you've actually used — the ones with a real list
-price (`j`/`k` move · `f` filters, word-anchored fuzzy · `Enter` arms · `Esc` cancels) — and
-**arms one as a comparison target**: *"what if the expensive model had done the
-subagents' work too?"*.
+`w` opens a picker with two tiers — the models you've actually used (the ones with a
+real list price), and, one `Tab` away, the **whole models.dev catalog**,
+cheapest-for-your-mix first with its eff $/M blend (`j`/`k` move · `f` filters,
+word-anchored fuzzy · `h`/`l`, `Tab`, or a click switch the tier tabs · `Enter` arms ·
+`Esc` cancels) — and **arms one as a comparison target**: *"what if the expensive model
+had done the subagents' work too?"*. Used few models? The catalog tier is the point — it
+opens directly when nothing you've used is priceable.
 
 It is **session-scoped**, exactly as in the TUI. Open a session and:
 

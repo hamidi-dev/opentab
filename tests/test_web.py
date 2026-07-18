@@ -310,6 +310,34 @@ def test_web_payload_ships_the_whatif_ingredients():
     assert set(payload["whatif"]["rates"]) == set(by_model)
 
 
+def test_web_payload_ships_the_whatif_catalog_tier():
+    # The picker's Tab tier travels as the TUI's own whatif_catalog_candidates rows --
+    # same names, same model_price rates, same cheapest-for-your-mix order -- because
+    # deriving it client-side from prices.catalog would re-implement the dedupe and
+    # could drift. Slim {m, p} rows: eff and its ~ flag are pure functions of p + the
+    # shipped mix, recomputed client-side exactly like the P overlay's catalog rows.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        payload = ot.build_payload(app)
+        catalog = payload["whatif"]["catalog"]
+        expected = app.whatif_catalog_candidates()
+    assert [c["m"] for c in catalog] == [name for name, _eff, _approx in expected]
+    assert len(catalog) > 100  # the whole catalog, not just the two used models
+    for c in catalog[:50]:
+        assert c["p"] == [round(float(v), 6) for v in ot.model_price(c["m"])]
+        assert set(c) == {"m", "p"}  # slim on purpose: ~1.5k rows ride in every payload
+    # A catalog target the data never used still reprices client-side: whatifTotals
+    # reads one rate map, into which the catalog rates pre-merge on load (mirrored
+    # here), so _js_whatif_totals works with an unused target armed.
+    rates = dict(payload["whatif"]["rates"])
+    for c in catalog:
+        rates.setdefault(c["m"], c["p"])
+    unused = next(c["m"] for c in catalog if c["m"] not in payload["whatif"]["rates"])
+    merged = dict(payload, whatif=dict(payload["whatif"], rates=rates))
+    js_actual, js_whatif = _js_whatif_totals(merged, "root", unused)
+    assert js_actual > 0 and js_whatif >= 0
+
+
 def test_web_whatif_reprices_the_serialized_tokens_to_the_tui_figure():
     # The page's arithmetic, run over the page's own numbers: its per-model baseline and
     # its counterfactual must land on the exact figures the TUI's whatif_session_totals
@@ -411,7 +439,7 @@ def test_web_whatif_target_is_transient_and_app_wide_costs_never_move():
     js = _js_source()
     keys = set(re.findall(r"localStorage\.setItem\('([^']+)'", js))
     assert keys == {"opentab-theme", "opentab-pins"}  # nothing what-if shaped
-    assert "let WHATIF = { model: null, open: false, q: '', i: 0 };" in js
+    assert "let WHATIF = { model: null, open: false, q: '', i: 0, cat: false };" in js
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         before = sum(w.total_cost for w in app.loaded)

@@ -169,6 +169,8 @@ class App:
     whatif_menu_index = 0
     whatif_query = ""
     whatif_filter_active = False
+    whatif_catalog = False
+    _whatif_catalog_rows: list[tuple[str, float, bool]] | None = None
 
     def __init__(self, store: Store, args: argparse.Namespace, source_key: str = ""):
         self.store = store
@@ -198,6 +200,8 @@ class App:
         self.whatif_menu_index = 0  # highlighted row in that picker
         self.whatif_query = ""  # its live `f` filter (word-anchored, like the P overlay's)
         self.whatif_filter_active = False  # keys are editing that query
+        self.whatif_catalog = False  # Tab in the picker: your models <-> the whole catalog
+        self._whatif_catalog_rows: list[tuple[str, float, bool]] | None = None  # lazy, memoized
         self._snapshot_real_costs()
         self._resolve_project_roots()
         # The per-model breakdown is the one heavy scan of the (huge) message
@@ -1053,20 +1057,22 @@ class App:
         else:
             self._compute_api_costs()
         self._models_loaded = True
+        self._whatif_catalog_rows = None  # the token mix behind its eff column changed
         self._apply_price_mode()  # re-assert the active ($/API) view onto fresh rows
-        self._revalidate_whatif()  # the target may not exist in this dataset
+        self._revalidate_whatif()  # the target may have lost its list rate
 
     def _revalidate_whatif(self) -> None:
         # The model rows just changed under an armed target (reload, `c` source switch,
-        # `D` demo toggle -- all land here). A target the new dataset never used, or
-        # can't price, is one a fresh App would refuse to arm; leaving it armed would
-        # quietly answer a question about models this data has never seen. Drop it.
-        if not self.whatif_model:
-            return
-        if any(name == self.whatif_model for name, _tokens in self.whatif_candidates()):
+        # `D` demo toggle -- all land here). A target needs no usage in the new dataset
+        # to stay meaningful -- the picker's catalog tier arms any model the price
+        # catalog knows, and the comparison is "this data's tokens at that model's
+        # list rates" either way. Only a target we can no longer price for real is
+        # dropped (one a fresh App would refuse to arm): its "rates" would be the
+        # generic FALLBACK_PRICE, a guess no price list contains.
+        if not self.whatif_model or has_known_price(self.whatif_model):
             return
         stale, self.whatif_model = self.whatif_model, None
-        self.notify(f"what-if cleared — {stale} is not used in this data", "warn")
+        self.notify(f"what-if cleared — no list rate for {stale}", "warn")
 
     def _ensure_models(self) -> None:
         # Run the deferred model-breakdown load once, on demand. Idempotent so the
@@ -1427,6 +1433,48 @@ class App:
             key=lambda kv: (-kv[1], kv[0]),
         )
 
+    def whatif_catalog_candidates(self) -> list[tuple[str, float, bool]]:
+        # The picker's second tier (Tab): every model in the models.dev catalog, not
+        # just the ones you've used -- a user who lives on one subscription model
+        # still deserves targets to compare against. One row per canonical model as
+        # (name, eff $/M, approx): date-pinned aliases fold onto one spelling (the P
+        # overlay's rule -- same billed model, same list price), the same model's
+        # gateway resale rows fold too, because arming prices through model_price(),
+        # where the vendor's own rate wins -- so per-route rows would all arm the
+        # SAME rate card and only pad the list. The kept spelling is the one whose
+        # resolved price is most complete (a date pin can reach a rate card its
+        # plain alias misses), vendor route first, so the row's eff is computed from
+        # exactly the rates arming it would use. Local providers and $0-rate models
+        # are excluded like everywhere else (no API rate to substitute in); rows are
+        # cheapest-for-your-mix first, the P models.dev leaderboard order. Memoized:
+        # the list is asked per keystroke while the picker is open, and only the
+        # token mix (model scan) or a price refresh can change it.
+        if self._whatif_catalog_rows is not None:
+            return self._whatif_catalog_rows
+        mix = self.price_token_mix()
+        shares = mix[0] if mix else (1.0, 0.0, 0.0, 0.0)
+        best: dict[str, tuple[tuple, str]] = {}
+        for pid, mid, price, _status in catalog_models():
+            if pid.lower() in LOCAL_PROVIDERS or (price[0] <= 0 and price[1] <= 0):
+                continue
+            bare = mid.rsplit("/", 1)[-1].lower()
+            rank = (
+                pid.lower() == model_family(bare),
+                sum(1 for v in model_price(mid) if v > 0),
+                -len(mid),
+            )
+            canon = canonical_model(bare)
+            cur = best.get(canon)
+            if cur is None or rank > cur[0]:
+                best[canon] = (rank, f"{pid}/{mid}")
+        rows = []
+        for _rank, name in best.values():
+            eff, approx = effective_price(model_price(name), shares)
+            rows.append((name, eff, approx))
+        rows.sort(key=lambda r: (r[1], r[0]))
+        self._whatif_catalog_rows = rows
+        return rows
+
     def whatif_session_totals(self, workflow: Workflow) -> tuple[float, float] | None:
         """The armed target's two figures for ONE session: (your models, all at target),
         BOTH at list prices. None when no target is armed, or the session has no
@@ -1518,32 +1566,56 @@ class App:
             self.clear_whatif_model()
             return
         self._ensure_models()  # needs the per-model token breakdown
+        self.whatif_catalog = False  # each open starts on your own models...
         if not self.whatif_candidates():
-            self.notify("no priced model usage to reprice", "error")
-            return
+            # ...unless there are none (a single-model subscription, a dataset with
+            # nothing priceable): open straight on the catalog tier instead of
+            # refusing -- having used few models is exactly when you need more to
+            # compare against.
+            if not self.whatif_catalog_candidates():
+                self.notify("no models to arm — the price catalog is unavailable", "error")
+                return
+            self.whatif_catalog = True
         self.whatif_menu_index = 0
         self.whatif_query = ""  # each open starts from the full list
         self.whatif_filter_active = False
         self.whatif_menu = True
 
-    def whatif_rows(self) -> list[tuple[str, int]]:
-        # The picker's visible rows: whatif_candidates() narrowed by the live `f` query,
-        # through the one shared rule (pricing.model_matches -- id by word-anchored
-        # fuzzy match, route by substring, dots==dashes). The P overlay's filter is the
-        # same call: two model lists asking the same question must not answer it
-        # differently.
+    def whatif_rows(self) -> list[tuple]:
+        # The picker's visible rows -- the active tier (your models, or the whole
+        # models.dev catalog after Tab) narrowed by the live `f` query, through the
+        # one shared rule (pricing.model_matches -- id by word-anchored fuzzy match,
+        # route by substring, dots==dashes). The P overlay's filter is the same call:
+        # two model lists asking the same question must not answer it differently.
         #
-        # Rows keep their most-used-first order: a filtered list should still answer
-        # "which of these do I lean on", never re-rank by match quality.
-        rows = self.whatif_candidates()
+        # Rows keep their tier's order (most-used-first, or cheapest-for-your-mix
+        # first on the catalog): a filtered list should still answer its tier's
+        # question, never re-rank by match quality. Each row leads with the model
+        # name; the tail differs per tier (tokens used vs eff $/M), which only
+        # draw_whatif_menu reads.
+        rows = self.whatif_catalog_candidates() if self.whatif_catalog else self.whatif_candidates()
         if not self.whatif_query:
-            return rows
+            return list(rows)
         out = []
-        for name, tokens in rows:
-            route, _, bare = name.rpartition("/")
+        for row in rows:
+            route, _, bare = row[0].rpartition("/")
             if model_matches(self.whatif_query, bare, (route,) if route else ()):
-                out.append((name, tokens))
+                out.append(row)
         return out
+
+    def whatif_toggle_catalog(self) -> None:
+        # Tab in the picker: flip between your models and the whole catalog. The
+        # query survives (typing "deepseek" over your all-Anthropic history and THEN
+        # widening is the expected motion); the highlight re-anchors. A tier with
+        # nothing in it isn't offered -- flipping to an empty list would strand the
+        # picker on "no model matches" with nothing a backspace could widen.
+        other = (
+            self.whatif_candidates() if self.whatif_catalog else self.whatif_catalog_candidates()
+        )
+        if not other:
+            return
+        self.whatif_catalog = not self.whatif_catalog
+        self.whatif_menu_index = 0
 
     def select_whatif_model(self, name: str) -> None:
         # Arming a target changes NO app-wide number: not a session's cost, not a day,
@@ -1577,18 +1649,26 @@ class App:
         # The `w` model picker: j/k move, Enter selects, Esc/q cancels, `f` (or `/`)
         # starts the live filter -- the same word-anchored narrowing, on the same keys,
         # as the P overlay's model list, because it is the same question asked of the
-        # same rows. Mirrors handle_source_menu_key otherwise, `w` advancing the highlight
+        # same rows -- and Tab flips between your models and the whole models.dev
+        # catalog. Mirrors handle_source_menu_key otherwise, `w` advancing the highlight
         # like `c` does.
         if key == 3:  # Ctrl-C still quits
             return False
-        if not self.whatif_candidates():
+        if not self.whatif_candidates() and not self.whatif_catalog_candidates():
             self.whatif_menu = False
             return True
         rows = self.whatif_rows()
+        if key == ord("\t"):
+            self.whatif_toggle_catalog()
+            return True
         if self.whatif_filter_active:
             return self._handle_whatif_filter_key(key, rows)
         if key in (ord("f"), ord("/")):
             self.whatif_filter_active = True
+        elif key in (ord("h"), ord("l"), curses.KEY_LEFT, curses.KEY_RIGHT):
+            # The tiers are tabs, so h/l switch them like tabs everywhere else
+            # (Tab still flips too; in the filter, h/l stay typable characters).
+            self.whatif_toggle_catalog()
         elif key in (ord("j"), curses.KEY_DOWN, ord("w")) and rows:
             self.whatif_menu_index = (self.whatif_menu_index + 1) % len(rows)
         elif key in (ord("k"), curses.KEY_UP) and rows:
@@ -1654,9 +1734,15 @@ class App:
             self.notify(f"price refresh failed: {exc}", "error")
             return
         invalidate_price_cache()  # drop the in-process overlay so the new file is read
+        self._whatif_catalog_rows = None  # the `w` picker's catalog tier reads those rates
         self._ensure_models()
         self._compute_api_costs()
         self._apply_price_mode()
+        # A refresh can drop a model from the catalog (a rename, a removed provider), so an
+        # armed target may have just lost its list rate. _ensure_models is a no-op here
+        # (models already loaded), so its usual revalidation never runs -- do it by hand,
+        # or the target stays armed and silently reprices at the generic FALLBACK_PRICE.
+        self._revalidate_whatif()
         self.prices_scroll = 0
         self.notify(f"refreshed {count} model prices from models.dev", "success")
 
@@ -4568,7 +4654,18 @@ class App:
             elif rows and down:
                 self.whatif_menu_index = (self.whatif_menu_index + 1) % len(rows)
             elif click or double:
-                self.whatif_menu = False  # click cancels, pricing unchanged
+                # The tier tabs are clickable like the P overlay's view tabs. Matched
+                # by kind, never through the generic hit(): the modal floats OVER the
+                # body, whose earlier-registered regions cover the same cells and
+                # would win a first-match scan.
+                for region in self.renderer.regions:
+                    if len(region) == 5 and region[0] == "whatiftab":
+                        _kind, ry, x0, x1, tier = region
+                        if ry == my and x0 <= mx <= x1:
+                            if bool(tier) != self.whatif_catalog:
+                                self.whatif_toggle_catalog()
+                            return True
+                self.whatif_menu = False  # any other click cancels, pricing unchanged
             return True
         if self.sort_menu:
             options = self.sort_menu_options()

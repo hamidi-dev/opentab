@@ -156,10 +156,22 @@ def _whatif_payload(app: App) -> dict:
     # token priced (dropping them would understate the baseline), but the figure stops
     # being a list price, so both frontends mark it with a `~` rather than quote a
     # made-up rate as fact. Mirrors App.whatif_baseline_is_estimated.
+    #
+    # `catalog` is the picker's second tier (Tab): the whole models.dev catalog as the
+    # TUI's whatif_catalog_candidates computes it -- one slim {m, p} row per canonical
+    # model, in its cheapest-for-your-mix order, priced by model_price() so both
+    # frontends arm identical names at identical rates (deriving it client-side from
+    # prices.catalog would re-implement the dedupe and could drift). eff and its ~
+    # flag are pure functions of p + the shipped mix, recomputed client-side like the
+    # P overlay's catalog rows.
     return {
         "models": [
             {"model": name, "tokens": int(tokens), "price": rates[name]}
             for name, tokens in app.whatif_candidates()
+        ],
+        "catalog": [
+            {"m": name, "p": [round(float(v), 6) for v in model_price(name)]}
+            for name, _eff, _approx in app.whatif_catalog_candidates()
         ],
         "rates": rates,
         "unpriced": sorted(

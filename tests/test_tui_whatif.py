@@ -170,8 +170,8 @@ def test_whatif_baseline_prices_each_model_not_the_dominant_one():
 def test_whatif_ignores_zero_token_model_rows():
     # OpenCode emits a model row with no tokens for an assistant record whose usage never
     # landed (an aborted turn). It names a model but is not usage, so it must neither
-    # float that model into the picker (where it could keep a stale target alive through
-    # _revalidate_whatif) nor, if it is unpriceable, mark an otherwise exact baseline "~".
+    # float that model into the picker's your-models tier nor, if it is unpriceable,
+    # mark an otherwise exact baseline "~".
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp, solo=True)  # 1M Opus tokens, priced
         wf = app.loaded[0]
@@ -180,10 +180,6 @@ def test_whatif_ignores_zero_token_model_rows():
 
         # The aborted rows name models, but neither is usage...
         assert [name for name, _tok in app.whatif_candidates()] == ["anthropic/claude-opus-4.5"]
-        # ...so an armed Haiku target is NOT kept alive by the zero-token Haiku row,
-        app.whatif_model = "anthropic/claude-haiku-4.5"
-        app._revalidate_whatif()
-        assert app.whatif_model is None
         # ...and the unpriceable zero-token row does not turn an exact baseline into "~".
         app.select_whatif_model("anthropic/claude-opus-4.5")
         assert not app.whatif_baseline_is_estimated(wf)
@@ -222,20 +218,50 @@ def test_whatif_baseline_is_marked_estimated_when_a_model_has_no_list_rate():
         )
 
 
-def test_whatif_target_is_dropped_when_the_data_no_longer_uses_it():
+def test_whatif_target_survives_a_dataset_that_never_used_it():
     # Arm a target, then reload into a dataset that never used it (a `c` source switch or
-    # `D` demo toggle does exactly this). A fresh App would refuse to arm it, so leaving
-    # it armed would quietly answer a question about a model this data has never seen.
+    # `D` demo toggle does exactly this). The picker's catalog tier can arm any model
+    # the price catalog knows, so usage is no longer what makes a target valid -- only
+    # a target we can no longer price for real is dropped (its "rates" would be the
+    # generic FALLBACK_PRICE, a guess no price list contains).
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.select_whatif_model("anthropic/claude-haiku-4.5")
         assert app.whatif_model == "anthropic/claude-haiku-4.5"
 
-        # The new dataset uses only Opus; the armed Haiku target must not survive it.
+        # The new dataset uses only Opus; the priceable Haiku target stays armed...
         app._model_by_root = {"root": [_model_row("anthropic/claude-opus-4.5", 1.0, 10)]}
         app._revalidate_whatif()
+        assert app.whatif_model == "anthropic/claude-haiku-4.5"
+
+        # ...while a target with no list rate at all is what gets dropped.
+        app.whatif_model = "unknown (not recorded)"
+        app._revalidate_whatif()
         assert app.whatif_model is None
-        assert app.toasts and "not used in this data" in app.toasts[-1].text
+        assert app.toasts and "no list rate" in app.toasts[-1].text
+
+
+def test_whatif_price_refresh_drops_a_target_that_lost_its_list_rate():
+    # A models.dev refresh can rename or remove a model, so an armed target may lose its
+    # list rate mid-session. refresh_prices_action reloads prices but _ensure_models is a
+    # no-op once models are loaded, so its usual revalidation never runs -- the refresh
+    # must revalidate by hand, or the target stays armed and reprices at FALLBACK_PRICE.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        app.select_whatif_model("anthropic/claude-opus-4.5")
+        app.whatif_model = "vendor/dropped-by-refresh"  # a target the new catalog won't price
+
+        orig = ot.tui.app.refresh_model_prices
+        ot.tui.app.refresh_model_prices = lambda *a, **k: (0, "/tmp/prices.json")  # no network
+        try:
+            app.refresh_prices_action()
+        finally:
+            ot.tui.app.refresh_model_prices = orig
+        # The target is dropped -- not left armed to reprice at FALLBACK_PRICE. (The
+        # revalidate's "no list rate" toast is collapsed onto the refresh's own success
+        # toast, both being set within this one handler with no paint between, so we
+        # assert the drop itself, which is the fix.)
+        assert app.whatif_model is None
 
 
 def test_whatif_candidates_skip_models_with_no_known_price():
@@ -521,6 +547,176 @@ def test_whatif_picker_filters_the_model_list():
         app.handle_whatif_menu_key(27)
         assert app.whatif_menu and not app.whatif_filter_active and app.whatif_query == ""
         assert len(app.whatif_rows()) == 2
+
+
+def test_whatif_catalog_candidates_cover_the_catalog_and_price_what_they_show():
+    # The picker's Tab tier: every models.dev model, not just the ones you've used.
+    # One row per canonical model -- gateway resale rows and date-pinned aliases fold,
+    # because arming prices through model_price(), where the vendor's own rate wins,
+    # so per-route rows would all arm the SAME rate card. The invariant that matters:
+    # each row's eff is computed from exactly the rates arming that name would use.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        rows = app.whatif_catalog_candidates()
+        assert len(rows) > 100  # the whole catalog, not the two models this data used
+
+        canons = [ot.pricing.canonical_model(name) for name, _eff, _approx in rows]
+        assert len(canons) == len(set(canons))  # one row per canonical model
+
+        mix = app.price_token_mix()
+        shares = mix[0] if mix else (1.0, 0.0, 0.0, 0.0)
+        for name, eff, approx in rows[:50]:
+            got_eff, got_approx = ot.pricing.effective_price(ot.model_price(name), shares)
+            assert (round(got_eff, 9), got_approx) == (round(eff, 9), approx)
+
+        # Cheapest-for-your-mix first (the P models.dev leaderboard order), and no
+        # local or $0-rate rows -- there is no API rate to substitute in.
+        assert [e for _n, e, _a in rows] == sorted(e for _n, e, _a in rows)
+        assert not any(ot.pricing.is_local_provider(n) for n, _e, _a in rows)
+
+        # The catalog tier survives a picker round-trip through the memo (the list is
+        # asked per keystroke) and re-computes after the model scan re-runs.
+        assert app.whatif_catalog_candidates() is rows
+        app._load_model_cache()
+        assert app.whatif_catalog_candidates() is not rows
+
+
+def test_whatif_picker_tab_flips_to_the_catalog_and_arms_from_it():
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        app.toggle_whatif()
+        assert app.whatif_menu and not app.whatif_catalog  # opens on your models
+
+        app.handle_whatif_menu_key(ord("f"))  # the query survives the flip:
+        for ch in "haiku4.5":  # type on the your-models tier...
+            app.handle_whatif_menu_key(ord(ch))
+        app.handle_whatif_menu_key(ord("\t"))  # ...then widen to the catalog
+        assert app.whatif_catalog and app.whatif_query == "haiku4.5"
+        assert app.whatif_menu_index == 0
+        rows = app.whatif_rows()
+        assert rows and all("haiku" in name for name, _eff, _approx in rows)
+
+        app.handle_whatif_menu_key(10)  # Enter arms the highlighted catalog row
+        assert not app.whatif_menu
+        assert app.whatif_model == rows[0][0]
+        assert ot.has_known_price(app.whatif_model)
+        # The armed catalog target drives the Subagents tab like any used model.
+        lines = app.renderer.detail_subagents(app.loaded[0], 200)
+        assert app.whatif_model in lines[0]
+        assert any(ln.startswith("TOTAL (list rates)") for ln in lines)
+
+
+def test_whatif_picker_renders_the_tier_tab_strip():
+    # The tier switch is a real tab strip -- the P overlay's view tabs, drawn by the
+    # same draw_tabs renderer with the same bracketed-active convention and the same
+    # clickable regions (kind="whatiftab"), not a text label.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        app.toggle_whatif()
+        orig_cp = ot.curses.color_pair
+        ot.curses.color_pair = lambda n: 0
+        try:
+            screen = FakeScreen(30, 90)
+            app.renderer.draw_whatif_menu(screen, 30, 90)
+            text = screen_text(screen)
+            assert "[your models]" in text and " models.dev " in text
+            tabs = [r for r in app.renderer.regions if r[0] == "whatiftab"]
+            assert [t[-1] for t in tabs] == [0, 1]  # both tabs registered clickable
+
+            app.whatif_toggle_catalog()
+            screen2 = FakeScreen(30, 90)
+            app.renderer.draw_whatif_menu(screen2, 30, 90)
+            assert "[models.dev]" in screen_text(screen2)  # the flip moves the brackets
+        finally:
+            ot.curses.color_pair = orig_cp
+
+
+def test_whatif_picker_keeps_the_selected_row_on_screen_at_the_minimum_height():
+    # The 80x20 minimum terminal hands draw_whatif_menu scr_h=18 (the frame eats two
+    # rows). The tier strip added two content lines, so the row cap must reserve for them
+    # or the selected LAST row of a filtered catalog scrolls off the bottom while Enter
+    # still arms it -- an off-screen pick. The picker must draw the highlighted row.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        app.toggle_whatif()
+        app.whatif_catalog = True
+        app.whatif_filter_active = True
+        app.whatif_query = "gpt"  # a long filtered catalog list
+        rows = app.whatif_rows()
+        assert len(rows) > 6  # enough to force scrolling at scr_h=18
+        app.whatif_menu_index = len(rows) - 1  # cursor on the last match
+        orig_cp = ot.curses.color_pair
+        ot.curses.color_pair = lambda n: 0
+        try:
+            screen = FakeScreen(18, 100)
+            app.renderer.draw_whatif_menu(screen, 18, 100)
+            selected = rows[app.whatif_menu_index][0]
+            assert selected[:20] in screen_text(screen)  # the armed row is actually visible
+        finally:
+            ot.curses.color_pair = orig_cp
+
+
+def test_whatif_picker_tier_tab_click_flips_the_tier():
+    # Clicking a tier tab flips the picker (and keeps it open); clicking anywhere
+    # else in the modal still cancels. Matched by region kind, never the generic
+    # hit() -- the modal floats over body regions covering the same cells.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        app.toggle_whatif()
+        assert app.whatif_menu and not app.whatif_catalog
+        app.renderer.regions = [  # what draw_whatif_menu's draw_tabs registers
+            ("whatiftab", 5, 10, 22, 0),
+            ("whatiftab", 5, 25, 36, 1),
+        ]
+        orig = ot.curses.getmouse
+        try:
+            ot.curses.getmouse = lambda: (0, 30, 5, 0, ot.curses.BUTTON1_CLICKED)
+            app.handle_mouse()
+            assert app.whatif_menu and app.whatif_catalog  # models.dev tab: flip, stay open
+            app.handle_mouse()
+            assert app.whatif_menu and app.whatif_catalog  # re-click the active tab: inert
+            ot.curses.getmouse = lambda: (0, 30, 15, 0, ot.curses.BUTTON1_CLICKED)
+            app.handle_mouse()
+            assert not app.whatif_menu  # a click off the tabs cancels, as before
+        finally:
+            ot.curses.getmouse = orig
+
+
+def test_whatif_picker_h_l_switch_the_tier_tabs():
+    # The tiers are tabs, so h/l switch them like tabs everywhere else (Tab and a
+    # click still flip too) -- while the filter is live, h/l stay typable characters.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        app.toggle_whatif()
+        assert app.whatif_menu and not app.whatif_catalog
+        app.handle_whatif_menu_key(ord("l"))
+        assert app.whatif_catalog
+        app.handle_whatif_menu_key(ord("h"))
+        assert not app.whatif_catalog
+        app.handle_whatif_menu_key(ot.curses.KEY_RIGHT)
+        assert app.whatif_catalog
+
+        app.handle_whatif_menu_key(ord("f"))  # the live filter owns printable keys
+        app.handle_whatif_menu_key(ord("h"))
+        assert app.whatif_query == "h" and app.whatif_catalog  # typed, not flipped
+
+
+def test_whatif_picker_opens_on_the_catalog_when_nothing_used_is_priceable():
+    # A user on a single unpriceable model (or none at all) is exactly who needs more
+    # models to compare against -- the picker opens straight on the catalog tier
+    # instead of refusing like it used to.
+    with tempfile.TemporaryDirectory() as tmp:
+        sessions = [("root", None, "Solo", "/tmp/p", 1760000000000, 0, 1_000_000)]
+        messages = [_whatif_msg("root", "unknown", "not recorded", 0, 1_000_000)]
+        app = _whatif_app(tmp, sessions, messages)
+        assert app.whatif_candidates() == []
+
+        app.handle_key(None, ord("w"))
+        assert app.whatif_menu and app.whatif_catalog
+        app.handle_whatif_menu_key(ord("\t"))  # nothing to flip back to: Tab is inert
+        assert app.whatif_catalog
+        app.handle_whatif_menu_key(10)  # Enter arms the cheapest-for-the-mix row
+        assert app.whatif_model and ot.has_known_price(app.whatif_model)
 
 
 def test_whatif_is_allowed_in_demo_mode_unlike_the_dollar_toggle():

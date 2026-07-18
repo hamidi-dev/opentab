@@ -3247,10 +3247,12 @@ class Renderer:
 
     def draw_modal(
         self, stdscr: curses.window, scr_h: int, scr_w: int, title: str, lines: list
-    ) -> None:
+    ) -> tuple[int, int, int, int]:
         # A small centered popup box floating over the current view (cleared interior so
         # the view doesn't bleed through). `lines` is a list of (text, attr); the caller
         # styles each row (header tint, A_REVERSE for a selected entry). Sized to content.
+        # Returns the box geometry (y, x, h, w) so a caller can post-paint richer rows --
+        # the `w` picker lays its tier tab strip over a placeholder line this way.
         content = [(str(t), a) for t, a in lines]
         inner_w = max([len(title) + 2] + [display_width(t) for t, _ in content] + [16])
         w = min(inner_w + 4, max(24, scr_w - 4))
@@ -3263,6 +3265,7 @@ class Renderer:
         field = w - 4
         for offset, (text, attr) in enumerate(content[: h - 4]):
             self.write(stdscr, y + 2 + offset, x + 2, pad(shorten(text, field), field), attr)
+        return y, x, h, w
 
     def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `c` picker: a small modal list of every present source. j/k moves the
@@ -3277,26 +3280,48 @@ class Renderer:
             lines.append((f" {marker}  {label}{suffix}", attr))
         self.draw_modal(stdscr, scr_h, scr_w, "Switch source · j/k · Enter · Esc", lines)
 
+    WHATIF_TIERS = ("your models", "models.dev")  # the picker's two row sets, Tab-flipped
+
     def draw_whatif_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
-        # The `w` picker: arm ONE model you've used as a comparison target -- "what if
-        # this model had done all of a session's work?" -- and a session's Subagents tab
-        # prices that session's tree at its list rates. j/k moves the highlight, Enter
-        # arms, `f` narrows the list (word-anchored, the P overlay's filter), Esc cancels
-        # (handle_whatif_menu_key); `w` again with a target set clears it. Scrolled around
-        # the selection like the theme picker -- a heavy month can carry a lot of models,
-        # which is what the filter is for.
+        # The `w` picker: arm ONE model as a comparison target -- "what if this model
+        # had done all of a session's work?" -- and a session's Subagents tab prices
+        # that session's tree at its list rates. Two tiers, Tab flips between them:
+        # your own models (most-used first, with the tokens they burned) and the whole
+        # models.dev catalog (cheapest-for-your-mix first, with the eff $/M blend the
+        # P overlay computes -- ~ marks a missing cache-read rate billed at the input
+        # rate). j/k moves the highlight, Enter arms, `f` narrows the list (word-anchored,
+        # the P overlay's filter), Esc cancels (handle_whatif_menu_key); `w` again with
+        # a target set clears it. Scrolled around the selection like the theme picker --
+        # the catalog runs to thousands of rows, which is what the filter is for.
         entries = self.whatif_rows()
         idx = self.whatif_menu_index % len(entries) if entries else 0
-        max_rows = max(4, scr_h - 14)
+        # Reserve rows for every non-entry line the modal carries, so draw_modal never
+        # clips the SELECTED entry off the bottom -- even at the 80x20 minimum, where this
+        # is handed scr_h=18. draw_modal paints at most scr_h-8 content rows; the worst-case
+        # non-entry lines before the list are 7 (two intro + the two-line tier strip + the
+        # filter and its blank + the "↑ more" marker), so entries must stay <= scr_h-15.
+        # The floor is 1, not 4: at scr_h=18 only three rows fit, and a floor of 4 would put
+        # the selected last row past the paint budget (Enter then arms an off-screen model).
+        max_rows = max(1, scr_h - 15)
         start = 0
         if len(entries) > max_rows:
             start = min(max(0, idx - max_rows // 2), len(entries) - max_rows)
         visible = entries[start : start + max_rows]
+        # The model-id column widens to fit the longest row, capped so the box still fits
+        # the terminal (and the eff/tokens cell isn't clipped off the right edge): 36% of
+        # catalog ids overflow a fixed 34 ("github-copilot/claude-sonnet-4.5", the whole
+        # "names don't fit" complaint). Sized off `entries` (the filtered set), not the
+        # scroll window, so the width tracks the filter and never jumps as j/k scrolls.
+        longest = max((len(str(r[0])) for r in entries), default=24)
+        name_cap = max(24, scr_w - 4) - 19  # modal width cap − "| |" gutters(4) − prefix+cell(15)
+        namew = max(24, min(longest, name_cap))
         lines = [
             ("Compare a session's tree against one model's list rates:", curses.color_pair(4)),
             ("(the Subagents tab; every other view keeps its actual cost)", curses.A_DIM),
+            ("", 0),  # the tier tab strip, post-painted below (draw_tabs needs mixed attrs)
             ("", 0),
         ]
+        tier_line = 2
         if self.whatif_query or self.whatif_filter_active:
             # A block cursor while the query is live, so it reads as an input, not a label.
             cursor = "█" if self.whatif_filter_active else ""
@@ -3304,10 +3329,16 @@ class Renderer:
             lines.append(("", 0))
         if start:
             lines.append((f"    ↑ {start} more", curses.A_DIM))
-        for offset, (name, tok) in enumerate(visible, start=start):
+        for offset, row in enumerate(visible, start=start):
+            name = row[0]
+            if self.whatif_catalog:
+                _name, eff, approx = row
+                cell = f"{'~' if approx else ''}${eff:,.2f}/M"
+            else:
+                cell = human_tokens(row[1])
             marker = "●" if name == self.whatif_model else "○"
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
-            lines.append((f" {marker}  {pad(shorten(name, 34), 34)} {human_tokens(tok):>9}", attr))
+            lines.append((f" {marker}  {pad(shorten(name, namew), namew)} {cell:>10}", attr))
         if not entries:
             lines.append(("    no model matches — backspace to widen", curses.color_pair(2)))
         below = len(entries) - (start + len(visible))
@@ -3319,7 +3350,20 @@ class Renderer:
             else "f filter · w again clears it · Esc cancels"
         )
         lines += [("", 0), (hint, curses.color_pair(1))]
-        self.draw_modal(stdscr, scr_h, scr_w, "What-if model · j/k · f · Enter · Esc", lines)
+        my, mx, mh, mw = self.draw_modal(
+            stdscr, scr_h, scr_w, "What-if model · j/k · h/l/Tab · f · Enter · Esc", lines
+        )
+        # The tier switch is a real tab strip (the P overlay's view tabs, same renderer,
+        # same clickable regions -- handle_mouse routes "whatiftab" hits to the flip):
+        # [your models]  models.dev, with the tier's column meaning dimmed beside it.
+        if tier_line < mh - 4:
+            ty, tx, field = my + 2 + tier_line, mx + 2, mw - 4
+            tabs = self.WHATIF_TIERS
+            self.draw_tabs(stdscr, ty, tx, field, tabs, int(self.whatif_catalog), kind="whatiftab")
+            tabs_w = sum(len(t) + 2 for t in tabs) + 2 * (len(tabs) - 1)
+            note = "eff $/M at your mix" if self.whatif_catalog else "tokens you ran through each"
+            if tabs_w + 2 + len(note) <= field:
+                self.write(stdscr, ty, tx + field - len(note), note, curses.A_DIM)
 
     def draw_theme_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `C` (Colours) picker: a modal list of the themes (shared with the web
