@@ -89,9 +89,9 @@ def test_tools_tab_offered_only_with_part_table():
         app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
         app.view = "session"
         # An OpenCode session offers every per-session tab (Turns, Tools, Context).
+        # The model mix lives in the Overview, so there is no separate Models tab.
         assert app.current_tabs() == (
             "Overview",
-            "Models",
             "Subagents",
             "Turns",
             "Tools",

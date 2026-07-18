@@ -109,7 +109,7 @@ class PriceEntry(NamedTuple):
 
 
 class App:
-    workflow_tabs = ("Overview", "Models", "Subagents")
+    workflow_tabs = ("Overview", "Subagents")  # a session's model mix lives in the Overview
     day_tabs = ("Overview", "Projects", "Sessions")  # day models stay folded into Overview
     month_tabs = ("Overview", "Models", "Projects", "Sessions")
     year_tabs = ("Overview", "Models", "Projects", "Sessions")

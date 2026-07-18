@@ -1831,24 +1831,22 @@ def test_f_filters_the_models_tab_by_name():
     }
     wf = app.all_workflows[0]
     r = app.renderer
+    month = app.months[0]
 
-    # The Models tab is now a filterable view.
-    app.view = "session"
-    app.tab = app.current_tabs().index("Models")
-    assert app.on_models_tab and app.can_filter_current_view()
-
+    # The Models tab (Month/Year/Project scope) is a filterable view; a session has no
+    # Models tab -- its model mix lives in the Overview, which stays unfiltered.
     # No query -> both models; a query keeps only the fuzzy matches.
     app.query = ""
-    assert any("opus" in ln for ln in r.detail_models(wf, 120))
+    assert any("opus" in ln for ln in r.month_models(month, 120))
     app.query = "opus"
-    lines = r.detail_models(wf, 120)
+    lines = r.month_models(month, 120)
     assert any("opus" in ln for ln in lines) and not any("gpt-5.3" in ln for ln in lines)
 
     # A query that matches nothing gives a friendly empty message, not a bare header.
     app.query = "zzz"
-    assert any("No models match" in ln for ln in r.detail_models(wf, 120))
+    assert any("No models match" in ln for ln in r.month_models(month, 120))
 
-    # Overview's Top Models is a different tab and is never filtered.
+    # A session's Overview Top Models is a different view and is never filtered.
     app.query = "opus"
     assert any("gpt-5.3" in ln for ln in r.detail_overview(wf, 120))
 

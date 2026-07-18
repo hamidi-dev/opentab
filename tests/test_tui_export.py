@@ -64,12 +64,6 @@ def test_export_follows_the_active_panel():
     app.tab = app.month_tabs.index("Overview")  # Overview falls back to the session list
     assert app._export_dataset()[0] == "sessions"
 
-    # Session view: the active detail tab decides.
-    app.view = "session"
-    app.tab = app.workflow_tabs.index("Models")
-    scope, header, _ = app._export_dataset()
-    assert scope == "models" and header[0] == "model"
-
 
 def test_export_prices_overlay_exports_the_price_table():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])

@@ -953,7 +953,7 @@ function scopeWorkflows(sc) {
    workflow_tabs), with Sources injected after Overview in the merged view */
 function tabsFor(sc) {
   if (sc.kind === 's') {
-    const t = ['Overview', 'Models', 'Subagents'];
+    const t = ['Overview', 'Subagents'];   // a session's model mix lives in its Overview
     const mine = EXTRAS.id === sc.id;
     if (mine && EXTRAS.loading) t.push('Turns', 'Tools', 'Context'); // placeholders while the fetch runs
     else {

@@ -773,10 +773,9 @@ def test_pager_lines_dispatch_session_tabs_by_name():
     app = ot.App(RichStore([workflow("ses_1", "2026-06-01 12:00:00")]), args)
     app.view = "session"
     wf = app.current_session()
-    assert app.current_tabs() == ("Overview", "Models", "Subagents", "Turns", "Tools", "Context")
+    assert app.current_tabs() == ("Overview", "Subagents", "Turns", "Tools", "Context")
     for name, table in (
         ("Overview", app.renderer.detail_overview),
-        ("Models", app.renderer.detail_models),
         ("Subagents", app.renderer.detail_subagents),
         ("Turns", app.renderer.detail_turns),
         ("Tools", app.renderer.detail_tools),

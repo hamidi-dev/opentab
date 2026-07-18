@@ -342,8 +342,6 @@ class Renderer:
             # Tools per session, so a fixed index would page the wrong line count.
             tabs = self.current_tabs()
             current = tabs[self.tab % len(tabs)]
-            if current == "Models":
-                return self.detail_models(workflow, content_width)
             if current == "Subagents":
                 return self.detail_subagents(workflow, content_width)
             if current == "Turns":
@@ -1592,9 +1590,7 @@ class Renderer:
         self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab)
 
         current = tabs[self.tab % len(tabs)]
-        if current == "Models":
-            lines = self.detail_models(workflow, w - 4)
-        elif current == "Subagents":
+        if current == "Subagents":
             lines = self.detail_subagents(workflow, w - 4)
         elif current == "Turns":
             lines = self.detail_turns(workflow, w - 4)
@@ -2236,21 +2232,6 @@ class Renderer:
         lines.append("")
         model_rows = self.model_mix(workflow.id)
         lines.extend(self._model_table(self._mix_rows(model_rows), "# Top Models", width))
-        return lines
-
-    def detail_models(self, workflow: Workflow, width: int) -> list[str]:
-        model_rows = self.model_mix(workflow.id)
-        lines = self._models_tab(self._mix_rows(model_rows), "# Model Mix", width)
-        # The note only makes sense alongside an unknown row that survived the filter.
-        shown = [
-            row
-            for row in model_rows
-            if not self.query or fuzzy_score(self.query, str(row["model_name"])) is not None
-        ]
-        if any(row["model_name"].startswith("unknown") for row in shown):
-            lines.append(
-                "! $0.00 rows with tokens = no local per-token price; common on subscription/credit plans (Claude Code, Codex, Copilot)."
-            )
         return lines
 
     def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
