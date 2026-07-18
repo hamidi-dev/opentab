@@ -607,11 +607,17 @@ KEYS: tuple[Key, ...] = (
     Key(
         id="source",
         keys="H",
-        summary="switch harness",
+        # In a fleet `H` FILTERS by harness (keeps every machine); elsewhere it swaps the
+        # backend store. Available whenever either applies -- a fleet with a single local
+        # source still filters, so machines_present widens can_switch_source's gate.
+        summary=lambda app: "filter harness (fleet)" if app.machines_present else "switch harness",
         section="global",
-        when=lambda app: app.can_switch_source(),
-        chip="H harness",
-        active=lambda app: app.source_menu,
+        # Shown when there's actually something to do: a backend swap available, or a fleet
+        # harness filter with >=2 harnesses / one armed to clear (never a bare single-harness
+        # fleet no-op, and never an armed filter you can't reach to clear).
+        when=lambda app: app.can_switch_source() or app.can_harness_filter(),
+        chip=lambda app: f"H {app.harness_filter}" if app.harness_filter else "H harness",
+        active=lambda app: app.source_menu or app.harness_menu or bool(app.harness_filter),
         binds=("H",),
     ),
     Key(

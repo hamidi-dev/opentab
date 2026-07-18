@@ -573,6 +573,8 @@ class Renderer:
             self.draw_source_menu(stdscr, height, width)
         elif self.machine_menu:
             self.draw_machine_menu(stdscr, height, width)
+        elif self.harness_menu:
+            self.draw_harness_menu(stdscr, height, width)
         elif self.whatif_menu:
             self.draw_whatif_menu(stdscr, height, width)
         elif self.sort_menu:
@@ -660,6 +662,8 @@ class Renderer:
             segs.append((f"  ·  ignored: {ignored_count}", active))
         if self.machine_filter:  # the `M` global narrowing -- a LIMIT, so accented
             segs.append((f"  ·  machine: {self.machine_filter}", active))
+        if self.harness_filter:  # the fleet `H` harness narrowing -- likewise a LIMIT
+            segs.append((f"  ·  harness: {self.harness_filter}", active))
         if self.show_bookmarks_only:
             segs.append(("  ·  ★ bookmarks only", active))
         # Transient status lives in floating toasts now (draw_toasts), not the header.
@@ -3839,19 +3843,43 @@ class Renderer:
             lines.append((f" {marker}  {label}{suffix}", attr))
         self.draw_modal(stdscr, scr_h, scr_w, "Switch harness · j/k · Enter · Esc", lines)
 
-    def draw_machine_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
-        # The `M` picker: narrow every view to one box (or "All machines" to clear). j/k
-        # moves the highlight, Enter arms, Esc cancels (handle_machine_menu_key). Mirrors
-        # draw_source_menu -- the machine twin of the harness narrowing.
-        options = self.machine_filter_options()
-        idx = self.machine_menu_index % len(options) if options else 0
-        lines = [("Narrow every view to which machine:", curses.color_pair(4)), ("", 0)]
+    def _draw_filter_menu(self, stdscr, scr_h, scr_w, title, intro, options, index) -> None:
+        # Shared body for the `M` / `H` global-filter pickers: an intro line then a radio
+        # list (● current, ○ others), the selected row reversed. Mirrors draw_source_menu.
+        idx = index % len(options) if options else 0
+        lines = [(intro, curses.color_pair(4)), ("", 0)]
         for offset, (_value, label, is_current) in enumerate(options):
             marker = "●" if is_current else "○"
             suffix = "  (current)" if is_current else ""
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {label}{suffix}", attr))
-        self.draw_modal(stdscr, scr_h, scr_w, "Filter machine · j/k · Enter · Esc", lines)
+        self.draw_modal(stdscr, scr_h, scr_w, title, lines)
+
+    def draw_machine_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # The `M` picker: narrow every view to one box (or "All machines" to clear). j/k
+        # moves the highlight, Enter arms, Esc cancels (handle_machine_menu_key).
+        self._draw_filter_menu(
+            stdscr,
+            scr_h,
+            scr_w,
+            "Filter machine · j/k · Enter · Esc",
+            "Narrow every view to which machine:",
+            self.machine_filter_options(),
+            self.machine_menu_index,
+        )
+
+    def draw_harness_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # The fleet `H` picker: narrow every view to one tool across all machines (or "All
+        # harnesses" to clear). The machine picker's orthogonal twin.
+        self._draw_filter_menu(
+            stdscr,
+            scr_h,
+            scr_w,
+            "Filter harness · j/k · Enter · Esc",
+            "Narrow every view to which harness (kept across all machines):",
+            self.harness_filter_options(),
+            self.harness_menu_index,
+        )
 
     WHATIF_TIERS = ("your models", "models.dev")  # the picker's two row sets, Tab-flipped
 

@@ -2418,3 +2418,99 @@ def test_machine_filter_key_is_advertised_wherever_it_is_handled():
             assert ("machine-filter" in shown) == ("machine-filter" in listed)
     finally:
         ot.sources.source_cycle = orig_cycle
+
+
+# --- The fleet `H` harness filter (machine_filter's orthogonal twin) ----------
+def _mixed_fleet():
+    # Two machines, two harnesses, so a harness filter and a machine filter can be shown
+    # to compose without one implying the other: laptop runs OpenCode + Claude, omv OpenCode.
+    from tests._support import fleet_app
+
+    a = workflow("a", "2026-05-01 10:00:00", cost=3.0)
+    a.source = "OpenCode"
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
+    c.source = "Claude Code"
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
+    b.source = "OpenCode"
+    return fleet_app({"laptop": [a, c], "omv": [b]})
+
+
+def test_harness_filter_narrows_by_tool_and_keeps_every_machine():
+    # The whole point of the fork: `H` in a fleet narrows to one tool across ALL machines
+    # (harness ⊥ machine), and composes with the `M` machine filter -- "OpenCode, on omv".
+    app = _mixed_fleet()
+    assert {w.source for w in app.all_workflows} == {"OpenCode", "Claude Code"}
+    app.select_harness_filter("OpenCode")
+    assert {w.id for w in app.all_workflows} == {"a", "b"}
+    assert {w.machine for w in app.all_workflows} == {"laptop", "omv"}  # fleet intact
+    assert app.machines_present is True
+    app.select_machine_filter("omv")  # composes
+    assert {w.id for w in app.all_workflows} == {"b"}
+    app.select_harness_filter(None)
+    app.select_machine_filter(None)
+    assert {w.id for w in app.all_workflows} == {"a", "b", "c"}
+
+
+def test_H_in_a_fleet_filters_harness_and_never_swaps_the_store():
+    app = _mixed_fleet()
+    store_before = app.store
+    app.handle_key(None, ord("H"))
+    assert app.harness_menu is True and app.source_menu is False  # the FILTER, not the swap
+    opts = app.harness_filter_options()
+    assert opts[0] == ("", "All harnesses", True)
+    app.harness_menu_index = next(i for i, (v, _l, _a) in enumerate(opts) if v == "Claude Code")
+    app.handle_harness_menu_key(10)  # Enter arms it
+    assert app.harness_filter == "Claude Code"
+    assert app.store is store_before  # store NOT swapped -- the pulled boxes are still here
+    assert {w.id for w in app.all_workflows} == {"c"}
+
+
+def test_H_outside_a_fleet_still_opens_the_store_swap_picker():
+    app, _chosen = _menu_app(current="opencode")
+    try:
+        app.handle_key(None, ord("H"))  # non-fleet -> the backend swap, not a harness filter
+        assert app.source_menu is True and app.harness_menu is False
+    finally:
+        ot.sources.source_cycle = app._orig_cycle
+
+
+def test_harness_filter_is_fleet_only_and_revalidates_away_when_the_fleet_is_gone():
+    app = _mixed_fleet()
+    app.select_harness_filter("OpenCode")
+    app.loaded = [w for w in app.loaded if w.machine == "laptop"]  # one box left -> not a fleet
+    app._revalidate_harness_filter()
+    assert app.harness_filter is None  # even though OpenCode still exists, the fleet doesn't
+
+
+def test_open_harness_menu_needs_more_than_one_harness():
+    app = _fleet()  # both boxes are OpenCode-only, nothing armed
+    assert app.can_harness_filter() is False  # nothing to filter -> H doesn't advertise it
+    app.open_harness_menu()
+    assert app.harness_menu is False
+    assert "one harness" in app.notice
+
+
+def test_armed_harness_filter_is_always_clearable_even_with_one_harness_left():
+    # Regression (Codex P2): arm a harness, then the OTHER harness's sessions vanish while
+    # the fleet remains. Revalidation keeps the armed filter -- so the picker MUST still
+    # open (to reach "All harnesses"), even though only one harness is now present.
+    app = _mixed_fleet()
+    app.select_harness_filter("OpenCode")
+    app.loaded = [w for w in app.loaded if w.source == "OpenCode"]  # Claude's session gone
+    app._revalidate_harness_filter()
+    assert app.harness_filter == "OpenCode"  # still a fleet with that harness -> kept
+    assert app.can_harness_filter() is True  # armed -> must stay reachable to clear
+    app.open_harness_menu()
+    assert app.harness_menu is True
+    assert app.harness_filter_options()[0][:2] == ("", "All harnesses")
+
+
+def test_source_swap_out_of_machines_mode_falls_back_to_time_browse():
+    # Regression (user-reported): switching to a single harness dropped the fleet but left
+    # browse_mode stuck on "machines" over a phantom "unknown" box, in a ZOOM. The
+    # no-restore reload path (select_source's) must fall back to a plain time browse.
+    app = app_with([workflow("a", "2026-05-01 10:00:00")])  # a non-fleet store
+    app.browse_mode = "machines"  # as if we'd been in a fleet's Machines mode
+    app.view = "zoom"
+    app._reload_for_source()  # the no-restore path select_source uses
+    assert app.browse_mode == "time" and app.view == "browse"

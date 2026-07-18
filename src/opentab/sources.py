@@ -329,7 +329,7 @@ def resolve_source(args: argparse.Namespace, state: dict | None = None) -> str:
     # The concrete starting source: an explicit --source wins; otherwise restore the
     # last-used source from saved state (when it's still available). With no saved
     # preference, auto merges every present source ("all") so you never need --source to
-    # see them together; `c` narrows to a single source and that choice is remembered.
+    # see them together; `H` narrows to a single source and that choice is remembered.
     if args.source != "auto":
         return args.source
     saved = (state or {}).get("source")

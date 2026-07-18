@@ -266,6 +266,8 @@ class App:
         self.source_menu_index = 0  # highlighted row in that picker
         self.machine_menu = False  # the `M` machine-filter picker overlay (fleet view)
         self.machine_menu_index = 0  # highlighted row in that picker
+        self.harness_menu = False  # the fleet `H` harness-filter picker overlay
+        self.harness_menu_index = 0  # highlighted row in that picker
         self.sort_menu = False  # the `s` sort-order picker overlay
         self.sort_menu_index = 0  # highlighted row in that picker
         # Active colour theme (shared source with the web browser). Seeded from
@@ -382,10 +384,15 @@ class App:
         self.zoom_machine: str | None = None
         self.machine_pick_index = 0
         # The `M` GLOBAL machine filter (fleet view): a name narrows *every* view to that
-        # box, the twin of the `H` harness narrowing (which rebuilds the store to one
-        # backend). None = all machines. Distinct from zoom_machine (a per-scope drill);
-        # keyed into the workflow caches below, and revalidated on reload/source swap.
+        # box. None = all machines. Distinct from zoom_machine (a per-scope drill); keyed
+        # into the workflow caches below, and revalidated on reload/source swap.
         self.machine_filter: str | None = None
+        # The GLOBAL harness filter, its orthogonal twin (w.source). In a FLEET, `H` arms
+        # this -- narrowing to one tool across every machine -- instead of swapping the
+        # store (which would drop the pulled boxes); outside a fleet `H` still swaps. So
+        # machine ⊥ harness: "pi, on omv" is M+H composed. Fleet-only (revalidation clears
+        # it on leaving the fleet); keyed into the workflow caches like machine_filter.
+        self.harness_filter: str | None = None
         # All screen output lives on the Renderer; the App stays curses-free
         # (aside from the modal prompt line in prompt_text).
         self.renderer = Renderer(self)
@@ -424,9 +431,11 @@ class App:
             # summaries, projects, trends, exports, even shown-ignored paths -- agrees.
             # The fingerprint keys the cache, so toggling b/B rebuilds it by itself.
             tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
-            # The `M` global machine filter narrows here too, so every downstream view
-            # (all_workflows and the shown-ignored path both read this) agrees on one box.
+            # The `M` machine and `H` harness global filters narrow here too, so every
+            # downstream view (all_workflows and the shown-ignored path both read this)
+            # agrees on the one box / one tool. They compose (machine ⊥ harness).
             self.machine_filter,
+            self.harness_filter,
         )
         if getattr(self, "_rw_key", None) == key:
             return self._rw_cache
@@ -435,6 +444,8 @@ class App:
             rows = [w for w in rows if w.id in self.bookmarks]
         if self.machine_filter is not None:
             rows = [w for w in rows if (w.machine or "unknown") == self.machine_filter]
+        if self.harness_filter is not None:
+            rows = [w for w in rows if (w.source or "unknown") == self.harness_filter]
         if self.custom_since or self.custom_until:
             if self.custom_since:
                 rows = [w for w in rows if w.created_at[:10] >= self.custom_since]
@@ -462,11 +473,12 @@ class App:
             self.range_months,
             tuple(sorted(self.ignored_projects)),
             tuple(sorted(self.ignored_sessions)),
-            # ranged_workflows narrows to bookmarks under B and by the `M` machine filter;
-            # mirror both in this fingerprint so the cache follows along (ranged_workflows
-            # already applied them -- this key just has to change when they do).
+            # ranged_workflows narrows to bookmarks under B and by the `M`/`H` global
+            # filters; mirror all three in this fingerprint so the cache follows along
+            # (ranged_workflows already applied them -- this key just has to change with them).
             tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
             self.machine_filter,
+            self.harness_filter,
         )
         if getattr(self, "_aw_key", None) == key:
             return self._aw_cache
@@ -832,6 +844,93 @@ class App:
             self.machine_menu = False  # cancel, filter unchanged
         # any other key: ignore and keep the menu open
         return True
+
+    # --- The fleet `H` global harness filter (machine_filter's orthogonal twin) ---
+    def harness_filter_options(self) -> list[tuple[str, str, bool]]:
+        # (value, label, is-active) for the fleet `H` picker; "" ("All harnesses") clears
+        # it. Distinct w.source over ALL loaded data, most-used first -- the harness twin
+        # of machine_filter_options.
+        grouped: dict[str, float] = defaultdict(float)
+        for w in self.loaded:
+            grouped[w.source or "unknown"] += w.total_cost
+        names = sorted(grouped, key=lambda n: grouped[n], reverse=True)
+        out: list[tuple[str, str, bool]] = [("", "All harnesses", self.harness_filter is None)]
+        for name in names:
+            out.append((name, name, self.harness_filter == name))
+        return out
+
+    def can_harness_filter(self) -> bool:
+        # Whether the fleet `H` filter has anything to do: a fleet with >=2 harnesses to
+        # pick between, OR a filter already armed (which must ALWAYS be reachable to clear,
+        # even after the other harness's sessions vanish and only its own remains).
+        if not self.machines_present:
+            return False
+        if self.harness_filter is not None:
+            return True
+        return len({w.source or "unknown" for w in self.loaded}) >= 2
+
+    def open_harness_menu(self) -> None:
+        # In a fleet, `H` opens this filter (narrow to one tool across every machine) rather
+        # than swapping the store -- a store swap would drop the pulled boxes. Off a fleet
+        # `H` still swaps (open_source_menu); the caller routes on machines_present.
+        if not self.can_harness_filter():
+            self.notify("only one harness in the fleet", "error")
+            return
+        options = self.harness_filter_options()
+        cur = next((i for i, (v, _l, _a) in enumerate(options) if v == self.harness_filter), 0)
+        self.harness_menu_index = cur
+        self.harness_menu = True
+
+    def select_harness_filter(self, name: str | None) -> None:
+        name = name or None
+        if name == self.harness_filter:
+            return
+        anchor = self.selection_anchor()
+        self.harness_filter = name
+        self._invalidate_workflow_cache()
+        self.restore_selection(anchor)
+        self.notify(f"harness: {name}" if name else "harness filter cleared", "success")
+
+    def _revalidate_harness_filter(self) -> None:
+        # Harness filtering is a fleet-only concept (outside a fleet `H` swaps stores). Drop
+        # it when the fleet is gone, or when the active data no longer has that harness.
+        if self.harness_filter is None:
+            return
+        present = {w.source or "unknown" for w in self.loaded}
+        if not self.machines_present or self.harness_filter not in present:
+            self.harness_filter = None
+
+    def handle_harness_menu_key(self, key: int) -> bool:
+        # j/k move, Enter arms/clears, Esc/q cancels; `H` again advances (mirrors the
+        # machine-filter picker).
+        options = self.harness_filter_options()
+        if not options:
+            self.harness_menu = False
+            return True
+        if key == 3:  # Ctrl-C still quits
+            return False
+        if key in (ord("j"), curses.KEY_DOWN, ord("H")):
+            self.harness_menu_index = (self.harness_menu_index + 1) % len(options)
+        elif key in (ord("k"), curses.KEY_UP):
+            self.harness_menu_index = (self.harness_menu_index - 1) % len(options)
+        elif key == ord("g"):
+            self.harness_menu_index = 0
+        elif key == ord("G"):
+            self.harness_menu_index = len(options) - 1
+        elif key in (10, 13, curses.KEY_ENTER):
+            self.harness_menu = False
+            self.select_harness_filter(options[self.harness_menu_index % len(options)][0])
+        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+            self.harness_menu = False  # cancel, filter unchanged
+        return True
+
+    def open_harness_picker(self) -> None:
+        # The `H` key's single entry point: in a fleet it's the harness FILTER (keep every
+        # machine), else the store-swap source picker -- the fork the user chose.
+        if self.machines_present:
+            self.open_harness_menu()
+        else:
+            self.open_source_menu()
 
     def mode_tab_list(self) -> list[tuple[str, str]]:
         # (label, mode) for the top-level browse-mode tab strip. Time/Projects always;
@@ -1665,7 +1764,11 @@ class App:
         # token mix (model scan) or a price refresh can change it.
         if self._whatif_catalog_rows is not None:
             return self._whatif_catalog_rows
-        mix = self.price_token_mix()
+        # App-wide mix, NOT price_token_mix (which is `M`-machine-scoped): the what-if
+        # machinery is deliberately app-wide and never narrows to the machine filter, so
+        # arming `M` must not re-rank this tier -- and _whatif_catalog_rows, cached here,
+        # is invalidated only by the model scan / a price refresh, never by an `M` change.
+        mix = self._token_mix(self._model_by_root)
         shares = mix[0] if mix else (1.0, 0.0, 0.0, 0.0)
         best: dict[str, tuple[tuple, str]] = {}
         for pid, mid, price, _status in catalog_models():
@@ -1865,7 +1968,7 @@ class App:
         # as the P overlay's model list, because it is the same question asked of the
         # same rows -- and Tab flips between your models and the whole models.dev
         # catalog. Mirrors handle_source_menu_key otherwise, `w` advancing the highlight
-        # like `c` does.
+        # like `H` does.
         if key == 3:  # Ctrl-C still quits
             return False
         if not self.whatif_candidates() and not self.whatif_catalog_candidates():
@@ -2028,6 +2131,7 @@ class App:
         self.zoom_source = None
         self.zoom_machine = None
         self._revalidate_machine_filter()  # keep the `M` filter iff its box still exists
+        self._revalidate_harness_filter()  # keep the `H` filter iff still a fleet w/ that tool
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
         self.day_index = min(self.day_index, max(0, len(self.days) - 1))
         self.month_index = min(self.month_index, max(0, len(self.months) - 1))
@@ -2156,8 +2260,8 @@ class App:
         return out
 
     def open_source_menu(self) -> None:
-        # `c` no longer cycles blindly; it opens a small picker the user can j/k through
-        # and Enter to switch (Esc cancels). With a single source there's nothing to pick.
+        # `H` opens a small picker the user can j/k through and Enter to switch (Esc
+        # cancels). With a single source there's nothing to pick.
         order = sources.source_cycle(self.args)
         if len(order) < 2:
             self.notify("only one harness available", "error")
@@ -2323,6 +2427,7 @@ class App:
         self.zoom_machine = None  # same: a box that may not be in the new data
         self.machine_pick_index = 0
         self._revalidate_machine_filter()  # drop the `M` filter if this source lacks the box
+        self._revalidate_harness_filter()  # ...and the `H` harness filter if the fleet is gone
         if restore:
             self.browse_mode = restore["browse_mode"]
             self.focus = restore["focus"]
@@ -2356,6 +2461,12 @@ class App:
         self.zoom_project = None
         self.query = ""
         self.view = "browse"
+        # A harness switch (this no-restore path) can drop the fleet: a single non-remote
+        # backend has no machines, so Machines mode would strand on a phantom "unknown" box
+        # the mode strip can't even show. Fall back to time browse -- the same guard the
+        # restore path applies, which select_source (unlike toggle_demo) never reaches.
+        if self.browse_mode == "machines" and not self.machines_present:
+            self.browse_mode = "time"
         self.focus = "days"
         self.tab = self.scroll = 0
         self.workflow_index = self.month_index = self.day_index = self.project_index = 0
@@ -2456,27 +2567,34 @@ class App:
     _PRICE_COLUMN_INDEX = {"input": 0, "output": 1, "cache_read": 2, "cache_write": 3}
 
     def _priced_model_roots(self) -> dict[str, list[dict]]:
-        # _model_by_root scoped to the active `M` machine filter, so the P overlay -- its
-        # mix, rows, per-model drill, and `e` export -- reflects the one box, exactly as
-        # the `H` harness picker does (it rebuilds this map for one backend). No filter
-        # armed returns the whole map, so P stays the *all-time* price reference it is for
-        # the range: the scope is by MACHINE over the full loaded set (never all_workflows,
-        # which is also range-scoped) -- an identity narrowing, not a time window.
-        if self.machine_filter is None:
+        # _model_by_root scoped to the active `M` machine and `H` harness filters, so the P
+        # overlay -- its mix, rows, per-model drill, and `e` export -- reflects the one box /
+        # one tool. No filter armed returns the whole map, so P stays the *all-time* price
+        # reference it is for the range: the scope is by MACHINE/HARNESS identity over the
+        # full loaded set (never all_workflows, which is also range-scoped) -- an identity
+        # narrowing, not a time window. Both compose, like everywhere the filters do.
+        if self.machine_filter is None and self.harness_filter is None:
             return self._model_by_root
-        visible = {w.id for w in self.loaded if (w.machine or "unknown") == self.machine_filter}
+        visible = {
+            w.id
+            for w in self.loaded
+            if (self.machine_filter is None or (w.machine or "unknown") == self.machine_filter)
+            and (self.harness_filter is None or (w.source or "unknown") == self.harness_filter)
+        }
         return {rid: rows for rid, rows in self._model_by_root.items() if rid in visible}
 
-    def price_token_mix(self) -> tuple[tuple[float, float, float, float], int] | None:
-        # Your app-wide token mix -- (input, output, cache-read, cache-write) shares
-        # over every non-local model row, plus the tokens they cover. This is what
-        # the P overlay's eff column prices at each model's list rates: with a
-        # cache-heavy mix the cache-read rate dominates, which four raw price
-        # columns can't show. Reasoning bills as output, so it folds in there; a
-        # row without an input split (older stores, tests) puts the total's
-        # remainder on input. None until the model scan has usage to measure.
+    @staticmethod
+    def _token_mix(
+        roots: dict[str, list[dict]],
+    ) -> tuple[tuple[float, float, float, float], int] | None:
+        # (input, output, cache-read, cache-write) shares over every non-local model row
+        # in `roots`, plus the tokens they cover. Reasoning bills as output, so it folds
+        # in there; a row without an input split (older stores, tests) puts the total's
+        # remainder on input. None until there is usage to measure. The caller chooses the
+        # scope by which root map it passes -- that is what keeps P (machine-scoped) and the
+        # `w` catalog (app-wide) from having to agree.
         sums = [0.0, 0.0, 0.0, 0.0]
-        for rows in self._priced_model_roots().values():
+        for rows in roots.values():
             for m in rows:
                 name = m.get("model_name")
                 if not name or is_local_provider(name):
@@ -2490,6 +2608,13 @@ class App:
         if total <= 0:
             return None
         return (sums[0] / total, sums[1] / total, sums[2] / total, sums[3] / total), int(total)
+
+    def price_token_mix(self) -> tuple[tuple[float, float, float, float], int] | None:
+        # The P overlay's token mix -- what its eff column prices at each model's list
+        # rates (a cache-heavy mix makes the cache-read rate dominate, which four raw
+        # price columns can't show). Machine-scoped via _priced_model_roots, so under an
+        # armed `M` filter P blends the one box's mix -- the `H`-harness-picker story.
+        return self._token_mix(self._priced_model_roots())
 
     @staticmethod
     def _best_alias_price(aliases: dict[str, float]) -> tuple[float, float, float, float]:
@@ -4586,7 +4711,7 @@ class App:
             self.open_theme_menu()  # live-previews with the charts as the swatch
             return True
         if key == ord("H"):
-            self.open_source_menu()  # switching re-scopes the charts in place
+            self.open_harness_picker()  # narrowing/switching re-scopes the charts in place
             return True
         if key == ord("M") and self.machines_present:
             self.open_machine_menu()  # narrowing to one box re-scopes the charts in place
@@ -4639,6 +4764,8 @@ class App:
             return self.handle_source_menu_key(key)
         if self.machine_menu:
             return self.handle_machine_menu_key(key)
+        if self.harness_menu:
+            return self.handle_harness_menu_key(key)
         if self.whatif_menu:  # the `w` target picker floats above everything too
             return self.handle_whatif_menu_key(key)
         if self.help:
@@ -4660,8 +4787,8 @@ class App:
                 self.help_scroll = 10_000  # clamped to the last page on draw
             elif key == ord("C"):
                 self.open_theme_menu()  # the Colours picker floats above help too
-            elif key == ord("H") and self.can_switch_source():
-                self.open_source_menu()  # ...and so does the source picker: the key list
+            elif key == ord("H") and (self.can_switch_source() or self.machines_present):
+                self.open_harness_picker()  # ...and so does the harness key: the key list
                 # names both, and a list that names a key it then eats is the very thing
                 # this table exists to prevent.
             elif key == ord("M") and self.machines_present:
@@ -4810,7 +4937,7 @@ class App:
             self.reload()
             return True
         if key == ord("H"):
-            self.open_source_menu()
+            self.open_harness_picker()  # fleet: filter harness (keep boxes); else swap store
             return True
         if key == ord("M"):
             self.open_machine_menu()  # narrow every view to one box (fleet); no-op off one
@@ -5092,7 +5219,7 @@ class App:
             self.open_theme_menu()
             return True
         if key == ord("H"):
-            self.open_source_menu()
+            self.open_harness_picker()
             return True
         if key == ord("M") and self.machines_present:
             self.open_machine_menu()
@@ -5230,6 +5357,15 @@ class App:
                 self.machine_menu_index = (self.machine_menu_index + 1) % len(options)
             elif click or double:
                 self.machine_menu = False  # click cancels, filter unchanged
+            return True
+        if self.harness_menu:
+            options = self.harness_filter_options()
+            if options and up:
+                self.harness_menu_index = (self.harness_menu_index - 1) % len(options)
+            elif options and down:
+                self.harness_menu_index = (self.harness_menu_index + 1) % len(options)
+            elif click or double:
+                self.harness_menu = False  # click cancels, filter unchanged
             return True
         if self.whatif_menu:
             rows = self.whatif_rows()  # the wheel walks what's on screen, filter included
