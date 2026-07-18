@@ -1929,11 +1929,17 @@ class Renderer:
         if not rows:
             return self._ruled_box("# Top Sessions", "no sessions in range", [], None, [], width)
         inner = max(1, width - 4)
-        header = f"{'Cost':>10}  {'Share':>5}  {'Tokens':>8}  {'Subs':>4}  Title"
-        title_w = max(10, inner - 35)  # the columns before Title eat 35 (four cols + 2-space gaps)
+        # Size Cost/Subs to their widest value so a 6-figure cost ($100,000.00 is 11
+        # cells, not 10) or a 5-digit subagent count doesn't overflow a fixed field and
+        # shove every following column one cell right of its header.
+        cost_w = max(10, *(len(money(w.total_cost)) for w in rows))
+        subs_w = max(4, *(len(str(w.subagents)) for w in rows))
+        prefix = cost_w + 2 + 5 + 2 + 8 + 2 + subs_w + 2  # Cost·Share·Tokens·Subs + gaps
+        title_w = max(10, inner - prefix)
+        header = f"{'Cost':>{cost_w}}  {'Share':>5}  {'Tokens':>8}  {'Subs':>{subs_w}}  Title"
         body = [
-            f"{money(w.total_cost):>10}  {pct(w.total_cost, scope_cost):>5}  "
-            f"{human_tokens(w.total_tokens):>8}  {w.subagents:>4}  "
+            f"{money(w.total_cost):>{cost_w}}  {pct(w.total_cost, scope_cost):>5}  "
+            f"{human_tokens(w.total_tokens):>8}  {w.subagents:>{subs_w}}  "
             f"{shorten(self.source_tag(w) + self.session_marks(w) + w.title, title_w)}"
             for w in rows
         ]
@@ -1958,15 +1964,29 @@ class Renderer:
         )[: self.TOP_SESSIONS_LIMIT]
         if not ranked:
             return self._ruled_box("# Top Projects", "no projects in range", [], None, [], width)
-        inner = max(1, width - 4)
-        header = f"{'Cost':>10}  {'Share':>5}  {'Tokens':>8}  {'Sess':>4}  Project"
-        path_w = max(10, inner - 35)  # the columns before Project eat 35 (four cols + 2-space gaps)
-        body = [
-            f"{money(sum(w.total_cost for w in ws)):>10}  "
-            f"{pct(sum(w.total_cost for w in ws), scope_cost):>5}  "
-            f"{human_tokens(sum(w.total_tokens for w in ws)):>8}  {len(ws):>4}  "
-            f"{short_path(directory, path_w)}"
+        # Fold each project to its (directory, cost, tokens, sessions) once, so the column
+        # widths and the rows read the same sums.
+        agg = [
+            (
+                directory,
+                sum(w.total_cost for w in ws),
+                sum(w.total_tokens for w in ws),
+                len(ws),
+            )
             for directory, ws in ranked
+        ]
+        inner = max(1, width - 4)
+        # Size Cost/Sess to their widest value (see _top_sessions_box) so a 6-figure
+        # project cost or a 4-digit session count doesn't overflow and shift the columns.
+        cost_w = max(10, *(len(money(cost)) for _, cost, _, _ in agg))
+        sess_w = max(4, *(len(str(n)) for _, _, _, n in agg))
+        prefix = cost_w + 2 + 5 + 2 + 8 + 2 + sess_w + 2  # Cost·Share·Tokens·Sess + gaps
+        path_w = max(10, inner - prefix)
+        header = f"{'Cost':>{cost_w}}  {'Share':>5}  {'Tokens':>8}  {'Sess':>{sess_w}}  Project"
+        body = [
+            f"{money(cost):>{cost_w}}  {pct(cost, scope_cost):>5}  "
+            f"{human_tokens(toks):>8}  {n:>{sess_w}}  {short_path(directory, path_w)}"
+            for directory, cost, toks, n in agg
         ]
         return self._ruled_box("# Top Projects", header, body, None, [], width)
 

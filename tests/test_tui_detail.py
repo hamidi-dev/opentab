@@ -237,6 +237,29 @@ def test_top_projects_box_ranks_projects_by_cost_in_the_overview():
     assert "small" in data[1] and "$1.00" in data[1]
 
 
+def test_top_sessions_box_widens_cost_column_for_six_figure_spend():
+    # "$123,456.78" is 11 cells, not 10 -- the Cost column must widen so Share/Tokens/Subs
+    # stay under their headers instead of every row shoving one cell right.
+    app = app_with([])
+    ws = [workflow("a", "2026-06-01 12:00:00", cost=123456.78)]
+    content = _cells(app.renderer._top_sessions_box(ws, 200000.0, 120))
+    header, row = content[0], next(ln for ln in content if "$123,456.78" in ln)
+    cw = len("$123,456.78")  # 11: the widened Cost column
+    assert row[:cw] == "$123,456.78"  # full cost, not clipped to 10
+    assert header[:cw] == f"{'Cost':>{cw}}"  # header padded to the same column
+    assert header[cw] == " " and row[cw] == " "  # the gap after Cost -- columns aligned
+
+
+def test_top_projects_box_widens_cost_column_for_six_figure_spend():
+    app = app_with([])
+    ws = [workflow("a", "2026-06-01 12:00:00", cost=123456.78, directory="/repo/x")]
+    content = _cells(app.renderer._top_projects_box(ws, 200000.0, 120))
+    header, row = content[0], next(ln for ln in content if "$123,456.78" in ln)
+    cw = len("$123,456.78")
+    assert row[:cw] == "$123,456.78"
+    assert header[cw] == " " and row[cw] == " "  # columns still aligned past the wider Cost
+
+
 def test_projects_merge_across_windows_slash_styles():
     # Pi records the cwd with backslashes; OpenCode records the same directory with
     # forward slashes. They must group as ONE project, not two (issue #4).
