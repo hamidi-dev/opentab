@@ -2326,6 +2326,120 @@ def test_switch_browse_mode_steps_out_of_a_session():
     assert app.view == "browse" and app.browse_mode == "time"
 
 
+def test_mode_keys_switch_browse_mode_from_within_a_session():
+    # The p/t/m KEYS must work from a drilled-in session, like the mode-tab click already
+    # did -- they used to no-op there (set_browse_mode returned early on the session view),
+    # so the keyboard and the mouse disagreed.
+    app = _fleet()
+    app.set_browse_mode("machines")
+    app.machine_index = 1
+    app.drill_in()  # into the box
+    app.tab = app.current_tabs().index("Sessions")
+    app.drill_in()  # into a session
+    assert app.view == "session"
+    assert app.handle_key(None, ord("t")) is True  # keyboard, from inside the session
+    assert app.browse_mode == "time"
+
+
+def test_returning_to_a_browse_mode_restores_the_session_and_tab():
+    # Switching modes and back lands you exactly where you were -- same session, same detail
+    # tab (a session's Context graph, say) -- not a fresh browse reset to the top.
+    app = _fleet()
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # server
+    app.drill_in()  # into the box
+    app.tab = app.current_tabs().index("Sessions")
+    app.drill_in()  # into a session
+    assert app.view == "session"
+    sid = app.current_session().id
+    app.tab = len(app.current_tabs()) - 1  # a non-first detail tab
+    tab_name = app.current_tabs()[app.tab]
+    app.set_browse_mode("time")  # wander off to time...
+    assert app.view == "browse" and app.browse_mode == "time"
+    app.set_browse_mode("machines")  # ...and come back
+    assert app.browse_mode == "machines" and app.view == "session"
+    assert app.current_session().id == sid  # same session
+    assert app.current_tabs()[app.tab] == tab_name  # same tab
+
+
+def test_returning_after_a_range_change_dropped_the_session_demotes_to_zoom():
+    # Codex finding: a raw index would clamp onto a surviving neighbour and silently open a
+    # DIFFERENT session after the range dropped the one you were viewing. The value-anchored
+    # memory re-finds by id; when the id is gone the view demotes to zoom, opening nothing.
+    from tests._support import fleet_app
+
+    old = workflow("old", "2020-01-01 10:00:00", cost=5.0)
+    new = workflow("new", "2026-05-02 10:00:00", cost=9.0)
+    app = fleet_app({"laptop": [old, new], "server": [workflow("s", "2026-05-03 10:00:00")]})
+    app.set_browse_mode("machines")
+    app.machine_index = 0  # laptop: old (2020) + new (2026)
+    app.drill_in()
+    app.tab = app.current_tabs().index("Sessions")
+    app.workflow_index = [w.id for w in app.current_sessions()].index("old")
+    app.drill_in()  # into the 2020 session
+    assert app.view == "session" and app.current_session().id == "old"
+    app.set_browse_mode("time")  # remember the machines spot (session "old")
+    app.set_range_from_text("2026-01-01..")  # a range change drops 2020 -> "old" is gone
+    app.set_browse_mode("machines")  # come back
+    assert app.view == "zoom"  # demoted, NOT silently opening the surviving "new"
+
+
+def test_returning_after_a_sort_reorder_reopens_the_same_session():
+    # Codex finding: a raw workflow_index opens whatever now sits at that slot after a
+    # re-sort. Value-anchoring stores the session id, so the SAME session reopens regardless
+    # of order -- and the missing-session guard can't false-negative (the other row exists).
+    from tests._support import fleet_app
+
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
+    app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # server: cost-sorted [b ($9), c ($1)]
+    app.drill_in()
+    app.tab = app.current_tabs().index("Sessions")
+    assert [w.id for w in app.current_sessions()] == ["b", "c"]
+    app.workflow_index = 1  # the SECOND row, c
+    app.drill_in()
+    assert app.current_session().id == "c"
+    app.set_browse_mode("time")  # remember (session c, then at index 1)
+    app.sort_reverse = True  # flip the order -> server is now [c, b], c at index 0
+    app.set_browse_mode("machines")  # come back
+    assert app.view == "session" and app.current_session().id == "c"  # c, not the row-1 b
+
+
+def test_maximize_stays_global_across_a_mode_switch():
+    # zoom_maximized is ONE global full-screen preference (persisted in state.json), not
+    # per-mode: turning it off in another mode must stay off on return, never roll back to a
+    # stale per-mode value. So it's deliberately excluded from the per-mode memory.
+    app = _fleet()
+    app.set_browse_mode("machines")
+    app.drill_in()  # zoom on the box
+    app.zoom_maximized = True  # maximized while in machines
+    app.set_browse_mode("time")
+    app.zoom_maximized = False  # ...then turned off while in time
+    app.set_browse_mode("machines")  # return
+    assert app.zoom_maximized is False  # stayed off, not restored to the stale True
+
+
+def test_trends_date_drill_remembers_the_mode_it_left():
+    # Drilling through Trends into a date jumps to time browse by assigning browse_mode
+    # directly (bypassing set_browse_mode). It must still snapshot the mode it left, so the
+    # Projects/Machines session you were on is restored when you return via m/p.
+    app = _fleet()
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # server
+    app.drill_in()
+    app.tab = app.current_tabs().index("Sessions")
+    app.drill_in()  # into a session
+    assert app.view == "session"
+    sid = app.current_session().id
+    date = app.current_session().created_at[:10]
+    assert app.drill_into_date(date) is True  # Trends date drill -> time browse
+    assert app.browse_mode == "time"
+    app.set_browse_mode("machines")  # return to machines
+    assert app.view == "session" and app.current_session().id == sid
+
+
 def test_export_dataset_in_machines_mode():
     app = _fleet()
     app.set_browse_mode("machines")

@@ -295,6 +295,12 @@ class App:
         # browse -> zoom (year/month/day detail) -> session (one session's detail).
         self.focus = "days"  # "years" | "months" | "days"
         self.browse_mode = "time"  # "time" | "projects" | "machines"
+        # Where you were in each browse mode, so switching modes and back lands you on the
+        # same session/tab/drill (a session's Context graph, say) instead of a fresh browse.
+        # Keyed by the mode you left; value-anchored (session id / project dir / month·day /
+        # names, not raw indices), so it self-heals against a range/sort/filter change rather
+        # than needing invalidation -- see _capture_mode_memory / _restore_mode_memory.
+        self._mode_memory: dict[str, dict] = {}
         # In-TUI machine refresh (R): a re-pull request handed to the run() loop so a
         # "refreshing…" toast paints before the blocking ssh fetch (the _session_loading
         # trick). _refresh_backend is injected by main()/web_command when a fleet is in
@@ -954,10 +960,9 @@ class App:
         return tabs
 
     def switch_browse_mode(self, mode: str) -> None:
-        # A mode-tab click: unlike the p/t/m keys it works from a drilled-in session too,
-        # stepping out first (set_browse_mode itself no-ops in the session view).
-        if self.view == "session":
-            self.drill_out()
+        # The mouse/tab entry point. set_browse_mode now works from a drilled-in session
+        # itself (snapshotting it into per-mode memory), so this is a thin alias -- the
+        # p/t/m keys and a mode-tab click go through exactly the same path.
         self.set_browse_mode(mode)
 
     def refreshable_machines(self) -> list[str]:
@@ -3925,12 +3930,49 @@ class App:
         self.zoom_maximized = not self.zoom_maximized
         self.notice = "detail maximized" if self.zoom_maximized else "split view"
 
+    def _capture_mode_memory(self) -> dict:
+        # The view position within a browse mode, anchored BY VALUE (session id, project
+        # dir, month/day, machine/harness/model names -- not raw indices) so it survives a
+        # sort reorder or a range/filter change between leaving the mode and returning: the
+        # spot is re-found, not re-indexed. The zoom picker cursors are the one raw part,
+        # and they're cosmetic (the drill they index is armed by value; the picker isn't
+        # even on screen once it has moved you to Sessions).
+        tabs = self.current_tabs()
+        return {
+            "view": self.view,
+            "focus": self.focus,
+            "tab_name": tabs[self.tab % len(tabs)] if tabs else None,
+            "scroll": self.scroll,
+            "anchor": self.selection_anchor(),
+            "zoom_project": self.zoom_project,
+            "zoom_source": self.zoom_source,
+            "zoom_model": self.zoom_model,
+            "zoom_machine": self.zoom_machine,
+            "source_index": self.source_index,
+            "model_pick_index": self.model_pick_index,
+            "machine_pick_index": self.machine_pick_index,
+        }
+
+    def _remember_mode_position(self) -> None:
+        # Snapshot the current mode's spot into _mode_memory so a later return restores the
+        # session/tab/drill. set_browse_mode calls this on every switch; the Trends date/month
+        # drills, which jump straight to time browse, call it too (else drilling through Trends
+        # from a Projects/Machines session would lose that mode's remembered position).
+        self._mode_memory[self.browse_mode] = self._capture_mode_memory()
+
     def set_browse_mode(self, mode: str) -> None:
-        if self.view == "session":
-            return
         if mode == self.browse_mode:
             return
+        # Remember where we were in the mode we're leaving (session, tab, drills and all),
+        # then restore the target mode's remembered spot if we've been there -- otherwise
+        # open it fresh at the top. The snapshot is value-anchored, so it self-heals against
+        # data changes (see _capture_mode_memory) and needs no cache-invalidation hook.
+        self._remember_mode_position()
         self.browse_mode = mode
+        saved = self._mode_memory.get(mode)
+        if saved is not None:
+            self._restore_mode_memory(saved)
+            return
         self.view = "browse"
         self.tab = 0
         self.scroll = 0
@@ -3941,6 +3983,40 @@ class App:
         self.zoom_source = None
         self.zoom_model = None
         self.zoom_machine = None
+
+    def _restore_mode_memory(self, saved: dict) -> None:
+        self.focus = saved["focus"]
+        # Value-based drills first: restore_selection scopes current_sessions() by them
+        # (a Machines-mode box is filtered by its armed harness/model), so they must be set
+        # before the session lookup below reads that list.
+        self.zoom_project = saved["zoom_project"]
+        self.zoom_source = saved["zoom_source"]
+        self.zoom_model = saved["zoom_model"]
+        self.zoom_machine = saved["zoom_machine"]
+        self.source_index = saved["source_index"]
+        self.model_pick_index = saved["model_pick_index"]
+        self.machine_pick_index = saved["machine_pick_index"]
+        # zoom_maximized is deliberately NOT restored: it's a single global full-screen
+        # preference (persisted in state.json), so it must NOT roll back to a per-mode value
+        # when you return -- toggling it off in one mode stays off in the others.
+        # Re-find the scope/session BY VALUE (id/dir/name), so a reorder or a dropped row
+        # lands on the SAME thing or clamps, never a wrong-but-valid neighbour by index.
+        self.restore_selection(saved["anchor"])
+        self.view = saved["view"]
+        # A session view is only honoured if THAT session is still present: a range/filter
+        # change may have removed it, and restore_selection would then clamp onto a
+        # neighbour -- silently opening the wrong session. Demote to the zoom scope instead.
+        saved_session_id = saved["anchor"][5]
+        if self.view == "session":
+            current = self.current_session()
+            if current is None or current.id != saved_session_id:
+                self.view = "zoom"
+        tabs = self.current_tabs()
+        tab_name = saved["tab_name"]
+        # Resolve the tab by NAME (a demoted view or a different session has different
+        # tabs); fall back to the first tab rather than a stale index into another tab set.
+        self.tab = tabs.index(tab_name) if tab_name in tabs else 0
+        self.scroll = max(0, int(saved["scroll"]))
 
     def drill_in(self) -> None:
         if self.view == "browse":
@@ -4760,6 +4836,8 @@ class App:
         yi = next((i for i, y in enumerate(years) if y.year == date[:4]), None)
         if yi is None:
             return False
+        if self.browse_mode != "time":  # leaving Projects/Machines -- remember its spot
+            self._remember_mode_position()
         self.view = "browse"  # the overlay may sit over a zoom; land back in browse first
         self.browse_mode = "time"
         self.focus = "days"
@@ -4782,6 +4860,8 @@ class App:
         yi = next((i for i, y in enumerate(self.years) if y.year == month[:4]), None)
         if yi is None:
             return False
+        if self.browse_mode != "time":  # leaving Projects/Machines -- remember its spot
+            self._remember_mode_position()
         self.view = "browse"  # the overlay may sit over a zoom; land back in browse first
         self.browse_mode = "time"
         self.focus = "months"
