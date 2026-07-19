@@ -4,6 +4,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 
+from opentab.demo import DEMO_ALL
 from opentab.models import Workflow
 
 
@@ -52,6 +53,12 @@ class CombinedStore:
         # proportions stay truthful -- still private (a single hidden factor can't be
         # inverted to real dollars).
         self.demo = any(getattr(s, "demo", False) for s in stores)
+        # The category selection is the same across every sub-store (they read one args),
+        # so take it from any demo sub-store; default all when none is in demo.
+        self.demo_cats = next(
+            (getattr(s, "demo_cats", DEMO_ALL) for s in stores if getattr(s, "demo", False)),
+            DEMO_ALL,
+        )
         if self.demo:
             scale = next((s.demo_scale for s in stores if getattr(s, "demo", False)), 1.0)
             for s in stores:

@@ -162,9 +162,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--until")
     parser.add_argument(
         "--demo",
-        action="store_true",
-        help="anonymize titles/paths and backfill synthetic prices "
-        "(for live demos and screenshots; never writes to the DB)",
+        nargs="?",
+        const="all",
+        default=None,
+        metavar="CATS",
+        help="anonymize for live demos and screenshots (never writes to the DB). Bare "
+        "--demo scrambles everything; a comma list limits it to some of titles "
+        "(session/prompt/project/model/machine names), turns (the expandable full "
+        "prompt text), spend (dollars + token magnitudes) -- e.g. --demo titles,spend "
+        "shows real prompt bodies but fake names and hidden costs. Toggle live in the "
+        "TUI with D",
     )
     parser.add_argument(
         "--no-state",

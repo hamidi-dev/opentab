@@ -5,10 +5,9 @@ import argparse
 import glob
 import json
 import os
-import random
 import re
 
-from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
+from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_local
 from opentab.models import Workflow
 from opentab.util import LazyStatusRoot, git_root, read_files_parallel, tool_rows_from_turns
@@ -59,9 +58,9 @@ class CodexStore:
     def __init__(self, root_dir: str, args: argparse.Namespace):
         self.root_dir = root_dir
         self.args = args
-        self.demo = getattr(args, "demo", False)
-        # Same hidden per-process factor Store/ClaudeStore use; 1.0 outside demo.
-        self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
+        # Demo mode: which categories to scramble (titles/turns/spend) and the
+        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
+        self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
         self._git_root_cache: dict[str, str] = {}
         self._head_meta_cache: dict[str, dict | None] = {}  # path -> head metadata
@@ -558,17 +557,7 @@ class CodexStore:
     def _demo_workflow(self, w: Workflow) -> Workflow:
         # Mirror ClaudeStore._demo_workflow: anonymize, backfill a synthetic price for
         # the (all-unpriced) tokens, then scale by the hidden per-process factor.
-        w.title = demo_title(w.id)
-        w.directory = demo_dir(w.id)
-        if w.unpriced_tokens > 0:
-            add = demo_cost(w.unpriced_tokens, w.id)
-            w.total_cost += add
-            w.root_cost += add
-            w.unpriced_tokens = 0
-        w.total_cost = round(w.total_cost * self.demo_scale, 4)
-        w.root_cost = round(w.root_cost * self.demo_scale, 4)
-        w.total_tokens = int(round(w.total_tokens * self.demo_scale))
-        return w
+        return scramble_workflow(w, self.demo_scale, self.demo_cats)
 
     def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
         return {
@@ -711,21 +700,7 @@ class CodexStore:
         return nodes
 
     def _demo_node(self, n: dict) -> dict:
-        n["title"] = demo_title(n["id"])
-        n["model_name"] = demo_model(n["model_name"])
-        if n["cost"] == 0:  # backfill a synthetic price for the unpriced tokens
-            n["cost"] = demo_cost(n["tokens_total"], n["id"])
-        n["cost"] = round(n["cost"] * self.demo_scale, 4)
-        for f in (
-            "tokens_input",
-            "tokens_output",
-            "tokens_reasoning",
-            "tokens_cache_read",
-            "tokens_cache_write",
-            "tokens_total",
-        ):
-            n[f] = int(round(n[f] * self.demo_scale))
-        return n
+        return scramble_node(n, self.demo_scale, self.demo_cats)
 
     def _subtree_turns(self, workflow_id: str) -> list[dict]:
         # The session's own turn rows plus every spawned descendant's, the child

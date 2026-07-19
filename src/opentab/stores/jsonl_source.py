@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 
+from opentab.demo import demo_config
 from opentab.formatting import _clean_prompt
 from opentab.stores.csv_source import CsvStore
 
@@ -78,9 +78,8 @@ class JsonlStore(CsvStore):
     def __init__(self, path: str, args: argparse.Namespace):
         self.path = path
         self.args = args
-        self.demo = getattr(args, "demo", False)
-        # Same hidden per-process factor Store/CsvStore use; 1.0 outside demo.
-        self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
+        # Same demo config CsvStore uses (categories + hidden factor); 1.0 outside demo.
+        self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
         self._records_cost: bool | None = None  # resolved lazily (records_cost property)

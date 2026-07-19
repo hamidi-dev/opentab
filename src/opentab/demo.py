@@ -1,9 +1,96 @@
 """Deterministic anonymisation for --demo."""
 from __future__ import annotations
 
+import random
 import zlib
 
+from opentab.models import Workflow
 from opentab.pricing import is_local_provider
+
+# --- Demo categories: what --demo actually scrambles, so a demo can be partial.
+# `titles` hides identity (session/prompt/subagent titles, project paths, model and
+# machine names); `turns` hides the expandable full prompt text; `spend` hides the
+# money and token magnitudes (the hidden scale factor and the synthetic prices that
+# backfill unpriced rows). Default is all three -- exactly the original behaviour.
+DEMO_CATEGORIES = ("titles", "turns", "spend")
+DEMO_ALL = frozenset(DEMO_CATEGORIES)
+
+
+def parse_demo_cats(spec) -> frozenset:
+    # Resolve a --demo value (or a set/list, or a bare on flag) to the category set.
+    # None / True / "" / "all" -> everything; "titles,spend" -> that subset; an
+    # unknown name is dropped, and an empty result falls back to all (an on-but-nothing
+    # demo makes no sense -- the caller expresses "off" with the demo flag itself).
+    if spec in (None, True, False, "", "all"):
+        return DEMO_ALL
+    names = spec if isinstance(spec, (set, frozenset, list, tuple)) else str(spec).split(",")
+    picked = frozenset(n.strip().lower() for n in names) & DEMO_ALL
+    return picked or DEMO_ALL
+
+
+def demo_config(args) -> tuple[bool, float, frozenset]:
+    # The demo state every store shares: (enabled, hidden magnitude scale, categories).
+    # `args.demo` is a bool (tests) or the --demo value carrying the categories. The
+    # scale is drawn once per store, and stays identity (1.0) unless spend is scrambled
+    # -- so turning spend off shows real dollars and tokens without touching call sites.
+    raw = getattr(args, "demo", False)
+    enabled = bool(raw)
+    cats = parse_demo_cats(raw) if enabled else DEMO_ALL
+    scale = 3.0 ** random.uniform(-1.0, 1.0) if (enabled and "spend" in cats) else 1.0
+    return enabled, scale, cats
+
+
+def scramble_workflow(
+    w: Workflow, scale: float, cats: frozenset, *, guard_root: bool = False
+) -> Workflow:
+    # Apply the selected scrambles to a session row in place, shared by every store so
+    # the category gating lives in one spot. `guard_root` keeps OpenCode's rule of only
+    # backfilling root_cost when it was $0 (its root is genuinely priced, unlike the
+    # all-unpriced backends). With every category on and a random scale this is byte-for-
+    # byte the old per-store _demo_workflow.
+    if "titles" in cats:
+        w.title = demo_title(w.id)
+        w.directory = demo_dir(w.id)
+    if w.unpriced_tokens > 0 and "spend" in cats:
+        add = demo_cost(w.unpriced_tokens, w.id)
+        w.total_cost += add
+        if not guard_root or w.root_cost == 0:
+            w.root_cost += add
+        w.unpriced_tokens = 0
+    w.total_cost = round(w.total_cost * scale, 4)
+    w.root_cost = round(w.root_cost * scale, 4)
+    w.total_tokens = int(round(w.total_tokens * scale))
+    return w
+
+
+_NODE_TOKEN_FIELDS = (
+    "tokens_input",
+    "tokens_output",
+    "tokens_reasoning",
+    "tokens_cache_read",
+    "tokens_cache_write",
+    "tokens_total",
+)
+
+
+def scramble_node(n: dict, scale: float, cats: frozenset, *, seed: str | None = None) -> dict:
+    # The subagent-node twin of scramble_workflow, in place. `seed` defaults to the
+    # node's own id but can be supplied (the remote export's nodes carry no stable id,
+    # so they seed off session id + position). Token fields absent from a given
+    # backend's node dict are simply skipped.
+    key = n["id"] if seed is None else seed
+    if "titles" in cats:
+        n["title"] = demo_title(key)
+        if n.get("model_name"):
+            n["model_name"] = demo_model(n["model_name"])
+    if float(n.get("cost") or 0.0) == 0 and "spend" in cats:
+        n["cost"] = demo_cost(n.get("tokens_total") or 0, key)
+    n["cost"] = round(float(n.get("cost") or 0.0) * scale, 4)
+    for f in _NODE_TOKEN_FIELDS:
+        if f in n:
+            n[f] = int(round((n.get(f) or 0) * scale))
+    return n
+
 
 # --- Demo mode: anonymize titles/paths, backfill synthetic prices for "$0.00 /
 # unpriced" gaps, and scale every cost/token by one hidden per-process factor so a

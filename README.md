@@ -68,7 +68,10 @@ uvx --from opentab-ai opentab --demo     # or: pipx run --spec opentab-ai openta
 `--demo` runs the full TUI on your real usage, anonymized in memory — titles, paths, and
 absolute numbers replaced with synthetic ones — so trying it out (and sharing the screen)
 is safe. It reads your tools' own records, so it needs at least one AI coding tool's
-history on disk. Drop `--demo` to see the real numbers.
+history on disk. Drop `--demo` to see the real numbers. Scramble only some of it with a
+comma list — `--demo titles,spend` shows real prompt bodies but fake names and hidden
+costs (categories: `titles`, `turns`, `spend`) — or press `D` in the TUI for a
+multi-check picker of the same.
 
 Then install for real:
 

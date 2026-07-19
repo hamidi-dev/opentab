@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import argparse
 import os
-import random
 import re
 import sqlite3
 from urllib.parse import quote
 
-from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
+from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt
 from opentab.models import Workflow
 from opentab.util import normalize_project_path
@@ -88,14 +87,11 @@ class Store:
     def __init__(self, db: str, args: argparse.Namespace):
         self.db = db
         self.args = args
-        self.demo = getattr(args, "demo", False)
-        # Demo mode multiplies every cost and token count by one hidden factor so a
-        # screenshot or recording can't be reverse-engineered into real spend --
-        # tokens x list price would otherwise recover the actual dollars. Log-uniform
-        # around 1 (~0.33x..3x) so the direction of scaling is hidden too; drawn once
-        # per process and unseeded, so it stays stable across redraws but differs every
-        # run and isn't recoverable from the (open) source. 1.0 outside demo.
-        self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
+        # Demo mode: which categories to scramble (titles/turns/spend) and the hidden
+        # magnitude factor -- one log-uniform draw (~0.33x..3x) so a screenshot can't be
+        # reverse-engineered into real spend (tokens x list price would recover dollars),
+        # or 1.0 when spend isn't scrambled. See demo.demo_config.
+        self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         # Open read-only (URI mode) so opentab physically cannot modify the
         # OpenCode database it reads -- the "never writes" promise, enforced.
         uri = "file:" + quote(os.path.abspath(db)) + "?mode=ro"
@@ -299,27 +295,10 @@ class Store:
             rows = [self._demo_workflow(w) for w in rows]
         return rows
 
-    def _demo_money(self, value: float) -> float:
-        return round(value * self.demo_scale, 4)
-
-    def _demo_tokens(self, value: float) -> int:
-        return int(round(value * self.demo_scale))
-
     def _demo_workflow(self, w: Workflow) -> Workflow:
-        w.title = demo_title(w.id)
-        w.directory = demo_dir(w.id)
-        if w.unpriced_tokens > 0:
-            add = demo_cost(w.unpriced_tokens, w.id)
-            w.total_cost += add
-            if w.root_cost == 0:
-                w.root_cost += add
-            w.unpriced_tokens = 0
-        # Scale magnitudes by the hidden factor so the figures on screen don't trace
-        # back to real spend; counts (subagents, model_count) stay structural.
-        w.total_cost = self._demo_money(w.total_cost)
-        w.root_cost = self._demo_money(w.root_cost)
-        w.total_tokens = self._demo_tokens(w.total_tokens)
-        return w
+        # guard_root: OpenCode's root_cost is really priced, so only backfill it when
+        # it was $0 (the all-unpriced backends have no such guard). See scramble_workflow.
+        return scramble_workflow(w, self.demo_scale, self.demo_cats, guard_root=True)
 
     def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
         return {
@@ -419,25 +398,7 @@ class Store:
         rows = list(self.conn.execute(sql, [workflow_id]))
         if not self.demo:
             return rows
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["title"] = demo_title(d["id"])
-            d["model_name"] = demo_model(d["model_name"])
-            if d["cost"] == 0:
-                d["cost"] = demo_cost(d["tokens_total"], d["id"])
-            d["cost"] = self._demo_money(d["cost"])
-            for f in (
-                "tokens_input",
-                "tokens_output",
-                "tokens_reasoning",
-                "tokens_cache_read",
-                "tokens_cache_write",
-                "tokens_total",
-            ):
-                d[f] = self._demo_tokens(d[f])
-            out.append(d)
-        return out
+        return [scramble_node(dict(r), self.demo_scale, self.demo_cats) for r in rows]
 
     def model_breakdown(self) -> list[sqlite3.Row]:
         # Per-(root session, model) cost/token attribution for EVERY root, in one

@@ -592,6 +592,14 @@ def test_goto_session_lands_on_the_named_tab_case_insensitively():
     assert app.view == "session" and app.current_tabs()[app.tab] == "Subagents"
 
 
+def test_demo_flag_takes_optional_categories():
+    assert _parse([]).demo is None  # off
+    assert _parse(["--demo"]).demo == "all"  # bare = everything (stays truthy for use_state)
+    assert _parse(["--demo", "titles,spend"]).demo == "titles,spend"
+    # bare --demo disables state persistence (not args.demo must be False)
+    assert not (not _parse(["--demo"]).demo)
+
+
 def test_goto_session_unknown_tab_keeps_overview_and_names_the_real_ones():
     # A backend without a Context curve (FakeStore) must not error on --tab context:
     # land in the session on Overview and say which tabs it does have -- the tmux
@@ -600,6 +608,16 @@ def test_goto_session_unknown_tab_keeps_overview_and_names_the_real_ones():
     assert app.goto_session("a", tab="context") is True
     assert app.view == "session" and app.current_tabs()[app.tab] == "Overview"
     assert "context" in app.notice and "overview" in app.notice
+
+
+def test_goto_missing_tab_notice_survives_a_range_clear():
+    # Regression: a target hidden by a restored range AND a tab its backend lacks --
+    # the range-clear retry must not clobber the "no 'context' tab here" explanation.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.set_range_from_text("2020-01-01..2020-01-31")  # hides the 2026 session
+    assert app.goto_session("a", tab="context") is True
+    assert app.view == "session" and app.current_tabs()[app.tab] == "Overview"
+    assert "context" in app.notice and "range cleared" not in app.notice
 
 
 def test_goto_hint_distinguishes_a_fresh_directory_from_an_unknown_id():

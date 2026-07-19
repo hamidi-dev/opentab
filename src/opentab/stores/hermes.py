@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import random
 import re
 import sqlite3
 from datetime import datetime, timezone
 
-from opentab.demo import demo_cost, demo_dir, demo_model, demo_title
+from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.models import Workflow
 from opentab.util import git_root
 
@@ -94,8 +93,9 @@ class HermesStore:
     def __init__(self, db_path: str, args: argparse.Namespace):
         self.db_path = db_path
         self.args = args
-        self.demo = getattr(args, "demo", False)
-        self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
+        # Demo mode: which categories to scramble (titles/turns/spend) and the
+        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
+        self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
         self._cols = self._probe_columns()
@@ -524,17 +524,7 @@ class HermesStore:
         return rows
 
     def _demo_workflow(self, w: Workflow) -> Workflow:
-        w.title = demo_title(w.id)
-        w.directory = demo_dir(w.id)
-        if w.unpriced_tokens > 0:
-            add = demo_cost(w.unpriced_tokens, w.id)
-            w.total_cost += add
-            w.root_cost += add
-            w.unpriced_tokens = 0
-        w.total_cost = round(w.total_cost * self.demo_scale, 4)
-        w.root_cost = round(w.root_cost * self.demo_scale, 4)
-        w.total_tokens = int(round(w.total_tokens * self.demo_scale))
-        return w
+        return scramble_workflow(w, self.demo_scale, self.demo_cats)
 
     def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
         return {
@@ -652,18 +642,4 @@ class HermesStore:
         return nodes
 
     def _demo_node(self, n: dict) -> dict:
-        n["title"] = demo_title(n["id"])
-        n["model_name"] = demo_model(n["model_name"])
-        if n["cost"] == 0:
-            n["cost"] = demo_cost(n["tokens_total"], n["id"])
-        n["cost"] = round(n["cost"] * self.demo_scale, 4)
-        for f in (
-            "tokens_input",
-            "tokens_output",
-            "tokens_reasoning",
-            "tokens_cache_read",
-            "tokens_cache_write",
-            "tokens_total",
-        ):
-            n[f] = int(round(n[f] * self.demo_scale))
-        return n
+        return scramble_node(n, self.demo_scale, self.demo_cats)

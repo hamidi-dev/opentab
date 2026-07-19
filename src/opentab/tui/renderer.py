@@ -574,6 +574,8 @@ class Renderer:
             self.draw_price_prompt(stdscr, height, width)
         elif self.theme_menu:
             self.draw_theme_menu(stdscr, height, width)
+        elif self.demo_menu:
+            self.draw_demo_menu(stdscr, height, width)
         elif self.source_menu:
             self.draw_source_menu(stdscr, height, width)
         elif self.machine_menu:
@@ -3143,9 +3145,14 @@ class Renderer:
 
     @staticmethod
     def _turn_dt(row: dict) -> datetime | None:
-        # A turn row's localtime string ("YYYY-MM-DD HH:MM:SS") as a datetime, for
-        # the Context graph's wall-clock span. None when a backend's row carries no
+        # A turn row's localtime string ("YYYY-MM-DD HH:MM:SS") as a naive datetime,
+        # for the Context graph's wall-clock span. None when a backend's row carries no
         # (or a malformed) time -- the caller then drops the time enrichments.
+        # Caveat: the string is local and tz-naive, so a span across a DST change is off
+        # by the offset (e.g. an hour short over a fall-back). It's display-only (never a
+        # money total) and human_duration clamps a negative to 0s, so the worst case is a
+        # cosmetically wrong duration on the rare session that straddles the switch --
+        # accepted rather than thread a UTC timestamp through every backend's timeline.
         try:
             return datetime.strptime((row.get("time") or "")[:19], "%Y-%m-%d %H:%M:%S")
         except ValueError:
@@ -3288,7 +3295,9 @@ class Renderer:
         for j, before, after in comps[:4]:
             ct = self._turn_dt(pts[j][0])
             when = self._ctx_clock(pts[j][0], multiday)
-            into = f" (+{human_duration((ct - start_dt).total_seconds())})" if ct and start_dt else ""
+            into = (
+                f" (+{human_duration((ct - start_dt).total_seconds())})" if ct and start_dt else ""
+            )
             lines.append(
                 f"  ▼ turn {j + 1} · {when}{into} — {human_tokens(before)} → {human_tokens(after)}"
             )
@@ -3931,6 +3940,24 @@ class Renderer:
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {label}{suffix}", attr))
         self.draw_modal(stdscr, scr_h, scr_w, "Switch harness · j/k · Enter · Esc", lines)
+
+    def draw_demo_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # The `D` picker: a multi-check list of what --demo scrambles. Space toggles a
+        # row's [x], `a` all/none, Enter applies (nothing checked = back to real data),
+        # Esc cancels. A checkbox list where draw_source_menu is a radio one.
+        entries = self.demo_menu_entries()
+        idx = self.demo_menu_index % len(entries) if entries else 0
+        intro = (
+            "Anonymize which parts (for a shareable screen):"
+            if self.demo_menu_sel
+            else "Nothing checked — Enter shows real data again."
+        )
+        lines = [(intro, curses.color_pair(4)), ("", 0)]
+        for offset, (_cat, label, checked) in enumerate(entries):
+            box = "[x]" if checked else "[ ]"
+            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
+            lines.append((f" {box}  {label}", attr))
+        self.draw_modal(stdscr, scr_h, scr_w, "Demo · Space · a all · Enter · Esc", lines)
 
     def _draw_filter_menu(self, stdscr, scr_h, scr_w, title, intro, options, index) -> None:
         # Shared body for the `M` / `H` global-filter pickers: an intro line then a radio

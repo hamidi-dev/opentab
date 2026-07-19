@@ -81,7 +81,7 @@ rows; `g`/`G` jump to the first/last prompt. `z` unfolds every prompt at once.
 | `H` | Harness picker (`j`/`k` move · `Enter` switch · `Esc` cancel) |
 | `M` | Machine filter (fleet only) — narrow **every** view to one box; the harness picker's twin (`j`/`k` move · `Enter` arm/clear · `Esc` cancel) |
 | `C` | Colour-theme picker — `j`/`k` live-preview · `Enter` keep · `Esc` revert (themes are shared with the web browser) |
-| `D` | Toggle real / demo data (demo anonymizes titles and paths) |
+| `D` | Demo (anonymize for a shareable screen) — opens a multi-check picker of what to scramble: **Titles** (session / prompt / project / model / machine names), **Turns** (the expandable full prompt text), **Spend** (dollars + token magnitudes). `j`/`k` move · `Space` toggle a category · `a` all/none · `Enter` apply · `Esc` cancel. All checked = full demo; none = back to real data. From the CLI: `--demo` (all) or `--demo titles,spend` |
 | `r` / `q` / `?` | Reload the data · quit · help |
 
 The global toggles stay live *inside* the overlays: `?`, `C`, `H`, `M` (fleet), and `D`

@@ -637,10 +637,11 @@ KEYS: tuple[Key, ...] = (
     Key(
         id="demo",
         keys="D",
-        summary="real / demo data (demo anonymizes it)",
+        summary="anonymize for a screenshot — pick titles / turns / spend",
         section="global",
         when=lambda app: bool(app.source_key),
-        chip=lambda app: "D real" if app.store.demo else "D demo",
+        chip=lambda app: "D demo·on" if app.store.demo else "D demo",
+        active=lambda app: app.demo_menu or bool(getattr(app.store, "demo", False)),
         binds=("D",),
     ),
     Key(

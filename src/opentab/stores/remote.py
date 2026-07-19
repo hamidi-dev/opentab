@@ -30,11 +30,10 @@ import copy
 import glob
 import json
 import os
-import random
 from dataclasses import asdict, fields
 from urllib.parse import unquote
 
-from opentab.demo import demo_cost, demo_dir, demo_machine, demo_model, demo_title
+from opentab.demo import DEMO_ALL, demo_config, demo_machine, scramble_node, scramble_workflow
 from opentab.models import Workflow
 
 # The on-disk summary format version. Separate from CachedStore.CACHE_VERSION on
@@ -320,10 +319,10 @@ class RemoteStore:
         # (the fleet passes the LIVE local ids so a pulled summary of a session we
         # already have locally can't double-count or steal its drill-in).
         self._args = args
-        self.demo = bool(getattr(args, "demo", False))
-        # A hidden per-process scale like every other store's demo, so absolute
-        # numbers can't be read off a shared screen while proportions stay real.
-        self.demo_scale = 3.0 ** random.uniform(-1.0, 1.0) if self.demo else 1.0
+        # Demo config (categories + hidden scale) shared with every other store; the
+        # scale is 1.0 unless spend is scrambled, so absolute numbers can't be read
+        # off a shared screen while proportions stay real. See demo_config.
+        self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._exclude_ids = set(exclude_ids or ())
         self._paths = self._resolve_paths(source)
         self._wf: list[Workflow] = []
@@ -478,6 +477,14 @@ class RemoteStore:
         self._machine_info = info
 
     @property
+    def _demo_names(self) -> bool:
+        # Whether to scramble machine labels: only when the `titles` category is on
+        # (a box name is identity, like a title or a path). Every machine-label site
+        # shares this one gate so the scrambled labels keep matching the scrambled
+        # w.machine that _apply_demo stamps -- the Machines views join them by label.
+        return self.demo and "titles" in self.demo_cats
+
+    @property
     def machine_meta(self) -> dict[str, dict]:
         # {machine label -> {live, exported_at, opentab_version, key}} for the Machines
         # mode. Under demo the label is scrambled to match the scrambled w.machine that
@@ -486,7 +493,7 @@ class RemoteStore:
         # gates refresh off anyway.
         out: dict[str, dict] = {}
         for label, meta in self._machine_info.items():
-            name = demo_machine(label) if self.demo else label
+            name = demo_machine(label) if self._demo_names else label
             out[name] = {"live": False, **meta}
         return out
 
@@ -507,7 +514,7 @@ class RemoteStore:
             counts[w.machine] = counts.get(w.machine, 0) + 1
         return [
             {
-                "label": demo_machine(label) if self.demo else label,
+                "label": demo_machine(label) if self._demo_names else label,
                 "sessions": counts.get(label, 0),
                 "bytes": self._file_sizes.get(label, 0),
             }
@@ -523,17 +530,9 @@ class RemoteStore:
         # factor and disagree with the local machine's rows. Model rows stay RAW: the
         # App's _load_model_cache scales and remaps the breakdown for every store.
         for w in wfs:
-            w.title = demo_title(w.id)
-            w.directory = demo_dir(w.id)
-            w.machine = demo_machine(w.machine)  # scramble the box name too (D must hide it)
-            if w.unpriced_tokens > 0:
-                add = demo_cost(w.unpriced_tokens, w.id)
-                w.total_cost += add
-                w.root_cost += add
-                w.unpriced_tokens = 0
-            w.total_cost = round(w.total_cost * self.demo_scale, 4)
-            w.root_cost = round(w.root_cost * self.demo_scale, 4)
-            w.total_tokens = int(round(w.total_tokens * self.demo_scale))
+            scramble_workflow(w, self.demo_scale, self.demo_cats)
+            if self._demo_names:  # the box name is identity too -- hide it with titles
+                w.machine = demo_machine(w.machine)
 
     # --- Store interface (four methods) -------------------------------------------
     def workflows(self) -> list[Workflow]:
@@ -575,24 +574,7 @@ class RemoteStore:
         # _demo_node. The node carries no stable id of its own, so seed the fake title/cost
         # off the (session id, position) -- deterministic across redraws, and the scale is
         # the fleet's shared demo_scale (set on this store after construction).
-        seed = f"{workflow_id}:{index}"
-        node["title"] = demo_title(seed)
-        if node.get("model_name"):
-            node["model_name"] = demo_model(node["model_name"])
-        cost = float(node.get("cost") or 0.0)
-        if cost == 0:
-            cost = demo_cost(node.get("tokens_total") or 0, seed)
-        node["cost"] = round(cost * self.demo_scale, 4)
-        for field in (
-            "tokens_input",
-            "tokens_output",
-            "tokens_reasoning",
-            "tokens_cache_read",
-            "tokens_cache_write",
-            "tokens_total",
-        ):
-            if field in node:
-                node[field] = int(round((node.get(field) or 0) * self.demo_scale))
+        scramble_node(node, self.demo_scale, self.demo_cats, seed=f"{workflow_id}:{index}")
 
     # The v2 per-session extras -- Turns/Tools/Context. Fresh dict copies each call (the
     # App owns and may demo-mutate the list it gets); demo scaling is the App's job, so
@@ -644,9 +626,14 @@ class MachineTaggedStore:
         setattr(self._store, name, value)
 
     def _tag(self) -> str:
-        # The label this machine's sessions carry -- scrambled under demo so `D` hides
-        # the real local hostname too, exactly as RemoteStore scrambles pulled labels.
-        return demo_machine(self._machine) if getattr(self._store, "demo", False) else self._machine
+        # The label this machine's sessions carry -- scrambled under demo (only when the
+        # `titles` category is on, like every other machine-label site) so `D` hides the
+        # real local hostname too, exactly as RemoteStore scrambles pulled labels.
+        store = self._store
+        # A minimal wrapped store (a test leaf) may set demo without demo_cats; default
+        # to scrambling all, matching the old all-or-nothing behaviour.
+        names = getattr(store, "demo", False) and "titles" in getattr(store, "demo_cats", DEMO_ALL)
+        return demo_machine(self._machine) if names else self._machine
 
     @property
     def machine_meta(self) -> dict[str, dict]:

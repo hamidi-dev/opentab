@@ -22,7 +22,7 @@ except ImportError:  # native Windows has no stdlib curses
     curses = None
 
 from opentab import sources, themes, util
-from opentab.demo import demo_cost, demo_model, demo_title
+from opentab.demo import DEMO_ALL, DEMO_CATEGORIES, demo_cost, demo_model, demo_title
 from opentab.formatting import clip, clip_tail, display_width, short_path, shorten
 from opentab.heatmap import (
     HEAT_DEFAULT_LEVELS,
@@ -198,8 +198,11 @@ class App:
         # built stores are cached so cycling back is instant. Empty when the App was
         # constructed without a key (tests / single fixed store).
         self.source_key = source_key
-        self._store_cache: dict[tuple[str, bool], object] = (
-            {(source_key, bool(getattr(store, "demo", False))): store} if source_key else {}
+        # Keyed by (source, demo state) where state is None (real) or the frozenset of
+        # scrambled categories -- so real, demo-all, and demo-titles-only are distinct
+        # cached stores the D picker can flip between without a re-parse.
+        self._store_cache: dict[tuple[str, frozenset | None], object] = (
+            {(source_key, self._store_state_key(store)): store} if source_key else {}
         )
         self.loaded = store.workflows()  # every root session, all time
         # "$" toggles real cost <-> API-equivalent. When no active backend records
@@ -270,6 +273,9 @@ class App:
         self.harness_menu_index = 0  # highlighted row in that picker
         self.sort_menu = False  # the `s` sort-order picker overlay
         self.sort_menu_index = 0  # highlighted row in that picker
+        self.demo_menu = False  # the `D` demo-category multi-check picker overlay
+        self.demo_menu_index = 0  # highlighted category row in that picker
+        self.demo_menu_sel: set = set()  # categories checked while the picker is open
         # Active colour theme (shared source with the web browser). Seeded from
         # --theme; a valid saved theme (apply_state) or the `Y` picker takes over.
         self.theme_id = getattr(args, "theme", None) or themes.DEFAULT_THEME
@@ -1367,10 +1373,10 @@ class App:
         for w in self.loaded:
             w.model_count = len(self._model_by_root.get(w.id, ()))
         if self.store.demo:
+            rename = "titles" in self._demo_cats  # local->cloud model names ride with titles
             for root_id, models in self._model_by_root.items():
-                self._model_by_root[root_id] = self._scale_demo_models(
-                    self._demo_rename_models(models)
-                )
+                rows = self._demo_rename_models(models) if rename else models
+                self._model_by_root[root_id] = self._scale_demo_models(rows)
             # Reconcile after scaling: the model rows and the workflow totals are now
             # both multiplied by the same factor, so the synthetic fill stays consistent.
             self._reconcile_demo_models()
@@ -1399,6 +1405,12 @@ class App:
         # run() loop, reload(), or any first model access all converge to one scan.
         if not self._models_loaded:
             self._load_model_cache()
+
+    @property
+    def _demo_cats(self) -> frozenset:
+        # Which demo categories the active store scrambles (titles / turns / spend).
+        # Default all -- a store without the attribute is the all-or-nothing legacy path.
+        return getattr(self.store, "demo_cats", DEMO_ALL)
 
     @staticmethod
     def _demo_rename_models(models: list[dict]) -> list[dict]:
@@ -1527,8 +1539,9 @@ class App:
         # cost/token by the hidden per-process factor. Tool/model names aren't
         # sensitive, so they pass through unchanged.
         k = self.store.demo_scale
+        synth = "spend" in self._demo_cats  # fake a price for $0 rows only when hiding spend
         for r in rows:
-            if r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
+            if synth and r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
                 r["cost"] = demo_cost(
                     r["tokens_total"], f"{workflow_id}:{r['tool']}:{r['model_name']}"
                 )
@@ -1563,15 +1576,20 @@ class App:
         # $0 (subscription) turns a synthetic price so the cumulative column isn't a
         # wall of red, then scale every cost/token by the hidden per-process factor.
         k = self.store.demo_scale
+        cats = self._demo_cats
+        titles, turns, spend = "titles" in cats, "turns" in cats, "spend" in cats
         for n, r in enumerate(rows):
-            r["model_name"] = demo_model(r["model_name"])
-            # Anonymize the prompt title (a real prompt would leak); keep it stable per
-            # prompt_id so a group's turns stay under one fake header. The expandable
-            # full text mirrors the fake -- never the real prompt.
-            if "prompt_title" in r:
-                r["prompt_title"] = demo_title(r.get("prompt_id") or "noprompt")
-                r["prompt_full"] = r["prompt_title"]
-            if r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
+            if titles:
+                r["model_name"] = demo_model(r["model_name"])
+                # Anonymize the prompt title (a real prompt would leak); keep it stable
+                # per prompt_id so a group's turns stay under one fake header.
+                if "prompt_title" in r:
+                    r["prompt_title"] = demo_title(r.get("prompt_id") or "noprompt")
+            # The expandable full text is the `turns` category -- replace it with a
+            # stable fake (never the real prompt body) when turns is scrambled.
+            if turns and "prompt_full" in r:
+                r["prompt_full"] = demo_title(r.get("prompt_id") or "noprompt")
+            if spend and r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
                 r["cost"] = demo_cost(r["tokens_total"], f"{workflow_id}:{n}")
             for f in ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write"):
                 r[f] = int(round(r.get(f, 0) * k))
@@ -2241,10 +2259,13 @@ class App:
         # wouldn't pick them up). Rebuild at the CURRENTLY ACTIVE demo state, not the launch
         # args' -- `D` toggles demo live, and rebuilding from self.args.demo would silently
         # flip the refreshed store back. Busts the cached build too, so a later c/D
-        # swap-back doesn't restore stale data.
-        demo = bool(getattr(self.store, "demo", False))
-        self.store = sources.make_store(self._args_with_demo(demo), self.source_key)[0]
-        self._store_cache[(self.source_key, demo)] = self.store
+        # swap-back doesn't restore stale data. Key on the demo *state* (None / the
+        # scrambled-category frozenset), not a bool, so it lands in the same cache slot
+        # select_source and the D picker use -- a bool key would strand the fresh store
+        # and (with a partial-demo state) crash _args_with_demo's sorted(state).
+        state = self._store_state_key(self.store)
+        self.store = sources.make_store(self._args_with_demo(state), self.source_key)[0]
+        self._store_cache[(self.source_key, state)] = self.store
 
     def refresh_machines_now(self, name: str | None = None) -> list:
         # Synchronous refresh for the web endpoint (no run loop to defer through): fetch,
@@ -2290,9 +2311,17 @@ class App:
     def can_switch_source(self) -> bool:
         return len(sources.source_cycle(self.args)) > 1
 
-    def _args_with_demo(self, demo: bool) -> argparse.Namespace:
+    @staticmethod
+    def _store_state_key(store) -> frozenset | None:
+        # A store's _store_cache identity: None when it's real data, else the frozenset
+        # of categories it scrambles. demo-all and demo-titles-only are different stores.
+        return store.demo_cats if getattr(store, "demo", False) else None
+
+    def _args_with_demo(self, state) -> argparse.Namespace:
+        # state: None (real data) or a frozenset of demo categories. Encoded onto
+        # args.demo as the comma spec demo_config parses back into (enabled, scale, cats).
         args = copy.copy(self.args)
-        args.demo = demo
+        args.demo = ",".join(sorted(state)) if state else None
         return args
 
     def next_source_name(self) -> str:
@@ -2387,7 +2416,7 @@ class App:
         if key == self.source_key:
             self.notice = f"already on {SOURCE_LABELS.get(key, key)}"
             return
-        cache_key = (key, bool(getattr(self.store, "demo", False)))
+        cache_key = (key, self._store_state_key(self.store))  # keep the demo state on switch
         if cache_key not in self._store_cache:
             try:
                 self._store_cache[cache_key] = sources.make_store(
@@ -2403,23 +2432,32 @@ class App:
             self.notice = f"source: {SOURCE_LABELS.get(key, key)}"
 
     def toggle_demo(self) -> None:
+        # Flip the whole thing on/off (the pre-screenshot path and a plain toggle): to
+        # real when in demo, to demo-everything when real. The D picker refines which
+        # categories via _apply_demo_state directly.
+        state = None if getattr(self.store, "demo", False) else DEMO_ALL
+        self._apply_demo_state(state)
+
+    def _apply_demo_state(self, state) -> None:
+        # Swap to the store for this demo state -- None (real) or a frozenset of
+        # categories -- building and caching it on first use, then reload the view.
+        # Shared by toggle_demo and the D category picker.
         if not self.source_key:
             self.notify("demo toggle unavailable", "error")
             return
         snapshot = self.ui_snapshot()
-        demo = not bool(getattr(self.store, "demo", False))
-        cache_key = (self.source_key, demo)
+        cache_key = (self.source_key, state)
         if cache_key not in self._store_cache:
             try:
                 self._store_cache[cache_key] = sources.make_store(
-                    self._args_with_demo(demo), self.source_key
+                    self._args_with_demo(state), self.source_key
                 )[0]
             except SystemExit as exc:
                 self.notify(str(exc), "error")
                 return
         self.store = self._store_cache[cache_key]
         self._reload_for_source(snapshot)
-        if demo and self.query:
+        if state is not None and self.query:
             # The query is text YOU typed -- out of a real title, path, or note -- and the
             # header paints it. Demo exists so the screen can be shared, and the snapshot
             # would restore "filter: Acme acquisition" right onto the anonymised view. It
@@ -2427,7 +2465,57 @@ class App:
             self.query = ""
             self._filter_edited()
         if self._notes_ok:  # else keep _reload_for_source's warning (toasts collapse)
-            self.notice = "demo mode" if demo else "real data"
+            self.notice = self._demo_notice(state)
+
+    @staticmethod
+    def _demo_notice(state) -> str:
+        # The toast for a demo swap: "real data", "demo mode" (everything), or the
+        # partial "demo: titles, spend" so the screen says exactly what's anonymized.
+        if not state:
+            return "real data"
+        if state == DEMO_ALL:
+            return "demo mode"
+        return "demo: " + ", ".join(sorted(state))
+
+    # --- Demo category picker (the `D` multi-check overlay) --------------------
+    _DEMO_CAT_LABELS = {
+        "titles": "Titles  — session / prompt / project / model / machine names",
+        "turns": "Turns   — the expandable full prompt text",
+        "spend": "Spend   — dollars and token magnitudes",
+    }
+
+    def open_demo_menu(self) -> None:
+        # `D` opens a multi-check picker of what to anonymize. Seeded from the current
+        # state -- the live categories when already in demo, or all (a ready-to-apply
+        # full demo) when on real data, so D then Enter is the quick "anonymize it all".
+        self.demo_menu_sel = set(self._store_state_key(self.store) or DEMO_ALL)
+        self.demo_menu_index = 0
+        self.demo_menu = True
+
+    def demo_menu_entries(self) -> list[tuple[str, str, bool]]:
+        # (category, label, is-checked) per row, in the canonical titles/turns/spend order.
+        return [
+            (cat, self._DEMO_CAT_LABELS[cat], cat in self.demo_menu_sel) for cat in DEMO_CATEGORIES
+        ]
+
+    def handle_demo_menu_key(self, key: int) -> bool:
+        # j/k move · Space toggles a category · a checks/clears all · Enter applies
+        # (no category checked = back to real data) · Esc/q/D cancels.
+        cats = DEMO_CATEGORIES
+        if key in (27, ord("q"), ord("D")):
+            self.demo_menu = False
+        elif key in (ord("j"), curses.KEY_DOWN):
+            self.demo_menu_index = (self.demo_menu_index + 1) % len(cats)
+        elif key in (ord("k"), curses.KEY_UP):
+            self.demo_menu_index = (self.demo_menu_index - 1) % len(cats)
+        elif key in (ord(" "), ord("x")):
+            self.demo_menu_sel.symmetric_difference_update({cats[self.demo_menu_index]})
+        elif key == ord("a"):
+            self.demo_menu_sel = set() if len(self.demo_menu_sel) == len(cats) else set(cats)
+        elif key in (10, 13, curses.KEY_ENTER):
+            self.demo_menu = False
+            self._apply_demo_state(frozenset(self.demo_menu_sel) or None)
+        return True
 
     def ui_snapshot(self) -> dict:
         tabs = self.current_tabs()
@@ -4756,7 +4844,13 @@ class App:
             self.custom_since = self.custom_until = None
             self._invalidate_workflow_cache()
             if self.drill_into_session(workflow_id, tab):
-                self.notice = "range cleared to reach the session"
+                # Keep select_session_tab's "no 'context' tab here" explanation if the
+                # requested tab was missing -- only announce the range clear otherwise.
+                tabs = self.current_tabs()
+                want = (tab or "").strip().lower()  # match select_session_tab's normalization
+                on_tab = bool(tabs) and tabs[self.tab % len(tabs)].lower() == want
+                if not tab or on_tab:
+                    self.notice = "range cleared to reach the session"
                 return True
             self.notice = "session is in an ignored project"
             return False
@@ -4970,6 +5064,8 @@ class App:
         # see keys before the overlays do (draw() already paints these small modals on top).
         if self.theme_menu:
             return self.handle_theme_menu_key(key)
+        if self.demo_menu:
+            return self.handle_demo_menu_key(key)
         if self.source_menu:
             return self.handle_source_menu_key(key)
         if self.machine_menu:
@@ -5156,7 +5252,7 @@ class App:
             self.open_theme_menu()
             return True
         if key == ord("D"):
-            self.toggle_demo()
+            self.open_demo_menu()  # pick what to anonymize (Enter applies; unchecked = real)
             return True
         if key == ord("+"):
             # In browse, + drills in like Enter (its old alias); once the detail is
@@ -5239,6 +5335,9 @@ class App:
             if tabs and tabs[self.tab % len(tabs)] == "Turns":
                 self.turns_full = not self.turns_full
                 self._turns_expanded.clear()
+                # Expanding all inserts bodies before a later cursor -- follow it so the
+                # highlighted header doesn't slide off-screen with the scroll unchanged.
+                self._turn_follow = True
                 self.notice = "turns expanded" if self.turns_full else "folded to prompts"
                 return True
         if key == ord("e"):
@@ -5553,6 +5652,15 @@ class App:
             elif click or double:
                 self.select_theme(self._theme_before, announce=False)
                 self.theme_menu = False  # click cancels, theme reverted (like Esc)
+            return True
+        if self.demo_menu:
+            n = len(DEMO_CATEGORIES)
+            if up:
+                self.demo_menu_index = (self.demo_menu_index - 1) % n
+            elif down:
+                self.demo_menu_index = (self.demo_menu_index + 1) % n
+            elif click or double:
+                self.demo_menu = False  # click cancels, demo state unchanged
             return True
         if self.source_menu:
             order = sources.source_cycle(self.args)

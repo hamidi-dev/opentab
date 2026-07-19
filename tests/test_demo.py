@@ -44,15 +44,106 @@ def test_demo_drops_a_filter_query_you_typed():
     # anyway, the titles being fakes).
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.source_key = "opencode"
-    app._store_cache = {("opencode", True): FakeStore([workflow("a", "2026-06-01 12:00:00")])}
-    app._store_cache[("opencode", True)].demo = True
+    demo_store = FakeStore([workflow("a", "2026-06-01 12:00:00")])
+    demo_store.demo = True
+    demo_store.demo_cats = ot.demo.DEMO_ALL
+    app._store_cache = {("opencode", ot.demo.DEMO_ALL): demo_store}  # demo-all, pre-cached
     app.query = "Acme acquisition"
 
-    app.toggle_demo()
+    app.toggle_demo()  # real -> demo-everything
 
     assert app.store.demo
     assert app.query == ""
     assert "demo mode" in app.notice
+
+
+def test_demo_categories_gate_titles_turns_and_spend():
+    from opentab.demo import demo_config, scramble_workflow
+    from opentab.models import Workflow
+
+    def wf():
+        return Workflow(
+            id="s1",
+            title="real title",
+            directory="/home/me/repo",
+            created_at="2026-07-01 10:00:00",
+            root_cost=5.0,
+            total_cost=5.0,
+            subagents=0,
+            model_count=1,
+            total_tokens=1000,
+            unpriced_tokens=0,
+        )
+
+    # spend pins the scale (identity unless spend is scrambled), so cost only moves
+    # when spend is on; titles only rename when titles is on.
+    def scrambled(spec):
+        _en, scale, cats = demo_config(type("A", (), {"demo": spec})())
+        w = scramble_workflow(wf(), scale, cats)
+        return w.title != "real title", w.total_cost != 5.0
+
+    assert demo_config(type("A", (), {"demo": "titles"})())[1] == 1.0  # no spend -> real $
+    assert scrambled("titles") == (True, False)  # fake name, real cost
+    assert scrambled("spend") == (False, True)  # real name, scaled cost
+    assert scrambled("turns") == (False, False)  # neither touches a workflow row
+    assert scrambled("all")[0] and scrambled("all")[1]  # everything moves
+    # an unknown category falls back to all, never a silent no-op demo
+    _en, _sc, cats = demo_config(type("A", (), {"demo": "bogus"})())
+    assert cats == ot.demo.DEMO_ALL
+
+
+def test_demo_picker_toggles_categories_and_applies_the_subset():
+    # Drive the D picker: uncheck spend, apply, and confirm the store is built for
+    # the {titles, turns} subset (the make_store args carry that spec).
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.source_key = "opencode"
+    specs = []
+    real_make_store = ot.sources.make_store
+    try:
+        built = FakeStore([workflow("a", "2026-06-01 12:00:00")])
+        built.demo = True
+        built.demo_cats = frozenset({"titles", "turns"})
+        ot.sources.make_store = lambda a, key: specs.append(a.demo) or (built, "")
+
+        app.open_demo_menu()
+        assert app.demo_menu and app.demo_menu_sel == set(ot.demo.DEMO_ALL)  # seeded all
+        # move to the Spend row and uncheck it with Space
+        app.handle_key(None, ord("j"))  # titles -> turns
+        app.handle_key(None, ord("j"))  # turns -> spend
+        app.handle_key(None, ord(" "))  # uncheck spend
+        assert app.demo_menu_sel == {"titles", "turns"}
+        app.handle_key(None, 10)  # Enter applies
+        assert not app.demo_menu and app.store is built
+        assert specs == ["titles,turns"]  # the store was built for exactly that subset
+        assert app.notice == "demo: titles, turns"
+    finally:
+        ot.sources.make_store = real_make_store
+
+
+def test_fleet_rebuild_uses_the_demo_state_key_not_a_bool():
+    # Regression: _rebuild_fleet_store must key the rebuilt store on the demo *state*
+    # (None / the category frozenset), like select_source and the picker. A bool key
+    # both stranded the fresh store (a later D swap-back showed stale data) and, in a
+    # partial demo, crashed _args_with_demo's sorted(state).
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.source_key = "remote"
+    demo_store = FakeStore([workflow("a", "2026-06-01 12:00:00")])
+    demo_store.demo = True
+    demo_store.demo_cats = ot.demo.DEMO_ALL
+    app.store = demo_store
+    seen = []
+    real_make = ot.sources.make_store
+    try:
+        fresh = FakeStore([workflow("a", "2026-06-01 12:00:00")])
+        fresh.demo = True
+        fresh.demo_cats = ot.demo.DEMO_ALL
+        ot.sources.make_store = lambda a, key: seen.append(a.demo) or (fresh, "")
+        app._rebuild_fleet_store()  # must not raise (a bool state would hit sorted(True))
+        assert app.store is fresh
+        assert ("remote", ot.demo.DEMO_ALL) in app._store_cache  # state key, not (…, True)
+        assert seen == ["spend,titles,turns"]  # a spec string reached make_store, never True
+    finally:
+        ot.sources.make_store = real_make
 
 
 def test_demo_cost_zero_and_deterministic():
@@ -266,7 +357,7 @@ def test_demo_turns_anonymize_the_full_prompt_too():
     assert rows[0]["prompt_full"] == rows[0]["prompt_title"]  # the fake, twice
 
 
-def test_capital_d_toggles_real_and_demo_store():
+def test_capital_d_opens_the_picker_that_toggles_real_and_demo():
     real = FakeStore(
         [
             workflow("ses_1", "2026-06-01 12:00:00", title="real one", cost=1.0),
@@ -281,6 +372,7 @@ def test_capital_d_toggles_real_and_demo_store():
     )
     demo.demo = True
     demo.demo_scale = 2.0
+    demo.demo_cats = ot.demo.DEMO_ALL
     args = type("Args", (), {"since": None, "until": None, "days": None})()
     app = ot.App(real, args, source_key="opencode")
     app.view = "zoom"
@@ -289,13 +381,17 @@ def test_capital_d_toggles_real_and_demo_store():
     real_make_store = ot.sources.make_store
     calls = []
     try:
-        ot.sources.make_store = lambda a, key: calls.append((a.demo, key)) or (
+        ot.sources.make_store = lambda a, key: calls.append((bool(a.demo), key)) or (
             demo if a.demo else real,
             "",
         )
 
+        # D opens the multi-check picker; nothing applied yet, still real data.
         app.handle_key(None, ord("D"))
-        assert app.store is demo
+        assert app.demo_menu and app.store is real
+        # Enter applies the default (all categories checked) -> demo store.
+        app.handle_key(None, 10)
+        assert not app.demo_menu and app.store is demo
         assert app.view == "zoom" and app.current_tabs()[app.tab] == "Models"
         assert {w.title for w in app.loaded} == {"demo one", "demo two"}
         assert app.notice == "demo mode"
@@ -304,12 +400,15 @@ def test_capital_d_toggles_real_and_demo_store():
         app.workflow_index = 1
         assert app.current_session().id == "ses_1"
 
+        # D again seeds the picker from the live cats; `a` clears all, Enter = real again.
         app.handle_key(None, ord("D"))
+        app.handle_key(None, ord("a"))  # all -> none
+        app.handle_key(None, 10)
         assert app.store is real
         assert app.view == "zoom" and app.current_tabs()[app.tab] == "Sessions"
         assert app.current_session().id == "ses_1"
         assert {w.title for w in app.loaded} == {"real one", "real two"}
         assert app.notice == "real data"
-        assert calls == [(True, "opencode")]  # real store was already cached
+        assert calls == [(True, "opencode")]  # only demo was built; real was already cached
     finally:
         ot.sources.make_store = real_make_store

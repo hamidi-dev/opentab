@@ -694,14 +694,14 @@ def test_remote_store_drops_model_rows_without_a_root_id():
 def test_remote_store_demo_leaves_model_rows_unscaled():
     # The App's _load_model_cache scales the per-model breakdown for every store, so
     # RemoteStore must NOT pre-scale it -- else Overview and the Models tab disagree.
-    import opentab.stores.remote as remote_mod
+    import opentab.demo as demo_mod
 
     payload = _summary("z", [workflow("s1", "2026-07-15 10:00:00", cost=10.0)])
     payload["model_breakdown"] = [
         {"root_id": "s1", "model_name": "openai/m", "cost": 10.0, "tokens_total": 100}
     ]
-    orig = remote_mod.random.uniform
-    remote_mod.random.uniform = lambda a, b: 1.0  # pin demo_scale to 3.0
+    orig = demo_mod.random.uniform
+    demo_mod.random.uniform = lambda a, b: 1.0  # pin the shared demo_scale to 3.0
     try:
         with tempfile.TemporaryDirectory() as d:
             _write(d, "z.json", payload)
@@ -709,7 +709,7 @@ def test_remote_store_demo_leaves_model_rows_unscaled():
             assert store.model_breakdown()[0]["cost"] == 10.0  # raw; App scales it once
             assert store.workflows()[0].total_cost == 30.0  # workflow IS scaled in-store
     finally:
-        remote_mod.random.uniform = orig
+        demo_mod.random.uniform = orig
 
 
 def test_remote_store_survives_unhashable_or_missing_root_id():

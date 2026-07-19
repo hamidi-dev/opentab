@@ -1199,6 +1199,16 @@ def test_turns_click_moves_the_keyboard_cursor_onto_the_group():
     assert app._turn_cursor == 2 and "p3" in app._turns_expanded
 
 
+def test_turns_z_expand_all_follows_the_cursor():
+    # Regression: z (expand all) inserts bodies before a later cursor, so it must ask
+    # the next draw to scroll the selected header back into view.
+    app = _turns_app()
+    app._turn_cursor = 2
+    app._turn_follow = False
+    app.handle_key(None, ord("z"))
+    assert app.turns_full and app._turn_follow
+
+
 def test_machine_overview_shows_live_pulled_and_freshness_niceties():
     # The Machines-mode main view carries what the plain rollup can't: live vs pulled,
     # the pull time + version, and (for a pulled box) the summary-only caveat.
