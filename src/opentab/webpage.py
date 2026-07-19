@@ -453,6 +453,23 @@ function renderTheme() {
 let TAB = 'Overview';       // active detail tab (transient, resets on scope change)
 let BROWSE = 'time';        // sidebar mode: 'time' (Months/Days) | 'projects' | 'machines', like the TUI
 let FOCUS = 'months';       // which sidebar list j/k drives
+// The Machines-scope sub-drill (the TUI's zoom_source/zoom_project/zoom_model): clicking a
+// row on the box's Harnesses/Projects/Models tab narrows its Sessions to that one dimension
+// without leaving the machine axis. Transient like TAB (cleared on any scope change), and
+// mutually exclusive -- only one dimension at a time -- so nothing composes. {dim, value}.
+let MSUB = null;
+function setMsub(dim, value) { MSUB = { dim, value }; TAB = 'Sessions'; render(false); }
+function clearMsub() { MSUB = null; render(false); }
+function msubFilter(ws) {
+  if (!MSUB) return ws;
+  // Fall back to META.source exactly like sourceRows() groups -- else a session with an
+  // empty source shows under "remote" in the Harnesses table but the drill (which set
+  // MSUB.value from that row) filters against "unknown" and opens an empty Sessions list.
+  if (MSUB.dim === 'source') return ws.filter(w => (w.source || META.source) === MSUB.value);
+  if (MSUB.dim === 'project') return ws.filter(w => w.project === MSUB.value);
+  if (MSUB.dim === 'model') return ws.filter(w => (DATA.models[w.id] || []).some(x => x.model === MSUB.value));
+  return ws;
+}
 // Per-machine niceties for the Machines mode (live vs pulled, export time/version);
 // {} off the fleet view. Keyed by machine name (== w.machine, demo-scrambled under demo).
 const MMETA = DATA.machineMeta || {};
@@ -1122,7 +1139,7 @@ function statTiles(ws) {
     ['active days', st.days.toLocaleString('en-US')],
   ]);
 }
-function modelsTable(id, rows, collapse) {
+function modelsTable(id, rows, collapse, onRow) {
   const totalCost = sum(rows, mCost), totalTok = sum(rows, r => r.tokens);
   const share = r => totalCost > 0 ? mCost(r) / totalCost : (totalTok > 0 ? r.tokens / totalTok : 0);
   return table(id, [
@@ -1134,16 +1151,17 @@ function modelsTable(id, rows, collapse) {
     { key: 'cacheRead', label: 'CacheR', align: 'r', fmt: r => hTok(r.cacheRead), cls: 'dim' },
     { key: 'cacheWrite', label: 'CacheW', align: 'r', fmt: r => hTok(r.cacheWrite), cls: 'dim' },
     { key: 'output', label: 'Output', align: 'r', fmt: r => hTok(r.output), cls: 'dim' },
-  ], rows, { defaultSort: { key: 'cost', desc: true }, collapse: collapse || 25,
+  ], rows, { defaultSort: { key: 'cost', desc: true }, collapse: collapse || 25, onRow: onRow || null,
     totals: { model: 'TOTAL', runs: String(sum(rows, r => r.runs)), cost: moneyCell(totalCost),
       tokens: hTok(totalTok), cacheRead: hTok(sum(rows, r => r.cacheRead)),
       cacheWrite: hTok(sum(rows, r => r.cacheWrite)), output: hTok(sum(rows, r => r.output)) } });
 }
-function projectsTable(id, ws, collapse, noDrill) {
+function projectsTable(id, ws, collapse, onRow) {
   const rows = projectRows(ws);
   const peak = Math.max(...rows.map(r => r.cost), 0);
-  // noDrill: a read-only breakdown (the Machines scope's Projects), so a row click does
-  // NOT go('p', ...) and jump out of the machine axis -- matching the TUI's read-only tab.
+  // onRow: undefined -> the default project-scope drill (go); null -> a read-only
+  // breakdown; a function -> a custom drill (the Machines scope narrows in place via
+  // MSUB instead of jumping out of the machine axis to the project scope).
   return table(id, [
     { key: 'project', label: 'Project', asc: true, sortVal: r => projName(r.project).toLowerCase(),
       fmt: r => [projName(r.project), ' ', h('span', { class: 'mut' }, shortPath(r.project))], cls: 'grow' },
@@ -1152,7 +1170,7 @@ function projectsTable(id, ws, collapse, noDrill) {
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
     { key: 'last', label: 'Last active', align: 'r', fmt: r => h('span', { class: 'dim' }, dt(r.last).slice(0, 10)) },
   ], rows, { defaultSort: { key: 'cost', desc: true }, collapse: collapse || 25,
-    onRow: noDrill ? null : r => { go('p', r.project); } });
+    onRow: onRow === undefined ? (r => { go('p', r.project); }) : onRow });
 }
 function filterInput() {
   return h('input', { class: 'filter', id: 'filter-input', placeholder: 'filter sessions…', value: FILTER,
@@ -1188,7 +1206,7 @@ function topSessionsTable(id, ws, n) {
   return table(id, sessionCols(), ws, { defaultSort: { key: 'cost', desc: true }, collapse: n,
     onRow: r => { go('s', r.id); } });
 }
-function sourcesTable(id, ws) {
+function sourcesTable(id, ws, onRow) {
   const rows = sourceRows(ws);
   const peak = Math.max(...rows.map(r => r.cost), 0);
   return table(id, [
@@ -1196,7 +1214,7 @@ function sourcesTable(id, ws) {
     { key: 'sessions', label: 'Sessions', align: 'r' },
     { key: 'cost', label: 'Cost', align: 'r', fmt: r => barCell(r.cost, peak) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
-  ], rows, { defaultSort: { key: 'cost', desc: true } });
+  ], rows, { defaultSort: { key: 'cost', desc: true }, onRow: onRow || null });
 }
 function machinesTable(id, ws) {
   // The per-scope Machines breakdown (fleet view), the sourcesTable twin: read-only, like
@@ -1649,7 +1667,7 @@ function renderOverview(root, sc, ws) {
     root.appendChild(card);
   }
   const panes = [];
-  if (sc.kind !== 'p') panes.push(pane('Top projects', projectsTable('t-ov-projects', ws, 8, sc.kind === 'M')));
+  if (sc.kind !== 'p') panes.push(pane('Top projects', projectsTable('t-ov-projects', ws, 8, sc.kind === 'M' ? null : undefined)));
   // A day touches few models, so its Overview carries the full mix -- the day
   // scope has no Models tab (the TUI's day_overview trade-off).
   panes.push(pane(sc.kind === 'd' ? 'Model mix' : 'Top models', modelsTable('t-ov-models', modelAgg(ws), 8)));
@@ -1679,13 +1697,21 @@ function renderSessionOverview(root, sc) {
 function renderDetail(sc, ws) {
   const root = document.getElementById('view');
   root.textContent = '';
+  // In the Machines scope, the Harnesses/Projects/Models tabs drill IN PLACE (MSUB) rather
+  // than jumping to another scope, and the Sessions list reflects that sub-drill -- the
+  // web twin of the TUI's Machines-mode zoom_source/zoom_project/zoom_model.
+  const box = sc.kind === 'M';
   if (TAB === 'Overview') renderOverview(root, sc, ws);
   else if (TAB === 'Models') {
     const rows = sc.kind === 's' ? (DATA.models[sc.id] || []).map(r => ({ ...r })) : modelAgg(ws);
-    root.appendChild(pane('Models · ' + scopeLabel(sc), modelsTable('t-tab-models', rows)));
-  } else if (TAB === 'Projects') root.appendChild(pane('Projects · ' + scopeLabel(sc), projectsTable('t-tab-projects', ws, undefined, sc.kind === 'M')));
-  else if (TAB === 'Sessions') root.appendChild(pane('Sessions · ' + scopeLabel(sc), sessionsTable('t-tab-sessions', ws)));
-  else if (TAB === 'Harnesses') root.appendChild(pane('Harnesses · ' + scopeLabel(sc), sourcesTable('t-tab-sources', ws)));
+    root.appendChild(pane('Models · ' + scopeLabel(sc),
+      modelsTable('t-tab-models', rows, undefined, box ? (r => setMsub('model', r.model)) : null)));
+  } else if (TAB === 'Projects') root.appendChild(pane('Projects · ' + scopeLabel(sc),
+    projectsTable('t-tab-projects', ws, undefined, box ? (r => setMsub('project', r.project)) : undefined)));
+  else if (TAB === 'Sessions') root.appendChild(pane('Sessions · ' + scopeLabel(sc),
+    sessionsTable('t-tab-sessions', box ? msubFilter(ws) : ws)));
+  else if (TAB === 'Harnesses') root.appendChild(pane('Harnesses · ' + scopeLabel(sc),
+    sourcesTable('t-tab-sources', ws, box ? (r => setMsub('source', r.source)) : null)));
   else if (TAB === 'Machines') root.appendChild(pane('Machines · ' + scopeLabel(sc), machinesTable('t-tab-machines', ws)));
   else if (TAB === 'Subagents') {
     // Nodes ride along only for a session that delegated. A solo session says "no
@@ -1752,6 +1778,14 @@ function renderCrumbs(sc) {
     if (i) el.appendChild(h('span', { class: 'sep' }, '/'));
     el.appendChild(href ? h('a', { href }, label) : h('span', { class: 'here' }, label));
   });
+  // The Machines-scope sub-drill (MSUB): a clearable chip, visible from any tab.
+  if (sc.kind === 'M' && MSUB) {
+    const lab = { source: 'harness', project: 'project', model: 'model' }[MSUB.dim];
+    const val = MSUB.dim === 'project' ? projName(MSUB.value) : MSUB.value;
+    el.appendChild(h('span', { class: 'sep' }, '·'));
+    el.appendChild(h('a', { href: '#', title: 'clear this drill',
+      onclick: e => { e.preventDefault(); clearMsub(); } }, lab + ': ' + val + ' ✕'));
+  }
 }
 function chrome() {
   const chips = document.getElementById('hchips');
@@ -2412,7 +2446,7 @@ document.getElementById('themepick').addEventListener('click', closeTheme);
 // Navigation resets the scoped table state, but keeps the active tab when it
 // still exists in the new scope (render() falls back to Overview otherwise) --
 // so month->month on the Sessions tab stays on Sessions.
-window.addEventListener('hashchange', () => { FILTER = ''; EXPANDED.clear(); render(); });
+window.addEventListener('hashchange', () => { FILTER = ''; EXPANDED.clear(); MSUB = null; render(); });
 // Theme precedence: the viewer's saved choice, else the page's baked-in default
 // (--theme / meta), else tokyo-night. Applied before the first paint so charts pick it up.
 applyTheme((function () { try { return localStorage.getItem('opentab-theme'); } catch (e) { return null; } })() || META.theme || 'tokyo-night');
