@@ -407,7 +407,15 @@ def session_extras(app: App, workflow_id: str) -> dict:
             if size <= 0:
                 continue
             model = r.get("model_name") or model
-            points.append({"t": (r.get("time") or "")[5:16], "v": int(size)})
+            # Each turn carries its OWN window: a session can switch models mid-way, and
+            # the peak % must be honest to the window the peak turn actually ran in (the
+            # TUI's rule). Deriving it from the live model's window instead let the page
+            # print an impossible 120% of the window when the session ended on a smaller
+            # one -- and since the client picks the peak, shipping one precomputed
+            # peakWindow could still disagree with whichever turn it chose.
+            points.append(
+                {"t": (r.get("time") or "")[5:16], "v": int(size), "w": model_context_window(model)}
+            )
             windows.add(model_context_window(model))
         if points:
             comp = []

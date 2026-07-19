@@ -1344,7 +1344,11 @@ class Renderer:
             return
         total = sum(float(it["cost"]) for _, it in rows)
         peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
-        namew = min(max(len(s) for s, _ in rows), max(10, w - 48))
+        # Size the name column to its HEADER too, not just the data: with every name
+        # shorter than the label ("Harness", "Machine"), the header's own field overflowed
+        # and shifted Cost/Share/Tokens/Sess right of the numbers they label. Short
+        # hostnames make that the default in a fleet view. _model_table guards the same way.
+        namew = min(max([len(s) for s, _ in rows] + [len(col)]), max(10, w - 48))
         barw = max(3, min(20, w - namew - 44))
         header = (
             f"  {col:<{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}"
@@ -4938,7 +4942,7 @@ class Renderer:
         peak = max((float(it["cost"]) for _, it in all_rows), default=0.0) or 1.0
         _idx, start, shown = self._trend_cursor_window(len(all_rows), height - 4)
         rows = all_rows[start : start + shown]
-        namew = min(max(len(p) for p, _ in rows), max(10, width - 44))
+        namew = min(max([len(p) for p, _ in rows] + [len("Provider")]), max(10, width - 44))
         barw = max(3, min(20, width - namew - 38))
         lines = [
             "# Spend by provider",
@@ -5021,7 +5025,7 @@ class Renderer:
             rows = all_rows if limit is None else all_rows[:limit]
             total_cost = sum(float(it["cost"]) for _, it in rows)
             peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
-        namew = min(max(len(s) for s, _ in rows), max(10, width - 44))
+        namew = min(max([len(s) for s, _ in rows] + [len(col)]), max(10, width - 44))
         barw = max(3, min(20, width - namew - 38))
         lines = [
             f"# Spend by {noun}",

@@ -406,3 +406,73 @@ def test_claude_context_breakdown_composes_split_records_and_matches_tools():
         turns = store.message_timeline("s1")
         assert len(turns) == 1 and turns[0]["tools"] == ["Bash"]
         assert sum(r["calls"] for r in store.tool_breakdown("s1")) == 1
+
+
+def test_claude_subagent_sidecars_belong_to_their_parent_session():
+    """Claude Code writes a subagent's turns to <slug>/<sessionId>/subagents/agent-*.jsonl,
+    and the records inside carry the PARENT's sessionId. The file name is therefore not a
+    session id: recent_roots must fold the sidecar into its owner (a phantom "agent-<hex>"
+    root sorts first, since sidecars are the freshest files, and --status would price it at
+    $0.00), root_of must refuse the phantom, and the single-transcript status path must
+    still see the subagent's tokens."""
+    with tempfile.TemporaryDirectory() as tmp:
+        projects = os.path.join(tmp, "projects")
+        slug = os.path.join(projects, "slug")
+        side_dir = os.path.join(slug, "s1", "subagents")
+        os.makedirs(side_dir)
+        cwd = os.path.join(tmp, "repo")
+        main = _claude_msg("s1", "claude-opus-4-8", _usage(100, 10, 0, 0), uuid="u0", cwd=cwd)
+        # The subagent's turn: its own file, but recorded under the parent's session id.
+        sub = _claude_msg(
+            "s1",
+            "claude-opus-4-8",
+            _usage(200, 20, 0, 0),
+            uuid="u1",
+            cwd=cwd,
+            parent="u0",
+            side=True,
+        )
+        _write_jsonl(os.path.join(slug, "s1.jsonl"), [main])
+        sidecar = os.path.join(side_dir, "agent-deadbeef.jsonl")
+        _write_jsonl(sidecar, [sub])
+        os.utime(os.path.join(slug, "s1.jsonl"), (1000, 1000))
+        os.utime(sidecar, (2000, 2000))  # the subagent is the most recent writer
+
+        args = type("A", (), {"demo": False})()
+        store = ot.ClaudeStore(projects, args)
+        roots = store.recent_roots()
+        assert [r["id"] for r in roots] == ["s1"]  # no phantom "agent-deadbeef" root
+        assert roots[0]["last_active"] == 2000 * 1000  # the sidecar still bumps its owner
+        assert roots[0]["directory"] == cwd  # read from the parent's own transcript
+        assert store.root_of("agent-deadbeef") is None
+        assert store.root_of("s1") == "s1"
+
+        # The cold status path (no full parse yet) must count the subagent's tokens too.
+        cold = ot.ClaudeStore(projects, args)
+        assert sum(n["tokens_total"] for n in cold.status_nodes("s1")) == 330
+        assert sum(n["tokens_total"] for n in store.workflow_nodes("s1")) == 330
+
+
+def test_recent_roots_reads_the_directory_from_the_newest_resumed_copy():
+    """Resuming a session from another directory leaves the same id under a second project
+    slug with a different cwd. The row must take its directory from the NEWEST copy, not
+    whichever the scan saw last, or a --status <dir> in the directory the session actually
+    moved to would not find it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        projects = os.path.join(tmp, "projects")
+        for slug, cwd, mtime in (("A", "/repo/A", 200), ("B", "/repo/B", 100)):
+            os.makedirs(os.path.join(projects, slug))
+            path = os.path.join(projects, slug, "s.jsonl")
+            _write_jsonl(
+                path,
+                [
+                    _claude_msg(
+                        "s", "claude-opus-4-8", _usage(10, 5, 0, 0), uuid="u" + slug, cwd=cwd
+                    )
+                ],
+            )
+            os.utime(path, (mtime, mtime))
+        store = ot.ClaudeStore(projects, type("A", (), {"demo": False})())
+        (row,) = store.recent_roots()
+        assert row["last_active"] == 200 * 1000  # newest copy's mtime
+        assert row["directory"] == "/repo/A"  # ...and ITS cwd, not the older copy's

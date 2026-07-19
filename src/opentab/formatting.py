@@ -122,9 +122,16 @@ def tokens(value: int) -> str:
 
 
 def human_tokens(value: int) -> str:
-    if value >= 1_000_000_000:
+    # Switch unit just BEFORE the boundary, not at it: rounding to one decimal first
+    # turned 999,950 into "1000.0k" and 999,950,000 into "1000.0M" -- seven characters,
+    # which overflow the fixed six-wide token cells (Renderer._split_cell) and shift that
+    # row's remaining columns one place right of their headers. Nothing here ever exceeds
+    # six characters now.
+    if value >= 999_950_000_000:
+        return f"{value / 1_000_000_000_000:.1f}T"
+    if value >= 999_950_000:
         return f"{value / 1_000_000_000:.1f}B"
-    if value >= 1_000_000:
+    if value >= 999_950:
         return f"{value / 1_000_000:.1f}M"
     if value >= 1_000:
         return f"{value / 1_000:.1f}k"

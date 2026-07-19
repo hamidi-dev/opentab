@@ -50,6 +50,10 @@ class JsonlStore(CsvStore):
 
     source_name = "JSONL"
 
+    # Own prefix for the synthetic (date, project) ids: CsvStore's context-curve gate
+    # keys off it, so sharing the parent's "csv:" would leave the gate dead here.
+    SYNTHETIC_ID_PREFIX = "jsonl:"
+
     # canonical field -> the JSON keys accepted for it (first present, non-empty wins).
     _KEYS = {
         "timestamp": ("timestamp", "time", "ts", "date", "created_at", "datetime"),
@@ -171,7 +175,7 @@ class JsonlStore(CsvStore):
         if not sid:
             # No session id: one synthetic session per (date, project), stable across
             # reloads/merges -- same fallback CsvStore uses.
-            sid = "jsonl:" + (ts[:10] or "?") + "|" + (project or "?")
+            sid = self.SYNTHETIC_ID_PREFIX + (ts[:10] or "?") + "|" + (project or "?")
         s = sessions.setdefault(sid, self._new_session())
 
         rid = str(self._get(obj, "request") or "").strip()
@@ -190,12 +194,7 @@ class JsonlStore(CsvStore):
         if acc is None:
             acc = s["models"][model] = self._new_acc()
         uncached = max(0, inp - cached)
-        acc["runs"] += 1
-        acc["input"] += uncached
-        acc["cache_read"] += cached
-        acc["output"] += out
-        acc["cost"] += cost
-        acc["tokens_total"] += uncached + cached + out
+        self._accumulate(acc, uncached, cached, out, cost)
 
         raw_prompt = self._get(obj, "prompt")
         full = raw_prompt.strip() if isinstance(raw_prompt, str) else ""

@@ -276,7 +276,34 @@ class CsvStore:
             "cache_write": 0,  # OpenAI-style: no separate cache-write bill
             "tokens_total": 0,
             "cost": 0.0,
+            # The unpriced half of the split, accumulated per row (see _accumulate).
+            "u_input": 0,
+            "u_output": 0,
+            "u_cache_read": 0,
+            "u_cache_write": 0,
         }
+
+    @staticmethod
+    def _accumulate(acc: dict, uncached: int, cached: int, out: int, cost: float) -> None:
+        # Fold one request row into its (session, model) bucket. The priced/unpriced
+        # split is decided PER ROW -- the PiStore pattern -- because a log legitimately
+        # mixes routes: a row with a recorded cost is real spend, a $0 row leaves its
+        # tokens in the unpriced_* split so the "$" view estimates them at list price.
+        # Deciding it per bucket (from the summed cost) instead would let a single
+        # metered row mark every subscription row sharing its model as priced, so those
+        # tokens would land in neither the recorded spend nor the estimate and "$" could
+        # not see them at all. JsonlStore shares this, so the two can never drift.
+        acc["runs"] += 1
+        acc["input"] += uncached
+        acc["cache_read"] += cached
+        acc["output"] += out
+        acc["tokens_total"] += uncached + cached + out
+        if cost > 0:
+            acc["cost"] += cost
+        else:
+            acc["u_input"] += uncached
+            acc["u_cache_read"] += cached
+            acc["u_output"] += out
 
     @staticmethod
     def _new_session() -> dict:
@@ -333,7 +360,7 @@ class CsvStore:
         if not sid:
             # No session id: one synthetic session per (date, project) keeps the list
             # meaningful. Stable so reloads/merges don't churn ids.
-            sid = "csv:" + (ts[:10] or "?") + "|" + (project or "?")
+            sid = self.SYNTHETIC_ID_PREFIX + (ts[:10] or "?") + "|" + (project or "?")
         s = sessions.setdefault(sid, self._new_session())
         rid = (g("request") or "").strip()
         if rid:
@@ -357,12 +384,7 @@ class CsvStore:
         if acc is None:
             acc = s["models"][model] = self._new_acc()
         uncached = max(0, inp - cached)
-        acc["runs"] += 1
-        acc["input"] += uncached
-        acc["cache_read"] += cached
-        acc["output"] += out
-        acc["cost"] += cost
-        acc["tokens_total"] += uncached + cached + out
+        self._accumulate(acc, uncached, cached, out, cost)
 
         s["turns"].append(
             {
@@ -389,15 +411,13 @@ class CsvStore:
         s["directory"] = self._resolve_dir(s["project"])
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
-            # Per-model priced/unpriced split (HermesStore pattern): a recorded cost > 0
-            # prices the row as real spend (unpriced_* zeroed); $0 leaves the full counts
-            # in the unpriced_* split so the "$" machinery estimates them at list price.
-            # No subagents, so root == total.
-            priced = acc["cost"] > 0
-            u_in = 0 if priced else acc["input"]
-            u_out = 0 if priced else acc["output"]
-            u_cr = 0 if priced else acc["cache_read"]
-            u_cw = 0 if priced else acc["cache_write"]
+            # The priced/unpriced split was decided per row in _accumulate (a log mixes
+            # metered and subscription routes freely), so the row just reports what it
+            # accumulated. No subagents, so root == total.
+            u_in = acc["u_input"]
+            u_out = acc["u_output"]
+            u_cr = acc["u_cache_read"]
+            u_cw = acc["u_cache_write"]
             rows.append(
                 {
                     "root_id": sid,
@@ -426,7 +446,17 @@ class CsvStore:
         s["model_rows"] = rows
         s["total_cost"] = round(sum(r["cost"] for r in rows), 6)
         s["total_tokens"] = sum(r["tokens_total"] for r in rows)
-        s["unpriced_tokens"] = sum(r["tokens_total"] for r in rows if r["cost"] <= 0)
+        # Sum the per-row unpriced split, not "every token of a $0-cost row": a bucket
+        # holding both metered and subscription rows has a cost > 0 yet still carries
+        # unpriced tokens, and counting it as fully priced would hide them.
+        s["unpriced_tokens"] = sum(
+            r["unpriced_input"]
+            + r["unpriced_output"]
+            + r["unpriced_reasoning"]
+            + r["unpriced_cache_read"]
+            + r["unpriced_cache_write"]
+            for r in rows
+        )
         # Whether any request logged a tool -- the per-session Tools tab gate, computed
         # once here so supports_tools stays O(1) per frame.
         s["has_tools"] = any(t.get("tools") for t in s["turns"])
@@ -558,13 +588,18 @@ class CsvStore:
     def supports_turns(self, workflow_id: str) -> bool:
         return True
 
+    # Prefix of the synthetic (date, project) session ids minted when the log carries
+    # no session column. JsonlStore overrides it -- supports_context_curve keys off
+    # this, so a subclass that mints a different prefix must say so or the gate goes
+    # dead for every synthetic session it creates.
+    SYNTHETIC_ID_PREFIX = "csv:"
+
     def supports_context_curve(self, workflow_id: str) -> bool:
         # The Context tab's growth curve needs the rows to be one *conversation's*
         # consecutive requests. A log row with a real session_id qualifies; a
-        # synthetic (date, project) bucket (the "csv:" ids _ingest_row mints when
-        # the column is absent) interleaves unrelated conversations, so a "curve"
-        # over it would be noise and fake compactions. JsonlStore inherits.
-        return not str(workflow_id).startswith("csv:")
+        # synthetic (date, project) bucket interleaves unrelated conversations, so a
+        # "curve" over it would be noise and fake compactions.
+        return not str(workflow_id).startswith(self.SYNTHETIC_ID_PREFIX)
 
     def tool_breakdown(self, workflow_id: str) -> list[dict]:
         # Per-(tool, model) token/cost attribution for the Tools tab: each request

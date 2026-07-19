@@ -5,7 +5,15 @@ import os
 
 import opentab as ot
 
-from tests._support import FakeScreen, _app_on_session, _model_row, app_with, screen_text, workflow
+from tests._support import (
+    FakeScreen,
+    FakeStore,
+    _app_on_session,
+    _model_row,
+    app_with,
+    screen_text,
+    workflow,
+)
 
 
 def test_terminal_resize_does_not_close_overlays():
@@ -2961,3 +2969,109 @@ def test_source_swap_out_of_machines_mode_falls_back_to_time_browse():
     app.view = "zoom"
     app._reload_for_source()  # the no-restore path select_source uses
     assert app.browse_mode == "time" and app.view == "browse"
+
+
+def test_notices_overlay_swallows_mouse_events():
+    """The N scrollback is drawn over the whole body, but had no mouse branch, so the
+    body's regions stayed live underneath: a double-click where the session list had been
+    drilled into a session behind the overlay, and the wheel scrolled that list instead of
+    the scrollback. Same contract as the help overlay: wheel pages it, a click closes it."""
+    app = app_with([workflow("s1", "2026-07-01 12:00:00"), workflow("s2", "2026-07-02 12:00:00")])
+    app.view, app.workflow_index = "zoom", 0
+    app.renderer.regions = [("rows", "session", 5, 20, 2, 100, 0)]  # a body region beneath it
+    app.toast_history, app.toast_history_scroll = True, 5
+    orig = ot.curses.getmouse
+    try:
+        ot.curses.getmouse = lambda: (0, 60, 12, 0, ot.curses.BUTTON4_PRESSED)
+        app.handle_mouse()
+        assert app.toast_history_scroll == 2 and app.toast_history  # wheel pages the overlay
+        ot.curses.getmouse = lambda: (0, 60, 12, 0, ot.curses.BUTTON1_DOUBLE_CLICKED)
+        app.handle_mouse()
+        assert app.view == "zoom" and app.workflow_index == 0  # never drilled in behind it
+        assert not app.toast_history  # the click closed it, as on help
+    finally:
+        ot.curses.getmouse = orig
+
+
+def test_reopen_trends_survives_a_tab_that_no_longer_exists():
+    """_trend_return names the tab Esc should return to. Every other overlay cursor is
+    re-anchored on a source swap; this one was not, and Machines can vanish outright when
+    the fleet does -- so trend_tabs.index() raised ValueError out of curses.wrapper."""
+    app = app_with([workflow("s1", "2026-07-01 12:00:00")])
+    assert "Machines" not in app.trend_tabs  # a single non-remote backend has no fleet
+    app._trend_return = ("drill", "machine", "boxA", 0)
+    app._reopen_trends(app._trend_return)  # must degrade, not crash
+    assert not app.trends
+
+
+def test_whatif_picker_ignores_a_stray_non_ascii_key():
+    """With the filter off, a non-ASCII character was appended to the query anyway, so a
+    stray dead key emptied the list to "no model matches -- backspace to widen" while
+    backspace was still bound to cancel: the one key the screen named threw the picker
+    away. An ASCII character in that state is ignored, so this one is too."""
+    app = app_with([workflow("s1", "2026-07-01 12:00:00")])
+    app.whatif_menu, app.whatif_filter_active, app.whatif_query = True, False, ""
+    app.handle_whatif_menu_key("ä")
+    assert app.whatif_query == "" and app.whatif_menu
+    app.whatif_filter_active = True  # ...but the filter still takes it
+    app.handle_whatif_menu_key("ä")
+    assert app.whatif_query == "ä"
+
+
+def test_reload_demotes_a_session_that_vanished_instead_of_showing_a_neighbour():
+    """The reload restore guarded with `not self.current_session()`, but current_session()
+    CLAMPS workflow_index -- so a session dropped by the reload handed back its neighbour,
+    which is truthy, and the guard never fired. You kept reading a session detail that had
+    silently become someone else's numbers. _restore_mode_memory already compares identity;
+    this path now does too."""
+    keeper = workflow("keeper", "2026-07-01 12:00:00", cost=1.0)
+    gone = workflow("gone", "2026-07-02 12:00:00", cost=9.0)
+
+    app = _app_on_session([keeper, gone], "gone")
+    app.view = "session"  # _app_on_session selects it; open its detail
+    assert app.current_session().id == "gone"
+    snap = app.ui_snapshot()
+    app.store._workflows = [keeper]  # the re-pull no longer carries it
+    app._reload_for_source(snap)
+    assert app.view == "zoom"  # demoted, rather than silently showing `keeper`
+
+    # ...and a session that survives the reload is still restored, not demoted.
+    app2 = _app_on_session([keeper, gone], "keeper")
+    app2.view = "session"
+    snap2 = app2.ui_snapshot()
+    app2._reload_for_source(snap2)
+    assert app2.view == "session" and app2.current_session().id == "keeper"
+
+
+def test_unpriced_tokens_are_restated_at_message_granularity():
+    """workflows() is the fast first-frame query, so a backend answers unpriced_tokens at
+    whatever granularity it already aggregates -- OpenCode per session NODE, which counts a
+    node holding one priced message as entirely priced and zeroes the rest of its tokens.
+    model_breakdown (the deferred scan the "$" estimate itself comes from) splits it per
+    MESSAGE and is right, so the App restates it from there: 23 of 692 real sessions were
+    labelled priced when they were not, the worst printing "Unpriced tokens: 0" against $37
+    of estimable spend while suppressing the "press $" hint."""
+
+    class NodeGranularStore(FakeStore):
+        def model_breakdown(self):
+            # One priced message and one $0 message on the same session and model: the
+            # node's summed cost is > 0, so a node-granular rollup reports 0 unpriced.
+            return [
+                dict(_model_row("anthropic/claude-fable-5", 0.17, 10), root_id="w1"),
+                dict(
+                    _model_row("anthropic/claude-fable-5", 0.0, 900),
+                    root_id="w1",
+                    unpriced_input=900,
+                    unpriced_output=0,
+                    unpriced_reasoning=0,
+                    unpriced_cache_read=0,
+                    unpriced_cache_write=0,
+                ),
+            ]
+
+    w = workflow("w1", "2026-07-01 12:00:00", cost=0.17, tokens=910)
+    w.unpriced_tokens = 0  # what the node-granular rollup claimed
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(NodeGranularStore([w]), args)
+    app._load_model_cache()
+    assert app.loaded[0].unpriced_tokens == 900  # the $0 message's tokens, visible again

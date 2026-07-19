@@ -304,7 +304,15 @@ class CopilotStore:
     # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
         # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
-        return self._files()
+        # session-store.db belongs here even though it holds no usage: _finalize reads
+        # each session's title and cwd from it, so a rollup parsed before the CLI wrote
+        # it was served from cache forever -- reload re-fingerprints, still matches,
+        # still hits -- freezing those sessions at "(untitled)" / "(unknown)", which
+        # also keeps them out of their project in Projects mode.
+        files = self._files()
+        if os.path.isfile(self._db_path):
+            files.append(self._db_path)
+        return files
 
     def _files(self) -> list[str]:
         files = glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
@@ -358,15 +366,20 @@ class CopilotStore:
         levels = ("chat", "inference", "agent_turn")
         traces = {lvl: set() for lvl in levels}
         resps = {lvl: set() for lvl in levels}
+        # Traces the level logged *without* a response id: the only case where a trace
+        # may still stand in for one, since there is no per-call id to compare (see _emit).
+        bare_traces = {lvl: set() for lvl in levels}
         for c in candidates:
             if c["source"] in traces:
                 if c["trace_id"]:
                     traces[c["source"]].add(c["trace_id"])
+                    if not c["response_id"]:
+                        bare_traces[c["source"]].add(c["trace_id"])
                 if c["response_id"]:
                     resps[c["source"]].add(c["response_id"])
         seen: set[str] = set()
         for c in candidates:
-            if not self._emit(c, traces, resps) or c["dedup_key"] in seen:
+            if not self._emit(c, traces, resps, bare_traces) or c["dedup_key"] in seen:
                 continue
             seen.add(c["dedup_key"])
             self._fold(sessions, c)
@@ -395,13 +408,30 @@ class CopilotStore:
             return None
 
     @staticmethod
-    def _emit(c: dict, traces: dict, resps: dict) -> bool:
+    def _emit(c: dict, traces: dict, resps: dict, bare_traces: dict) -> bool:
         tid, rid, src = c["trace_id"], c["response_id"], c["source"]
 
         def covered(lvl: str) -> bool:
-            return (tid is not None and tid in traces[lvl]) or (
-                rid is not None and rid in resps[lvl]
-            )
+            # A response id names ONE LLM call; a trace id groups every operation in a
+            # turn, and an agentic turn makes several calls on one trace. Treating a
+            # matching trace as proof of a duplicate therefore let a single chat span
+            # suppress every *other* call logged under it -- real tokens, silently gone.
+            # So when this record names its response, only the same response counts...
+            if rid is not None:
+                if rid in resps[lvl]:
+                    return True
+                # ...except against a record of that level on the same trace that named
+                # no response at all: nothing can tell the two apart, and OTel makes
+                # gen_ai.response.id recommended rather than required, so assume the
+                # conservative reading (same call) instead of counting it twice.
+                # Known limit: one response-less record then covers EVERY named call on
+                # its trace, so a bare chat span beside two named inference logs still
+                # keeps only the span. Which named call it duplicates is not knowable,
+                # and guessing one would drop an arbitrary set of tokens instead of a
+                # defensible one -- the conventions put response.id on the chat span, so
+                # that shape needs an exporter that omits it exactly where it matters.
+                return tid is not None and tid in bare_traces[lvl]
+            return tid is not None and tid in traces[lvl]
 
         if src == "chat":
             return True
@@ -441,9 +471,17 @@ class CopilotStore:
         tid = self._trace_id(rec)
         ctx = trace_ctx.get(tid) if tid else None
         model = self._attr_str(attrs, *self._MODEL_ATTRS) or (ctx["model"] if ctx else None)
-        sid, _ = self._session_attr(attrs)
+        # Take the trace's best session id when it outranks this record's own. Keeping
+        # only the local one meant a record whose sole session attribute is the per-call
+        # gen_ai.response.id (priority 1) held onto it even when a sibling on the same
+        # trace named the real conversation (priority 3) -- so one conversation shattered
+        # into a session per LLM call, each of them missing the title and cwd that
+        # session-store.db enriches by session id.
+        sid, prio = self._session_attr(attrs)
+        if ctx and ctx["session"] is not None and (sid is None or ctx["prio"] > prio):
+            sid = ctx["session"]
         if sid is None:
-            sid = (ctx["session"] if ctx else None) or tid or "unknown-session"
+            sid = tid or "unknown-session"
         ts_ms = self._record_ts_ms(rec)
         if ts_ms is None:
             ts_ms = self._file_mtime_ms(path)

@@ -607,3 +607,70 @@ def test_model_context_window_reads_catalog_and_falls_back_by_family():
                 os.environ.pop("XDG_CONFIG_HOME", None)
             else:
                 os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
+def test_model_price_folds_a_suffixed_id_only_off_a_resale_card():
+    """Harnesses log the id they were handed ("claude-3-5-haiku-20241022"), and gateways
+    list exactly those dated/effort-suffixed spellings -- usually with no cache-read rate.
+    An exact hit on that junk beat both the plain spelling's complete card and the
+    hand-kept family fallbacks, so a cache-heavy session was priced ~82% under. Fold to
+    the plain spelling when only resale routes carry the suffixed one -- but never when
+    the suffixed id is the vendor's OWN card, because a dated card is real pricing:
+    openai sells gpt-4o-2024-05-13 dearer than plain gpt-4o."""
+    haiku = ot.pricing.model_price("anthropic/claude-3-5-haiku-20241022")
+    assert haiku == ot.pricing.model_price("anthropic/claude-3-5-haiku")
+    assert haiku[2] > 0 and haiku[3] > 0  # the cache rates the resale card omitted
+
+    # An authoritative dated vendor card keeps its own, dearer rates.
+    assert ot.pricing.model_price("openai/gpt-4o-2024-05-13") == (5.0, 15.0, 0.0, 0.0)
+    assert ot.pricing.model_price("openai/gpt-4o") == (2.5, 10.0, 1.25, 0.0)
+
+    # The load-bearing what-if invariant: arming the canonical twin of the only model a
+    # session used must be exactly a $0 change. The two spellings priced apart broke it.
+    tok = (500_000, 200_000, 0, 30_000_000, 3_000_000)
+    for used, armed in (
+        ("openai/gpt-5.3-codex-xhigh", "openai/gpt-5.3-codex"),
+        ("anthropic/claude-3-5-haiku-20241022", "anthropic/claude-3-5-haiku"),
+    ):
+        assert ot.pricing.api_equivalent_cost(used, *tok) == ot.pricing.api_equivalent_cost(
+            armed, *tok
+        )
+    assert ot.pricing.has_known_price("openai/gpt-5.3-codex-xhigh")
+
+
+def test_vendor_route_beats_a_gateway_markup_for_every_family():
+    """ "The model's own vendor route wins over gateway resale rates" compared a models.dev
+    provider id against the family inferred from the model NAME. They differ for Qwen
+    (alibaba), Kimi (moonshotai) and GLM (zhipuai), so the test silently found no vendor
+    at all and a gateway won on completeness plus file order -- llmgateway's
+    qwen3-coder-plus card is 6x Alibaba's input rate, pricing a session 19x over."""
+    assert ot.pricing.model_price("alibaba/qwen3-coder-plus") == (1.0, 5.0, 0.0, 0.0)
+    assert ot.pricing.is_vendor_route("alibaba", "qwen3-coder-plus")
+    assert ot.pricing.is_vendor_route("moonshotai", "kimi-k2")
+    # Identity still holds where the two spellings already agreed...
+    assert ot.pricing.is_vendor_route("anthropic", "claude-sonnet-4-5")
+    assert ot.pricing.is_vendor_route("xai", "grok-4")
+    # ...and a gateway is never the vendor. alibaba-coding-plan is deliberately absent:
+    # it prices at $0 (a plan, not a rate card) and would beat the real one outright.
+    assert not ot.pricing.is_vendor_route("openrouter", "claude-sonnet-4-5")
+    assert not ot.pricing.is_vendor_route("alibaba-coding-plan", "qwen3-coder-plus")
+    assert not ot.pricing.is_vendor_route("azure", "gpt-4o")
+    # Zhipu is deliberately unmapped: it sells GLM through zhipuai AND zai at different
+    # regional rates, and keying by bare model id cannot tell which one was bought, so
+    # naming both would only hand the choice to catalog file order.
+    assert not ot.pricing.is_vendor_route("zhipuai", "glm-4.6")
+
+
+def test_a_zero_rate_card_never_wins_on_being_the_vendor():
+    """A vendor lists an all-zero card for models it only sells inside a plan. That is not
+    a rate card, so it must not shadow a route that publishes real rates -- zhipuai prices
+    glm-4.7-flash at (0,0,0,0) while half a dozen routes quote a real one. A $0 resolution
+    would also read as free in `$` and make the model armable in `w` for "all at $0"."""
+    price = ot.pricing.model_price("zhipuai/glm-4.7-flash")
+    assert price != (0.0, 0.0, 0.0, 0.0) and price[0] > 0
+
+    # And a suffixed id whose vendor _MODEL_FAMILIES doesn't name must NOT fold: every
+    # route looks like resale there, so folding would be a guess -- sakana's own dated
+    # card would pick up a cache-write rate it never charges.
+    assert ot.pricing.model_family("fugu-ultra-20260615") == ""
+    assert ot.pricing.model_price("sakana/fugu-ultra-20260615") == (5.0, 30.0, 0.5, 0.0)

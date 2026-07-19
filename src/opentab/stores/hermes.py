@@ -262,6 +262,20 @@ class HermesStore:
                 out[sid] = title
         return out
 
+    @staticmethod
+    def _reachable(starts: list[str], children: dict[str, list[str]]) -> set[str]:
+        # Every session reachable from `starts` by walking the child map, cycle-guarded
+        # so malformed parent metadata can't spin forever.
+        seen: set[str] = set()
+        queue = list(starts)
+        while queue:
+            node = queue.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            queue.extend(children.get(node, []))
+        return seen
+
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
             return self._sessions
@@ -312,10 +326,26 @@ class HermesStore:
             if pid and pid in flat:
                 children.setdefault(pid, []).append(sid)
 
+        # Roots are the sessions with no parent -- plus any whose parent_id doesn't
+        # resolve here, because the parent was archived (the query above filters those
+        # out) or pruned from the table. An unresolvable parent makes the child its own
+        # root, which is the rule root_of and recent_roots already follow; treating it as
+        # a subagent instead left it reachable from nowhere, so its tokens and its real
+        # metered spend dropped out of every view while records_cost still advertised
+        # recorded cost.
+        roots = [sid for sid, s in flat.items() if not s["parent_id"] or s["parent_id"] not in flat]
+        # Anything still unreachable sits in a parent cycle (every member points at
+        # another member, so none of them qualified above). Promote them in id order, so
+        # a cycle yields a deterministic tree instead of vanishing.
+        reached = self._reachable(roots, children)
+        for sid in sorted(flat):
+            if sid not in reached:
+                roots.append(sid)
+                reached |= self._reachable([sid], children)
+
         result: dict[str, dict] = {}
-        for sid, s in flat.items():
-            if s["parent_id"]:
-                continue  # handled as a subagent node under its root
+        for sid in roots:
+            s = flat[sid]
             if s["tokens_total"] == 0 and s["cost"] == 0 and not children.get(sid):
                 continue  # no recorded usage or cost
 
@@ -334,8 +364,12 @@ class HermesStore:
             model_acc: dict[str, dict] = {}
 
             bfs_queue: list[tuple[str, int, bool]] = [(sid, 0, True)]
+            walked: set[str] = set()
             while bfs_queue:
                 node_id, depth, is_root = bfs_queue.pop(0)
+                if node_id in walked:
+                    continue  # cyclic parent metadata: never walk (or count) a node twice
+                walked.add(node_id)
                 node = flat[node_id]
                 tot_total += node["tokens_total"]
                 tot_cost += node["cost"]

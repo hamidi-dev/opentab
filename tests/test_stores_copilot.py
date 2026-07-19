@@ -294,3 +294,114 @@ def test_copilot_turns_timeline_is_headerless():
         assert all(r["prompt_id"] == "" and r["prompt_title"] == "" for r in t)
         assert t[0]["model_name"] == "openai/gpt-5" and t[0]["input"] == 800
         assert t[0]["time"] <= t[1]["time"] and t[0]["time"].startswith("2026-")
+
+
+def _otel_inference(conv, resp, inp, out, trace="t1", model="gpt-5.4-mini"):
+    # A GenAI inference LOG -- the same call a chat span also records, one fidelity down.
+    attrs = {
+        "event.name": "gen_ai.client.inference.operation.details",
+        "gen_ai.response.model": model,
+        "gen_ai.usage.input_tokens": inp,
+        "gen_ai.usage.output_tokens": out,
+    }
+    if conv:
+        attrs["gen_ai.conversation.id"] = conv
+    if resp:
+        attrs["gen_ai.response.id"] = resp
+    return {
+        "hrTime": [1775934263, 0],
+        "_body": "GenAI inference",
+        "traceId": trace,
+        "attributes": attrs,
+    }
+
+
+def _tokens(otel):
+    store = ot.CopilotStore(otel, _copilot_args(otel))
+    rows = store.model_breakdown()
+    return sum(r["runs"] for r in rows), sum(r["tokens_total"] for r in rows)
+
+
+def test_copilot_dedup_keeps_distinct_calls_sharing_one_trace():
+    """A response id names ONE call; a trace id groups a whole turn, and an agentic turn
+    makes several calls on one trace. Coverage was (same trace) OR (same response), so a
+    single chat span suppressed every other call logged under its trace -- real tokens
+    gone. Only a matching response counts now, with the trace still standing in when the
+    covering record named no response at all (OTel makes it recommended, not required)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        # chat(r1) + its duplicate inference(r1) + a DISTINCT second call inference(r2)
+        _write_otel(
+            otel,
+            [
+                _otel_chat("conv", "gpt-5.4-mini", 60, 10, trace="t1", span="s1", resp="r1"),
+                _otel_inference("conv", "r1", 80, 20),
+                _otel_inference("conv", "r2", 40, 10),
+            ],
+        )
+        assert _tokens(otel) == (2, 120)  # both calls, chat winning r1 -- not (1, 70)
+
+    # The duplicate shapes must still collapse.
+    for rows, expect in (
+        (
+            [
+                _otel_chat("c", "gpt-5.4-mini", 60, 10, trace="t1", span="s1", resp="r1"),
+                _otel_inference("c", "r1", 80, 20),
+            ],
+            (1, 70),
+        ),  # same response
+        (
+            [
+                _otel_chat("c", "gpt-5.4-mini", 60, 10, trace="t1", span="s1"),
+                _otel_inference("c", "r1", 80, 20),
+            ],
+            (1, 70),
+        ),  # cover names no response
+        (
+            [
+                _otel_chat("c", "gpt-5.4-mini", 60, 10, trace="t1", span="s1"),
+                _otel_inference("c", None, 80, 20),
+            ],
+            (1, 70),
+        ),  # neither does
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            otel = os.path.join(tmp, ".copilot", "otel")
+            _write_otel(otel, rows)
+            assert _tokens(otel) == expect
+
+
+def test_copilot_record_joins_the_conversation_named_on_its_trace():
+    """_SESSION_ATTRS ranks gen_ai.conversation.id above the per-call gen_ai.response.id,
+    and _parse keeps the best id per trace -- but _to_candidate threw the priority away
+    and consulted the trace only when the record had no session attribute at all. A
+    record whose only one was a response id therefore became its own session per LLM
+    call, each missing the session-store.db title and cwd keyed by session id."""
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        _write_otel(
+            otel,
+            [
+                _otel_chat("conv-real", "gpt-5.4-mini", 0, 0, trace="t9", span="s9"),
+                _otel_inference(None, "resp-A", 60, 10, trace="t9"),
+                _otel_inference(None, "resp-B", 40, 10, trace="t9"),
+            ],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        assert {r["root_id"] for r in store.model_breakdown()} == {"conv-real"}
+
+
+def test_copilot_cache_fingerprint_covers_the_session_store_db():
+    """_finalize reads each session's title and cwd from the sibling session-store.db, but
+    cache_inputs listed only the OTEL files -- so a rollup parsed before the CLI wrote that
+    DB was served from cache forever (reload re-fingerprints, still matches, still hits),
+    freezing the session at "(untitled)" / "(unknown)" and out of its project."""
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        _write_otel(otel, [_otel_chat(COPILOT_SID, "gpt-5.4-mini", 60, 10)])
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        db = os.path.join(tmp, ".copilot", "session-store.db")
+        assert db not in store.cache_inputs()  # absent: nothing to fingerprint yet
+
+        sqlite3.connect(db).close()
+        assert db in ot.CopilotStore(otel, _copilot_args(otel)).cache_inputs()

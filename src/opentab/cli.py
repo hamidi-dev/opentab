@@ -18,6 +18,7 @@ except ImportError:  # native Windows has no stdlib curses
     curses = None
 
 from opentab import __version__, sources, themes
+from opentab.demo import DEMO_CATEGORIES, demo_config, demo_machine
 from opentab.formatting import (
     cost_bar,
     human_tokens,
@@ -545,10 +546,33 @@ def _apply_subcommand(args: argparse.Namespace) -> None:
         args.forget = list(args.names)  # >=1 by nargs="+" (== --forget)
 
 
+def _validate_demo_cats(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    # --demo takes an OPTIONAL value, so argparse happily eats the next positional:
+    # `opentab --demo requests.csv` bound the path to --demo, and `opentab export --demo
+    # out.json` sent the summary to stdout while out.json was never written. Nothing
+    # complained, because parse_demo_cats deliberately drops names it doesn't know (an
+    # empty result falls back to everything), which is right for a set arriving from
+    # saved state but hides a typo -- or a swallowed filename -- on the command line.
+    # Reject it here instead, where a value is unambiguously something the user typed.
+    spec = getattr(args, "demo", None)
+    if not isinstance(spec, str) or spec == "all":
+        return
+    unknown = [n.strip() for n in spec.split(",") if n.strip().lower() not in DEMO_CATEGORIES]
+    if unknown or not spec.strip():
+        parser.error(
+            f"--demo: unknown categor{'y' if len(unknown) == 1 else 'ies'} "
+            f"{', '.join(repr(u) for u in unknown) or repr(spec)} "
+            f"(choose from {', '.join(DEMO_CATEGORIES)}, or pass bare --demo for all). "
+            "Note --demo takes an optional value, so a path right after it is read as "
+            "one: use `--demo -- PATH` or put the path first."
+        )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     raw = list(sys.argv[1:] if argv is None else argv)
     parser = _build_parser()
     args = parser.parse_args(_normalize_argv(raw))
+    _validate_demo_cats(parser, args)
     _apply_subcommand(args)
     # Positional-path routing (tui only -- path is None for other subcommands) plus the
     # --csv/--jsonl default paths, which every command needs.
@@ -1191,6 +1215,16 @@ def export_command(args: argparse.Namespace) -> int:
 
     key = args.source if args.source not in ("auto", "remote") else "all"
     label = args.label or socket.gethostname() or "machine"
+    # --demo pairs with --export for a shareable summary, and under it every title, path,
+    # model and dollar figure in the payload is scrambled -- but the label is a real
+    # hostname (a work box, a personal handle), so leaving it raw put the one piece of
+    # genuine identity into the artefact you hand to someone. RemoteStore already
+    # scrambles it at display time behind the same `titles` gate; do it here too, so the
+    # file on disk matches what a demo shows. demo_machine is deterministic, so a
+    # summary exported under demo still joins to its scrambled w.machine.
+    demo_on, _scale, demo_cats = demo_config(args)
+    if demo_on and "titles" in demo_cats:
+        label = demo_machine(label)
     exported_at = datetime.now().astimezone().isoformat(timespec="seconds")
     if key == "all" and not sources.available_sources(args):
         # A machine with no agent data yet still exports a valid, empty summary, so

@@ -525,8 +525,10 @@ const money = v => (v > 0 && v < 0.005) ? '<$0.01'
 const moneyLabel = v => v <= 0 ? '' : v < 0.005 ? '<$.01' : v < 10 ? '$' + v.toFixed(2)
   : v < 1000 ? '$' + Math.round(v) : v < 10000 ? '$' + (v / 1000).toFixed(1) + 'k'
   : '$' + Math.round(v / 1000) + 'k';
-const hTok = v => v >= 1e9 ? (v / 1e9).toFixed(1) + 'B' : v >= 1e6 ? (v / 1e6).toFixed(1) + 'M'
-  : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(v);
+// Unit switches just before the boundary, mirroring formatting.human_tokens: rounding
+// first would print "1000.0k" for 999,950 and the two frontends would disagree.
+const hTok = v => v >= 999.95e9 ? (v / 1e12).toFixed(1) + 'T' : v >= 999.95e6 ? (v / 1e9).toFixed(1) + 'B'
+  : v >= 999.95e3 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(v);
 const pct = (p, w) => w <= 0 ? '-' : (p > 0 && 100 * p / w < 1) ? '<1%' : Math.round(100 * p / w) + '%';
 const cost = w => MODE === 'api' ? w.api : w.real;
 const rootCost = w => MODE === 'api' ? w.apiRoot : w.realRoot;
@@ -1141,12 +1143,18 @@ function statTiles(ws) {
 }
 function modelsTable(id, rows, collapse, onRow) {
   const totalCost = sum(rows, mCost), totalTok = sum(rows, r => r.tokens);
-  const share = r => totalCost > 0 ? mCost(r) / totalCost : (totalTok > 0 ? r.tokens / totalTok : 0);
+  // Share is a share OF COST. With nothing priced -- a subscription backend with `$`
+  // off, i.e. the default view for Claude Code / Codex / Copilot -- it used to fall back
+  // to a TOKEN share, so a column headed Share showed confident percentages next to a
+  // Cost column reading $0.00 everywhere, meaning something else entirely. The TUI's
+  // pct() prints "-" for a zero denominator; do the same rather than answer a different
+  // question under the same heading.
+  const share = r => totalCost > 0 ? mCost(r) / totalCost : null;
   return table(id, [
     { key: 'model', label: 'Model', asc: true, cls: 'grow', fmt: r => modelCell(r.model) },
     { key: 'runs', label: 'Msgs', align: 'r' },
     { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => moneyCell(mCost(r)) },
-    { key: 'share', label: 'Share', align: 'r', sortVal: share, fmt: r => [pct(share(r), 1), h('span', { class: 'bar' }, h('i', { style: '--w:' + Math.round(100 * share(r)) + '%' }))] },
+    { key: 'share', label: 'Share', align: 'r', sortVal: r => share(r) || 0, fmt: r => share(r) === null ? '-' : [pct(share(r), 1), h('span', { class: 'bar' }, h('i', { style: '--w:' + Math.round(100 * share(r)) + '%' }))] },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
     { key: 'cacheRead', label: 'CacheR', align: 'r', fmt: r => hTok(r.cacheRead), cls: 'dim' },
     { key: 'cacheWrite', label: 'CacheW', align: 'r', fmt: r => hTok(r.cacheWrite), cls: 'dim' },
@@ -1353,12 +1361,17 @@ function contextPane(ctx) {
   const comps = [];
   for (let i = 1; i < vs.length; i++) if (vs[i - 1] > 50000 && vs[i] < vs[i - 1] * 0.6) comps.push(i);
   const freed = comps.reduce((a, i) => a + vs[i - 1] - vs[i], 0);
-  const pctW = v => Math.round(100 * v / ctx.window) + '%';
+  // end is measured against the live (last) model's window, peak against the window the
+  // PEAK TURN actually ran in -- the TUI's split (renderer.detail_context). Measuring
+  // both against ctx.window printed an impossible 120% when a session peaked on a big
+  // model and ended on a smaller one.
+  const pctOf = (v, w) => Math.round(100 * v / (w || ctx.window)) + '%';
+  const peakWindow = (ctx.points[vs.indexOf(peak)] || {}).w;
   const wrap = h('div', null);
   wrap.appendChild(tiles([
     ['window', hTok(ctx.window), ctx.model],
-    ['end', hTok(fin) + ' · ' + pctW(fin), 'of the window'],
-    ['peak', hTok(peak) + ' · ' + pctW(peak), 'at turn ' + peakAt + ' of ' + vs.length],
+    ['end', hTok(fin) + ' · ' + pctOf(fin, ctx.window), 'of the window'],
+    ['peak', hTok(peak) + ' · ' + pctOf(peak, peakWindow), 'at turn ' + peakAt + ' of ' + vs.length],
     ['session start', hTok(start), 'system prompt + tools + first prompt'],
     comps.length ? ['compactions', String(comps.length), '~' + hTok(freed) + ' freed'] : null,
   ].filter(Boolean)));

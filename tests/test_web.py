@@ -705,3 +705,49 @@ def test_web_refresh_endpoint_ignores_malformed_and_unnamed_requests():
         server.shutdown()
         server.server_close()
     thread.join(timeout=5)
+
+
+def test_web_context_points_carry_their_own_window():
+    """The page derives peak/final itself, and a session can switch models mid-way, so the
+    peak % must be measured against the window the PEAK TURN ran in -- the TUI's split
+    (renderer.detail_context). Shipping only the live model's window made the page print an
+    impossible 120% of the window for a session that peaked on a big model and ended on a
+    smaller one; shipping one precomputed peakWindow could still disagree with whichever
+    turn the client picked as the peak, so every point carries its own."""
+    base = {
+        "depth": 0,
+        "agent": "-",
+        "reasoning": 0,
+        "cache_read": 0,
+        "cache_write": 0,
+        "cost": 0.0,
+        "output": 0,
+        "prompt_id": "p1",
+        "prompt_title": "t",
+        "prompt_full": "t",
+    }
+
+    class MixedWindowTurns(TurnsFakeStore):
+        def message_timeline(self, workflow_id):
+            return [
+                # peaks on a 400k-window model, then ends on a 200k one
+                dict(base, time="2026-05-01 10:00:00", model_name="openai/gpt-5.2", input=239_957),
+                dict(
+                    base,
+                    time="2026-05-01 10:05:00",
+                    model_name="anthropic/claude-opus-4-5",
+                    input=50_000,
+                ),
+            ]
+
+    w = workflow("w1", "2026-05-01 10:00:00", cost=0.5)
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(MixedWindowTurns([w]), args)
+    ctx = ot.session_extras(app, "w1")["context"]
+    windows = [p["w"] for p in ctx["points"]]
+    assert len(windows) == 2 and windows[0] != windows[1]  # each turn's own window
+    assert ctx["mixedWindows"]
+    # The peak turn's window is the bigger one, so the peak reads under 100% -- the
+    # figure the TUI shows -- not the 120% the live model's window would have given.
+    peak_i = max(range(len(ctx["points"])), key=lambda i: ctx["points"][i]["v"])
+    assert 100 * ctx["points"][peak_i]["v"] / windows[peak_i] < 100

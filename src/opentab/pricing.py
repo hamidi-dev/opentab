@@ -115,6 +115,25 @@ _MODEL_FAMILIES = (
 )  # fmt: skip
 _FAMILY_LABELS = {fam: label for fam, label, _p in _MODEL_FAMILIES}
 
+# models.dev provider ids for a family whose route is spelled differently from the family
+# key above (which comes from the model NAME). The two agree for anthropic/openai/google/
+# xai/meta/deepseek/mistral/cohere, so identity is the default and only the misses are
+# listed. Deliberately narrow -- a vendor owns several routes, and the wrong ones would
+# win the "vendor's own card" test for the wrong reason: alibaba-coding-plan prices its
+# models at $0 (a subscription plan, which would beat a real rate card outright),
+# alibaba-cn is a different geography at different rates, and azure is Microsoft's
+# *access* route to OpenAI's models, not the vendor's own list price.
+# Exactly ONE route per family: two routes for the same vendor are not
+# interchangeable. Zhipu is deliberately absent -- it sells GLM through both `zhipuai`
+# and `zai` at genuinely different regional rates (glm-5v-turbo is (5, 22, 1.2, 0) on
+# one and (1.2, 4, 0.24, 0) on the other), and since model_price keys by bare model id
+# it cannot tell which one the user actually bought through. Listing both would just
+# hand the choice to catalog file order, so GLM keeps the ordinary completeness rule.
+_VENDOR_PROVIDER_IDS = {
+    "qwen": ("alibaba",),
+    "moonshot": ("moonshotai",),
+}
+
 
 def model_family(name: str) -> str:
     # The vendor family for a model id (e.g. "anthropic" for github-copilot/claude-*),
@@ -125,6 +144,23 @@ def model_family(name: str) -> str:
         if bare.startswith(prefixes):
             return fam
     return ""
+
+
+def is_vendor_route(provider_id: str, name: str) -> bool:
+    """Is this catalog route the model's OWN vendor, rather than a gateway reselling it?
+
+    The one question behind "on a cross-provider collision the model's own vendor route
+    wins over gateway resale rates". It compares a models.dev *provider id* against the
+    family inferred from the model *name*, which mostly agree -- but not always, and a
+    bare equality test silently answered "no vendor here" for every Qwen, Kimi and GLM
+    model, letting a gateway's markup win on completeness and file order instead
+    (llmgateway's qwen3-coder-plus card is 6x Alibaba's own input rate).
+    """
+    fam = model_family(name)
+    if not fam:
+        return False
+    pid = str(provider_id).lower()
+    return pid == fam or pid in _VENDOR_PROVIDER_IDS.get(fam, ())
 
 
 def family_label(family: str) -> str:
@@ -278,20 +314,22 @@ def prune_models_dev(data: dict) -> dict:
     return providers
 
 
-def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None]:
+def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
     # One catalog layer -> (bare-id price map, bare-id context-limit map, provider
-    # tree, meta). Accepts the provider-keyed schema and the legacy flat {"models":
-    # {id: [4 rates]}} cache written before the bundled catalog existed. Both maps
-    # key by *bare* model id (last path segment, matching model_price's lookup); on
-    # a cross-provider collision the model's own vendor route wins (openrouter also
-    # lists anthropic/claude-*, often at a markup), ties to the most completely
-    # priced.
+    # tree, meta, bare-id "came from the vendor's own route" map). Accepts the
+    # provider-keyed schema and the legacy flat {"models": {id: [4 rates]}} cache
+    # written before the bundled catalog existed. Both maps key by *bare* model id
+    # (last path segment, matching model_price's lookup); on a cross-provider
+    # collision the model's own vendor route wins (openrouter also lists
+    # anthropic/claude-*, often at a markup), ties to the most completely priced.
+    # The vendor map records which of those two won, because model_price needs to
+    # know whether a spelling is authoritative or merely the best resale card.
     prices: dict[str, tuple[float, float, float, float]] = {}
     limits: dict[str, int] = {}
     rank: dict[str, tuple] = {}
     providers: dict = {}
     if not isinstance(data, dict):
-        return {}, {}, {}, None
+        return {}, {}, {}, None, {}
     tree = data.get("providers")
     if isinstance(tree, dict):
         for pid, p in tree.items():
@@ -315,7 +353,13 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None]:
                     entry["limit"] = int(limit)
                 kept[str(mid)] = entry
                 bare = str(mid).rsplit("/", 1)[-1].lower()
-                score = (str(pid).lower() == model_family(bare), sum(1 for v in row if v > 0))
+                # An all-zero card is not a rate card -- a vendor lists one for models
+                # it only sells inside a plan -- so it must not win the vendor test and
+                # shadow a route that does publish rates: zhipuai prices glm-4.7-flash
+                # at (0, 0, 0, 0) while half a dozen routes quote a real one, and a $0
+                # resolution would also make the model armable in `w` for "$0 at target".
+                priced = sum(1 for v in row if v > 0)
+                score = (is_vendor_route(pid, bare) and priced > 0, priced)
                 if bare not in rank or score > rank[bare]:
                     prices[bare], rank[bare] = row, score
                     if "limit" in entry:
@@ -342,10 +386,10 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None]:
         if prices
         else None
     )
-    return prices, limits, providers, meta
+    return prices, limits, providers, meta, {bare: r[0] for bare, r in rank.items()}
 
 
-def _load_bundled() -> tuple[dict, dict, dict, dict | None]:
+def _load_bundled() -> tuple[dict, dict, dict, dict | None, dict]:
     # Parse the release-bundled snapshot once, lazily. importlib.resources (not a
     # path join) so a zipped install still resolves; a missing/garbled file
     # degrades to the hand-kept fallbacks, never a crash.
@@ -357,11 +401,11 @@ def _load_bundled() -> tuple[dict, dict, dict, dict | None]:
             text = files("opentab").joinpath("data").joinpath("models.json").read_text("utf-8")
             _BUNDLED = _parse_catalog(json.loads(text))
         except Exception:  # noqa: BLE001 -- packaging-dependent (zip/dir/missing), all non-fatal
-            _BUNDLED = ({}, {}, {}, None)
+            _BUNDLED = ({}, {}, {}, None, {})
     return _BUNDLED
 
 
-def _load_price_cache() -> tuple[dict, dict, dict, dict | None]:
+def _load_price_cache() -> tuple[dict, dict, dict, dict | None, dict]:
     # Read the user cache once, lazily; a missing/garbled file means "no overlay".
     global _PRICE_CACHE
     if _PRICE_CACHE is None:
@@ -369,11 +413,11 @@ def _load_price_cache() -> tuple[dict, dict, dict, dict | None]:
             with open(price_cache_path()) as fh:
                 _PRICE_CACHE = _parse_catalog(json.load(fh))
         except (OSError, ValueError):
-            _PRICE_CACHE = ({}, {}, {}, None)
+            _PRICE_CACHE = ({}, {}, {}, None, {})
     return _PRICE_CACHE
 
 
-def _layers() -> list[tuple[dict, dict, dict, dict | None]]:
+def _layers() -> list[tuple[dict, dict, dict, dict | None, dict]]:
     # The catalog layers, newest models.dev fetch first -- the newer of the user
     # cache and the bundled release snapshot wins a lookup, so a year-old cache
     # can't shadow a fresher release and a fresh refresh beats any release.
@@ -404,7 +448,7 @@ def catalog_models() -> list[tuple[str, str, tuple[float, float, float, float], 
     # (provider_id, model_id, (in, out, cacheR, cacheW), status) rows -- the P
     # overlay's models.dev view. A legacy flat cache has no provider tree, so the
     # bundled snapshot backs the view even when a newer flat cache wins lookups.
-    for _prices, _limits, tree, _meta in _layers():
+    for _prices, _limits, tree, _meta, _vendor in _layers():
         if tree:
             return [
                 (pid, mid, tuple(m["cost"]), m.get("status", ""))
@@ -455,9 +499,36 @@ def model_price(name: str) -> tuple[float, float, float, float]:
     if is_local_provider(name):
         return (0.0, 0.0, 0.0, 0.0)  # runs on your hardware -- no per-token API bill
     mid = str(name).rsplit("/", 1)[-1].lower()
-    for prices, _limits, _tree, _meta in _layers():
-        if mid in prices:
-            return prices[mid]
+    plain = display_model(mid)  # date-pin and effort suffix stripped, separators kept
+    for prices, _limits, _tree, _meta, vendor in _layers():
+        row = prices.get(mid)
+        if row is None:
+            # Nothing under this exact spelling. A harness logs the id it was given
+            # ("claude-3-5-haiku-20241022"), so fall back to the plain one before the
+            # hand-kept families -- a real rate card beats a substring guess.
+            row = prices.get(plain)
+            if row is not None:
+                return row
+            continue
+        if plain == mid or vendor.get(mid) or not model_family(mid):
+            # Nothing to fold; or this spelling IS the vendor's own card and stays
+            # authoritative even when a plainer one exists (openai prices
+            # gpt-4o-2024-05-13 at (5, 15, 0, 0), genuinely dearer than plain gpt-4o);
+            # or the vendor is one _MODEL_FAMILIES doesn't name, in which case every
+            # route looks like resale and folding would be a guess -- sakana's own
+            # fugu-ultra-20260615 card would pick up a cache-write rate it never charges.
+            return row
+        alt = prices.get(plain)
+        if alt is None:
+            return row
+        # Only resale routes carry this suffixed spelling, and a gateway that lists no
+        # cache-read rate is not selling a cheaper model -- it is publishing a less
+        # complete rate card. Prefer the plain spelling when it is the vendor's own, or
+        # simply prices more of the four components; a cache-heavy agent session priced
+        # off the incomplete card came out ~82% under.
+        if vendor.get(plain) or sum(1 for v in alt if v > 0) > sum(1 for v in row if v > 0):
+            return alt
+        return row
     return next((tuple(p) for needle, *p in MODEL_PRICE_FALLBACKS if needle in mid), FALLBACK_PRICE)
 
 
@@ -481,7 +552,8 @@ def has_known_price(name: str) -> bool:
     if is_local_provider(name):
         return False
     mid = str(name).rsplit("/", 1)[-1].lower()
-    if any(mid in prices for prices, _limits, _tree, _meta in _layers()):
+    plain = display_model(mid)  # model_price folds to this, so it counts as named too
+    if any(mid in prices or plain in prices for prices, _limits, _tree, _meta, _v in _layers()):
         return True  # the catalog names it outright
     return any(needle in mid for needle, *_p in MODEL_PRICE_FALLBACKS)  # a hand-kept family
 
@@ -492,7 +564,7 @@ def model_context_window(name: str) -> int:
     # catalog layer first), backed by the hand-kept family fallbacks; local models
     # have windows too, so there is no is_local_provider short-circuit here.
     mid = str(name).rsplit("/", 1)[-1].lower()
-    for _prices, limits, _tree, _meta in _layers():
+    for _prices, limits, _tree, _meta, _vendor in _layers():
         if mid in limits:
             return limits[mid]
     return next(

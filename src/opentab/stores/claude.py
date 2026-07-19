@@ -163,11 +163,45 @@ class ClaudeStore:
     def _files(self) -> list[str]:
         return glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
 
+    # Claude Code writes a subagent's transcript to a sidecar file under
+    # <project-slug>/<sessionId>/subagents/, and the records inside it carry the
+    # PARENT's sessionId -- so a sidecar's file name is not a session id at all.
+    _SIDECAR_DIR = "subagents"
+
+    @classmethod
+    def _sidecar_owner(cls, path: str) -> str | None:
+        # The session a sidecar transcript belongs to, or None for a main transcript.
+        # Keyed off the directory layout rather than the "agent-" file-name prefix,
+        # which is Claude Code's to change.
+        holder = os.path.dirname(path)
+        if os.path.basename(holder) != cls._SIDECAR_DIR:
+            return None
+        return os.path.basename(os.path.dirname(holder)) or None
+
     def _transcripts(self, session_id: str) -> list[str]:
         # A session's transcript is <project-slug>/<sessionId>.jsonl. Resuming the
         # session from another directory can leave the same id under a second slug,
-        # so glob for every copy.
-        return glob.glob(os.path.join(self.root_dir, "**", session_id + ".jsonl"), recursive=True)
+        # so glob for every copy -- plus the sidecars holding its subagents' turns,
+        # whose records carry this session's id and whose tokens are part of its
+        # subtree. Without them the single-transcript paths (_parse_one, and so the
+        # cold status_nodes) priced the main thread alone and undercounted every
+        # session that delegated. _parse() must NOT come here: it reads every file
+        # through _files() already, and would count the sidecars twice.
+        main = [
+            p
+            for p in glob.glob(
+                os.path.join(self.root_dir, "**", session_id + ".jsonl"), recursive=True
+            )
+            # A sidecar whose file name happens to equal the id we were asked about is
+            # not that session's transcript; keeping it would let a phantom
+            # "agent-<hex>" id confirm itself in root_of.
+            if self._sidecar_owner(p) is None
+        ]
+        sidecars = glob.glob(
+            os.path.join(self.root_dir, "**", session_id, self._SIDECAR_DIR, "*.jsonl"),
+            recursive=True,
+        )
+        return list(dict.fromkeys(main + sidecars))
 
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
@@ -635,15 +669,38 @@ class ClaudeStore:
         # session id is the file name. "directory" is read lazily from the file
         # head (_TranscriptRoot), so a scan stops paying at the row that matches.
         newest: dict[str, _TranscriptRoot] = {}
+        main_mtime: dict[str, int] = {}  # mtime of the main transcript each row reads cwd from
         for path in self._files():
-            sid = os.path.basename(path)[: -len(".jsonl")]
+            # A sidecar is named for the subagent, not the session, and its records
+            # carry the parent's id -- so fold it into the session that owns it. Taking
+            # the file name would mint a phantom root that no parse can resolve, and
+            # since sidecars are usually the freshest files it would sort to the top and
+            # be exactly what --status priced. Folding (rather than skipping) is what
+            # keeps a busy subagent bumping its real root to the front.
+            owner = self._sidecar_owner(path)
+            sid = owner or os.path.basename(path)[: -len(".jsonl")]
             try:
                 last_active = int(os.stat(path).st_mtime * 1000)  # ms, like Store's
             except OSError:
                 continue  # deleted mid-scan
             row = newest.get(sid)
-            if row is None or last_active > row["last_active"]:
+            if row is None:
                 newest[sid] = _TranscriptRoot(self, path, sid, last_active)
+                if owner is None:
+                    main_mtime[sid] = last_active
+                continue
+            if last_active > row["last_active"]:
+                row["last_active"] = last_active
+            # Read "directory" from a main transcript when the session has one (a sidecar
+            # only stands in for a session whose own file we haven't reached yet, or that
+            # no longer exists) -- and from the NEWEST such copy. Resuming from another
+            # directory leaves the same id under a second project slug with a different
+            # cwd, so taking whichever copy the scan happened to see last could report a
+            # directory the session has since moved away from, and a --status <dir> there
+            # would miss it.
+            if owner is None and last_active > main_mtime.get(sid, -1):
+                row.prefer(path)
+                main_mtime[sid] = last_active
         return sorted(newest.values(), key=lambda r: r["last_active"], reverse=True)
 
     def root_of(self, session_id: str) -> str | None:
@@ -742,6 +799,11 @@ class _TranscriptRoot(dict):
     def __init__(self, store: ClaudeStore, path: str, sid: str, last_active: int):
         super().__init__(id=sid, last_active=last_active)
         self._store = store
+        self._path = path
+
+    def prefer(self, path: str) -> None:
+        # Read the cwd from this file instead. Called while recent_roots is still
+        # building the rows, i.e. before anything can have cached "directory".
         self._path = path
 
     def __getitem__(self, key):

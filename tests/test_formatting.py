@@ -158,3 +158,17 @@ def test_notice_is_info_and_colours_are_explicit():
     app._mark_toasts_shown()
     app.notify("heads up", kind="warn")
     assert app.toasts[-1].kind == "warn"
+
+
+def test_human_tokens_never_exceeds_six_characters():
+    """The unit was chosen before rounding, so 999,950 printed "1000.0k" and 999,950,000
+    "1000.0M" -- seven characters, overflowing the fixed six-wide token cells in the
+    price-split columns and shifting that row's CacheW/Output one place right of their
+    headers. Switch unit just before the boundary instead."""
+    assert ot.human_tokens(999_950) == "1.0M"
+    assert ot.human_tokens(999_949) == "999.9k"
+    assert ot.human_tokens(999_950_000) == "1.0B"
+    assert ot.human_tokens(999_949_999) == "999.9M"
+    # Nothing anywhere in the range outgrows the cell.
+    for v in (0, 1, 999, 1_000, 12_345, 999_949, 999_950, 1_000_000, 123_456_789, 10**12):
+        assert len(ot.human_tokens(v)) <= 6, (v, ot.human_tokens(v))

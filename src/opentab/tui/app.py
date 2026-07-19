@@ -51,6 +51,7 @@ from opentab.pricing import (
     has_known_price,
     invalidate_price_cache,
     is_local_provider,
+    is_vendor_route,
     model_family,
     model_matches,
     model_price,
@@ -1393,11 +1394,43 @@ class App:
             # both multiplied by the same factor, so the synthetic fill stays consistent.
             self._reconcile_demo_models()
         else:
+            self._reconcile_unpriced_tokens()
             self._compute_api_costs()
         self._models_loaded = True
         self._whatif_catalog_rows = None  # the token mix behind its eff column changed
         self._apply_price_mode()  # re-assert the active ($/API) view onto fresh rows
         self._revalidate_whatif()  # the target may have lost its list rate
+
+    def _reconcile_unpriced_tokens(self) -> None:
+        """Restate each session's unpriced-token count from the per-model rows.
+
+        `workflows()` is the fast first-frame query, so a backend can only afford to
+        answer this at whatever granularity it already aggregates: OpenCode asks it per
+        session NODE (`case when node_cost = 0`), which counts a node with one priced
+        message as entirely priced and zeroes the rest of its tokens. `model_breakdown`
+        -- the deferred scan, which is where the "$" estimate itself comes from -- splits
+        it per MESSAGE, and is right. Measured on a real 692-session DB, 23 sessions and
+        330M tokens were labelled priced that are not; the worst prints "Unpriced tokens:
+        0" against $37 of estimable spend and suppresses the hint that would tell you to
+        press `$`.
+
+        Restating it here (where model_count is already taken from the same rows) keeps
+        the fast path fast and fixes every backend at once, rather than teaching each
+        one's rollup query a granularity it cannot cheaply reach. Demo is excluded by the
+        caller: scramble_workflow spends this figure on a synthetic cost and then zeroes
+        it deliberately.
+        """
+        parts = (
+            "unpriced_input",
+            "unpriced_output",
+            "unpriced_reasoning",
+            "unpriced_cache_read",
+            "unpriced_cache_write",
+        )
+        for w in self.loaded:
+            rows = self._model_by_root.get(w.id)
+            if rows:  # no rows == the scan knows nothing about it; keep what the store said
+                w.unpriced_tokens = sum(int(r.get(p) or 0) for r in rows for p in parts)
 
     def _revalidate_whatif(self) -> None:
         # The model rows just changed under an armed target (reload, `H` source switch,
@@ -1855,7 +1888,7 @@ class App:
                 continue
             bare = mid.rsplit("/", 1)[-1].lower()
             rank = (
-                pid.lower() == model_family(bare),
+                is_vendor_route(pid, bare),  # same vendor-wins rule the catalog resolves by
                 sum(1 for v in model_price(mid) if v > 0),
                 -len(mid),
             )
@@ -2037,8 +2070,13 @@ class App:
         self.select_whatif_model(rows[self.whatif_menu_index % len(rows)][0])
 
     def handle_whatif_menu_key(self, key: int | str) -> bool:
-        if isinstance(key, str):  # a non-ASCII character: type it (see _read_key)
-            if key.isprintable():
+        if isinstance(key, str):  # a non-ASCII character (see _read_key)
+            # Only the filter takes it. Typed with the filter off it used to land in the
+            # query anyway, so a stray "ä" or a dead key emptied the list to "no model
+            # matches -- backspace to widen" while backspace was still bound to *cancel*:
+            # the one key the screen told you to press threw the picker away. An ASCII
+            # character in the same state is ignored, so this one is too.
+            if self.whatif_filter_active and key.isprintable():
                 self.whatif_query += key
                 self.whatif_menu_index = 0
             return True
@@ -2567,6 +2605,9 @@ class App:
         self.trend_drill_index = 0
         self.trend_row_index = 0
         self.trend_cursor = None
+        # Where Esc would return to, armed before the swap: it names a tab and a bucket
+        # from the old data, and Machines can be gone outright once the fleet is.
+        self._trend_return = None
         self.cal_cursor = None
         self.trend_month_index = 0
         self.trend_week_index = 0
@@ -2613,8 +2654,15 @@ class App:
                 if tab_name in tabs
                 else min(int(restore["tab"]), max(0, len(tabs) - 1))
             )
-            if self.view == "session" and not self.current_session():
-                self.view = "zoom"
+            if self.view == "session":
+                # current_session() CLAMPS workflow_index, so a session that vanished in
+                # the reload hands back its neighbour -- truthy, so the old "is there a
+                # session at all" guard never fired and the detail pane silently became
+                # someone else's numbers. Compare identity, as _restore_mode_memory does.
+                current = self.current_session()
+                saved_session_id = restore["anchor"][5]
+                if current is None or (saved_session_id and current.id != saved_session_id):
+                    self.view = "zoom"
             self.scroll = max(0, int(restore["scroll"]))
             return
         self.zoom_project = None
@@ -4170,6 +4218,8 @@ class App:
                 "source": "Harnesses",
                 "machine": "Machines",
             }[kind]
+            if ranked not in self.trend_tabs:
+                return  # the tab itself is gone -- Machines after the fleet went away
             self.trends = True
             self.trend_tab = self.trend_tabs.index(ranked)
             keys = self.trend_ranked_keys()
@@ -5858,6 +5908,19 @@ class App:
         if self.launch_menu is not None:
             if click or double:
                 self.launch_menu = None  # click cancels the launch picker
+            return True
+        if self.toast_history:
+            # The notices scrollback is drawn over the whole body, but it had no mouse
+            # branch, so the body's click regions stayed live underneath it: a
+            # double-click where the session list had been drilled into a session behind
+            # the overlay, and the wheel scrolled that list instead of the scrollback.
+            # Same shape as the help overlay below -- wheel pages it, a click closes it.
+            if up:
+                self.toast_history_scroll = max(0, self.toast_history_scroll - 3)
+            elif down:
+                self.toast_history_scroll += 3  # clamped to the last page on draw
+            elif click or double:
+                self.toast_history = False
             return True
         if self.help:
             if up:

@@ -1316,3 +1316,55 @@ def test_remote_timings_without_pull_never_fetches():
                 ot.cli.sources.make_store,
                 ot.cli._fleet_timing_tables,
             ) = saved
+
+
+def test_demo_rejects_a_value_that_is_not_a_category():
+    """--demo takes an OPTIONAL value, so argparse eats the next positional: `--demo
+    requests.csv` bound the path to --demo, and `export --demo out.json` wrote the summary
+    to stdout while out.json was never created. parse_demo_cats drops unknown names on
+    purpose (an empty result means "everything"), which hides the swallowed filename -- so
+    the command line rejects it instead."""
+    for argv in (["--demo", "requests.csv"], ["export", "--demo", "out.json"], ["--demo", "turnz"]):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            try:
+                ot.cli.parse_args(argv)
+                raise AssertionError(f"{argv} should have been rejected")
+            except SystemExit:
+                pass
+        assert "--demo: unknown categor" in err.getvalue()
+
+    # The real category specs still work, bare --demo still means everything, and a path
+    # can still be passed either side of the flag.
+    assert ot.cli.parse_args(["--demo", "titles,spend"]).demo == "titles,spend"
+    assert ot.cli.parse_args(["--demo"]).demo == "all"
+
+
+def test_export_under_demo_does_not_leak_the_real_hostname():
+    """--export pairs with --demo for a shareable summary, so the machine label -- a real
+    hostname, i.e. identity exactly like a title or a path -- must be scrambled with the
+    rest, behind the same `titles` gate RemoteStore uses at display time."""
+    import socket
+    import sys as _sys
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = os.path.join(tmp, "r.csv")
+        with open(log, "w") as fh:
+            fh.write("timestamp,model,input_tokens,output_tokens,project\n")
+            fh.write("2026-07-01T10:00:00Z,gpt-4o,100000,5000,/tmp/proj\n")
+
+        def export(*extra):
+            argv = _sys.argv
+            _sys.argv = ["opentab", "export", "-", "--csv", log, "--source", "csv", *extra]
+            out = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(out):
+                    ot.cli.main()
+            finally:
+                _sys.argv = argv
+            return json.loads(out.getvalue())
+
+        assert export()["label"] == (socket.gethostname() or "machine")  # real run: real name
+        assert export("--demo")["label"] != socket.gethostname()
+        # `titles` off means names stay real everywhere, so the label must follow.
+        assert export("--demo", "spend")["label"] == (socket.gethostname() or "machine")

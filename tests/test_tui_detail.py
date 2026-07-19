@@ -1286,3 +1286,20 @@ def test_detail_tabs_center_as_accent_and_chip_pairs():
         assert scr.attrs[(0, tabregs[1][2])] == r._TAB_PAIR  # inactive = the chip pair
     finally:
         ot.curses.color_pair = orig
+
+
+def test_ranked_group_table_header_lines_up_with_short_names():
+    """The name column was sized to the DATA alone, so when every name is shorter than the
+    header label ("Harness", "Machine", "Provider") the header's own field overflowed and
+    pushed Cost/Share/Tokens/Sess right of the numbers they label. Short hostnames make
+    that the default in a fleet view; _model_table already guards the same way."""
+    app = app_with([workflow("s1", "2026-07-01 12:00:00", cost=4.0)])
+    rows = [
+        ("pi", {"cost": 4.0, "tokens": 4000, "sessions": 2}),
+        ("Zaly", {"cost": 2.0, "tokens": 2000, "sessions": 1}),
+    ]
+    lines = app.renderer._group_table(rows, 90, "harness", "Harness")
+    header = next(line for line in lines if "Cost" in line)
+    row = next(line for line in lines if "$4.00" in line)
+    # The Cost header and the cost it labels must end in the same column.
+    assert header.index("Cost") + len("Cost") == row.index("$4.00") + len("$4.00")
