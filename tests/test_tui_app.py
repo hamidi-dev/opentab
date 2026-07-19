@@ -2056,6 +2056,231 @@ def test_machines_mode_scopes_sessions_to_the_selected_box():
     assert app.current_tabs() == ("Overview", "Harnesses", "Sessions", "Models", "Projects")
 
 
+def test_machines_mode_harness_tab_drills_into_a_harness_on_the_box():
+    # The Machines-mode Harnesses tab is a navigable picker (like the Projects-mode one):
+    # Enter on a harness row scopes the box's Sessions to that harness -- "Claude Code on
+    # server" opens with one drill -- and Esc pops back to the picker.
+    from tests._support import fleet_app
+
+    a = workflow("a", "2026-05-01 10:00:00", cost=3.0)
+    a.source = "Claude Code"
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
+    b.source = "Claude Code"
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
+    c.source = "OpenCode"
+    app = fleet_app({"laptop": [a], "server": [b, c]})
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # server: b (Claude Code) + c (OpenCode)
+    app.drill_in()  # into the box
+    assert app.view == "zoom"
+    app.tab = app.current_tabs().index("Harnesses")
+    keys = [s for s, _ in app.zoom_source_rows()]  # the box's two harnesses, ranked
+    assert set(keys) == {"Claude Code", "OpenCode"}
+    app.source_index = keys.index("Claude Code")
+    app.drill_in()  # drill the harness -> Sessions scoped to (server, Claude Code)
+    assert app.zoom_source == "Claude Code" and app.on_sessions_tab
+    assert {w.id for w in app.current_sessions()} == {"b"}  # server's Claude session only
+    app.drill_out()  # Esc pops back to the Harnesses picker, clearing the drill
+    assert app.zoom_source is None and app.on_sources_tab
+
+
+def test_machines_mode_harness_row_double_click_drills():
+    # A double-click on a harness row drills the same way Enter does (via _apply_click).
+    from tests._support import fleet_app
+
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
+    b.source = "Claude Code"
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
+    c.source = "OpenCode"
+    app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
+    app.set_browse_mode("machines")
+    app.machine_index = 1
+    app.drill_in()
+    app.tab = app.current_tabs().index("Harnesses")
+    idx = [s for s, _ in app.zoom_source_rows()].index("OpenCode")
+    app._apply_click(("zoomsource", idx), drill=True)
+    assert app.zoom_source == "OpenCode" and app.on_sessions_tab
+    assert {w.id for w in app.current_sessions()} == {"c"}
+
+
+def test_machines_mode_switching_box_clears_an_armed_harness():
+    # Re-scoping to another box (a sidebar click in zoom) must drop a harness drill scoped
+    # to the previous box -- else the new box's Sessions are silently filtered by it.
+    from tests._support import fleet_app
+
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
+    b.source = "Claude Code"
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
+    c.source = "OpenCode"
+    app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
+    app.set_browse_mode("machines")
+    app.machine_index = 1
+    app.drill_in()
+    app.tab = app.current_tabs().index("Harnesses")
+    app.source_index = [s for s, _ in app.zoom_source_rows()].index("Claude Code")
+    app.drill_in()  # harness armed on server
+    assert app.zoom_source == "Claude Code"
+    app._apply_click(("machine", 0), drill=False)  # click laptop in the sidebar
+    assert app.zoom_source is None  # the old box's harness drill is dropped
+    assert {w.id for w in app.current_sessions()} == {"a"}  # laptop's sessions, unfiltered
+
+
+def test_machines_mode_wheel_over_the_sidebar_also_clears_an_armed_harness():
+    # The scroll-wheel re-scopes to another box just like a click, so it must drop the
+    # harness drill too (else the wheeled-to box's Sessions stay filtered by it).
+    from tests._support import fleet_app
+
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
+    b.source = "Claude Code"
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
+    c.source = "OpenCode"
+    app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
+    app.set_browse_mode("machines")
+    app.machine_index = 1
+    app.drill_in()
+    app.tab = app.current_tabs().index("Harnesses")
+    app.source_index = [s for s, _ in app.zoom_source_rows()].index("Claude Code")
+    app.drill_in()
+    assert app.zoom_source == "Claude Code"
+    app.renderer.hit = lambda _y, _x: ("machine", 0)  # cursor over the machine sidebar
+    app._wheel(0, 0, -1)  # wheel up to laptop
+    assert app.machine_index == 0 and app.zoom_source is None
+    assert {w.id for w in app.current_sessions()} == {"a"}
+
+
+def test_machines_mode_projects_tab_drills_into_a_project_on_the_box():
+    # The Projects tab is a navigable picker in Machines mode too: Enter scopes the box's
+    # Sessions to that project.
+    from tests._support import fleet_app
+
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0, directory="/work/beta")
+    app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # server: b (/work/alpha), c (/work/beta)
+    app.drill_in()
+    app.tab = app.current_tabs().index("Projects")
+    projects = app.zoom_projects()  # the box's two projects, cost-sorted (alpha $9 first)
+    assert len(projects) == 2 and projects[0].directory == app.project_root("/work/alpha")
+    app.project_index = 0
+    app.drill_in()
+    assert app.zoom_project == app.project_root("/work/alpha") and app.on_sessions_tab
+    assert {w.id for w in app.current_sessions()} == {"b"}
+    app.drill_out()
+    assert app.zoom_project is None and app.on_projects_tab
+
+
+def test_machines_mode_models_tab_drills_into_sessions_using_a_model():
+    # The Models tab drills into the box's sessions that USED a model (a membership filter,
+    # since a session can use several models).
+    from tests._support import fleet_app
+
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
+    app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
+    app._model_by_root = {  # seed the per-model breakdown the picker/drill read
+        "b": [{"model_name": "opus", "cost": 9.0, "tokens_total": 900}],
+        "c": [
+            {"model_name": "opus", "cost": 0.6, "tokens_total": 60},
+            {"model_name": "haiku", "cost": 0.4, "tokens_total": 40},
+        ],
+    }
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # server: b (opus), c (opus + haiku)
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    keys = [m for m, _ in app.zoom_model_rows()]
+    assert set(keys) == {"opus", "haiku"}
+    app.model_pick_index = keys.index("opus")
+    app.drill_in()  # opus was used by both sessions
+    assert app.zoom_model == "opus" and app.on_sessions_tab
+    assert {w.id for w in app.current_sessions()} == {"b", "c"}
+    app.drill_out()
+    assert app.zoom_model is None and app.on_models_tab
+    keys = [m for m, _ in app.zoom_model_rows()]
+    app.model_pick_index = keys.index("haiku")
+    app.drill_in()  # haiku only by c
+    assert {w.id for w in app.current_sessions()} == {"c"}
+
+
+def test_machines_mode_drills_are_mutually_exclusive():
+    # Arming a Projects drill drops an armed Harnesses drill on the same box (they don't
+    # compose -- each picker ranks the whole box), so Sessions is never doubly filtered.
+    from tests._support import fleet_app
+
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
+    b.source = "Claude Code"
+    app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b]})
+    app.set_browse_mode("machines")
+    app.machine_index = 1
+    app.drill_in()
+    app.tab = app.current_tabs().index("Harnesses")
+    app.source_index = 0
+    app.drill_in()
+    assert app.zoom_source == "Claude Code"
+    app.tab = app.current_tabs().index("Projects")
+    app.project_index = 0
+    app.drill_in()  # arming the project clears the harness
+    assert app.zoom_project == app.project_root("/work/alpha") and app.zoom_source is None
+
+
+def test_machines_mode_wheeling_in_place_keeps_an_armed_drill():
+    # Wheeling at the sidebar boundary (already on the first box) doesn't change the box, so
+    # it must NOT drop an armed drill -- only an actual re-scope to another box does.
+    from tests._support import fleet_app
+
+    a = workflow("a", "2026-05-01 10:00:00", cost=9.0)
+    a.source = "Claude Code"
+    app = fleet_app({"laptop": [a], "server": [workflow("b", "2026-05-02 10:00:00")]})
+    app.set_browse_mode("machines")
+    app.machine_index = 0
+    app.drill_in()
+    app.tab = app.current_tabs().index("Harnesses")
+    app.source_index = 0
+    app.drill_in()
+    assert app.zoom_source == "Claude Code"
+    app.renderer.hit = lambda _y, _x: ("machine", 0)  # cursor over the sidebar
+    app._wheel(0, 0, -1)  # wheel up at the top edge -- machine_index stays 0
+    assert app.machine_index == 0 and app.zoom_source == "Claude Code"  # drill preserved
+
+
+def test_machines_mode_switching_to_a_smaller_box_resets_the_picker_cursor():
+    # An actual box switch clears the drills AND zeros the picker cursors -- else a cursor
+    # left at row 3 of a 4-model box points off the end of a 2-model box (a dead first j/k).
+    from tests._support import fleet_app
+
+    big = [workflow(f"s{i}", f"2026-05-0{i + 1} 10:00:00", cost=float(9 - i)) for i in range(4)]
+    for i, w in enumerate(big):
+        w.source = f"Src{i}"
+    app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": big})
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # the big box
+    app.drill_in()
+    app.tab = app.current_tabs().index("Harnesses")
+    app.source_index = 3  # cursor deep in the big box's picker
+    app._apply_click(("machine", 0), drill=False)  # click over to the one-session laptop
+    assert app.source_index == 0  # cursor re-anchored for the smaller box's picker
+
+
+def test_machines_mode_refresh_drops_a_project_drill_like_source_and_model():
+    # A fleet refresh restores UI state, but a Machines-mode project drill is per-box: the
+    # refreshed box may no longer carry it while another box does, so restoring it globally
+    # would leave the Sessions list wrongly filtered. It's dropped, like zoom_source/model.
+    from tests._support import fleet_app
+
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
+    app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b]})
+    app.set_browse_mode("machines")
+    app.machine_index = 1
+    app.drill_in()
+    app.tab = app.current_tabs().index("Projects")
+    app.project_index = 0
+    app.drill_in()  # project armed on server
+    assert app.zoom_project == app.project_root("/work/alpha")
+    app._reload_for_source(app.ui_snapshot())  # the refresh path (_do_refresh)
+    assert app.zoom_project is None  # per-box drill dropped, not restored
+
+
 def test_mode_tab_list_gates_machines_on_a_fleet():
     assert [m for _l, m in app_with([workflow("a", "2026-05-01 10:00:00")]).mode_tab_list()] == [
         "time",

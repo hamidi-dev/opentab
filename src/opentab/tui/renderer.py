@@ -1291,6 +1291,13 @@ class Renderer:
             stdscr, y, x, h, w, self.zoom_source_rows(), self.source_index, "Harness", "zoomsource"
         )
 
+    def draw_models_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
+        # The Sources picker's twin on the Machines-mode Models tab: j/k pick a model, Enter
+        # the box's sessions that used it. Shared body, so the three can't drift.
+        self._draw_dimension_picker(
+            stdscr, y, x, h, w, self.zoom_model_rows(), self.model_pick_index, "Model", "zoommodel"
+        )
+
     def draw_machines_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # The Sources picker's twin on the fleet's per-scope Machines tab: j/k pick a box,
         # Enter its sessions within this scope. Shared body, so the two can't drift.
@@ -1668,10 +1675,20 @@ class Renderer:
         self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
-        # Only Sessions drills (into a session); Models/Projects/Harnesses are read-only
-        # breakdowns for a box, so no pickers here.
+        # Sessions drills into a session; Harnesses/Projects/Models each drill into the
+        # box's sessions along that dimension (the navigable pickers the Projects-mode
+        # detail uses, plus a Models one). Overview stays a read-only breakdown.
         if current == "Sessions" and self.view == "zoom":
             self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Harnesses" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
+            return
+        if current == "Projects" and self.view == "zoom":
+            self.draw_projects_picker(stdscr, y, x, h, w)
+            return
+        if current == "Models" and self.view == "zoom":
+            self.draw_models_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.machine_overview(machine, w - 4)

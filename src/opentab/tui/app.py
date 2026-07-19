@@ -378,6 +378,11 @@ class App:
         # (source_index), Enter narrows the Sessions list to that source.
         self.zoom_source: str | None = None
         self.source_index = 0  # selected row on a zoomed Sources tab
+        # And the Machines-mode detail's Models tab: j/k pick a model (model_pick_index),
+        # Enter narrows the box's Sessions to the ones that used it. Machines-mode only,
+        # and mutually exclusive with the box's zoom_source/zoom_project drills.
+        self.zoom_model: str | None = None
+        self.model_pick_index = 0
         # And the fleet's per-scope Machines tab (a month/day/project cut by box): j/k
         # pick a machine (machine_pick_index), Enter narrows Sessions to it. Distinct from
         # machine_index (the top-level Machines-MODE sidebar) -- a scope can carry both.
@@ -1014,9 +1019,9 @@ class App:
     def active_project_for_toggle(self) -> ProjectSummary | None:
         if self.browse_mode == "projects":
             return self.selected_project_summary
-        # Only a time-mode zoom has a navigable Projects picker; the Machines Projects
-        # tab is a read-only breakdown, so it offers nothing to ignore.
-        if self.view == "zoom" and self.on_projects_tab and self.browse_mode == "time":
+        # Time- and Machines-mode zooms both have a navigable Projects picker (projects
+        # mode's sidebar IS the project, so it's excluded).
+        if self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
             return self.zoom_selected_project()
         return None
 
@@ -2129,6 +2134,7 @@ class App:
         self._load_model_cache()
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_model = None
         self.zoom_machine = None
         self._revalidate_machine_filter()  # keep the `M` filter iff its box still exists
         self._revalidate_harness_filter()  # keep the `H` filter iff still a fleet w/ that tool
@@ -2424,6 +2430,8 @@ class App:
         self.prices_scroll = 0
         self.zoom_source = None  # names a source that may not exist in the new data
         self.source_index = 0
+        self.zoom_model = None  # same: a model this data may no longer carry
+        self.model_pick_index = 0
         self.zoom_machine = None  # same: a box that may not be in the new data
         self.machine_pick_index = 0
         self._revalidate_machine_filter()  # drop the `M` filter if this source lacks the box
@@ -2441,7 +2449,12 @@ class App:
             zoom_project = restore["zoom_project"]
             self.zoom_project = (
                 zoom_project
+                # In Machines mode a project drill is per-box; a refresh could remove it
+                # from the selected box while another box keeps it, so a global "still
+                # exists" check would leave the Sessions list wrongly filtered (empty).
+                # Drop it there, like zoom_source/zoom_model already are (reset above).
                 if zoom_project
+                and self.browse_mode != "machines"
                 and any(self.project_root(w.directory) == zoom_project for w in self.loaded)
                 else None
             )
@@ -3293,11 +3306,15 @@ class App:
         return self.workflows_for_day(item.day, source) if item else []
 
     def zoom_projects(self) -> list[ProjectSummary]:
-        # Projects active within the zoomed month/day — the navigable Projects tab.
-        return self.projects_for_workflows(
-            self.zoom_scope_workflows(include_ignored=self.show_ignored_projects),
-            include_ignored=self.show_ignored_projects,
-        )
+        # Projects active within the zoomed scope — the navigable Projects tab. In Machines
+        # mode the scope is the selected box (not a month/day); everywhere else it's the
+        # zoomed year/month/day.
+        if self.browse_mode == "machines":
+            item = self.selected_machine_summary
+            base = self.workflows_for_machine(item.name) if item else []
+        else:
+            base = self.zoom_scope_workflows(include_ignored=self.show_ignored_projects)
+        return self.projects_for_workflows(base, include_ignored=self.show_ignored_projects)
 
     def zoom_selected_project(self) -> ProjectSummary | None:
         rows = self.zoom_projects()
@@ -3315,7 +3332,12 @@ class App:
         # (h/l can leave a machine/source narrowed while you move to the sibling picker) --
         # everything except the dimension being picked (`exclude`), which the pick SETS. So
         # the Harnesses picker shows sources within an armed box, and vice-versa.
-        if self.browse_mode == "projects":
+        if self.browse_mode == "machines":
+            # The Harnesses picker of a zoomed BOX: rank the harnesses within this machine
+            # (the sidebar selection scopes it, not zoom_machine, which stays None here).
+            item = self.selected_machine_summary
+            rows = self.workflows_for_machine(item.name) if item else []
+        elif self.browse_mode == "projects":
             item = self.selected_project_summary
             rows = (
                 self.workflows_for_project(
@@ -3329,15 +3351,31 @@ class App:
             rows = self.zoom_scope_workflows(include_ignored=self._showing_ignored_workflows())
             if self.zoom_project:
                 rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
-        if exclude != "source" and self.zoom_source:
-            rows = [w for w in rows if (w.source or "unknown") == self.zoom_source]
-        if exclude != "machine" and self.zoom_machine:
-            rows = [w for w in rows if (w.machine or "unknown") == self.zoom_machine]
+        if self.browse_mode != "machines":
+            # The fleet's per-scope pickers COMPOSE (h/l can leave a box/source armed while
+            # you pick the sibling). Machines mode does not: its Harnesses/Projects/Models
+            # drills are mutually exclusive (drilling one clears the others), so each picker
+            # ranks the whole box and there's nothing to compose in.
+            if exclude != "source" and self.zoom_source:
+                rows = [w for w in rows if (w.source or "unknown") == self.zoom_source]
+            if exclude != "machine" and self.zoom_machine:
+                rows = [w for w in rows if (w.machine or "unknown") == self.zoom_machine]
         return self.filtered_sessions(rows)
 
     def zoom_source_rows(self) -> list[tuple[str, dict[str, float | int]]]:
         # The navigable Sources tab of a zoomed scope (merged view), grouped by harness.
         return self.source_rows(self._zoom_picker_scope("source"))
+
+    def zoom_model_rows(self) -> list[tuple[str, dict[str, float | int]]]:
+        # The navigable Models tab of a zoomed box (Machines mode), grouped by model.
+        return self.model_rows(self._zoom_picker_scope("model"))
+
+    def zoom_selected_model(self) -> str | None:
+        rows = self.zoom_model_rows()
+        if not rows:
+            return None
+        self.model_pick_index = max(0, min(self.model_pick_index, len(rows) - 1))
+        return rows[self.model_pick_index][0]
 
     def zoom_selected_source(self) -> str | None:
         rows = self.zoom_source_rows()
@@ -3362,6 +3400,12 @@ class App:
         if self.browse_mode == "machines":
             item = self.selected_machine_summary
             rows = self.workflows_for_machine(item.name) if item else []
+            if self.zoom_source:  # a Harnesses-tab drill narrows this box to one harness
+                rows = [w for w in rows if (w.source or "unknown") == self.zoom_source]
+            if self.zoom_project:  # a Projects-tab drill narrows this box to one project
+                rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
+            if self.zoom_model:  # a Models-tab drill narrows to sessions that used it
+                rows = [w for w in rows if self._session_used_model(w.id, self.zoom_model)]
             return self.filtered_sessions(rows)
         if self.browse_mode == "projects":
             item = self.selected_project_summary
@@ -3668,6 +3712,7 @@ class App:
         self.scroll = 0
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_model = None
         self.zoom_machine = None
 
     def cycle_focus(self, step: int = 1) -> None:
@@ -3715,6 +3760,7 @@ class App:
         self.scroll = 0
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_model = None
         self.zoom_machine = None
         return True
 
@@ -3735,6 +3781,7 @@ class App:
         self.view = "browse"
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_model = None
         self.zoom_machine = None
         self.scroll = 0
 
@@ -3758,6 +3805,7 @@ class App:
             self.machine_index = 0
         self.zoom_project = None
         self.zoom_source = None
+        self.zoom_model = None
         self.zoom_machine = None
 
     def drill_in(self) -> None:
@@ -3780,6 +3828,8 @@ class App:
                 self.zoom_project = None
                 self.zoom_source = None
                 self.source_index = 0
+                self.zoom_model = None
+                self.model_pick_index = 0
                 self.zoom_machine = None
                 self.machine_pick_index = 0
                 self._trend_return = (
@@ -3790,24 +3840,41 @@ class App:
                     # picker; reset it. In projects mode it is the selected project
                     # we are drilling into, so it must be left alone.
                     self.project_index = 0
-        elif self.view == "zoom" and self.on_projects_tab and self.browse_mode == "time":
-            # Pick a project in a month/day zoom -> view its sessions in this scope. Only
-            # in time mode: the Machines Projects tab is a read-only breakdown, not a picker.
+        elif self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
+            # Pick a project -> its sessions in this scope. In time mode that's within the
+            # zoomed month/day; in Machines mode within the selected box (projects mode has
+            # no Projects tab -- its sidebar IS the project -- so the guard just excludes it).
             project = self.zoom_selected_project()
             if project is not None:
                 self.zoom_project = project.directory
+                if self.browse_mode == "machines":  # the box's drills are mutually exclusive
+                    self.zoom_source = self.zoom_model = None
                 tabs = self.current_tabs()
                 if "Sessions" in tabs:
                     self.tab = tabs.index("Sessions")
                 self.workflow_index = 0
                 self.scroll = 0
-        elif self.view == "zoom" and self.on_sources_tab and self.browse_mode != "machines":
-            # Pick a source in a zoom -> its sessions in this scope (the Trends
-            # Sources drill, scoped to the zoomed year/month/day/project). The Machines
-            # Harnesses tab is a read-only breakdown, so it doesn't drill.
+        elif self.view == "zoom" and self.on_sources_tab:
+            # Pick a source in a zoom -> its sessions in this scope (the Trends Sources
+            # drill, scoped to the zoomed year/month/day/project -- or, in Machines mode,
+            # to the selected box, so "Claude Code on hermes" opens with one Enter).
             source = self.zoom_selected_source()
             if source is not None:
                 self.zoom_source = source
+                if self.browse_mode == "machines":
+                    self.zoom_project = self.zoom_model = None
+                tabs = self.current_tabs()
+                if "Sessions" in tabs:
+                    self.tab = tabs.index("Sessions")
+                self.workflow_index = 0
+                self.scroll = 0
+        elif self.view == "zoom" and self.on_models_tab and self.browse_mode == "machines":
+            # Pick a model in a zoomed box -> the box's sessions that used it (a membership
+            # filter, since a session can use several models). Machines-mode only.
+            model = self.zoom_selected_model()
+            if model is not None:
+                self.zoom_model = model
+                self.zoom_source = self.zoom_project = None
                 tabs = self.current_tabs()
                 if "Sessions" in tabs:
                     self.tab = tabs.index("Sessions")
@@ -3856,10 +3923,16 @@ class App:
                 self.zoom_project = None
                 tabs = self.current_tabs()
                 self.tab = tabs.index("Projects") if "Projects" in tabs else 0
+            elif self.zoom_model:
+                # Leave a model's sessions, back to the box's Models list.
+                self.zoom_model = None
+                tabs = self.current_tabs()
+                self.tab = tabs.index("Models") if "Models" in tabs else 0
             else:
                 self.view = "browse"
                 self.zoom_project = None
                 self.zoom_source = None
+                self.zoom_model = None
                 self.zoom_machine = None
                 if self._trend_return is not None:
                     self._reopen_trends(self._trend_return)
@@ -3926,14 +3999,18 @@ class App:
                 n = len(self.current_sessions())
                 if n:
                     self.workflow_index = max(0, min(self.workflow_index + delta, n - 1))
-            elif self.on_projects_tab and self.browse_mode == "time":
+            elif self.on_projects_tab and self.browse_mode != "projects":
                 n = len(self.zoom_projects())
                 if n:
                     self.project_index = max(0, min(self.project_index + delta, n - 1))
-            elif self.on_sources_tab and self.browse_mode != "machines":
+            elif self.on_sources_tab:
                 n = len(self.zoom_source_rows())
                 if n:
                     self.source_index = max(0, min(self.source_index + delta, n - 1))
+            elif self.on_models_tab and self.browse_mode == "machines":
+                n = len(self.zoom_model_rows())
+                if n:
+                    self.model_pick_index = max(0, min(self.model_pick_index + delta, n - 1))
             elif self.on_machines_tab:
                 n = len(self.zoom_machine_rows())
                 if n:
@@ -3965,6 +4042,19 @@ class App:
             if n:
                 self.day_index = max(0, min(self.day_index + delta, n - 1))
 
+    def _clear_box_drills(self) -> None:
+        # Machines mode re-scoped to another box: its Harnesses/Projects/Models drills
+        # (zoom_source/zoom_project/zoom_model) and the cursors that index their pickers
+        # belonged to the OLD box. Drop the drills so the new box's Sessions aren't
+        # silently filtered by the previous scope, and zero the cursors so a smaller box's
+        # picker opens at the top instead of a now-out-of-range row (a dead first j/k).
+        self.zoom_source = None
+        self.zoom_project = None
+        self.zoom_model = None
+        self.source_index = 0
+        self.project_index = 0
+        self.model_pick_index = 0
+
     def _wheel(self, my: int, mx: int, delta: int) -> None:
         # Scroll the panel the cursor is over -- active or not. The wheel used to always
         # move the active pane, so hovering a non-focused panel scrolled the wrong one.
@@ -3983,7 +4073,10 @@ class App:
         elif kind == "project" and self.projects:
             self.project_index = max(0, min(self.project_index + delta, len(self.projects) - 1))
         elif kind == "machine" and self.machines:
-            self.machine_index = max(0, min(self.machine_index + delta, len(self.machines) - 1))
+            new = max(0, min(self.machine_index + delta, len(self.machines) - 1))
+            if new != self.machine_index and self.view == "zoom":
+                self._clear_box_drills()  # a NEW box; wheeling in place must keep the drill
+            self.machine_index = new
         elif kind == "session":
             n = len(self.current_sessions())
             if n:
@@ -3996,6 +4089,10 @@ class App:
             n = len(self.zoom_source_rows())
             if n:
                 self.source_index = max(0, min(self.source_index + delta, n - 1))
+        elif kind == "zoommodel":
+            n = len(self.zoom_model_rows())
+            if n:
+                self.model_pick_index = max(0, min(self.model_pick_index + delta, n - 1))
         elif kind == "zoommachine":
             n = len(self.zoom_machine_rows())
             if n:
@@ -4046,16 +4143,22 @@ class App:
                 self.workflow_index = len(rows) - 1 if to_end else 0
             return
 
-        if self.view == "zoom" and self.on_projects_tab and self.browse_mode == "time":
+        if self.view == "zoom" and self.on_projects_tab and self.browse_mode != "projects":
             rows = self.zoom_projects()
             if rows:
                 self.project_index = len(rows) - 1 if to_end else 0
             return
 
-        if self.view == "zoom" and self.on_sources_tab and self.browse_mode != "machines":
+        if self.view == "zoom" and self.on_sources_tab:
             rows = self.zoom_source_rows()
             if rows:
                 self.source_index = len(rows) - 1 if to_end else 0
+            return
+
+        if self.view == "zoom" and self.on_models_tab and self.browse_mode == "machines":
+            rows = self.zoom_model_rows()
+            if rows:
+                self.model_pick_index = len(rows) - 1 if to_end else 0
             return
 
         if self.view == "zoom" and self.on_machines_tab:
@@ -4406,6 +4509,36 @@ class App:
             item["sessions"] = int(item["sessions"]) + 1
         return sorted(
             by_machine.items(),
+            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+            reverse=True,
+        )
+
+    def _session_used_model(self, session_id: str, model: str) -> bool:
+        # Whether a session's per-model breakdown includes this model -- the membership
+        # test the Models-tab drill filters by (a session can use several models, so this
+        # is a filter, not a partition like source/project/machine).
+        return any(row["model_name"] == model for row in self.model_mix(session_id))
+
+    def model_rows(self, workflows: list[Workflow]) -> list[tuple[str, dict[str, float | int]]]:
+        # Spend grouped by model, cost-sorted -- the Machines-mode Models picker's rows.
+        # `sessions` counts DISTINCT sessions that used the model (not per-model rows), so
+        # a row's Sess equals what its drill opens (current_sessions' membership filter).
+        # Cost/tokens come from model_mix, so they follow the "$" mode like the Models tab.
+        by_model: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
+        )
+        for w in workflows:
+            seen_here: set[str] = set()
+            for row in self.model_mix(w.id):
+                name = row["model_name"]
+                item = by_model[name]
+                item["cost"] = float(item["cost"]) + float(row["cost"] or 0)
+                item["tokens"] = int(item["tokens"]) + int(row["tokens_total"] or 0)
+                if name not in seen_here:
+                    item["sessions"] = int(item["sessions"]) + 1
+                    seen_here.add(name)
+        return sorted(
+            by_model.items(),
             key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
             reverse=True,
         )
@@ -5617,8 +5750,11 @@ class App:
         elif kind == "machine":
             # The Machines sidebar: a row click re-scopes the detail (in a zoom too);
             # a double-click drills into that box's sessions.
+            changed = value != self.machine_index
             self.machine_index = value
             if self.view == "zoom":
+                if changed:  # a NEW box -- its Harnesses/Projects/Models drill doesn't carry over
+                    self._clear_box_drills()
                 self.workflow_index = 0
                 self.scroll = 0
                 return
@@ -5628,6 +5764,8 @@ class App:
             self.project_index = value
         elif kind == "zoomsource":
             self.source_index = value
+        elif kind == "zoommodel":
+            self.model_pick_index = value
         elif kind == "zoommachine":
             self.machine_pick_index = value
         else:
