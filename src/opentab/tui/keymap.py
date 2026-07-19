@@ -472,7 +472,9 @@ KEYS: tuple[Key, ...] = (
         if app.machines_present
         else "Time / Projects browse mode",
         section="nav",
-        when=lambda app: in_main(app) and app.view != "session",
+        # Works from a drilled-in session too (set_browse_mode snapshots it), so advertise
+        # it there -- returning to the mode lands back on that session.
+        when=in_main,
         segments=lambda app: [
             ("t", app.browse_mode == "time"),
             ("/", False),
@@ -482,28 +484,6 @@ KEYS: tuple[Key, ...] = (
         + [(" mode", False)],
         chip=lambda app: "t/p/m mode" if app.machines_present else "t/p mode",
         binds=("p", "t", "m"),
-    ),
-    Key(
-        id="refresh-machines",
-        keys="F",
-        summary="re-pull machine summaries over ssh",
-        section="nav",
-        when=lambda app: in_main(app) and app.machines_present,
-        chip="F refresh",
-        binds=("F",),
-    ),
-    Key(
-        id="machine-filter",
-        keys="M",
-        summary="filter every view to one machine",
-        section="nav",
-        # Not in_main-gated: like `H` it floats above Trends/Prices/help (handled there in
-        # the overlay-common paths), so it must advertise itself there too -- machines_present
-        # is the whole gate, matching where the handlers act.
-        when=lambda app: app.machines_present,
-        chip=lambda app: f"M {app.machine_filter}" if app.machine_filter else "M machine",
-        active=lambda app: bool(app.machine_filter) or app.machine_menu,
-        binds=("M",),
     ),
     Key(
         id="tabs",
@@ -551,6 +531,66 @@ KEYS: tuple[Key, ...] = (
         keys="mouse",
         summary="click selects · double-click drills · header sorts",
         section="nav",
+    ),
+    # ---- Pickers --------------------------------------------------------------------
+    # The GLOBAL modal choosers, all handled in the same pre-overlay slot (they float above
+    # Trends/Prices/help): pop a list, pick one (D's is a multi-check). Context-gated pickers
+    # (s sort, L launch) stay in "Here" where they apply; F (an ssh action) stays in "Global".
+    Key(
+        id="source",
+        keys="H",
+        # In a fleet `H` FILTERS by harness (keeps every machine); elsewhere it swaps the
+        # backend store. Available whenever either applies -- a fleet with a single local
+        # source still filters, so machines_present widens can_switch_source's gate.
+        summary=lambda app: "filter harness (fleet)" if app.machines_present else "switch harness",
+        section="pickers",
+        # Shown when there's actually something to do: a backend swap available, or a fleet
+        # harness filter with >=2 harnesses / one armed to clear (never a bare single-harness
+        # fleet no-op, and never an armed filter you can't reach to clear).
+        when=lambda app: app.can_switch_source() or app.can_harness_filter(),
+        chip=lambda app: f"H {app.harness_filter}" if app.harness_filter else "H harness",
+        active=lambda app: app.source_menu or app.harness_menu or bool(app.harness_filter),
+        binds=("H",),
+    ),
+    Key(
+        id="machine-filter",
+        keys="M",
+        # Twin of `H`: not in_main-gated, floats above Trends/Prices/help (handled there in
+        # the overlay-common paths), so machines_present is the whole gate.
+        summary="filter every view to one machine",
+        section="pickers",
+        when=lambda app: app.machines_present,
+        chip=lambda app: f"M {app.machine_filter}" if app.machine_filter else "M machine",
+        active=lambda app: bool(app.machine_filter) or app.machine_menu,
+        binds=("M",),
+    ),
+    Key(
+        id="whatif",
+        keys="w",
+        summary="what-if — reprice a session at one model",
+        section="pickers",
+        when=in_main,
+        chip="w model",
+        active=lambda app: bool(app.whatif_model),
+        binds=("w",),
+    ),
+    Key(
+        id="theme",
+        keys="C",
+        summary="colour theme",
+        section="pickers",
+        chip=None,
+        binds=("C",),
+    ),
+    Key(
+        id="demo",
+        keys="D",
+        summary="anonymize for a screenshot — pick titles / turns / spend",
+        section="pickers",
+        when=lambda app: bool(app.source_key),
+        chip=lambda app: "D demo·on" if app.store.demo else "D demo",
+        active=lambda app: app.demo_menu or bool(getattr(app.store, "demo", False)),
+        binds=("D",),
     ),
     # ---- Global ---------------------------------------------------------------------
     Key(
@@ -601,48 +641,15 @@ KEYS: tuple[Key, ...] = (
         binds=("$",),
     ),
     Key(
-        id="whatif",
-        keys="w",
-        summary="what-if — reprice a session at one model",
+        id="refresh-machines",
+        keys="F",
+        # A fleet ACTION (an ssh re-fetch), not movement -- it belongs in Global with the
+        # other things that always work when a fleet is present, not under Navigation.
+        summary="re-pull machine summaries over ssh",
         section="global",
-        when=in_main,
-        chip="w model",
-        active=lambda app: bool(app.whatif_model),
-        binds=("w",),
-    ),
-    Key(
-        id="source",
-        keys="H",
-        # In a fleet `H` FILTERS by harness (keeps every machine); elsewhere it swaps the
-        # backend store. Available whenever either applies -- a fleet with a single local
-        # source still filters, so machines_present widens can_switch_source's gate.
-        summary=lambda app: "filter harness (fleet)" if app.machines_present else "switch harness",
-        section="global",
-        # Shown when there's actually something to do: a backend swap available, or a fleet
-        # harness filter with >=2 harnesses / one armed to clear (never a bare single-harness
-        # fleet no-op, and never an armed filter you can't reach to clear).
-        when=lambda app: app.can_switch_source() or app.can_harness_filter(),
-        chip=lambda app: f"H {app.harness_filter}" if app.harness_filter else "H harness",
-        active=lambda app: app.source_menu or app.harness_menu or bool(app.harness_filter),
-        binds=("H",),
-    ),
-    Key(
-        id="theme",
-        keys="C",
-        summary="colour theme",
-        section="global",
-        chip=None,
-        binds=("C",),
-    ),
-    Key(
-        id="demo",
-        keys="D",
-        summary="anonymize for a screenshot — pick titles / turns / spend",
-        section="global",
-        when=lambda app: bool(app.source_key),
-        chip=lambda app: "D demo·on" if app.store.demo else "D demo",
-        active=lambda app: app.demo_menu or bool(getattr(app.store, "demo", False)),
-        binds=("D",),
+        when=lambda app: in_main(app) and app.machines_present,
+        chip="F refresh",
+        binds=("F",),
     ),
     Key(
         id="reload",
@@ -715,7 +722,7 @@ FOOTER_ORDER = (
     "quit",
 )
 
-SECTIONS = ("here", "nav", "global")
+SECTIONS = ("here", "nav", "pickers", "global")
 
 
 def sections(app: App) -> list[tuple[str, list[Key]]]:
@@ -723,6 +730,7 @@ def sections(app: App) -> list[tuple[str, list[Key]]]:
     titles = {
         "here": f"Here — {context_label(app)}",
         "nav": "Navigation",
+        "pickers": "Pickers",
         "global": "Global",
     }
     out = []

@@ -61,7 +61,7 @@ def test_help_lists_the_keys_that_work_where_you_are():
     app = _keymap_app()
     app.focus = "months"
     titles = [t for t, _ in app.renderer.help_sections()]
-    assert titles == ["Here — browse · Months", "Navigation", "Global"]
+    assert titles == ["Here — browse · Months", "Navigation", "Pickers", "Global"]
 
     def here(a):
         return {
