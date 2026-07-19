@@ -148,6 +148,10 @@ class Renderer:
         self._trend_rows_at: tuple[int, int, int] | None = None
         # Turns tab: which detail-line indices are ▸ prompt headers (click unfolds).
         self._turn_header_at: dict[int, str] = {}
+        # The line index of the selected ▸ group's header (App._turn_cursor resolved
+        # against the drawn headers), so draw_detail can highlight it and scroll it
+        # into view. None when the Turns tab has no groups. Recomputed each paint.
+        self._turn_cursor_line: int | None = None
         # Line-based panes (browse previews, the Subagents tab): which line indices
         # are sortable column headers, as line_index -> (columns, target). The paint
         # loops turn a visible one into sort_regions at its on-screen y, so header
@@ -1989,12 +1993,19 @@ class Renderer:
             lines = self.detail_overview(workflow, w - 4)
 
         visible = h - 4
+        if current == "Turns" and self.app._turn_follow:
+            # j/k/Enter moved or toggled the ▸ cursor -- bring its header into view
+            # before the scroll clamp, then consume the request (one-shot).
+            self._scroll_turn_cursor_into_view(visible)
+            self.app._turn_follow = False
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         drawn = lines[self.scroll : self.scroll + visible]
         for offset, line in enumerate(drawn):
             attr = self.line_attr(line)
             if line.startswith(("▸ ", "▾ ")):  # Turns tab: a user-prompt group header
                 attr = curses.color_pair(6) | curses.A_BOLD
+                if current == "Turns" and self.scroll + offset == self._turn_cursor_line:
+                    attr |= curses.A_REVERSE  # the keyboard-selected ▸ group
             elif line.startswith("  │"):  # Turns tab: an unfolded prompt's full text
                 attr = curses.color_pair(1)
             if current == "Context":
@@ -2014,6 +2025,19 @@ class Renderer:
             # Make the ▸/▾ headers clickable: the region maps a row back to its line
             # index; _apply_click resolves headers via _turn_header_at.
             self._add_rows_region("turnline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
+
+    def _scroll_turn_cursor_into_view(self, visible: int) -> None:
+        # Nudge the scroll so the selected ▸ header sits within the visible window --
+        # only when it's off-screen, so following the cursor never yanks a header
+        # that's already comfortably in view. Its expanded body flows below it.
+        line = self._turn_cursor_line
+        if line is None or visible <= 0:
+            return
+        top = self.app.scroll
+        if line < top:
+            self.app.scroll = line
+        elif line >= top + visible:
+            self.app.scroll = line - visible + 1
 
     def _model_table(
         self,
@@ -3055,6 +3079,7 @@ class Renderer:
         last_pid = object()  # sentinel: the first row always opens a group
         group_open = False
         self._turn_header_at = {}  # line index -> prompt_id, for the click toggle
+        header_lines: list[int] = []  # header line index per ▸ group, in render order
         for n, (r, cost) in enumerate(zip(rows, costs), start=1):
             pid = r.get("prompt_id", "")
             if pid != last_pid:
@@ -3065,6 +3090,7 @@ class Renderer:
                 title = shorten(title, max(10, width - len(gc) - 5))
                 head = ("▾ " if group_open else "▸ ") + title
                 self._turn_header_at[len(lines)] = pid
+                header_lines.append(len(lines))
                 lines.append(head + " " * max(1, width - display_width(head) - len(gc)) + gc)
                 if group_open:
                     # The whole prompt, its own line breaks kept, wrapped to the pane.
@@ -3082,10 +3108,15 @@ class Renderer:
                 f"{pad(shorten(agent, agent_w), agent_w)} "
                 f"{human_tokens(r['tokens_total']):>9} {money(cost):>9} {cumlabel:>16}"
             )
+        # Resolve the App's group-ordinal cursor to a header line index for the paint
+        # loop (highlight) and the follow-scroll. header_lines and App.turn_groups both
+        # split on the same consecutive-prompt runs, so the ordinal lines up.
+        cur = self.app._turn_cursor
+        self._turn_cursor_line = header_lines[cur] if 0 <= cur < len(header_lines) else None
         lines += [
             "",
             "· One ▸ line per user prompt, its subtotal on the right — time order, not cost.",
-            "· Folded to prompts by default: z expands all · click a ▸ header for its turns.",
+            "· Folded to prompts: j/k pick a ▸ prompt · Enter (or a click) unfolds one · z all.",
         ]
         return lines
 

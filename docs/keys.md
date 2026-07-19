@@ -37,15 +37,17 @@ compaction.
 | `p` / `t` | Switch to the Projects / Time browse mode |
 | `Tab` / `Shift-Tab` | Cycle focus Years → Months → Days (Time mode); Shift-Tab at the top steps back out |
 | `1` / `2` / `3` / `0` | Jump straight to a panel — **each panel wears its number in its title**, lazygit-style: the sidebar top to bottom (`[1] Years`, `[2] Months`, `[3] Days`; in Projects mode `[1] Projects`) and `[0]` the detail pane on the right, what `Enter` drills into. A digit jumps from anywhere: it steps out of a zoomed detail or an open session to get there |
-| `Enter` / `+` | Drill into the selection; on a Sessions / Projects / Harnesses tab, open it in this scope |
+| `Enter` / `+` | Drill into the selection; on a Sessions / Projects / Harnesses tab, open it in this scope; on the Turns tab, fold/unfold the selected `▸` prompt |
 | `Esc` | Step back out — session → zoom → browse |
 | `h` / `l` | Switch detail tabs |
-| `j` / `k` | Move in the list (`↑`/`↓` too), or scroll the detail pane |
+| `j` / `k` | Move in the list (`↑`/`↓` too), or scroll the detail pane; on the Turns tab, move the `▸` prompt cursor |
 | `PgDn` / `PgUp` | Half a page (`Ctrl-D` / `Ctrl-U` too) |
 | `g` / `G` | Jump to the top / bottom |
 | Mouse | Wheel scrolls · click selects (anywhere in the preview pane focuses it) · double-click drills · click a tab, or a column header to sort (again to reverse) |
 
-On the Turns tab, `z` (or clicking a `▸` header) unfolds the whole prompt text.
+On the Turns tab, `j`/`k` move a cursor over the `▸` prompt headers and `Enter`
+(or a click) folds/unfolds the selected one — its full prompt text and per-turn
+rows; `g`/`G` jump to the first/last prompt. `z` unfolds every prompt at once.
 
 ## Scope & filter
 

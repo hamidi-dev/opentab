@@ -320,7 +320,9 @@ class App:
         self.trend_drill: tuple[str, str] | None = None
         self.trend_drill_index = 0  # cursor within that sessions list
         self.turns_full = False  # Turns tab: expand every ▸ prompt group — text + turns (z)
-        self._turns_expanded: set[str] = set()  # individually expanded prompts (click)
+        self._turns_expanded: set[str] = set()  # individually expanded prompts (click / Enter)
+        self._turn_cursor = 0  # Turns tab: selected ▸ prompt group (a run-ordinal); j/k move it
+        self._turn_follow = False  # scroll to reveal the Turns cursor on the next draw
         self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
         self.has256 = False  # set in run() once curses knows the terminal's color depth
         self.colors_ok = True  # run() clears it on a monochrome terminal (no start_color)
@@ -1576,6 +1578,48 @@ class App:
             r["cost"] = round(r.get("cost", 0) * k, 4)
         return rows
 
+    def turn_groups(self, workflow_id: str) -> list[str]:
+        # The ▸ prompt groups on the Turns tab in render order: one entry per
+        # consecutive run of a prompt_id -- exactly how detail_turns splits headers,
+        # so the Turns cursor (_turn_cursor) is a plain index into this list, and
+        # Enter/j/k agree with what's drawn without depending on a prior paint.
+        pids: list[str] = []
+        last: object = object()
+        for r in self.session_turn_rows(workflow_id):
+            pid = r.get("prompt_id", "")
+            if pid != last:
+                pids.append(pid)
+                last = pid
+        return pids
+
+    def _on_turns_tab(self) -> bool:
+        return self.view == "session" and self.active_tab_name() == "Turns"
+
+    def _move_turn_cursor(self, delta: int) -> bool:
+        # j/k/PgDn on the Turns tab walk the ▸ prompt cursor instead of raw-scrolling
+        # (delta groups, clamped), and ask the next draw to scroll it into view.
+        # Returns False (nothing to select) so movement falls back to plain scroll.
+        wf = self.current_session()
+        groups = self.turn_groups(wf.id) if wf else []
+        if not groups:
+            return False
+        self._turn_cursor = max(0, min(self._turn_cursor + delta, len(groups) - 1))
+        self._turn_follow = True
+        return True
+
+    def _toggle_turn_cursor(self) -> bool:
+        # Enter on the Turns tab folds/unfolds the selected ▸ group -- exactly what a
+        # click on its header does. Returns False when there's nothing to toggle so
+        # Enter falls back to its usual drill-in.
+        wf = self.current_session()
+        groups = self.turn_groups(wf.id) if wf else []
+        if not groups:
+            return False
+        self._turn_cursor = max(0, min(self._turn_cursor, len(groups) - 1))
+        self._turns_expanded.symmetric_difference_update({groups[self._turn_cursor]})
+        self._turn_follow = True
+        return True
+
     def session_supports_context(self, workflow_id: str) -> bool:
         # Whether the Context tab's estimated composition section applies (only
         # backends whose logs carry full message content implement the opt-in).
@@ -2129,6 +2173,7 @@ class App:
         self._tool_by_session.clear()
         self._turns_by_session.clear()
         self._turns_expanded.clear()  # cleared with the turn cache it indexes into
+        self._turn_cursor = 0  # and its cursor, so a fresh session opens on the first prompt
         self._context_by_session.clear()
         self._nodes_by_session.clear()
         self._load_model_cache()
@@ -2409,6 +2454,7 @@ class App:
         self._tool_by_session.clear()
         self._turns_by_session.clear()
         self._turns_expanded.clear()  # cleared with the turn cache it indexes into
+        self._turn_cursor = 0  # and its cursor, so a fresh session opens on the first prompt
         self._context_by_session.clear()
         self._nodes_by_session.clear()
         self._load_model_cache()
@@ -3900,6 +3946,7 @@ class App:
             # the last one would spuriously light the turn-column header (any_open) and,
             # on a prompt-id collision, auto-expand a group that was never opened here.
             self._turns_expanded.clear()
+            self._turn_cursor = 0  # the Turns cursor starts on the first prompt
 
     def drill_out(self) -> None:
         if self.view == "session":
@@ -3993,6 +4040,8 @@ class App:
 
     def move(self, delta: int) -> None:
         if self.view == "session":
+            if self._on_turns_tab() and self._move_turn_cursor(delta):
+                return
             self.scroll = max(0, self.scroll + delta)
         elif self.view == "zoom":
             if self.on_sessions_tab:
@@ -4167,6 +4216,13 @@ class App:
                 self.machine_pick_index = len(rows) - 1 if to_end else 0
             return
 
+        if self._on_turns_tab():
+            wf = self.current_session()
+            groups = self.turn_groups(wf.id) if wf else []
+            if groups:
+                self._turn_cursor = len(groups) - 1 if to_end else 0
+                self._turn_follow = True
+                return
         if not to_end:
             self.scroll = 0
             return
@@ -5210,6 +5266,10 @@ class App:
             self.focus_detail()  # 0: the pane on the right
             return True
         if key in (10, 13, curses.KEY_ENTER):
+            # On the Turns tab Enter folds/unfolds the selected ▸ group; everywhere
+            # else it drills in (and it still does here when there's no group to toggle).
+            if self._on_turns_tab() and self._toggle_turn_cursor():
+                return True
             self.drill_in()
             return True
         if key in (27, curses.KEY_BACKSPACE, 127):
@@ -5725,9 +5785,13 @@ class App:
         if kind == "turnline":
             # A click on a Turns-tab "▸" prompt header folds/unfolds that one group
             # (z toggles them all); clicks on the turn rows between headers are inert.
-            pid = getattr(self.renderer, "_turn_header_at", {}).get(value)
+            headers = getattr(self.renderer, "_turn_header_at", {})
+            pid = headers.get(value)
             if pid is not None:
                 self._turns_expanded.symmetric_difference_update({pid})
+                # Move the keyboard cursor onto the clicked group so j/k/Enter pick up
+                # from here (the ordinal is this header's position among all headers).
+                self._turn_cursor = sorted(headers).index(value)
             return
         if kind in ("year", "month", "day"):
             # The time sidebar: live in browse, and still live behind a zoomed

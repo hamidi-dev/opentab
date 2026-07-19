@@ -444,7 +444,7 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         assert folded[0] == "# Turns — 2 prompts · 3 turns · $3.00"
         assert "▸ Add feature X" in fj and "▸ Fix the bug" in fj
         assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in folded)  # no turn rows
-        assert "Folded to prompts by default" in fj
+        assert "Folded to prompts" in fj and "Enter (or a click) unfolds one" in fj
         # Expanded (z): the per-turn rows appear, chronological, ending at $3.00 · 100%.
         app.turns_full = True
         normal = rnd.detail_turns(wf, 96)
@@ -1099,6 +1099,104 @@ def test_context_tab_overlays_spend_wallclock_and_compaction_times():
     # both compactions stamped with clock time and how far into the session they hit
     assert "▼ turn 5 · 10:45 (+1h 45m)" in joined
     assert "▼ turn 8 · 12:07 (+3h 7m)" in joined
+
+
+class _TurnNavStore(FakeStore):
+    # Three ▸ prompt groups (two turns each) so the Turns cursor has somewhere to go.
+    def supports_turns(self, wid):
+        return True
+
+    def message_timeline(self, wid):
+        rows = []
+        for i, pid in enumerate(("p1", "p2", "p3")):
+            for j in range(2):
+                rows.append(
+                    {
+                        "time": f"2026-06-01 12:0{i}:0{j}",
+                        "agent": "-",
+                        "depth": 0,
+                        "model_name": "anthropic/claude-sonnet-5",
+                        "cost": 0.5,
+                        "input": 1000,
+                        "output": 50,
+                        "reasoning": 0,
+                        "cache_read": 0,
+                        "cache_write": 0,
+                        "tokens_total": 1050,
+                        "prompt_id": pid,
+                        "prompt_title": f"prompt {pid}",
+                        "prompt_full": f"the full text of {pid}",
+                    }
+                )
+        return rows
+
+
+def _turns_app():
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(_TurnNavStore([workflow("ses_1", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+    app.tab = app.current_tabs().index("Turns")
+    return app
+
+
+def test_turns_cursor_walks_the_prompt_groups_with_jk_and_gG():
+    app = _turns_app()
+    assert app._on_turns_tab()
+    assert app.turn_groups("ses_1") == ["p1", "p2", "p3"]
+    assert app._turn_cursor == 0
+    app.move(1)
+    assert app._turn_cursor == 1  # j steps one group
+    app.move(1)
+    app.move(1)
+    assert app._turn_cursor == 2  # clamped at the last group, not past it
+    app.move(-1)
+    assert app._turn_cursor == 1  # k steps back
+    app.jump(to_end=True)
+    assert app._turn_cursor == 2  # G -> last prompt
+    app.jump(to_end=False)
+    assert app._turn_cursor == 0  # g -> first prompt
+
+
+def test_turns_enter_toggles_only_the_selected_group():
+    app = _turns_app()
+    app.move(1)  # select p2
+    assert app._toggle_turn_cursor()  # the Enter path
+    assert app._turns_expanded == {"p2"}
+    joined = "\n".join(app.renderer.detail_turns(app.current_session(), 96))
+    assert "the full text of p2" in joined and "the full text of p1" not in joined
+    app._toggle_turn_cursor()  # Enter again folds it back
+    assert app._turns_expanded == set()
+
+
+def test_turns_cursor_line_tracks_the_selected_header():
+    app = _turns_app()
+    app._turn_cursor = 0
+    lines = app.renderer.detail_turns(app.current_session(), 96)
+    first = app.renderer._turn_cursor_line
+    assert first is not None and lines[first].startswith(("▸ ", "▾ "))
+    app._turn_cursor = 2
+    app.renderer.detail_turns(app.current_session(), 96)
+    assert app.renderer._turn_cursor_line > first  # a later header line
+
+
+def test_turns_follow_scroll_reveals_an_offscreen_cursor():
+    app = _turns_app()
+    app.renderer._turn_cursor_line = 20
+    app.scroll = 0
+    app.renderer._scroll_turn_cursor_into_view(visible=5)
+    assert app.scroll == 16  # 20 - 5 + 1: scrolled down just enough to show line 20
+    app.renderer._turn_cursor_line = 2
+    app.renderer._scroll_turn_cursor_into_view(visible=5)
+    assert app.scroll == 2  # scrolled back up to reveal an earlier header
+
+
+def test_turns_click_moves_the_keyboard_cursor_onto_the_group():
+    app = _turns_app()
+    rnd = app.renderer
+    rnd.detail_turns(app.current_session(), 96)  # a paint records the header lines
+    lines_by_pid = {p: i for i, p in rnd._turn_header_at.items()}
+    app._apply_click(("turnline", lines_by_pid["p3"]), drill=False)
+    assert app._turn_cursor == 2 and "p3" in app._turns_expanded
 
 
 def test_machine_overview_shows_live_pulled_and_freshness_niceties():

@@ -169,6 +169,8 @@ def _enter_opens_something(app: App) -> bool:
         return True
     if app.view == "zoom":
         return app.active_tab_name() in ("Sessions", "Projects", "Harnesses")
+    if _on_turns(app):  # Enter folds/unfolds the selected ▸ prompt group
+        return True
     return False
 
 
@@ -179,6 +181,8 @@ def _enter_summary(app: App) -> str:
     tab = app.active_tab_name()
     if tab == "Sessions":
         return "open the selected session"
+    if tab == "Turns":
+        return "fold / unfold the selected ▸ prompt"
     if tab == "Projects":
         return "its sessions, within this scope"
     return "its sessions, within this scope"
@@ -520,7 +524,9 @@ KEYS: tuple[Key, ...] = (
     Key(
         id="move",
         keys="j  k",
-        summary="move / scroll (↑ ↓ too)",
+        summary=lambda app: "pick a ▸ prompt (↑ ↓ too)"
+        if _on_turns(app)
+        else "move / scroll (↑ ↓ too)",
         section="nav",
         when=lambda app: not in_trends(app),  # Trends binds j/k to paging -- its own entry
         binds=("j", "k"),
@@ -535,7 +541,7 @@ KEYS: tuple[Key, ...] = (
     Key(
         id="ends",
         keys="g  G",
-        summary="top / bottom",
+        summary=lambda app: "first / last prompt" if _on_turns(app) else "top / bottom",
         section="nav",
         when=lambda app: not in_trends(app) or app.trend_drill is not None,
         binds=("g", "G"),
