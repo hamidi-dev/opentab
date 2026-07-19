@@ -205,6 +205,18 @@ def parse_args() -> argparse.Namespace:
         "#{pane_current_path}\"'",
     )
     parser.add_argument(
+        "--tab",
+        metavar="NAME",
+        default=None,
+        help="with --goto, land on this session tab instead of Overview: overview, "
+        "subagents, turns, tools, or context (case-insensitive; a tab the session's "
+        "backend doesn't have keeps Overview and says so). Implies --goto of the "
+        "current directory when --goto is absent -- so `opentab --tab context` jumps "
+        "straight to the context curve of the cwd's live session. Made for a tmux "
+        "binding: bind t run 'tmux popup -E \"opentab --goto #{pane_current_path} "
+        "--tab context\"'",
+    )
+    parser.add_argument(
         "--export",
         nargs="?",
         const="-",
@@ -1298,6 +1310,11 @@ def main() -> int:
     source_key = resolve_source(args, state)
     goto = None
     goto_hint = None
+    if getattr(args, "tab", None) and getattr(args, "goto", None) is None:
+        # --tab is meaningless without a session to open, so it stands in for a bare
+        # --goto of the current directory: `opentab --tab context` == jump to the
+        # cwd's live session, landing on its Context tab.
+        args.goto = ""
     if getattr(args, "goto", None) is not None:
         # Resolve before the store is built: the target's backend must be in view,
         # so a saved single-source preference can't hide the session it names.
@@ -1333,7 +1350,7 @@ def main() -> int:
     if goto is not None:
         # After apply_state (a restored range could hide the target; goto_session
         # clears it when needed), before curses -- the jump is state-only.
-        app.goto_session(goto[1])
+        app.goto_session(goto[1], tab=getattr(args, "tab", None))
     elif goto_hint and notes_ok:
         # a broken notes.json outranks the miss hint: no frame paints between the
         # two notify calls, so this one would collapse onto and bury the warning

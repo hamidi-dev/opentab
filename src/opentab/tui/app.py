@@ -4650,9 +4650,10 @@ class App:
         self.drill_in()
         return True
 
-    def drill_into_session(self, workflow_id: str) -> bool:
+    def drill_into_session(self, workflow_id: str, tab: str | None = None) -> bool:
         # Jump from a Trends sessions list straight into that session's detail: zoom
-        # its day, land on the Sessions tab with it selected, and drill in.
+        # its day, land on the Sessions tab with it selected, and drill in. An
+        # optional tab name lands on that session sub-tab instead of Overview.
         w = next((x for x in self.all_workflows if x.id == workflow_id), None)
         if w is None or not self.drill_into_date(w.created_at[:10]):
             return False
@@ -4664,21 +4665,41 @@ class App:
         if i is not None:
             self.workflow_index = i
             self.drill_in()  # the day's Sessions tab -> the session view
+            if tab and self.view == "session":
+                self.select_session_tab(tab)
         return True
 
-    def goto_session(self, workflow_id: str) -> bool:
-        # The --goto startup jump: land straight in a session's detail view.
-        # State-only (no curses), so cli.main can call it before curses.wrapper.
-        # A restored range can hide the target; when it does, clear the range and
-        # retry so goto always lands. An ignored project stays ignored -- that's
-        # an explicit user choice, so just say why the jump didn't happen.
-        if self.drill_into_session(workflow_id):
+    def select_session_tab(self, name: str) -> bool:
+        # Land on a named session sub-tab (case-insensitive) -- the --goto/--tab
+        # target. The tab set is backend-dependent (Codex has no Context curve, a
+        # non-OpenCode session no Tools), so a miss keeps Overview and says why:
+        # the tmux popup this was made for must never error out over a bad name.
+        if self.view != "session":
+            return False
+        tabs = self.current_tabs()
+        want = name.strip().lower()
+        match = next((i for i, t in enumerate(tabs) if t.lower() == want), None)
+        if match is None:
+            named = ", ".join(t.lower() for t in tabs)
+            self.notice = f"no '{name}' tab here -- this session has: {named}"
+            return False
+        self.tab, self.scroll = match, 0
+        return True
+
+    def goto_session(self, workflow_id: str, tab: str | None = None) -> bool:
+        # The --goto startup jump: land straight in a session's detail view (on the
+        # named tab when --tab asked for one). State-only (no curses), so cli.main
+        # can call it before curses.wrapper. A restored range can hide the target;
+        # when it does, clear the range and retry so goto always lands. An ignored
+        # project stays ignored -- that's an explicit user choice, so just say why
+        # the jump didn't happen.
+        if self.drill_into_session(workflow_id, tab):
             return True
         if any(w.id == workflow_id for w in self.loaded):
             self.range_days = self.range_months = None
             self.custom_since = self.custom_until = None
             self._invalidate_workflow_cache()
-            if self.drill_into_session(workflow_id):
+            if self.drill_into_session(workflow_id, tab):
                 self.notice = "range cleared to reach the session"
                 return True
             self.notice = "session is in an ignored project"

@@ -578,6 +578,30 @@ def test_goto_session_lands_in_session_view_and_clears_a_hiding_range():
     assert "not found" in app3.notice
 
 
+def test_tab_flag_parses_and_stays_out_of_goto_until_main():
+    assert _parse([]).tab is None
+    assert _parse(["--tab", "context"]).tab == "context"
+    # --tab alone leaves goto None at parse time; main() derives the bare --goto.
+    assert _parse(["--tab", "context"]).goto is None
+    assert _parse(["--goto", "abc", "--tab", "turns"]).goto == "abc"
+
+
+def test_goto_session_lands_on_the_named_tab_case_insensitively():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    assert app.goto_session("a", tab="SubAgents") is True
+    assert app.view == "session" and app.current_tabs()[app.tab] == "Subagents"
+
+
+def test_goto_session_unknown_tab_keeps_overview_and_names_the_real_ones():
+    # A backend without a Context curve (FakeStore) must not error on --tab context:
+    # land in the session on Overview and say which tabs it does have -- the tmux
+    # popup this was built for must never flash-close over a bad tab name.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    assert app.goto_session("a", tab="context") is True
+    assert app.view == "session" and app.current_tabs()[app.tab] == "Overview"
+    assert "context" in app.notice and "overview" in app.notice
+
+
 def test_goto_hint_distinguishes_a_fresh_directory_from_an_unknown_id():
     with tempfile.TemporaryDirectory() as tmp:
         assert "no session yet" in ot.cli._goto_hint(tmp)
