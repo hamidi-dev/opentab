@@ -46,10 +46,21 @@ from opentab.state import apply_state, load_state, save_state
 from opentab.tui.app import App
 from opentab.util import git_root, resolve_project_root, unicode_screen
 
+# --- argument groups ----------------------------------------------------------------
+# The parser is split so subcommands can share it. GLOBAL modifiers (source
+# selection, per-harness paths, range, demo, theme, the serve address) attach to
+# every subcommand via parents=[...]. The old VERB flags (--status/--export/--web/...)
+# live only on the implicit `tui` command, kept working as deprecated aliases the same
+# way --source still works after becoming --harness. Each new verb (`web`, and more as
+# they land) owns its own options. --version is the top-level parser's alone.
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="opentab", description="OpenTab — OpenCode spend TUI")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+
+def _add_global_args(parser: argparse.ArgumentParser) -> None:
+    # --version rides on the shared parent, not just the top-level parser, so it stays
+    # order-independent through the implicit `tui` prepend: `opentab --source x --version`
+    # and `opentab PATH --version` must still print and exit, as the flat parser did. A
+    # fixed string (not %(prog)s) keeps it "opentab X.Y.Z" and never "opentab tui X.Y.Z".
+    parser.add_argument("--version", action="version", version=f"opentab {__version__}")
     parser.add_argument(
         "--harness",
         "--source",  # deprecated alias, kept working; dest stays `source` internally
@@ -72,24 +83,11 @@ def parse_args() -> argparse.Namespace:
             "remote",
         ),
         default="auto",
-        help="which harness's spend to browse: opencode (SQLite), claude (Claude Code "
-        "transcripts), codex (Codex CLI rollouts), hermes (Hermes Agent DB), csv (a CSV of "
-        "logged API requests, e.g. GitHub Copilot), jsonl (an NDJSON of logged API "
-        "requests), copilot (GitHub Copilot CLI via its OTEL export), vscode (Copilot Chat "
-        "sessions in VS Code), pi (pi-agent sessions), openclaw (OpenClaw gateway "
-        "sessions), zaly (Zaly sessions), all (merged), or remote (other machines' "
-        "exported summaries, gathered by --pull/--export). auto merges every present "
-        "local harness (default: auto). Or just pass a file path -- e.g. `opentab "
-        "requests.csv` (--source is a deprecated alias for --harness)",
-    )
-    parser.add_argument(
-        "path",
-        nargs="?",
-        default=None,
-        metavar="PATH",
-        help="a CSV file, an OpenCode .db, etc. to view -- its harness is picked "
-        "automatically (e.g. `opentab requests.csv`). Same as passing the matching "
-        "--csv/--db flag; with --harness it fills that harness's path.",
+        help="which harness's spend to browse: opencode · claude · codex · hermes · csv · "
+        "jsonl · copilot · vscode · pi · openclaw · zaly · all (merged) · remote (other "
+        "machines, via pull/export). Default auto merges every present local harness. Or "
+        "just pass a file path -- e.g. `opentab requests.csv`. (--source is a deprecated "
+        "alias for --harness)",
     )
     parser.add_argument("--db", default=os.path.expanduser("~/.local/share/opencode/opencode.db"))
     parser.add_argument(
@@ -184,6 +182,55 @@ def parse_args() -> argparse.Namespace:
         help="do not fold git worktrees into their main repo (keep each path separate)",
     )
     parser.add_argument(
+        "--remotes",
+        default=None,
+        metavar="DIR",
+        help="directory of exported machine summaries for --source remote "
+        f"(default: {default_remotes_dir()}); one *.json per machine, from --export/--pull",
+    )
+    parser.add_argument(
+        "--label",
+        default=None,
+        metavar="NAME",
+        help="machine name recorded in --export (default: this host's name); how the "
+        "session shows up under --source remote when several machines are merged",
+    )
+    parser.add_argument(
+        "--theme",
+        choices=themes.THEME_IDS,
+        default=themes.DEFAULT_THEME,
+        metavar="THEME",  # collapse the 30-name choices wall in --help; still validated
+        help="colour theme for the TUI and the web browser (opentab, "
+        "catppuccin-mocha/latte, tokyo-night/-day, gruvbox, nord, dracula, rose-pine); "
+        "switch live in the TUI with C or the browser's theme button, and your choice is "
+        f"remembered. Default: {themes.DEFAULT_THEME}",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8321, help="port for `opentab web` (default: 8321)"
+    )
+    parser.add_argument(
+        "--bind",
+        default="127.0.0.1",
+        help="address for `opentab web` (default: 127.0.0.1). The browser exposes prompt "
+        "titles, project paths, and spend -- bind beyond localhost only on a "
+        "trusted/VPN (e.g. Tailscale) interface, never a public one",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="skip the warm-start rollup cache and always re-parse from scratch. The "
+        "cache (under ~/.config/opentab/cache) reuses the previous parse when a backend's "
+        "files are unchanged; use this to force a cold read or to measure it",
+    )
+
+
+def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
+    # The pre-subcommand verb flags. They stay on the implicit `tui` command as
+    # deprecated-but-working aliases, so old invocations and tmux bindings never break --
+    # the same courtesy --source got when it became --harness. New spellings are
+    # subcommands: `opentab web` today (== --web/--serve/--html), and
+    # status/goto/export/pull/... as they are ported.
+    parser.add_argument(
         "--status",
         nargs="?",
         const="",
@@ -236,20 +283,6 @@ def parse_args() -> argparse.Namespace:
         "--source remote` (see --remotes); pairs with --demo for a shareable summary",
     )
     parser.add_argument(
-        "--remotes",
-        default=None,
-        metavar="DIR",
-        help="directory of exported machine summaries for --source remote "
-        f"(default: {default_remotes_dir()}); one *.json per machine, from --export/--pull",
-    )
-    parser.add_argument(
-        "--label",
-        default=None,
-        metavar="NAME",
-        help="machine name recorded in --export (default: this host's name); how the "
-        "session shows up under --source remote when several machines are merged",
-    )
-    parser.add_argument(
         "--pull",
         nargs="*",
         default=None,
@@ -282,43 +315,25 @@ def parse_args() -> argparse.Namespace:
         const="opentab-report.html",
         default=None,
         metavar="FILE",
-        help="write a self-contained HTML browser and exit: drill-in by month/day/"
-        "project/session, calendar heat map, sortable tables, the $ what-if toggle "
-        "-- all client-side in one file (default FILE: opentab-report.html). "
-        "Pairs with --demo for a shareable page",
+        help="write a self-contained HTML browser and exit (deprecated alias for "
+        "`opentab web --html`): drill-in by month/day/project/session, calendar heat "
+        "map, sortable tables, the $ what-if toggle -- all client-side in one file "
+        "(default FILE: opentab-report.html). Pairs with --demo for a shareable page",
     )
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="serve the HTML browser from a local web server; adds the per-session "
-        "Turns/Tools drill-in as live endpoints and a data-refresh button "
-        "(Ctrl-C stops it)",
+        help="serve the HTML browser from a local web server (deprecated alias for "
+        "`opentab web --headless`); adds the per-session Turns/Tools drill-in as live "
+        "endpoints and a data-refresh button (Ctrl-C stops it)",
     )
     parser.add_argument(
         "--web",
         action="store_true",
-        help="like --serve, but also open it in your default web browser "
-        "(cross-platform via the stdlib webbrowser: `open` on macOS, `xdg-open` on "
-        "Linux, the shell association on Windows); honors --port/--bind",
-    )
-    parser.add_argument(
-        "--theme",
-        choices=themes.THEME_IDS,
-        default=themes.DEFAULT_THEME,
-        help="colour theme for the TUI and the --html/--serve browser (opentab, "
-        "catppuccin-mocha/latte, tokyo-night/-day, gruvbox, nord, dracula, rose-pine); "
-        "switch live in the TUI with C or the browser's theme button, and your choice is "
-        f"remembered. Default: {themes.DEFAULT_THEME}",
-    )
-    parser.add_argument(
-        "--port", type=int, default=8321, help="port for --serve/--web (default: 8321)"
-    )
-    parser.add_argument(
-        "--bind",
-        default="127.0.0.1",
-        help="address for --serve/--web (default: 127.0.0.1). The browser exposes prompt "
-        "titles, project paths, and spend -- bind beyond localhost only on a "
-        "trusted/VPN (e.g. Tailscale) interface, never a public one",
+        help="like --serve, but also open it in your default web browser (deprecated "
+        "alias for `opentab web`; cross-platform via the stdlib webbrowser: `open` on "
+        "macOS, `xdg-open` on Linux, the shell association on Windows); honors "
+        "--port/--bind",
     )
     parser.add_argument(
         "--refresh-models",
@@ -334,14 +349,209 @@ def parse_args() -> argparse.Namespace:
         "backend's parse/scan take, then exit (no curses -- works on native Windows). "
         "Handy for measuring the file-heavy backends on a slow filesystem",
     )
-    parser.add_argument(
-        "--no-cache",
-        action="store_true",
-        help="skip the warm-start rollup cache and always re-parse from scratch. The "
-        "cache (under ~/.config/opentab/cache) reuses the previous parse when a backend's "
-        "files are unchanged; use this to force a cold read or to measure it",
+
+
+# The verbs that carry their own subparser. Everything else -- a bare `opentab`, a
+# `opentab requests.csv`, any legacy flag -- is the implicit `tui` command.
+_SUBCOMMANDS = ("tui", "web", "pull", "remote", "export", "forget")
+
+
+def _focus_help(subparser: argparse.ArgumentParser, common_dests: set, keep: set) -> None:
+    # A verb inherits every global (parents=[common]) so its namespace is complete and
+    # `main()`/_route_path_arg never miss an attribute -- but `opentab pull -h` should not
+    # then recite every backend path, the theme list and the serve address. Hide the
+    # globals a verb doesn't care about from its --help (they still PARSE, just aren't
+    # advertised -- `opentab tui -h` remains the full reference). Zen over completeness.
+    for action in subparser._actions:
+        if action.dest in common_dests and action.dest not in keep:
+            action.help = argparse.SUPPRESS
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    # `common` is a PROBE, not a shared parent: argparse's parents=[...] re-adds the SAME
+    # action objects to every child, so mutating action.help in _focus_help would leak
+    # across verbs. Instead each subparser gets its OWN globals via _add_global_args(sub),
+    # and this throwaway just enumerates which dests count as "global" for _focus_help.
+    probe = argparse.ArgumentParser(add_help=False)
+    _add_global_args(probe)
+    gdests = {a.dest for a in probe._actions if a.dest not in ("help", "version")}
+    parser = argparse.ArgumentParser(
+        prog="opentab", description="OpenTab — browse your AI-coding spend"
     )
-    args = parser.parse_args()
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    # Seed every legacy verb field on the namespace so a subcommand that has none of them
+    # (web, pull, ...) still carries them for main()'s dispatch and App/apply_state to read
+    # without an AttributeError -- the tui subparser and _apply_subcommand override what
+    # they own. path is here too: _route_path_arg reads it (and applies the --csv/--jsonl
+    # default paths) for every command, though only tui takes a positional.
+    parser.set_defaults(
+        path=None,
+        status=None,
+        goto=None,
+        tab=None,
+        export=None,
+        pull=None,
+        remote=False,
+        forget=None,
+        html=None,
+        serve=False,
+        web=False,
+        refresh_models=False,
+        timings=False,
+    )
+    subs = parser.add_subparsers(dest="command", metavar="COMMAND")
+    tui = subs.add_parser(
+        "tui",
+        help="browse spend in the terminal (the default when no command is named)",
+        description="Browse AI-coding spend in a terminal UI. This is the default "
+        "command, so a bare `opentab` and `opentab <file>` run it without naming it, "
+        "and the old top-level flags (--web, --status, --pull, ...) still work here.",
+    )
+    _add_global_args(tui)  # tui is the full reference: every global, not focused
+    tui.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        metavar="PATH",
+        help="a CSV file, an OpenCode .db, etc. to view -- its harness is picked "
+        "automatically (e.g. `opentab requests.csv`). Same as passing the matching "
+        "--csv/--db flag; with --harness it fills that harness's path.",
+    )
+    _add_legacy_command_flags(tui)
+    web = subs.add_parser(
+        "web",
+        help="open the spend browser in your web browser (serve + open)",
+        description="Serve the self-contained HTML spend browser and open it in your "
+        "default browser. Add --headless to serve without opening one, or --html FILE "
+        "to write the static page and exit instead of serving.",
+    )
+    _add_global_args(web)
+    web.add_argument(
+        "--html",
+        nargs="?",
+        const="opentab-report.html",
+        default=None,
+        metavar="FILE",
+        help="write a self-contained HTML file and exit, instead of serving it live "
+        "(default FILE: opentab-report.html). Pairs with --demo for a shareable page",
+    )
+    web.add_argument(
+        "--headless",
+        action="store_true",
+        help="serve but do NOT open a browser (Ctrl-C stops it); the bare `opentab web` "
+        "opens one. Either way the live per-session Turns/Tools endpoints and the "
+        "data-refresh button are served",
+    )
+    _focus_help(web, gdests, {"source", "demo", "theme", "port", "bind"})
+    # --- the fleet: getting other machines' spend (the --pull/--remote/--export/--forget
+    # verbs as subcommands). pull/remote open the merged fleet view; export/forget are
+    # one-shot. All map onto the legacy fields in _apply_subcommand, so main() dispatches
+    # them through the exact same code path.
+    pull = subs.add_parser(
+        "pull",
+        help="fetch other machines' spend over SSH and open them merged",
+        description="Fetch other machines' spend summaries over SSH (all in parallel) and "
+        "open them merged (the fleet view). Each HOST is remembered, so a later bare "
+        "`opentab pull` refreshes every saved machine. The remote just needs opentab on "
+        "its PATH -- it runs `opentab export -` there; nothing has to be listening.",
+    )
+    _add_global_args(pull)
+    pull.add_argument(
+        "hosts",
+        nargs="*",
+        metavar="HOST",
+        help="an ssh target -- `box`, `user@host`, `name=user@host`, or "
+        "`http://host:port` for an `opentab web` box. None given = refresh every machine "
+        "already in remotes.json. Set a machine's `cmd` in remotes.json if opentab isn't "
+        "on its non-interactive PATH",
+    )
+    _focus_help(pull, gdests, {"remotes", "demo"})
+    remote = subs.add_parser(
+        "remote",
+        help="open the already-pulled machines without re-fetching (offline)",
+        description="Open the machine summaries already gathered by `opentab pull`, "
+        "merged into the fleet view, without re-fetching over SSH -- the offline twin of "
+        "`opentab pull`.",
+    )
+    _add_global_args(remote)
+    _focus_help(remote, gdests, {"remotes", "demo"})
+    export = subs.add_parser(
+        "export",
+        help="write this machine's spend summary as portable JSON",
+        description="Write this machine's spend summary (every present harness, merged) "
+        "as a portable JSON file -- totals + per-model breakdown, no transcripts -- for "
+        "another box to `opentab pull`. Pairs with --demo for a shareable summary.",
+    )
+    _add_global_args(export)
+    export.add_argument(
+        "file",
+        nargs="?",
+        default="-",
+        metavar="FILE",
+        help="where to write it (default: stdout, so `ssh box opentab export > box.json` " "works)",
+    )
+    _focus_help(export, gdests, {"demo", "label"})
+    forget = subs.add_parser(
+        "forget",
+        help="drop machines from the saved fleet",
+        description="Remove machines from remotes.json and delete their cached summaries "
+        "(under --remotes), then exit.",
+    )
+    _add_global_args(forget)
+    forget.add_argument(
+        "names",
+        nargs="+",
+        metavar="NAME",
+        help="the machine name(s) to forget",
+    )
+    _focus_help(forget, gdests, {"remotes"})
+    return parser
+
+
+def _normalize_argv(argv: list[str]) -> list[str]:
+    # Insert the implicit `tui` command unless the first token already names a
+    # subcommand or asks for top-level --help/--version -- so `opentab`,
+    # `opentab requests.csv`, `opentab --demo`, and every legacy flag keep working
+    # unchanged. (A file literally named like a subcommand must be opened as
+    # `opentab tui web` -- the one cost of the bare-path shortcut.)
+    if argv and (argv[0] in _SUBCOMMANDS or argv[0] in ("-h", "--help", "--version")):
+        return argv
+    return ["tui", *argv]
+
+
+def _apply_subcommand(args: argparse.Namespace) -> None:
+    # Map a new subcommand's own options onto the legacy args.* fields main() already
+    # dispatches on, so there stays exactly ONE dispatch path. `tui` needs nothing --
+    # its flags already ARE those fields.
+    command = getattr(args, "command", None)
+    if command == "web":
+        # web: --html writes the static file, --headless serves without opening, the
+        # bare command serves AND opens -- the three legacy flags, one friendly verb.
+        if args.html is not None:
+            args.serve = args.web = False
+        elif args.headless:
+            args.serve, args.web = True, False
+        else:
+            args.serve, args.web = False, True
+    elif command == "pull":
+        # `opentab pull [HOST...]` == `--pull [HOST...]`: fetch, then main() flows into the
+        # merged fleet view (TUI). An empty list is bare --pull (refresh the saved machines).
+        args.pull = list(args.hosts)
+    elif command == "remote":
+        args.remote = True  # open the already-pulled fleet, no fetch (== --remote)
+    elif command == "export":
+        args.export = args.file  # "-" (stdout) by default (== --export)
+    elif command == "forget":
+        args.forget = list(args.names)  # >=1 by nargs="+" (== --forget)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    parser = _build_parser()
+    args = parser.parse_args(_normalize_argv(raw))
+    _apply_subcommand(args)
+    # Positional-path routing (tui only -- path is None for other subcommands) plus the
+    # --csv/--jsonl default paths, which every command needs.
     _route_path_arg(parser, args)
     return args
 

@@ -529,6 +529,103 @@ def test_cli_web_flag_is_recognized_and_is_distinct_from_serve():
     assert args.port == 8321 and args.bind == "127.0.0.1"  # shared with --serve
 
 
+# --- subcommands: `opentab web`, `pull`, `remote`, `export`, `forget` ---------
+# The verbs are a thin front door: each maps onto the SAME legacy args.* field the
+# old flag set, so main() keeps one dispatch path. Bare `opentab` / a path / any
+# legacy flag stay the implicit `tui` command (the other tests here still pass them).
+
+
+def test_bare_and_flags_are_the_implicit_tui_command():
+    # No verb named -> tui, with every legacy field present (main() reads them freely).
+    assert _parse([]).command == "tui"
+    assert _parse(["--web"]).command == "tui"  # a legacy flag doesn't name a subcommand
+    a = _parse([])
+    assert a.web is False and a.pull is None and a.status is None  # seeded on every namespace
+
+
+def test_web_subcommand_maps_onto_serve_and_web_fields():
+    bare = _parse(["web"])
+    assert bare.command == "web" and bare.web is True and bare.serve is False and bare.html is None
+    headless = _parse(["web", "--headless"])
+    assert headless.web is False and headless.serve is True and headless.html is None
+    static = _parse(["web", "--html"])  # bare --html -> the default file
+    assert static.web is False and static.serve is False and static.html == "opentab-report.html"
+    named = _parse(["web", "--html", "r.html"])
+    assert named.html == "r.html" and named.web is False
+
+
+def test_web_subcommand_takes_the_shared_globals_after_the_verb():
+    # parents=[globals]: modifiers land AFTER the verb, e.g. `opentab web --demo`.
+    a = _parse(["web", "--demo", "--theme", "nord", "--port", "9000"])
+    assert a.command == "web" and a.demo == "all" and a.theme == "nord" and a.port == 9000
+
+
+def test_pull_subcommand_maps_hosts_onto_the_pull_field():
+    assert _parse(["pull"]).pull == []  # bare: refresh the saved machines (== bare --pull)
+    assert _parse(["pull", "laptop", "mo@box"]).pull == ["laptop", "mo@box"]
+    assert _parse(["pull"]).command == "pull"
+
+
+def test_remote_export_forget_subcommands_map_onto_legacy_fields():
+    assert _parse(["remote"]).remote is True
+    assert _parse(["export"]).export == "-"  # stdout by default
+    assert _parse(["export", "box.json"]).export == "box.json"
+    assert _parse(["forget", "laptop", "old"]).forget == ["laptop", "old"]
+
+
+def test_explicit_tui_verb_still_reads_legacy_flags():
+    # `opentab tui --web ...` is the same as the bare legacy invocation.
+    a = _parse(["tui", "--goto", "abc", "--source", "claude"])
+    assert a.command == "tui" and a.goto == "abc" and a.source == "claude"
+
+
+def _subparser_help(name):
+    import argparse
+
+    parser = ot.cli._build_parser()
+    action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    return action.choices[name].format_help()
+
+
+def test_verb_help_is_focused_but_globals_still_parse():
+    # `opentab pull -h` must not recite every backend path / the theme list -- only the
+    # globals that matter to it. But the hidden ones are SUPPRESSED from help, NOT removed:
+    # they still parse. (And per-verb hiding must not leak across verbs -- the shared-action
+    # trap: forget must still show --remotes even though web/pull hid other globals.)
+    pull_help = _subparser_help("pull")
+    assert "--remotes" in pull_help and "--demo" in pull_help  # kept
+    assert "--claude-dir" not in pull_help and "--theme" not in pull_help  # hidden
+    assert "--port" not in pull_help and "--csv" not in pull_help
+    assert "--remotes" in _subparser_help("forget")  # no cross-verb leak
+    assert "--label" in _subparser_help("export") and "--harness" not in _subparser_help("export")
+    assert "--theme" in _subparser_help("web")  # web keeps its relevant ones
+    # tui stays the full reference -- nothing hidden there.
+    tui_help = _subparser_help("tui")
+    assert "--claude-dir" in tui_help and "--theme" in tui_help and "--web" in tui_help
+    # Hidden != gone: a suppressed global still parses on that verb.
+    assert _parse(["pull", "--no-cache", "host"]).no_cache is True
+    assert _parse(["export", "--harness", "claude"]).source == "claude"
+
+
+def test_version_stays_order_independent_through_the_tui_prepend():
+    # --version rides on the shared parent, not just the top level, so it still prints
+    # and exits 0 after another flag or a path (the flat parser did; the prepend of the
+    # implicit `tui` must not turn it into "unrecognized arguments").
+    import contextlib
+    import io
+
+    for argv in (["--version"], ["--source", "claude", "--version"], ["/dev/null", "--version"]):
+        buf = io.StringIO()
+        code = "did-not-exit"
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                _parse(argv)
+        except SystemExit as exc:  # the version action exits
+            code = exc.code
+        assert code == 0, (argv, code)
+        assert "opentab 1.14.0" in buf.getvalue(), argv
+
+
 # --- --goto: open the TUI drilled into a session ------------------------------
 
 
