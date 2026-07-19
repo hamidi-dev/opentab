@@ -1061,14 +1061,14 @@ def test_machine_overview_shows_live_pulled_and_freshness_niceties():
     app = fleet_app(
         {
             "laptop": [workflow("a", "2026-05-01 10:00:00", cost=3.0)],
-            "omv": [workflow("b", "2026-05-02 10:00:00", cost=9.0)],
+            "server": [workflow("b", "2026-05-02 10:00:00", cost=9.0)],
         }
     )
     app.set_browse_mode("machines")
     # laptop (live) is first: full drill-in, no export stamp.
     live = "\n".join(app.renderer.machine_overview(app.machines[0], 100))
     assert "● live" in live and "Summary only" not in live
-    # omv (pulled): the pulled-summary niceties + the re-pull hint.
+    # server (pulled): the pulled-summary niceties + the re-pull hint.
     pulled = "\n".join(app.renderer.machine_overview(app.machines[1], 100))
     assert "○ pulled" in pulled
     assert "opentab:      1.6.0" in pulled
@@ -1082,11 +1082,11 @@ def test_machine_detail_dispatches_its_tabs():
     app = fleet_app(
         {
             "laptop": [workflow("a", "2026-05-01 10:00:00")],
-            "omv": [workflow("b", "2026-05-02 10:00:00")],
+            "server": [workflow("b", "2026-05-02 10:00:00")],
         }
     )
     app.set_browse_mode("machines")
-    app.machine_index = 1  # omv
+    app.machine_index = 1  # server
     r = app.renderer
     machine = app.selected_machine_summary
     assert r.machine_workflows(machine, 100)  # its sessions table

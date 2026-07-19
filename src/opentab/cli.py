@@ -401,7 +401,7 @@ def timings_command(args: argparse.Namespace) -> int:
     # We keep the rolled-up workflows too (row[5]) -- they're already in memory, and the
     # fleet breakdown below re-aggregates them per machine and per harness rather than
     # re-parsing anything.
-    backends: list[list] = []  # [label, files, ms, cached, sub, workflows]
+    backends: list[list] = []  # [label, files, ms, cached, sub, workflows, model_rows]
     for sub in getattr(store, "stores", None) or [store]:
         label = getattr(sub, "source_name", type(sub).__name__)
         files = None
@@ -412,9 +412,12 @@ def timings_command(args: argparse.Namespace) -> int:
             except OSError:
                 files = None
         wf, wf_ms = timed(sub.workflows)
-        _mb, mb_ms = timed(sub.model_breakdown)
+        mb, mb_ms = timed(sub.model_breakdown)
         cached = getattr(sub, "served_from_cache", None)
-        backends.append([label, files, wf_ms + mb_ms, cached, sub, wf])
+        # Keep the per-model rows: the fleet's list-price ("$") estimate reprices each
+        # row's unpriced tokens (below), and they're already parsed -- discarding them
+        # would mean a second model_breakdown scan.
+        backends.append([label, files, wf_ms + mb_ms, cached, sub, wf, mb])
     total_ms = (time.perf_counter() - t_start) * 1000.0
     backends.sort(key=lambda b: b[2], reverse=True)  # slowest backend first
 
@@ -440,7 +443,7 @@ def timings_command(args: argparse.Namespace) -> int:
     print(f"  build store     {fmt_ms(build_ms)}")
     print()
     print(f"  {'backend'.ljust(lbl)}  {'files':>5}  {'time':>10}")
-    for label, files, ms, cached, _sub, _wf in backends:
+    for label, files, ms, cached, _sub, _wf, _mb in backends:
         fcell = str(files) if files is not None else "—"
         status = {True: "cached", False: "parsed"}.get(cached, "")
         bar = cost_bar(ms, peak, 12)
@@ -529,26 +532,59 @@ def _box_table(
     return lines
 
 
-def _fleet_aggregate(workflows: list) -> tuple[dict, dict, dict]:
+def _fleet_estimated_costs(backends: list) -> dict[str, float]:
+    # Per-root list-price ESTIMATE delta: what each session's $0/subscription tokens WOULD
+    # cost at API rates -- the `$` view's number, mirroring App._compute_api_costs exactly
+    # (same unpriced_* split, same api_equivalent_cost). Summed per root_id across every
+    # backend's already-parsed model rows (row[6]); a backend without model rows (older test
+    # fixtures) contributes nothing, so the estimate falls back to the real cost.
+    # input, output, reasoning, cache_read, cache_write -- api_equivalent_cost's arg order.
+    unpriced = ("unpriced_input", "unpriced_output", "unpriced_reasoning",
+                "unpriced_cache_read", "unpriced_cache_write")  # fmt: skip
+    whole = ("input", "output", "reasoning", "cache_read", "cache_write")
+    delta: dict[str, float] = {}
+    for row in backends:
+        for m in row[6] if len(row) > 6 and row[6] else ():
+            m = dict(m)
+            rid = m.get("root_id")
+            if not rid:
+                continue
+            real = m.get("cost", 0) or 0
+            # A pure-$0 row without an unpriced_* split still prices from its aggregate
+            # tokens (the App's all_unpriced case); otherwise only the $0 messages count.
+            keys = whole if (real == 0 and "unpriced_input" not in m) else unpriced
+            delta[rid] = delta.get(rid, 0.0) + api_equivalent_cost(
+                m["model_name"], *(m.get(k, 0) for k in keys)
+            )
+    return delta
+
+
+def _fleet_aggregate(workflows: list, est_by_id: dict | None = None) -> tuple[dict, dict, dict]:
     # Roll the fleet's sessions up two ways and cross-tabbed, from the already-parsed
     # Workflow rows (each carries .machine, .source, .total_cost, .total_tokens): per
-    # machine, per harness, and machine -> harness -> [sessions, tokens, cost]. Pure over
-    # the rows so it's testable without a store.
+    # machine, per harness, and machine -> harness -> [sessions, tokens, cost, est]. `est`
+    # is the list-price figure (real spend + the session's unpriced tokens at list rates,
+    # from _fleet_estimated_costs) -- equal to `cost` when there's nothing to estimate.
+    # Pure over the rows so it's testable without a store.
+    est_by_id = est_by_id or {}
     by_machine: dict[str, list] = {}
     by_harness: dict[str, list] = {}
     cell: dict[str, dict[str, list]] = {}
     for w in workflows:
         m = w.machine or "(this machine)"
         h = w.source or "?"
+        est = w.total_cost + est_by_id.get(w.id, 0.0)
         for table, key in ((by_machine, m), (by_harness, h)):
-            e = table.setdefault(key, [0, 0, 0.0])
+            e = table.setdefault(key, [0, 0, 0.0, 0.0])
             e[0] += 1
             e[1] += w.total_tokens
             e[2] += w.total_cost
-        c = cell.setdefault(m, {}).setdefault(h, [0, 0, 0.0])
+            e[3] += est
+        c = cell.setdefault(m, {}).setdefault(h, [0, 0, 0.0, 0.0])
         c[0] += 1
         c[1] += w.total_tokens
         c[2] += w.total_cost
+        c[3] += est
     return by_machine, by_harness, cell
 
 
@@ -567,7 +603,8 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
     dash = "—" if uni else "-"  # a not-applicable cell (live box has no summary file)
 
     all_wf = [w for row in backends for w in (row[5] or [])]
-    by_machine, by_harness, cell = _fleet_aggregate(all_wf)
+    est_by_id = _fleet_estimated_costs(backends)
+    by_machine, by_harness, cell = _fleet_aggregate(all_wf, est_by_id)
 
     meta = getattr(store, "machine_meta", {}) or {}
     live_label = next((n for n, m in meta.items() if m.get("live")), None)
@@ -578,7 +615,8 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
     remote_ms = 0.0
     live_load_ms = 0.0
     harness_time: dict[str, float] = {}
-    for _label, _files, ms, _cached, sub, wf in backends:
+    for row in backends:  # index, not unpack -- a row may or may not carry model rows (row[6])
+        ms, sub, wf = row[2], row[4], row[5]
         stats_fn = getattr(sub, "machine_stats", None)
         if callable(stats_fn):  # the RemoteStore -- pulled summaries, one file per box
             remote_ms += ms
@@ -596,12 +634,18 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
     # drop the machine count below the "it's a fleet" threshold). Labels here already agree
     # with w.machine: both machine_meta and machine_stats scramble under demo.
     for name in list(meta) + list(byte_by_machine):
-        by_machine.setdefault(name, [0, 0, 0.0])
+        by_machine.setdefault(name, [0, 0, 0.0, 0.0])
 
     multi_machine = len(by_machine) >= 2
     multi_harness = len(by_harness) >= 2
     if not (multi_machine or multi_harness):
         return []
+
+    # Show the list-price ("$") estimate column only when it says something the real cost
+    # doesn't -- i.e. there are unpriced/subscription tokens. A fully metered fleet skips it.
+    total_cost = sum(v[2] for v in by_machine.values())
+    total_est = sum(v[3] for v in by_machine.values())
+    show_est = abs(total_est - total_cost) > 0.005
 
     def machine_load(name: str) -> float:
         if name == live_label:
@@ -617,6 +661,7 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
             sum(v[0] for v in table.values()),
             sum(v[1] for v in table.values()),
             sum(v[2] for v in table.values()),
+            sum(v[3] for v in table.values()),
         ]
 
     if multi_machine:
@@ -627,41 +672,34 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
         )
         rows = []
         for name in order:
-            sess, toks, cost = by_machine[name]
+            sess, toks, cost, est = by_machine[name]
             live = name == live_label
             mark = live_mark if live else pull_mark
             size = dash if live else _human_bytes(byte_by_machine.get(name, 0))
             age = "live" if live else relative_age(meta.get(name, {}).get("exported_at", ""))
-            rows.append(
-                [
-                    mark + name,
-                    f"{sess:,}",
-                    human_tokens(toks),
-                    money(cost),
-                    size,
-                    _fmt_ms(machine_load(name)),
-                    age,
-                ]
-            )
-        tsess, ttoks, tcost = _totals(by_machine)
-        rows.append(
-            [
-                "fleet",
-                f"{tsess:,}",
-                human_tokens(ttoks),
-                money(tcost),
-                _human_bytes(total_bytes),
-                _fmt_ms(live_load_ms + remote_ms),
-                "",
-            ]
+            row = [mark + name, f"{sess:,}", human_tokens(toks), money(cost)]
+            if show_est:
+                row.append(money(est))
+            row += [size, _fmt_ms(machine_load(name)), age]
+            rows.append(row)
+        tsess, ttoks, tcost, test = _totals(by_machine)
+        total_row = ["fleet", f"{tsess:,}", human_tokens(ttoks), money(tcost)]
+        if show_est:
+            total_row.append(money(test))
+        total_row += [_human_bytes(total_bytes), _fmt_ms(live_load_ms + remote_ms), ""]
+        rows.append(total_row)
+        headers = (
+            ["machine", "sess", "tokens", "cost"]
+            + (["est $"] if show_est else [])
+            + ["size", "load", "age"]
         )
         out.append("")
         out.extend(
             _box_table(
                 "By machine",
-                ["machine", "sess", "tokens", "cost", "size", "load", "age"],
+                headers,
                 rows,
-                aligns="lrrrrrl",
+                aligns="lrrr" + ("r" if show_est else "") + "rrl",
                 rule_before_last=True,
                 uni=uni,
             )
@@ -671,20 +709,27 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
         order = sorted(by_harness, key=lambda h: (-by_harness[h][0], h))
         rows = []
         for key in order:
-            sess, toks, cost = by_harness[key]
+            sess, toks, cost, est = by_harness[key]
             t = harness_time.get(key)
             row = [SOURCE_LABELS.get(key, key), f"{sess:,}", human_tokens(toks), money(cost)]
+            if show_est:
+                row.append(money(est))
             if multi_machine:  # a "boxes" count is only informative once there's a fleet
                 row.append(str(sum(1 for m in cell if key in cell[m])))
             row.append(_fmt_ms(t) if t is not None else dash)
             rows.append(row)
-        tsess, ttoks, tcost = _totals(by_harness)
+        tsess, ttoks, tcost, test = _totals(by_harness)
         total_row = ["all", f"{tsess:,}", human_tokens(ttoks), money(tcost)]
+        if show_est:
+            total_row.append(money(test))
         if multi_machine:
             total_row.append(str(len(cell)))
         total_row.append(_fmt_ms(live_load_ms))
         headers = (
-            ["harness", "sess", "tokens", "cost"] + (["boxes"] if multi_machine else []) + ["load"]
+            ["harness", "sess", "tokens", "cost"]
+            + (["est $"] if show_est else [])
+            + (["boxes"] if multi_machine else [])
+            + ["load"]
         )
         out.append("")
         out.extend(
@@ -692,13 +737,16 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
                 "By harness",
                 headers,
                 [*rows, total_row],
-                aligns="lrrr" + ("r" if multi_machine else "") + "r",
+                aligns="lrrr" + ("r" if show_est else "") + ("r" if multi_machine else "") + "r",
                 rule_before_last=True,
                 uni=uni,
             )
         )
         if multi_machine:  # a footnote, since load means something different per box
             out.append("  load = this machine's parse; pulled boxes arrive pre-rolled")
+
+    if show_est:  # the est column can ride on either flat table -- footnote it once
+        out.append("  est $ = list-price estimate for $0 / subscription tokens (the $ view)")
 
     if multi_machine and multi_harness:
         m_order = sorted(by_machine, key=lambda n: (n != live_label, -by_machine[n][0]))

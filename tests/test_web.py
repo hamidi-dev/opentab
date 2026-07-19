@@ -594,10 +594,10 @@ def test_web_payload_carries_machine_and_the_fleet_flag():
     w1 = workflow("a", "2026-05-01 10:00:00", cost=1.0)
     w1.machine = "laptop"
     w2 = workflow("b", "2026-05-02 10:00:00", cost=2.0)
-    w2.machine = "omv"
+    w2.machine = "server"
     payload = ot.build_payload(app_with([w1, w2]))
     assert payload["meta"]["machines"] is True
-    assert {row["machine"] for row in payload["workflows"]} == {"laptop", "omv"}
+    assert {row["machine"] for row in payload["workflows"]} == {"laptop", "server"}
     # A non-fleet view sets the flag off, so the page grows no Machine column/tab.
     plain = ot.build_payload(app_with([workflow("a", "2026-05-01 10:00:00")]))
     assert plain["meta"]["machines"] is False
@@ -609,14 +609,14 @@ def test_web_payload_carries_machine_meta_for_the_machines_mode():
     app = fleet_app(
         {
             "laptop": [workflow("a", "2026-05-01 10:00:00")],
-            "omv": [workflow("b", "2026-05-02 10:00:00")],
+            "server": [workflow("b", "2026-05-02 10:00:00")],
         }
     )
     mm = ot.build_payload(app)["machineMeta"]
     assert mm["laptop"]["live"] is True and mm["laptop"]["refreshable"] is False
-    assert mm["omv"]["live"] is False
-    assert mm["omv"]["refreshable"] is True  # a pulled box with a remotes key
-    assert mm["omv"]["exportedAt"].startswith("2026") and mm["omv"]["version"] == "1.6.0"
+    assert mm["server"]["live"] is False
+    assert mm["server"]["refreshable"] is True  # a pulled box with a remotes key
+    assert mm["server"]["exportedAt"].startswith("2026") and mm["server"]["version"] == "1.6.0"
     # Off the fleet view the map is empty (no Machines mode).
     assert ot.build_payload(app_with([workflow("a", "2026-05-01 10:00:00")]))["machineMeta"] == {}
 
@@ -627,7 +627,7 @@ def test_web_page_has_the_per_scope_machines_tab_machinery():
     app = fleet_app(
         {
             "laptop": [workflow("a", "2026-05-01 10:00:00")],
-            "omv": [workflow("b", "2026-05-02 10:00:00")],
+            "server": [workflow("b", "2026-05-02 10:00:00")],
         }
     )
     html = ot.webpage.render_html(ot.build_payload(app))
@@ -663,13 +663,13 @@ def test_web_refresh_endpoint_repulls_the_named_machine():
     try:
         req = urllib.request.Request(
             base + "/api/refresh",
-            data=json.dumps({"machine": "omv"}).encode(),
+            data=json.dumps({"machine": "server"}).encode(),
             method="POST",
             headers={"Content-Type": "application/json"},
         )
         body = json.loads(urllib.request.urlopen(req).read().decode("utf-8"))
-        assert body["ok"] is True and body["results"] == [["omv", 4, ""]]
-        assert captured["name"] == "omv"
+        assert body["ok"] is True and body["results"] == [["server", 4, ""]]
+        assert captured["name"] == "server"
         assert server._page is None  # the next GET rebuilds off the freshly pulled data
     finally:
         server.shutdown()

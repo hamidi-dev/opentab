@@ -93,7 +93,17 @@ def test_demo_machine_is_stable_and_collision_free():
     # space (the pool index is derived from it) and collided host-89 with host-111.
     assert ot.demo_machine("host-89") != ot.demo_machine("host-111")
     assert ot.demo_machine("alpha") != ot.demo_machine("epsilon")
-    names = ["alpha", "epsilon", "laptop", "omv", "giant", "tiny", "host-89", "host-111", "nas-01"]
+    names = [
+        "alpha",
+        "epsilon",
+        "laptop",
+        "server",
+        "desktop",
+        "vps",
+        "host-89",
+        "host-111",
+        "nas-01",
+    ]
     assert len({ot.demo_machine(n) for n in names}) == len(names)
 
 

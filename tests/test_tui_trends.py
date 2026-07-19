@@ -784,7 +784,7 @@ def _fleet_app():
     w1 = workflow("a", "2026-05-01 10:00:00", cost=2.0)
     w1.machine = "laptop"
     w2 = workflow("b", "2026-05-02 10:00:00", cost=9.0)
-    w2.machine = "omv"
+    w2.machine = "server"
     return app_with([w1, w2])
 
 
@@ -796,8 +796,8 @@ def test_machines_trend_tab_only_in_the_fleet_view():
 def test_trends_machines_drill_filters_sessions_by_machine():
     app = _fleet_app()
     app.trend_tab = app.trend_tabs.index("Machines")
-    assert app.trend_ranked_keys() == ["omv", "laptop"]  # cost-sorted
+    assert app.trend_ranked_keys() == ["server", "laptop"]  # cost-sorted
     app.trend_row_index = 0
     app._open_trend_drill()
-    assert app.trend_drill == ("machine", "omv")
+    assert app.trend_drill == ("machine", "server")
     assert [s[0].id for s in app.trend_drill_sessions()] == ["b"]

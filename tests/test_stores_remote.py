@@ -512,13 +512,13 @@ def test_remote_store_machine_meta_carries_pulled_niceties_and_the_refresh_key()
     payload["exported_at"] = "2026-07-18T09:00:00+00:00"
     payload["opentab_version"] = "1.6.0"
     with tempfile.TemporaryDirectory() as d:
-        _write(d, "omv.json", payload)  # filename (remotes key) != label
+        _write(d, "server.json", payload)  # filename (remotes key) != label
         meta = ot.RemoteStore(d, _parse([])).machine_meta
         info = meta["workstation"]
         assert info["live"] is False
         assert info["exported_at"] == "2026-07-18T09:00:00+00:00"
         assert info["opentab_version"] == "1.6.0"
-        assert info["key"] == "omv"  # decoded from the filename, the handle a refresh uses
+        assert info["key"] == "server"  # decoded from the filename, the handle a refresh uses
 
 
 def test_remote_store_machine_meta_key_survives_a_percent_encoded_filename():
@@ -540,11 +540,11 @@ def test_remote_store_demo_scrambles_the_machine_name_and_meta_stays_aligned():
     # machine_meta keys go through the same deterministic demo_machine, so they agree
     # (else the Machines Overview couldn't look up a scrambled box's freshness).
     with tempfile.TemporaryDirectory() as d:
-        _write(d, "omv.json", _summary("workstation", [workflow("a", "2026-07-15 10:00:00")]))
-        _write(d, "gi.json", _summary("giant", [workflow("b", "2026-07-15 11:00:00")]))
+        _write(d, "server.json", _summary("workstation", [workflow("a", "2026-07-15 10:00:00")]))
+        _write(d, "gi.json", _summary("desktop", [workflow("b", "2026-07-15 11:00:00")]))
         store = ot.RemoteStore(d, _parse(["--demo"]))
         wf_names = {w.machine for w in store.workflows()}
-        assert "workstation" not in wf_names and "giant" not in wf_names  # scrambled
+        assert "workstation" not in wf_names and "desktop" not in wf_names  # scrambled
         assert set(store.machine_meta) == wf_names  # keys track the scrambled names 1:1
         assert len(wf_names) == 2  # two boxes stay two boxes (no collision)
 
@@ -594,11 +594,11 @@ def test_combined_machine_meta_merges_and_live_wins():
 
     local = MachineTaggedStore(Leaf([workflow("l", "2026-07-15 10:00:00")]), "laptop")
     with tempfile.TemporaryDirectory() as d:
-        _write(d, "omv.json", _summary("omv", [workflow("a", "2026-07-15 10:00:00")]))
+        _write(d, "server.json", _summary("server", [workflow("a", "2026-07-15 10:00:00")]))
         remote = ot.RemoteStore(d, _parse([]))
         merged = CombinedStore([local, remote]).machine_meta
         assert merged["laptop"]["live"] is True  # the box you're on
-        assert merged["omv"]["live"] is False and merged["omv"]["key"] == "omv"
+        assert merged["server"]["live"] is False and merged["server"]["key"] == "server"
 
 
 # --- the --export CLI command -------------------------------------------------

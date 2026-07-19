@@ -780,14 +780,14 @@ def test_make_refresh_fn_repulls_named_machines_over_the_pull_workers():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg, fetch):
-            ot.cli._save_remotes({"omv": {"ssh": "omv"}, "giant": {"ssh": "root@giant"}})
+            ot.cli._save_remotes({"server": {"ssh": "server"}, "desktop": {"ssh": "root@desktop"}})
             fn = ot.cli._make_refresh_fn(_parse(["--remote", "--remotes", rdir]))
-            results = dict((n, (c, e)) for n, c, e in fn(["omv"]))
-            assert results == {"omv": (2, "")}  # only omv, its 2 sessions
-            assert os.listdir(rdir) == ["omv.json"]  # giant was not touched
+            results = dict((n, (c, e)) for n, c, e in fn(["server"]))
+            assert results == {"server": (2, "")}  # only server, its 2 sessions
+            assert os.listdir(rdir) == ["server.json"]  # desktop was not touched
             # The written summary reads straight back through RemoteStore.
             store = ot.RemoteStore(rdir, _parse([]))
-            assert {w.id for w in store.workflows()} == {"omv-a", "omv-b"}
+            assert {w.id for w in store.workflows()} == {"server-a", "server-b"}
 
 
 def test_pull_with_no_hosts_refreshes_every_saved_machine():
@@ -914,12 +914,99 @@ def test_fleet_aggregate_rolls_up_by_machine_and_harness():
     wfs = [
         _fleet_wf("a", "laptop", "opencode", cost=5.0, tokens=1000),
         _fleet_wf("b", "laptop", "claude", cost=0.0, tokens=2000),
-        _fleet_wf("c", "omv", "opencode", cost=2.0, tokens=500),
+        _fleet_wf("c", "server", "opencode", cost=2.0, tokens=500),
     ]
     by_machine, by_harness, cell = ot.cli._fleet_aggregate(wfs)
-    assert by_machine["laptop"] == [2, 3000, 5.0]  # sessions, tokens, cost
-    assert by_harness["opencode"] == [2, 1500, 7.0]  # spans two machines
-    assert cell["omv"]["opencode"] == [1, 500, 2.0]
+    # sessions, tokens, cost, est -- est defaults to cost with no estimate map
+    assert by_machine["laptop"] == [2, 3000, 5.0, 5.0]
+    assert by_harness["opencode"] == [2, 1500, 7.0, 7.0]  # spans two machines
+    assert cell["server"]["opencode"] == [1, 500, 2.0, 2.0]
+
+
+def test_fleet_aggregate_adds_the_list_price_estimate_per_session():
+    # The est column = real cost + the session's unpriced tokens at list rates. The b
+    # session (a $0 subscription row) gets a $3 estimate; a's real $5 has nothing to add.
+    wfs = [
+        _fleet_wf("a", "laptop", "opencode", cost=5.0, tokens=1000),
+        _fleet_wf("b", "laptop", "claude", cost=0.0, tokens=2000),
+    ]
+    by_machine, by_harness, _cell = ot.cli._fleet_aggregate(wfs, {"b": 3.0})
+    assert by_machine["laptop"] == [2, 3000, 5.0, 8.0]  # est adds b's $3
+    assert by_harness["claude"] == [1, 2000, 0.0, 3.0]  # $0 real -> $3 estimated
+
+
+def test_fleet_estimated_costs_prices_unpriced_tokens():
+    # The per-root estimate = the row's unpriced tokens at list rates, summed per root_id.
+    # Mirrors App._compute_api_costs, so assert it equals a direct api_equivalent_cost call.
+    from opentab.pricing import api_equivalent_cost
+
+    row = {
+        "root_id": "s1",
+        "model_name": "anthropic/claude-sonnet-5",
+        "cost": 0.0,
+        "unpriced_input": 1000,
+        "unpriced_output": 500,
+        "unpriced_reasoning": 0,
+        "unpriced_cache_read": 2000,
+        "unpriced_cache_write": 0,
+    }
+    backends = [["Claude Code", 1, 10.0, False, object(), [], [row]]]
+    est = ot.cli._fleet_estimated_costs(backends)
+    expect = api_equivalent_cost("anthropic/claude-sonnet-5", 1000, 500, 0, 2000, 0)
+    assert est == {"s1": expect}
+    assert est["s1"] > 0  # a priced model -> a real estimate
+    # A backend row without model rows (older fixture) contributes nothing, never crashes.
+    assert ot.cli._fleet_estimated_costs([["OpenCode", 1, 5.0, False, object(), []]]) == {}
+
+
+def test_fleet_timings_show_the_list_price_estimate_column():
+    # Two subscription ($0) Claude boxes: the real cost column is all $0, but the est
+    # column reprices their unpriced tokens at list rates -- the fleet's "$" view.
+    laptop = [_fleet_wf("s1", "laptop", "claude", cost=0.0, tokens=3000)]
+    server = [_fleet_wf("s2", "server", "claude", cost=0.0, tokens=1000)]
+
+    def mrow(sid, cr):
+        return {
+            "root_id": sid,
+            "model_name": "anthropic/claude-sonnet-5",
+            "cost": 0.0,
+            "unpriced_input": 500,
+            "unpriced_output": 200,
+            "unpriced_reasoning": 0,
+            "unpriced_cache_read": cr,
+            "unpriced_cache_write": 0,
+        }
+
+    store = _MetaStore({"laptop": {"live": True}, "server": {"live": False, "exported_at": ""}})
+    remote = _RemoteSub([{"label": "server", "sessions": 1, "bytes": 2048}])
+    backends = [
+        ["Claude Code", 1, 100.0, False, object(), laptop, [mrow("s1", 3000)]],
+        ["remote", 1, 0.1, False, remote, server, [mrow("s2", 800)]],
+    ]
+    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=True))
+    assert "est $" in text  # the estimate column is present
+    assert "list-price estimate" in text  # and its footnote
+    assert "$0.00" in text  # real cost stays $0 for subscription rows
+
+
+def test_fleet_timings_hide_the_estimate_when_everything_is_metered():
+    # A fully metered fleet (real cost == estimate) omits the est column -- it would just
+    # duplicate the cost column. Here the rows have no unpriced tokens.
+    laptop = [_fleet_wf("s1", "laptop", "opencode", cost=5.0, tokens=3000)]
+    server = [_fleet_wf("s2", "server", "opencode", cost=2.0, tokens=1000)]
+    store = _MetaStore({"laptop": {"live": True}, "server": {"live": False, "exported_at": ""}})
+    remote = _RemoteSub([{"label": "server", "sessions": 1, "bytes": 2048}])
+
+    # model rows carry real cost and zero unpriced tokens -> estimate == cost
+    def priced(sid, c):
+        return {"root_id": sid, "model_name": "anthropic/claude-sonnet-5", "cost": c}
+
+    backends = [
+        ["OpenCode", 1, 100.0, False, object(), laptop, [priced("s1", 5.0)]],
+        ["remote", 1, 0.1, False, remote, server, [priced("s2", 2.0)]],
+    ]
+    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=True))
+    assert "est $" not in text and "list-price estimate" not in text
 
 
 def test_box_table_is_a_bordered_grid_with_a_titled_top_rule():
@@ -944,9 +1031,9 @@ def test_fleet_timings_break_down_by_machine_harness_and_grid():
     # pins the UTF-8 glyph set so the assertions don't depend on the test host's locale.
     laptop_oc = [_fleet_wf("a", "laptop", "opencode", cost=5.0, tokens=1000)]
     laptop_cc = [_fleet_wf("b", "laptop", "claude", cost=0.0, tokens=2000)]
-    omv_oc = [_fleet_wf("c", "omv", "opencode", cost=2.0, tokens=500)]
-    store = _MetaStore({"laptop": {"live": True}, "omv": {"live": False, "exported_at": ""}})
-    remote = _RemoteSub([{"label": "omv", "sessions": 1, "bytes": 2048}])
+    omv_oc = [_fleet_wf("c", "server", "opencode", cost=2.0, tokens=500)]
+    store = _MetaStore({"laptop": {"live": True}, "server": {"live": False, "exported_at": ""}})
+    remote = _RemoteSub([{"label": "server", "sessions": 1, "bytes": 2048}])
     backends = [
         ["OpenCode", 3, 300.0, False, object(), laptop_oc],
         ["Claude Code", 5, 1500.0, False, object(), laptop_cc],
@@ -954,10 +1041,10 @@ def test_fleet_timings_break_down_by_machine_harness_and_grid():
     ]
     text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=True))
     assert "By machine" in text and "By harness" in text and "machine × harness" in text
-    assert "● laptop" in text and "○ omv" in text  # live vs pulled markers
+    assert "● laptop" in text and "○ server" in text  # live vs pulled markers
     assert "OpenCode" in text and "Claude Code" in text
     assert "1800.0 ms" in text  # the live box's summed harness parse
-    assert "2 KB" in text  # omv's summary size
+    assert "2 KB" in text  # server's summary size
     assert "Σ" in text  # the grid's totals row/column
     assert "┌" in text and "├" in text and "└" in text  # rendered as ruled boxes
 
@@ -983,16 +1070,16 @@ def test_fleet_timings_use_ascii_glyphs_on_a_non_utf8_terminal():
     # A non-UTF-8 locale gets the ASCII fallback everywhere -- borders AND the content
     # glyphs (markers/dot/sigma/times), so nothing lands as a garbage byte.
     laptop_oc = [_fleet_wf("a", "laptop", "opencode", cost=5.0)]
-    omv_oc = [_fleet_wf("c", "omv", "claude", cost=0.0)]
-    store = _MetaStore({"laptop": {"live": True}, "omv": {"live": False, "exported_at": ""}})
-    remote = _RemoteSub([{"label": "omv", "sessions": 1, "bytes": 2048}])
+    omv_oc = [_fleet_wf("c", "server", "claude", cost=0.0)]
+    store = _MetaStore({"laptop": {"live": True}, "server": {"live": False, "exported_at": ""}})
+    remote = _RemoteSub([{"label": "server", "sessions": 1, "bytes": 2048}])
     backends = [
         ["OpenCode", 3, 300.0, False, object(), laptop_oc],
         ["remote", 1, 0.1, False, remote, omv_oc],
     ]
     text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=False))
     assert text.isascii()  # not a single multibyte glyph slips through
-    assert "* laptop" in text and "- omv" in text and "machine x harness" in text
+    assert "* laptop" in text and "- server" in text and "machine x harness" in text
 
 
 def test_fleet_timings_are_empty_for_a_single_source_local_run():
@@ -1028,7 +1115,7 @@ def test_pull_with_timings_refreshes_the_fleet_before_profiling():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            ot.cli._save_remotes({"omv": {"ssh": "omv"}})
+            ot.cli._save_remotes({"server": {"ssh": "server"}})
         ot.cli.sources.available_sources = lambda args: []
         ot.cli.resolve_source = lambda args, state: "remote"
         ot.cli.sources.make_store = lambda args, key: (_Stub(), "")
@@ -1045,7 +1132,7 @@ def test_pull_with_timings_refreshes_the_fleet_before_profiling():
                 ot.cli.sources.make_store,
                 ot.cli._fleet_timing_tables,
             ) = saved
-        assert os.listdir(rdir) == ["omv.json"]  # the pull fetched and wrote the summary
+        assert os.listdir(rdir) == ["server.json"]  # the pull fetched and wrote the summary
 
 
 def test_remote_timings_without_pull_never_fetches():
@@ -1073,7 +1160,7 @@ def test_remote_timings_without_pull_never_fetches():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            ot.cli._save_remotes({"omv": {"ssh": "omv"}})
+            ot.cli._save_remotes({"server": {"ssh": "server"}})
         ot.cli.sources.available_sources = lambda args: []
         ot.cli.resolve_source = lambda args, state: "remote"
         ot.cli.sources.make_store = lambda args, key: (_Stub(), "")

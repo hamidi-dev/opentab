@@ -33,7 +33,7 @@ def test_machines_browse_mode_restored_only_into_a_fleet():
     app = fleet_app(
         {
             "laptop": [workflow("a", "2026-06-01 12:00:00")],
-            "omv": [workflow("b", "2026-06-02 12:00:00")],
+            "server": [workflow("b", "2026-06-02 12:00:00")],
         }
     )
     app.browse_mode = "machines"
@@ -48,7 +48,7 @@ def test_machines_browse_mode_restored_only_into_a_fleet():
             fleet = fleet_app(
                 {
                     "laptop": [workflow("a", "2026-06-01 12:00:00")],
-                    "omv": [workflow("b", "2026-06-02 12:00:00")],
+                    "server": [workflow("b", "2026-06-02 12:00:00")],
                 }
             )
             ot.apply_state(fleet, fleet.args, state)

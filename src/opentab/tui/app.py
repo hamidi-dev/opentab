@@ -390,7 +390,7 @@ class App:
         # The GLOBAL harness filter, its orthogonal twin (w.source). In a FLEET, `H` arms
         # this -- narrowing to one tool across every machine -- instead of swapping the
         # store (which would drop the pulled boxes); outside a fleet `H` still swaps. So
-        # machine ⊥ harness: "pi, on omv" is M+H composed. Fleet-only (revalidation clears
+        # machine ⊥ harness: "pi, on server" is M+H composed. Fleet-only (revalidation clears
         # it on leaving the fleet); keyed into the workflow caches like machine_filter.
         self.harness_filter: str | None = None
         # All screen output lives on the Renderer; the App stays curses-free
