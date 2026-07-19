@@ -1658,6 +1658,112 @@ def test_draw_toasts_wraps_a_long_message_instead_of_truncating():
     assert ".csv" in text  # ...and its tail both survive (nothing truncated away)
 
 
+# --- the N notices scrollback -------------------------------------------------
+
+
+def test_notices_log_keeps_faded_toasts_beyond_the_live_cap():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    clock = [0.0]
+    app._toast_clock = lambda: clock[0]
+    # More distinct notices than the live list holds: the cards cap, the log keeps all.
+    for i in range(app.TOAST_MAX + 3):
+        app._mark_toasts_shown()
+        app.notify(f"m{i}")
+    assert len(app.toasts) == app.TOAST_MAX
+    assert [t.text for t in app.toast_log] == [f"m{i}" for i in range(app.TOAST_MAX + 3)]
+    # Expiry empties the live cards but NEVER the scrollback -- that's the whole point.
+    clock[0] += app.TOAST_TTL + 1
+    assert app.active_toasts() == []
+    assert len(app.toast_log) == app.TOAST_MAX + 3
+    # Clearing the current message (notice = "") leaves the history intact.
+    app.notice = ""
+    assert app.toasts == [] and len(app.toast_log) == app.TOAST_MAX + 3
+
+
+def test_notices_log_mirrors_the_within_frame_coalesce_and_caps():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app._toast_clock = lambda: 0.0
+    # Two notices in one frame collapse onto one, in BOTH the live list and the log,
+    # so the log records what was shown, not the discarded midpoint.
+    app.notify("fetching…")
+    app.notify("done")
+    assert [t.text for t in app.toasts] == ["done"]
+    assert [t.text for t in app.toast_log] == ["done"]
+    app._mark_toasts_shown()
+    app.notify("next action")  # a distinct frame stacks
+    assert [t.text for t in app.toast_log] == ["done", "next action"]
+    # The scrollback is bounded: oldest fall off past TOAST_LOG_MAX.
+    for i in range(app.TOAST_LOG_MAX + 5):
+        app._mark_toasts_shown()
+        app.notify(f"n{i}")
+    assert len(app.toast_log) == app.TOAST_LOG_MAX
+    assert app.toast_log[-1].text == f"n{app.TOAST_LOG_MAX + 4}"
+
+
+def test_notices_overlay_opens_scrolls_and_closes():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app._toast_clock = lambda: 0.0
+    for i in range(5):
+        app._mark_toasts_shown()
+        app.notify(f"n{i}")
+    assert app.handle_key(None, ord("N")) is True
+    assert app.toast_history and app.toast_history_scroll == 0
+    app.handle_key(None, ord("j"))
+    app.handle_key(None, ord("j"))
+    assert app.toast_history_scroll == 2
+    app.handle_key(None, ord("k"))
+    assert app.toast_history_scroll == 1
+    app.handle_key(None, ord("g"))
+    assert app.toast_history_scroll == 0
+    app.handle_key(None, ord("z"))  # a mistyped key is swallowed, not a close
+    assert app.toast_history
+    app.handle_key(None, 27)  # Esc closes
+    assert not app.toast_history
+    app.handle_key(None, ord("N"))  # N reopens...
+    assert app.toast_history
+    app.handle_key(None, ord("N"))  # ...and N again closes (its own toggle)
+    assert not app.toast_history
+
+
+def test_toast_history_lines_are_newest_first_with_age_and_kind():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    clock = [0.0]
+    app._toast_clock = lambda: clock[0]
+    # Empty log -> a single info-tinted placeholder row.
+    empty = app.renderer.toast_history_lines(60)
+    assert len(empty) == 1 and empty[0][1] == "info" and "No notifications yet" in empty[0][0]
+    app.notify("older note")
+    app._mark_toasts_shown()
+    clock[0] = 65.0  # 65s later
+    app.notify("disk on fire", kind="error")
+    rows = app.renderer.toast_history_lines(60)
+    assert rows[0][1] == "error" and "disk on fire" in rows[0][0]  # newest first, kind kept
+    assert rows[1][1] == "info" and "older note" in rows[1][0]
+    assert "now" in rows[0][0]  # the just-raised one
+    assert "1m" in rows[1][0]  # 65s -> "1m"
+
+
+def test_draw_toast_history_paints_the_scrollback_newest_first():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app._toast_clock = lambda: 0.0
+    app.notify("copied ses_42", kind="success")
+    app._mark_toasts_shown()
+    app.notify("boom", kind="error")
+    app._mark_toasts_shown()
+    app.toast_history = True
+    screen = FakeScreen(24, 80)
+    orig_cp = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: 0
+    try:
+        app.renderer.draw_toast_history(screen, 3, 22, 80)
+    finally:
+        ot.curses.color_pair = orig_cp
+    text = screen_text(screen)
+    assert "Notifications (2)" in text  # the count is in the title
+    assert "boom" in text and "copied ses_42" in text
+    assert text.index("boom") < text.index("copied ses_42")  # newest painted first
+
+
 def test_launch_menu_opens_in_tmux_and_copy_only_outside():
     a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
     a.source = "Claude Code"

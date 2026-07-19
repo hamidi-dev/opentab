@@ -567,6 +567,8 @@ class Renderer:
 
         if self.help:
             self.draw_help(stdscr, top, bottom, width)
+        if self.toast_history:
+            self.draw_toast_history(stdscr, top, bottom, width)
 
         # Small centered modals float on top of the current view (so context stays
         # visible behind them), unlike the full-body prices/trends overlays.
@@ -3905,6 +3907,68 @@ class Renderer:
                     base | (curses.A_DIM if fading else 0),
                 )
             row += len(body) + 2  # card (header + body lines) plus a 1-row gap
+
+    @staticmethod
+    def _toast_age(seconds: float) -> str:
+        # A compact "how long ago" for the notices log. Toasts store a monotonic birth
+        # time, so this is elapsed seconds -- no wall clock, no timezone, just an age.
+        if seconds < 1:
+            return "now"
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        if seconds < 3600:
+            return f"{int(seconds // 60)}m"
+        if seconds < 86400:
+            return f"{int(seconds // 3600)}h"
+        return f"{int(seconds // 86400)}d"
+
+    def toast_history_lines(self, width: int) -> list[tuple[str, str]]:
+        # One row per past notice, NEWEST FIRST -- "<age>  <sigil> <message>" -- each
+        # tagged with its kind so draw_toast_history colours it. Returns (text, kind)
+        # pairs, so a test can assert the content with no screen. Empty log = one hint row.
+        log = self.app.toast_log
+        if not log:
+            return [("No notifications yet — status messages will collect here.", "info")]
+        now = self.toast_now()
+        rows: list[tuple[str, str]] = []
+        for toast in reversed(log):
+            sigil = self.TOAST_STYLE.get(toast.kind, self.TOAST_STYLE["info"])[1]
+            age = self._toast_age(max(0.0, now - toast.born))
+            rows.append((shorten(f"{age:>4}  {sigil} {toast.text}", width), toast.kind))
+        return rows
+
+    def draw_toast_history(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
+        # The `N` overlay: a pager over the notices scrollback (App.toast_log), floating
+        # centered over the view like help -- but sized tall, since the log runs long.
+        # Newest first; each row painted in its kind's colour (red errors stay legible in
+        # the scrollback too). j/k/g/G/page scroll (handle_key); Esc/q/N close.
+        inner_w = max(24, min(76, width - 8))
+        rows = self.toast_history_lines(inner_w)
+        box_w = inner_w + 4
+        box_x = max(0, (width - box_w) // 2)
+        avail_h = bottom - y
+        box_h = min(avail_h, max(6, len(rows) + 3))
+        box_y = y + max(0, (avail_h - box_h) // 2)
+        for row in range(box_y, box_y + box_h):  # clear the footprint (draw_modal's rule)
+            self.write(stdscr, row, box_x, " " * box_w)
+        count = len(self.app.toast_log)
+        title = f"Notifications ({count}) · Esc close" if count else "Notifications · Esc close"
+        self.box(stdscr, box_y, box_x, box_h, box_w, title, active=True)
+        visible = max(1, box_h - 3)
+        scroll = max(0, min(self.app.toast_history_scroll, max(0, len(rows) - visible)))
+        self.app.toast_history_scroll = scroll
+        for offset, (text, kind) in enumerate(rows[scroll : scroll + visible]):
+            pair = self.TOAST_STYLE.get(kind, self.TOAST_STYLE["info"])[0]
+            self.write(stdscr, box_y + 1 + offset, box_x + 2, text, curses.color_pair(pair))
+        if len(rows) > visible:  # only then is there anything to scroll
+            hint = " j/k scroll "
+            self.write(
+                stdscr,
+                box_y + box_h - 1,
+                box_x + max(2, box_w - len(hint) - 2),
+                hint,
+                curses.color_pair(1),
+            )
 
     def draw_modal(
         self, stdscr: curses.window, scr_h: int, scr_w: int, title: str, lines: list

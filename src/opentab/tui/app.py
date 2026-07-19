@@ -175,6 +175,11 @@ class App:
     TOAST_FADE = 0.9
     TOAST_MAX = 3
     TOAST_POLL_MS = 200
+    # Toasts fade after a few seconds, so a message you glanced away from is gone. The
+    # `N` overlay keeps a scrollback of the last TOAST_LOG_MAX of them (never pruned by
+    # time, unlike the live cards) so you can read what flew by. It is in-memory only --
+    # notices are transient status, never authored data like notes, so nothing persists.
+    TOAST_LOG_MAX = 200
     # Class-level defaults so App instances built via __new__ in tests (skipping
     # __init__) still accept a notice. _toast_clock is injectable per instance for
     # deterministic expiry tests; the live `toasts` list is lazily materialised below.
@@ -315,6 +320,8 @@ class App:
         self.scroll = 0
         self.help = False
         self.help_scroll = 0  # pager offset within the help overlay
+        self.toast_history = False  # the `N` notices scrollback overlay
+        self.toast_history_scroll = 0  # pager offset within it
         self.trends = False  # the Trends overlay (T); trend_tab selects its tab
         self.trend_tab = 0
         self.trend_month_index = 0  # which month the Daily tab shows (0 = newest)
@@ -4412,6 +4419,17 @@ class App:
         return toasts
 
     @property
+    def toast_log(self) -> list[Toast]:
+        # The `N` overlay's scrollback: every toast notify() ever raised (oldest first),
+        # capped at TOAST_LOG_MAX and NEVER pruned by expiry -- the whole point is to
+        # read a message after its live card has faded. Lazily materialised like `toasts`
+        # so a __new__-built App (tests) has one on demand.
+        log = self.__dict__.get("_toast_log")
+        if log is None:
+            log = self.__dict__["_toast_log"] = []
+        return log
+
+    @property
     def notice(self) -> str:
         toasts = self.toasts
         return toasts[-1].text if toasts else ""
@@ -4421,7 +4439,7 @@ class App:
         if value:
             self.notify(value)
         else:
-            self.toasts.clear()  # `self.notice = ""` means "no message"
+            self.toasts.clear()  # `self.notice = ""` means "no message" (the log persists)
 
     def toast_now(self) -> float:
         return self._toast_clock()
@@ -4429,18 +4447,31 @@ class App:
     def notify(self, text: str, kind: str = "info") -> None:
         toasts = self.toasts
         if not text:
-            toasts.clear()
+            toasts.clear()  # clears the live card only; the N scrollback is history
             return
         toast = Toast(text, kind, self.toast_now(), self.TOAST_TTL)
         # Several notices set within one input handler (e.g. "fetching…" → "refreshed")
         # never get a frame between them, so collapse onto one toast; distinct user
-        # actions (a paint happened in between) stack instead.
-        if toasts and not self._toast_shown:
+        # actions (a paint happened in between) stack instead. The scrollback mirrors
+        # that collapse so it records what was actually shown, not the discarded midpoint.
+        collapsing = bool(toasts) and not self._toast_shown
+        if collapsing:
             toasts[-1] = toast
         else:
             toasts.append(toast)
             del toasts[: max(0, len(toasts) - self.TOAST_MAX)]
+        log = self.toast_log
+        if collapsing and log:
+            log[-1] = toast
+        else:
+            log.append(toast)
+            del log[: max(0, len(log) - self.TOAST_LOG_MAX)]
         self._toast_shown = False
+
+    def open_notices(self) -> None:
+        # `N`: open the notices scrollback, landing at the top (newest first).
+        self.toast_history = True
+        self.toast_history_scroll = 0
 
     def active_toasts(self) -> list[Toast]:
         # Drop expired toasts (in place) and return what's still on screen.
@@ -5184,6 +5215,29 @@ class App:
             elif key in (27, ord("q"), ord("?")):
                 self.help = False
             return True
+        if self.toast_history:
+            # A pager like help/prices: j/k/arrows + page keys + g/G scroll the notices
+            # scrollback; closing is explicit (Esc/q/N), Ctrl-C still quits, and every
+            # other key is swallowed so a mistype can't tear it down.
+            if key in (ord("j"), curses.KEY_DOWN):
+                self.toast_history_scroll += 1
+            elif key in (ord("k"), curses.KEY_UP):
+                self.toast_history_scroll = max(0, self.toast_history_scroll - 1)
+            elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+                self.toast_history_scroll += self._page_step(stdscr)  # clamped on draw
+            elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+                self.toast_history_scroll = max(
+                    0, self.toast_history_scroll - self._page_step(stdscr)
+                )
+            elif key == ord("g"):
+                self.toast_history_scroll = 0
+            elif key == ord("G"):
+                self.toast_history_scroll = 10_000  # clamped to the last page on draw
+            elif key == 3:  # Ctrl-C still quits
+                return False
+            elif key in (27, ord("q"), ord("N")):
+                self.toast_history = False
+            return True
         if self.show_prices:
             if self.sort_menu:  # the `s` picker floats over the price table
                 return self.handle_sort_menu_key(key)
@@ -5301,6 +5355,9 @@ class App:
         if key == ord("?"):
             self.help = True
             self.help_scroll = 0
+            return True
+        if key == ord("N"):
+            self.open_notices()  # the notices scrollback: read a toast that faded
             return True
         if key == ord("T"):
             self.trends = True

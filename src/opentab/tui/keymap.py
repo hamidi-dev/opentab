@@ -660,6 +660,15 @@ KEYS: tuple[Key, ...] = (
         binds=("r",),
     ),
     Key(
+        id="notices",
+        keys="N",
+        summary="notifications — reread the toasts that faded",
+        section="global",
+        when=in_main,
+        active=lambda app: app.toast_history,
+        binds=("N",),
+    ),
+    Key(
         id="help",
         keys="?",
         summary="these keys",
