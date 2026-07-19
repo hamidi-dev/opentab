@@ -35,6 +35,7 @@ from opentab.formatting import (
     clip,
     cost_bar,
     display_width,
+    human_duration,
     human_tokens,
     iso_to_local,
     money,
@@ -3109,6 +3110,23 @@ class Renderer:
         frac = value / window if window > 0 else 0.0
         return max(0, min(PRICE_HEAT_LEVELS - 1, int(frac * PRICE_HEAT_LEVELS)))
 
+    @staticmethod
+    def _turn_dt(row: dict) -> datetime | None:
+        # A turn row's localtime string ("YYYY-MM-DD HH:MM:SS") as a datetime, for
+        # the Context graph's wall-clock span. None when a backend's row carries no
+        # (or a malformed) time -- the caller then drops the time enrichments.
+        try:
+            return datetime.strptime((row.get("time") or "")[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _ctx_clock(row: dict, multiday: bool) -> str:
+        # "HH:MM" for a same-day session, "MM-DD HH:MM" once it spans days so the
+        # left/right axis clocks and the ▼ times stay unambiguous.
+        t = row.get("time") or ""
+        return t[5:16] if multiday else t[11:16]
+
     def detail_context(self, workflow: Workflow, width: int) -> list[str]:
         # What the session's context window did over time -- the *measured* side is
         # exact (every main-thread turn's recorded prompt = input + cacheRead +
@@ -3163,6 +3181,21 @@ class Renderer:
         # that height's heat color (against its own turn's window) so the stats
         # and the chart read as one scale, like the end line above.
         self._ctx_line_heat[len(lines) - 1] = self._ctx_heat_level(peakv, peak_window)
+        # Money + wall-clock: what the session cost and how it evolved in real time,
+        # so the context curve isn't read in a vacuum -- spend and pace live nowhere
+        # else on this tab. Both come straight off the turn rows / the session total.
+        start_dt, end_dt = self._turn_dt(pts[0][0]), self._turn_dt(pts[-1][0])
+        elapsed = (end_dt - start_dt).total_seconds() if start_dt and end_dt else 0.0
+        multiday = bool(start_dt and end_dt and start_dt.date() != end_dt.date())
+        spent = workflow.total_cost
+        if spent > 0:
+            rate = f" · ~{money(spent / (elapsed / 3600))}/h" if elapsed >= 60 else ""
+            lines.append(f"  spent {money(spent):>8}  ~{money(spent / n)}/turn{rate}")
+        if elapsed >= 1:
+            lines.append(
+                f"  over  {human_duration(elapsed):>8}  "
+                f"{self._ctx_clock(pts[0][0], multiday)} → {self._ctx_clock(pts[-1][0], multiday)}"
+            )
         if comps:
             lines.append(
                 f"  compacted {len(comps)}× — freed ~{human_tokens(freed)} of context along the way"
@@ -3213,12 +3246,20 @@ class Renderer:
             band_mid = ymax * (chart_h - r - 0.5) / chart_h
             self._ctx_line_heat[len(lines) - 1] = self._ctx_heat_level(band_mid, window)
         lines.append(" " * gut + "└" + "─" * cols)
-        xl, xr = "turn 1", str(n)
+        # The x-axis carries turn indices *and* the start/end clock, so the chart's
+        # left and right edges are pinned to real time -- when there's room for both.
+        sc, ec = self._ctx_clock(pts[0][0], multiday), self._ctx_clock(pts[-1][0], multiday)
+        xl = f"turn 1 · {sc}" if sc else "turn 1"
+        xr = f"{ec} · turn {n}" if ec else str(n)
+        if len(xl) + len(xr) + 1 > cols:  # clocks don't fit this narrow -> bare indices
+            xl, xr = "turn 1", str(n)
         lines.append(" " * (gut + 1) + xl + " " * max(1, cols - len(xl) - len(xr)) + xr)
         for j, before, after in comps[:4]:
-            when = (pts[j][0].get("time") or "")[5:16]
+            ct = self._turn_dt(pts[j][0])
+            when = self._ctx_clock(pts[j][0], multiday)
+            into = f" (+{human_duration((ct - start_dt).total_seconds())})" if ct and start_dt else ""
             lines.append(
-                f"  ▼ turn {j + 1} · {when} — {human_tokens(before)} → {human_tokens(after)}"
+                f"  ▼ turn {j + 1} · {when}{into} — {human_tokens(before)} → {human_tokens(after)}"
             )
             self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK  # same amber as the ▼ row
         if len(comps) > 4:

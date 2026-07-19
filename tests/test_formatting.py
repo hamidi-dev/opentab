@@ -31,6 +31,18 @@ def test_human_tokens():
     assert ot.human_tokens(3_000_000_000) == "3.0B"
 
 
+def test_human_duration():
+    assert ot.human_duration(0) == "0s"
+    assert ot.human_duration(-5) == "0s"  # clamped, never negative
+    assert ot.human_duration(45) == "45s"
+    assert ot.human_duration(60) == "1m"
+    assert ot.human_duration(125) == "2m"  # seconds drop once we reach minutes
+    assert ot.human_duration(3600) == "1h"  # a whole hour drops its 0m
+    assert ot.human_duration(3600 + 3 * 60) == "1h 3m"
+    assert ot.human_duration(26 * 3600) == "1d 2h"
+    assert ot.human_duration(48 * 3600) == "2d"  # a whole day drops its 0h
+
+
 def test_money_is_two_decimals():
     assert ot.money(195.6915) == "$195.69"
     assert ot.money(0) == "$0.00"

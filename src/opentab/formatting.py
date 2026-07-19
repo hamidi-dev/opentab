@@ -131,6 +131,23 @@ def human_tokens(value: int) -> str:
     return str(value)
 
 
+def human_duration(seconds: float) -> str:
+    # Compact wall-clock span for the Context graph's "how the session evolved"
+    # line: seconds → minutes → "Hh Mm" → "Dd Hh". The coarser unit drops its
+    # zero remainder ("2h" not "2h 0m") so the common cases stay short.
+    seconds = int(max(0, seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, _ = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h" if hours else f"{days}d"
+
+
 def _char_cells(ch: str) -> int:
     if unicodedata.combining(ch):
         return 0

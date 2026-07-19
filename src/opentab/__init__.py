@@ -64,6 +64,7 @@ from opentab.formatting import (
     clip_tail,
     cost_bar,
     display_width,
+    human_duration,
     human_tokens,
     iso_to_local,
     money,

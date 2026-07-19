@@ -1053,6 +1053,54 @@ def test_context_tab_flags_mixed_model_windows():
     assert "200.0k window" in joined  # header still names the live window
 
 
+def test_context_tab_overlays_spend_wallclock_and_compaction_times():
+    # The graph carries how the session evolved in real time and what it cost, on
+    # top of the token curve: a spend + $/h burn line, the wall-clock span, clock
+    # edges on the x-axis, and each compaction stamped with its time-into-session.
+    class SpanStore(FakeStore):
+        SIZES = (30_000, 70_000, 120_000, 180_000, 55_000, 95_000, 150_000, 60_000, 110_000)
+        TIMES = ("09:00", "09:20", "09:55", "10:30", "10:45", "11:20", "11:58", "12:07", "12:15")
+
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            rows = []
+            for i, (v, t) in enumerate(zip(self.SIZES, self.TIMES)):
+                rows.append(
+                    {
+                        "time": f"2026-06-01 {t}:00",
+                        "agent": "-",
+                        "depth": 0,
+                        "model_name": "anthropic/claude-sonnet-5",
+                        "cost": 0.0,
+                        "input": 1000,
+                        "output": 50,
+                        "reasoning": 0,
+                        "cache_read": v - 1000,
+                        "cache_write": 0,
+                        "tokens_total": v + 50,
+                        "prompt_id": f"p{i}",
+                        "prompt_title": "hi",
+                    }
+                )
+            return rows
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(SpanStore([workflow("ses_1", "2026-06-01 09:00:00", cost=6.0)]), args)
+    app.view = "session"
+    joined = "\n".join(app.renderer.detail_context(app.current_session(), 100))
+    # money overlay: session total, a per-turn figure, and a $/h burn rate (span >= 1m)
+    assert "$6.00" in joined and "/turn" in joined and "/h" in joined
+    # wall-clock span line: 09:00 -> 12:15 is 3h 15m
+    assert "3h 15m" in joined and "09:00 → 12:15" in joined
+    # x-axis edges pinned to the clock (enough turns/width for both to fit)
+    assert "turn 1 · 09:00" in joined and "12:15 · turn 9" in joined
+    # both compactions stamped with clock time and how far into the session they hit
+    assert "▼ turn 5 · 10:45 (+1h 45m)" in joined
+    assert "▼ turn 8 · 12:07 (+3h 7m)" in joined
+
+
 def test_machine_overview_shows_live_pulled_and_freshness_niceties():
     # The Machines-mode main view carries what the plain rollup can't: live vs pulled,
     # the pull time + version, and (for a pulled box) the summary-only caveat.

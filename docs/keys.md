@@ -25,6 +25,10 @@ that records per-step usage), **Tools** (per-tool / MCP spend) and **Context** (
 context window's growth curve, % of the model's window, compaction markers, and —
 on harnesses whose logs carry content — an estimated breakdown of what filled it)
 when its harness supports them, and **Harnesses** joins in the merged `all` view.
+The Context tab also overlays how the session evolved: what it spent (with a
+per-turn and per-hour burn rate), its wall-clock span with clock times pinned to
+the chart's edges, and the clock time — and how far into the session — of each
+compaction.
 
 ## Move around
 
