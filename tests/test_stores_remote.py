@@ -124,7 +124,7 @@ def test_v2_export_round_trips_turns_tools_and_context():
     tools = {
         "s1": [{"tool": "Bash", "model_name": "openai/gpt-5.6", "cost": 3.0, "tokens_total": 500}]
     }
-    context = {"s1": [{"category": "tool_result", "kind": "Bash", "est_tokens": 400}]}
+    context = {"s1": [{"category": "tool_result", "kind": "Bash", "count": 3, "est_tokens": 400}]}
     store = _FakeExtrasStore(wfs, [], turns=turns, tools=tools, context=context, curve={"s1"})
     payload = ot.build_export(store, "laptop", "2026-07-18T00:00:00", "9.9")
     assert payload["opentab_export"] == 2
@@ -138,7 +138,10 @@ def test_v2_export_round_trips_turns_tools_and_context():
         assert rs.supports_context("s1") and rs.supports_context_curve("s1")
         assert rs.message_timeline("s1")[0]["prompt_title"] == "do the port"
         assert rs.tool_breakdown("s1")[0]["tool"] == "Bash"
-        assert rs.context_breakdown("s1")[0]["est_tokens"] == 400
+        ctx = rs.context_breakdown("s1")[0]
+        # detail_context sums count per category -- it must survive the round-trip, not
+        # get dropped on load (a KeyError mid-draw the day a remote session's Context tab opens).
+        assert ctx["est_tokens"] == 400 and ctx["count"] == 3
         assert not rs.supports_turns("nope")  # a session the export never carried stays hidden
 
 
@@ -240,7 +243,8 @@ def test_malformed_extras_rows_normalize_instead_of_crashing():
                 assert f in r
         tool = rs.tool_breakdown("s1")[0]
         assert tool["calls"] == 0 and tool["tool"] == "?" and isinstance(tool["cost"], float)
-        assert rs.context_breakdown("s1")[0]["est_tokens"] == 0
+        crow = rs.context_breakdown("s1")[0]  # every field detail_context brackets, defaulted
+        assert crow["est_tokens"] == 0 and crow["count"] == 0
 
 
 def test_machine_stats_reports_per_machine_sessions_and_bytes():

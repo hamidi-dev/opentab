@@ -127,6 +127,9 @@ def _clean_context(row: dict) -> dict:
     return {
         "category": str(row.get("category") or "other"),
         "kind": str(row.get("kind") or ""),
+        # detail_context sums this per category ("40× ~200 tokens"); a row without
+        # it (an older/partial export) must default to 0, never KeyError mid-draw.
+        "count": _coerce_int(row.get("count")),
         "est_tokens": _coerce_int(row.get("est_tokens")),
     }
 
