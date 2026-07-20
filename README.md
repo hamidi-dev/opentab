@@ -30,6 +30,9 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
   Hermes, GitHub Copilot (its CLI and Copilot Chat in VS Code), pi-agent, OpenClaw,
   [zaly](https://github.com/folke/zaly), and
   CSV/JSONL logs of your own API requests — [each detailed in the docs](docs/sources.md).
+- **Every machine, one tab** — code on more than one box? `opentab pull` gathers each
+  machine's spend over SSH and merges it into one browser; filter and drill by machine
+  (`M`). [How it works](#fleet).
 - **Drill, don't scroll** — month → day → project → session → model, down the recursive
   subagent tree, with a live fuzzy filter (fzf-style) and live date-range scoping.
 - **Trends** — daily / weekly / monthly charts, a calendar spend heatmap, and model /
@@ -162,6 +165,37 @@ tool's records live, its flags and env vars, how cost is derived, quirks (Copilo
 opt-in OTEL export, Codex's cumulative counters, the pi/OpenClaw/zaly
 metered-vs-subscription split, …), the CSV/JSONL schema, and the merged
 `--harness all` view.
+
+## Fleet
+
+Code on more than one machine? **`opentab pull` gathers each box's spend over SSH — all in
+parallel — and opens them merged into one browser** you filter and drill by machine.
+
+```sh
+opentab pull laptop workstation gpu-box   # fetch all three over SSH, open the fleet
+opentab pull                              # later: refresh every machine you've saved
+```
+
+Each host is remembered (in `~/.config/opentab/remotes/`), so a bare `opentab pull`
+refreshes the lot. A host is any ssh target — `box`, `user@host`, `name=user@host` to
+label it, or `http://host:port` for a box already running `opentab web`.
+
+**No agent, nothing to install, nothing listening.** The remote only needs `opentab` on
+its `PATH`: pull runs `opentab export -` there, which prints that box's spend summary —
+totals, a per-model breakdown, and Turns / Tools / Context, but **no transcripts** — and
+streams it back over the SSH pipe. (If opentab isn't on the machine's non-interactive
+`PATH`, set that box's `cmd` in `remotes.json`.)
+
+Once pulled, the fleet behaves like any other harness:
+
+- **`M`** filters every view to one machine — the harness picker (`H`)'s twin; Trends and
+  the web browser gain a per-machine breakdown.
+- **`opentab remote`** reopens the last pull offline, with no SSH round-trip.
+- **`opentab export box.json`** writes one box's summary by hand (so
+  `ssh box opentab export > box.json` works), and **`opentab forget <machine>`** drops one
+  you no longer pull.
+
+Pair any of it with `--demo` for a shareable fleet snapshot — names and numbers scrambled.
 
 ## Keys
 
