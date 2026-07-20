@@ -92,6 +92,36 @@ def test_demo_categories_gate_titles_turns_and_spend():
     assert cats == ot.demo.DEMO_ALL
 
 
+def test_demo_scale_env_override_pins_the_hidden_factor():
+    # $OPENTAB_DEMO_SCALE pins the otherwise-random magnitude factor so a chaptered
+    # capture (or a set of screenshots) shows ONE consistent scale across launches --
+    # including --goto launches, whose throwaway probe stores would otherwise perturb
+    # the RNG and shift the factor. A malformed/non-positive value falls back to the
+    # random draw (never to a real-magnitude 1.0).
+    from opentab.demo import demo_config
+
+    def scale_for(spec):
+        return demo_config(type("A", (), {"demo": spec})())[1]
+
+    saved = os.environ.get("OPENTAB_DEMO_SCALE")
+    try:
+        os.environ["OPENTAB_DEMO_SCALE"] = "2.5"
+        assert scale_for("all") == 2.5  # pinned exactly
+        assert scale_for("spend") == 2.5
+        assert scale_for("titles") == 1.0  # override only bites when spend is scrambled
+        # empty / non-numeric / non-positive / non-finite all fall back to the random draw
+        # (inf/nan would overflow tokens*scale and crash), never to a real-magnitude 1.0.
+        for bad in ("", "not-a-number", "-1", "0", "inf", "-inf", "nan", "1e309"):
+            os.environ["OPENTAB_DEMO_SCALE"] = bad
+            s = scale_for("all")
+            assert (3.0**-1.0) - 1e-9 <= s <= (3.0**1.0) + 1e-9  # random draw, not the env value
+    finally:
+        if saved is None:
+            os.environ.pop("OPENTAB_DEMO_SCALE", None)
+        else:
+            os.environ["OPENTAB_DEMO_SCALE"] = saved
+
+
 def test_demo_picker_toggles_categories_and_applies_the_subset():
     # Drive the D picker: uncheck spend, apply, and confirm the store is built for
     # the {titles, turns} subset (the make_store args carry that spec).

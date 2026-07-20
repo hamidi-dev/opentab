@@ -1,6 +1,8 @@
 """Deterministic anonymisation for --demo."""
 from __future__ import annotations
 
+import math
+import os
 import random
 import zlib
 
@@ -36,8 +38,27 @@ def demo_config(args) -> tuple[bool, float, frozenset]:
     raw = getattr(args, "demo", False)
     enabled = bool(raw)
     cats = parse_demo_cats(raw) if enabled else DEMO_ALL
-    scale = 3.0 ** random.uniform(-1.0, 1.0) if (enabled and "spend" in cats) else 1.0
+    scale = _demo_scale() if (enabled and "spend" in cats) else 1.0
     return enabled, scale, cats
+
+
+def _demo_scale() -> float:
+    # The hidden magnitude multiplier. Random per store by default (so token×list-price
+    # can't recover real dollars), BUT pinnable with $OPENTAB_DEMO_SCALE to a fixed value
+    # so a multi-launch capture (a chaptered video, a set of screenshots) shows ONE
+    # consistent scale -- otherwise every launch, and even a --goto vs a plain launch,
+    # draws its own factor because each store build consumes the RNG differently. A
+    # malformed or non-positive override falls back to the random draw rather than
+    # showing real ($0-scale) magnitudes.
+    override = os.environ.get("OPENTAB_DEMO_SCALE")
+    if override:
+        try:
+            value = float(override)
+            if math.isfinite(value) and value > 0:  # reject inf/nan: they overflow tokens*scale
+                return value
+        except ValueError:
+            pass
+    return 3.0 ** random.uniform(-1.0, 1.0)
 
 
 def scramble_workflow(
