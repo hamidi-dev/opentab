@@ -623,7 +623,7 @@ def test_version_stays_order_independent_through_the_tui_prepend():
         except SystemExit as exc:  # the version action exits
             code = exc.code
         assert code == 0, (argv, code)
-        assert "opentab 1.14.0" in buf.getvalue(), argv
+        assert f"opentab {ot.__version__}" in buf.getvalue(), argv  # never goes stale on a release
 
 
 # --- --goto: open the TUI drilled into a session ------------------------------
