@@ -1288,6 +1288,87 @@ def test_detail_tabs_center_as_accent_and_chip_pairs():
         ot.curses.color_pair = orig
 
 
+def _draw_tabs_row(app, tabs, active, hint, width):
+    r = app.renderer
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        r.oy = r.ox = 0
+        r.regions = []
+        scr = FakeScreen(4, width)
+        r.draw_tabs(scr, 0, 2, width - 4, tabs, active, center=True, hint=hint)
+        row = screen_text(scr).splitlines()[0]
+        tabregs = [rg for rg in r.regions if rg[0] == "tab" and rg[1] == 0]
+        return row, tabregs
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+
+
+def test_zoom_picker_hint_never_clobbers_a_wide_tab_strip():
+    # The fleet view's six-tab strip (Overview/Harnesses/Machines/Models/Projects/Sessions)
+    # is centered on the tab-strip row, and a zoom picker paints a right-aligned
+    # "Enter: open session(s)" hint on that SAME row. Before draw_tabs reserved the hint's
+    # width, the centered strip ran under it and the last tab ("Sessions") was clobbered to
+    # "Se". Reserve it: the hint shows AND every tab label survives intact, disjoint.
+    app = app_with([workflow("a", "2026-07-01 12:00:00", cost=1)])
+    tabs = ("Overview", "Harnesses", "Machines", "Models", "Projects", "Sessions")
+    hint = "Enter: open sessions"
+    row, tabregs = _draw_tabs_row(app, tabs, tabs.index("Projects"), hint, 105)
+    assert hint in row  # the hint is painted
+    assert "Sessions" in row  # the last tab is NOT truncated to "Se..."
+    assert len(tabregs) == len(tabs)  # every tab still registered/clickable
+    hint_start = row.find(hint)
+    last_tab_end = max(x1 for (_k, _y, _x0, x1, _i) in tabregs)
+    assert last_tab_end < hint_start  # tabs and hint are disjoint on the row
+
+
+def test_zoom_picker_hint_is_dropped_when_the_tabs_cannot_fit_beside_it():
+    # If the pane is too narrow to seat the whole strip AND the hint, the strip wins and
+    # the hint is dropped -- never a half-overwritten tab. (A pane that narrow is degenerate,
+    # but the invariant is: tab labels are never sacrificed to the hint.)
+    app = app_with([workflow("a", "2026-07-01 12:00:00", cost=1)])
+    tabs = ("Overview", "Harnesses", "Machines", "Models", "Projects", "Sessions")
+    hint = "Enter: open sessions"
+    row, tabregs = _draw_tabs_row(app, tabs, tabs.index("Projects"), hint, 80)
+    assert hint not in row  # dropped: not enough room for tabs + hint
+    assert "Sessions" in row  # ...and the tabs kept their full width instead
+    assert len(tabregs) == len(tabs)
+
+
+def _month_detail_text(app, width=100):
+    screen = FakeScreen(24, width)
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        app.renderer.oy = app.renderer.ox = 0
+        app.renderer.regions = []
+        app.renderer.draw_month_detail(screen, 0, 0, 24, width)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    return screen_text(screen)
+
+
+def test_empty_zoom_picker_suppresses_the_open_hint():
+    # The "Enter: open session(s)" hint is now painted by draw_tabs (so it reserves room
+    # and can't clobber a tab). It must still be gated on the picker having rows: an empty
+    # Sessions picker (an f-query that matches nothing) shows "No sessions." and NO hint --
+    # Enter can't open a row that isn't there. This mirrors the pickers' old empty-return.
+    app = app_with([workflow("s1", "2026-06-01 12:00:00", title="alpha", cost=1)])
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Sessions")
+
+    lit = _month_detail_text(app)  # no filter: the picker has the one session
+    assert "Enter: open session" in lit  # hint shown when there's something to open
+
+    app.query = "zzzznomatchzzzz"  # fuzzy-matches no title
+    dark = _month_detail_text(app)
+    assert "No sessions." in dark  # the empty-state line
+    assert "Enter: open session" not in dark  # ...and the hint is gone
+
+
 def test_ranked_group_table_header_lines_up_with_short_names():
     """The name column was sized to the DATA alone, so when every name is shorter than the
     header label ("Harness", "Machine", "Provider") the header's own field overflowed and
