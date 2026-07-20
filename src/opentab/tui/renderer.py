@@ -1255,8 +1255,6 @@ class Renderer:
                 )
             else:
                 self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
-        # The "Enter: open session" hint rides the tab-strip row, painted by draw_tabs so
-        # it reserves room and never clobbers a tab (see draw_project_detail et al.).
 
     def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # Navigable project list on the Projects tab of a zoomed month/day.
@@ -1290,8 +1288,6 @@ class Renderer:
                 )
             else:
                 self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
-        # The "Enter: open sessions" hint rides the tab-strip row, painted by draw_tabs (it
-        # reserves the width so a wide fleet strip can't clobber it).
 
     def draw_sources_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # Navigable source list on the Sources tab of a zoomed scope (merged view):
@@ -1387,8 +1383,6 @@ class Renderer:
                     shorten(caption, w - 4),
                     curses.color_pair(1),
                 )
-        # The "Enter: open sessions" hint rides the tab-strip row, painted by draw_tabs so
-        # it reserves room and never clobbers a tab (the wide fleet strip did before).
 
     def draw_tabs(
         self,
@@ -1400,27 +1394,20 @@ class Renderer:
         active_index: int,
         kind: str = "tab",
         center: bool = False,
-        hint: str = "",
     ) -> None:
         # Every tab is a chip: the active one filled with the accent (pair 7) and wearing
         # [brackets] (the monochrome/pair-starved fallback for "which is active"), the
         # inactive ones a raised panel2 chip (_TAB_PAIR) so they read as tabs, not grey
         # text. `center` offsets the whole strip within `width` (the detail tab bars center
-        # over their pane); the modals leave it left-aligned. `hint` is a right-aligned
-        # label sharing the row (the zoom pickers' "Enter: open session(s)"): reserve its
-        # width so the strip centers in what's left instead of running under it -- the
-        # fleet view's six-tab strip clobbered the last tab this way. If the tabs can't fit
-        # even in the reduced width, the strip wins and the hint is dropped.
+        # over their pane); the modals leave it left-aligned.
         if width <= 0 or not tabs:
             return
         active_index %= len(tabs)
         labels = [f"[{t}]" if i == active_index else f" {t} " for i, t in enumerate(tabs)]
         sep = "  "
         total = sum(len(lbl) for lbl in labels) + len(sep) * (len(labels) - 1)
-        show_hint = bool(hint) and total <= width - (len(hint) + 2)
-        avail = width - (len(hint) + 2) if show_hint else width
-        cx = x + max(0, (avail - total) // 2) if center and total <= avail else x
-        remaining = max(0, avail - (cx - x))
+        cx = x + max(0, (width - total) // 2) if center and total <= width else x
+        remaining = max(0, width - (cx - x))
         for i, label in enumerate(labels):
             if i > 0:
                 self.write(stdscr, y, cx, shorten(sep, remaining), curses.A_NORMAL)
@@ -1438,28 +1425,6 @@ class Renderer:
             self.regions.append((kind, y, cx, cx + len(text) - 1, i))  # clickable tab
             cx += len(text)
             remaining -= len(text)
-        if show_hint:
-            self.write(stdscr, y, x + width - len(hint), hint, curses.color_pair(1))
-
-    def _zoom_picker_hint(self, current: str, picker) -> str:
-        # The right-aligned tab-row hint for a zoom picker (empty otherwise): Sessions opens
-        # the one selected session, every dimension picker (Harnesses/Projects/Models/
-        # Machines) opens a filtered sessions list. draw_tabs reserves its width so it never
-        # clobbers a tab. Suppressed when the active tab isn't a picker OR the picker has no
-        # rows -- an empty picker paints "No sessions." and Enter must not advertise an
-        # action it can't take (the pickers' own empty-state return used to gate this).
-        if picker is None:
-            return ""
-        rows = {
-            "Sessions": self.current_sessions,
-            "Projects": self.zoom_projects,
-            "Harnesses": self.zoom_source_rows,
-            "Models": self.zoom_model_rows,
-            "Machines": self.zoom_machine_rows,
-        }.get(current)
-        if rows is not None and not rows():
-            return ""
-        return "Enter: open session" if current == "Sessions" else "Enter: open sessions"
 
     @staticmethod
     def panel_title(number: int, title: str, active: bool = False) -> str:
@@ -1630,18 +1595,17 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(1))
             return
 
-        tabs = self.current_tabs()
-        current = tabs[self.tab % len(tabs)]
-        pickers = {
-            "Sessions": self.draw_sessions_picker,
-            "Harnesses": self.draw_sources_picker,
-            "Machines": self.draw_machines_picker,
-        }
-        picker = pickers.get(current) if self.view == "zoom" else None
-        hint = self._zoom_picker_hint(current, picker)
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab, center=True, hint=hint)
-        if picker:
-            picker(stdscr, y, x, h, w)
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Harnesses" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
+            return
+        if current == "Machines" and self.view == "zoom":
+            self.draw_machines_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.project_overview(project, w - 4)
@@ -1715,22 +1679,23 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No machine selected.", curses.color_pair(1))
             return
 
-        tabs = self.current_tabs()
-        current = tabs[self.tab % len(tabs)]
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
         # Sessions drills into a session; Harnesses/Projects/Models each drill into the
         # box's sessions along that dimension (the navigable pickers the Projects-mode
         # detail uses, plus a Models one). Overview stays a read-only breakdown.
-        pickers = {
-            "Sessions": self.draw_sessions_picker,
-            "Harnesses": self.draw_sources_picker,
-            "Projects": self.draw_projects_picker,
-            "Models": self.draw_models_picker,
-        }
-        picker = pickers.get(current) if self.view == "zoom" else None
-        hint = self._zoom_picker_hint(current, picker)
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab, center=True, hint=hint)
-        if picker:
-            picker(stdscr, y, x, h, w)
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Harnesses" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
+            return
+        if current == "Projects" and self.view == "zoom":
+            self.draw_projects_picker(stdscr, y, x, h, w)
+            return
+        if current == "Models" and self.view == "zoom":
+            self.draw_models_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.machine_overview(machine, w - 4)
@@ -1822,19 +1787,20 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No year selected.", curses.color_pair(1))
             return
 
-        tabs = self.current_tabs()
-        current = tabs[self.tab % len(tabs)]
-        pickers = {
-            "Sessions": self.draw_sessions_picker,
-            "Projects": self.draw_projects_picker,
-            "Harnesses": self.draw_sources_picker,
-            "Machines": self.draw_machines_picker,
-        }
-        picker = pickers.get(current) if self.view == "zoom" else None
-        hint = self._zoom_picker_hint(current, picker)
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab, center=True, hint=hint)
-        if picker:
-            picker(stdscr, y, x, h, w)
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Projects" and self.view == "zoom":
+            self.draw_projects_picker(stdscr, y, x, h, w)
+            return
+        if current == "Harnesses" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
+            return
+        if current == "Machines" and self.view == "zoom":
+            self.draw_machines_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.year_overview(year, w - 4)
@@ -1861,19 +1827,20 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(1))
             return
 
-        tabs = self.current_tabs()
-        current = tabs[self.tab % len(tabs)]
-        pickers = {
-            "Sessions": self.draw_sessions_picker,
-            "Projects": self.draw_projects_picker,
-            "Harnesses": self.draw_sources_picker,
-            "Machines": self.draw_machines_picker,
-        }
-        picker = pickers.get(current) if self.view == "zoom" else None
-        hint = self._zoom_picker_hint(current, picker)
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab, center=True, hint=hint)
-        if picker:
-            picker(stdscr, y, x, h, w)
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Projects" and self.view == "zoom":
+            self.draw_projects_picker(stdscr, y, x, h, w)
+            return
+        if current == "Harnesses" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
+            return
+        if current == "Machines" and self.view == "zoom":
+            self.draw_machines_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.month_overview(month, w - 4)
@@ -1956,19 +1923,20 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(1))
             return
 
-        tabs = self.current_tabs()
-        current = tabs[self.tab % len(tabs)]
-        pickers = {
-            "Sessions": self.draw_sessions_picker,
-            "Projects": self.draw_projects_picker,
-            "Harnesses": self.draw_sources_picker,
-            "Machines": self.draw_machines_picker,
-        }
-        picker = pickers.get(current) if self.view == "zoom" else None
-        hint = self._zoom_picker_hint(current, picker)
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab, center=True, hint=hint)
-        if picker:
-            picker(stdscr, y, x, h, w)
+        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+
+        current = self.current_tabs()[self.tab % len(self.current_tabs())]
+        if current == "Sessions" and self.view == "zoom":
+            self.draw_sessions_picker(stdscr, y, x, h, w)
+            return
+        if current == "Projects" and self.view == "zoom":
+            self.draw_projects_picker(stdscr, y, x, h, w)
+            return
+        if current == "Harnesses" and self.view == "zoom":
+            self.draw_sources_picker(stdscr, y, x, h, w)
+            return
+        if current == "Machines" and self.view == "zoom":
+            self.draw_machines_picker(stdscr, y, x, h, w)
             return
         if current == "Overview":
             lines = self.day_overview(day, w - 4)
