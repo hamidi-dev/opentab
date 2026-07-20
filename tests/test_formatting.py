@@ -63,6 +63,31 @@ def test_money_label_marks_sub_cent_costs_like_money():
     assert ot.money_label(0) == ""
 
 
+def test_money_pattern_covers_the_compact_k_suffix():
+    # money_label emits "$1.2k"/"$12k" on the Trends bars; the paint regex must span the
+    # whole amount (incl. the "k") so write_rich colours it as one green run, not "$1.2"
+    # green + a stray uncoloured "k".
+    from opentab.formatting import MONEY_PATTERN
+
+    for label in ("$1.2k", "$12k", "$1,234.56", "$0.00", "<$0.01"):
+        assert MONEY_PATTERN.search(label).group(0).lstrip("<") == label.lstrip("<")
+    # a following letter is not part of the amount (never eat into a word)
+    assert MONEY_PATTERN.search("$5kb").group(0) == "$5"
+
+
+def test_token_pattern_never_clobbers_a_money_k_label():
+    # The bug this guards: "$1.2k"'s digits look exactly like a token count "1.2k", and
+    # write_rich paints tokens AFTER money -- so an unguarded token match repainted them
+    # grey, leaving only the "$" green. A leading "$" must block the token match.
+    from opentab.formatting import TOKEN_PATTERN
+
+    assert TOKEN_PATTERN.search("$1.2k") is None
+    assert TOKEN_PATTERN.search("($12.3k)") is None
+    # a real, unprefixed token figure still matches (that colouring is intended)
+    assert TOKEN_PATTERN.search(" 1.2k ").group(0) == "1.2k"
+    assert TOKEN_PATTERN.search("35.0B").group(0) == "35.0B"
+
+
 def test_display_width_counts_terminal_cells():
     assert ot.display_width("abc") == 3
     assert ot.display_width("") == 0

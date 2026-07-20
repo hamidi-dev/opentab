@@ -9,9 +9,15 @@ from datetime import datetime, timezone
 # Real token figures from human_tokens are always decimal + space-delimited
 # ("35.0B", "1.0M"); model param tags are integer + hyphen-delimited ("-35B-A3B").
 # Requiring the decimal and excluding hyphen boundaries keeps name segments from
-# being mistaken for token counts (e.g. the "35B" in Qwen3.6-35B-A3B).
-TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.\-])\d+\.\d+[kMB](?![A-Za-z0-9_\-])")
-MONEY_PATTERN = re.compile(r"\$\d+(?:,\d{3})*(?:\.\d+)?")
+# being mistaken for token counts (e.g. the "35B" in Qwen3.6-35B-A3B). Also exclude a
+# leading "$": the digits inside a compact money label ("$1.2k") look exactly like a
+# token count, and since write_rich paints tokens AFTER money, an unguarded match here
+# would overpaint "$1.2k"'s digits token-grey, leaving only the "$" green.
+TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.\-$])\d+\.\d+[kMB](?![A-Za-z0-9_\-])")
+# The trailing "k?" catches money_label's compact form ("$1.2k", "$12k") so the whole
+# amount paints as one green span; guarded against a following letter so it never eats
+# into an alphanumeric run.
+MONEY_PATTERN = re.compile(r"\$\d+(?:,\d{3})*(?:\.\d+)?(?:k(?![A-Za-z]))?")
 # Block glyphs (cost_bar / the ranked spend bars) fill their cell with the
 # *foreground* colour, so under a selected row's A_REVERSE they invert to the
 # theme background — a hole punched in the highlight band. Selected-row writers
