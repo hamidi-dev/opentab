@@ -1162,7 +1162,10 @@ def _goto_target(args: argparse.Namespace) -> tuple[str, str] | None:
     target = args.goto or os.getcwd()
     keys = [k for k in sources.available_sources(args) if k in _STATUS_SOURCES]
     source = getattr(args, "source", "auto")
-    if source not in ("auto", "all"):  # an explicit --source pins one backend
+    # "auto"/"all" span every backend; "remote" is the fleet view whose live box IS the
+    # local backends (available_sources never yields "remote"), so it must probe them
+    # too -- pinning to =="remote" would empty the key list and never find the session.
+    if source not in ("auto", "all", "remote"):  # an explicit --source pins one backend
         keys = [k for k in keys if k == source]
     stores = [(k, sources._build_store(args, k)[0]) for k in keys]
     if _is_session_target(target):
@@ -1574,7 +1577,10 @@ def main() -> int:
             # Nothing to land in. Don't exit -- that just flash-closes the tmux
             # popup this flag was made for; open the plain TUI with a hint.
             goto_hint = _goto_hint(args.goto or os.getcwd())
-        elif source_key not in ("all", goto[0]):
+        elif source_key not in ("all", "remote", goto[0]):
+            # "all"/"remote" already compose goto[0]'s backend (remote's live box is the
+            # local sources), so the target is in view -- don't collapse the merged/fleet
+            # view down to a single source. Only a pinned single source needs overriding.
             source_key = goto[0]
     store, loading = sources.make_store(args, source_key)
     # The first load runs the recursive roll-up over the whole DB / parses every

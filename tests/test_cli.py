@@ -659,6 +659,24 @@ def test_goto_target_resolves_ids_and_directories_like_status():
         assert ot.cli._goto_target(args) is None  # unclaimed id, never a dir fallback
 
 
+def test_goto_target_probes_local_backends_under_source_remote():
+    # --source remote is the fleet view whose live box IS the local backends;
+    # available_sources() never yields "remote", so goto must probe the locals rather
+    # than pin to =="remote" (which would empty the key list and never find the session,
+    # so --goto/--tab could not open a session in the fleet view).
+    sid = "77777777-7777-7777-7777-777777777777"
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(repo)
+        projects = os.path.join(tmp, "projects")
+        _write_claude_status_session(projects, sid, repo, 1760000900, _usage(1000, 50))
+        db = os.path.join(tmp, "absent-opencode.db")  # not written: only claude present
+        args = type(
+            "A", (), {"demo": False, "db": db, "claude_dir": projects, "goto": sid, "source": "remote"}
+        )()
+        assert ot.cli._goto_target(args) == ("claude", sid)
+
+
 def test_goto_session_lands_in_session_view_and_clears_a_hiding_range():
     app = app_with([workflow("a", "2026-06-01 12:00:00"), workflow("b", "2026-06-02 12:00:00")])
     assert app.goto_session("a") is True
