@@ -672,7 +672,9 @@ def test_goto_target_probes_local_backends_under_source_remote():
         _write_claude_status_session(projects, sid, repo, 1760000900, _usage(1000, 50))
         db = os.path.join(tmp, "absent-opencode.db")  # not written: only claude present
         args = type(
-            "A", (), {"demo": False, "db": db, "claude_dir": projects, "goto": sid, "source": "remote"}
+            "A",
+            (),
+            {"demo": False, "db": db, "claude_dir": projects, "goto": sid, "source": "remote"},
         )()
         assert ot.cli._goto_target(args) == ("claude", sid)
 
