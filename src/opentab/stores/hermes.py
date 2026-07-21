@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
+from opentab.formatting import worked_seconds
 from opentab.models import Workflow
 from opentab.util import git_root
 
@@ -262,6 +263,21 @@ class HermesStore:
                 out[sid] = title
         return out
 
+    def _load_message_events(self, conn: sqlite3.Connection, flat: dict[str, dict]) -> None:
+        # Populate each node's msg_events [(epoch_s, is_user)] and its last-activity
+        # end from the messages table. Raises sqlite3.Error (caught by the caller) when
+        # the table or its role column is absent, so an old/partial DB falls back to a
+        # grouped-MAX end and leaves worked unknown.
+        for sid, ts, role in conn.execute("SELECT session_id, timestamp, role FROM messages"):
+            s = flat.get(sid)
+            if s is None or ts is None:
+                continue
+            e = self._epoch_ms(ts) / 1000.0
+            s["msg_events"].append((e, role == "user"))
+            if e > s.get("ended_ts", 0.0):
+                s["ended_ts"] = e
+            s["msg_end"] = True  # a directly observed end
+
     @staticmethod
     def _reachable(starts: list[str], children: dict[str, list[str]]) -> set[str]:
         # Every session reachable from `starts` by walking the child map, cycle-guarded
@@ -308,6 +324,7 @@ class HermesStore:
                     "cw": cw,
                     "cost": self._recorded_cost(row["actual_cost_usd"], row["estimated_cost_usd"]),
                     "tokens_total": inp + out + cr + cw,
+                    "msg_events": [],  # (epoch_s, is_user) per message, for worked_seconds
                 }
 
             # Untitled sessions (roots and subagent nodes alike) fall back to
@@ -316,8 +333,29 @@ class HermesStore:
             fallbacks = self._fallback_titles(conn, untitled)
             for sid in untitled:
                 flat[sid]["title"] = fallbacks.get(sid) or "(untitled)"
+            # Per-message activity: each row's timestamp is an activity point, and its
+            # role tells a human turn (idle boundary) from an agent turn -- the raw
+            # material for both the last-activity end and worked_seconds. Same guarded
+            # probe as recent_roots; an old/partial DB without a messages table (or
+            # without a role column) just leaves started_at as each node's end and
+            # worked unknown. Read whole rows rather than a grouped MAX so worked can
+            # see every gap; the DB is personal-scale.
+            try:
+                self._load_message_events(conn, flat)
+            except sqlite3.Error:
+                try:  # no role column: still salvage the end from a grouped MAX
+                    for sid, ts in conn.execute(
+                        "SELECT session_id, MAX(timestamp) FROM messages GROUP BY session_id"
+                    ):
+                        if sid in flat:
+                            flat[sid]["ended_ts"] = self._epoch_ms(ts) / 1000.0
+                            flat[sid]["msg_end"] = True  # a directly observed end
+                except sqlite3.Error:
+                    pass
         finally:
             conn.close()
+        for s in flat.values():
+            s["ended_ts"] = max(s.get("ended_ts", 0.0), s["started_at"] or 0.0)
 
         # Map root_id -> list of direct children
         children: dict[str, list[str]] = {}
@@ -359,6 +397,9 @@ class HermesStore:
             tot_total = 0
             tot_unpriced = 0
             tot_cost = 0.0
+            ended_ts = 0.0  # latest activity anywhere in the subtree
+            end_observed = False  # any node with a real message end (vs start-only)
+            tree_events: list[tuple[float, bool]] = []  # (epoch_s, is_user) subtree-wide
             subagent_nodes: list[dict] = []
             # model_name -> {runs, cost, r_cost, inp/out/cr/cw, u_* (unpriced), ru_* (root unpriced)}
             model_acc: dict[str, dict] = {}
@@ -373,6 +414,14 @@ class HermesStore:
                 node = flat[node_id]
                 tot_total += node["tokens_total"]
                 tot_cost += node["cost"]
+                ended_ts = max(ended_ts, node["ended_ts"])
+                end_observed = end_observed or node.get("msg_end", False)
+                # Only the root's `user` messages are human turns (idle boundaries); a
+                # subagent's are the agent-authored task, so a gap into one is work.
+                if is_root:
+                    tree_events.extend(node["msg_events"])
+                else:
+                    tree_events.extend((e, False) for e, _u in node["msg_events"])
                 if node["cost"] <= 0:
                     tot_unpriced += node["tokens_total"]
                 self._add_model(model_acc, node, is_root)
@@ -421,10 +470,22 @@ class HermesStore:
                     }
                 )
 
+            # An end that only restates the start (no messages table, a session with
+            # no message rows, no later-started child) is not knowledge -- blank it
+            # so the UI shows "unknown", never a fake 0s on a long session.
+            if ended_ts <= (s["started_at"] or 0.0) and not end_observed:
+                ended_at = ""
+            else:
+                ended_at = self._ts_to_local(ended_ts)
+            # Worked time over the whole subtree's messages: user turns mark the idle
+            # gaps. None (unknown) when there's no per-message stream to measure.
+            worked = worked_seconds([e for e, _u in tree_events], [e for e, u in tree_events if u])
             result[sid] = {
                 "title": s["title"],
                 "directory": directory,
                 "created_at": created_at,
+                "ended_at": ended_at,
+                "worked_seconds": worked,
                 "total_tokens": tot_total,
                 "unpriced_tokens": tot_unpriced,
                 "total_cost": round(tot_cost, 6),
@@ -550,6 +611,8 @@ class HermesStore:
                     total_tokens=s["total_tokens"],
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,
+                    ended_at=s["ended_at"],
+                    worked_seconds=s["worked_seconds"],
                 )
             )
         if self.demo:

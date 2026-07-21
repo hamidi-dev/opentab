@@ -120,6 +120,7 @@ class VscodeStore:
             "directory": "(unknown)",
             "title": None,
             "ts_min": None,
+            "ts_max": None,
             "models": {},
             "turns": [],
         }
@@ -403,6 +404,8 @@ class VscodeStore:
         ts_ms = self._num(req.get("timestamp")) or session_created_ms
         if ts_ms and (s["ts_min"] is None or ts_ms < s["ts_min"]):
             s["ts_min"] = ts_ms
+        if ts_ms and (s["ts_max"] is None or ts_ms > s["ts_max"]):
+            s["ts_max"] = ts_ms
 
         message = req.get("message")
         if isinstance(message, dict):
@@ -442,6 +445,7 @@ class VscodeStore:
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title"] or "(untitled)"
         s["created_at"] = self._ms_to_local(s["ts_min"]) if s["ts_min"] else ""
+        s["ended_at"] = self._ms_to_local(s["ts_max"]) if s["ts_max"] else ""
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
             # Recorded cost is $0 (VS Code logs none); every token is "unpriced", so the
@@ -495,6 +499,7 @@ class VscodeStore:
                     total_tokens=s["total_tokens"],
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,
+                    ended_at=s["ended_at"],
                 )
             )
         if self.demo:

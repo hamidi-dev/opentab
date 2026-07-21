@@ -1,6 +1,7 @@
 """Money / token / path string formatting and the rich-paint regexes."""
 from __future__ import annotations
 
+import math
 import os
 import re
 import unicodedata
@@ -93,6 +94,49 @@ def iso_to_local(ts: str) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def iso_to_epoch(ts: str) -> float | None:
+    # The same ISO-8601 forms iso_to_local accepts ("...Z", millis, naive), as a
+    # POSIX epoch float for arithmetic. None when empty or unparseable. Naive stamps
+    # are read as UTC (as elsewhere); the epoch is tz-absolute, so worked_seconds is
+    # immune to the DST-straddle caveat that dogs the naive-local span parse.
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def worked_seconds(event_epochs, prompt_epochs) -> float | None:
+    # How long the agent actually worked, idle excluded: walk the session's activity
+    # timestamps in order and sum each gap EXCEPT the one that lands on a human prompt
+    # -- that gap is the user reading/composing the follow-up, not the agent working.
+    # `prompt_epochs` are the epochs of those human turns (a subset of event_epochs);
+    # a backend that can't tell human turns from tool-loop turns passes none, and then
+    # every gap would count, so such a backend must leave worked unknown instead.
+    # Returns None on fewer than two activity points (nothing to measure -> the UI
+    # shows blank, never a fake 0s). Equal timestamps contribute a 0 gap, so replayed
+    # duplicate records are harmless. Non-finite epochs (a stray inf/nan from a
+    # malformed stamp) are dropped rather than propagated -- an inf worked would crash
+    # human_duration's int() at render time.
+    times = sorted(e for e in event_epochs if e is not None and math.isfinite(e))
+    if len(times) < 2:
+        return None
+    prompts = {p for p in prompt_epochs if p is not None and math.isfinite(p)}
+    total = 0.0
+    for a, b in zip(times, times[1:]):
+        if b in prompts:
+            continue  # gap leading into a human prompt = idle wait, not work
+        total += b - a
+    return total
 
 
 def relative_age(ts: str, now: datetime | None = None) -> str:

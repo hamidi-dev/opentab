@@ -1023,11 +1023,12 @@ class Renderer:
     SESSION_TITLE_MIN = 24  # room the title keeps before an optional column earns its cells
     SESSION_PROJECT_MAX = 20
 
-    def session_columns(self, sessions: list[Workflow], width: int) -> tuple[bool, int]:
-        # The optional cells this pane can afford: (Models, Project width). Both
-        # frames measure the same pane, so a column can't appear on Enter and vanish
-        # on Esc. A squeezed pane drops Models first (a bare count), the Project
-        # column second, and never the title -- a session list is read by its titles.
+    def session_columns(self, sessions: list[Workflow], width: int) -> tuple[bool, int, bool]:
+        # The optional cells this pane can afford: (Models, Project width, Duration).
+        # Both frames measure the same pane, so a column can't appear on Enter and
+        # vanish on Esc. A squeezed pane drops Models first (a bare count), the
+        # Project column second, Duration third, and never the title -- a session
+        # list is read by its titles.
         proj_w = 0
         if self.sessions_span_projects():
             # Only where the list can mix projects; sized to the longest name on show
@@ -1036,15 +1037,22 @@ class Renderer:
             longest = max((display_width(self.session_project(wf)) for wf in sessions), default=0)
             proj_w = max(len(head), min(self.SESSION_PROJECT_MAX, longest))
         title = self.sort_heading("title", "Title")
-        for models, proj in ((True, proj_w), (False, proj_w), (False, 0)):
-            prefix = len(self.session_header_text(models, proj)) - len(title)
+        for models, proj, dur in (
+            (True, proj_w, True),
+            (False, proj_w, True),
+            (False, 0, True),
+            (False, 0, False),
+        ):
+            prefix = len(self.session_header_text(models, proj, dur)) - len(title)
             if width - prefix >= self.SESSION_TITLE_MIN:
-                return models, proj
-        return False, 0
+                return models, proj, dur
+        return False, 0, False
 
-    def session_header_text(self, models: bool, proj_w: int) -> str:
-        header = (
-            f"  {self.sort_heading('date', self.session_date_label()):<10} "
+    def session_header_text(self, models: bool, proj_w: int, dur: bool = True) -> str:
+        header = f"  {self.sort_heading('date', self.session_date_label()):<10} "
+        if dur:
+            header += f"{self.sort_heading('duration', 'Worked'):>8} "
+        header += (
             f"{self.sort_heading('cost', 'Cost'):>9} "
             f"{self.sort_heading('tokens', 'Tokens'):>8} "
             f"{self.sort_heading('subagents', 'Subagents'):>11} "
@@ -1057,9 +1065,34 @@ class Renderer:
             header += f"{self.sort_heading('project', 'Project'):<{proj_w}}  "
         return header + self.sort_heading("title", "Title")
 
-    def session_row_text(self, workflow: Workflow, marker: str, models: bool, proj_w: int) -> str:
-        text = (
-            f"{marker} {self.session_started(workflow):<10} "
+    def _worked_suffix(self, workflow: Workflow) -> str:
+        # "· worked 2h 13m (until 16:42)" appended to a session's Started line: the
+        # agent's active working time (idle waits removed), and, if the backend also
+        # recorded a last-activity stamp, when that work last happened. Same-day ends
+        # show a bare clock time; a session that ran into another day keeps the date.
+        seconds = workflow.worked_seconds
+        if seconds is None:
+            return ""
+        ended = workflow.ended_at
+        if not ended:
+            return f"   · worked {human_duration(seconds)}"
+        until = ended[11:16] if ended[:10] == workflow.created_at[:10] else ended[:16]
+        return f"   · worked {human_duration(seconds)} (until {until})"
+
+    def session_duration(self, workflow: Workflow) -> str:
+        # How long the agent actually worked on this session, idle waits excluded.
+        # Blank when the backend can't tell work from waiting (a source with no
+        # human-turn markers, an old --export) -- never a fake 0s.
+        seconds = workflow.worked_seconds
+        return human_duration(seconds) if seconds is not None else ""
+
+    def session_row_text(
+        self, workflow: Workflow, marker: str, models: bool, proj_w: int, dur: bool = True
+    ) -> str:
+        text = f"{marker} {self.session_started(workflow):<10} "
+        if dur:
+            text += f"{self.session_duration(workflow):>8} "
+        text += (
             f"{money(workflow.total_cost):>9} "
             f"{human_tokens(workflow.total_tokens):>8} "
             f"{workflow.subagents:>11} "
@@ -1075,9 +1108,11 @@ class Renderer:
             f"{self.ignored_session_tag(workflow)}{workflow.title}"
         )
 
-    def session_sort_columns(self, proj_w: int) -> tuple:
+    def session_sort_columns(self, proj_w: int, dur: bool = True) -> tuple:
         # (sort_key, label) in drawn order, for the clickable headers of both frames.
         columns = [("date", self.session_date_label()), *self.SESSION_SORT_COLUMNS]
+        if dur:
+            columns.insert(1, ("duration", "Worked"))  # right after the date cell
         if proj_w:
             columns.insert(-1, ("project", "Project"))  # between Subagents and Title
         return tuple(columns)
@@ -1106,13 +1141,13 @@ class Renderer:
         # No "# ... Sessions" heading -- the tab strip above already names it, and the
         # extra line would shift every row when the picker takes over on Enter.
         sessions = self.filtered_sessions(rows)
-        models, proj_w = self.session_columns(sessions, width)
-        lines = [self.session_header_text(models, proj_w)]
-        self._mark_session_header(lines, self.session_sort_columns(proj_w))
+        models, proj_w, dur = self.session_columns(sessions, width)
+        lines = [self.session_header_text(models, proj_w, dur)]
+        self._mark_session_header(lines, self.session_sort_columns(proj_w, dur))
         if not sessions:
             lines.append("No sessions.")
             return lines
-        lines.extend(self.session_row_text(wf, " ", models, proj_w) for wf in sessions)
+        lines.extend(self.session_row_text(wf, " ", models, proj_w, dur) for wf in sessions)
         return lines
 
     def unpriced_hint(self) -> str:
@@ -1213,8 +1248,8 @@ class Renderer:
         # the browse preview's table (session_table), made selectable.
         sessions = self.current_sessions()
         cy = y + 3
-        models, proj_w = self.session_columns(sessions, w - 4)
-        header = self.session_header_text(models, proj_w)
+        models, proj_w, dur = self.session_columns(sessions, w - 4)
+        header = self.session_header_text(models, proj_w, dur)
         self.write(
             stdscr,
             cy,
@@ -1226,7 +1261,7 @@ class Renderer:
             cy,
             x + 2,
             header,
-            self.session_sort_columns(proj_w),
+            self.session_sort_columns(proj_w, dur),
             "session",
             w - 4,
         )
@@ -1244,7 +1279,7 @@ class Renderer:
             marker = ">" if start + off == idx else " "
             cost = money(wf.total_cost)
             tok = human_tokens(wf.total_tokens)
-            text = self.session_row_text(wf, marker, models, proj_w)
+            text = self.session_row_text(wf, marker, models, proj_w, dur)
             if start + off == idx:
                 self.write(
                     stdscr,
@@ -2746,7 +2781,7 @@ class Renderer:
         lines = [
             "# Session",
             f"ID:       {workflow.id}",
-            f"Started:  {workflow.created_at}",
+            f"Started:  {workflow.created_at}{self._worked_suffix(workflow)}",
             f"Project:  {short_path(workflow.directory, max(20, width - 10))}",
             f"Title:    {workflow.title}",
         ]
@@ -4178,6 +4213,7 @@ class Renderer:
         "cost": "Cost",
         "tokens": "Tokens",
         "date": "Date",
+        "duration": "Worked",
         "recency": "Recency",
         "subagents": "Subagents",
         "sessions": "Sessions",

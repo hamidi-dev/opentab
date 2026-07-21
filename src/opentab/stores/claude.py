@@ -7,7 +7,7 @@ import json
 import os
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt, iso_to_local
+from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
 from opentab.pricing import api_equivalent_cost
 from opentab.util import (
@@ -249,6 +249,7 @@ class ClaudeStore:
             s = sessions[sid] = {
                 "cwd": None,
                 "ts_min": None,
+                "ts_max": None,
                 "title_ai": None,
                 "title_custom": None,
                 "title_prompt": None,
@@ -258,6 +259,7 @@ class ClaudeStore:
                 "side_usage": {},  # sidechain-assistant uuid -> (model_name, acc)
                 "turns": [],  # per-message rows for the Turns tab (chronological)
                 "prompts": [],  # {ts,title,id} per real user prompt, for Turns grouping
+                "event_ts": [],  # every record's raw ISO ts, for worked_seconds
                 "context": {},  # (category, kind) -> [count, est_tokens], Context tab
                 "pending_tools": {},  # tool_use id -> name, consumed by its tool_result
                 "ctx_seen": set(),  # record uuids already composed (replay dedup)
@@ -269,6 +271,10 @@ class ClaudeStore:
         ts = o.get("timestamp")
         if ts and (s["ts_min"] is None or ts < s["ts_min"]):
             s["ts_min"] = ts
+        if ts and (s["ts_max"] is None or ts > s["ts_max"]):
+            s["ts_max"] = ts  # ISO strings order lexicographically
+        if ts:
+            s["event_ts"].append(ts)  # an activity point for worked_seconds
         uuid = o.get("uuid")
         if uuid:
             s["uuid_parent"][uuid] = o.get("parentUuid")
@@ -477,6 +483,14 @@ class ClaudeStore:
         s["title"] = s["title_custom"] or s["title_ai"] or s["title_prompt"] or "(untitled)"
         s["directory"] = self._git_root(s["cwd"]) if s["cwd"] else "(unknown)"
         s["created_at"] = iso_to_local(s["ts_min"])
+        s["ended_at"] = iso_to_local(s["ts_max"]) if s["ts_max"] else ""
+        # Active working time: every record is an activity point; the real user
+        # prompts (already filtered of tool-result "user" messages) mark the idle
+        # gaps -- the wait before each is you composing, not the agent working.
+        s["worked_seconds"] = worked_seconds(
+            [iso_to_epoch(t) for t in s["event_ts"]],
+            [iso_to_epoch(p["ts"]) for p in s["prompts"]],
+        )
         rows: list[dict] = []
         for model_name, e in s["models"].items():
             tot, root = e["total"], e["root"]
@@ -604,6 +618,8 @@ class ClaudeStore:
                     total_tokens=sum(r["tokens_total"] for r in model_rows),
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,
+                    ended_at=s["ended_at"],
+                    worked_seconds=s["worked_seconds"],
                 )
             )
         if self.demo:

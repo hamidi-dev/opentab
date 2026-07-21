@@ -61,6 +61,16 @@ rows; `g`/`G` jump to the first/last prompt. `z` unfolds every prompt at once.
 
 ## Sessions & projects
 
+Every session list carries a **Worked** column — how long the agent was *actually
+working*, summing its bursts and dropping the idle gaps where it waited for your next
+prompt (so a session you left open for hours shows minutes, not hours). It's derived
+from the human turns the transcript logs, not a guessed timeout; blank when the
+backend can't tell work from waiting (a source with no human-turn markers like Copilot
+OTEL or VS Code, or an export from an older opentab). It's sortable like any column
+(`s` picker or a header click), and a session's Overview spells it out: `Started: … ·
+worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock story
+(burn rate, per-turn offsets).
+
 | Key | Action |
 |-----|--------|
 | `i` / `I` | Ignore / unignore the selection; `I` reveals hidden rows so they can be unignored |

@@ -530,6 +530,13 @@ const moneyLabel = v => v <= 0 ? '' : v < 0.005 ? '<$.01' : v < 10 ? '$' + v.toF
 const hTok = v => v >= 999.95e9 ? (v / 1e12).toFixed(1) + 'T' : v >= 999.95e6 ? (v / 1e9).toFixed(1) + 'B'
   : v >= 999.95e3 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(v);
 const pct = (p, w) => w <= 0 ? '-' : (p > 0 && 100 * p / w < 1) ? '<1%' : Math.round(100 * p / w) + '%';
+// Mirrors formatting.human_duration exactly (s -> m -> "Hh Mm" -> "Dd Hh", zero
+// remainders dropped) so the TUI and the web can never disagree about a span.
+const hDur = s => { s = Math.max(0, Math.floor(s)); if (s < 60) return s + 's';
+  const m = Math.floor(s / 60); if (m < 60) return m + 'm';
+  const hh = Math.floor(m / 60), mm = m % 60;
+  if (hh < 24) return mm ? hh + 'h ' + mm + 'm' : hh + 'h';
+  const d = Math.floor(hh / 24), rh = hh % 24; return rh ? d + 'd ' + rh + 'h' : d + 'd'; };
 const cost = w => MODE === 'api' ? w.api : w.real;
 const rootCost = w => MODE === 'api' ? w.apiRoot : w.realRoot;
 const mCost = r => MODE === 'api' ? r.api : r.real;
@@ -1188,6 +1195,8 @@ function filterInput() {
 function sessionCols() {
   const cols = [
     { key: 'date', label: 'Date', align: 'r', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },
+    { key: 'dur', label: 'Worked', align: 'r', sortVal: r => r.dur || 0,
+      fmt: r => r.dur == null ? h('span', { class: 'mut' }, '·') : h('span', { class: 'dim' }, hDur(r.dur)) },
     { key: 'title', label: 'Title', asc: true, sortVal: r => r.title.toLowerCase(), cls: 'grow' },
     { key: 'project', label: 'Project', asc: true, sortVal: r => projName(r.project).toLowerCase(), fmt: r => h('span', { class: 'dim' }, projName(r.project)) },
     { key: 'cost', label: 'Cost', align: 'r', sortVal: cost, fmt: r => moneyCell(cost(r)) },
@@ -1695,6 +1704,7 @@ function renderSessionOverview(root, sc) {
   root.appendChild(h('dl', { class: 'meta' },
     h('dt', null, 'project'), h('dd', null, h('a', { href: '#/p/' + encodeURIComponent(w.project) }, shortPath(w.project))),
     h('dt', null, 'date'), h('dd', null, dt(w.date)),
+    w.dur != null ? [h('dt', null, 'worked'), h('dd', null, hDur(w.dur))] : null,
     META.combined && w.source ? [h('dt', null, 'harness'), h('dd', null, w.source)] : null,
     META.machines && w.machine ? [h('dt', null, 'machine'), h('dd', null, w.machine)] : null,
     h('dt', null, 'id'), h('dd', null, w.id)));

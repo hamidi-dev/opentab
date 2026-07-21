@@ -8,7 +8,7 @@ import os
 import re
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt, iso_to_local
+from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
 from opentab.util import LazyStatusRoot, git_root, read_files_parallel, tool_rows_from_turns
 
@@ -99,11 +99,13 @@ class CodexStore:
         return {
             "cwd": None,
             "ts_min": None,
+            "ts_max": None,
             "ts_meta": None,  # session_meta.timestamp, preferred for created_at
             "title_prompt": None,
             "models": {},  # model_name -> acc (a session's own usage; trees fold later)
             "turns": [],  # one per accepted token_count delta, for the Turns tab
             "prompts": [],  # user_message events, for the Turns tab's ▸ grouping
+            "event_ts": [],  # every record's raw ISO ts, for worked_seconds
             "parent_id": None,  # ThreadSpawn.parent_thread_id for a spawned thread
             "agent": None,  # the spawned thread's nickname/role, for the tree label
         }
@@ -351,6 +353,10 @@ class CodexStore:
             ts = o.get("timestamp")
             if ts and (s["ts_min"] is None or ts < s["ts_min"]):
                 s["ts_min"] = ts
+            if ts and (s["ts_max"] is None or ts > s["ts_max"]):
+                s["ts_max"] = ts  # ISO strings order lexicographically
+            if ts:
+                s["event_ts"].append(ts)  # an activity point for worked_seconds
             if p is None:
                 continue
             if typ == "turn_context":
@@ -534,6 +540,20 @@ class CodexStore:
             if s["is_child"]:
                 continue  # a spawned thread rolls up into its parent's row
             model_rows = s["model_rows"]
+            kids = self._descendants(sessions, sid)
+            # A spawned thread can outlive its parent's last event, so the row's end
+            # is the max across the whole folded tree (ISO strings compare cleanly).
+            ends = [s["ts_max"]] + [sessions[k]["ts_max"] for k, _d in kids]
+            ended = max((t for t in ends if t), default=None)
+            # Worked time over the folded tree: the root's events plus every spawned
+            # thread's (a subagent still running is the agent working, and can outlive
+            # the root's last event). Only the root's *human* prompts mark idle -- a
+            # child's user_message is the Task instruction the agent wrote, not a wait.
+            kid_events = [t for k, _d in kids for t in sessions[k]["event_ts"]]
+            worked = worked_seconds(
+                [iso_to_epoch(t) for t in s["event_ts"] + kid_events],
+                [iso_to_epoch(p["ts"]) for p in s["prompts"]],
+            )
             rows.append(
                 Workflow(
                     id=sid,
@@ -542,11 +562,13 @@ class CodexStore:
                     created_at=s["created_at"],
                     root_cost=0.0,  # recorded cost is $0; "$" reprices the tokens
                     total_cost=0.0,
-                    subagents=len(self._descendants(sessions, sid)),
+                    subagents=len(kids),
                     model_count=0,  # filled by App._load_model_cache
                     total_tokens=sum(r["tokens_total"] for r in model_rows),
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,
+                    ended_at=iso_to_local(ended) if ended else "",
+                    worked_seconds=worked,
                 )
             )
         if self.demo:

@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timezone
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt
+from opentab.formatting import _clean_prompt, worked_seconds
 from opentab.models import Workflow
 from opentab.util import read_files_parallel
 
@@ -259,6 +259,7 @@ class OpenClawStore:
         return {
             "agent": None,  # the directory under agents/ -> the project
             "ts_min": None,  # earliest record (epoch seconds)
+            "ts_max": None,  # latest record (epoch seconds)
             "ts_meta": None,  # the `session` record's timestamp, preferred for created_at
             "title_prompt": None,
             "models": {},
@@ -431,6 +432,8 @@ class OpenClawStore:
             ts = self._epoch(o.get("timestamp"))
             if ts is not None and (s["ts_min"] is None or ts < s["ts_min"]):
                 s["ts_min"] = ts
+            if ts is not None and (s["ts_max"] is None or ts > s["ts_max"]):
+                s["ts_max"] = ts
             if self._is_model_change(o):
                 src = o.get("data") if isinstance(o.get("data"), dict) else o
                 m = src.get("modelId") or src.get("model")
@@ -453,6 +456,8 @@ class OpenClawStore:
             mts = self._epoch(msg.get("timestamp"))
             if mts is not None and (s["ts_min"] is None or mts < s["ts_min"]):
                 s["ts_min"] = mts
+            if mts is not None and (s["ts_max"] is None or mts > s["ts_max"]):
+                s["ts_max"] = mts
             role = msg.get("role")
             mid = o.get("id") or msg.get("idempotencyKey")
             rts = mts if mts is not None else ts
@@ -533,6 +538,15 @@ class OpenClawStore:
         s["title"] = s["title_prompt"] or "(untitled)"
         s["directory"] = s["agent"] or "(unknown)"
         s["created_at"] = self._fmt_epoch(s["ts_meta"] or s["ts_min"])
+        s["ended_at"] = self._fmt_epoch(s["ts_max"]) if s["ts_max"] is not None else ""
+        # Active working time: assistant turns + user prompts are the activity points
+        # (epoch seconds already); the user prompts mark the idle waits. A missing 0.0
+        # stamp is treated as unknown, not the 1970 epoch.
+        prompt_epochs = [p["ts"] or None for p in s["prompts"]]
+        s["worked_seconds"] = worked_seconds(
+            [r["ts"] or None for r in s["turns"]] + prompt_epochs,
+            prompt_epochs,
+        )
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
             # Per-model priced/unpriced split (HermesStore pattern): metered messages
@@ -624,6 +638,8 @@ class OpenClawStore:
                     total_tokens=s["total_tokens"],
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,
+                    ended_at=s["ended_at"],
+                    worked_seconds=s["worked_seconds"],
                 )
             )
         if self.demo:

@@ -29,7 +29,7 @@ from dataclasses import asdict
 
 from opentab.models import Workflow
 
-CACHE_VERSION = 3  # bump when the cached payload shape changes (invalidates old files)
+CACHE_VERSION = 4  # bump when the cached payload shape changes (invalidates old files)
 
 
 def cache_dir() -> str:

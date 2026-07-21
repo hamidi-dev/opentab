@@ -8,7 +8,7 @@ import os
 import re
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt, iso_to_local
+from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
 from opentab.util import LazyStatusRoot, git_root, read_files_parallel, tool_rows_from_turns
 
@@ -175,6 +175,7 @@ class PiStore:
         return {
             "cwd": None,
             "ts_min": None,
+            "ts_max": None,
             "ts_meta": None,  # the `session` record's timestamp, preferred for created_at
             "title_prompt": None,
             "models": {},
@@ -343,6 +344,8 @@ class PiStore:
             ts = o.get("timestamp")
             if ts and (s["ts_min"] is None or ts < s["ts_min"]):
                 s["ts_min"] = ts
+            if ts and (s["ts_max"] is None or ts > s["ts_max"]):
+                s["ts_max"] = ts  # ISO strings order lexicographically
             if typ == "session":
                 if o.get("cwd") and not s["cwd"]:
                     s["cwd"] = o["cwd"]
@@ -443,6 +446,14 @@ class PiStore:
         s["directory"] = self._git_root(s["cwd"]) if s["cwd"] else "(unknown)"
         stamp = s["ts_meta"] or s["ts_min"]
         s["created_at"] = iso_to_local(stamp) if stamp else ""
+        s["ended_at"] = iso_to_local(s["ts_max"]) if s["ts_max"] else ""
+        # Active working time: assistant turns + user prompts are the activity points;
+        # the user prompts mark the idle gaps (you composing the next message).
+        prompt_epochs = [iso_to_epoch(p["ts"]) for p in s["prompts"]]
+        s["worked_seconds"] = worked_seconds(
+            [iso_to_epoch(r["ts"]) for r in s["turns"]] + prompt_epochs,
+            prompt_epochs,
+        )
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
             # Per-model priced/unpriced split (HermesStore pattern): metered messages
@@ -537,6 +548,8 @@ class PiStore:
                     total_tokens=s["total_tokens"],
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,
+                    ended_at=s["ended_at"],
+                    worked_seconds=s["worked_seconds"],
                 )
             )
         if self.demo:

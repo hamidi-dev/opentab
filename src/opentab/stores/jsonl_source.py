@@ -170,6 +170,7 @@ class JsonlStore(CsvStore):
         if inp == 0 and out == 0 and cached == 0 and cost <= 0:
             return
         ts = self._parse_ts(self._get(obj, "timestamp"))
+        ts_epoch = self._parse_ts_epoch(self._get(obj, "timestamp"))  # absolute, for worked
         project = str(self._get(obj, "project") or "").strip()
         sid = str(self._get(obj, "session") or "").strip()
         if not sid:
@@ -186,6 +187,8 @@ class JsonlStore(CsvStore):
 
         if ts and (not s["created_at"] or ts < s["created_at"]):
             s["created_at"] = ts
+        if ts and ts > s["ended_at"]:
+            s["ended_at"] = ts  # the canonical local format sorts lexicographically
         if not s["project"] and project:
             s["project"] = project
 
@@ -199,7 +202,8 @@ class JsonlStore(CsvStore):
         raw_prompt = self._get(obj, "prompt")
         full = raw_prompt.strip() if isinstance(raw_prompt, str) else ""
         prompt = _clean_prompt(full)
-        pid = str(self._get(obj, "prompt_id") or "").strip()
+        pid_raw = self._get(obj, "prompt_id")  # keep a falsy-but-present id (e.g. 0)
+        pid = "" if pid_raw is None else str(pid_raw).strip()
         if s["title"] is None:  # title precedence: explicit title > first prompt
             title = str(self._get(obj, "title") or "").strip()
             s["title"] = " ".join(title.split())[:80] if title else (prompt[:80] or None)
@@ -207,6 +211,7 @@ class JsonlStore(CsvStore):
         s["turns"].append(
             {
                 "ts": ts or "",
+                "ts_epoch": ts_epoch,  # absolute epoch (DST-proof), for worked-time
                 "depth": 0,  # logged requests have no subagent tree
                 "agent": "-",
                 "model_name": model,

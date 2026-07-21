@@ -235,6 +235,51 @@ class Store:
         cost_expr = self._cost_expr()
         title_expr = self._session_text_expr("root", ["title"], "'(untitled)'")
         directory_expr = self._session_text_expr("root", ["directory", "path"], "'(unknown)'")
+        # Last activity anywhere in the subtree (a subagent still streaming bumps its
+        # root) -- the same coalesce recent_roots uses, over the tree this query
+        # already walks. Without a time_updated column the latest child *creation*
+        # still beats nothing.
+        if "time_updated" in self.session_columns:
+            ended_expr = "coalesce(s.time_updated, s.time_created)"
+        else:
+            ended_expr = "s.time_created"
+        # Active working time (idle excluded): walk the tree's user+assistant messages
+        # in time order and sum each gap EXCEPT the one landing on a HUMAN prompt --
+        # that gap is the user composing the follow-up. Only a depth-0 (root) `user`
+        # message is a human turn; a subagent's `user` message is the agent-authored
+        # task, so a gap into it is work. On a timestamp tie, human rows are ordered
+        # first (is_human desc) so the gap-into-a-prompt is the one that drops -- which
+        # keeps this SQL identical to formatting.worked_seconds' epoch-membership rule.
+        # Needs the message table (per-message times); without it, worked stays null.
+        if self.supports_message_timeline:
+            worked_cte = f"""
+        , msg_events as (
+          select tree.root_id as root_id, {_TL_TS} as t_ms,
+                 (json_extract(m.data, '$.role') = 'user' and tree.depth = 0) as is_human,
+                 m.rowid as rid
+          from message m
+          join tree on tree.id = m.session_id
+          where json_extract(m.data, '$.role') in ('user', 'assistant')
+            and {_TL_TS} is not null
+        ), worked as (
+          select root_id,
+                 sum(case when is_human then 0 else t_ms - prev_ms end) as worked_ms
+          from (
+            select root_id, t_ms, is_human,
+                   lag(t_ms) over (
+                     partition by root_id order by t_ms, is_human desc, rid
+                   ) as prev_ms
+            from msg_events
+          )
+          where prev_ms is not null
+          group by root_id
+        )"""
+            worked_select = "worked.worked_ms / 1000.0 as worked_seconds"
+            worked_join = "left join worked on worked.root_id = rollup.root_id"
+        else:
+            worked_cte = ""
+            worked_select = "null as worked_seconds"
+            worked_join = ""
         sql = f"""
         with recursive roots(id) as (
           select root.id
@@ -253,6 +298,7 @@ class Store:
             tree.root_id,
             tree.depth,
             s.*,
+            {ended_expr} as node_ended,
             {token_exprs['tokens_total']} as tokens_total,
             {cost_expr} as node_cost
           from session s
@@ -265,10 +311,11 @@ class Store:
             sum(case when depth = 0 then node_cost else 0 end) as root_cost,
             sum(tokens_total) as total_tokens,
             sum(case when depth > 0 then 1 else 0 end) as subagents,
-            sum(case when node_cost = 0 then tokens_total else 0 end) as unpriced_tokens
+            sum(case when node_cost = 0 then tokens_total else 0 end) as unpriced_tokens,
+            max(node_ended) as ended_ms
           from nodes
           group by root_id
-        )
+        ){worked_cte}
         select
           root.id,
           {title_expr} as title,
@@ -279,12 +326,22 @@ class Store:
           rollup.subagents,
           0 as model_count,  -- filled in by App._load_model_cache from model_breakdown
           rollup.total_tokens,
-          rollup.unpriced_tokens
+          rollup.unpriced_tokens,
+          coalesce(datetime(rollup.ended_ms / 1000, 'unixepoch', 'localtime'), '') as ended_at,
+          {worked_select}
         from rollup
         join session root on root.id = rollup.root_id
+        {worked_join}
         order by rollup.total_cost desc, rollup.total_tokens desc
         """
         rows = [Workflow(**dict(row)) for row in self.conn.execute(sql)]
+        if "time_updated" not in self.session_columns:
+            # Legacy schema: the end was inferred from creation times alone. A tree's
+            # latest child creation still teaches something; a flat session's doesn't
+            # -- blank it so the UI shows "unknown", never a fake 0s.
+            for w in rows:
+                if w.ended_at == w.created_at:
+                    w.ended_at = ""
         for w in rows:
             w.source = self.source_name
             # OpenCode stores forward-slash Windows paths (C:/DEV/app); fold them to

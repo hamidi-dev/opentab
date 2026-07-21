@@ -34,6 +34,21 @@ class Workflow:
     # with the exporting machine's label so the consolidated view can tag/group by box.
     # A second, orthogonal dimension to `source` (a session has both a tool and a host).
     machine: str = ""
+    # When the session's LAST recorded activity happened, same local
+    # "YYYY-MM-DD HH:MM:SS" string as created_at. Each backend fills it from data it
+    # already reads (a time_updated column, the max event timestamp of the parse it
+    # runs anyway) -- never a new scan. Empty = the backend can't know (an old
+    # --export, a schema without the column). Purely for the "(until 16:42)" hint on
+    # the detail line; the headline duration is worked_seconds, not this span.
+    ended_at: str = ""
+    # How long the agent ACTUALLY worked, in seconds -- the sum of its working bursts
+    # with the idle gaps (you reading/composing the next prompt) removed, computed at
+    # parse time by formatting.worked_seconds from the timestamps a backend already
+    # walks. NOT the wall-clock span (created_at..ended_at), which includes those
+    # waits. None when the backend can't tell work from waiting (a source with no
+    # human-turn markers -- Copilot OTEL, VS Code -- or an old --export); the UI then
+    # shows blank rather than a misleading elapsed-time or a fake 0s.
+    worked_seconds: float | None = None
 
 
 @dataclass

@@ -125,7 +125,7 @@ class CopilotStore:
 
     @staticmethod
     def _new_session() -> dict:
-        return {"cwd": None, "ts_min": None, "models": {}, "turns": []}
+        return {"cwd": None, "ts_min": None, "ts_max": None, "models": {}, "turns": []}
 
     # --- OTEL attribute helpers ----------------------------------------------
     @staticmethod
@@ -504,6 +504,8 @@ class CopilotStore:
         ts = c["ts_ms"]
         if ts is not None and (s["ts_min"] is None or ts < s["ts_min"]):
             s["ts_min"] = ts
+        if ts is not None and (s["ts_max"] is None or ts > s["ts_max"]):
+            s["ts_max"] = ts
         acc = s["models"].get(c["model"])
         if acc is None:
             acc = s["models"][c["model"]] = self._new_acc()
@@ -537,6 +539,7 @@ class CopilotStore:
         s["title"] = summary or "(untitled)"
         s["directory"] = self._git_root(cwd) if cwd else "(unknown)"
         s["created_at"] = self._ms_to_local(s["ts_min"]) if s["ts_min"] is not None else ""
+        s["ended_at"] = self._ms_to_local(s["ts_max"]) if s["ts_max"] is not None else ""
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
             # Recorded cost is $0 (OTEL logs none); every token is "unpriced", so the
@@ -618,6 +621,7 @@ class CopilotStore:
                     total_tokens=sum(r["tokens_total"] for r in model_rows),
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,
+                    ended_at=s["ended_at"],
                 )
             )
         if self.demo:

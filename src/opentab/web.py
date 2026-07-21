@@ -268,6 +268,9 @@ def build_payload(app: App) -> dict:
                 "title": w.title,
                 "project": app.project_root(w.directory),
                 "date": w.created_at,
+                # Active working time in seconds, idle waits excluded (null = the
+                # backend can't tell work from waiting); the JS shows it as "Worked".
+                "dur": w.worked_seconds,
                 "real": _money6(w.real_total_cost),
                 "api": _money6(w.api_total_cost),
                 "realRoot": _money6(w.real_root_cost),

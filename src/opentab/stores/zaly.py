@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt
+from opentab.formatting import _clean_prompt, worked_seconds
 from opentab.models import Workflow
 from opentab.util import (
     ATTACHMENT_EST_TOKENS,
@@ -257,6 +257,7 @@ class ZalyStore:
             "cwd": None,  # settings workspace (or cwd) -> git root
             "model_setting": None,  # latest session-settings modelId (per-message fallback)
             "ts_min": None,  # earliest record (epoch seconds)
+            "ts_max": None,  # latest record (epoch seconds)
             "title_prompt": None,
             "models": {},
             "seen_msgs": set(),  # assistant message.ids already counted (branch dedup)
@@ -436,6 +437,8 @@ class ZalyStore:
             ts = self._epoch(o.get("ts"))
             if ts is not None and (s["ts_min"] is None or ts < s["ts_min"]):
                 s["ts_min"] = ts
+            if ts is not None and (s["ts_max"] is None or ts > s["ts_max"]):
+                s["ts_max"] = ts
             typ = o.get("type")
             if typ == "session-settings":
                 settings = o.get("settings")
@@ -643,6 +646,15 @@ class ZalyStore:
         s["title"] = s["title_prompt"] or "(untitled)"
         s["directory"] = self._git_root(s["cwd"]) if s["cwd"] else "(unknown)"
         s["created_at"] = self._fmt_epoch(s["ts_min"])
+        s["ended_at"] = self._fmt_epoch(s["ts_max"]) if s["ts_max"] is not None else ""
+        # Active working time: assistant turns + user prompts are the activity points
+        # (epoch seconds already); the user prompts mark the idle waits. A missing 0.0
+        # stamp is treated as unknown, not the 1970 epoch.
+        prompt_epochs = [p["ts"] or None for p in s["prompts"]]
+        s["worked_seconds"] = worked_seconds(
+            [r["ts"] or None for r in s["turns"]] + prompt_epochs,
+            prompt_epochs,
+        )
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
             # Per-model priced/unpriced split (HermesStore pattern): metered messages
@@ -737,6 +749,8 @@ class ZalyStore:
                     total_tokens=s["total_tokens"],
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,
+                    ended_at=s["ended_at"],
+                    worked_seconds=s["worked_seconds"],
                 )
             )
         if self.demo:

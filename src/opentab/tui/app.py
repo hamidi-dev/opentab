@@ -126,7 +126,7 @@ class App:
     # its sessions, its model mix, and which projects ran on it. "Harnesses" is injected
     # after Overview by current_tabs like every other scope (the fleet is always combined).
     machine_tabs = ("Overview", "Sessions", "Models", "Projects")
-    sort_options = ("cost", "tokens", "date", "subagents", "project", "title")
+    sort_options = ("cost", "tokens", "date", "duration", "subagents", "project", "title")
     project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
     subagent_sort_options = ("cost", "tokens", "date", "title", "model", "agent", "depth")
     # The P overlay's price table sorts by model name, the blended eff column, your
@@ -3472,6 +3472,14 @@ class App:
             return sorted(rows, key=lambda item: (item.total_tokens, item.total_cost), reverse=desc)
         if sort_by == "subagents":
             return sorted(rows, key=lambda item: (item.subagents, item.total_tokens), reverse=desc)
+        if sort_by == "duration":
+            # Hardest-worked first by default. A session whose backend can't tell work
+            # from waiting (worked None) sorts as 0s, keeping it with the shortest.
+            return sorted(
+                rows,
+                key=lambda item: (item.worked_seconds or 0.0, item.total_cost),
+                reverse=desc,
+            )
         if sort_by == "title":
             return sorted(rows, key=lambda item: item.title.lower(), reverse=desc)
         if sort_by == "project":

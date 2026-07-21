@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 from datetime import datetime, timezone
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt, iso_to_local
+from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
 from opentab.util import git_root, tool_rows_from_turns
 
@@ -197,6 +198,28 @@ class CsvStore:
             return ""
 
     @staticmethod
+    def _parse_ts_epoch(raw) -> float | None:
+        # The ABSOLUTE POSIX epoch for a raw timestamp (ISO or numeric epoch s/ms/us),
+        # for worked-time arithmetic -- unlike _parse_ts's offset-free local string, a
+        # gap computed from these survives a DST fall-back. None when empty/unparseable.
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        if not s:
+            return None
+        try:
+            val = float(s)
+        except ValueError:
+            return iso_to_epoch(s)
+        if not math.isfinite(val):
+            return None  # "inf"/"nan" parse as floats but would crash human_duration's int()
+        if val > 1e14:  # microseconds
+            val /= 1e6
+        elif val > 1e11:  # milliseconds
+            val /= 1e3
+        return val
+
+    @staticmethod
     def _infer_provider(model: str) -> str:
         m = model.lower()
         if m.startswith(("claude-", "claude/")):
@@ -309,6 +332,7 @@ class CsvStore:
     def _new_session() -> dict:
         return {
             "created_at": "",
+            "ended_at": "",
             "title": None,
             "project": "",
             "models": {},
@@ -355,6 +379,7 @@ class CsvStore:
         if inp == 0 and out == 0 and cached == 0 and cost <= 0:
             return
         ts = self._parse_ts(g("timestamp"))
+        ts_epoch = self._parse_ts_epoch(g("timestamp"))  # absolute, for worked-time
         project = (g("project") or "").strip()
         sid = (g("session") or "").strip()
         if not sid:
@@ -369,6 +394,8 @@ class CsvStore:
             s["seen"].add(rid)
         if ts and (not s["created_at"] or ts < s["created_at"]):
             s["created_at"] = ts
+        if ts and ts > s["ended_at"]:
+            s["ended_at"] = ts  # the canonical local format sorts lexicographically
         if not s["project"] and project:
             s["project"] = project
         raw_prompt = g("prompt")
@@ -389,6 +416,7 @@ class CsvStore:
         s["turns"].append(
             {
                 "ts": ts or "",
+                "ts_epoch": ts_epoch,  # absolute epoch (DST-proof), for worked-time
                 "depth": 0,  # logged requests have no subagent tree
                 "agent": "-",
                 "model_name": model,
@@ -409,6 +437,33 @@ class CsvStore:
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title"] or "(untitled)"
         s["directory"] = self._resolve_dir(s["project"])
+        # Active working time: every timestamped request row is an activity point; a row
+        # that opens a new prompt group is a fresh human turn, so the gap before it is an
+        # idle wait. The boundary key column is decided ONCE per session: if any row
+        # carries a stable prompt_id, that id is authoritative (a blank id is a
+        # continuation, never a new turn); otherwise the key is the FULL prompt text
+        # (not the 160-char-capped display prompt, which would merge two long prompts
+        # sharing a prefix). Mixing the two per row turned a blank-id continuation into a
+        # false human turn. A new group is a non-empty key differing from the last; a
+        # blank key never opens one. Left unknown, per session, whenever no usable prompt
+        # boundary survives: no prompt info at all, all rows blank, or the only prompt
+        # row had no timestamp -- blank beats reporting the elapsed-with-idle span.
+        # Arithmetic is on the ABSOLUTE ts_epoch (a row without one is dropped), never
+        # the local string, so a session straddling a DST fall-back still measures true
+        # gaps -- matching the ISO backends, which already work off absolute epochs.
+        turns = sorted(
+            (t for t in s["turns"] if t["ts_epoch"] is not None), key=lambda t: t["ts_epoch"]
+        )
+        use_id = any(t["prompt_id"] for t in turns)
+        prompt_epochs, prev_key = [], None
+        for t in turns:
+            key = t["prompt_id"] if use_id else t["prompt_full"]
+            if key and key != prev_key:
+                prompt_epochs.append(t["ts_epoch"])
+                prev_key = key
+        s["worked_seconds"] = (
+            worked_seconds([t["ts_epoch"] for t in turns], prompt_epochs) if prompt_epochs else None
+        )
         rows: list[dict] = []
         for model_name, acc in s["models"].items():
             # The priced/unpriced split was decided per row in _accumulate (a log mixes
@@ -511,6 +566,8 @@ class CsvStore:
                     total_tokens=s["total_tokens"],
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,
+                    ended_at=s["ended_at"],
+                    worked_seconds=s["worked_seconds"],
                 )
             )
         if self.demo:
