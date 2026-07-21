@@ -1,6 +1,5 @@
 """The one keymap table behind the help overlay and the footer (tui/keymap.py)."""
 
-import os
 
 import opentab as ot
 
@@ -134,35 +133,63 @@ def test_help_lists_the_keys_that_work_where_you_are():
     assert "trends-page" not in ids and "prices-view" in ids
 
 
-def test_every_binding_the_app_handles_is_documented():
-    # The table is the source of truth for BOTH the footer and the help, so a binding
-    # missing from it is a key nobody can discover. Hold it against what the App
-    # actually binds: every ord("x") literal in its key handlers.
-    import ast
+def test_every_registry_action_is_discoverable():
+    # The bindings registry is what the App dispatches on; the display table is what
+    # the user can find. An action in a help-listed context that no entry surfaces is
+    # a key nobody can discover -- the modern form of the old undocumented-ord() bug.
+    from opentab.tui import bindings
 
-    source = os.path.join(os.path.dirname(ot.__file__), "tui", "app.py")
-    with open(source) as fh:
-        tree = ast.parse(fh.read())
-    bound = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "ord"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-        ):
-            bound.add(node.args[0].value)
-    documented = {ch for entry in ot.keymap.KEYS for ch in entry.binds}
-    # The keys spelled out in an entry's own label ("h / l", "j / k", "1 / 2 / 3 / 0")
-    # count as documented too -- binds only carries what the label doesn't say.
-    app = _keymap_app()
+    surfaced = set()
     for entry in ot.keymap.KEYS:
-        documented |= {ch for ch in entry.label(app) if ch.isalnum() or ch in "$?/+-="}
-    missing = sorted(
-        bound - documented - {"Y", "y", "d", "D"}
-    )  # y/n/d: the price prompt's own modal
-    assert not missing, f"undocumented bindings: {missing}"
+        for token in entry.actions:
+            surfaced.add(token.rstrip("*"))
+    # Named in a summary/hint (computed off the live keymap there), not as an entry
+    # of their own: the pager-bracket aliases, the focused-chart cursor keys, the
+    # panel digits and browse-mode letters (their entries print literal labels
+    # derived from the same bindings), and the overlays' floating D toggle.
+    prose = {
+        "older",
+        "newer",
+        "cursor_left",
+        "cursor_right",
+        "cursor_up",
+        "cursor_down",
+        "panel_1",
+        "panel_2",
+        "panel_3",
+        "panel_detail",
+        "mode_time",
+        "mode_projects",
+        "mode_machines",
+        "demo_toggle",
+    }
+    # Contexts whose keys are taught by their own chrome (modal titles, box hints,
+    # input-line hints -- all rendered from the live keymap), not by the ? overlay.
+    self_documenting = {
+        "help",
+        "notices",
+        "menu",
+        "menu.source",
+        "menu.harness",
+        "menu.machine",
+        "menu.sort",
+        "menu.theme",
+        "menu.demo",
+        "menu.launch",
+        "menu.whatif",
+        "menu.whatif.filter",
+        "filter",
+        "input",
+        "prompt.prices",
+    }
+    missing = []
+    for ctx in bindings.REGISTRY:
+        if ctx.name in self_documenting:
+            continue
+        for action in ctx.actions:
+            if action.name not in surfaced and action.name not in prose:
+                missing.append(f"{ctx.name}.{action.name}")
+    assert not missing, f"registry actions nothing surfaces: {missing}"
 
 
 def test_footer_and_help_cannot_disagree():

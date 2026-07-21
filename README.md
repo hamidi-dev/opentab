@@ -225,6 +225,7 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | `L` | Relaunch the session in its own tool — tmux window/split/popup, or [your own launcher](docs/keys.md#custom-launchers) |
 | `n` | Note ✎ the selected session — why it cost what it did. Searchable, exported, kept in its own file |
 | `e` / `o` | Export the current view to CSV / open the project's directory |
+| `K` | **Remap anything** — opens `~/.config/opentab/keymap.conf` in `$EDITOR` and reloads it the moment you return; every key in every view, picker and prompt is configurable, and the footer/help re-label themselves live ([docs](docs/keys.md#remap-any-key)) |
 | `?` / `q` | Help / quit |
 
 The active **harness, range, sort, ignored projects, and `$` what-if view are

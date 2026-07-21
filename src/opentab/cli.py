@@ -44,6 +44,7 @@ from opentab.sources import (
     resolve_source,
 )
 from opentab.state import apply_state, load_state, save_state
+from opentab.tui import bindings
 from opentab.tui.app import App
 from opentab.util import git_root, resolve_project_root, unicode_screen
 
@@ -350,6 +351,13 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         "backend's parse/scan take, then exit (no curses -- works on native Windows). "
         "Handy for measuring the file-heavy backends on a slow filesystem",
     )
+    parser.add_argument(
+        "--keymap",
+        action="store_true",
+        help="print the path of the keymap config (installing the commented default "
+        "on first use) and exit; every key the TUI answers to is remappable there, "
+        "and K inside opentab opens it in $EDITOR with a live reload",
+    )
 
 
 # The verbs that carry their own subparser. Everything else -- a bare `opentab`, a
@@ -399,6 +407,7 @@ def _build_parser() -> argparse.ArgumentParser:
         web=False,
         refresh_models=False,
         timings=False,
+        keymap=False,
     )
     subs = parser.add_subparsers(dest="command", metavar="COMMAND")
     tui = subs.add_parser(
@@ -1529,6 +1538,10 @@ def main() -> int:
     args = parse_args()  # handles --help first, so it works even without curses
     if getattr(args, "refresh_models", False):
         return refresh_models_command()  # fetch prices and exit; no curses needed
+    if getattr(args, "keymap", False):
+        # Print (and first-run install) the keymap config path; no curses needed.
+        print(bindings.ensure_user_keymap())
+        return 0
     if getattr(args, "status", None) is not None:
         return status_command(args)  # one-shot for the tmux status line; no curses
     if getattr(args, "timings", False):
@@ -1588,7 +1601,11 @@ def main() -> int:
     # curses starts.
     sys.stderr.write(loading)
     sys.stderr.flush()
-    app = App(store, args, source_key=source_key)
+    # The user's key bindings: install the commented default file on first run, then
+    # load it (typos become toasts, never a refusal to start). Tests and the web path
+    # construct App without one and get the pristine defaults.
+    bindings.ensure_user_keymap()
+    app = App(store, args, source_key=source_key, keymap=bindings.load_user_keymap())
     if source_key == "remote":
         # Let `F` in the TUI re-pull a machine over ssh (fleet view only).
         app._refresh_backend = _make_refresh_fn(args)
@@ -1604,6 +1621,7 @@ def main() -> int:
     # After apply_state, which ends by clearing the notice -- and so would wipe the
     # "your notes.json is unreadable" warning this can raise.
     notes_ok = app.refresh_notes()
+    app.announce_keymap_warnings()  # a broken keymap.conf line greets, not breaks
     if goto is not None:
         # After apply_state (a restored range could hide the target; goto_session
         # clears it when needed), before curses -- the jump is state-only.

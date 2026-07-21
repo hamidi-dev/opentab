@@ -119,6 +119,57 @@ confused with a red `$0.00`, which specifically means *unpriced* (tokens with no
 local price); and git worktrees fold into their main repo (`--no-worktrees` keeps
 them split).
 
+## Remap any key
+
+Every key above — and every key in every picker, overlay, pager, prompt and text
+field — is remappable. The keymap lives at `~/.config/opentab/keymap.conf`, a fully
+commented INI file installed on first run (also in the wheel as
+`opentab/data/keymap.conf`; `opentab --keymap` prints the path). Press **`K`** inside
+opentab to open it in `$EDITOR` (`$VISUAL` wins, `vi` as fallback): edit, save, quit,
+and the new bindings are live the moment the editor returns — the footer chips, the
+`?` cheat sheet, and every modal title re-label themselves from the file, so the UI
+never advertises a key that isn't bound.
+
+One line per action, first key shown in the UI, comma-separated aliases, empty value
+unbinds:
+
+```ini
+[main]
+# sort this list
+sort = o
+# step back out — session → zoom → browse
+back = esc, backspace, h
+# an empty value unbinds (comments are full-line only: # or ; at line start)
+export =
+
+[menu]
+# one line re-teaches j/k in EVERY picker (sort, themes, launch, …)
+down = n
+up = e
+```
+
+Key syntax: a single character (case-sensitive — `S` is shift-s; non-ASCII like `ö`
+works), named keys (`enter esc space tab shift-tab backspace delete insert up down
+left right pgup pgdn home end f1`–`f12`, `comma` for a literal `,`), and control chords
+(`ctrl-u` or `^u`, letters only). `Ctrl-C` is the hardwired panic quit and cannot be
+rebound.
+
+Contexts mirror what owns the keyboard: `[main]` for browse/zoom/session, `[trends]`
+(+ `[trends.chart]` for a focused chart, `[trends.drill]` for a ranked row's session
+list), `[prices]` (+ `[prices.sessions]`), `[help]`, `[notices]`, the shared `[menu]`
+with per-picker overrides (`[menu.sort]`, `[menu.theme]`, `[menu.launch]`,
+`[menu.whatif]`, …), `[filter]` for the live filter line, `[input]` for the note/range
+prompts, and `[prompt.prices]`. A sub-context falls back to its family for anything it
+doesn't name; anything the file doesn't name falls back to the built-in default — so
+the file survives upgrades, and deleting a line (or the whole file) restores stock
+behavior.
+
+Typos never break the TUI: a bad key name, an unknown action, or two lines fighting
+over one key each fall back sanely and land a precise warning as a toast (press `N`
+for the list). Rebinding a key *takes it away* from whatever held it — bind `x` to
+`down` and `x` no longer clears the filter (with a warning that `clear_filter` is now
+unreachable, unless you bind or unbind it yourself).
+
 ## Custom launchers
 
 If an executable exists at `~/.config/opentab/launcher` (or `$OPENTAB_LAUNCHER`

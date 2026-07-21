@@ -118,6 +118,26 @@ class Renderer:
         ("cache_write", "cacheW"),
     )
 
+    def _key(self, ctx: str, action: str) -> str:
+        # The primary key bound to (ctx, action), for a painted hint ("j", "Enter").
+        # Every hint below asks the live keymap instead of quoting a character, so a
+        # remapped key renames itself in every modal title and footer line.
+        return self.app.keymap.label(ctx, action)
+
+    def _keys(self, ctx: str, *actions: str) -> str:
+        # Slash-joined primaries for a hint ("j/k", "h/l"); unbound actions vanish.
+        return "/".join(filter(None, (self.app.keymap.label(ctx, a) for a in actions)))
+
+    def _menu_title(self, title: str, ctx: str) -> str:
+        # The standard picker title: "Sort by · j/k · Enter · Esc", off the live keymap.
+        parts = [
+            title,
+            self._keys(ctx, "down", "up"),
+            self._key(ctx, "select"),
+            self._key(ctx, "cancel"),
+        ]
+        return " · ".join(p for p in parts if p)
+
     def __init__(self, app: App) -> None:
         self.app = app
         # The app frame (lazygit's outer border) is a *viewport*, not a layout change:
@@ -623,7 +643,7 @@ class Renderer:
                 # "what-if" — the estimate is the only meaningful number.
                 tag = " ESTIMATED — tokens × API list prices "
         elif not getattr(self.store, "records_cost", True):
-            tag = " $0 = no recorded cost · press $ to estimate "
+            tag = f" $0 = no recorded cost · press {self._key('main', 'api_prices')} to estimate "
         else:
             tag = ""
         info_x = len(title) + len(chip)
@@ -836,7 +856,10 @@ class Renderer:
                 stdscr,
                 height - 1,
                 x,
-                "   ↑/↓ select  Enter keep  Esc cancel  Ctrl-U clear",
+                f"   {self._keys('filter', 'up', 'down')} select"
+                f"  {self._key('filter', 'confirm')} keep"
+                f"  {self._key('filter', 'cancel')} cancel"
+                f"  {self._key('filter', 'clear')} clear",
                 curses.color_pair(4),
                 width,
             )
@@ -1155,7 +1178,10 @@ class Renderer:
         # per price mode so it never says "not billed" beside estimated dollars.
         if self.show_api_prices:
             return "! estimates — subscription tokens at API list prices"
-        return "! $0.00 = subscription tokens — press $ to estimate"
+        return (
+            "! $0.00 = subscription tokens — press "
+            f"{self._key('main', 'api_prices')} to estimate"
+        )
 
     def line_attr(self, line: str) -> int:
         # Shared prefix styling for the text panes: "# " section titles (accent -- they
@@ -1409,7 +1435,10 @@ class Renderer:
         if not self.show_api_prices and any(
             float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
         ):
-            caption = "· $ prices subscription/credit usage at API list rates"
+            caption = (
+                f"· {self._key('main', 'api_prices')} prices subscription/credit "
+                "usage at API list rates"
+            )
             if cy + 2 + len(shown) < y + h - 1:
                 self.write(
                     stdscr,
@@ -1773,7 +1802,8 @@ class Renderer:
         if not machine.live:
             lines += [
                 "",
-                "Summary only — Turns/Tools/Context aren't exported. Press F to re-pull.",
+                "Summary only — Turns/Tools/Context aren't exported. "
+                f"Press {self._key('main', 'refresh_machines')} to re-pull.",
             ]
         lines.append("")
         agg = self.aggregate_models(workflows)
@@ -3153,7 +3183,9 @@ class Renderer:
         lines += [
             "",
             "· One ▸ line per user prompt, its subtotal on the right — time order, not cost.",
-            "· Folded to prompts: j/k pick a ▸ prompt · Enter (or a click) unfolds one · z all.",
+            f"· Folded to prompts: {self._keys('main', 'down', 'up')} pick a ▸ prompt · "
+            f"{self._key('main', 'select')} (or a click) unfolds one · "
+            f"{self._key('main', 'fold_turns')} all.",
         ]
         return lines
 
@@ -3477,7 +3509,15 @@ class Renderer:
         # through the gaps between segments.
         for row in range(box_y, box_y + box_h):
             self.write(stdscr, row, box_x, " " * box_w)
-        self.box(stdscr, box_y, box_x, box_h, box_w, "Keys · Esc close", active=True)
+        self.box(
+            stdscr,
+            box_y,
+            box_x,
+            box_h,
+            box_w,
+            f"Keys · {self._key('help', 'close')} close",
+            active=True,
+        )
 
         visible = max(1, box_h - 3)
         scroll = max(0, min(self.app.help_scroll, max(0, len(lines) - visible)))
@@ -3487,7 +3527,7 @@ class Renderer:
             for dx, text, attr in segments:
                 self.write(stdscr, row_y, box_x + 2 + dx, text, attr)
         if len(lines) > visible:  # only then is there anything to scroll
-            hint = " j/k scroll "
+            hint = f" {self._keys('help', 'down', 'up')} scroll "
             self.write(
                 stdscr,
                 box_y + box_h - 1,
@@ -3733,7 +3773,14 @@ class Renderer:
         # (h/l or a click switches, p still cycles), a short right-aligned hint, and
         # one dim context line -- everything else is table.
         self.box(stdscr, y, 0, bottom - y, width, "Model prices", active=True)
-        hint = "h/l views · j/k · space pin · Enter sessions · f filter · q closes"
+        hint = (
+            f"{self._keys('prices', 'tab_prev', 'tab_next')} views · "
+            f"{self._keys('prices', 'down', 'up')} · "
+            f"{self._key('prices', 'pin')} pin · "
+            f"{self._key('prices', 'select')} sessions · "
+            f"{self._key('prices', 'filter')} filter · "
+            f"{self._key('prices', 'close')} closes"
+        )
         labels = tuple(label for _key, label in self.app.prices_views)
         keys = [key for key, _label in self.app.prices_views]
         active = keys.index(self.app.prices_view) if self.app.prices_view in keys else 0
@@ -3865,7 +3912,11 @@ class Renderer:
             f"Model prices · {shorten(model, max(8, width - 30))}",
             active=True,
         )
-        hint = "j/k scroll · esc back · q closes"
+        hint = (
+            f"{self._keys('prices.sessions', 'down', 'up')} scroll · "
+            f"{self._key('prices.sessions', 'back')} back · "
+            f"{self._key('prices.sessions', 'close')} closes"
+        )
         self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
         lines = self.price_session_lines(model, inner_w)
@@ -3985,7 +4036,12 @@ class Renderer:
         for row in range(box_y, box_y + box_h):  # clear the footprint (draw_modal's rule)
             self.write(stdscr, row, box_x, " " * box_w)
         count = len(self.app.toast_log)
-        title = f"Notifications ({count}) · Esc close" if count else "Notifications · Esc close"
+        close = self._key("notices", "close")
+        title = (
+            f"Notifications ({count}) · {close} close"
+            if count
+            else f"Notifications · {close} close"
+        )
         self.box(stdscr, box_y, box_x, box_h, box_w, title, active=True)
         visible = max(1, box_h - 3)
         scroll = max(0, min(self.app.toast_history_scroll, max(0, len(rows) - visible)))
@@ -3994,7 +4050,7 @@ class Renderer:
             pair = self.TOAST_STYLE.get(kind, self.TOAST_STYLE["info"])[0]
             self.write(stdscr, box_y + 1 + offset, box_x + 2, text, curses.color_pair(pair))
         if len(rows) > visible:  # only then is there anything to scroll
-            hint = " j/k scroll "
+            hint = f" {self._keys('notices', 'down', 'up')} scroll "
             self.write(
                 stdscr,
                 box_y + box_h - 1,
@@ -4036,7 +4092,9 @@ class Renderer:
             suffix = "  (current)" if is_current else ""
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {label}{suffix}", attr))
-        self.draw_modal(stdscr, scr_h, scr_w, "Switch harness · j/k · Enter · Esc", lines)
+        self.draw_modal(
+            stdscr, scr_h, scr_w, self._menu_title("Switch harness", "menu.source"), lines
+        )
 
     def draw_demo_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `D` picker: a multi-check list of what --demo scrambles. Space toggles a
@@ -4047,14 +4105,19 @@ class Renderer:
         intro = (
             "Anonymize which parts (for a shareable screen):"
             if self.demo_menu_sel
-            else "Nothing checked — Enter shows real data again."
+            else f"Nothing checked — {self._key('menu.demo', 'select')} shows real data again."
         )
         lines = [(intro, curses.color_pair(4)), ("", 0)]
         for offset, (_cat, label, checked) in enumerate(entries):
             box = "[x]" if checked else "[ ]"
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {box}  {label}", attr))
-        self.draw_modal(stdscr, scr_h, scr_w, "Demo · Space · a all · Enter · Esc", lines)
+        title = (
+            f"Demo · {self._key('menu.demo', 'toggle')} · "
+            f"{self._key('menu.demo', 'check_all')} all · "
+            f"{self._key('menu.demo', 'select')} · {self._key('menu.demo', 'cancel')}"
+        )
+        self.draw_modal(stdscr, scr_h, scr_w, title, lines)
 
     def _draw_filter_menu(self, stdscr, scr_h, scr_w, title, intro, options, index) -> None:
         # Shared body for the `M` / `H` global-filter pickers: an intro line then a radio
@@ -4075,7 +4138,7 @@ class Renderer:
             stdscr,
             scr_h,
             scr_w,
-            "Filter machine · j/k · Enter · Esc",
+            self._menu_title("Filter machine", "menu.machine"),
             "Narrow every view to which machine:",
             self.machine_filter_options(),
             self.machine_menu_index,
@@ -4088,7 +4151,7 @@ class Renderer:
             stdscr,
             scr_h,
             scr_w,
-            "Filter harness · j/k · Enter · Esc",
+            self._menu_title("Filter harness", "menu.harness"),
             "Narrow every view to which harness (kept across all machines):",
             self.harness_filter_options(),
             self.harness_menu_index,
@@ -4154,19 +4217,27 @@ class Renderer:
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {pad(shorten(name, namew), namew)} {cell:>10}", attr))
         if not entries:
-            lines.append(("    no model matches — backspace to widen", curses.color_pair(2)))
+            erase = self._key("menu.whatif.filter", "erase")
+            lines.append((f"    no model matches — {erase} to widen", curses.color_pair(2)))
         below = len(entries) - (start + len(visible))
         if below:
             lines.append((f"    ↓ {below} more", curses.A_DIM))
         hint = (
-            "Enter selects · Esc drops the filter"
+            f"{self._key('menu.whatif.filter', 'select')} selects · "
+            f"{self._key('menu.whatif.filter', 'cancel')} drops the filter"
             if self.whatif_filter_active
-            else "f filter · w again clears it · Esc cancels"
+            else f"{self._key('menu.whatif', 'filter')} filter · "
+            f"{self._key('main', 'whatif')} again clears it · "
+            f"{self._key('menu.whatif', 'cancel')} cancels"
         )
         lines += [("", 0), (hint, curses.color_pair(1))]
-        my, mx, mh, mw = self.draw_modal(
-            stdscr, scr_h, scr_w, "What-if model · j/k · h/l/Tab · f · Enter · Esc", lines
+        catalog = "/".join(self.app.keymap.labels("menu.whatif", "catalog")[:3])
+        title = (
+            f"What-if model · {self._keys('menu.whatif', 'down', 'up')} · {catalog} · "
+            f"{self._key('menu.whatif', 'filter')} · {self._key('menu.whatif', 'select')} · "
+            f"{self._key('menu.whatif', 'cancel')}"
         )
+        my, mx, mh, mw = self.draw_modal(stdscr, scr_h, scr_w, title, lines)
         # The tier switch is a real tab strip (the P overlay's view tabs, same renderer,
         # same clickable regions -- handle_mouse routes "whatiftab" hits to the flip):
         # [your models]  models.dev, with the tier's column meaning dimmed beside it.
@@ -4204,9 +4275,11 @@ class Renderer:
         below = len(entries) - (start + len(visible))
         if below:
             lines.append((f"    ↓ {below} more", curses.A_DIM))
-        self.draw_modal(
-            stdscr, scr_h, scr_w, "Theme · j/k preview · Enter keep · Esc revert", lines
+        title = (
+            f"Theme · {self._keys('menu.theme', 'down', 'up')} preview · "
+            f"{self._key('menu.theme', 'select')} keep · {self._key('menu.theme', 'cancel')} revert"
         )
+        self.draw_modal(stdscr, scr_h, scr_w, title, lines)
 
     # Friendlier one-word names for the raw sort keys shown in the `s` picker.
     SORT_LABELS = {
@@ -4244,7 +4317,7 @@ class Renderer:
             suffix = "  (current)" if is_current else ""
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {marker}  {self.SORT_LABELS.get(key, key)}{suffix}", attr))
-        self.draw_modal(stdscr, scr_h, scr_w, "Sort by · j/k · Enter · Esc", lines)
+        self.draw_modal(stdscr, scr_h, scr_w, self._menu_title("Sort by", "menu.sort"), lines)
 
     def draw_launch_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `L` picker: a small modal of launch targets. One keystroke picks (handled in
@@ -4265,8 +4338,10 @@ class Renderer:
         for offset, (kc, _kind, label) in enumerate(targets):
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
             lines.append((f" {kc}  {label}", attr))
-        lines += [("", 0), (" Esc  cancel", curses.A_NORMAL)]
-        self.draw_modal(stdscr, scr_h, scr_w, "Launch session · j/k · Enter · Esc", lines)
+        lines += [("", 0), (f" {self._key('menu.launch', 'cancel')}  cancel", curses.A_NORMAL)]
+        self.draw_modal(
+            stdscr, scr_h, scr_w, self._menu_title("Launch session", "menu.launch"), lines
+        )
 
     def draw_price_prompt(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # Startup prompt when used models have no built-in price: offer a models.dev fetch.
@@ -4284,11 +4359,16 @@ class Renderer:
             ("", 0),
             ("Fetch current list prices from models.dev?", curses.A_NORMAL),
             ("", 0),
-            (" y   yes, fetch now", accent),
-            (" n   not now (ask again next run)", accent),
-            (" d   don't ask again", accent),
+            (f" {self._key('prompt.prices', 'accept')}   yes, fetch now", accent),
+            (f" {self._key('prompt.prices', 'decline')}   not now (ask again next run)", accent),
+            (f" {self._key('prompt.prices', 'never')}   don't ask again", accent),
             ("", 0),
-            ("anytime: --refresh-models, or r in the P prices view", curses.color_pair(1)),
+            (
+                "anytime: --refresh-models, or "
+                f"{self._key('prices', 'refresh')} in the {self._key('main', 'prices')} "
+                "prices view",
+                curses.color_pair(1),
+            ),
         ]
         self.draw_modal(stdscr, scr_h, scr_w, "Unpriced models found", lines)
 
@@ -4300,21 +4380,48 @@ class Renderer:
         current = tabs[self.trend_tab % len(tabs)]
         self.app._trend_bar_geom = None  # rebuilt below when a bar chart draws
         self._trend_rows_at = None  # rebuilt below when a selectable list draws
+        arrows = "".join(
+            self.app.keymap.label("trends.chart", a)
+            for a in ("cursor_up", "cursor_down", "cursor_left", "cursor_right")
+        )
+        tabkeys = self._keys("trends", "tab_prev", "tab_next")
+        jk = self._keys("trends", "down", "up")
         if self.trend_drill is not None:
-            hint = "j/k move · Enter opens session · esc back"
+            hint = (
+                f"{self._keys('trends.drill', 'down', 'up')} move · "
+                f"{self._key('trends.drill', 'select')} opens session · "
+                f"{self._key('trends.drill', 'back')} back"
+            )
         elif current == "Calendar":
             if self.trend_focus:
-                hint = "↑↓←→ day · +/- shades · Enter open · esc back"
+                hint = (
+                    f"{arrows} day · "
+                    f"{self._keys('trends', 'shades_more', 'shades_less')} shades · "
+                    f"{self._key('trends.chart', 'select')} open · "
+                    f"{self._key('trends.chart', 'back')} back"
+                )
             else:
-                hint = "h/l tabs · Enter pick days · esc closes"
+                hint = (
+                    f"{tabkeys} tabs · {self._key('trends', 'select')} pick days · "
+                    f"{self._key('trends', 'back')} closes"
+                )
         elif current in ("Daily", "Weekly", "Monthly"):
             if self.trend_focus:
-                hint = "↑↓←→ bar · Enter open · esc back"
+                hint = (
+                    f"{arrows} bar · {self._key('trends.chart', 'select')} open · "
+                    f"{self._key('trends.chart', 'back')} back"
+                )
             else:
-                unit = {"Daily": "j/k month · ", "Weekly": "j/k week · "}.get(current, "")
-                hint = f"h/l tabs · {unit}Enter pick bars · esc closes"
+                unit = {"Daily": f"{jk} month · ", "Weekly": f"{jk} week · "}.get(current, "")
+                hint = (
+                    f"{tabkeys} tabs · {unit}{self._key('trends', 'select')} pick bars · "
+                    f"{self._key('trends', 'back')} closes"
+                )
         else:
-            hint = "h/l tabs · j/k rows · Enter sessions · esc closes"
+            hint = (
+                f"{tabkeys} tabs · {jk} rows · {self._key('trends', 'select')} sessions · "
+                f"{self._key('trends', 'back')} closes"
+            )
         self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, tabs, self.trend_tab, kind="trend")
         self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
@@ -4560,7 +4667,7 @@ class Renderer:
         pairs = [(str(int(d[8:10])), v) for d, v in data]
         title = f"# Daily spend · {month}"
         if len(months) > 1:
-            title += f"   ({idx + 1}/{len(months)} — j/k older/newer month)"
+            title += f"   ({idx + 1}/{len(months)} — {self._keys('trends', 'down', 'up')} older/newer month)"
         chart = self._bar_chart(
             pairs,
             width,
@@ -4583,7 +4690,7 @@ class Renderer:
         sunday = data[-1][0]
         title = f"# Weekly spend · {monday} – {sunday}"
         if len(weeks) > 1:
-            title += f"   ({idx + 1}/{len(weeks)} — j/k older/newer week)"
+            title += f"   ({idx + 1}/{len(weeks)} — {self._keys('trends', 'down', 'up')} older/newer week)"
         chart = self._bar_chart(
             pairs,
             width,
@@ -4656,7 +4763,7 @@ class Renderer:
 
         title = f"Spend calendar · {year}"
         if len(years) > 1:
-            title += f"   ({idx + 1}/{len(years)} — j/k older/newer year)"
+            title += f"   ({idx + 1}/{len(years)} — {self._keys('trends', 'down', 'up')} older/newer year)"
         self.write(
             stdscr,
             top,
@@ -4753,18 +4860,35 @@ class Renderer:
                 if day_sessions:
                     noun = "session" if day_sessions == 1 else "sessions"
                     info.append(
-                        (f"{label}{money(day_cost)}   {day_sessions} {noun}   Enter opens", 0)
+                        (
+                            f"{label}{money(day_cost)}   {day_sessions} {noun}   "
+                            f"{self._key('trends.chart', 'select')} opens",
+                            0,
+                        )
                     )
                 else:
-                    info.append((f"{label}no sessions   move with ←↑↓→", 0))
+                    arrows = " ".join(
+                        self.app.keymap.label("trends.chart", a)
+                        for a in ("cursor_left", "cursor_up", "cursor_down", "cursor_right")
+                    )
+                    info.append((f"{label}no sessions   move with {arrows}", 0))
         else:
             info.append(("", 0))  # a couple of blank lines set the call-to-action apart
             info.append(("", 0))
             info.append(
-                ("Press Enter to navigate the calendar", curses.color_pair(6) | curses.A_BOLD)
+                (
+                    f"Press {self._key('trends', 'select')} to navigate the calendar",
+                    curses.color_pair(6) | curses.A_BOLD,
+                )
             )
         if total == 0 and sessions and not self.show_api_prices:
-            info.append(("$ prices subscription/credit usage at API list rates", 0))
+            info.append(
+                (
+                    f"{self._key('trends', 'api_prices')} prices subscription/credit "
+                    "usage at API list rates",
+                    0,
+                )
+            )
         for i, (line, line_attr) in enumerate(info):
             row_y = ly + 1 + i
             if row_y >= top + height:
@@ -4990,7 +5114,11 @@ class Renderer:
         if not self.show_api_prices and any(
             float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
         ):
-            lines += ["", "$ prices subscription/credit usage at API list rates"]
+            lines += [
+                "",
+                f"{self._key('trends', 'api_prices')} prices subscription/credit "
+                "usage at API list rates",
+            ]
         return lines
 
     def trend_sources(self, width: int, height: int) -> list[str]:
@@ -5074,7 +5202,11 @@ class Renderer:
         if not self.show_api_prices and any(
             float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
         ):
-            lines += ["", "$ prices subscription/credit usage at API list rates"]
+            lines += [
+                "",
+                f"{self._key('trends', 'api_prices')} prices subscription/credit "
+                "usage at API list rates",
+            ]
         return lines
 
     def trend_machines(self, width: int, height: int) -> list[str]:

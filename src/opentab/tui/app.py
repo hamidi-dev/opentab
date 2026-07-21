@@ -59,6 +59,7 @@ from opentab.pricing import (
     refresh_model_prices,
 )
 from opentab.sources import RESUME_COMMANDS, SOURCE_LABELS
+from opentab.tui import bindings
 from opentab.tui.renderer import Renderer
 from opentab.util import (
     fuzzy_score,
@@ -197,9 +198,19 @@ class App:
     whatif_catalog = False
     _whatif_catalog_rows: list[tuple[str, float, bool]] | None = None
 
-    def __init__(self, store: Store, args: argparse.Namespace, source_key: str = ""):
+    def __init__(
+        self,
+        store: Store,
+        args: argparse.Namespace,
+        source_key: str = "",
+        keymap: bindings.Keymap | None = None,
+    ):
         self.store = store
         self.args = args
+        # The composed key bindings (defaults + the user's keymap.conf overrides).
+        # The CLI passes the loaded file; tests and the web path get pure defaults.
+        # Every handler resolves keys through this — never against a literal.
+        self.keymap = keymap or bindings.DEFAULT
         # Live source switching (the `H` key). source_key is the active backend's key;
         # built stores are cached so cycling back is instant. Empty when the App was
         # constructed without a key (tests / single fixed store).
@@ -847,27 +858,28 @@ class App:
         if self.machine_filter not in names:
             self.machine_filter = None
 
-    def handle_machine_menu_key(self, key: int) -> bool:
-        # The `M` machine-filter picker: j/k move, Enter arms/clears, Esc/q cancels; `M`
-        # again advances the highlight (repeated taps walk the list, like the `H` menu).
+    def handle_machine_menu_key(self, key: int | str) -> bool:
+        # The `M` machine-filter picker: down/up move, select arms/clears, cancel
+        # closes; advance (`M` again) walks the highlight, like the `H` menu.
         options = self.machine_filter_options()
         if not options:
             self.machine_menu = False
             return True
         if key == 3:  # Ctrl-C still quits
             return False
-        if key in (ord("j"), curses.KEY_DOWN, ord("M")):
+        act = self.keymap.action("menu.machine", key)
+        if act in ("down", "advance"):
             self.machine_menu_index = (self.machine_menu_index + 1) % len(options)
-        elif key in (ord("k"), curses.KEY_UP):
+        elif act == "up":
             self.machine_menu_index = (self.machine_menu_index - 1) % len(options)
-        elif key == ord("g"):
+        elif act == "first":
             self.machine_menu_index = 0
-        elif key == ord("G"):
+        elif act == "last":
             self.machine_menu_index = len(options) - 1
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             self.machine_menu = False
             self.select_machine_filter(options[self.machine_menu_index % len(options)][0])
-        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+        elif act == "cancel":
             self.machine_menu = False  # cancel, filter unchanged
         # any other key: ignore and keep the menu open
         return True
@@ -927,27 +939,28 @@ class App:
         if not self.machines_present or self.harness_filter not in present:
             self.harness_filter = None
 
-    def handle_harness_menu_key(self, key: int) -> bool:
-        # j/k move, Enter arms/clears, Esc/q cancels; `H` again advances (mirrors the
-        # machine-filter picker).
+    def handle_harness_menu_key(self, key: int | str) -> bool:
+        # down/up move, select arms/clears, cancel closes; advance (`H` again) walks
+        # the highlight (mirrors the machine-filter picker).
         options = self.harness_filter_options()
         if not options:
             self.harness_menu = False
             return True
         if key == 3:  # Ctrl-C still quits
             return False
-        if key in (ord("j"), curses.KEY_DOWN, ord("H")):
+        act = self.keymap.action("menu.harness", key)
+        if act in ("down", "advance"):
             self.harness_menu_index = (self.harness_menu_index + 1) % len(options)
-        elif key in (ord("k"), curses.KEY_UP):
+        elif act == "up":
             self.harness_menu_index = (self.harness_menu_index - 1) % len(options)
-        elif key == ord("g"):
+        elif act == "first":
             self.harness_menu_index = 0
-        elif key == ord("G"):
+        elif act == "last":
             self.harness_menu_index = len(options) - 1
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             self.harness_menu = False
             self.select_harness_filter(options[self.harness_menu_index % len(options)][0])
-        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+        elif act == "cancel":
             self.harness_menu = False  # cancel, filter unchanged
         return True
 
@@ -1206,10 +1219,12 @@ class App:
         if not self.allow_notes:
             self.notify("notes are off in demo / --no-state", "error")
             return
+        km = self.keymap
         value = self.prompt_text(
             stdscr,
             "note: ",
-            "Enter saves · ^U clears · Esc cancels",
+            f"{km.label('input', 'confirm')} saves · {km.label('input', 'kill_line')} clears · "
+            f"{km.label('input', 'cancel')} cancels",
             self.note_for(session.id),
             max_chars=self.NOTE_MAX_CHARS,
         )
@@ -1273,7 +1288,10 @@ class App:
         # starred with `b` (within the active range), mirroring I for ignored
         # projects. ranged_workflows applies the filter (keyed into its cache).
         if not self.show_bookmarks_only and not self.bookmarks:
-            self.notify("no bookmarks — press b on a session", "error")
+            self.notify(
+                f"no bookmarks — press {self.keymap.label('main', 'bookmark')} on a session",
+                "error",
+            )
             return
         anchor = self.selection_anchor()
         self.show_bookmarks_only = not self.show_bookmarks_only
@@ -2070,78 +2088,75 @@ class App:
         self.select_whatif_model(rows[self.whatif_menu_index % len(rows)][0])
 
     def handle_whatif_menu_key(self, key: int | str) -> bool:
-        if isinstance(key, str):  # a non-ASCII character (see _read_key)
-            # Only the filter takes it. Typed with the filter off it used to land in the
-            # query anyway, so a stray "ä" or a dead key emptied the list to "no model
-            # matches -- backspace to widen" while backspace was still bound to *cancel*:
-            # the one key the screen told you to press threw the picker away. An ASCII
-            # character in the same state is ignored, so this one is too.
-            if self.whatif_filter_active and key.isprintable():
-                self.whatif_query += key
-                self.whatif_menu_index = 0
-            return True
-        # The `w` model picker: j/k move, Enter selects, Esc/q cancels, `f` (or `/`)
-        # starts the live filter -- the same word-anchored narrowing, on the same keys,
-        # as the P overlay's model list, because it is the same question asked of the
-        # same rows -- and Tab flips between your models and the whole models.dev
-        # catalog. Mirrors handle_source_menu_key otherwise, `w` advancing the highlight
-        # like `H` does.
+        # The `w` model picker: down/up move, select picks, cancel closes, filter
+        # starts the live filter -- the same word-anchored narrowing, on the same
+        # keys, as the P overlay's model list, because it is the same question asked
+        # of the same rows -- and catalog (Tab / h / l) flips between your models and
+        # the whole models.dev catalog. Mirrors handle_source_menu_key otherwise,
+        # advance (`w` again) walking the highlight like `H` does.
         if key == 3:  # Ctrl-C still quits
             return False
         if not self.whatif_candidates() and not self.whatif_catalog_candidates():
             self.whatif_menu = False
             return True
         rows = self.whatif_rows()
-        if key == ord("\t"):
-            self.whatif_toggle_catalog()
-            return True
         if self.whatif_filter_active:
+            # The filter is typing: its own keys first, then a catalog-bound key that
+            # is NOT a typable character (Tab, arrows) still flips the tier -- h/l stay
+            # characters here, and a query must never eat the picker.
+            if (
+                self.keymap.action("menu.whatif.filter", key) is None
+                and bindings.typed_char(key) is None
+                and self.keymap.is_action("menu.whatif", key, "catalog")
+            ):
+                self.whatif_toggle_catalog()
+                return True
             return self._handle_whatif_filter_key(key, rows)
-        if key in (ord("f"), ord("/")):
+        act = self.keymap.action("menu.whatif", key)
+        if act == "filter":
             self.whatif_filter_active = True
-        elif key in (ord("h"), ord("l"), curses.KEY_LEFT, curses.KEY_RIGHT):
-            # The tiers are tabs, so h/l switch them like tabs everywhere else
-            # (Tab still flips too; in the filter, h/l stay typable characters).
+        elif act == "catalog":
             self.whatif_toggle_catalog()
-        elif key in (ord("j"), curses.KEY_DOWN, ord("w")) and rows:
+        elif act in ("down", "advance") and rows:
             self.whatif_menu_index = (self.whatif_menu_index + 1) % len(rows)
-        elif key in (ord("k"), curses.KEY_UP) and rows:
+        elif act == "up" and rows:
             self.whatif_menu_index = (self.whatif_menu_index - 1) % len(rows)
-        elif key == ord("g"):
+        elif act == "first":
             self.whatif_menu_index = 0
-        elif key == ord("G") and rows:
+        elif act == "last" and rows:
             self.whatif_menu_index = len(rows) - 1
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             self._whatif_pick(rows)
-        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+        elif act == "cancel":
             self.whatif_menu = False  # cancel, pricing unchanged
         # any other key: ignore and keep the menu open
         return True
 
-    def _handle_whatif_filter_key(self, key: int, rows: list[tuple[str, int]]) -> bool:
+    def _handle_whatif_filter_key(self, key: int | str, rows: list[tuple[str, int]]) -> bool:
         # Filter-edit mode inside the picker: printable keys narrow the list live,
-        # arrows still move the highlight so you can land on a match without leaving
-        # the mode, and Enter selects it outright -- type, arrow, done. Esc drops the
-        # query and hands the keys back to j/k rather than closing the picker: losing
-        # a mistyped query should not cost you the menu.
-        if key == 27:
+        # down/up still move the highlight so you can land on a match without leaving
+        # the mode, and select picks it outright -- type, arrow, done. cancel drops
+        # the query and hands the keys back to the list rather than closing the
+        # picker: losing a mistyped query should not cost you the menu.
+        act = self.keymap.action("menu.whatif.filter", key)
+        if act == "cancel":
             self.whatif_query = ""
             self.whatif_filter_active = False
             self.whatif_menu_index = 0
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             self._whatif_pick(rows)
-        elif key in (curses.KEY_BACKSPACE, 127, 8):
+        elif act == "erase":
             self.whatif_query = self.whatif_query[:-1]
             self.whatif_menu_index = 0
-        elif key == 21:  # Ctrl-U clears the query
+        elif act == "clear":
             self.whatif_query = ""
             self.whatif_menu_index = 0
-        elif key in (curses.KEY_DOWN, 14) and rows:  # Ctrl-N
+        elif act == "down" and rows:
             self.whatif_menu_index = (self.whatif_menu_index + 1) % len(rows)
-        elif key in (curses.KEY_UP, 16) and rows:  # Ctrl-P
+        elif act == "up" and rows:
             self.whatif_menu_index = (self.whatif_menu_index - 1) % len(rows)
-        elif 32 <= key <= 126:
-            self.whatif_query += chr(key)
+        elif (ch := bindings.typed_char(key)) is not None:
+            self.whatif_query += ch
             self.whatif_menu_index = 0
         return True
 
@@ -2217,21 +2232,31 @@ class App:
         self.unknown_models = unknown
         self.price_prompt = True
 
-    def handle_price_prompt_key(self, key: int) -> bool:
-        # y/Enter fetches now; d never asks again (persisted); n/Esc/other = not now.
+    def handle_price_prompt_key(self, key: int | str) -> bool:
+        # accept fetches now; never stops asking (persisted); anything else = not now.
         if key == 3:  # Ctrl-C still quits
             return False
-        if key in (ord("y"), ord("Y"), 10, 13, curses.KEY_ENTER):
+        act = self.keymap.action("prompt.prices", key)
+        if act == "accept":
             self.price_prompt = False
             self.refresh_prices_action()  # fetch + reprice in place
-        elif key in (ord("d"), ord("D")):
+        elif act == "never":
             self.price_prompt = False
             self.prices_prompt_dismissed = True  # save_state persists it on exit
-            self.notice = "won't ask again — fetch anytime with --refresh-models or r in P"
-        else:  # n, Esc, or anything else: not now, ask again next run
+            self.notice = f"won't ask again — {self.price_fetch_hint()}"
+        else:  # decline, or any other key: not now, ask again next run
             self.price_prompt = False
-            self.notice = "skipped — fetch anytime with --refresh-models or r in the P view"
+            self.notice = f"skipped — {self.price_fetch_hint()}"
         return True
+
+    def price_fetch_hint(self) -> str:
+        # How to fetch model prices later, with the keys as actually bound -- this
+        # trails every way of dismissing the startup prompt.
+        return (
+            "fetch anytime with --refresh-models or "
+            f"{self.keymap.label('prices', 'refresh')} in the "
+            f"{self.keymap.label('main', 'prices')} prices view"
+        )
 
     def reload(self) -> None:
         self.loaded = self.store.workflows()
@@ -2433,19 +2458,25 @@ class App:
         self.theme_menu_index = index % len(ids)
         self.select_theme(ids[self.theme_menu_index], announce=False)
 
-    def handle_theme_menu_key(self, key: int) -> bool:
-        # j/k live-preview the highlighted theme, Enter keeps it + closes, Esc/q reverts
-        # to the theme active when the picker opened, `C` again advances the highlight.
-        if key in (27, ord("q")):
+    def handle_theme_menu_key(self, key: int | str) -> bool:
+        # down/up live-preview the highlighted theme, select keeps it + closes, cancel
+        # reverts to the theme active when the picker opened, advance (`C` again)
+        # walks the highlight like every picker's own key.
+        if key == 3:  # Ctrl-C still quits
+            return False
+        act = self.keymap.action("menu.theme", key)
+        if act == "cancel":
             self.select_theme(self._theme_before, announce=False)  # cancel -> revert
             self.theme_menu = False
-        elif key in (ord("j"), curses.KEY_DOWN):
+        elif act in ("down", "advance"):
             self._preview_theme_at(self.theme_menu_index + 1)
-        elif key in (ord("k"), curses.KEY_UP):
+        elif act == "up":
             self._preview_theme_at(self.theme_menu_index - 1)
-        elif key == ord("C"):
-            self._preview_theme_at(self.theme_menu_index + 1)
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "first":
+            self._preview_theme_at(0)
+        elif act == "last":
+            self._preview_theme_at(len(themes.THEMES) - 1)
+        elif act == "select":
             self.select_theme(list(themes.THEMES)[self.theme_menu_index])
             self.theme_menu = False
         return True
@@ -2548,21 +2579,28 @@ class App:
             (cat, self._DEMO_CAT_LABELS[cat], cat in self.demo_menu_sel) for cat in DEMO_CATEGORIES
         ]
 
-    def handle_demo_menu_key(self, key: int) -> bool:
-        # j/k move · Space toggles a category · a checks/clears all · Enter applies
-        # (no category checked = back to real data) · Esc/q/D cancels.
+    def handle_demo_menu_key(self, key: int | str) -> bool:
+        # down/up move · toggle checks a category · check_all checks/clears all ·
+        # select applies (no category checked = back to real data) · cancel closes.
         cats = DEMO_CATEGORIES
-        if key in (27, ord("q"), ord("D")):
+        if key == 3:  # Ctrl-C still quits
+            return False
+        act = self.keymap.action("menu.demo", key)
+        if act == "cancel":
             self.demo_menu = False
-        elif key in (ord("j"), curses.KEY_DOWN):
+        elif act == "down":
             self.demo_menu_index = (self.demo_menu_index + 1) % len(cats)
-        elif key in (ord("k"), curses.KEY_UP):
+        elif act == "up":
             self.demo_menu_index = (self.demo_menu_index - 1) % len(cats)
-        elif key in (ord(" "), ord("x")):
+        elif act == "first":
+            self.demo_menu_index = 0
+        elif act == "last":
+            self.demo_menu_index = len(cats) - 1
+        elif act == "toggle":
             self.demo_menu_sel.symmetric_difference_update({cats[self.demo_menu_index]})
-        elif key == ord("a"):
+        elif act == "check_all":
             self.demo_menu_sel = set() if len(self.demo_menu_sel) == len(cats) else set(cats)
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             self.demo_menu = False
             self._apply_demo_state(frozenset(self.demo_menu_sel) or None)
         return True
@@ -3395,27 +3433,37 @@ class App:
         else:
             self.notify(f"clipboard tool not found ({util.clipboard_tools_label()})", "error")
 
-    def handle_launch_key(self, key: int) -> bool:
-        # The `L` launch picker: j/k move, Enter runs the highlighted target, the w/s/v/p/y
-        # shortcuts jump straight to one, Esc/q cancels. Mirrors handle_source_menu_key.
+    def handle_launch_key(self, key: int | str) -> bool:
+        # The `L` launch picker: down/up move, select runs the highlighted target, the
+        # first-letter shortcuts jump straight to one, cancel closes. Mirrors
+        # handle_source_menu_key.
         if key == 3:  # Ctrl-C still quits
             return False
         targets = self.launch_targets()
         n = len(targets)
-        if key in (ord("j"), curses.KEY_DOWN):
+        act = self.keymap.action("menu.launch", key)
+        if act == "down":
             self.launch_menu_index = (self.launch_menu_index + 1) % n
             return True
-        if key in (ord("k"), curses.KEY_UP):
+        if act == "up":
             self.launch_menu_index = (self.launch_menu_index - 1) % n
             return True
-        if key in (27, ord("q"), curses.KEY_BACKSPACE, 127):
+        if act == "first":
+            self.launch_menu_index = 0
+            return True
+        if act == "last":
+            self.launch_menu_index = n - 1
+            return True
+        if act == "cancel":
             self.launch_menu = None
             self.notice = "launch cancelled"
             return True
+        # The per-target letters follow the target names (w/s/v/p/y today), so they
+        # are dynamic, not remappable -- and a remapped action above wins over them.
         shortcuts = {ord(t[0]): i for i, t in enumerate(targets)}
         if key in shortcuts:
             index = shortcuts[key]
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             index = self.launch_menu_index % n
         else:
             return True  # ignore unknown keys, keep the modal open
@@ -3438,27 +3486,28 @@ class App:
         else:
             self.notice = f"{kind}: {shorten(command, 50)}"
 
-    def handle_source_menu_key(self, key: int) -> bool:
-        # The `H` data-source picker: j/k move, Enter switches, Esc/q cancels. `H` again
-        # advances the highlight so repeated taps still walk the list.
+    def handle_source_menu_key(self, key: int | str) -> bool:
+        # The `H` data-source picker: down/up move, select switches, cancel closes.
+        # advance (`H` again) walks the highlight so repeated taps still move.
         order = sources.source_cycle(self.args)
         if not order:
             self.source_menu = False
             return True
         if key == 3:  # Ctrl-C still quits
             return False
-        if key in (ord("j"), curses.KEY_DOWN, ord("H")):
+        act = self.keymap.action("menu.source", key)
+        if act in ("down", "advance"):
             self.source_menu_index = (self.source_menu_index + 1) % len(order)
-        elif key in (ord("k"), curses.KEY_UP):
+        elif act == "up":
             self.source_menu_index = (self.source_menu_index - 1) % len(order)
-        elif key == ord("g"):
+        elif act == "first":
             self.source_menu_index = 0
-        elif key == ord("G"):
+        elif act == "last":
             self.source_menu_index = len(order) - 1
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             self.source_menu = False
             self.select_source(order[self.source_menu_index % len(order)])
-        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+        elif act == "cancel":
             self.source_menu = False  # cancel, source unchanged
         # any other key: ignore and keep the menu open
         return True
@@ -3864,9 +3913,9 @@ class App:
             self.workflow_index = 0
         self.scroll = 0
 
-    def handle_sort_menu_key(self, key: int) -> bool:
-        # The `s` sort picker: j/k move, Enter applies, Esc/q cancels. `s` again
-        # advances the highlight so repeated taps still walk the list. Mirrors
+    def handle_sort_menu_key(self, key: int | str) -> bool:
+        # The `s` sort picker: down/up move, select applies, cancel closes. advance
+        # (`s` again) walks the highlight so repeated taps still move. Mirrors
         # handle_source_menu_key.
         options = self.sort_menu_options()
         if not options:
@@ -3874,18 +3923,19 @@ class App:
             return True
         if key == 3:  # Ctrl-C still quits
             return False
-        if key in (ord("j"), curses.KEY_DOWN, ord("s")):
+        act = self.keymap.action("menu.sort", key)
+        if act in ("down", "advance"):
             self.sort_menu_index = (self.sort_menu_index + 1) % len(options)
-        elif key in (ord("k"), curses.KEY_UP):
+        elif act == "up":
             self.sort_menu_index = (self.sort_menu_index - 1) % len(options)
-        elif key == ord("g"):
+        elif act == "first":
             self.sort_menu_index = 0
-        elif key == ord("G"):
+        elif act == "last":
             self.sort_menu_index = len(options) - 1
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             self.sort_menu = False
             self.apply_sort_choice(options[self.sort_menu_index % len(options)])
-        elif key in (27, curses.KEY_BACKSPACE, 127, ord("q")):
+        elif act == "cancel":
             self.sort_menu = False  # cancel, order unchanged
         # any other key: ignore and keep the menu open
         return True
@@ -3934,8 +3984,6 @@ class App:
     # one left panel, so 1 is the Projects list and 2/3 have nothing to focus), and 0 is
     # the pane on the right, the way lazygit numbers its main view 0. The digits are
     # position-based, not scope-based: what you press is where you look.
-    PANEL_KEYS = {ord("1"): "years", ord("2"): "months", ord("3"): "days"}
-    DETAIL_KEY = ord("0")
 
     def focus_panel(self, name: str) -> bool:
         # Jump to a sidebar panel. A digit is a jump from *anywhere* (lazygit's rule),
@@ -4531,6 +4579,73 @@ class App:
         self.toast_history = True
         self.toast_history_scroll = 0
 
+    def edit_keymap(self, stdscr: curses.window | None) -> None:
+        # `K`: suspend curses, open keymap.conf in $EDITOR, and reload the bindings
+        # the moment the editor returns -- edit, save, quit, and the new keys are
+        # live, with every problem in the file toasted rather than fatal. The file
+        # is (re)installed first so K works even before any conf exists.
+        path = bindings.ensure_user_keymap()
+        if stdscr is None or not hasattr(stdscr, "refresh"):
+            # Headless (tests / screen doubles): no terminal to hand an editor.
+            self.notify(f"keymap: edit {short_path(path, 60)}", "info")
+            return
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+        try:
+            cmd = shlex.split(editor) + [path]  # $EDITOR may carry flags ("code -w")
+        except ValueError:
+            cmd = [editor, path]
+        import subprocess  # deferred: only this path pays for it
+
+        curses.def_prog_mode()
+        curses.endwin()  # hand the real terminal to the editor
+        error = ""
+        try:
+            subprocess.call(cmd)
+        except OSError as exc:
+            error = str(exc)
+        finally:
+            curses.reset_prog_mode()
+            with contextlib.suppress(curses.error):
+                curses.curs_set(0)
+            # Re-arm the mouse: endwin resets the terminal's tracking mode, and a
+            # reload must not silently cost the wheel and clicks run() enabled.
+            with contextlib.suppress(curses.error, AttributeError):
+                curses.mousemask(
+                    curses.BUTTON1_CLICKED
+                    | curses.BUTTON1_DOUBLE_CLICKED
+                    | curses.BUTTON4_PRESSED
+                    | getattr(self, "_wheel_down", 0)
+                )
+            stdscr.clear()
+            stdscr.refresh()
+        if error:
+            self.notify(f"editor failed ({editor}): {error}", "error")
+            return
+        self.reload_keymap()
+
+    def reload_keymap(self) -> None:
+        # Re-read keymap.conf into the live resolver. Warnings land one per toast in
+        # the N scrollback (marked shown in between so they stack instead of
+        # collapsing onto each other), with a summary card on top.
+        self.keymap = bindings.load_user_keymap()
+        if self.announce_keymap_warnings():
+            return
+        self.notify("keymap reloaded", "success")
+
+    def announce_keymap_warnings(self) -> bool:
+        # Toast every problem the last keymap load found (startup and K both come
+        # through here). True when there was anything to say.
+        warns = self.keymap.warnings
+        if not warns:
+            return False
+        for w in warns:
+            self.notify(f"keymap: {w}", "error")
+            self._mark_toasts_shown()  # stack: each problem is its own line in N
+        plural = "s" if len(warns) != 1 else ""
+        notices = self.keymap.label("main", "notices") or "the notices list"
+        self.notify(f"keymap: {len(warns)} problem{plural} — press {notices} for the list", "error")
+        return True
+
     def active_toasts(self) -> list[Toast]:
         # Drop expired toasts (in place) and return what's still on screen.
         now = self.toast_now()
@@ -5026,28 +5141,22 @@ class App:
         self.notice = "session not found in this source"
         return False
 
-    def _calendar_key(self, key: int) -> bool:
-        # +/- tune the heat-map granularity live (more shades = finer spend bands);
-        # arrow keys walk the day cursor (←/→ = ∓1 week, ↑/↓ = ∓1 day, clamped to the
-        # shown year); Enter drills into the highlighted day.
-        if key in (ord("+"), ord("=")):
-            self.cal_levels = min(HEAT_MAX_LEVELS, self.cal_levels + 1)
-            return True
-        if key in (ord("-"), ord("_")):
-            self.cal_levels = max(HEAT_MIN_LEVELS, self.cal_levels - 1)
-            return True
+    def _calendar_key(self, act: str) -> bool:
+        # The focused Calendar grid: the cursor actions walk the day cursor (←/→ =
+        # ∓1 week, ↑/↓ = ∓1 day, clamped to the shown year); select drills into the
+        # highlighted day. `act` is a trends.chart action, resolved by the caller.
         cursor = self.calendar_cursor()
         if cursor is None:
             return True
-        if key in (10, 13, curses.KEY_ENTER):
+        if act == "select":
             if self.drill_into_date(cursor):
                 self._trend_return = ("Calendar", cursor)  # Esc out of the day returns here
                 self.trends = False
             else:
                 self.notify(f"no sessions on {cursor}", "error")
             return True
-        delta = {curses.KEY_LEFT: -7, curses.KEY_RIGHT: 7, curses.KEY_UP: -1, curses.KEY_DOWN: 1}
-        nxt = datetime.strptime(cursor, "%Y-%m-%d") + timedelta(days=delta[key])
+        delta = {"cursor_left": -7, "cursor_right": 7, "cursor_up": -1, "cursor_down": 1}
+        nxt = datetime.strptime(cursor, "%Y-%m-%d") + timedelta(days=delta[act])
         if nxt.strftime("%Y") == cursor[:4]:  # stay inside the shown calendar year
             self.cal_cursor = nxt.strftime("%Y-%m-%d")
         return True
@@ -5067,24 +5176,24 @@ class App:
         date = (grid_start + timedelta(days=(start_col + col) * 7 + row)).strftime("%Y-%m-%d")
         return date if date[:4] == year else None
 
-    def _trend_bar_key(self, key: int, current: str) -> bool:
-        # Arrow keys walk the bar cursor on a focused Daily/Weekly/Monthly chart
-        # (↑/↓ hop a week on Daily, one bar elsewhere); Enter drills into the
+    def _trend_bar_key(self, act: str, current: str) -> bool:
+        # The cursor actions walk the bar cursor on a focused Daily/Weekly/Monthly
+        # chart (↑/↓ hop a week on Daily, one bar elsewhere); select drills into the
         # highlighted day / month, clamped to the charted buckets.
         pairs = self.trend_bar_data()
         cursor = self._effective_bar_cursor(pairs)
         if cursor is None:
             return True
-        if key in (10, 13, curses.KEY_ENTER):
+        if act == "select":
             self._trend_bar_open(current, cursor)
             return True
         vstep = 7 if current == "Daily" else 1
         delta = {
-            curses.KEY_LEFT: -1,
-            curses.KEY_RIGHT: 1,
-            curses.KEY_UP: -vstep,
-            curses.KEY_DOWN: vstep,
-        }[key]
+            "cursor_left": -1,
+            "cursor_right": 1,
+            "cursor_up": -vstep,
+            "cursor_down": vstep,
+        }[act]
         keys = [k for k, _ in pairs]
         i = keys.index(cursor)
         self.trend_cursor = keys[max(0, min(i + delta, len(keys) - 1))]
@@ -5118,78 +5227,80 @@ class App:
         self.trend_drill = (kind, keys[max(0, min(self.trend_row_index, len(keys) - 1))])
         self.trend_drill_index = 0
 
-    def _trend_drill_key(self, key: int, stdscr: curses.window | None = None) -> bool:
-        # A ranked row's sessions list: j/k/arrows move the cursor, page keys stride,
-        # g/G jump to the ends, Enter opens the selected session itself, Esc/left/
-        # backspace backs out to the ranked tab; any other key closes the overlay.
+    def _trend_drill_key(self, key: int | str, stdscr: curses.window | None = None) -> bool:
+        # A ranked row's sessions list: the scroll keys move the cursor, select opens
+        # the selected session itself, back steps out to the ranked tab; any other
+        # key is swallowed.
         n = len(self.trend_drill_sessions())
-        if key in (ord("j"), curses.KEY_DOWN):
+        act = self.keymap.action("trends.drill", key)
+        if act == "down":
             self.trend_drill_index = min(self.trend_drill_index + 1, max(0, n - 1))
-        elif key in (ord("k"), curses.KEY_UP):
+        elif act == "up":
             self.trend_drill_index = max(0, self.trend_drill_index - 1)
-        elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+        elif act == "page_down":
             self.trend_drill_index = min(
                 self.trend_drill_index + self._page_step(stdscr), max(0, n - 1)
             )
-        elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+        elif act == "page_up":
             self.trend_drill_index = max(0, self.trend_drill_index - self._page_step(stdscr))
-        elif key == ord("g"):
+        elif act == "top":
             self.trend_drill_index = 0
-        elif key == ord("G"):
+        elif act == "bottom":
             self.trend_drill_index = max(0, n - 1)
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             self._open_trend_drill_session()
-        elif key in (ord("h"), ord("l"), curses.KEY_RIGHT):
-            # h/l switch Trends tabs even from inside a drill list -- leave the drill
+        elif act in ("tab_prev", "tab_next"):
+            # Tab switching works even from inside a drill list -- leave the drill
             # and move, instead of falling into "any other key closes the overlay"
-            # (which threw you back to the main view). ←/Esc stay "back to the rows".
+            # (which threw you back to the main view). back stays "back to the rows".
             self.trend_drill = None
             self.trend_focus = False
             self.trend_row_index = 0
-            step = -1 if key == ord("h") else 1
+            step = -1 if act == "tab_prev" else 1
             self.trend_tab = (self.trend_tab + step) % len(self.trend_tabs)
-        elif key in (27, curses.KEY_LEFT, curses.KEY_BACKSPACE, 127, 8):
+        elif act == "back":
             self.trend_drill = None  # back to the ranked rows
-        elif key == ord("$"):
+        elif act == "api_prices":
             self.toggle_api_prices()  # re-prices the list in place, stays open
         else:
-            handled = self._trend_common_key(key)
+            handled = self._trend_common_key(key, "trends.drill")
             if handled is not None:
                 return handled
             # Any other key is swallowed -- it must not tear down the list.
         return True
 
-    def _trend_common_key(self, key: int) -> bool | None:
-        # Overlay-wide keys that work anywhere inside Trends (tabs, focused charts
-        # excepted -- they see arrows/Enter first -- and drill lists): q or T again
-        # close the overlay, ? and P float their overlay above it (closing that one
-        # lands back on Trends), C and c float their picker over the charts, D swaps
-        # real/demo data under them in place, Ctrl-C still quits. None = not one of
-        # these.
-        if key in (ord("q"), ord("T")):
+    def _trend_common_key(self, key: int | str, context: str = "trends") -> bool | None:
+        # Overlay-wide actions that work anywhere inside Trends (tabs, focused charts
+        # excepted -- they see the cursor keys first -- and drill lists): close shuts
+        # the overlay, help and prices float their overlay above it (closing that one
+        # lands back on Trends), theme floats its picker over the charts, demo_toggle
+        # swaps real/demo data under them in place, Ctrl-C still quits. None = not one
+        # of these. `context` is the sub-state that asked, so its own overrides win.
+        act = self.keymap.action(context, key)
+        if act == "close":
             self.trends = False
             self.trend_drill = None
             return True
-        if key == ord("?"):
+        if act == "help":
             self.help = True
             self.help_scroll = 0
             return True
-        if key == ord("P"):
+        if act == "prices":
             self.show_prices = True
             self.prices_scroll = 0
             self.prices_index = 0
             self.prices_model = None
             return True
-        if key == ord("C"):
+        if act == "theme":
             self.open_theme_menu()  # live-previews with the charts as the swatch
             return True
-        if key == ord("H"):
+        if act == "harness":
             self.open_harness_picker()  # narrowing/switching re-scopes the charts in place
             return True
-        if key == ord("M") and self.machines_present:
+        if act == "machine" and self.machines_present:
             self.open_machine_menu()  # narrowing to one box re-scopes the charts in place
             return True
-        if key == ord("D"):
+        if act == "demo_toggle":
             self.toggle_demo()  # anonymize before a screenshot without leaving
             return True
         if key == 3:  # Ctrl-C
@@ -5217,15 +5328,10 @@ class App:
             # The next paint reads getmaxyx() fresh, so just swallow it -- otherwise it
             # falls through to an overlay's "any other key closes" path and shuts it.
             return True
-        if isinstance(key, str):
-            # A non-ASCII character (_read_key keeps only those as str). The text fields
-            # take it; nothing else can -- every other binding is an ASCII key, and the
-            # "32 <= key <= 126" tests below would raise on a str rather than ignore it.
-            if self.filter_active:
-                return self.handle_filter_key(key)
-            if self.whatif_menu:
-                return self.handle_whatif_menu_key(key)
-            return True
+        # A non-ASCII character arrives as a str (_read_key). It flows through the same
+        # routing as any key: the keymap can bind one ("ö = quit" works), the text
+        # fields type it, and every handler resolves through the keymap rather than
+        # arithmetic on the code, so a str never hits an int comparison.
         if self.price_prompt:
             return self.handle_price_prompt_key(key)
         # The C (Colours), H (source) and M (machine filter) pickers float above
@@ -5244,56 +5350,60 @@ class App:
         if self.whatif_menu:  # the `w` target picker floats above everything too
             return self.handle_whatif_menu_key(key)
         if self.help:
-            # A pager like the price overlay: j/k/arrows, page keys and g/G scroll.
-            # Closing is explicit (Esc/q/?) and every other key is swallowed -- it lists
-            # the keys that work here, so it is read *while deciding what to press*, and
-            # a mistyped one must not tear it down (the Trends/P convention).
-            if key in (ord("j"), curses.KEY_DOWN):
+            # A pager like the price overlay: scroll keys page it. Closing is explicit
+            # and every other key is swallowed -- it lists the keys that work here, so
+            # it is read *while deciding what to press*, and a mistyped one must not
+            # tear it down (the Trends/P convention).
+            if key == 3:  # Ctrl-C still quits
+                return False
+            act = self.keymap.action("help", key)
+            if act == "down":
                 self.help_scroll += 1
-            elif key in (ord("k"), curses.KEY_UP):
+            elif act == "up":
                 self.help_scroll = max(0, self.help_scroll - 1)
-            elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+            elif act == "page_down":
                 self.help_scroll += self._page_step(stdscr)  # clamped on draw
-            elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+            elif act == "page_up":
                 self.help_scroll = max(0, self.help_scroll - self._page_step(stdscr))
-            elif key == ord("g"):
+            elif act == "top":
                 self.help_scroll = 0
-            elif key == ord("G"):
+            elif act == "bottom":
                 self.help_scroll = 10_000  # clamped to the last page on draw
-            elif key == ord("C"):
+            elif act == "theme":
                 self.open_theme_menu()  # the Colours picker floats above help too
-            elif key == ord("H") and (self.can_switch_source() or self.machines_present):
+            elif act == "harness" and (self.can_switch_source() or self.machines_present):
                 self.open_harness_picker()  # ...and so does the harness key: the key list
                 # names both, and a list that names a key it then eats is the very thing
                 # this table exists to prevent.
-            elif key == ord("M") and self.machines_present:
+            elif act == "machine" and self.machines_present:
                 self.open_machine_menu()  # the machine filter floats above help too
-            elif key == 3:  # Ctrl-C still quits
-                return False
-            elif key in (27, ord("q"), ord("?")):
+            elif act == "edit_keymap":
+                self.edit_keymap(stdscr)  # change the very keys the list is showing
+            elif act == "close":
                 self.help = False
             return True
         if self.toast_history:
-            # A pager like help/prices: j/k/arrows + page keys + g/G scroll the notices
-            # scrollback; closing is explicit (Esc/q/N), Ctrl-C still quits, and every
-            # other key is swallowed so a mistype can't tear it down.
-            if key in (ord("j"), curses.KEY_DOWN):
+            # A pager like help/prices: the scroll keys page the notices scrollback;
+            # closing is explicit, Ctrl-C still quits, and every other key is swallowed
+            # so a mistype can't tear it down.
+            if key == 3:  # Ctrl-C still quits
+                return False
+            act = self.keymap.action("notices", key)
+            if act == "down":
                 self.toast_history_scroll += 1
-            elif key in (ord("k"), curses.KEY_UP):
+            elif act == "up":
                 self.toast_history_scroll = max(0, self.toast_history_scroll - 1)
-            elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+            elif act == "page_down":
                 self.toast_history_scroll += self._page_step(stdscr)  # clamped on draw
-            elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+            elif act == "page_up":
                 self.toast_history_scroll = max(
                     0, self.toast_history_scroll - self._page_step(stdscr)
                 )
-            elif key == ord("g"):
+            elif act == "top":
                 self.toast_history_scroll = 0
-            elif key == ord("G"):
+            elif act == "bottom":
                 self.toast_history_scroll = 10_000  # clamped to the last page on draw
-            elif key == 3:  # Ctrl-C still quits
-                return False
-            elif key in (27, ord("q"), ord("N")):
+            elif act == "close":
                 self.toast_history = False
             return True
         if self.show_prices:
@@ -5308,73 +5418,54 @@ class App:
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
             if self.trend_drill is not None:
                 return self._trend_drill_key(key, stdscr)
-            if current == "Calendar":
-                # The Calendar tab is modal so the arrows aren't trapped: until you
-                # focus the grid, arrows move between tabs like every other tab. Enter
-                # focuses it (arrows then walk the day cursor, Enter drills in), and Esc
-                # steps back out to tab navigation instead of closing the whole overlay.
-                if self.trend_focus:
-                    if key == 27:  # Esc -> leave focus, back to tab navigation
-                        self.trend_focus = False
-                        return True
-                    if key in (
-                        curses.KEY_LEFT,
-                        curses.KEY_RIGHT,
-                        curses.KEY_UP,
-                        curses.KEY_DOWN,
-                        10,
-                        13,
-                        curses.KEY_ENTER,
-                    ):
-                        return self._calendar_key(key)
-                elif key in (10, 13, curses.KEY_ENTER):
-                    self.trend_focus = True  # focus the grid; arrows now pick days
+            chart_tab = current in ("Daily", "Weekly", "Monthly", "Calendar")
+            focused = chart_tab and self.trend_focus
+            # The charts are modal so the arrows aren't trapped: until you focus one
+            # (select), arrows move between tabs like everywhere else. Focused, the
+            # trends.chart context takes over: cursor keys walk the bars / days,
+            # select drills, back unfocuses -- and anything it doesn't bind falls
+            # through to the plain trends keys below (j/k still page a focused chart).
+            act = self.keymap.action("trends.chart" if focused else "trends", key)
+            if focused:
+                if act == "back":  # leave focus, back to tab navigation
+                    self.trend_focus = False
                     return True
-                if key in (ord("+"), ord("="), ord("-"), ord("_")):
-                    return self._calendar_key(key)  # +/- tune shades in either mode
-            elif current in ("Daily", "Weekly", "Monthly"):
-                # The bar charts follow the Calendar's modal pattern: Enter focuses
-                # the chart (arrows then walk the bars, Enter drills into the
-                # highlighted day / month), Esc steps back out to tab navigation.
-                if self.trend_focus:
-                    if key == 27:
-                        self.trend_focus = False
-                        return True
-                    if key in (
-                        curses.KEY_LEFT,
-                        curses.KEY_RIGHT,
-                        curses.KEY_UP,
-                        curses.KEY_DOWN,
-                        10,
-                        13,
-                        curses.KEY_ENTER,
-                    ):
-                        return self._trend_bar_key(key, current)
-                elif key in (10, 13, curses.KEY_ENTER):
-                    self.trend_focus = True  # focus the chart; arrows now pick bars
-                    return True
-            else:
-                # Ranked tabs (Models/Providers/Sources): j/k move the row cursor
-                # directly (no pager competes for them), Enter opens its sessions.
-                if key in (10, 13, curses.KEY_ENTER):
+                if act in ("cursor_left", "cursor_right", "cursor_up", "cursor_down", "select"):
+                    if current == "Calendar":
+                        return self._calendar_key(act)
+                    return self._trend_bar_key(act, current)
+            elif chart_tab and act == "select":
+                self.trend_focus = True  # focus the chart; the cursor keys now pick
+                return True
+            if current == "Calendar" and act in ("shades_more", "shades_less"):
+                self.cal_levels = (
+                    min(HEAT_MAX_LEVELS, self.cal_levels + 1)
+                    if act == "shades_more"
+                    else max(HEAT_MIN_LEVELS, self.cal_levels - 1)
+                )
+                return True
+            if not chart_tab:
+                # Ranked tabs (Models/Providers/Sources): down/up move the row cursor
+                # directly (no pager competes for them), select opens its sessions.
+                if act == "select":
                     self._open_trend_drill()
                     return True
-                if key in (ord("j"), curses.KEY_DOWN, ord("k"), curses.KEY_UP):
+                if act in ("down", "up"):
                     n = len(self.trend_ranked_keys())
-                    step = 1 if key in (ord("j"), curses.KEY_DOWN) else -1
+                    step = 1 if act == "down" else -1
                     self.trend_row_index = max(0, min(self.trend_row_index + step, n - 1))
                     return True
-            if key in (ord("h"), curses.KEY_LEFT):
+            if act == "tab_prev":
                 self.trend_tab = (self.trend_tab - 1) % len(self.trend_tabs)
                 self.trend_focus = False  # switching tabs leaves any focused canvas
                 self.trend_row_index = 0
-            elif key in (ord("l"), curses.KEY_RIGHT):
+            elif act == "tab_next":
                 self.trend_tab = (self.trend_tab + 1) % len(self.trend_tabs)
                 self.trend_focus = False
                 self.trend_row_index = 0
-            elif key in (ord("j"), curses.KEY_DOWN, ord("["), ord("k"), curses.KEY_UP, ord("]")):
+            elif act in ("down", "older", "up", "newer"):
                 # Page the Daily tab's month / the Weekly tab's week / the Calendar's year.
-                older = key in (ord("j"), curses.KEY_DOWN, ord("["))
+                older = act in ("down", "older")
                 if current == "Daily":
                     n = len(self.trend_months())
                     self.trend_month_index = self._step_trend_index(
@@ -5389,16 +5480,16 @@ class App:
                     n = len(self.calendar_years())
                     self.trend_year_index = self._step_trend_index(self.trend_year_index, n, older)
                     self.cal_cursor = None  # re-anchor the cursor on the new year's peak
-            elif key == ord("$"):
+            elif act == "api_prices":
                 self.toggle_api_prices()  # re-prices the charts in place, stays open
-            elif key == 27:
-                self.trends = False  # Esc (with nothing focused) closes the overlay
+            elif act == "back":
+                self.trends = False  # back (with nothing focused) closes the overlay
             else:
                 handled = self._trend_common_key(key)
                 if handled is not None:
                     return handled
                 # Any other key is swallowed: Trends is interactive, so a mistyped
-                # key must not tear the overlay down. Closing is explicit (Esc/q/T).
+                # key must not tear the overlay down. Closing is explicit.
             return True
 
         if self.sort_menu:
@@ -5408,16 +5499,17 @@ class App:
         if self.launch_menu is not None:
             return self.handle_launch_key(key)
 
-        if key in (ord("q"), 3):
+        act = self.keymap.action("main", key)
+        if key == 3 or act == "quit":
             return False
-        if key == ord("?"):
+        if act == "help":
             self.help = True
             self.help_scroll = 0
             return True
-        if key == ord("N"):
+        if act == "notices":
             self.open_notices()  # the notices scrollback: read a toast that faded
             return True
-        if key == ord("T"):
+        if act == "trends":
             self.trends = True
             self.trend_month_index = 0  # start at the most recent month
             self.trend_week_index = 0  # and the most recent week
@@ -5428,28 +5520,31 @@ class App:
             self.trend_drill = None
             self.trend_focus = False  # land unfocused (arrows pick tabs)
             return True
-        if key == ord("P"):
+        if act == "prices":
             self.show_prices = True
             self.prices_scroll = 0
             self.prices_index = 0
             self.prices_model = None
             return True
-        if key == ord("r"):
+        if act == "reload":
             self.reload()
             return True
-        if key == ord("H"):
+        if act == "harness":
             self.open_harness_picker()  # fleet: filter harness (keep boxes); else swap store
             return True
-        if key == ord("M"):
+        if act == "machine":
             self.open_machine_menu()  # narrow every view to one box (fleet); no-op off one
             return True
-        if key == ord("C"):
+        if act == "theme":
             self.open_theme_menu()
             return True
-        if key == ord("D"):
+        if act == "demo":
             self.open_demo_menu()  # pick what to anonymize (Enter applies; unchecked = real)
             return True
-        if key == ord("+"):
+        if act == "edit_keymap":
+            self.edit_keymap(stdscr)  # $EDITOR on keymap.conf, reloaded on return
+            return True
+        if act == "maximize":
             # In browse, + drills in like Enter (its old alias); once the detail is
             # the active pane it becomes lazygit's screen-mode key: toggle between
             # the split and a full-screen detail.
@@ -5458,19 +5553,19 @@ class App:
             else:
                 self.drill_in()
             return True
-        if key == ord("a"):
+        if act == "all_time":
             self.set_all_time()
             return True
-        if key == ord("R"):
+        if act == "range":
             self.prompt_range(stdscr)
             return True
-        if key == ord("p"):
+        if act == "mode_projects":
             self.set_browse_mode("projects")
             return True
-        if key == ord("t"):
+        if act == "mode_time":
             self.set_browse_mode("time")
             return True
-        if key == ord("m"):
+        if act == "mode_machines":
             # Machines mode: only meaningful with a fleet (>=2 boxes). Off a fleet it
             # would be a single all-"unknown" list, so say what's missing instead.
             if self.machines_present:
@@ -5478,7 +5573,7 @@ class App:
             else:
                 self.notify("machines view needs a fleet — see --pull", "error")
             return True
-        if key == ord("F"):
+        if act == "refresh_machines":
             # Fetch: re-pull the selected box (Machines mode) or every pulled box.
             if self.can_refresh_machines():
                 self.request_machine_refresh(self.refresh_target())
@@ -5487,25 +5582,25 @@ class App:
             else:
                 self.notify("refresh needs a fleet (--pull / --remote)", "error")
             return True
-        if key in (ord("s"), ord("S")):
+        if act == "sort":
             self.open_sort_menu()
             return True
-        if key == ord("i"):
+        if act == "ignore":
             self.toggle_ignore()
             return True
-        if key == ord("I"):
+        if act == "show_ignored":
             self.toggle_ignored_projects_view()
             return True
-        if key == ord("b"):
+        if act == "bookmark":
             self.toggle_bookmark()
             return True
-        if key == ord("B"):
+        if act == "show_bookmarks":
             self.toggle_bookmarks_view()
             return True
-        if key == ord("n"):
+        if act == "note":
             self.edit_note(stdscr)
             return True
-        if key in (ord("f"), ord("/")):
+        if act == "filter":
             if not self.can_filter_current_view():
                 self.notify(
                     "nothing to filter here — open a sessions, projects, or models list", "error"
@@ -5514,7 +5609,7 @@ class App:
             self.filter_active = True
             self._filter_before = self.query
             return True
-        if key == ord("x"):
+        if act == "clear_filter":
             if self.query:
                 self.query = ""
                 self.workflow_index = 0
@@ -5523,82 +5618,85 @@ class App:
             else:
                 self.notify("no active filter", "error")
             return True
-        if key == ord("z") and self.view == "session":
+        if act == "fold_turns":
             # On the Turns tab, z expands/folds every ▸ prompt group — its full text and
             # per-turn rows (vim's fold key); a click on one header toggles just that group.
-            tabs = self.current_tabs()
-            if tabs and tabs[self.tab % len(tabs)] == "Turns":
-                self.turns_full = not self.turns_full
-                self._turns_expanded.clear()
-                # Expanding all inserts bodies before a later cursor -- follow it so the
-                # highlighted header doesn't slide off-screen with the scroll unchanged.
-                self._turn_follow = True
-                self.notice = "turns expanded" if self.turns_full else "folded to prompts"
-                return True
-        if key == ord("e"):
+            if self.view == "session":
+                tabs = self.current_tabs()
+                if tabs and tabs[self.tab % len(tabs)] == "Turns":
+                    self.turns_full = not self.turns_full
+                    self._turns_expanded.clear()
+                    # Expanding all inserts bodies before a later cursor -- follow it so
+                    # the highlighted header doesn't slide off-screen with the scroll
+                    # unchanged.
+                    self._turn_follow = True
+                    self.notice = "turns expanded" if self.turns_full else "folded to prompts"
+            return True
+        if act == "export":
             self.export_current()
             return True
-        if key == ord("o"):
+        if act == "open_dir":
             self.open_current()
             return True
-        if key == ord("L"):
+        if act == "launch":
             self.launch_current()
             return True
-        if key == ord("$"):
+        if act == "api_prices":
             self.toggle_api_prices()
             return True
-        if key == ord("w"):
+        if act == "whatif":
             self.toggle_whatif()  # pick a target model, or clear the active one
             return True
-        if key == ord("\t"):
+        if act == "cycle_panel":
             self.cycle_focus(1)
             return True
-        if key in self.PANEL_KEYS:
-            self.focus_panel(self.PANEL_KEYS[key])  # 1/2/3: jump to a sidebar panel
+        if act in ("panel_1", "panel_2", "panel_3"):
+            # Jump to a sidebar panel — its number is in its title.
+            self.focus_panel(self.FOCUS_CYCLE[int(act[-1]) - 1])
             return True
-        if key == self.DETAIL_KEY:
-            self.focus_detail()  # 0: the pane on the right
+        if act == "panel_detail":
+            self.focus_detail()  # the pane on the right
             return True
-        if key in (10, 13, curses.KEY_ENTER):
-            # On the Turns tab Enter folds/unfolds the selected ▸ group; everywhere
+        if act == "select":
+            # On the Turns tab select folds/unfolds the selected ▸ group; everywhere
             # else it drills in (and it still does here when there's no group to toggle).
             if self._on_turns_tab() and self._toggle_turn_cursor():
                 return True
             self.drill_in()
             return True
-        if key in (27, curses.KEY_BACKSPACE, 127):
+        if act == "back":
             self.drill_out()  # session -> zoom -> browse; no-op when browsing
             return True
-        if key == curses.KEY_BTAB:
+        if act == "cycle_panel_back":
             if self.view == "browse":
                 self.cycle_focus(-1)
             else:
                 self.drill_out()
             return True
-        if key in (ord("h"), curses.KEY_LEFT):
+        if act == "tab_prev":
             self.tab = (self.tab - 1) % len(self.current_tabs())
             self.scroll = 0
             return True
-        if key in (ord("l"), curses.KEY_RIGHT):
+        if act == "tab_next":
             self.tab = (self.tab + 1) % len(self.current_tabs())
             self.scroll = 0
             return True
-        if key == ord("g"):
+        if act == "top":
             self.jump(to_end=False, stdscr=stdscr)
             return True
-        if key == ord("G"):
+        if act == "bottom":
             self.jump(to_end=True, stdscr=stdscr)
             return True
-        if key in (ord("j"), curses.KEY_DOWN):
+        if act == "down":
             self.move(1)
             return True
-        if key in (ord("k"), curses.KEY_UP):
+        if act == "up":
             self.move(-1)
             return True
-        if key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+        if act == "page_down":
             self.move(self._page_step(stdscr))
             return True
-        if key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+        if act == "page_up":
             self.move(-self._page_step(stdscr))
             return True
         return True
@@ -5653,55 +5751,53 @@ class App:
                 self.prices_index = i
                 break
 
-    def _handle_price_models_key(self, key: int, stdscr: curses.window | None = None) -> bool:
-        # The P overlay's model list: j/k/arrows move a cursor, page keys stride,
-        # g/G jump to ends, Enter drills into the selected model's sessions, s sorts
-        # by a column, p cycles the layout (by vendor / by provider / flat), f
-        # filters, r refreshes, e exports the table. Closing is explicit (Esc/q/P),
-        # like the Trends overlay -- a mistyped key must not tear the table down.
+    def _handle_price_models_key(self, key: int | str, stdscr: curses.window | None = None) -> bool:
+        # The P overlay's model list: the scroll keys move a cursor, select drills
+        # into the selected model's sessions, sort sorts by a column, cycle_view walks
+        # the layout (by vendor / by provider / flat), filter filters, refresh
+        # refreshes, export exports the table. Closing is explicit, like the Trends
+        # overlay -- a mistyped key must not tear the table down.
         n = len(self.priced_model_names())
-        if key in (ord("s"), ord("S")):
+        act = self.keymap.action("prices", key)
+        if act == "sort":
             self.open_sort_menu()
             return True
-        if key == ord("p"):
-            self.cycle_prices_view()
-            return True
-        if key in (ord("l"), curses.KEY_RIGHT):
+        if act in ("cycle_view", "tab_next"):
             self.cycle_prices_view()  # the tabs read left-to-right, like Trends
             return True
-        if key in (ord("h"), curses.KEY_LEFT):
+        if act == "tab_prev":
             self.cycle_prices_view(-1)
             return True
-        if key == ord(" "):
+        if act == "pin":
             self.toggle_price_pin()
             return True
-        if key in (ord("j"), curses.KEY_DOWN):
+        if act == "down":
             self.prices_index = min(self.prices_index + 1, max(0, n - 1))
-        elif key in (ord("k"), curses.KEY_UP):
+        elif act == "up":
             self.prices_index = max(0, self.prices_index - 1)
-        elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+        elif act == "page_down":
             self.prices_index = min(self.prices_index + self._page_step(stdscr), max(0, n - 1))
-        elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+        elif act == "page_up":
             self.prices_index = max(0, self.prices_index - self._page_step(stdscr))
-        elif key == ord("g"):
+        elif act == "top":
             self.prices_index = 0
-        elif key == ord("G"):
+        elif act == "bottom":
             self.prices_index = max(0, n - 1)
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "select":
             names = self.priced_model_names()
             if names:
                 self.prices_model = names[max(0, min(self.prices_index, len(names) - 1))]
                 self.prices_scroll = 0
-        elif key in (ord("r"), ord("R")):
+        elif act == "refresh":
             self.refresh_prices_action()  # keeps the overlay open
-        elif key in (ord("f"), ord("/")):
+        elif act == "filter":
             self.filter_active = True
             self._filter_before = self.query
             self.prices_scroll = 0
-        elif key == ord("e"):
+        elif act == "export":
             self.export_current()  # _export_dataset sees show_prices; overlay stays open
-        elif key == 27:
-            self.show_prices = False  # Esc closes the overlay from the model list
+        elif act == "back":
+            self.show_prices = False  # closes the overlay from the model list
         else:
             handled = self._prices_common_key(key)
             if handled is not None:
@@ -5709,102 +5805,102 @@ class App:
             # Any other key is swallowed -- closing is explicit.
         return True
 
-    def _prices_common_key(self, key: int) -> bool | None:
-        # Overlay-wide keys that work anywhere inside the P overlay (model list and
-        # the per-model drill): Esc handling stays contextual at the call sites; q or
-        # P again close the overlay, ? floats help above it (closing that lands back
-        # here), C and c float their picker over the table, $ re-prices the app
-        # behind it in place, D swaps real/demo data under it, Ctrl-C still quits.
-        if key in (ord("q"), ord("P")):
+    def _prices_common_key(self, key: int | str, context: str = "prices") -> bool | None:
+        # Overlay-wide actions that work anywhere inside the P overlay (model list and
+        # the per-model drill): back stays contextual at the call sites; close shuts
+        # the overlay, help floats above it (closing that lands back here), theme its
+        # picker over the table, api_prices re-prices the app behind it in place,
+        # demo_toggle swaps real/demo data under it, Ctrl-C still quits.
+        act = self.keymap.action(context, key)
+        if act == "close":
             self.show_prices = False
             self.prices_model = None
             return True
-        if key == ord("?"):
+        if act == "help":
             self.help = True
             self.help_scroll = 0
             return True
-        if key == ord("C"):
+        if act == "theme":
             self.open_theme_menu()
             return True
-        if key == ord("H"):
+        if act == "harness":
             self.open_harness_picker()
             return True
-        if key == ord("M") and self.machines_present:
+        if act == "machine" and self.machines_present:
             self.open_machine_menu()
             return True
-        if key == ord("D"):
+        if act == "demo_toggle":
             self.toggle_demo()
             return True
-        if key == ord("$"):
+        if act == "api_prices":
             self.toggle_api_prices()
             return True
         if key == 3:  # Ctrl-C
             return False
         return None
 
-    def _handle_price_sessions_key(self, key: int, stdscr: curses.window | None = None) -> bool:
-        # The P overlay's per-model drill-in: j/k/arrows, page keys and g/G scroll the
-        # session list; Esc/left/backspace backs out to the model list; q/P close the
-        # overlay; any other key is swallowed (closing is explicit, like Trends).
-        if key in (ord("j"), curses.KEY_DOWN):
+    def _handle_price_sessions_key(
+        self, key: int | str, stdscr: curses.window | None = None
+    ) -> bool:
+        # The P overlay's per-model drill-in: the scroll keys page the session list;
+        # back steps out to the model list; close shuts the overlay; any other key is
+        # swallowed (closing is explicit, like Trends).
+        act = self.keymap.action("prices.sessions", key)
+        if act == "down":
             self.prices_scroll += 1
-        elif key in (ord("k"), curses.KEY_UP):
+        elif act == "up":
             self.prices_scroll = max(0, self.prices_scroll - 1)
-        elif key in (curses.KEY_NPAGE, 4):  # PgDn / Ctrl-D
+        elif act == "page_down":
             self.prices_scroll += self._page_step(stdscr)  # clamped on draw
-        elif key in (curses.KEY_PPAGE, 21):  # PgUp / Ctrl-U
+        elif act == "page_up":
             self.prices_scroll = max(0, self.prices_scroll - self._page_step(stdscr))
-        elif key == ord("g"):
+        elif act == "top":
             self.prices_scroll = 0
-        elif key == ord("G"):
+        elif act == "bottom":
             self.prices_scroll = 10_000  # clamped to the last page on draw
-        elif key in (27, curses.KEY_LEFT, curses.KEY_BACKSPACE, 127, 8):
+        elif act == "back":
             self.prices_model = None  # back to the model list
             self.prices_scroll = 0
         else:
-            handled = self._prices_common_key(key)
+            handled = self._prices_common_key(key, "prices.sessions")
             if handled is not None:
                 return handled
             # Any other key is swallowed -- it must not tear down the list.
         return True
 
     def handle_filter_key(self, key: int | str) -> bool:
-        if isinstance(key, str):  # a non-ASCII character: type it (see _read_key)
-            if key.isprintable():
-                self.query += key
-                self._filter_edited()
-            return True
         # Live fuzzy filter mode (`/`): printable keys edit the query and every
-        # list re-ranks on the very next paint. Arrows still move the selection,
+        # list re-ranks on the very next paint. down/up still move the selection,
         # so you can land on a match without leaving the mode.
         if key == 3:  # Ctrl-C still quits
             return False
-        if key == 27:  # Esc restores the query from before `/`
+        act = self.keymap.action("filter", key)
+        if act == "cancel":  # restore the query from before `/`
             self.query = self._filter_before
             self.filter_active = False
             self._filter_edited()
             self.notice = "filter cancelled"
-        elif key in (10, 13, curses.KEY_ENTER):
+        elif act == "confirm":
             self.filter_active = False
             # The committed query already shows as a persistent orange "filter:" chip in
             # the header, so a "filter: x" notice would just duplicate it -- only the
             # cleared case (no chip) needs a word.
             self.notice = "" if self.query else "filter cleared"
-        elif key in (curses.KEY_BACKSPACE, 127, 8):
+        elif act == "erase":
             self.query = self.query[:-1]
             self._filter_edited()
-        elif key == 21:  # Ctrl-U clears the input
+        elif act == "clear":
             self.query = ""
             self._filter_edited()
-        elif key in (curses.KEY_UP, curses.KEY_DOWN):
+        elif act in ("down", "up"):
             if self.show_prices:
-                # Arrows move the P model cursor so you can land on a filter match.
-                self.prices_index += 1 if key == curses.KEY_DOWN else -1
+                # The move keys walk the P model cursor so you can land on a match.
+                self.prices_index += 1 if act == "down" else -1
                 self.prices_index = max(0, self.prices_index)
             else:
-                self.move(1 if key == curses.KEY_DOWN else -1)
-        elif 32 <= key <= 126:
-            self.query += chr(key)
+                self.move(1 if act == "down" else -1)
+        elif (ch := bindings.typed_char(key)) is not None:
+            self.query += ch
             self._filter_edited()
         return True
 
@@ -5837,7 +5933,7 @@ class App:
         if self.price_prompt:
             if click or double:
                 self.price_prompt = False  # click = not now
-                self.notice = "skipped — fetch anytime with --refresh-models or r in the P view"
+                self.notice = f"skipped — {self.price_fetch_hint()}"
             return True
         if self.theme_menu:
             if up:
@@ -6179,7 +6275,8 @@ class App:
         value = self.prompt_text(
             stdscr,
             "range: ",
-            "all · 30d · 2m · 2026 · 2026-05 · start..end · Esc cancel",
+            "all · 30d · 2m · 2026 · 2026-05 · start..end · "
+            f"{self.keymap.label('input', 'cancel')} cancel",
             initial,
         )
         if value is None:
@@ -6251,7 +6348,7 @@ class App:
                     continue  # interrupted read (resize/signal): repaint and wait again
                 if key == curses.KEY_RESIZE:
                     continue  # repaint against the new size
-                value, done, cancelled = self.filter_prompt_step(value, key, limit)
+                value, done, cancelled = self.filter_prompt_step(value, key, limit, self.keymap)
                 if cancelled:
                     return None
                 if done:
@@ -6279,37 +6376,39 @@ class App:
         return shown, display_width(head + shown), max_len
 
     @staticmethod
-    def filter_prompt_step(value: str, key: int | str, max_len: int) -> tuple[str, bool, bool]:
+    def filter_prompt_step(
+        value: str, key: int | str, max_len: int, keymap: bindings.Keymap | None = None
+    ) -> tuple[str, bool, bool]:
         # One edit step of the modal input line. `key` is an int (getch / special keys)
         # or a str (get_wch: any character the user actually typed, ASCII or not).
-        # Returns the new value + (done, cancelled).
+        # Returns the new value + (done, cancelled). Resolved against the [input]
+        # context (prompt_text passes the live keymap; headless callers get defaults).
+        km = keymap or bindings.DEFAULT
         if isinstance(key, str):
             if not key:
                 return value, False, False
             code = ord(key) if len(key) == 1 else -1
-            if code in (27, 10, 13, 127, 8, 21, 23) or (0 <= code < 32):
-                key = code  # a control character: fall through to the int handling
-            elif len(value) < max_len and key.isprintable():
-                return value + key, False, False
-            else:
-                return value, False, False
-        if key == 27:  # Esc cancels without changing the current value.
+            if 0 <= code < 32 or code == 127:
+                key = code  # a control character: resolve it like the int it is
+        act = km.action("input", key)
+        if act == "cancel":  # cancels without changing the current value
             return value, False, True
-        if key in (10, 13, curses.KEY_ENTER):
+        if act == "confirm":
             return value, True, False
-        if key in (curses.KEY_BACKSPACE, 127, 8):
+        if act == "erase":
             return value[:-1], False, False
         # A note is long enough that erasing it one key at a time is a chore, so the
-        # readline reflexes work: Ctrl-U kills the line, Ctrl-W the last word. (Ctrl-U
+        # readline reflexes work: kill_line (Ctrl-U) and kill_word (Ctrl-W). (Ctrl-U
         # is what the live `/` filter already binds -- same muscle memory.)
-        if key == 21:  # Ctrl-U
+        if act == "kill_line":
             return "", False, False
-        if key == 23:  # Ctrl-W: back to the previous word boundary (bash keeps the space)
+        if act == "kill_word":  # back to the previous word boundary (bash keeps the space)
             stripped = value.rstrip()
             cut = stripped.rfind(" ")
             return (stripped[: cut + 1] if cut >= 0 else ""), False, False
-        if isinstance(key, int) and 32 <= key <= 126 and len(value) < max_len:
-            return value + chr(key), False, False
+        ch = bindings.typed_char(key)
+        if ch is not None and len(value) < max_len:
+            return value + ch, False, False
         return value, False, False
 
     def current_tabs(self) -> tuple[str, ...]:
