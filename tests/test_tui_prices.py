@@ -189,9 +189,9 @@ def test_prices_pinning_floats_a_shortlist_and_persists():
     app.handle_key(None, ord(" "))
     assert app.pinned_models == set()
     app.pinned_models = {"openai/gpt-5-mini", "anthropic/claude-opus-4-8"}
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with([workflow("a", "2026-06-01 12:00:00")])
@@ -199,9 +199,9 @@ def test_prices_pinning_floats_a_shortlist_and_persists():
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
     assert restored.pinned_models == {"openai/gpt-5-mini", "anthropic/claude-opus-4-8"}
 
 
@@ -648,8 +648,8 @@ def _price_prompt_app(model="openrouter/exotic-zzz-9", unpriced=500):
 
 def test_price_prompt_triggers_on_unknown_models():
     with tempfile.TemporaryDirectory() as tmp:
-        old = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        old = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = tmp
         try:
             ot.invalidate_price_cache()
             app = _price_prompt_app()
@@ -663,15 +663,15 @@ def test_price_prompt_triggers_on_unknown_models():
         finally:
             ot.invalidate_price_cache()
             if old is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old
+                os.environ["XDG_CACHE_HOME"] = old
 
 
 def test_price_prompt_skipped_when_known_dismissed_or_no_unpriced():
     with tempfile.TemporaryDirectory() as tmp:
-        old = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        old = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = tmp
         try:
             ot.invalidate_price_cache()
             # a hardcoded model -> no prompt
@@ -695,15 +695,15 @@ def test_price_prompt_skipped_when_known_dismissed_or_no_unpriced():
         finally:
             ot.invalidate_price_cache()
             if old is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old
+                os.environ["XDG_CACHE_HOME"] = old
 
 
 def test_price_prompt_keys_fetch_dismiss_and_skip():
     with tempfile.TemporaryDirectory() as tmp:
-        old = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        old = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = tmp
         try:
             ot.invalidate_price_cache()
             # y fetches (stubbed) and closes
@@ -728,6 +728,6 @@ def test_price_prompt_keys_fetch_dismiss_and_skip():
         finally:
             ot.invalidate_price_cache()
             if old is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old
+                os.environ["XDG_CACHE_HOME"] = old

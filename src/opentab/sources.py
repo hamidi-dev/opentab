@@ -6,6 +6,7 @@ import glob
 import os
 import sys
 
+from opentab import paths
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import ClaudeStore
 from opentab.stores.codex import CodexStore
@@ -21,15 +22,25 @@ from opentab.stores.remote import RemoteStore
 from opentab.stores.vscode import VscodeStore
 from opentab.stores.zaly import ZalyStore, default_zaly_data_dir
 
-DEFAULT_CSV_PATH = os.path.expanduser("~/.config/opentab/requests.csv")
-DEFAULT_JSONL_PATH = os.path.expanduser("~/.config/opentab/requests.jsonl")
+
+def _default_requests_path(name: str) -> str:
+    # Auto-discovered input log (a CSV/NDJSON you point opentab at). It's user-provided
+    # data -> the XDG data dir; but keep finding a file a pre-split user left in the old
+    # config dir, so an upgrade doesn't silently stop discovering it.
+    data = os.path.join(paths.data_dir(), name)
+    legacy = os.path.join(paths.config_dir(), name)
+    return legacy if (not os.path.exists(data) and os.path.exists(legacy)) else data
+
+
+DEFAULT_CSV_PATH = _default_requests_path("requests.csv")
+DEFAULT_JSONL_PATH = _default_requests_path("requests.jsonl")
 
 
 def default_remotes_dir() -> str:
     # Where `opentab --pull` drops (and `--source remote` reads) other machines'
-    # exported summaries -- one *.json per machine. Beside the warm-start cache.
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "opentab", "remotes")
+    # exported summaries -- one *.json per machine. A fetched cache -> the XDG cache dir
+    # (re-`pull` to repopulate); the machine list itself is remotes.json in the config dir.
+    return os.path.join(paths.cache_dir(), "remotes")
 
 
 def _default_pi_dir() -> str:

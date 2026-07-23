@@ -190,9 +190,9 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 *Bring your own ledger · mixed per row*
 
 - **Reads** any CSV (`--csv`) or NDJSON (`--jsonl`) of logged API requests, one request
-  per row/line — auto-discovered at `~/.config/opentab/requests.csv` /
-  `requests.jsonl` if present. Log your own gateway or proxy traffic and browse it
-  like any other harness.
+  per row/line — auto-discovered at `~/.local/share/opentab/requests.csv` /
+  `requests.jsonl` if present (a file left in the old `~/.config/opentab/` is still
+  found). Log your own gateway or proxy traffic and browse it like any other harness.
 - **Cost**: per row — a populated cost column is real spend; rows without one are
   estimated under `$`.
 - **Notes**: each request is one turn on the Turns tab, grouped under its `prompt`;

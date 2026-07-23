@@ -78,7 +78,7 @@ Want rates fresher than your release? Refresh from models.dev:
 opentab --refresh-models     # fetch every provider's list prices into a local cache
 ```
 
-This writes `~/.config/opentab/prices.json` — the one time runtime OpenTab touches
+This writes `~/.cache/opentab/prices.json` — the one time runtime OpenTab touches
 the network, and only on this explicit command (stdlib `urllib`, no dependency). The
 newer of the cache and the bundled snapshot wins; you can also press **`r`** inside
 `P` to refresh in place. The `P` overlay's source line names which layer is serving

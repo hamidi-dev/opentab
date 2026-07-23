@@ -27,14 +27,16 @@ import json
 import os
 from dataclasses import asdict
 
+from opentab import paths
 from opentab.models import Workflow
 
 CACHE_VERSION = 4  # bump when the cached payload shape changes (invalidates old files)
 
 
 def cache_dir() -> str:
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "opentab", "cache")
+    # The warm-start rollups get their own subdir of the XDG cache dir, kept apart from
+    # the sibling prices.json / remotes/ so a CACHE_VERSION wipe touches only these.
+    return os.path.join(paths.cache_dir(), "cache")
 
 
 class CachedStore:

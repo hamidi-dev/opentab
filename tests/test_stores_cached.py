@@ -12,8 +12,8 @@ from tests._support import workflow
 
 def test_cached_store_warm_start_and_invalidation():
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
         data = os.path.join(tmp, "data.jsonl")
         with open(data, "w") as fh:
             fh.write("one\n")
@@ -75,15 +75,15 @@ def test_cached_store_warm_start_and_invalidation():
             assert isinstance(raw, Backend)
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
 def test_cached_store_serves_records_cost_and_survives_field_drift():
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
         data = os.path.join(tmp, "data.jsonl")
         with open(data, "w") as fh:
             fh.write("one\n")
@@ -149,9 +149,9 @@ def test_cached_store_serves_records_cost_and_survives_field_drift():
             assert c4.served_from_cache is False
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
 def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
@@ -161,8 +161,8 @@ def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
     # reload (r) / the browser's refresh never shows sessions written since -- the
     # reported "--web refresh doesn't get new sessions" bug.
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
         db = os.path.join(tmp, "opencode.db")
         # Writer stays open the whole test with autocheckpoint off, so every commit
         # stays in the -wal file and the main .db is never checkpointed/rewritten.
@@ -221,6 +221,6 @@ def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
         finally:
             w.close()
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg

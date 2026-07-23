@@ -20,18 +20,28 @@ To fold git worktrees into their main repo it also reads project `.git` files (n
 
 ## Everything it writes
 
-Nothing near your tools' data — only its own files:
+Nothing near your tools' data — only its own files, split across the standard XDG
+base directories (each honors its `XDG_*_HOME` override; the defaults are shown):
 
-- `~/.config/opentab/state.json` — a small preferences file (your last harness,
-  range, and sort; disable with `--no-state`).
-- `~/.config/opentab/prices.json` — the optional model-price cache, written **only**
-  when you run `--refresh-models` or press `r` in the `P` overlay.
-- `~/.config/opentab/cache/` — a warm-start rollup cache, one JSON per backend,
-  rewritten after a parse when that backend's files change (off under
-  `--demo`/`--no-cache`). It never changes what you see — a stale rollup is never
-  shown.
+- **Config** — `~/.config/opentab/`: `keymap.conf` (your key bindings), `remotes.json`
+  (the saved machine list for `--pull`/`--remote`), and an optional `launcher` hook.
+- **State** — `~/.local/state/opentab/state.json`: a small preferences file (your last
+  harness, range, and sort; disable with `--no-state`).
+- **Data** — `~/.local/share/opentab/notes.json`: your session notes, the one thing you
+  authored — saved on the edit and never pruned.
+- **Cache** — `~/.cache/opentab/`: `cache/` (a warm-start rollup, one JSON per backend,
+  rewritten after a parse when that backend's files change — off under
+  `--demo`/`--no-cache`, and it never changes what you see: a stale rollup is never
+  shown), `prices.json` (the optional model-price cache, written **only** when you run
+  `--refresh-models` or press `r` in the `P` overlay), and `remotes/` (summaries pulled
+  from other machines). Cache files are safe to delete; opentab regenerates them.
 - Only when you ask: an `opentab-*.csv` export (on `e`) or the HTML browser file
   (on `--html`) in the current directory.
+
+Upgrading from a version that kept everything under `~/.config/opentab/`? The first run
+relocates it all automatically — `state.json` and `notes.json` to their new homes, and
+the caches into `~/.cache/opentab/` — leaving the old config dir holding only real config
+(`keymap.conf`, `launcher`, `remotes.json`). Nothing is lost.
 
 ## Network
 

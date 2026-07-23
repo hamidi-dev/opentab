@@ -75,7 +75,7 @@ worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock st
 |-----|--------|
 | `i` / `I` | Ignore / unignore the selection; `I` reveals hidden rows so they can be unignored |
 | `b` / `B` | Bookmark ★ the selected session (remembered between runs); `B` shows only bookmarks, within the active range |
-| `n` | Note ✎ on the selected session — *why* it cost what it did, which no token count records. Opens a prompt seeded with the existing note (`Enter` saves · `Ctrl-U` clears · `Ctrl-W` kills a word · `Esc` cancels); saving an empty note removes it. An annotated session shows a `✎` in every list and the note in its **Overview**; `f`/`/` searches note text too, and `e` exports it as a `note` column. Notes live in their own `~/.config/opentab/notes.json` and are written the moment you save. Off under `--demo` / `--no-state` |
+| `n` | Note ✎ on the selected session — *why* it cost what it did, which no token count records. Opens a prompt seeded with the existing note (`Enter` saves · `Ctrl-U` clears · `Ctrl-W` kills a word · `Esc` cancels); saving an empty note removes it. An annotated session shows a `✎` in every list and the note in its **Overview**; `f`/`/` searches note text too, and `e` exports it as a `note` column. Notes live in their own `~/.local/share/opentab/notes.json` and are written the moment you save. Off under `--demo` / `--no-state` |
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the session in its own tool — `opencode --session` / `claude --resume` / `codex resume`. Then `w` window · `s` split · `v` vsplit · `p` popup · `y` copy the command (`w`/`s`/`v`/`p` need tmux or a [launcher hook](#custom-launchers); `y` copies anywhere) |
 | `e` | Export the current list to a CSV in the working directory |
@@ -101,14 +101,14 @@ work from anywhere, Trends and Prices included.
 
 The active **harness, range, sort, ignored projects, bookmarks, pinned price rows,
 theme, and `$` what-if view are remembered between runs**, stored in
-`~/.config/opentab/state.json`. Pass `--no-state` to disable; `--demo` never
-persists.
+`~/.local/state/opentab/state.json` (the XDG *state* dir — regenerable prefs). Pass
+`--no-state` to disable; `--demo` never persists.
 
-**Session notes (`n`) are kept apart**, in `~/.config/opentab/notes.json`. Everything
-in `state.json` is a preference opentab can regenerate or shrug off; a note is the one
-thing you wrote, so it gets its own file, is saved on the edit rather than at quit, and
-a note whose session has since disappeared (a rotated transcript, a harness you didn't
-merge in this run) is **kept, never pruned**.
+**Session notes (`n`) are kept apart**, in `~/.local/share/opentab/notes.json` (the XDG
+*data* dir). Everything in `state.json` is a preference opentab can regenerate or shrug
+off; a note is the one thing you wrote, so it gets its own file in the data dir, is saved
+on the edit rather than at quit, and a note whose session has since disappeared (a
+rotated transcript, a harness you didn't merge in this run) is **kept, never pruned**.
 
 A `w` **what-if target model is deliberately not remembered**: it's a transient
 analysis mode, and a persisted one would silently re-frame every future launch's

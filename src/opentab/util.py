@@ -10,6 +10,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
+from opentab import paths
 from opentab.models import Workflow
 
 _UNICODE_SCREEN: bool | None = None
@@ -374,10 +375,9 @@ def launcher_hook() -> str | None:
     # ...) without any of it living here. Called as:
     #   <hook> <kind> <directory> <command>     kind ∈ window|hsplit|vsplit|popup
     # Exit 0 = handled; nonzero = stderr is shown as the launch error.
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     candidates = (
         os.environ.get("OPENTAB_LAUNCHER", ""),
-        os.path.join(base, "opentab", "launcher"),
+        os.path.join(paths.config_dir(), "launcher"),
     )
     for path in candidates:
         if path and os.path.isfile(path) and os.access(path, os.X_OK):

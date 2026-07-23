@@ -39,6 +39,8 @@ from __future__ import annotations
 import os
 from typing import NamedTuple
 
+from opentab import paths
+
 try:
     import curses
 except ImportError:  # native Windows has no stdlib curses; specs fall back to ncurses codes
@@ -46,9 +48,8 @@ except ImportError:  # native Windows has no stdlib curses; specs fall back to n
 
 
 def keymap_path() -> str:
-    # Same convention as state.json: XDG config, one folder for everything opentab.
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "opentab", "keymap.conf")
+    # Genuine user config (hand-edited, hand-committed) -> the XDG config dir.
+    return os.path.join(paths.config_dir(), "keymap.conf")
 
 
 # --- key specs ----------------------------------------------------------------------

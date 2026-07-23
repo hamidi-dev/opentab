@@ -1,4 +1,4 @@
-"""Reading/writing ~/.config/opentab/state.json prefs."""
+"""Reading/writing the saved-prefs state.json (in $XDG_STATE_HOME/opentab)."""
 from __future__ import annotations
 
 import argparse
@@ -6,7 +6,7 @@ import json
 import os
 from typing import TYPE_CHECKING
 
-from opentab import themes
+from opentab import paths, themes
 from opentab.heatmap import HEAT_MAX_LEVELS, HEAT_MIN_LEVELS
 
 if TYPE_CHECKING:
@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 
 
 def state_path() -> str:
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "opentab", "state.json")
+    # Regenerable UI prefs -> XDG state dir; migrated from the old config dir on read.
+    return paths.migrated(os.path.join(paths.state_dir(), "state.json"))
 
 
 def load_state() -> dict:

@@ -11,9 +11,9 @@ from tests._support import _claude_msg, _price_sort_app, _usage, _write_jsonl, a
 def test_prices_sort_is_persisted_in_state():
     app = _price_sort_app()
     app.prices_sort, app.prices_sort_reverse = "cache_write", True
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = _price_sort_app()
@@ -21,9 +21,9 @@ def test_prices_sort_is_persisted_in_state():
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
     assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
 
 
@@ -37,9 +37,9 @@ def test_machines_browse_mode_restored_only_into_a_fleet():
         }
     )
     app.browse_mode = "machines"
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             state = ot.load_state()
@@ -59,17 +59,17 @@ def test_machines_browse_mode_restored_only_into_a_fleet():
             assert solo.browse_mode == "time"
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
 
 
 def test_zoom_maximized_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.zoom_maximized = True
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with([workflow("a", "2026-06-01 12:00:00")])
@@ -77,27 +77,27 @@ def test_zoom_maximized_is_persisted_in_state():
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
     assert restored.zoom_maximized
 
 
 def test_ignored_projects_are_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/repo/a")])
     app.ignored_projects = {"/repo/a", "/repo/b"}
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with([workflow("a", "2026-06-01 12:00:00", directory="/repo/a")])
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
 
     assert restored.ignored_projects == {"/repo/a", "/repo/b"}
     assert restored.all_workflows == []
@@ -106,18 +106,18 @@ def test_ignored_projects_are_persisted_in_state():
 def test_ignored_sessions_are_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.ignored_sessions = {"a", "missing"}
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with([workflow("a", "2026-06-01 12:00:00")])
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
 
     assert restored.ignored_sessions == {"a", "missing"}
     assert restored.all_workflows == []
@@ -126,18 +126,18 @@ def test_ignored_sessions_are_persisted_in_state():
 def test_bookmarks_are_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.bookmarks = {"a", "gone-session"}  # a stale id survives too (source may return)
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with([workflow("a", "2026-06-01 12:00:00")])
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
 
     assert restored.bookmarks == {"a", "gone-session"}
     assert not restored.show_bookmarks_only  # the B view itself always starts off
@@ -146,9 +146,9 @@ def test_bookmarks_are_persisted_in_state():
 def test_what_if_price_view_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.show_api_prices = True
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with([workflow("a", "2026-06-01 12:00:00")])
@@ -156,9 +156,9 @@ def test_what_if_price_view_is_persisted_in_state():
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
 
     assert restored.show_api_prices
 
@@ -166,9 +166,9 @@ def test_what_if_price_view_is_persisted_in_state():
 def test_calendar_granularity_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.cal_levels = ot.HEAT_MAX_LEVELS
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with([workflow("a", "2026-06-01 12:00:00")])
@@ -176,9 +176,9 @@ def test_calendar_granularity_is_persisted_in_state():
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
 
     assert restored.cal_levels == ot.HEAT_MAX_LEVELS
 
@@ -204,8 +204,8 @@ def test_source_is_persisted_and_restored():
                 "demo": False,
             },
         )()
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        old_xdg = os.environ.get("XDG_STATE_HOME")
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             app = app_with([workflow("a", "2026-06-01 12:00:00")])
             app.source_key = "all"
@@ -228,9 +228,9 @@ def test_source_is_persisted_and_restored():
             args.demo = False
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
 
 
 def test_legacy_subagent_sort_state_routes_home_and_direction_stays_safe():
@@ -246,17 +246,17 @@ def test_legacy_subagent_sort_state_routes_home_and_direction_stays_safe():
 def test_subagent_sort_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.subagent_sort_by, app.subagent_sort_reverse = "agent", True
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with([workflow("a", "2026-06-01 12:00:00")])
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
     assert restored.subagent_sort_by == "agent"
     assert restored.subagent_sort_reverse is True

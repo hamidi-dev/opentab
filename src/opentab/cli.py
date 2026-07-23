@@ -17,7 +17,7 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-from opentab import __version__, sources, themes
+from opentab import __version__, paths, sources, themes
 from opentab.demo import DEMO_CATEGORIES, demo_config, demo_machine
 from opentab.formatting import (
     cost_bar,
@@ -176,7 +176,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-state",
         action="store_true",
-        help="do not read or write the saved range/sort state (~/.config/opentab)",
+        help="do not read or write the saved range/sort state ($XDG_STATE_HOME/opentab)",
     )
     parser.add_argument(
         "--no-worktrees",
@@ -221,7 +221,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         "--no-cache",
         action="store_true",
         help="skip the warm-start rollup cache and always re-parse from scratch. The "
-        "cache (under ~/.config/opentab/cache) reuses the previous parse when a backend's "
+        "cache (under $XDG_CACHE_HOME/opentab) reuses the previous parse when a backend's "
         "files are unchanged; use this to force a cold read or to measure it",
     )
 
@@ -1273,10 +1273,10 @@ REMOTES_VERSION = 1
 
 
 def remotes_config_path() -> str:
-    # The learned machine list for --pull/--remote (an ssh target or url per machine),
-    # beside the remotes/ directory of summaries it fetches into.
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "opentab", "remotes.json")
+    # The learned machine list for --pull/--remote (an ssh target or url per machine).
+    # Real config -> the XDG config dir; the summaries it fetches are a cache elsewhere
+    # (sources.default_remotes_dir, under the XDG cache dir).
+    return os.path.join(paths.config_dir(), "remotes.json")
 
 
 def _load_remotes() -> dict:
@@ -1536,6 +1536,12 @@ def main() -> int:
         )
     enable_unicode_locale()
     args = parse_args()  # handles --help first, so it works even without curses
+    if not getattr(args, "demo", False):
+        # One-time upgrade tidy: relocate the pre-split caches (cache/, prices.json,
+        # remotes/) out of ~/.config into the XDG cache dir. Not in a path getter — those
+        # feed --help; here it runs once and is a no-op forever after. --demo touches no
+        # real files, so it's skipped there.
+        paths.migrate_legacy_caches()
     if getattr(args, "refresh_models", False):
         return refresh_models_command()  # fetch prices and exit; no curses needed
     if getattr(args, "keymap", False):

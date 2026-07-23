@@ -8,7 +8,7 @@ import re
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
-from opentab import __version__
+from opentab import __version__, paths
 from opentab.util import anchored_fuzzy_match
 
 # Providers whose models run on your own hardware. There is no per-token API bill,
@@ -25,7 +25,7 @@ LOCAL_PROVIDERS = frozenset(
 # snapshot (src/opentab/data/models.json -- every provider, regenerated each release
 # by scripts/update_prices.py), so pricing works offline out of the box; the explicit
 # --refresh-models opt-in (or `r` in the P overlay) fetches a fresh copy into
-# ~/.config/opentab/prices.json. Between the two layers the newest fetch wins a
+# the price cache ($XDG_CACHE_HOME/opentab/prices.json). Between the two layers the newest fetch wins a
 # lookup, so a stale cache never shadows a fresher release (and a fresh refresh beats
 # any release). Lookup order: bare model id in the newest layer, then the older
 # layer, then the hand-kept MODEL_PRICE_FALLBACKS (substring, to catch dotted/dated/
@@ -261,8 +261,8 @@ _PRICE_CACHE: tuple[dict, dict, dict, dict | None] | None = None
 
 
 def price_cache_path() -> str:
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "opentab", "prices.json")
+    # A refreshed models.dev snapshot -> XDG cache dir (regenerable via --refresh-models).
+    return os.path.join(paths.cache_dir(), "prices.json")
 
 
 def prune_models_dev(data: dict) -> dict:

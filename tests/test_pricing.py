@@ -419,8 +419,8 @@ def test_refresh_model_prices_writes_cache_and_overlays_table():
         "junk": "not a dict",  # tolerated, skipped
     }
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp  # so price_cache_path() lands in the temp dir
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = tmp  # so price_cache_path() lands in the temp dir
         src = os.path.join(tmp, "api.json")
         with open(src, "w") as fh:
             json.dump(models_dev, fh)
@@ -438,9 +438,9 @@ def test_refresh_model_prices_writes_cache_and_overlays_table():
         finally:
             ot.invalidate_price_cache()
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
 def test_refresh_model_prices_rejects_empty_response():
@@ -459,8 +459,8 @@ def test_refresh_model_prices_rejects_empty_response():
 
 def test_model_price_uses_embedded_table_without_cache():
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp  # empty dir -> no prices.json
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = tmp  # empty dir -> no prices.json
         try:
             ot.invalidate_price_cache()
             assert ot.price_cache_meta() is None
@@ -469,9 +469,9 @@ def test_model_price_uses_embedded_table_without_cache():
         finally:
             ot.invalidate_price_cache()
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
 def test_bundled_catalog_is_the_offline_price_source():
@@ -479,8 +479,8 @@ def test_bundled_catalog_is_the_offline_price_source():
     # snapshot: every provider, so open models on paid routes resolve offline (the
     # old embedded table covered only the big three and left them to FALLBACK_PRICE).
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = tmp
         try:
             ot.invalidate_price_cache()
             meta = ot.price_source_meta()
@@ -494,9 +494,9 @@ def test_bundled_catalog_is_the_offline_price_source():
         finally:
             ot.invalidate_price_cache()
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
 def test_price_layers_newest_fetch_wins():
@@ -505,8 +505,8 @@ def test_price_layers_newest_fetch_wins():
     # release. (Pre-catalog behavior was "cache always wins", which inverts once the
     # bundled layer refreshes every release.)
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = tmp
         cache_dir = os.path.join(tmp, "opentab")
         os.makedirs(cache_dir)
 
@@ -534,9 +534,9 @@ def test_price_layers_newest_fetch_wins():
         finally:
             ot.invalidate_price_cache()
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
 def test_legacy_flat_price_cache_still_read():
@@ -544,8 +544,8 @@ def test_legacy_flat_price_cache_still_read():
     # the models.dev view falls back to the bundled provider tree the flat shape
     # can't provide.
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = tmp
         cache_dir = os.path.join(tmp, "opentab")
         os.makedirs(cache_dir)
         with open(os.path.join(cache_dir, "prices.json"), "w") as fh:
@@ -564,9 +564,9 @@ def test_legacy_flat_price_cache_still_read():
         finally:
             ot.invalidate_price_cache()
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
 # --- the Context tab (window growth + composition) ---------------------------
@@ -574,8 +574,8 @@ def test_legacy_flat_price_cache_still_read():
 
 def test_model_context_window_reads_catalog_and_falls_back_by_family():
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = tmp
         cache_dir = os.path.join(tmp, "opentab")
         os.makedirs(cache_dir)
         try:
@@ -604,9 +604,9 @@ def test_model_context_window_reads_catalog_and_falls_back_by_family():
         finally:
             ot.invalidate_price_cache()
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
 def test_model_price_folds_a_suffixed_id_only_off_a_resale_card():

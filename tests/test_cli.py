@@ -819,19 +819,19 @@ def test_goto_miss_hint_never_buries_the_notes_warning():
                 captured["app"] = fn.__self__
 
         argv, real_curses = _sys.argv, ot.cli.curses
-        xdg = os.environ.get("XDG_CONFIG_HOME")
+        xdg = os.environ.get("XDG_DATA_HOME")
         _sys.argv = ["opentab", "--source", "opencode", "--db", db, "--goto", repo, "--no-cache"]
         ot.cli.curses = _FakeCurses
-        os.environ["XDG_CONFIG_HOME"] = cfg  # notes/state live here, not the suite's dir
+        os.environ["XDG_DATA_HOME"] = cfg  # notes.json lives here, not the suite's dir
         try:
             with contextlib.redirect_stderr(io.StringIO()):
                 assert ot.cli.main() == 0
         finally:
             _sys.argv, ot.cli.curses = argv, real_curses
             if xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_DATA_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = xdg
+                os.environ["XDG_DATA_HOME"] = xdg
         app = captured["app"]
         assert "unreadable" in app.notice  # the warning is what survived
         assert not any("no session yet" in t.text for t in app.toasts)

@@ -181,9 +181,10 @@ opentab pull laptop workstation gpu-box   # fetch all three over SSH, open the f
 opentab pull                              # later: refresh every machine you've saved
 ```
 
-Each host is remembered (in `~/.config/opentab/remotes/`), so a bare `opentab pull`
-refreshes the lot. A host is any ssh target — `box`, `user@host`, `name=user@host` to
-label it, or `http://host:port` for a box already running `opentab web`.
+Each host is remembered (the list in `~/.config/opentab/remotes.json`, the summaries it
+pulls in `~/.cache/opentab/remotes/`), so a bare `opentab pull` refreshes the lot. A host
+is any ssh target — `box`, `user@host`, `name=user@host` to label it, or
+`http://host:port` for a box already running `opentab web`.
 
 **No agent, nothing to install, nothing listening.** The remote only needs `opentab` on
 its `PATH`: pull runs `opentab export -` there, which prints that box's spend summary —
@@ -229,12 +230,12 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | `?` / `q` | Help / quit |
 
 The active **harness, range, sort, ignored projects, and `$` what-if view are
-remembered between runs** (stored in `~/.config/opentab/state.json`; pass `--no-state`
-to disable, and `--demo` does not persist). A `w` **target model is not** — it's a
-transient analysis mode, and a remembered one would quietly re-frame the next run's
-Subagents tab. Session **notes (`n`) live apart**, in `~/.config/opentab/notes.json` —
-they're the one thing here you wrote rather than opentab derived, so they're saved the
-moment you write them and never pruned. The complete keymap — bookmarks, notes, ignore
+remembered between runs** (stored in `~/.local/state/opentab/state.json`; pass
+`--no-state` to disable, and `--demo` does not persist). A `w` **target model is not** —
+it's a transient analysis mode, and a remembered one would quietly re-frame the next
+run's Subagents tab. Session **notes (`n`) live apart**, in
+`~/.local/share/opentab/notes.json` — they're the one thing here you wrote rather than
+opentab derived, so they're saved the moment you write them and never pruned. The complete keymap — bookmarks, notes, ignore
 lists, the sort picker, overlay keys, custom launcher hooks — is in
 **[docs/keys.md](docs/keys.md)**.
 
@@ -302,9 +303,10 @@ How the estimate is priced, the `P` views, pinning, and refreshing rates
 ## What it touches
 
 Local-only, no network, no telemetry, no accounts — it opens every harness file
-**read-only**, so it doesn't modify any of them. It writes only its own files (prefs
-and caches under `~/.config/opentab/`, plus the CSV/HTML exports you explicitly ask
-for), and runs external programs only on the key you press. The full list of
+**read-only**, so it doesn't modify any of them. It writes only its own files — config,
+prefs, notes and caches under the standard XDG dirs (`~/.config`, `~/.local/state`,
+`~/.local/share`, `~/.cache`), plus the CSV/HTML exports you explicitly ask for — and
+runs external programs only on the key you press. The full list of
 everything it reads, writes, and runs: **[docs/privacy.md](docs/privacy.md)**.
 
 ## Windows

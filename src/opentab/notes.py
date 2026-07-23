@@ -1,6 +1,7 @@
-"""Per-session notes — ~/.config/opentab/notes.json.
+"""Per-session notes — notes.json in $XDG_DATA_HOME/opentab.
 
-This is the one file opentab writes that it cannot rebuild. Everything else it
+This is the one file opentab writes that it cannot rebuild — which is why it lives
+in the XDG *data* dir, not among the regenerable state and caches. Everything else it
 persists is *derived* — the rollup cache re-parses, prices.json re-fetches,
 state.json is just prefs and is rewritten wholesale on every quit — but a note is
 authored, and nothing can recover it. That single difference sets the rules here:
@@ -23,6 +24,8 @@ import contextlib
 import json
 import os
 
+from opentab import paths
+
 try:
     import fcntl  # POSIX advisory locks; native Windows has none
 except ImportError:
@@ -32,8 +35,8 @@ NOTES_VERSION = 1
 
 
 def notes_path() -> str:
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
-    return os.path.join(base, "opentab", "notes.json")
+    # Authored, unrebuildable -> XDG data dir; migrated from the old config dir on read.
+    return paths.migrated(os.path.join(paths.data_dir(), "notes.json"))
 
 
 @contextlib.contextmanager
