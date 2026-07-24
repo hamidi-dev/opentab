@@ -572,6 +572,22 @@ def model_context_window(name: str) -> int:
     )
 
 
+# The token types a cost decomposes into, in api_equivalent_cost's argument order --
+# the labels the Token economics box and its web twin read. Reasoning bills at the
+# output rate but stays its own row: "you paid $57 to think" is exactly what folding it
+# into Output would hide.
+#
+# "Uncached input", not "Input": the backends report input_tokens as the RESIDUAL after
+# cache accounting -- the slice of the prompt that was neither read from nor written to
+# the cache -- so the three input-side rows are disjoint and only their sum is "what you
+# sent". A caching agent puts its last breakpoint at the end of the newest turn, which
+# leaves this row at a couple of tokens per request while the real new material lands in
+# Cache write. Labelled "Input" it reads as "everything I sent", and a 774-token row
+# next to a 107M-token cache read looks like a bug in us rather than the point of the
+# chart.
+TOKEN_TYPES = ("Uncached input", "Output", "Reasoning", "Cache read", "Cache write")
+
+
 def api_equivalent_cost(
     name: str, inp: float, out: float, reasoning: float, cache_read: float, cache_write: float
 ) -> float:

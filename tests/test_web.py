@@ -751,3 +751,111 @@ def test_web_context_points_carry_their_own_window():
     # figure the TUI shows -- not the 120% the live model's window would have given.
     peak_i = max(range(len(ctx["points"])), key=lambda i: ctx["points"][i]["v"])
     assert 100 * ctx["points"][peak_i]["v"] / windows[peak_i] < 100
+
+
+def _js_token_economics(payload, session_ids):
+    # The page's tokenEconomics(), transcribed: the same per-model rows and the same
+    # per-type arithmetic the TUI's App.token_economics runs, so a drift between the two
+    # implementations fails a test instead of quietly showing two different bills.
+    rates = payload["whatif"]["rates"]
+    local = set(payload["whatif"].get("local") or [])
+    tokens, cost, saved, local_tokens = [0.0] * 5, [0.0] * 5, 0.0, 0
+    for sid in session_ids:
+        for r in payload["models"].get(sid) or []:
+            if r["model"] in local:
+                local_tokens += sum(r["tok"])
+                continue
+            ir, orr, crr, cwr = rates[r["model"]]
+            for i, v in enumerate(r["tok"]):
+                tokens[i] += v
+            cost[0] += r["tok"][0] * ir / 1e6
+            cost[1] += r["tok"][1] * orr / 1e6
+            cost[2] += r["tok"][2] * orr / 1e6
+            cost[3] += r["tok"][3] * crr / 1e6
+            cost[4] += r["tok"][4] * cwr / 1e6
+            if crr > 0:
+                saved += r["tok"][3] * max(0.0, ir - crr) / 1e6
+    return tokens, cost, saved, local_tokens
+
+
+def test_web_token_economics_matches_the_tui_split_exactly():
+    # One formula, two frontends -- the same rule the what-if follows. The page computes
+    # the split client-side (only it knows the drilled/filtered scope), so the payload has
+    # to carry everything that needs: the per-model token splits, every used model's
+    # rates, and which of those models are local.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)
+        payload = ot.build_payload(app)
+        tokens, cost, saved, local_tokens = _js_token_economics(payload, [w.id for w in app.loaded])
+        econ = app.token_economics(app.loaded)
+        assert [round(v, 6) for v in tokens] == [round(v, 6) for v in econ.tokens]
+        assert [round(v, 9) for v in cost] == [round(v, 9) for v in econ.cost]
+        assert abs(saved - econ.saved) < 1e-9
+        assert local_tokens == econ.local_tokens
+    js = _js_source()
+    # The pieces must stay pieces: summing them here would make the pane's TOTAL a second
+    # implementation of the cost rather than a decomposition of the one on screen.
+    assert "function tokenEconomics(" in js
+    assert "cost[2] += tok[2] * orr / 1e6" in js  # reasoning bills at the output rate
+    assert "if (crr > 0) saved" in js  # a missing cache rate is never a "saving"
+    assert "WI_LOCAL.has(r.model)" in js  # local models leave both rows
+
+
+def test_web_token_economics_pane_is_two_stacked_bars_over_a_fixed_order_table():
+    js = _js_source()
+    # Two 100% bars over the SAME five types, one above the other -- the reading is the
+    # gap between them, which needs a shared scale and one colour per type.
+    assert "share of tokens sent" in js and "share of dollars billed" in js
+    # The detail table must NOT go through the sortable table(): its headers install
+    # click handlers unconditionally, so a click would re-rank the five rows away from
+    # cost order and keep that ranking for every later scope (one shared table id).
+    pane = js.split("function tokenEconomicsPane(", 1)[1].split("\nfunction ", 1)[0]
+    assert "table('t-" not in pane and "SORT[" not in pane
+    assert "b.cost - a.cost" in pane  # the fixed order is by cost
+    # Five slots per mode, and the ORDER is the colour-vision-deficiency safety
+    # mechanism (adjacent pairs were validated in that order) -- not decoration.
+    for ramp in ("TOK_SERIES_DARK", "TOK_SERIES_LIGHT"):
+        row = next(ln for ln in js.splitlines() if ln.startswith("const " + ramp))
+        assert row.count("#") == 5, row
+    # A label sitting ON a fill picks its ink from that fill, not from the theme: one
+    # theme-wide choice is unreadable on the ramp's own lighter slots.
+    assert "function inkOn(" in js
+    assert "1.05 / (L + 0.05)" in js  # WCAG contrast against white, not 21/(L+0.05)
+
+
+def test_web_payload_names_the_local_models_so_the_page_can_exclude_them():
+    # Without this list the page cannot apply App.token_economics' rule and would price
+    # local tokens at the generic fallback -- inventing spend that no one was billed.
+    app = app_with([workflow("w1", "2026-05-01 10:00:00", cost=0.0)])
+    app._model_by_root = {
+        "w1": [
+            {
+                "model_name": "ollama/llama3.1",
+                "runs": 1,
+                "cost": 0.0,
+                "tokens_total": 1_000,
+                "input": 1_000,
+                "output": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+            },
+            {
+                "model_name": "anthropic/claude-opus-4.5",
+                "runs": 1,
+                "cost": 1.0,
+                "tokens_total": 1_000,
+                "input": 1_000,
+                "output": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+            },
+        ]
+    }
+    app._models_loaded = True  # the rows above ARE the breakdown; don't rescan the store
+    app._compute_api_costs()
+    payload = ot.build_payload(app)
+    assert "ollama/llama3.1" in payload["whatif"]["local"]
+    assert "anthropic/claude-opus-4.5" not in payload["whatif"]["local"]
+    # It is a subset of `rates` (which covers every used model), so the page can look a
+    # model up in both without a missing-key branch.
+    assert set(payload["whatif"]["local"]) <= set(payload["whatif"]["rates"])

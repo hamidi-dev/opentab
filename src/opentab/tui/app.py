@@ -42,6 +42,7 @@ from opentab.models import (
 from opentab.notes import notes_path, read_notes, update_note
 from opentab.pricing import (
     LOCAL_PROVIDERS,
+    TOKEN_TYPES,
     api_equivalent_cost,
     canonical_model,
     catalog_models,
@@ -91,6 +92,36 @@ class Toast:
 
     def remaining(self, now: float) -> float:
         return self.ttl - (now - self.born)
+
+
+class TokenEconomics(NamedTuple):
+    """Where a scope's tokens went and where its money went -- the same five token
+    types measured twice. The gap between the two is the whole point: a token type's
+    share of VOLUME and its share of SPEND differ by up to two orders of magnitude
+    (an output token costs 50x a cache-read token at Anthropic's rates), so a plain
+    token count says nothing about the bill and vice versa.
+
+    `cost` is always at LIST rates, whatever the "$" toggle says, because no backend
+    attributes recorded spend per token type -- there is nothing else to decompose.
+    Same basis as the `w` what-if's baseline (whatif_session_totals), and computed
+    with api_equivalent_cost's own arithmetic so the five pieces sum to the API-
+    equivalent figure the rest of the UI already shows.
+    """
+
+    tokens: tuple[float, ...]  # per TOKEN_TYPES
+    cost: tuple[float, ...]  # per TOKEN_TYPES, at list rates
+    saved: float  # what the cache reads would have cost at the input rate, minus what they did
+    estimated: bool  # a contributing model has no real list rate (FALLBACK_PRICE) -> mark "~"
+    missing_cache_rate: bool  # a contributing model has no cache-read rate -> its reads read $0
+    local_tokens: int  # tokens from local models, excluded from both rows (no API rate)
+
+    @property
+    def total_tokens(self) -> float:
+        return sum(self.tokens)
+
+    @property
+    def total_cost(self) -> float:
+        return sum(self.cost)
 
 
 class PriceEntry(NamedTuple):
@@ -1971,6 +2002,68 @@ class App:
             baseline += api_equivalent_cost(str(m.get("model_name") or ""), *split)
             tokens = [a + b for a, b in zip(tokens, split)]
         return baseline, api_equivalent_cost(target, *tokens)
+
+    def token_economics(self, workflows: list[Workflow]) -> TokenEconomics | None:
+        """Split a scope's tokens AND its list-rate cost across the five token types.
+        None when nothing in the scope has priceable usage.
+
+        Built from the per-model breakdown rows (`_model_by_root`) for the same reason
+        the what-if baseline is: they are the one place a session's tokens are split per
+        model, and pricing a token type needs the rate card of the model that produced
+        it. A node row carries one dominant model label and would misprice any session
+        that switched models mid-flight.
+
+        Local models are excluded from BOTH rows, not just the cost one (the rule
+        `_token_mix` and the P overlay already follow). They have no API rate, so their
+        tokens can only be priced at a generic guess -- and leaving them in the volume
+        row while dropping them from the cost row would invent a token type that looks
+        free. Excluded tokens are reported separately (`local_tokens`) rather than
+        silently dropped.
+
+        The arithmetic is api_equivalent_cost's, kept in pieces instead of summed:
+        input at the input rate, output AND reasoning at the output rate, cache reads
+        and writes at their own. That is what makes the five parts add up to the "$"
+        figure shown everywhere else -- including its known soft spot, a model whose
+        cache-read rate is missing from the catalog, whose reads then price at $0
+        (flagged as `missing_cache_rate`; effective_price bills that case at the input
+        rate instead, but this is a decomposition of a total the app already prints, so
+        it has to use the same arithmetic as the total).
+        """
+        tokens = [0.0] * len(TOKEN_TYPES)
+        cost = [0.0] * len(TOKEN_TYPES)
+        saved = 0.0
+        estimated = missing_cache_rate = False
+        local_tokens = 0
+        for workflow in workflows:
+            for row in self._model_by_root.get(workflow.id) or []:
+                name = str(row.get("model_name") or "")
+                split = model_row_split(row)
+                if is_local_provider(name):
+                    local_tokens += int(sum(split))
+                    continue
+                inp, out, reasoning, cache_read, cache_write = split
+                ir, orr, crr, cwr = model_price(name)
+                for i, n in enumerate(split):
+                    tokens[i] += n
+                cost[0] += inp * ir / 1e6
+                cost[1] += out * orr / 1e6
+                cost[2] += reasoning * orr / 1e6  # reasoning bills at the output rate
+                cost[3] += cache_read * crr / 1e6
+                cost[4] += cache_write * cwr / 1e6
+                if crr > 0:
+                    # Only a real, non-zero cache rate is a real discount: a missing one
+                    # would show the full input cost as "saved", which is the opposite of
+                    # what it means.
+                    saved += cache_read * max(0.0, ir - crr) / 1e6
+                elif cache_read > 0 and ir > 0:
+                    missing_cache_rate = True
+                if sum(split) > 0 and not has_known_price(name):
+                    estimated = True
+        if sum(tokens) <= 0:
+            return None
+        return TokenEconomics(
+            tuple(tokens), tuple(cost), saved, estimated, missing_cache_rate, local_tokens
+        )
 
     def whatif_baseline_is_estimated(self, workflow: Workflow) -> bool:
         # Does the baseline lean on a model we have no real rate for? Every token is

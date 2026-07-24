@@ -199,6 +199,22 @@ button.showall:hover{color:var(--accent);border-color:var(--accent)}
 .tile .v{font-size:22px;font-weight:700;margin-top:2px;color:var(--ink)}
 .tile .v.money{color:var(--good)}
 .tile .n{font-size:11px;color:var(--mut)}
+/* Token economics: two 100%-stacked bars, the same five token types measured twice
+   (volume, then spend). The 2px gap between segments is the spacer that keeps adjacent
+   fills apart without a border; the outer radius is on the track so only the two ends
+   round. Segment labels ride INSIDE their segment, in the page background colour rather
+   than a fixed near-black, so they stay legible on a light theme's lighter steps. */
+.sbar{margin:2px 0 14px}
+.sbar .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--mut);margin-bottom:5px}
+.sbar .track{display:flex;gap:2px;height:32px;border-radius:4px;overflow:hidden}
+.sbar .seg{display:flex;align-items:center;justify-content:center;min-width:0;overflow:hidden;
+  white-space:nowrap;font-size:11px;font-weight:700}
+.tk-legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:11.5px;color:var(--ink2)}
+.tk-legend span{display:flex;align-items:center;gap:6px}
+.tk-legend i{width:10px;height:10px;border-radius:2px;flex:none}
+/* the swatch in the detail table's Type cell -- the table repeats the bars' colour key
+   so a row can be matched to its segment without counting across the legend */
+.lgd{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:7px;vertical-align:-1px}
 /* the session Overview money card (mirrors the TUI's Money box: donut + stats, with the
    armed what-if as accent-highlighted rows below a rule) */
 .money{display:flex;flex-wrap:wrap;gap:14px 28px;align-items:center;margin:8px 0 2px}
@@ -420,6 +436,26 @@ let MODE = META.startApi ? 'api' : 'real';
 const THEMES = __THEMES__;
 let TH = THEMES['tokyo-night'];      // the active theme object (charts read it)
 const thc = k => TH.css[k];          // theme color for an SVG chart slot
+// The one CATEGORICAL ramp on the page -- five slots for the five token types. Not a
+// theme field: a theme supplies chrome plus two SEQUENTIAL ramps (heat, priceHeat), and
+// pressing a sequential ramp into categorical duty would say "more" where it means
+// "different". Two steppings of the same five hues instead, picked for the light and the
+// dark chart surface and validated as a set (lightness band, chroma floor, adjacent-pair
+// separation under simulated colour-vision deficiency, contrast against the pane). Order
+// is the safety mechanism, not decoration -- do not reorder without re-validating.
+const TOK_SERIES_DARK = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181'];
+const TOK_SERIES_LIGHT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'];
+const tokSeries = () => TH.dark ? TOK_SERIES_DARK : TOK_SERIES_LIGHT;
+// Ink for a label sitting ON a fill: picked per SEGMENT from that fill's luminance, not
+// from the theme. One theme-wide choice fails on the ramp's own spread -- the light
+// theme's near-white ink is unreadable on the yellow slot while it is fine on the blue.
+function inkOn(hex) {
+  const v = i => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
+  const lin = c => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  const L = 0.2126 * lin(v(0)) + 0.7152 * lin(v(1)) + 0.0722 * lin(v(2));
+  // WCAG contrast against black is (L+0.05)/0.05, against white 1.05/(L+0.05).
+  return (L + 0.05) / 0.05 > 1.05 / (L + 0.05) ? '#101014' : '#ffffff';
+}
 const CUR = { theme: 'tokyo-night' };
 function applyTheme(id) {
   const t = THEMES[id] ? id : 'tokyo-night';
@@ -500,6 +536,9 @@ const WI_MODELS = (DATA.whatif && DATA.whatif.models) || [];   // armable target
 // still have to be counted, or the baseline would quietly drop them).
 const WI_PRICE = new Map(Object.entries((DATA.whatif && DATA.whatif.rates) || {}));
 const WI_UNPRICED = new Set((DATA.whatif && DATA.whatif.unpriced) || []);
+// Models with no API rate at all (ollama, lmstudio, ...). The what-if never arms them,
+// and tokenEconomics drops them from BOTH its rows -- App.token_economics' rule.
+const WI_LOCAL = new Set((DATA.whatif && DATA.whatif.local) || []);
 // The picker's second tier (Tab): the whole models.dev catalog, in the TUI's own rows and
 // order (cheapest-for-your-mix first) so both frontends arm identical names at identical
 // rates. The rates merge into WI_PRICE up front -- whatifTotals prices a catalog-armed
@@ -759,6 +798,50 @@ function whatifCost(tok, rates) {
   const [inp, out, reason, cr, cw] = tok, [ir, orr, crr, cwr] = rates;
   return (inp * ir + (out + reason) * orr + cr * crr + cw * cwr) / 1e6;
 }
+/* ---------- token economics (the mirror of App.token_economics) ---------- */
+// The five token types, in the payload's `tok` order -- pricing.TOKEN_TYPES.
+const TOK_TYPES = ['Uncached input', 'Output', 'Reasoning', 'Cache read', 'Cache write'];
+// Where a scope's tokens went, and where its money went: the same five types measured
+// twice, because a type's share of VOLUME and its share of SPEND differ by up to two
+// orders of magnitude (an output token costs 50x a cache-read token). Computed here
+// rather than shipped precomputed for the same reason the rollups are: the scope is
+// whatever the page is showing after drill-in, sorting and the ignored filters, and only
+// the client knows that.
+//
+// Always LIST rates, whatever the $ toggle says -- no backend attributes recorded spend
+// per token type, so there is nothing else to decompose (same basis as the what-if
+// baseline). The arithmetic is whatifCost's, kept in pieces instead of summed, so the
+// five parts add up to the API-equivalent figure shown elsewhere.
+function tokenEconomics(ws) {
+  const tokens = [0, 0, 0, 0, 0], cost = [0, 0, 0, 0, 0];
+  let saved = 0, local = 0, est = false, missingCache = false;
+  ws.forEach(w => (DATA.models[w.id] || []).forEach(r => {
+    const tok = r.tok || [0, 0, 0, 0, 0];
+    if (WI_LOCAL.has(r.model)) { local += tok.reduce((a, b) => a + b, 0); return; }
+    // Unreachable by construction -- `rates` is built from the same per-model rows this
+    // reduces over, so every model here has an entry. Guarded anyway: skipping one row
+    // beats throwing and blanking the whole pane.
+    const p = WI_PRICE.get(r.model);
+    if (!p) return;
+    const [ir, orr, crr, cwr] = p;
+    tok.forEach((v, i) => { tokens[i] += v; });
+    cost[0] += tok[0] * ir / 1e6;
+    cost[1] += tok[1] * orr / 1e6;
+    cost[2] += tok[2] * orr / 1e6;      // reasoning bills at the output rate
+    cost[3] += tok[3] * crr / 1e6;
+    cost[4] += tok[4] * cwr / 1e6;
+    // Only a real, non-zero cache rate is a real discount: counting a MISSING one as
+    // free would report the whole input cost as "saved", the opposite of what it means.
+    if (crr > 0) saved += tok[3] * Math.max(0, ir - crr) / 1e6;
+    else if (tok[3] > 0 && ir > 0) missingCache = true;
+    if (r.tokens > 0 && WI_UNPRICED.has(r.model)) est = true;
+  }));
+  const totalTokens = tokens.reduce((a, b) => a + b, 0);
+  if (totalTokens <= 0) return null;
+  return { tokens, cost, saved, est, missingCache, local,
+    totalTokens, totalCost: cost.reduce((a, b) => a + b, 0) };
+}
+
 // The ONE place a session's two what-if figures come from -- the Subagents tree's TOTAL
 // and the Overview summary both read it, so they cannot drift (the TUI's
 // App.whatif_session_totals, mirrored). Null when no target is armed, or the session has
@@ -1171,6 +1254,90 @@ function modelsTable(id, rows, collapse, onRow) {
       tokens: hTok(totalTok), cacheRead: hTok(sum(rows, r => r.cacheRead)),
       cacheWrite: hTok(sum(rows, r => r.cacheWrite)), output: hTok(sum(rows, r => r.output)) } });
 }
+// NOT the shared pct(): it renders anything under 1% as "<1%", and here the sub-percent
+// rows are the punchline -- output is half a percent of the tokens and a sixth of the
+// bill, which "<1%" cannot say. Never rounds a present-but-tiny row down to "0.00%".
+function tokShare(v, tot) {
+  const s = tot > 0 ? 100 * v / tot : 0;
+  if (s >= 10 || s === 0) return s.toFixed(0) + '%';
+  if (s >= 1) return s.toFixed(1) + '%';
+  return s >= 0.005 ? s.toFixed(2) + '%' : '<0.01%';
+}
+
+/* The Token economics pane. Two 100%-stacked bars over the SAME five token types --
+   what you sent, then what you paid -- because the reading is the gap between them: a
+   type's block is huge in one bar and a sliver in the other. Reading either bar alone
+   gives the opposite answer, so they have to sit one above the other, sharing a scale
+   and a colour per type.
+
+   The table below is the same five rows with the numbers behind the bars; it is the
+   accessibility path as much as the detail one (identity never rests on colour alone).
+   Its order is FIXED by cost -- the ordering is part of what the bars say, so it does
+   not go through the sortable `table()`, whose headers would silently re-rank it and
+   keep that ranking across every later scope.
+
+   (The TUI's box makes the opposite trade for a real constraint: an 8-colour terminal
+   cannot promise five distinguishable fills, so it pairs a bar per measure on each row
+   instead. Same numbers, same order, same notes.) */
+function tokenEconomicsPane(ws, label) {
+  const e = tokenEconomics(ws);
+  if (!e) return null;
+  const approx = e.est ? '~' : '';
+  const SER = tokSeries();
+  // Rows keep their TOKEN-TYPE index as `i` so a type owns one colour in both bars and
+  // in the table, whatever the cost ordering does to their positions.
+  const rows = TOK_TYPES.map((t, i) => ({ t, i, tok: e.tokens[i], cost: e.cost[i] }))
+    .filter(r => r.tok > 0 || r.cost > 0)
+    .sort((a, b) => b.cost - a.cost || b.tok - a.tok);
+  const stack = (caption, total, get, fmt) => h('div', { class: 'sbar' },
+    h('div', { class: 'lbl' }, h('span', null, caption), h('span', null, fmt(total))),
+    h('div', { class: 'track' }, rows.map(r => {
+      const v = get(r), share = total > 0 ? v / total : 0;
+      return h('div', {
+        class: 'seg',
+        style: 'flex:' + share + ' 0 0;background:' + SER[r.i] + ';color:' + inkOn(SER[r.i]),
+        title: r.t + ' · ' + fmt(v) + ' · ' + tokShare(v, total),
+      // A label only where the segment can hold one; the legend and the table carry
+      // the rest, so a 0.4% sliver never gets an unreadable smear of text.
+      }, share > 0.075 ? tokShare(v, total) : null);
+    })));
+  const grid = h('div', { class: 'scroll' }, h('table', null,
+    h('thead', null, h('tr', null,
+      ['Type', 'Tokens', 'Volume', 'Cost', 'Spend'].map((c, i) =>
+        h('th', { class: i ? 'r' : null }, c)))),
+    h('tbody', null, rows.map(r => h('tr', null,
+      h('td', null, h('span', { class: 'lgd', style: 'background:' + SER[r.i] }), r.t),
+      h('td', { class: 'r' }, hTok(r.tok)),
+      h('td', { class: 'r' }, tokShare(r.tok, e.totalTokens)),
+      h('td', { class: 'r' }, moneyCell(r.cost)),
+      h('td', { class: 'r' }, tokShare(r.cost, e.totalCost))))),
+    h('tfoot', null, h('tr', null,
+      h('td', null, 'TOTAL'), h('td', { class: 'r' }, hTok(e.totalTokens)),
+      h('td', null, ''), h('td', { class: 'r' }, approx + money(e.totalCost)),
+      h('td', null, '')))));
+  const body = h('div', null,
+    tiles([['spend · list rates', approx + money(e.totalCost), null, true],
+      ['tokens', hTok(e.totalTokens)],
+      ...(e.saved > 0 ? [['cache reads saved', money(e.saved), 'vs the input rate', true]] : [])]),
+    stack('share of tokens sent', e.totalTokens, r => r.tok, hTok),
+    stack('share of dollars billed', e.totalCost, r => r.cost, money),
+    h('div', { class: 'tk-legend' }, rows.map(r =>
+      h('span', null, h('i', { style: 'background:' + SER[r.i] }), r.t))),
+    grid);
+  const notes = [];
+  if (e.saved > 0) notes.push('cache reads saved ' + money(e.saved)
+    + ' against paying the input rate for them');
+  if (e.est) notes.push('~ a model here has no known list rate — its tokens use a generic estimate');
+  if (e.missingCache) notes.push('a model here has no cache-read rate on file — its reads '
+    + 'price at $0, so Cache read is understated');
+  if (e.local) notes.push(hTok(e.local) + ' local-model tokens excluded — no API rate to price them at');
+  return pane('Token economics · ' + label,
+    h('div', { class: 'hint' }, 'always at list rates — no backend records which token '
+      + 'type your spend went to, so this is the only decomposition there is'),
+    body,
+    notes.map(n => h('div', { class: 'hint' }, n)));
+}
+
 function projectsTable(id, ws, collapse, onRow) {
   const rows = projectRows(ws);
   const peak = Math.max(...rows.map(r => r.cost), 0);
@@ -1695,6 +1862,10 @@ function renderOverview(root, sc, ws) {
   panes.push(pane(sc.kind === 'd' ? 'Model mix' : 'Top models', modelsTable('t-ov-models', modelAgg(ws), 8)));
   if (panes.length === 2) root.appendChild(sideBySide(...panes));
   else panes.forEach(p => root.appendChild(p));
+  // Scoped to `ws`, so it answers for whatever the page is showing -- the drilled
+  // year/month/day/project/machine, ignored projects already filtered out.
+  const econ = tokenEconomicsPane(ws, scopeLabel(sc));
+  if (econ) root.appendChild(econ);
   root.appendChild(pane('Top sessions', topSessionsTable('t-ov-sessions', ws, 8)));
 }
 function renderSessionOverview(root, sc) {
@@ -1712,6 +1883,10 @@ function renderSessionOverview(root, sc) {
   // donut, and an armed `w` target answers for THIS session right here (a solo session
   // has no subagent tree for the Subagents tab, so its what-if lives here too).
   root.appendChild(moneyCard(w, whatifTotals(sc.id)));
+  // Same pane as the scope Overviews, over this one session: the Money card says how
+  // much and to which agent, this says which KIND of token the money went to.
+  const econ = tokenEconomicsPane([w], 'this session');
+  if (econ) root.appendChild(econ);
   if (EXTRAS.id === sc.id && EXTRAS.loading)
     root.appendChild(h('div', { class: 'hint' }, 'loading turns & tools…'));
   if (!META.serve)

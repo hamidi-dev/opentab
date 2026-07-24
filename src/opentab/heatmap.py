@@ -55,6 +55,42 @@ HEAT_RAMP = "░▒▓█"  # density glyphs; on 256-color the *color* carries t
 PRICE_HEAT_LEVELS = 5
 PRICE_HEAT_BASE_PAIR = 20  # pairs 20..24; clear of the calendar's 8..18
 
+# The token-type ramp: the ONE categorical ramp in the TUI, five slots for the five
+# token types of the Token economics box. Every other ramp here is SEQUENTIAL (more is
+# hotter); this one means "different", not "more", so it is its own thing.
+#
+# Two steppings of the same five hues, chosen for a dark and a light terminal
+# background and validated as a set (lightness band, chroma floor, adjacent-pair
+# separation under simulated colour-vision deficiency, contrast against the surface).
+# The web page ships the identical pair -- one chart, two frontends. Slot ORDER is the
+# colour-vision safety mechanism, not decoration: do not reorder without re-validating.
+TOKEN_SERIES_DARK = ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181")
+TOKEN_SERIES_LIGHT = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4")
+TOKEN_SERIES_BASE_PAIR = 26  # pairs 26..30; clear of the price ramp's 20..24, tab 25, bg 32
+
+# An 8-colour terminal still has five distinct ANSI hues to spend, so the bar keeps its
+# colours there; only a PAIR-starved terminal (COLOR_PAIRS <= 26, e.g. minitel1) loses
+# them, and then the glyphs below carry identity instead. Same escape hatch the calendar
+# uses, applied to a categorical scale rather than a sequential one.
+TOKEN_SERIES_GLYPHS = ("█", "▓", "▒", "░", "▚")
+
+
+def token_series(dark: bool) -> tuple[str, ...]:
+    return TOKEN_SERIES_DARK if dark else TOKEN_SERIES_LIGHT
+
+
+def token_series_ansi() -> tuple[int, ...]:
+    # Five distinct ANSI hues, in the validated ramp's own order (blue, red, green,
+    # yellow, magenta). Black/white are excluded -- they are the fore/background.
+    return (
+        curses.COLOR_BLUE,
+        curses.COLOR_RED,
+        curses.COLOR_GREEN,
+        curses.COLOR_YELLOW,
+        curses.COLOR_MAGENTA,
+    )
+
+
 # 256-color: the high-contrast green→red edge of the xterm color cube — eleven
 # maximally-distinct steps (pure green, lime, yellow, orange, pure red). We sample N
 # of these so each level is a clearly different hue even at the finest granularity;

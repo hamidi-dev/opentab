@@ -164,11 +164,17 @@ def _whatif_payload(app: App) -> dict:
     # prices.catalog would re-implement the dedupe and could drift). eff and its ~
     # flag are pure functions of p + the shipped mix, recomputed client-side like the
     # P overlay's catalog rows.
+    # `local` are the used models with no API rate at all (ollama, lmstudio, ...). The
+    # what-if never arms them, and the Token economics pane excludes them from BOTH its
+    # rows -- the App-side rule (App.token_economics): pricing them would mean inventing
+    # a rate, and keeping them in the volume row while dropping them from the cost row
+    # would show a token type that looks free.
     return {
         "models": [
             {"model": name, "tokens": int(tokens), "price": rates[name]}
             for name, tokens in app.whatif_candidates()
         ],
+        "local": sorted(name for name in rates if is_local_provider(name)),
         "catalog": [
             {"m": name, "p": [round(float(v), 6) for v in model_price(name)]}
             for name, _eff, _approx in app.whatif_catalog_candidates()

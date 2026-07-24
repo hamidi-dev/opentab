@@ -53,14 +53,19 @@ from opentab.heatmap import (
     HEAT_EMPTY_GLYPH,
     PRICE_HEAT_BASE_PAIR,
     PRICE_HEAT_LEVELS,
+    TOKEN_SERIES_BASE_PAIR,
+    TOKEN_SERIES_GLYPHS,
     calendar_cells,
     heat_band_label,
     heat_glyph,
     heat_level,
     heat_palette,
+    token_series,
+    token_series_ansi,
 )
 from opentab.models import ALL_YEARS, year_label
 from opentab.pricing import (
+    TOKEN_TYPES,
     api_equivalent_cost,
     family_label,
     model_context_window,
@@ -150,6 +155,10 @@ class Renderer:
         # lot) paints exactly where it's told.
         self.oy = 0
         self.ox = 0
+        # Per-segment colour runs for the Token economics bars, keyed by line text
+        # (_token_stack_line). draw() clears it per frame; seeded here so a line-builder
+        # called on its own -- which the suite does a lot -- has somewhere to record.
+        self._token_runs: dict[str, list[tuple[int, int, int]]] = {}
         # Clickable hit regions, rebuilt every draw() so they always match what is
         # on screen. Each is ("rows", kind, y0, y_last, x0, x1, start) for a list
         # (click row y selects index start + (y - y0)) or (kind, y, x0, x1, index)
@@ -254,6 +263,7 @@ class Renderer:
                 else self.line_attr(line)
             )
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+            self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
             self._register_line_sort_header(y + 3 + offset, x + 2, index, line, w - 4)
 
     def year_row_text(self, year: YearSummary, marker: str) -> str:
@@ -503,6 +513,10 @@ class Renderer:
         self.regions = []  # rebuilt below as panels draw, for this frame's clicks
         self.sort_regions = []  # column-header sort zones, same lifecycle as regions
         self._line_sort_headers = {}  # refilled by the line-based drawers below
+        # Per-segment colour runs for the Token economics bars, keyed by the line's own
+        # text (see _token_stack_line). Cleared per frame like the other paint
+        # side-channels, so a stale bar can never colour a line that outlived it.
+        self._token_runs: dict[str, list[tuple[int, int, int]]] = {}
         self.oy = self.ox = 0  # screen coordinates until the app frame is up
         height, width = stdscr.getmaxyx()
         if height < 20 or width < 80:
@@ -1808,6 +1822,12 @@ class Renderer:
         lines.append("")
         agg = self.aggregate_models(workflows)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
+        if machine.live:
+            # A pulled box carries only rollups -- no per-model rows travel in a summary,
+            # so there is nothing to decompose and the box would render "no priceable
+            # usage" beside a real cost. Live boxes have the rows.
+            lines.append("")
+            lines.extend(self._token_economics_box(workflows, width))
         top_projects = self.projects_for_workflows(workflows)
         if top_projects:
             lines.extend(["", "# Top Projects"])
@@ -2085,6 +2105,7 @@ class Renderer:
                 elif lvl is not None:
                     attr = curses.color_pair(PRICE_HEAT_BASE_PAIR + lvl) | curses.A_BOLD
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+            self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
             self._register_line_sort_header(
                 y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
             )
@@ -2391,6 +2412,210 @@ class Renderer:
             for r in model_rows
         ]
 
+    def _paint_token_runs(
+        self, stdscr: curses.window, y: int, x: int, line: str, width: int
+    ) -> None:
+        # Repaint a Token economics bar (or its legend) segment by segment, after
+        # write_rich has laid the line down in one attribute. Same two-pass shape
+        # write_rich itself uses for money/token runs: draw once, then overpaint the
+        # spans that own a colour. A line with no recorded runs -- every other line in
+        # the app -- costs one dict miss.
+        runs, shift = self._token_runs.get(line), 0
+        if runs is None and line[:1] in ("│", "|"):
+            # The bar lives inside a ruled box, so the painted line is the recorded one
+            # wrapped in "│ … │" gutters. Look up the content and shift the runs by the
+            # gutter rather than making the builder predict its own wrapping -- it is
+            # spliced into six different Overviews and cannot know.
+            runs, shift = self._token_runs.get(line[2:].rstrip(" │|")), 2
+        if not runs:
+            return
+        for col, length, slot in runs:
+            col += shift
+            if col >= width:
+                break  # the pane clipped this segment away entirely
+            self.write(
+                stdscr,
+                y,
+                x + col,
+                line[col : col + min(length, width - col)],
+                curses.color_pair(TOKEN_SERIES_BASE_PAIR + slot) | curses.A_BOLD,
+            )
+
+    def _token_glyph(self, slot: int) -> str:
+        # A solid cell when the five colour pairs took, a per-type density glyph when
+        # they didn't (a pair-starved terminal). Colour and glyph carry the SAME
+        # distinction, so exactly one of them is ever in play.
+        return "█" if self._token_series_ok else TOKEN_SERIES_GLYPHS[slot]
+
+    def _token_stack_line(self, rows, total: float, cells: int) -> str:
+        # One 100%-stacked bar as a single string, plus the per-segment colour runs it
+        # needs, stashed in _token_runs keyed by the line TEXT rather than its index --
+        # the box is spliced into a bigger line list by six different Overviews, so it
+        # cannot know its final offsets, and two identical bar strings want identical
+        # colouring anyway.
+        #
+        # Widths come from cumulative rounding so they sum to exactly `cells` with no
+        # drift opening a gap at the right edge, and every positive value keeps at least
+        # one cell -- a type that cost real money is never invisible. That floor is
+        # reserved out of the width first, so honouring it can never overflow the bar.
+        floor = sum(1 for _, value, _ in rows if value > 0)
+        room = max(0, cells - floor)
+        widths, acc, used = [], 0.0, 0
+        for _label, value, _slot in rows:
+            if total > 0:
+                acc += value / total
+            edge = min(room, round(acc * room))
+            widths.append(max(0, edge - used) + (1 if value > 0 else 0))
+            used = edge
+        short = cells - sum(widths)  # rounding can leave a cell unclaimed
+        if short > 0 and widths:
+            widths[widths.index(max(widths))] += short
+        runs: list[tuple[int, int, int]] = []
+        text, col = "", 0
+        for (_label, value, slot), w in zip(rows, widths):
+            if w <= 0:
+                continue
+            glyph = self._token_glyph(slot)
+            share = f"{round(100.0 * value / total)}%" if total > 0 else ""
+            # The percentage rides INSIDE its segment when it fits with a cell of air on
+            # each side; otherwise the legend and the table carry it, rather than
+            # smearing two digits across a three-cell sliver. Only when colour is doing
+            # the separating -- with glyphs in play the fill itself is the identity and
+            # punching a label through it would break the one distinction left.
+            body = (
+                share.center(w, glyph)
+                if self._token_series_ok and share and len(share) + 2 <= w
+                else glyph * w
+            )
+            runs.append((col, w, slot))
+            text += body
+            col += w
+        self._token_runs[text] = runs
+        return text
+
+    def _token_legend_lines(self, rows, inner: int) -> list[str]:
+        # "<swatch> Cache read  <swatch> Output …" -- every type keyed to its fill, so a
+        # segment too narrow for its own label is still identifiable without dropping to
+        # the table. Wraps onto more rows rather than letting the box clip it: a legend
+        # missing its last entry is worse than a legend two rows tall, because the
+        # clipped type is exactly the small one whose segment you couldn't read either.
+        # Built and measured in one pass so each row's runs land on its own swatches.
+        lines: list[str] = []
+        runs: list[tuple[int, int, int]] = []
+        text = ""
+        for label, _toks, _cost, slot in rows:
+            entry = f"{self._token_glyph(slot)} {label}"
+            gap = "  " if text else ""
+            if text and len(text) + len(gap) + len(entry) > inner:
+                self._token_runs[text] = runs
+                lines.append(text)
+                text, runs, gap = "", [], ""
+            runs.append((len(text) + len(gap), 1, slot))
+            text += gap + entry
+        if text:
+            self._token_runs[text] = runs
+            lines.append(text)
+        return lines
+
+    def _token_economics_box(self, workflows: list[Workflow], width: int) -> list[str]:
+        # "Where the money actually goes": the same five token types measured twice --
+        # what you SENT, then what you PAID -- as two 100%-stacked bars, one above the
+        # other. The reading is the gap between them (a type that is most of the first
+        # bar and a sliver of the second), which is why they share a scale and a colour
+        # per type. One ruled box holds the bars, the legend and the numbers as three
+        # sections, so the chart reads as one object rather than loose lines above a
+        # table -- and on a pane too narrow for five legible segments the bar section
+        # drops out and the numbers alone still answer.
+        #
+        # Always list rates (App.token_economics explains why nothing else is
+        # decomposable), so the title says so rather than following "$".
+        econ = self.app.token_economics(workflows)
+        if econ is None:
+            return self._ruled_box(
+                "# Token economics", "no priceable usage here", [], None, [], width
+            )
+        approx = "~" if econ.estimated else ""
+        inner = max(1, width - 4)
+        # `slot` is the token TYPE's index, carried with the row so a type owns one
+        # colour in both bars, in the legend and in the table however the cost ordering
+        # moves it around.
+        rows = [
+            (label, econ.tokens[i], econ.cost[i], i)
+            for i, label in enumerate(TOKEN_TYPES)
+            if econ.tokens[i] > 0 or econ.cost[i] > 0
+        ]
+        rows.sort(key=lambda r: (r[2], r[1]), reverse=True)
+
+        def share_text(value: float, total: float) -> str:
+            # NOT formatting.pct: it floors everything under 1% to "<1%", and here the
+            # sub-percent rows are the punchline -- output is half a percent of the
+            # tokens and a sixth of the bill, which "<1%" can't say.
+            share = 100.0 * value / total if total > 0 else 0.0
+            if share >= 10 or share == 0:
+                return f"{share:.0f}%"
+            if share >= 1:
+                return f"{share:.1f}%"
+            if share >= 0.005:
+                return f"{share:.2f}%"
+            return "<0.01%"  # present but tiny -- never round a real row down to 0.00%
+
+        # --- section 1: the two bars + the colour key. Below ~34 usable cells five
+        # segments stop being legible (several are slivers), so the section drops out
+        # rather than drawing five ambiguous cells.
+        chart: list[str] = []
+        if inner >= 34:
+            for caption, index, total, fmt in (
+                ("share of tokens sent", 1, econ.total_tokens, lambda v: human_tokens(int(v))),
+                ("share of dollars billed", 2, econ.total_cost, money),
+            ):
+                if chart:
+                    chart.append("")  # a blank row between the bars, so they read as two
+                figure = fmt(total)
+                chart.append(caption + " " * max(1, inner - len(caption) - len(figure)) + figure)
+                chart.append(
+                    self._token_stack_line([(r[0], r[index], r[3]) for r in rows], total, inner)
+                )
+            chart.append("")
+            chart.extend(self._token_legend_lines(rows, inner))
+
+        # --- section 2: the numbers behind the bars
+        type_w = max(max((len(label) for label, *_ in rows), default=4), len("TOTAL"))
+        cost_w = max(8, *(len(money(c)) for _, _, c, _ in rows), len(money(econ.total_cost)) + 1)
+        table = [
+            f"{'Type':<{type_w}}  {'Tokens':>8}  {'Volume':>6}  {'Cost':>{cost_w}}  {'Spend':>6}"
+        ]
+        table += [
+            f"{label:<{type_w}}  {human_tokens(int(toks)):>8}  "
+            f"{share_text(toks, econ.total_tokens):>6}  {money(cost):>{cost_w}}  "
+            f"{share_text(cost, econ.total_cost):>6}"
+            for label, toks, cost, _slot in rows
+        ]
+        total_row = [
+            f"{'TOTAL':<{type_w}}  {human_tokens(int(econ.total_tokens)):>8}  "
+            f"{'':>6}  {approx + money(econ.total_cost):>{cost_w}}"
+        ]
+        notes = []
+        if econ.saved > 0:
+            notes.append(
+                f"! cache reads saved {money(econ.saved)} against paying the input rate for them"
+            )
+        if econ.estimated:
+            notes.append(
+                "! ~ a model here has no known list rate — its tokens use a generic estimate"
+            )
+        if econ.missing_cache_rate:
+            notes.append(
+                "! a model here has no cache-read rate on file — its reads price at $0, "
+                "so Cache read is understated"
+            )
+        if econ.local_tokens:
+            notes.append(
+                f"! {human_tokens(econ.local_tokens)} local-model tokens excluded — "
+                "no API rate to price them at"
+            )
+        title = f"# Token economics · {approx}{money(econ.total_cost)} at list rates"
+        return self._sectioned_box(title, [chart, table, total_row], width, notes)
+
     def _top_sessions_box(
         self, workflows: list[Workflow], scope_cost: float, width: int
     ) -> list[str]:
@@ -2480,6 +2705,8 @@ class Renderer:
         agg = self.aggregate_models(month_ws)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
         lines.append("")
+        lines.extend(self._token_economics_box(month_ws, width))
+        lines.append("")
         lines.extend(self._top_projects_box(month_ws, month.cost, width))
         lines.append("")
         lines.extend(self._top_sessions_box(month_ws, month.cost, width))
@@ -2543,6 +2770,8 @@ class Renderer:
         agg = self.aggregate_models(year_ws)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
         lines.append("")
+        lines.extend(self._token_economics_box(year_ws, width))
+        lines.append("")
         lines.extend(self._top_projects_box(year_ws, year.cost, width))
         lines.append("")
         lines.extend(self._top_sessions_box(year_ws, year.cost, width))
@@ -2593,11 +2822,14 @@ class Renderer:
             lines.extend(["", self.unpriced_hint()])
         # A day touches few models, so the full model table lives here in the
         # Overview rather than in its own (near-empty) tab.
-        agg = self.aggregate_models(self.workflows_for_day(day.day))
+        day_ws = self.workflows_for_day(day.day)
+        agg = self.aggregate_models(day_ws)
         lines.append("")
         lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
         lines.append("")
-        lines.extend(self._top_sessions_box(self.workflows_for_day(day.day), day.cost, width))
+        lines.extend(self._token_economics_box(day_ws, width))
+        lines.append("")
+        lines.extend(self._top_sessions_box(day_ws, day.cost, width))
         return lines
 
     def day_sources(self, day: DaySummary, width: int) -> list[str]:
@@ -2641,6 +2873,8 @@ class Renderer:
         lines.append("")
         agg = self.aggregate_models(workflows)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
+        lines.append("")
+        lines.extend(self._token_economics_box(workflows, width))
         lines.extend(["", "# Top Sessions"])
         for workflow in self.top_sessions(workflows):
             lines.append(
@@ -2825,6 +3059,8 @@ class Renderer:
         lines.append("")
         model_rows = self.model_mix(workflow.id)
         lines.extend(self._model_table(self._mix_rows(model_rows), "# Top Models", width))
+        lines.append("")
+        lines.extend(self._token_economics_box([workflow], width))
         return lines
 
     def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
@@ -4903,9 +5139,14 @@ class Renderer:
     _THEME_COLOR_BASE = 16
     _HEAT_COLOR_BASE = 40  # calendar heat colours (up to HEAT_MAX_LEVELS)
     _PRICE_COLOR_BASE = 56  # price-heat colours (PRICE_HEAT_LEVELS)
+    _TOKEN_COLOR_BASE = 72  # the token-type categorical ramp (TOKEN_SERIES)
     _BASE_PAIR = 32  # the window background pair (ink on theme bg); clear of heat/price
     _TAB_PAIR = 25  # inactive-tab chip (ink2 on panel2); free slot after the price ramp
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
+    # Did the five token-type pairs take? False on a pair-starved terminal, where the
+    # bar falls back to per-type glyphs. Class-level so a Renderer built without curses
+    # (the line-builders are unit-tested headless) still answers.
+    _token_series_ok = True
 
     def _color_index(self, hexcolor: str) -> int:
         # A curses color index for a hex: a fresh init_color slot on truecolor
@@ -4971,6 +5212,7 @@ class Renderer:
         # skip it and fall back to plain text -- the active tab's [brackets] still show which.
         self._set_pair(self._TAB_PAIR, r(roles["ink2"]), r(roles["panel2"]))
         self._init_price_heat()
+        self._init_token_series()
         self._sync_heat_palette()
 
     @staticmethod
@@ -5013,6 +5255,33 @@ class Renderer:
         else:
             for i, col in enumerate(heat_palette(PRICE_HEAT_LEVELS, False)):
                 self._set_pair(PRICE_HEAT_BASE_PAIR + i, col, self._bg_index)
+
+    def _init_token_series(self) -> None:
+        # The Token economics bar's five categorical fills. Unlike the two heat ramps
+        # this one is not a scale, so it never re-derives from the theme's `heat` hexes:
+        # it is its own validated pair, picked by whether the theme is dark or light.
+        #
+        # `_token_series_ok` records whether the pairs actually took. A pair-starved
+        # terminal (_set_pair returns False for anything past COLOR_PAIRS) would render
+        # every segment in the terminal default -- one indistinguishable blob across a
+        # chart whose whole point is telling five things apart -- so the box switches to
+        # per-segment glyphs there instead.
+        hexes = token_series(bool(self.app.theme.get("dark", True)))
+        if self._can_change or self.has256:
+            ok = [
+                self._set_pair(
+                    TOKEN_SERIES_BASE_PAIR + i,
+                    self._heat_index(self._TOKEN_COLOR_BASE + i, hx),
+                    self._bg_index,
+                )
+                for i, hx in enumerate(hexes)
+            ]
+        else:
+            ok = [
+                self._set_pair(TOKEN_SERIES_BASE_PAIR + i, col, self._bg_index)
+                for i, col in enumerate(token_series_ansi())
+            ]
+        self._token_series_ok = all(ok)
 
     def _heat_index(self, slot: int, hexcolor: str) -> int:
         # A reusable fixed-slot heat colour: re-init_color the slot on truecolor
