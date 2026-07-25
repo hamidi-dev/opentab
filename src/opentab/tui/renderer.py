@@ -1825,9 +1825,6 @@ class Renderer:
                 "Summary only — Turns/Tools/Context aren't exported. "
                 f"Press {self._key('main', 'refresh_machines')} to re-pull.",
             ]
-        lines.append("")
-        agg = self.aggregate_models(workflows)
-        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
         if machine.live:
             # A pulled box carries only rollups -- no per-model rows travel in a summary,
             # so there is nothing to decompose and the box would render "no priceable
@@ -1843,6 +1840,9 @@ class Renderer:
                     f"{human_tokens(project.tokens):>8}  "
                     f"{short_path(project.directory, max(10, width - 30))}"
                 )
+        lines.append("")
+        agg = self.aggregate_models(workflows)
+        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
         return lines
 
     def machine_models(self, machine: MachineSummary, width: int) -> list[str]:
@@ -2151,8 +2151,18 @@ class Renderer:
         count_label: str = "Msgs",
         price_split: bool = True,
     ) -> list[str]:
-        # rows: (name, count, cost, tokens, cache_read, cache_write, output). Built as a
-        # ruled box (_ruled_box): the title rides the top border, the columns sit inside,
+        # rows: (name, count, cost, tokens, cache_read, cache_write, output).
+        #
+        # This box CLOSES every Overview -- every scope's, and the session's -- and that
+        # placement is deliberate: it is the widest thing on the pane (up to eight columns,
+        # one row per model) and it is the least likely answer to "where did the money go".
+        # The blocks above it (the stats, Token economics, Top projects/sessions) each fit
+        # in a few lines and each name a different axis of the same spend, so they read as
+        # a summary; the model table is the detail you scroll to, and it has its own tab in
+        # every scope that can afford one. Adding a section? It goes ABOVE this one.
+        #
+        # Built as a ruled box
+        # (_ruled_box): the title rides the top border, the columns sit inside,
         # and a multi-row table closes with a rule + TOTAL row -- no coloured sum bar. The
         # name column fits the longest entry (so the numbers sit right after it), capped by
         # the box-reduced width so long names aren't cut when there's room. name_label/
@@ -2775,14 +2785,14 @@ class Renderer:
             lines.extend(["", self.unpriced_hint()])
         month_ws = self.workflows_for_month(month.month)
         lines.append("")
-        agg = self.aggregate_models(month_ws)
-        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
-        lines.append("")
         lines.extend(self._token_economics_box(month_ws, width))
         lines.append("")
         lines.extend(self._top_projects_box(month_ws, month.cost, width))
         lines.append("")
         lines.extend(self._top_sessions_box(month_ws, month.cost, width))
+        lines.append("")
+        agg = self.aggregate_models(month_ws)
+        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
         return lines
 
     def month_models(self, month: MonthSummary, width: int) -> list[str]:
@@ -2840,14 +2850,14 @@ class Renderer:
                 f"{len(ws):>4} sess"
             )
         lines.append("")
-        agg = self.aggregate_models(year_ws)
-        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
-        lines.append("")
         lines.extend(self._token_economics_box(year_ws, width))
         lines.append("")
         lines.extend(self._top_projects_box(year_ws, year.cost, width))
         lines.append("")
         lines.extend(self._top_sessions_box(year_ws, year.cost, width))
+        lines.append("")
+        agg = self.aggregate_models(year_ws)
+        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
         return lines
 
     def year_models(self, year: YearSummary, width: int) -> list[str]:
@@ -2893,16 +2903,16 @@ class Renderer:
         ]
         if day.unpriced_tokens:
             lines.extend(["", self.unpriced_hint()])
-        # A day touches few models, so the full model table lives here in the
-        # Overview rather than in its own (near-empty) tab.
         day_ws = self.workflows_for_day(day.day)
-        agg = self.aggregate_models(day_ws)
-        lines.append("")
-        lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
         lines.append("")
         lines.extend(self._token_economics_box(day_ws, width))
         lines.append("")
         lines.extend(self._top_sessions_box(day_ws, day.cost, width))
+        # A day touches few models, so the full model table lives here in the
+        # Overview rather than in its own (near-empty) tab.
+        lines.append("")
+        agg = self.aggregate_models(day_ws)
+        lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
         return lines
 
     def day_sources(self, day: DaySummary, width: int) -> list[str]:
@@ -2944,9 +2954,6 @@ class Renderer:
         if project.unpriced_tokens:
             lines.extend(["", self.unpriced_hint()])
         lines.append("")
-        agg = self.aggregate_models(workflows)
-        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
-        lines.append("")
         lines.extend(self._token_economics_box(workflows, width))
         lines.extend(["", "# Top Sessions"])
         for workflow in self.top_sessions(workflows):
@@ -2956,6 +2963,9 @@ class Renderer:
                 f"{human_tokens(workflow.total_tokens):>8} subagents {workflow.subagents:<3} "
                 f"{shorten(self.source_tag(workflow) + self.session_marks(workflow) + workflow.title, max(20, width - 53))}"
             )
+        lines.append("")
+        agg = self.aggregate_models(workflows)
+        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
         return lines
 
     def project_models(self, project: ProjectSummary, width: int) -> list[str]:
@@ -3130,10 +3140,10 @@ class Renderer:
         lines.append("")
         lines += self._money_overview(workflow, width)
         lines.append("")
+        lines.extend(self._token_economics_box([workflow], width))
+        lines.append("")
         model_rows = self.model_mix(workflow.id)
         lines.extend(self._model_table(self._mix_rows(model_rows), "# Top Models", width))
-        lines.append("")
-        lines.extend(self._token_economics_box([workflow], width))
         return lines
 
     _FLAME_LEGEND_MAX = 6  # past this the legend is noise; the table below has them all

@@ -823,6 +823,22 @@ def test_web_token_economics_pane_is_two_stacked_bars_over_a_fixed_order_table()
     assert "1.05 / (L + 0.05)" in js  # WCAG contrast against white, not 21/(L+0.05)
 
 
+def test_web_overview_closes_with_the_models_table():
+    # The TUI's rule (renderer._model_table), mirrored: the models table is the widest
+    # block and the least likely answer to "where did the money go", so every Overview
+    # ends with it and the blocks that read in a glance -- Token economics, Top projects,
+    # Top sessions -- come first.
+    js = _js_source()
+    body = js.split("function renderOverview(", 1)[1].split("\nfunction ", 1)[0]
+    econ = body.index("tokenEconomicsPane(")
+    projects = body.index("'Top projects'")
+    sessions = body.index("'Top sessions'")
+    models = body.index("'Top models'")
+    assert econ < projects < sessions < models
+    # And it is the LAST thing appended -- a new pane goes above it, never below.
+    assert "modelsTable('t-ov-models'" in body[body.rindex("root.appendChild(") :]
+
+
 def test_web_tools_treemap_is_passive_themed_and_precedes_the_table():
     js = _js_source()
     tools = js.split("function toolsTable(", 1)[1].split("\nfunction binaryTreemap", 1)[0]

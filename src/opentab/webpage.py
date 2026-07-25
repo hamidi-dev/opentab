@@ -183,10 +183,6 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
 #foot kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:3px;padding:0 5px;
   font-family:inherit;font-size:10.5px;color:var(--ink2);background:var(--panel);margin-right:2px}
 
-/* side-by-side panel pairs inside the detail pane */
-.cols{display:grid;grid-template-columns:1fr;gap:0 14px;align-items:start}
-@media (min-width:1250px){.cols{grid-template-columns:1fr 1fr}}
-.cols .pane{min-width:0}
 button.showall{display:block;width:100%;font:inherit;font-size:11px;margin-top:6px;
   padding:5px;border:1px dashed var(--line);border-radius:4px;background:none;
   color:var(--mut);cursor:pointer}
@@ -1252,7 +1248,6 @@ function renderSidebar(sc) {
 
 /* ---------- detail pane pieces ---------- */
 const pane = (title, ...kids) => h('section', { class: 'pane' }, title ? h('h3', null, title) : null, ...kids);
-const sideBySide = (...panes) => h('div', { class: 'cols' }, ...panes);
 function tiles(items) {
   return h('div', { class: 'tiles' }, items.map(([k, v, note, moneyish]) =>
     h('div', { class: 'tile' }, h('div', { class: 'k' }, k),
@@ -2244,18 +2239,19 @@ function renderOverview(root, sc, ws) {
       card.appendChild(h('div', { class: 'hint' }, 'summary only — Turns/Tools/Context aren\'t exported (opentab --serve to re-pull)'));
     root.appendChild(card);
   }
-  const panes = [];
-  if (sc.kind !== 'p') panes.push(pane('Top projects', projectsTable('t-ov-projects', ws, 8, sc.kind === 'M' ? null : undefined)));
-  // A day touches few models, so its Overview carries the full mix -- the day
-  // scope has no Models tab (the TUI's day_overview trade-off).
-  panes.push(pane(sc.kind === 'd' ? 'Model mix' : 'Top models', modelsTable('t-ov-models', modelAgg(ws), 8)));
-  if (panes.length === 2) root.appendChild(sideBySide(...panes));
-  else panes.forEach(p => root.appendChild(p));
   // Scoped to `ws`, so it answers for whatever the page is showing -- the drilled
   // year/month/day/project/machine, ignored projects already filtered out.
   const econ = tokenEconomicsPane(ws, scopeLabel(sc));
   if (econ) root.appendChild(econ);
+  if (sc.kind !== 'p')
+    root.appendChild(pane('Top projects', projectsTable('t-ov-projects', ws, 8, sc.kind === 'M' ? null : undefined)));
   root.appendChild(pane('Top sessions', topSessionsTable('t-ov-sessions', ws, 8)));
+  // The models table CLOSES the Overview here as it does in the TUI (see _model_table):
+  // it is the widest table on the page and the least likely answer to "where did the
+  // money go", so the blocks that fit in a glance go above it. A day touches few models,
+  // so its Overview carries the full mix -- the day scope has no Models tab (the TUI's
+  // day_overview trade-off).
+  root.appendChild(pane(sc.kind === 'd' ? 'Model mix' : 'Top models', modelsTable('t-ov-models', modelAgg(ws), 8)));
 }
 function renderSessionOverview(root, sc) {
   const w = sc.session;

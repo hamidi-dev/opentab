@@ -221,6 +221,36 @@ def test_top_sessions_overview_box_caps_the_leaderboard_at_twenty():
     assert not any("$5.00" in ln for ln in data)  # the bottom five fall off the cap
 
 
+def test_the_model_table_closes_every_overview():
+    # The model table is the widest block on any Overview and the least likely answer to
+    # "where did the money go", so it goes LAST everywhere -- under the stats, Token
+    # economics and the Top projects/sessions boxes, which each fit in a glance. A new
+    # section goes above it, never below.
+    from tests._support import _model_row, fleet_app
+
+    ws = [workflow("a", "2026-06-01 12:00:00", directory="/x", cost=2.0, tokens=1000)]
+    app = app_with(ws)
+    app._model_by_root = {"a": [_model_row("anthropic/claude-opus-4.5", 2.0, 1000)]}
+    app._compute_api_costs()
+    r = app.renderer
+    fleet = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00", cost=3.0)]})
+    fleet.set_browse_mode("machines")
+    overviews = [
+        r.year_overview(app.years[0], 120),
+        r.month_overview(app.months[0], 120),
+        r.day_overview(app.days[0], 120),
+        r.project_overview(app.projects[0], 120),
+        r.detail_overview(ws[0], 120),
+        fleet.renderer.machine_overview(fleet.machines[0], 120),
+    ]
+    for lines in overviews:
+        # The last non-blank line closes the model box -- nothing renders after it.
+        body = [ln for ln in lines if ln.strip()]
+        title = next(i for i, ln in enumerate(body) if "Top Models" in ln or "Model Mix" in ln)
+        assert body[title][:1] in ("┌", "+")  # it is the ruled box's titled top border
+        assert body[-1][:1] in ("└", "+")  # and its bottom border ends the pane
+
+
 def test_top_projects_box_ranks_projects_by_cost_in_the_overview():
     # The Overview grows a "# Top Projects" ruled box beside Top Models/Top Sessions,
     # aggregating the scope's sessions by project directory, cost-ranked.
