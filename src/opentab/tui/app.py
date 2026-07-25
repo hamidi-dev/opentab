@@ -473,6 +473,11 @@ class App:
         # view -- it fetches given remotes keys and returns [(key, count, error)].
         self._refresh_request: list[str] | None = None
         self._refresh_backend = None
+        # {remotes.json key -> ssh target}, injected by main() alongside _refresh_backend
+        # so `L` can reopen a session on the box it actually ran on. A callable, not a
+        # dict: remotes.json is re-read per keystroke, so a machine added mid-run lands
+        # without a restart. None outside the fleet view -> `L` stays purely local.
+        self._ssh_targets = None
         self.view = "browse"  # "browse" | "zoom" | "session"
         # lazygit-style zoom: the detail becomes the active pane in the split; `+`
         # maximizes it full-screen on demand (a saved pref, so it sticks between runs).
@@ -3716,12 +3721,50 @@ class App:
             return None
         return directory, f"{cli} {shlex.quote(workflow.id)}"
 
+    def machine_ssh_target(self, workflow: Workflow) -> str | None:
+        # The ssh target for the box a PULLED session ran on -- its machine's
+        # remotes.json key, resolved through the map main() injects. None for your own
+        # live box (there is nothing to ssh into), for a machine reached by `url` rather
+        # than ssh, and whenever no fleet is in view -- each case meaning "this session
+        # is launchable right here", which is the pre-fleet behaviour.
+        name = getattr(workflow, "machine", "") or ""
+        if not name or self._ssh_targets is None:
+            return None
+        meta = self.machine_meta().get(name) or {}
+        key = meta.get("key")
+        if meta.get("live") or not key:
+            return None
+        try:
+            targets = self._ssh_targets() or {}
+        except Exception:  # noqa: BLE001 -- a broken remotes.json must not eat the `L` key
+            return None
+        return targets.get(str(key)) or None
+
+    def launch_parts(self, workflow: Workflow) -> tuple[str, str] | None:
+        # (start directory, command) for the spawn targets. Locally that is the project
+        # and the bare resume command; for a session pulled from another box it is the
+        # same command wrapped in ssh, started from HOME -- the remote project path does
+        # not exist here, and tmux's -c would refuse a directory it can't enter.
+        parts = self.resume_parts(workflow)
+        if not parts:
+            return None
+        target = self.machine_ssh_target(workflow)
+        if not target:
+            return parts
+        directory, command = parts
+        return os.path.expanduser("~"), util.ssh_command(target, directory, command)
+
     def resume_command(self, workflow: Workflow) -> str | None:
-        # The ready-to-paste shell form: cd to the project, then resume.
+        # The ready-to-paste shell form: cd to the project, then resume -- or the whole
+        # thing over ssh when the session ran on another machine, so what you yank is a
+        # line that works from here rather than a path that only exists over there.
         parts = self.resume_parts(workflow)
         if not parts:
             return None
         directory, command = parts
+        target = self.machine_ssh_target(workflow)
+        if target:
+            return util.ssh_command(target, directory, command)
         return f"cd {shlex.quote(directory)} && {command}"
 
     def launch_available(self) -> bool:
@@ -3731,10 +3774,26 @@ class App:
         # but only offers copying the resume command (see launch_targets).
         return in_tmux() or launcher_hook() is not None
 
+    def unreachable_machine(self) -> str | None:
+        # The machine name when the session in the `L` picker was pulled from a box we
+        # cannot ssh into (a `url` entry, or one no longer in remotes.json). Spawning
+        # locally would be wrong, not merely unhelpful -- it would run `claude --resume`
+        # against another box's session id, in a directory that is not this one's -- so
+        # those rows come off the menu and only the yank is left.
+        session = self.launch_menu
+        if session is None or self._ssh_targets is None:
+            return None
+        name = getattr(session, "machine", "") or ""
+        meta = self.machine_meta().get(name) or {}
+        if not name or meta.get("live"):
+            return None
+        return None if self.machine_ssh_target(session) else name
+
     def launch_targets(self) -> tuple[tuple[str, str, str], ...]:
         # The picker rows actually offered here: everything inside tmux (or with a
-        # launcher hook); only the clipboard copy outside — copying needs neither.
-        if self.launch_available():
+        # launcher hook); only the clipboard copy outside — copying needs neither, and
+        # it is also all that is left for a machine with no ssh target.
+        if self.launch_available() and not self.unreachable_machine():
             return self.LAUNCH_TARGETS
         return tuple(t for t in self.LAUNCH_TARGETS if t[1] == "copy")
 
@@ -3809,7 +3868,7 @@ class App:
         if kind == "copy":
             self.copy_resume_command(session)
             return
-        parts = self.resume_parts(session)
+        parts = self.launch_parts(session)
         if not parts:
             self.notice = "launch cancelled"
             return
@@ -3818,7 +3877,8 @@ class App:
         if error:
             self.notify(f"launch failed: {error}", "error")
         else:
-            self.notice = f"{kind}: {shorten(command, 50)}"
+            where = self.machine_ssh_target(session)
+            self.notice = f"{kind}: {shorten(command, 50)}" if not where else f"{kind} on {where}"
 
     def handle_source_menu_key(self, key: int | str) -> bool:
         # The `H` data-source picker: down/up move, select switches, cancel closes.

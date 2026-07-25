@@ -4,6 +4,7 @@ from __future__ import annotations
 import locale
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -420,6 +421,19 @@ def launcher_hook() -> str | None:
         if path and os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return None
+
+
+def ssh_command(target: str, directory: str, command: str) -> str:
+    # One line that reopens a session on ANOTHER box -- what the `L` menu runs (and
+    # copies) for a machine you pulled rather than the one you are sitting at.
+    #
+    # `-t` because every agent CLI here is interactive: without a tty the remote
+    # `claude --resume` gets a pipe and exits. The remote side is quoted as a SINGLE
+    # argument so the cd and the resume run in one remote shell -- passed as two, ssh
+    # joins them with a space and the `&&` is evaluated by the LOCAL shell instead,
+    # which is how you end up resuming in your own home directory.
+    inner = f"cd {shlex.quote(directory)} && {command}"
+    return f"ssh -t {shlex.quote(target)} {shlex.quote(inner)}"
 
 
 def tmux_launch_argv(kind: str, directory: str, command: str) -> list[str]:

@@ -198,6 +198,17 @@ def test_tmux_launch_argv_builds_window_split_popup():
     assert "/repo/a" in popup and cmd in popup
 
 
+def test_ssh_command_quotes_the_remote_side_as_one_argument():
+    # The whole remote half is ONE quoted argument: passed as two, ssh joins them with a
+    # space and the local shell evaluates the "&&" instead -- which resumes on the remote
+    # box but in the wrong directory (and, with a path holding a space, not at all).
+    cmd = ot.ssh_command("root@giant", "/srv/app", "claude --resume abc123")
+    assert cmd == "ssh -t root@giant 'cd /srv/app && claude --resume abc123'"
+    assert cmd.startswith("ssh -t ")  # a tty: these CLIs are interactive
+    spaced = ot.ssh_command("mo@box", "/srv/my app", "codex resume 'x y'")
+    assert spaced == """ssh -t mo@box 'cd '"'"'/srv/my app'"'"' && codex resume '"'"'x y'"'"''"""
+
+
 def test_launcher_hook_detected_via_env_then_config():
     old_env = os.environ.get("OPENTAB_LAUNCHER")
     old_xdg = os.environ.get("XDG_CONFIG_HOME")

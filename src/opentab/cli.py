@@ -1486,6 +1486,23 @@ def _make_refresh_fn(args: argparse.Namespace):
     return refresh
 
 
+def _make_ssh_targets_fn():
+    # A closure the TUI's `L` menu calls to turn a machine's remotes.json key into its
+    # ssh target, so a session pulled from another box reopens on that box. Re-reads the
+    # file per call (it is tiny, and this runs on a keystroke) so a machine learned by a
+    # `--pull` in another terminal is launchable without restarting. `url` machines have
+    # no ssh target and are deliberately absent: opentab fetches summaries over HTTP, but
+    # it will not invent a shell on a box that only offered it a JSON endpoint.
+    def targets() -> dict:
+        return {
+            name: str(entry["ssh"])
+            for name, entry in _load_remotes().items()
+            if isinstance(entry, dict) and entry.get("ssh")
+        }
+
+    return targets
+
+
 def forget_command(args: argparse.Namespace) -> int:
     # --forget: drop machines from remotes.json and delete their cached summaries.
     machines = _load_remotes()
@@ -1613,8 +1630,10 @@ def main() -> int:
     bindings.ensure_user_keymap()
     app = App(store, args, source_key=source_key, keymap=bindings.load_user_keymap())
     if source_key == "remote":
-        # Let `F` in the TUI re-pull a machine over ssh (fleet view only).
+        # Let `F` in the TUI re-pull a machine over ssh (fleet view only), and `L`
+        # reopen a pulled session on the box it actually ran on.
         app._refresh_backend = _make_refresh_fn(args)
+        app._ssh_targets = _make_ssh_targets_fn()
     app.allow_price_prompt = use_state  # no startup prompt under --no-state/--demo
     # Session notes are authored data, so they live in their own file and carry their own
     # gate: --no-state turns them off for the run, while demo is re-checked live (`D`

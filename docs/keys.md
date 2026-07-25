@@ -82,7 +82,7 @@ worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock st
 | `b` / `B` | Bookmark ★ the selected session (remembered between runs); `B` shows only bookmarks, within the active range |
 | `n` | Note ✎ on the selected session — *why* it cost what it did, which no token count records. Opens a prompt seeded with the existing note (`Enter` saves · `Ctrl-U` clears · `Ctrl-W` kills a word · `Esc` cancels); saving an empty note removes it. An annotated session shows a `✎` in every list and the note in its **Overview**; `f`/`/` searches note text too, and `e` exports it as a `note` column. Notes live in their own `~/.local/share/opentab/notes.json` and are written the moment you save. Off under `--demo` / `--no-state` |
 | `o` | Open the selected session's / project's directory |
-| `L` | Launch the session in its own tool — `opencode --session` / `claude --resume` / `codex resume`. Then `w` window · `s` split · `v` vsplit · `p` popup · `y` copy the command (`w`/`s`/`v`/`p` need tmux or a [launcher hook](#custom-launchers); `y` copies anywhere) |
+| `L` | Launch the session in its own tool — `opencode --session` / `claude --resume` / `codex resume`. Then `w` window · `s` split · `v` vsplit · `p` popup · `y` copy the command (`w`/`s`/`v`/`p` need tmux or a [launcher hook](#custom-launchers); `y` copies anywhere). A session **pulled from another machine** reopens *there*: every target wraps the command in `ssh -t <target> 'cd … && …'` using that machine's `remotes.json` entry, and `y` yanks that same line. A pulled box reached by `url` (no ssh target) offers only the yank |
 | `e` | Export the current list to a CSV in the working directory |
 
 ## Views & overlays
@@ -189,6 +189,10 @@ launcher <kind> <directory> <command>
 
 and a nonzero exit shows its stderr as the launch error. The footer reads
 "launch via launcher hook" when one is active.
+
+For a session pulled from another machine the `<command>` is already the full
+`ssh -t … 'cd … && …'` line and `<directory>` is your home — the hook runs it
+locally, exactly as it runs a local one, and the `cd` happens on the far side.
 
 **Example hook** — route launches through zellij (or kitty, or your own popup
 manager):

@@ -1853,6 +1853,113 @@ def test_launch_menu_is_navigable_with_jk_and_enter():
             os.environ["TMUX"] = old_tmux
 
 
+def _remote_launch_app(targets):
+    # A two-box fleet: "laptop" is the live local machine, "giant" a pulled one whose
+    # remotes.json key is its own name. `targets` is what main() injects for `L`.
+    from tests._support import fleet_app
+
+    here = workflow("ses_here", "2026-06-01 12:00:00", directory="/repo/a")
+    there = workflow("ses_there", "2026-06-02 12:00:00", directory="/srv/app")
+    here.source = there.source = "Claude Code"
+    app = fleet_app({"laptop": [here], "giant": [there]})
+    app._ssh_targets = lambda: targets
+    app.set_browse_mode("machines")
+    app.view = "session"
+    return app
+
+
+def _launch(app, session_id, key):
+    app.session_stack = []
+    app.drill_into_session(session_id)
+    app.handle_key(None, ord("L"))
+    app.handle_key(None, key)
+
+
+def test_launch_reopens_a_pulled_session_on_its_own_machine_over_ssh():
+    # A session you pulled from another box ran THERE: its id is that box's, and its
+    # project path may not even exist here. Spawning it locally would resume the wrong
+    # thing in the wrong place, so the launch goes over ssh -- and what `y` yanks is the
+    # same one-liner, because a `cd` into a path that is not on this machine is not a
+    # command anyone can paste.
+    app = _remote_launch_app({"giant": "root@giant"})
+    old_tmux = os.environ.get("TMUX")
+    real_launch, real_copy = ot.util.tmux_launch, ot.util.copy_to_clipboard
+    launches, copies = [], []
+    try:
+        ot.util.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        ot.util.copy_to_clipboard = lambda v: copies.append(v) or True
+        os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
+        _launch(app, "ses_there", ord("w"))
+        kind, directory, command = launches[0]
+        # -t (the agent CLIs are interactive) and ONE quoted remote argument, so the cd
+        # and the resume happen in the same remote shell.
+        assert kind == "window"
+        assert command == "ssh -t root@giant 'cd /srv/app && claude --resume ses_there'"
+        # started from HOME: tmux -c would refuse /srv/app, which is not a path here
+        assert directory == os.path.expanduser("~")
+        _launch(app, "ses_there", ord("y"))
+        assert copies == [command]
+        # The picker says where it is about to land, and the yank row says what it yanks.
+        app.session_stack = []
+        app.drill_into_session("ses_there")
+        app.handle_key(None, ord("L"))
+        screen = FakeScreen(30, 100)
+        real_pair = ot.curses.color_pair
+        ot.curses.color_pair = lambda n: 0  # headless: no initscr behind the modal
+        try:
+            app.renderer.draw_launch_menu(screen, 30, 100)
+        finally:
+            ot.curses.color_pair = real_pair
+        text = screen_text(screen)
+        assert "open on root@giant (ssh)" in text and "copy ssh command" in text
+        app.handle_key(None, 27)
+        # The local box is untouched: same session list, same plain local launch.
+        _launch(app, "ses_here", ord("w"))
+        assert launches[-1] == ("window", "/repo/a", "claude --resume ses_here")
+        _launch(app, "ses_here", ord("y"))
+        assert copies[-1] == "cd /repo/a && claude --resume ses_here"
+    finally:
+        ot.util.tmux_launch, ot.util.copy_to_clipboard = real_launch, real_copy
+        if old_tmux is None:
+            os.environ.pop("TMUX", None)
+        else:
+            os.environ["TMUX"] = old_tmux
+
+
+def test_launch_on_a_machine_with_no_ssh_target_offers_only_the_yank():
+    # A box pulled over `url` (or one dropped from remotes.json) has no shell to open:
+    # the spawn rows come off the menu rather than silently resuming another machine's
+    # session id here, and the picker says why.
+    app = _remote_launch_app({})
+    old_tmux = os.environ.get("TMUX")
+    real_launch = ot.util.tmux_launch
+    launches = []
+    try:
+        ot.util.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
+        app.session_stack = []
+        app.drill_into_session("ses_there")
+        app.handle_key(None, ord("L"))
+        assert [kind for _k, kind, _l in app.launch_targets()] == ["copy"]
+        assert app.unreachable_machine() == "giant"
+        screen = FakeScreen(30, 100)
+        real_pair = ot.curses.color_pair
+        ot.curses.color_pair = lambda n: 0  # headless: no initscr behind the modal
+        try:
+            app.renderer.draw_launch_menu(screen, 30, 100)
+        finally:
+            ot.curses.color_pair = real_pair
+        assert "no ssh target" in screen_text(screen)
+        app.handle_key(None, ord("w"))  # not offered -> ignored, menu stays open
+        assert app.launch_menu is not None and not launches
+    finally:
+        ot.util.tmux_launch = real_launch
+        if old_tmux is None:
+            os.environ.pop("TMUX", None)
+        else:
+            os.environ["TMUX"] = old_tmux
+
+
 def test_launch_only_works_on_session_contexts():
     a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
     a.source = "OpenCode"

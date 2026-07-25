@@ -207,6 +207,7 @@ from opentab.util import (
     parse_range_text,
     read_files_parallel,
     resolve_project_root,
+    ssh_command,
     tmux_launch,
     tmux_launch_argv,
     tool_namespace,

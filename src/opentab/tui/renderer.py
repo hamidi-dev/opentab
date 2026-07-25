@@ -5186,19 +5186,29 @@ class Renderer:
         # handle_launch_key); anything else cancels.
         session = self.launch_menu
         targets = self.launch_targets()
-        if self.launch_available():
-            via = "launcher hook" if launcher_hook() else "tmux"
-            headline = f"open in {via}:"
-        else:
+        # A session pulled from another box reopens THERE, over ssh -- so the picker says
+        # where it is about to land before you pick, rather than after.
+        remote = self.machine_ssh_target(session)
+        unreachable = self.unreachable_machine()
+        if unreachable:
+            headline = f"pulled from {unreachable} — no ssh target, copy instead:"
+        elif not self.launch_available():
             headline = "no tmux / launcher hook — copy instead:"
+        else:
+            via = "launcher hook" if launcher_hook() else "tmux"
+            headline = f"open in {via}:" if not remote else f"open on {remote} (ssh) in {via}:"
         idx = self.launch_menu_index % len(targets)
         lines = [
             (shorten(session.title or "(untitled)", 52), curses.color_pair(4)),
             (headline, curses.A_NORMAL),
             ("", 0),
         ]
-        for offset, (kc, _kind, label) in enumerate(targets):
+        for offset, (kc, kind, label) in enumerate(targets):
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
+            # The yank is the one row whose CONTENT changes with the machine: for a
+            # pulled session it copies the ssh line, not a cd into a path that isn't here.
+            if kind == "copy" and remote:
+                label = "copy ssh command"
             lines.append((f" {kc}  {label}", attr))
         lines += [("", 0), (f" {self._key('menu.launch', 'cancel')}  cancel", curses.A_NORMAL)]
         self.draw_modal(
