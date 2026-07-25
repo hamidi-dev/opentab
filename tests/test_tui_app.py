@@ -183,6 +183,7 @@ def test_theme_pairs_respect_a_pair_starved_terminal():
         renderer.app.has256 = False
         renderer.init_theme_colors()  # the exact call that crashed on minitel1
         assert made and max(made) <= 7  # roles landed, nothing past the terminal's 8
+        assert not renderer._tool_heat_ok  # treemap switches to its glyph fallback
     finally:
         for key, value in saved.items():
             if value is None:

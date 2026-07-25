@@ -288,6 +288,27 @@ input.filter:focus{outline:none;border-color:var(--accent)}
 .cal-legend{display:flex;align-items:center;gap:4px;color:var(--mut);font-size:11px;margin-top:8px}
 .cal-legend span{width:11px;height:11px;border-radius:2px;display:inline-block}
 
+/* tools: a passive treemap above the exact table. Area and shade encode the same
+   visible measure on purpose -- the first is proportion, the second preserves the
+   hierarchy when adjacent tiles have similar geometry. */
+.tool-map-wrap{margin:2px 0 18px}
+.tool-map-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline;
+  margin:0 2px 6px;color:var(--ink2);font-size:12px}
+.tool-map-head b{color:var(--ink);font-size:13px}
+.tool-map{position:relative;height:clamp(150px,18vw,220px);overflow:hidden;
+  border-radius:6px;background:var(--panel2)}
+.tool-tile{position:absolute;border:2px solid var(--panel);background-clip:padding-box;
+  padding:9px 11px;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-start;
+  line-height:1.25;container-type:size}
+.tool-tile .tn{font-size:clamp(12px,2.3cqw,19px);font-weight:800;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.tool-tile .tv{font-size:clamp(10px,1.7cqw,14px);margin-top:3px;white-space:nowrap;opacity:.9}
+.tool-tile .tr{font-size:clamp(10px,1.6cqw,13px);margin-top:2px;white-space:nowrap;opacity:.75;
+  font-weight:600}
+.tool-tile.tiny{padding:2px}
+.tool-table{margin-top:2px}
+@media (max-width:600px){.tool-map{height:170px}.tool-map-head{align-items:flex-start;flex-direction:column;gap:1px}}
+
 /* turns */
 tr.prompt-row td{color:var(--accent);padding-top:9px;font-weight:600}
 tr.prompt-row td:first-child{white-space:normal;overflow-wrap:anywhere}
@@ -1680,18 +1701,173 @@ function toolsTable(toolRows) {
   const agg = new Map();
   for (const r of toolRows) {
     let a = agg.get(r.tool);
-    if (!a) { a = { tool: r.tool, ns: r.ns, real: 0, api: 0, tokens: 0 }; agg.set(r.tool, a); }
-    a.real += r.real; a.api += r.api; a.tokens += r.tokens;
+    if (!a) { a = { tool: r.tool, ns: r.ns, calls: 0, real: 0, api: 0, tokens: 0 }; agg.set(r.tool, a); }
+    a.calls += r.calls || 0; a.real += r.real; a.api += r.api; a.tokens += r.tokens;
   }
   const rows = [...agg.values()];
   const peak = Math.max(...rows.map(mCost), 0);
-  return table('t-s-tools', [
+  const grid = table('t-s-tools', [
     { key: 'tool', label: 'Tool', asc: true, cls: 'grow' },
     { key: 'ns', label: 'Server', asc: true, fmt: r => h('span', { class: 'dim' }, r.ns) },
+    // The treemap shades by $/call, so the exact reading below it has to be able to
+    // state that figure too -- the TUI's Tools table has carried Calls all along.
+    { key: 'calls', label: 'Calls', align: 'r' },
     { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => barCell(mCost(r), peak) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
   ], rows, { defaultSort: { key: 'cost', desc: true },
-    totals: { tool: 'TOTAL', cost: moneyCell(sum(rows, mCost)), tokens: hTok(sum(rows, r => r.tokens)) } });
+    totals: { tool: 'TOTAL', calls: sum(rows, r => r.calls),
+      cost: moneyCell(sum(rows, mCost)), tokens: hTok(sum(rows, r => r.tokens)) } });
+  return h('div', null, toolTreemap(rows), h('div', { class: 'tool-table' }, grid),
+    h('div', { class: 'hint' }, 'cost and tokens belong to the LLM turns that invoked each tool; '
+      + 'a multi-tool turn is split evenly'));
+}
+
+// Balanced binary treemap. It recursively halves the sorted weight along the current
+// rectangle's long edge: enough structure for a convincing map without pulling a chart
+// library into the self-contained page.
+function binaryTreemap(items, x, y, w, h, out) {
+  if (!items.length || w <= 0 || h <= 0) return out;
+  if (items.length === 1) { out.push({ ...items[0], x, y, w, h }); return out; }
+  const total = sum(items, r => r.value), half = total / 2;
+  let acc = 0, split = 1, best = Infinity;
+  for (let i = 1; i < items.length; i++) {
+    acc += items[i - 1].value;
+    const d = Math.abs(acc - half);
+    if (d < best) { best = d; split = i; }
+  }
+  const left = items.slice(0, split), right = items.slice(split);
+  const share = sum(left, r => r.value) / total;
+  if (w >= h) {
+    const cut = w * share;
+    binaryTreemap(left, x, y, cut, h, out);
+    binaryTreemap(right, x + cut, y, w - cut, h, out);
+  } else {
+    const cut = h * share;
+    binaryTreemap(left, x, y, w, cut, out);
+    binaryTreemap(right, x, y + cut, w, h - cut, out);
+  }
+  return out;
+}
+function toolTreemap(rows) {
+  const dollars = sum(rows, mCost) > 0;
+  const sortItems = (a, b) => b.value - a.value || (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0);
+  const all = rows.map(r => ({ tool: r.tool, calls: r.calls || 0, value: dollars ? mCost(r) : r.tokens }))
+    .filter(r => r.value > 0)
+    .sort(sortItems);
+  if (!all.length) return null;
+  const total = sum(all, r => r.value), peak = all[0].value;
+  // A tile too narrow to hold a name is a stripe, not a tile, and a row of those at the
+  // right edge is most of what made this chart read as big and empty. The tail folds into
+  // "Other" until every drawn tile can carry its own label -- measured against the REAL
+  // container in draw(), since a percentage cannot know whether that is 40px or 240px.
+  // (Renderer._TOOL_TILE_MIN, in pixels.) The long tail is read in the table below.
+  const TILE_MIN = 70;
+  const fold = keep => {
+    const head = all.slice(0, keep), rest = all.slice(keep);
+    if (!rest.length) return head;
+    const out = head.concat([{ tool: 'Other', calls: sum(rest, r => r.calls),
+      value: sum(rest, r => r.value) }]);
+    out.sort(sortItems); // the folded tail can itself be the largest tile
+    return out;
+  };
+  // Shade is the PER-CALL rate, not the area's own measure (Renderer._tool_treemap_box
+  // is canonical): area already says what a tool cost in total, so colouring by the same
+  // number spends the second channel saying it twice. $/call splits the two findings a
+  // Cost column cannot tell apart -- "expensive because it ran 200 times" (big, cool)
+  // from "expensive every single time" (small, hot).
+  //
+  // The SCALE comes off the FULL ranking, not the drawn tiles: whether per-call rates
+  // exist and vary is a property of the data, so a tool keeps its colour when a resize
+  // folds a neighbour away, and the caption below can be written before we measure. A
+  // folded "Other" blends the rates it swallowed, which lands inside the range anyway.
+  const byRate = all.every(r => r.calls > 0)
+    && new Set(all.map(r => r.value / r.calls)).size > 1;
+  const rates = all.map(r => r.value / r.calls);
+  const rLo = byRate ? Math.min(...rates) : 0, rHi = byRate ? Math.max(...rates) : 0;
+  // Log position, like Renderer._heat_position: per-call rates span orders of magnitude
+  // and a linear ramp would flatten every tool but the priciest into one band.
+  const level = r => {
+    const n = TH.heat.length - 1;
+    if (!byRate) return Math.max(0, Math.min(n, Math.round(Math.sqrt(r.value / peak) * n)));
+    const v = r.value / r.calls;
+    if (!(rHi > rLo && rLo > 0) || v <= rLo) return 0;
+    return Math.max(0, Math.min(n, Math.round((Math.log(v) - Math.log(rLo)) / (Math.log(rHi) - Math.log(rLo)) * n)));
+  };
+  // money() floors at the cent, but a per-call rate usually lives below one and the whole
+  // point of the figure is telling $0.0004 from $0.006 -- "<$0.01" for both erases it.
+  const rateText = r => !r.calls ? '' : !dollars ? hTok(Math.round(r.value / r.calls)) + '/call'
+    : (r.value / r.calls) >= 0.01 ? money(r.value / r.calls) + '/call'
+    : (r.value / r.calls) < 0.0001 ? '<$0.0001/call'
+    : '$' + (r.value / r.calls).toFixed(4).replace(/0+$/, '') + '/call';
+  const map = h('div', { class: 'tool-map', 'aria-hidden': 'true' });
+  // Measure after insertion: choosing split axes against a fake square makes wide panes
+  // produce flat strips, and percentage thresholds cannot know whether a label has 40px
+  // or 240px. ResizeObserver reflows this chart alone -- a global render on mobile-keyboard
+  // resize would destroy expanded prompt rows and focused filters elsewhere on the page.
+  let frame = 0;
+  const draw = () => {
+    if (!map.isConnected) return;
+    const box = map.getBoundingClientRect();
+    // Only the TAIL folds -- the tiles that individually cannot hold a label. Asking
+    // instead that every tile in the folded set clear the floor lets one small tool drag
+    // away everything ranked below it: measured on real data (18 tools, an 884px map)
+    // that rule left three tiles, which is a bar chart with extra steps.
+    let keep = 0;
+    while (keep < Math.min(8, all.length)
+      && all[keep].value / total * box.width >= TILE_MIN) keep++;
+    const items = fold(Math.max(1, keep));
+    const rects = binaryTreemap(items, 0, 0, box.width, box.height, []);
+    const tiles_ = rects.map(r => {
+      const fill = TH.heat[level(r)], roomy = r.w >= 66 && r.h >= 30;
+      const amount = (dollars ? money(r.value) : hTok(r.value)) + ' · ' + fPct(r.value / total);
+      // Each line has its own pixel gate and drops on its own, so a tile too short for
+      // the rate still names itself -- the TUI's per-row degradation, in pixels.
+      const details = (r.w >= 110 && r.h >= 46) ? h('span', { class: 'tv' }, amount) : null;
+      const rate = rateText(r);
+      const rateEl = (rate && r.w >= 110 && r.h >= 64)
+        ? h('span', { class: 'tr' }, rate + ' · ' + r.calls + ' call' + (r.calls === 1 ? '' : 's'))
+        : null;
+      return h('div', {
+        class: 'tool-tile' + (roomy ? '' : ' tiny'),
+        style: 'left:' + r.x + 'px;top:' + r.y + 'px;width:' + r.w + 'px;height:' + r.h
+          + 'px;background:' + fill + ';color:' + inkOn(fill),
+        title: r.tool + ' · ' + amount + (rate ? ' · ' + rate : ''),
+      }, roomy ? h('span', { class: 'tn' }, r.tool) : null, details, rateEl);
+    });
+    map.replaceChildren(...tiles_);
+  };
+  if ('ResizeObserver' in window) {
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(draw);
+    });
+    map._resizeObserver = observer;
+    requestAnimationFrame(() => { if (map.isConnected) observer.observe(map); });
+  } else {
+    requestAnimationFrame(draw);
+  }
+  const amount = dollars ? money(total) : hTok(total) + ' tokens';
+  const area = dollars ? 'visible cost' : 'tokens · no recorded cost';
+  const unit = byRate ? 'area = ' + area + ' · shade = ' + (dollars ? '$' : 'tokens') + '/call'
+    : 'area + shade = ' + area;
+  // The finding as a sentence -- the flamegraph's headline, for the same reason: it is
+  // what survives a phone-width map, and what a passive chart otherwise makes the reader
+  // derive. It reads the FULL ranking, so it can still name the tool the fold swallowed
+  // into "Other" -- which matters most when that tool is the hot one, since pricey-per-
+  // call tools are usually small by total and fold first. (Renderer's headline.)
+  const top = all[0], ofWhat = dollars ? 'the spend' : 'the tokens';
+  const line = [top.tool + ' is ' + fPct(top.value / total) + ' of ' + ofWhat
+    + (top.calls ? ', over ' + top.calls + ' calls' : '')];
+  if (byRate) {
+    const hot = all.reduce((a, b) => (b.value / b.calls) > (a.value / a.calls) ? b : a);
+    if (hot !== top) line.push('priciest per call is ' + hot.tool + ' at ' + rateText(hot)
+      + ' — ' + Math.round((hot.value / hot.calls) / (top.value / top.calls)) + '× ' + top.tool + "'s");
+    else line.push('and the priciest per call, at ' + rateText(hot));
+  }
+  return h('div', { class: 'tool-map-wrap' },
+    h('div', { class: 'tool-map-head' }, h('b', null, 'Tool-attributed spend · ' + amount), h('span', null, unit)),
+    h('div', { class: 'flame-head' }, line.join(' · ')),
+    map);
 }
 
 /* ---------- the Context tab (the TUI's detail_context, in SVG) ---------- */
@@ -2107,6 +2283,7 @@ function renderSessionOverview(root, sc) {
 }
 function renderDetail(sc, ws) {
   const root = document.getElementById('view');
+  root.querySelectorAll('.tool-map').forEach(el => el._resizeObserver?.disconnect());
   root.textContent = '';
   // In the Machines scope, the Harnesses/Projects/Models tabs drill IN PLACE (MSUB) rather
   // than jumping to another scope, and the Sessions list reflects that sub-drill -- the

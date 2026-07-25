@@ -432,6 +432,13 @@ def test_detail_tools_reprices_unpriced_under_dollar():
         wf = app.loaded[0]
         normal = rnd.detail_tools(wf, 92)
         joined = "\n".join(normal)
+        assert "Tool-attributed spend" in joined
+        assert "Tool-attributed spend · $6.00" in joined
+        # Only `bash` has spend here, so there is exactly one tile and no per-call
+        # SCALE to shade against -- the caption says so instead of implying one. The
+        # rate itself still rides on the tile: it is useful without a comparison.
+        assert "area + shade = visible cost" in joined
+        assert "$3.00/call · 2 calls" in joined
         assert "Tools — this session" in joined  # the title rides the box's top border
         assert "By server / namespace" in joined
         assert "(built-in)" in joined  # the server rollup labels built-in vs MCP
@@ -443,6 +450,129 @@ def test_detail_tools_reprices_unpriced_under_dollar():
             c for c in _cells(rnd.detail_tools(wf, 92)) if c.startswith("serena_read_file")
         )
         assert "$1.00" in serena_line
+        api_lines = "\n".join(rnd.detail_tools(wf, 92))
+        assert "Tool-attributed spend · $7.00" in api_lines
+        # ...and now that the estimate gives serena a width too, there are two rates to
+        # rank, so the shade becomes a scale and the caption says which one.
+        assert "area = visible cost · shade = $/call" in api_lines
+
+
+def test_tool_treemap_shades_by_per_call_rate_not_by_its_own_area():
+    # The whole point of the second channel: area is the total, shade is the RATE, so a
+    # tool that is big because it ran often is cool and one that is small because it ran
+    # three times at $2 each is hot. Encoding the same number twice says nothing.
+    rnd = app_with([]).renderer
+    bucket = {
+        "Bash": {"cost": 6.0, "tokens": 6000, "calls": 600},  # biggest tile, cheapest call
+        "WebFetch": {"cost": 3.0, "tokens": 3000, "calls": 3},  # small tile, priciest call
+        "Read": {"cost": 1.0, "tokens": 1000, "calls": 50},
+    }
+    joined = "\n".join(rnd._tool_treemap_box(bucket, 120))
+    assert "area = visible cost · shade = $/call" in joined
+    # Area ranks Bash > WebFetch > Read. The shade must NOT agree with it: the biggest
+    # tile is the CHEAPEST per call and has to come out coolest, the small WebFetch
+    # hottest. Levels are stashed by (line, column) and stay plain ints until paint.
+    levels = {}
+    for runs in rnd._tool_tree_runs.values():
+        for col, _length, level in runs:
+            levels.setdefault(col, level)
+    ordered = [levels[col] for col in sorted(levels)]  # left to right = Bash, WebFetch, Read
+    assert ordered[0] == min(ordered) and ordered[1] == max(ordered)
+    rects = {
+        name: w * h
+        for name, _v, _x, _y, w, h in rnd._treemap_rects(
+            [("Bash", 6.0), ("WebFetch", 3.0), ("Read", 1.0)], 60, 5
+        )
+    }
+    assert rects["Bash"] > rects["WebFetch"] > rects["Read"]
+    assert "$1.00/call · 3 calls" in joined  # WebFetch: $3 over 3 calls
+    assert "$0.01/call · 600 calls" in joined  # Bash: $6 over 600 calls
+    assert "$0.02/call" in joined  # Read: $1 over 50 calls
+
+    # A narrow pane OMITS a figure it cannot fit, never clips it: "$0.02/call" cut to
+    # "$0.0" is silently a different number, which no amount of context repairs.
+    narrow = "\n".join(rnd._tool_treemap_box(bucket, 72))
+    assert "$0.02/call" not in narrow  # Read's tile has no room at this width...
+    assert "$0.0 " not in narrow and not narrow.count("$0.0\n")  # ...so it says nothing
+    assert "$1.00/call" in narrow  # the tiles that do have room still speak
+
+    # Sub-cent rates keep four decimals -- "<$0.01" for both would erase exactly the
+    # distinction the shade is drawing.
+    cheap = "\n".join(
+        rnd._tool_treemap_box(
+            {
+                "Read": {"cost": 0.006, "tokens": 900, "calls": 1},
+                "Grep": {"cost": 0.004, "tokens": 400, "calls": 10},
+            },
+            120,
+        )
+    )
+    assert "$0.006/call" in cheap and "$0.0004/call" in cheap
+
+
+def test_tool_treemap_uses_token_fallback_geometry_and_theme_fill_pairs():
+    rnd = app_with([]).renderer
+    bucket = {
+        "Bash": {"cost": 0.0, "tokens": 6000},
+        "Edit": {"cost": 0.0, "tokens": 3000},
+        "Read": {"cost": 0.0, "tokens": 1000},
+    }
+    lines = rnd._tool_treemap_box(bucket, 72)
+    joined = "\n".join(lines)
+    assert "Tool-attributed spend · 10.0k tokens" in joined
+    # No call counts in this bucket at all, so a rate is not computable -- the shade
+    # falls back to the area's own measure rather than inventing a scale, and says so.
+    assert "area + shade = tokens (no recorded cost)" in joined
+    assert "area is TOKENS" in joined
+    assert "Bash" in joined and "Edit" in joined
+    assert rnd._tool_treemap_box(bucket, 72, max_height=2) == []
+    three_rows = rnd._tool_treemap_box(bucket, 72, max_height=3)
+    assert "Tool-attributed spend" in "\n".join(three_rows)
+    # chart box + trailing blank, then the table through its first exact data row.
+    assert len(three_rows) + 4 == 14
+
+    rects = rnd._treemap_rects([("Bash", 6), ("Edit", 3), ("Read", 1)], 60, 10)
+    areas = {name: w * h for name, _value, _x, _y, w, h in rects}
+    assert sum(areas.values()) == 600
+    assert areas["Bash"] > areas["Edit"] > areas["Read"]
+
+    # Heat levels remain plain data until draw_detail resolves the dedicated fill pairs.
+    orig = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n << 8
+    try:
+        screen = AttrScreen(height=30, width=80)
+        painted = []
+        for index, runs in rnd._tool_tree_runs.items():
+            rnd._paint_tool_tree_runs(screen, index, 0, index, lines[index], 72)
+            painted.extend(screen.attrs[(index, col)] for col, _length, _level in runs)
+    finally:
+        ot.curses.color_pair = orig
+    attrs = set(painted)
+    expected = {
+        ((ot.TOOL_HEAT_BASE_PAIR + level) << 8) | ot.curses.A_BOLD
+        for level in range(ot.TOOL_HEAT_LEVELS)
+    }
+    assert len(attrs) >= 2
+    assert attrs <= expected
+
+    # Pair-starved + non-UTF screens keep visible ASCII density instead of sending
+    # block glyphs through curses' unsafe narrow-character path.
+    import opentab.tui.renderer as renderer_module
+
+    original_unicode = renderer_module.unicode_screen
+    try:
+        renderer_module.unicode_screen = lambda: False
+        rnd._tool_heat_ok = False
+        fallback = "\n".join(rnd._tool_treemap_box(bucket, 48))
+    finally:
+        renderer_module.unicode_screen = original_unicode
+        rnd._tool_heat_ok = True
+    assert any(ch in fallback for ch in ".:*#")
+    assert not any(ch in fallback for ch in "░▒▓█")
+
+    # Degenerate canvases collapse an overfull tail instead of losing its weight.
+    tiny = rnd._treemap_rects([("a", 8), ("b", 1), ("c", 1)], 1, 1)
+    assert tiny == [("Other", 10.0, 0, 0, 1, 1)]
 
 
 def test_detail_turns_cumulative_and_reprices_under_dollar():

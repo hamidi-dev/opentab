@@ -55,6 +55,11 @@ HEAT_RAMP = "░▒▓█"  # density glyphs; on 256-color the *color* carries t
 PRICE_HEAT_LEVELS = 5
 PRICE_HEAT_BASE_PAIR = 20  # pairs 20..24; clear of the calendar's 8..18
 
+# Fixed theme-heat fills for the Tools treemap. Unlike the Calendar ramp these
+# pairs paint the heat colour as a background, and their levels never follow +/-.
+TOOL_HEAT_LEVELS = 6
+TOOL_HEAT_BASE_PAIR = 33  # pairs 33..38; clear of the window-bg pair at 32
+
 # The token-type ramp: the ONE categorical ramp in the TUI, five slots for the five
 # token types of the Token economics box. Every other ramp here is SEQUENTIAL (more is
 # hotter); this one means "different", not "more", so it is its own thing.

@@ -127,6 +127,12 @@ by regex at paint time.
   drill-in, memoized (`_turns_by_session`, `_tool_by_session`) and cleared on
   reload/harness switch. Drilling into a session never freezes mid-draw — a
   "Loading session…" frame paints first and the prefetch tick does the blocking work.
+  Both Tools tabs derive a passive treemap from those same rows above the table: area
+  follows the live cost mode (token fallback for all-$0 sessions), shade is the per-call
+  rate on a log scale over the full ranking, and a headline sentence names the biggest
+  slice and the priciest-per-call tool. The tail folds into `Other` until every drawn
+  tile can carry its label. The TUI paints fixed theme-heat background pairs; the web
+  measures its responsive container.
 - `ranged_workflows` → `all_workflows` are cached properties; anything that mutates
   range/ignored state must call `_invalidate_workflow_cache()`.
 - Subagent costs are recursive: `workflow_nodes` walks the parent chain so a root

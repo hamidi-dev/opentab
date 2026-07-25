@@ -823,6 +823,65 @@ def test_web_token_economics_pane_is_two_stacked_bars_over_a_fixed_order_table()
     assert "1.05 / (L + 0.05)" in js  # WCAG contrast against white, not 21/(L+0.05)
 
 
+def test_web_tools_treemap_is_passive_themed_and_precedes_the_table():
+    js = _js_source()
+    tools = js.split("function toolsTable(", 1)[1].split("\nfunction binaryTreemap", 1)[0]
+    tree = js.split("function toolTreemap(", 1)[1].split("\n}", 1)[0]
+    assert tools.index("toolTreemap(rows)") < tools.index("class: 'tool-table'")
+    assert "onclick" not in tools and "onclick" not in tree  # passive: no hidden interaction mode
+    assert "TH.heat[level(r)]" in tree and "inkOn(fill)" in tree
+    assert "dollars ? mCost(r) : r.tokens" in tree  # $0 subscription fallback
+    assert "Math.min(8, all.length)" in tree and "tool: 'Other'" in tree
+    assert "out.sort(sortItems)" in tree  # Other can become the new largest tile
+    assert "getBoundingClientRect()" in tree  # partition the real wide/mobile canvas
+    assert "r.w >= 66 && r.h >= 30" in tree  # labels are pixel-gated, not percentage-gated
+    # Shade is the PER-CALL rate, not the area's own measure -- area already says what a
+    # tool cost in total, so colouring by the same number spends the second channel
+    # saying it twice. It needs a count on every drawn tile to be a scale at all, and
+    # falls back to the area's measure when the payload has none.
+    assert "new Set(all.map(r => r.value / r.calls)).size > 1" in tree
+    assert (
+        "if (!byRate) return Math.max(0, Math.min(n, Math.round(Math.sqrt(r.value / peak) * n)));"
+        in tree
+    )
+    # Log position over the rate range, like Renderer._heat_position: per-call rates span
+    # orders of magnitude and a linear ramp flattens every tool but the priciest.
+    assert "Math.log(v) - Math.log(rLo)" in tree
+    # money() floors at the cent; a per-call rate usually lives below one, so telling
+    # $0.0004 from $0.006 needs the extra decimals "<$0.01" would erase for both.
+    assert "'<$0.0001/call'" in tree and ".toFixed(4).replace(/0+$/, '')" in tree
+    # The folded tail carries its calls too, or "Other" would have no rate at all.
+    assert "calls: sum(rest, r => r.calls)" in tree
+    # The tail keeps folding until every drawn tile can hold its own name -- measured
+    # against the REAL container, since a percentage cannot know whether a tile is 40px
+    # or 240px wide. A row of anonymous stripes is what made this chart read as empty.
+    assert "const TILE_MIN = 70;" in tree
+    assert "all[keep].value / total * box.width >= TILE_MIN) keep++;" in tree
+    assert "const items = fold(Math.max(1, keep));" in tree
+    # The scale is a property of the DATA, not of how many tiles fit: `all`, not the
+    # folded set, so a tool keeps its colour when a resize folds a neighbour away.
+    assert "const byRate = all.every(r => r.calls > 0)" in tree
+    # The finding as a sentence, read off the FULL ranking so it can still name the tool
+    # the fold swallowed -- which is exactly the pricey-per-call one, small by total and
+    # therefore first to fold. (The flamegraph's headline, same reason.)
+    assert "const top = all[0], ofWhat = dollars ? 'the spend' : 'the tokens';" in tree
+    assert "'priciest per call is ' + hot.tool + ' at ' + rateText(hot)" in tree
+    assert "class: 'flame-head' }, line.join(' · ')" in tree
+    # The exact table below has to be able to state the figure the shade encodes.
+    assert "{ key: 'calls', label: 'Calls', align: 'r' }," in tools
+    assert "calls: sum(rows, r => r.calls)" in tools
+    assert "'aria-hidden': 'true'" in tree  # exact accessible table follows immediately
+    assert "new ResizeObserver(" in tree  # reflow only the chart, never global page state
+    assert "render(false)" not in tree
+    assert "function binaryTreemap(" in js
+    page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-05-01 10:00:00")])))
+    assert ".tool-map{position:relative" in page
+    assert ".tool-tile{position:absolute" in page
+    # Shorter than it was: eight tiles restating one column did not earn 360px.
+    assert "height:clamp(150px,18vw,220px)" in page
+    assert ".tool-tile .tr{" in page  # the rate rides its own line, gated on its own
+
+
 def test_web_flamegraph_divides_the_same_node_costs_as_the_tui():
     # One chart, two frontends. The target is not the issue here (the flamegraph has
     # none) -- the SCOPE is: widths follow the live $ toggle, so the page computes them

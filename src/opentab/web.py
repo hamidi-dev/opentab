@@ -393,6 +393,10 @@ def session_extras(app: App, workflow_id: str) -> dict:
                 {
                     "tool": r.get("tool") or "?",
                     "ns": tool_namespace(r.get("tool") or "?"),
+                    # The treemap shades by per-call rate, so the count has to travel --
+                    # and the exact table below it has to be able to state the same
+                    # figure, which is why it also grows a Calls column.
+                    "calls": int(r.get("calls") or 0),
                     "model": r.get("model_name") or "",
                     "real": _money6(real),
                     "api": _money6(api),

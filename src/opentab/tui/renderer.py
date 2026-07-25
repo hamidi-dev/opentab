@@ -16,7 +16,7 @@ from opentab.models import (
     Workflow,
     YearSummary,
 )
-from opentab.themes import hex_rgb1000, nearest_8, nearest_256, ramp
+from opentab.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
 from opentab.tui import keymap
 
 if TYPE_CHECKING:
@@ -55,6 +55,8 @@ from opentab.heatmap import (
     PRICE_HEAT_LEVELS,
     TOKEN_SERIES_BASE_PAIR,
     TOKEN_SERIES_GLYPHS,
+    TOOL_HEAT_BASE_PAIR,
+    TOOL_HEAT_LEVELS,
     calendar_cells,
     heat_band_label,
     heat_glyph,
@@ -159,6 +161,9 @@ class Renderer:
         # (_token_stack_line). draw() clears it per frame; seeded here so a line-builder
         # called on its own -- which the suite does a lot -- has somewhere to record.
         self._token_runs: dict[str, list[tuple[int, int, int]]] = {}
+        # Tools treemap fills are keyed by detail-line index: most chart rows are
+        # spaces, so unlike Token economics their line text is not a unique key.
+        self._tool_tree_runs: dict[int, list[tuple[int, int, int]]] = {}
         # Clickable hit regions, rebuilt every draw() so they always match what is
         # on screen. Each is ("rows", kind, y0, y_last, x0, x1, start) for a list
         # (click row y selects index start + (y - y0)) or (kind, y, x0, x1, index)
@@ -517,6 +522,7 @@ class Renderer:
         # text (see _token_stack_line). Cleared per frame like the other paint
         # side-channels, so a stale bar can never colour a line that outlived it.
         self._token_runs: dict[str, list[tuple[int, int, int]]] = {}
+        self._tool_tree_runs = {}
         self.oy = self.ox = 0  # screen coordinates until the app frame is up
         height, width = stdscr.getmaxyx()
         if height < 20 or width < 80:
@@ -2068,18 +2074,23 @@ class Renderer:
         self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab, center=True)
 
         current = tabs[self.tab % len(tabs)]
+        visible = h - 4
         if current == "Subagents":
             lines = self.detail_subagents(workflow, w - 4)
         elif current == "Turns":
             lines = self.detail_turns(workflow, w - 4)
         elif current == "Tools":
-            lines = self.detail_tools(workflow, w - 4)
+            # Treemap overhead around the chart itself: title, headline, rule, caption,
+            # bottom and the trailing blank, plus a note in the $0 token-fallback mode
+            # and a second headline row when the pane is too narrow for one. The table's
+            # first data row is its fourth. Budget for the LARGEST form, so that exact
+            # row stays visible in either cost mode and at any width.
+            lines = self.detail_tools(workflow, w - 4, max(0, visible - 12))
         elif current == "Context":
             lines = self.detail_context(workflow, w - 4)
         else:
             lines = self.detail_overview(workflow, w - 4)
 
-        visible = h - 4
         if current == "Turns" and self.app._turn_follow:
             # j/k/Enter moved or toggled the ▸ cursor -- bring its header into view
             # before the scroll clamp, then consume the request (one-shot).
@@ -2106,6 +2117,10 @@ class Renderer:
                     attr = curses.color_pair(PRICE_HEAT_BASE_PAIR + lvl) | curses.A_BOLD
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
             self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
+            if current == "Tools":
+                self._paint_tool_tree_runs(
+                    stdscr, y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
+                )
             self._register_line_sort_header(
                 y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
             )
@@ -2444,6 +2459,24 @@ class Renderer:
                 x + col,
                 line[col : col + min(length, width - col)],
                 curses.color_pair(TOKEN_SERIES_BASE_PAIR + slot) | curses.A_BOLD,
+            )
+
+    def _paint_tool_tree_runs(
+        self, stdscr: curses.window, y: int, x: int, index: int, line: str, width: int
+    ) -> None:
+        # Repaint complete tile spans after write_rich, which would otherwise turn
+        # embedded dollar labels green. Each pair owns contrast-safe ink + heat fill.
+        if not self._tool_heat_ok:
+            return
+        for col, length, level in self._tool_tree_runs.get(index, []):
+            if col >= width:
+                break
+            self.write(
+                stdscr,
+                y,
+                x + col,
+                line[col : col + min(length, width - col)],
+                curses.color_pair(TOOL_HEAT_BASE_PAIR + level) | curses.A_BOLD,
             )
 
     def _token_glyph(self, slot: int) -> str:
@@ -3494,7 +3527,288 @@ class Renderer:
             )
         return lines
 
-    def detail_tools(self, workflow: Workflow, width: int) -> list[str]:
+    @staticmethod
+    def _treemap_rects(
+        items: list[tuple[str, float]], width: int, height: int
+    ) -> list[tuple[str, float, int, int, int, int]]:
+        # The web twin uses the same balanced-binary rule: split weights nearest
+        # half along the current long edge, then recurse. Integer cuts make every
+        # returned rectangle paintable in terminal cells.
+        out: list[tuple[str, float, int, int, int, int]] = []
+
+        def place(rows, x: int, y: int, w: int, h: int) -> None:
+            if not rows or w <= 0 or h <= 0:
+                return
+            if len(rows) == 1 or w * h == 1:
+                name = rows[0][0] if len(rows) == 1 else "Other"
+                out.append((name, sum(value for _, value in rows), x, y, w, h))
+                return
+            total = sum(value for _, value in rows)
+            half = total / 2
+            split = min(
+                range(1, len(rows)),
+                key=lambda i: abs(sum(value for _, value in rows[:i]) - half),
+            )
+            left, right = rows[:split], rows[split:]
+            share = sum(value for _, value in left) / total
+            vertical = w >= h
+            if vertical and w < 2:
+                vertical = False
+            elif not vertical and h < 2:
+                vertical = True
+            if vertical:
+                cut = max(1, min(w - 1, round(w * share)))
+                place(left, x, y, cut, h)
+                place(right, x + cut, y, w - cut, h)
+            else:
+                cut = max(1, min(h - 1, round(h * share)))
+                place(left, x, y, w, cut)
+                place(right, x, y + cut, w, h - cut)
+
+        positive = [(name, float(value)) for name, value in items if value > 0]
+        place(positive, 0, 0, max(1, width), max(1, height))
+        return out
+
+    # The narrowest column that can still carry a tool name plus its inset -- below it a
+    # tile is a stripe, and the exact table is the honest place for it.
+    _TOOL_TILE_MIN = 12
+
+    @staticmethod
+    def _heat_position(value: float, lo: float, hi: float, levels: int) -> int:
+        # A 0..levels-1 bucket for `value`'s LOGARITHMIC position in [lo, hi] -- the same
+        # reasoning as _price_heat_level, for the same reason: per-call rates span orders
+        # of magnitude (a sub-cent Read beside a $0.60 WebFetch), and a linear ramp
+        # collapses everything but the most expensive tool into one indistinguishable
+        # band. A degenerate range reads coolest rather than falsely hot.
+        if not (hi > lo > 0) or value <= lo:
+            return 0
+        frac = (math.log(value) - math.log(lo)) / (math.log(hi) - math.log(lo))
+        return max(0, min(levels - 1, round(frac * (levels - 1))))
+
+    def _tool_treemap_box(
+        self, bucket: dict[str, dict], width: int, max_height: int | None = None
+    ) -> list[str]:
+        # Area follows the table's live Cost column. A wholly-$0 subscription session
+        # has no spend geometry, so it falls back to attributed tokens until `$` is on.
+        costs = {name: float(it["cost"]) for name, it in bucket.items()}
+        dollars = sum(costs.values()) > 0
+        values = costs if dollars else {name: float(it["tokens"]) for name, it in bucket.items()}
+        calls = {name: int(it.get("calls") or 0) for name, it in bucket.items()}
+        ranked = sorted(
+            ((name, value) for name, value in values.items() if value > 0),
+            key=lambda row: (-row[1], row[0].lower()),
+        )
+        if not ranked:
+            self._tool_tree_runs = {}
+            return []
+
+        inner = max(1, width - 4)
+        # The graph is a summary, not a table blocker: at the supported 80x20
+        # minimum the first exact tool row must still fit in the initial viewport.
+        height = max(3, min(5, inner // 14))
+        if max_height is not None:
+            height = min(height, max_height)
+        if height < 3:
+            self._tool_tree_runs = {}
+            return []
+
+        # How many tiles the pane can actually SPEAK for. A box this wide and this short
+        # partitions into full-height columns, so a tile's width is its share of `inner`
+        # -- and a 3-cell column carries no name, no figure and no story, just a stripe.
+        # A row of those at the right edge is most of what made the old chart read as big
+        # and empty. So the tail folds into "Other" until every remaining tile can hold at
+        # least its own label; the long tail is read in the exact table below, which is
+        # where a long tail belongs.
+        def fold(keep: int) -> list[tuple[str, float]]:
+            head, tail = ranked[:keep], ranked[keep:]
+            if not tail:
+                return list(head)
+            calls["Other"] = sum(calls.get(name, 0) for name, _ in tail)
+            out = head + [("Other", sum(value for _, value in tail))]
+            out.sort(key=lambda row: (-row[1], row[0].lower()))
+            return out
+
+        # Only the TAIL folds -- the tiles that individually cannot hold a label. Asking
+        # instead that every tile in the folded set clear the floor makes one small tool
+        # drag away everything ranked below it: on real data (18 tools, an 884-cell pane)
+        # that rule left three tiles, which is a bar chart with extra steps.
+        grand = sum(value for _, value in ranked)
+        keep = 0
+        while keep < min(8, len(ranked)):
+            if ranked[keep][1] / grand * inner < self._TOOL_TILE_MIN:
+                break
+            keep += 1
+        ranked_all, ranked = ranked, fold(max(1, keep))
+
+        # Shade is the PER-CALL rate, deliberately not the area's own measure: area
+        # already says what a tool cost in total, so colouring by the same number spends
+        # the second channel saying it twice. $/call is the one thing the table below
+        # cannot be read off at a glance, and it splits the two findings that look
+        # identical in a Cost column -- "expensive because it ran 200 times" (a big, cool
+        # tile: a workflow question) from "expensive every single time" (a small, hot
+        # one: a context question). It needs a call count for EVERY drawn tile to be a
+        # scale at all, so a bucket without them falls back to the area's measure, where
+        # the fill is at worst redundant rather than arbitrary.
+        # The SCALE comes off the full ranking, not the drawn tiles: whether per-call
+        # rates exist and vary is a property of the data, and pinning the range to it
+        # keeps a tool the same colour when a resize folds a neighbour away. A folded
+        # "Other" carries the blended rate of what it swallowed, which sits inside that
+        # range by construction.
+        all_rates = {name: value / calls[name] for name, value in ranked_all if calls.get(name)}
+        by_rate = len(all_rates) == len(ranked_all) and max(all_rates.values()) > min(
+            all_rates.values()
+        )
+        rate_lo = min(all_rates.values()) if by_rate else 0.0
+        rate_hi = max(all_rates.values()) if by_rate else 0.0
+        rates = {name: value / calls[name] for name, value in ranked if calls.get(name)}
+
+        rects = self._treemap_rects(ranked, inner, height)
+        total = sum(value for _, value in ranked)
+        peak = max(value for _, value in ranked)
+        glyphs = "░▒▓█" if unicode_screen() else ".:*#"
+        grid = [[" " for _ in range(inner)] for _ in range(height)]
+        row_runs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
+
+        def put(y: int, x: int, text: str, room: int) -> None:
+            for i, ch in enumerate(clip(text, room)):
+                if x + i < inner:
+                    grid[y][x + i] = ch
+
+        def rate_text(rate: float | None) -> str:
+            if rate is None:
+                return ""
+            if not dollars:
+                return f"{human_tokens(int(round(rate)))}/call"
+            if rate >= 0.01:
+                return f"{money(rate)}/call"
+            # money() floors at the cent, but a per-call rate usually lives below one and
+            # the whole point of the figure is telling $0.0004 from $0.006 -- rendering
+            # both as "<$0.01" would erase exactly the distinction the shade is drawing.
+            return "<$0.0001/call" if rate < 0.0001 else f"${rate:.4f}".rstrip("0") + "/call"
+
+        for name, value, x, y, w, h in rects:
+            # A one-cell panel gutter separates adjacent heat fills -- but only where
+            # there is actually a neighbour to separate from. A tile on the chart's own
+            # right or bottom edge keeps its last cell, because the gutter there abuts
+            # the frame, not another fill: at five rows a blanked bottom edge was a
+            # quarter of the chart spent on nothing. Runt rectangles keep their single
+            # cell; the exact table below always carries the label.
+            tw = w if x + w >= inner else max(1, w - 1)
+            th = h if y + h >= height else max(1, h - 1)
+            level = (
+                self._heat_position(rates[name], rate_lo, rate_hi, TOOL_HEAT_LEVELS)
+                if by_rate
+                else max(
+                    0,
+                    min(
+                        TOOL_HEAT_LEVELS - 1,
+                        round(math.sqrt(value / peak) * (TOOL_HEAT_LEVELS - 1)),
+                    ),
+                )
+            )
+            fill = (
+                " "
+                if self._tool_heat_ok
+                else glyphs[min(len(glyphs) - 1, level * len(glyphs) // TOOL_HEAT_LEVELS)]
+            )
+            for yy in range(y, min(height, y + th)):
+                for xx in range(x, min(inner, x + tw)):
+                    grid[yy][xx] = fill
+                row_runs[yy].append((x, tw, level))
+
+            # Name, then the area's own figure, then the shade's -- each on its own row
+            # and each dropping independently, so a tile too short for the rate still
+            # names itself. No vertical centring any more: the box is five rows at most
+            # now, and the row it used to spend on air is the row the rate reads from.
+            inset = 1 if tw >= 4 else 0
+            room = tw - inset * 2
+            if room >= 4 and th >= 2:
+                put(y, x + inset, shorten(name, room), room)
+                metric = money(value) if dollars else human_tokens(int(value))
+                stat = f"{metric} · {pct(value, total)}"
+                if len(stat) <= room:
+                    put(y + 1, x + inset, stat, room)
+                # Every figure here is gated on FITTING, never clipped: `shorten` marks a
+                # cut name with an ellipsis, but a clipped money value is silently a
+                # different number ("$0.02/call" losing its tail reads as "$0.0"), so a
+                # rate with no room is omitted and the table below answers instead.
+                rate = rate_text(rates.get(name))
+                n = calls.get(name) or 0
+                both = f"{rate} · {n} call{'s' if n != 1 else ''}"
+                if th >= 3 and rate:
+                    for candidate in (both, rate):
+                        if len(candidate) <= room:
+                            put(y + 2, x + inset, candidate, room)
+                            break
+
+        chart = ["".join(row) for row in grid]
+        area_unit = "visible cost" if dollars else "tokens (no recorded cost)"
+        caption = (
+            f"area = {area_unit} · shade = {'$' if dollars else 'tokens'}/call"
+            if by_rate
+            else f"area + shade = {area_unit}"
+        )
+        total_label = money(total) if dollars else f"{human_tokens(int(total))} tokens"
+
+        # The finding, as a sentence -- the flamegraph's headline, for the same reason:
+        # it is the part that survives a pane too narrow to read tiles off, and it is
+        # what a passive chart otherwise makes you derive yourself. It reads the FULL
+        # ranking, not the drawn tiles, so the tool the fold swallowed into "Other" can
+        # still be named -- which matters most exactly when it is the hot one, since a
+        # tool that is pricey per call is usually small by total and folds first.
+        top_name, top_value = ranked_all[0]
+        of_what = "the spend" if dollars else "the tokens"
+        headline = [
+            f"{shorten(top_name, 22)} is "
+            f"{pct(top_value, sum(v for _, v in ranked_all))} of {of_what}"
+        ]
+        if calls.get(top_name):
+            headline[0] += f", over {calls[top_name]} calls"
+        if len(all_rates) > 1:
+            hot = max(all_rates, key=lambda name: all_rates[name])
+            if hot != top_name and all_rates[top_name] > 0:
+                headline.append(
+                    f"priciest per call is {shorten(hot, 22)} at {rate_text(all_rates[hot])}"
+                    f" — {all_rates[hot] / all_rates[top_name]:.0f}× {shorten(top_name, 22)}'s"
+                )
+            elif hot == top_name:
+                headline.append(f"and the priciest per call, at {rate_text(all_rates[hot])}")
+        notes = []
+        if not dollars:
+            if self.show_api_prices and not self.store.demo:
+                notes.append(
+                    "! no tool-attributed tokens here have a list price — area stays TOKENS"
+                )
+            else:
+                notes.append(
+                    "! nothing here recorded a cost, so area is TOKENS — press "
+                    f"{self._key('main', 'api_prices')} for list-price spend"
+                )
+        # One line when it fits, its clauses stacked when it doesn't -- never clipped.
+        # _sectioned_box shortens what overflows, and a headline ending in "…" loses the
+        # figure it exists to deliver; a second row is the cheaper price.
+        joined = " · ".join(headline)
+        boxed = self._sectioned_box(
+            f"# Tool-attributed spend · {total_label}",
+            [[joined] if len(joined) <= inner else headline, [caption, *chart]],
+            width,
+            notes,
+        )
+        # Where the chart landed inside the box, DERIVED rather than counted off the
+        # prologue: the box is title + groups + rules + bottom + notes, and a literal
+        # index silently shifts every tile's colour a row the moment a group grows a
+        # line -- which the headline just did. Content rows carry the frame's two-cell
+        # gutter, so the columns shift with them.
+        chart_at = len(boxed) - len(notes) - 1 - len(chart)
+        self._tool_tree_runs = {
+            chart_at + row: [(col + 2, length, level) for col, length, level in runs]
+            for row, runs in row_runs.items()
+        }
+        return boxed + [""]
+
+    def detail_tools(
+        self, workflow: Workflow, width: int, treemap_height: int | None = None
+    ) -> list[str]:
         # Which tools (and MCP servers) the LLM calls cost the most. Each row is the
         # tokens/cost of the assistant steps that invoked a tool, split evenly when a
         # step called several -- so this is "tokens spent in turns that used this
@@ -3562,7 +3876,8 @@ class Renderer:
                 for name, it in ordered
             ]
 
-        lines = self._model_table(
+        lines = self._tool_treemap_box(by_tool, width, treemap_height)
+        lines += self._model_table(
             table_rows(by_tool), "# Tools — this session", width, "Tool", "Calls", price_split=False
         )
         lines.append("")
@@ -5403,6 +5718,7 @@ class Renderer:
     _HEAT_COLOR_BASE = 40  # calendar heat colours (up to HEAT_MAX_LEVELS)
     _PRICE_COLOR_BASE = 56  # price-heat colours (PRICE_HEAT_LEVELS)
     _TOKEN_COLOR_BASE = 72  # the token-type categorical ramp (TOKEN_SERIES)
+    _TOOL_COLOR_BASE = 80  # Tools treemap fill colours (TOOL_HEAT_LEVELS)
     _BASE_PAIR = 32  # the window background pair (ink on theme bg); clear of heat/price
     _TAB_PAIR = 25  # inactive-tab chip (ink2 on panel2); free slot after the price ramp
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
@@ -5410,6 +5726,7 @@ class Renderer:
     # bar falls back to per-type glyphs. Class-level so a Renderer built without curses
     # (the line-builders are unit-tested headless) still answers.
     _token_series_ok = True
+    _tool_heat_ok = True
 
     def _color_index(self, hexcolor: str) -> int:
         # A curses color index for a hex: a fresh init_color slot on truecolor
@@ -5450,6 +5767,7 @@ class Renderer:
         self._next_color = self._THEME_COLOR_BASE
         self._themed_bg = False
         self._can_change = False
+        self._tool_heat_ok = False
         if not self.colors_ok:  # monochrome: every pair stays "terminal default"
             return
         self._can_change = bool(
@@ -5475,6 +5793,7 @@ class Renderer:
         # skip it and fall back to plain text -- the active tab's [brackets] still show which.
         self._set_pair(self._TAB_PAIR, r(roles["ink2"]), r(roles["panel2"]))
         self._init_price_heat()
+        self._init_tool_heat()
         self._init_token_series()
         self._sync_heat_palette()
 
@@ -5518,6 +5837,26 @@ class Renderer:
         else:
             for i, col in enumerate(heat_palette(PRICE_HEAT_LEVELS, False)):
                 self._set_pair(PRICE_HEAT_BASE_PAIR + i, col, self._bg_index)
+
+    def _init_tool_heat(self) -> None:
+        # These pairs are filled rectangles: theme heat as background, with
+        # black/white foreground selected independently for every shade.
+        hexes = ramp(self.app.theme["heat"], TOOL_HEAT_LEVELS)
+        ok = []
+        for i, hx in enumerate(hexes):
+            bg = (
+                self._heat_index(self._TOOL_COLOR_BASE + i, hx)
+                if self._can_change or self.has256
+                else nearest_8(hx)
+            )
+            ok.append(
+                self._set_pair(
+                    TOOL_HEAT_BASE_PAIR + i,
+                    self._color_index(ink_on(hx)),
+                    bg,
+                )
+            )
+        self._tool_heat_ok = all(ok)
 
     def _init_token_series(self) -> None:
         # The Token economics bar's five categorical fills. Unlike the two heat ramps

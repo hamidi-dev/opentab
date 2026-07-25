@@ -748,6 +748,16 @@ def hex_rgb1000(color: str) -> tuple[int, int, int]:
     return round(r / 255 * 1000), round(g / 255 * 1000), round(b / 255 * 1000)
 
 
+def ink_on(color: str) -> str:
+    """Black or white text, whichever has stronger WCAG contrast on ``color``."""
+    channels = [v / 255 for v in hex_rgb(color)]
+    linear = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in channels]
+    luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+    black = (luminance + 0.05) / 0.05
+    white = 1.05 / (luminance + 0.05)
+    return "#101014" if black > white else "#ffffff"
+
+
 # The xterm-256 cube (16..231) steps and the greyscale ramp (232..255), for nearest().
 _CUBE = (0, 95, 135, 175, 215, 255)
 

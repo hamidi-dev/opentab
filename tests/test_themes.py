@@ -27,6 +27,8 @@ def test_theme_color_math():
     assert len(r) == 5 and r[0] == "#000000" and r[-1] == "#ffffff"
     assert r[2] in ("#808080", "#7f7f7f")  # halfway grey
     assert ot.ramp(["#123456"], 4) == ["#123456"] * 4  # single stop repeats
+    assert ot.ink_on("#101014") == "#ffffff"
+    assert ot.ink_on("#f0f0f0") == "#101014"
 
 
 def test_nearest_8_maps_roles_onto_the_basic_ansi_palette():

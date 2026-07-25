@@ -43,7 +43,8 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
 - **Trends** — daily / weekly / monthly charts, a calendar spend heatmap, and model /
   provider / harness rankings; every one navigable down to a single session.
 - **Turns and Tools** — per-turn cost over time inside a session, and token attribution
-  per tool call.
+  per tool call, with a spend treemap above the exact table — area is what a tool cost
+  in total, shade is what it costs *per call*.
 - **Context** — a session's context window over time: a heat-shaded growth curve with
   compaction markers and % of the model's window (measured from recorded usage), plus
   an estimated breakdown of what filled it — tool results, prompts, reasoning, per tool.
