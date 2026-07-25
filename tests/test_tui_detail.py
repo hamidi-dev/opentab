@@ -1408,7 +1408,7 @@ def test_section_headings_use_the_accent_not_structural_grey():
     orig = ot.curses.color_pair
     ot.curses.color_pair = lambda n: n  # identity: read the pair number off the attr
     try:
-        assert app.renderer.line_attr("# Money") == (2 | ot.curses.A_BOLD)  # pair 2 == accent
+        assert app.renderer.line_attr("# Money card") == (2 | ot.curses.A_BOLD)  # pair 2 == accent
         assert app.renderer.line_attr("# Top Models") == (2 | ot.curses.A_BOLD)
         # a ruled-box title (top border with a title) matches its "# " siblings
         assert app.renderer.line_attr("┌ Top Models ──────┐") == (2 | ot.curses.A_BOLD)

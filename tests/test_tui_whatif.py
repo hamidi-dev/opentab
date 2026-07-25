@@ -28,7 +28,7 @@ def _table(lines):
 
 
 def _wi_row(lines, label):
-    # The Overview's Money box renders the what-if as accent "★"-marked rows inside a
+    # The Overview's Money card renders the what-if as accent "★"-marked rows inside a
     # ruled box; a test reads the row carrying a given label (value is right-aligned).
     return next((ln for ln in lines if label in ln), "")
 
@@ -66,7 +66,7 @@ def test_whatif_overview_answers_for_a_solo_session_that_has_no_subagents():
 
         app.select_whatif_model("anthropic/claude-haiku-4.5")
         lines = app.renderer.detail_overview(wf, 100)
-        assert any("Money · what-if anthropic/claude-haiku-4.5" in ln for ln in lines)
+        assert any("Money card · what-if anthropic/claude-haiku-4.5" in ln for ln in lines)
         # BOTH sides at list rates -- the baseline is its 1M Opus tokens at Opus rates,
         # NOT the $1.50 that happened to be recorded (that would compare a list-price
         # counterfactual against a metered bill and call the difference a saving).

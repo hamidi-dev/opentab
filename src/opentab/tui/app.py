@@ -1702,7 +1702,7 @@ class App:
         # total cost/tokens. Subscription/credit rows (Copilot, Codex, Claude Code)
         # carry real runs/tokens but $0 cost in the message JSON, so we distribute
         # the session's synthetic shortfall across those rows by message count.
-        # Keeps the Models tab consistent with the Money panel at every zoom level.
+        # Keeps the Models tab consistent with the Money card at every zoom level.
         by_id = {w.id: w for w in self.loaded}
         for root_id, models in self._model_by_root.items():
             wf = by_id.get(root_id)

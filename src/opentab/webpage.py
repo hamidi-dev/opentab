@@ -231,7 +231,7 @@ button.showall:hover{color:var(--accent);border-color:var(--accent)}
   white-space:nowrap;font-size:11px;font-weight:700;padding:0 2px}
 .flame-head{font-size:12.5px;color:var(--ink2);margin:0 0 10px}
 .flame-head b{color:var(--ink)}
-/* the session Overview money card (mirrors the TUI's Money box: donut + stats, with the
+/* the session Overview money card (mirrors the TUI's Money card: donut + stats, with the
    armed what-if as accent-highlighted rows below a rule) */
 .money{display:flex;flex-wrap:wrap;gap:14px 28px;align-items:center;margin:8px 0 2px}
 .money-legend{display:flex;gap:14px;font-size:11px;color:var(--mut);margin-bottom:8px}
@@ -2051,7 +2051,7 @@ function donut(root, sub) {
     s('text', { x: c, y: c + 13, 'text-anchor': 'middle', 'font-size': 9, fill: 'var(--mut)', text: 'root' }));
 }
 
-// The Overview Money card (the TUI's Money box): the cost split + shape stats, a root-vs-
+// The Overview Money card (the TUI's Money card): the cost split + shape stats, a root-vs-
 // subagents donut, and -- when a `w` target is armed -- the what-if comparison as accent
 // rows below a rule. Both what-if sides are list rates (whatifTotals), so the recorded
 // rows above and the comparison below never quote the same number for different things.
@@ -2082,7 +2082,7 @@ function moneyCard(w, wi) {
     kids.push(h('div', { class: 'hint' }, 'both sides at list rates — recorded spend is unchanged, here and everywhere else.'));
     if (wi.est) kids.push(h('div', { class: 'hint' }, '~ a model in your mix has no known list rate — its tokens use a generic estimate.'));
   }
-  return pane('Money' + (wi ? ' · what-if ' + wi.target : ''), ...kids);
+  return pane('Money card' + (wi ? ' · what-if ' + wi.target : ''), ...kids);
 }
 
 /* ---------- the `w` target picker (the TUI's draw_whatif_menu) ---------- */
@@ -2268,7 +2268,7 @@ function renderSessionOverview(root, sc) {
     META.combined && w.source ? [h('dt', null, 'harness'), h('dd', null, w.source)] : null,
     META.machines && w.machine ? [h('dt', null, 'machine'), h('dd', null, w.machine)] : null,
     h('dt', null, 'id'), h('dd', null, w.id)));
-  // The Money card mirrors the TUI's Money box: cost split + shape + a root/subagents
+  // The Money card mirrors the TUI's: cost split + shape + a root/subagents
   // donut, and an armed `w` target answers for THIS session right here (a solo session
   // has no subagent tree for the Subagents tab, so its what-if lives here too).
   root.appendChild(moneyCard(w, whatifTotals(sc.id)));

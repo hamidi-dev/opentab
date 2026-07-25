@@ -38,7 +38,7 @@ def _app(rows_by_session, workflows=None):
 def test_the_five_parts_sum_to_the_api_equivalent_total():
     # The whole contract: this is a DECOMPOSITION of a figure the rest of the UI already
     # prints, so it has to use api_equivalent_cost's own arithmetic. If the two ever
-    # disagree, the Token economics TOTAL contradicts the Money box on the same screen.
+    # disagree, the Token economics TOTAL contradicts the Money card on the same screen.
     rows = [
         _row(
             "anthropic/claude-opus-4.5",

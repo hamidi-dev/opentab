@@ -1234,7 +1234,7 @@ class Renderer:
             return curses.A_NORMAL
         if first in ("│", "|"):
             content = line[2:].lstrip()
-            # The Money box's armed what-if rows are marked with a leading ★ and painted
+            # The Money card's armed what-if rows are marked with a leading ★ and painted
             # in the orange accent (pair 6 -- the same state-emphasis colour as the Turns
             # ▸ headers and the narrowed-view chip), so the counterfactual pops off the
             # white recorded-cost rows above it (money spans keep their own colour on top).
@@ -2323,7 +2323,7 @@ class Renderer:
         self, title: str, groups: list[list[str]], width: int, notes: list[str]
     ) -> list[str]:
         # A ruled box like _ruled_box, but its body is several row GROUPS separated by
-        # rules -- the Overview's Money table stacks the cost breakdown and, below a rule,
+        # rules -- the Overview's Money card stacks the cost breakdown and, below a rule,
         # the armed what-if rows. Same glyphs, same titled top border (line_attr paints it
         # in the accent), same "! ..." notes riding outside the box below it. Empty groups
         # are dropped so a rule never opens onto nothing.
@@ -3030,7 +3030,7 @@ class Renderer:
 
     def note_lines(self, workflow: Workflow, width: int) -> list[str]:
         # The note sits in the Session block, wrapped to the pane and hanging-indented
-        # under its label like every other field there. It's above Money on purpose:
+        # under its label like every other field there. It's above the Money card on purpose:
         # it's the one line on this screen that says what the money was *for*.
         note = self.note_for(workflow.id)
         if not note:
@@ -3042,7 +3042,7 @@ class Renderer:
         return [f"Note:     {wrapped[0]}"] + [f"          {line}" for line in wrapped[1:]]
 
     def _money_overview(self, workflow: Workflow, width: int) -> list[str]:
-        # The Overview's Money table (a _sectioned_box): one box that carries the cost
+        # The Overview's Money card (a _sectioned_box): one box that carries the cost
         # split, the shape stats folded in (so there is no separate "# Shape" block to
         # crowd the pane), a root-vs-subagents proportion bar -- the TUI's pie stand-in --
         # and, when a `w` target is armed, the what-if comparison as accent-highlighted
@@ -3079,7 +3079,7 @@ class Renderer:
             kv("Tokens", tokens(workflow.total_tokens)),
             kv("Models · Subagents", f"{workflow.model_count} · {workflow.subagents}"),
         ]
-        title = "# Money"
+        title = "# Money card"
         notes: list[str] = []
         # An armed `w` target answers for THIS session right here -- including a solo one,
         # which has no subagent tree for the Subagents tab to show. The ★ marks the rows
@@ -3092,7 +3092,7 @@ class Renderer:
             delta = whatif - actual
             sign = "+" if delta >= 0 else "-"
             approx = "~" if self.whatif_baseline_is_estimated(workflow) else ""
-            title = f"# Money · what-if {target}"
+            title = f"# Money card · what-if {target}"
             whatif_rows = [
                 kv("★ Your models (list)", f"{approx}{money(actual)}"),
                 kv(f"★ All at {shorten(target, max(4, inner - 22))}", money(whatif)),
