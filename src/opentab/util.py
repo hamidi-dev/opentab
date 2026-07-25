@@ -262,6 +262,43 @@ def context_rows(ctx: dict) -> list[dict]:
     )
 
 
+# What counts as a context compaction: a drop this sharp from a context this big is a
+# clear, not just a smaller prompt. Heuristic, but backend-agnostic (only Codex records
+# resets explicitly). It lives here, not in a frontend, because FOUR views mark the same
+# event -- the TUI's Turns markers and Context curve, and the web's twin of each -- and
+# two of them sit on the same screen: disagreeing about whether the window was cleared
+# would be worse than not marking it at all.
+CONTEXT_COMPACT_FLOOR = 50_000
+CONTEXT_COMPACT_RATIO = 0.6
+
+
+def context_size(row) -> int:
+    # The live context at one turn: an Anthropic-style request's whole prompt is
+    # input + cache_read + cache_write, which IS what was in the window when it ran.
+    return int(
+        (row.get("input") or 0) + (row.get("cache_read") or 0) + (row.get("cache_write") or 0)
+    )
+
+
+def context_compactions(rows) -> dict:
+    # {index into rows: (before, after)} for every main-thread turn whose context
+    # collapsed against the previous one. Subagents run in their own windows, so they
+    # neither trigger a marker nor break the main thread's chain; a turn with no
+    # measurable context (0) is skipped rather than read as a clear.
+    out: dict[int, tuple[int, int]] = {}
+    prev = 0
+    for i, row in enumerate(rows):
+        if row.get("depth"):
+            continue
+        size = context_size(row)
+        if size <= 0:
+            continue
+        if prev > CONTEXT_COMPACT_FLOOR and size < prev * CONTEXT_COMPACT_RATIO:
+            out[i] = (prev, size)
+        prev = size
+    return out
+
+
 class LazyStatusRoot(dict):
     """A recent_roots() row whose expensive fields resolve on first access (the
     ClaudeStore._TranscriptRoot pattern, shared by the other file backends): the

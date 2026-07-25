@@ -148,6 +148,38 @@ def test_web_session_extras_reports_turns_with_both_costs():
     assert ctx["mixedWindows"] is False and ctx["comp"] == []
 
 
+def test_web_turns_carry_the_context_size_and_mark_compactions():
+    # The page marks compactions in its Turns table like the TUI's detail_turns, so the
+    # per-turn context size has to travel on the turn row (the Context tab's `points` are
+    # main-thread-only and minute-stamped -- not something a turn can be matched back to).
+    class Compacting(TurnsFakeStore):
+        def message_timeline(self, workflow_id):
+            rows = super().message_timeline(workflow_id)
+            rows[0]["input"] = 900_000
+            rows[0]["tokens_total"] = 900_200
+            # a subagent turn between them: its own window, so ctx must ship as 0 and it
+            # must not break the main thread's chain.
+            rows.insert(1, dict(rows[0], depth=1, agent="explore", input=5_000, cost=0.0))
+            return rows
+
+    w = workflow("w1", "2026-05-01 10:00:00", cost=0.5)
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    turns = ot.session_extras(ot.App(Compacting([w]), args), "w1")["turns"]
+    assert [t["ctx"] for t in turns] == [900_000, 0, 400]
+
+    js = _js_source()
+    # One rule, both views -- the JS twin of util.CONTEXT_COMPACT_*: the Context curve's
+    # ▼ and the Turns markers call the same predicate, so they cannot disagree.
+    assert js.count("const isCompaction = (before, after) => before > 50000") == 1
+    assert "if (isCompaction(vs[i - 1], vs[i])) comps.push(i)" in js
+    table = js.split("function turnsTable(", 1)[1].split("\nfunction ", 1)[0]
+    assert "turnCompactions(turns)" in table
+    # NOT pushed into `body` (the per-group fold list): this table is folded to prompts by
+    # default, so a marker inside a collapsed group would be a marker nobody sees.
+    marker = next(ln for ln in table.splitlines() if "compact-row" in ln)
+    assert "rows.push(" in marker and "body.push" not in marker
+
+
 def test_web_session_extras_context_gated_by_curve_support():
     # A backend whose turn rows are cumulative deltas (Codex) opts out of the
     # curve; the payload ships context: None so the page never draws a wrong one.

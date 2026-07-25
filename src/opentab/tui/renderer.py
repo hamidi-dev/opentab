@@ -74,7 +74,16 @@ from opentab.pricing import (
     model_price,
     price_source_meta,
 )
-from opentab.util import fuzzy_score, launcher_hook, tool_namespace, unicode_screen
+from opentab.util import (
+    CONTEXT_COMPACT_FLOOR,
+    CONTEXT_COMPACT_RATIO,
+    context_compactions,
+    context_size,
+    fuzzy_score,
+    launcher_hook,
+    tool_namespace,
+    unicode_screen,
+)
 
 
 class Renderer:
@@ -1212,6 +1221,10 @@ class Renderer:
             return curses.color_pair(2) | curses.A_BOLD
         if line.startswith("! "):
             return curses.color_pair(2)
+        if line.startswith("▼ "):
+            # A Turns-tab compaction marker: the same amber the Context tab's ▼ rows get
+            # from _CTX_MARK, so one event reads as one thing on both tabs.
+            return curses.color_pair(2) | curses.A_BOLD
         if line.startswith("· "):
             return curses.color_pair(1)
         if line.startswith("TOTAL"):
@@ -3960,7 +3973,17 @@ class Renderer:
         # with its subtotal, the per-turn rows hidden until a group is expanded (z toggles
         # all, a click one). The column header only earns its line when a group is open.
         any_open = self.turns_full or bool(self._turns_expanded)
-        lines = [f"# Turns — {len(subtotal)} prompts · {len(rows)} turns · {money(total)}"]
+        # Compactions are the one thing on this tab that is NOT a turn: the window was
+        # cleared between two of them, and every row after it starts from a smaller
+        # context. It goes in the title and in the flow (below), because a session that
+        # compacted three times spent money re-reading what it had already read.
+        comps = context_compactions(rows)
+        head = f"# Turns — {len(subtotal)} prompts · {len(rows)} turns · {money(total)}"
+        if comps:
+            freed = sum(before - after for before, after in comps.values())
+            head += f" · ▼ {len(comps)} compaction{'s' if len(comps) > 1 else ''}"
+            head += f", ~{human_tokens(freed)} freed"
+        lines = [head]
         if any_open:
             lines.append(
                 f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Model':<{mw}} {'Agent':<{agent_w}} "
@@ -3989,6 +4012,22 @@ class Renderer:
                     for para in full.splitlines() or [""]:
                         for piece in textwrap.wrap(para, max(20, width - 4)) or [""]:
                             lines.append("  │ " + piece)
+            comp = comps.get(n - 1)
+            if comp:
+                # Rendered whether or not the group is open, and flush left like the ▸
+                # headers rather than indented with the turn rows: the compaction is a
+                # session-level event, and hiding it inside a folded group -- the default
+                # state of this tab -- would be hiding it outright.
+                before, after = comp
+                # Minute resolution, like the Context tab's ▼ lines: an event between
+                # two turns, not a turn -- the seconds a turn row carries would make it
+                # read as one more row in the list it is interrupting.
+                when = (r["time"] or "")[5:16]
+                lines.append(
+                    f"▼ context compacted before turn {n} · {when} — "
+                    f"{human_tokens(before)} → {human_tokens(after)} "
+                    f"(~{human_tokens(before - after)} freed)"
+                )
             cum += cost  # accumulate across every turn, shown or not, so an expanded
             if not group_open:  # group's Cumulative column stays correct
                 continue
@@ -4011,16 +4050,16 @@ class Renderer:
             f"{self._key('main', 'select')} (or a click) unfolds one · "
             f"{self._key('main', 'fold_turns')} all.",
         ]
+        if comps:
+            lines.append(
+                "· ▼ the context window was cleared before that turn — the Context tab charts it."
+            )
         return lines
 
     # The Context tab's chart geometry: enough rows for the curve's shape without
     # eating the pane, and a right-aligned y-axis gutter ("681.7k┤").
     _CTX_CHART_ROWS = 9
     _CTX_GUTTER = 8
-    # A drop this sharp from a context this big is a compaction/clear, not a small
-    # prompt: heuristic, but backend-agnostic (only Codex records resets explicitly).
-    _CTX_COMPACT_FLOOR = 50_000
-    _CTX_COMPACT_RATIO = 0.6
 
     # Marker value in _ctx_line_heat for the amber ▼ compaction rows (heat levels
     # are >= 0); draw_detail maps levels to color pairs at paint time, keeping
@@ -4068,10 +4107,7 @@ class Renderer:
         self._ctx_line_heat: dict[int, int] = {}
         rows = self.session_turn_rows(workflow.id)
         main = [r for r in rows if not r.get("depth")]
-        pts = [
-            (r, (r.get("input") or 0) + (r.get("cache_read") or 0) + (r.get("cache_write") or 0))
-            for r in main
-        ]
+        pts = [(r, context_size(r)) for r in main]
         pts = [(r, v) for r, v in pts if v > 0]
         if not pts:
             return ["# Context", "No per-turn context usage recorded for this session."]
@@ -4088,11 +4124,13 @@ class Renderer:
         # header declares which window the chart uses.
         peak_window = model_context_window(pts[peak_i][0]["model_name"])
         windows = {model_context_window(r["model_name"]) for r, _v in pts}
+        # The same rule the Turns tab marks with (util.context_compactions), applied to
+        # this tab's own main-thread series so the marker positions stay indices into
+        # `pts`/`vals` -- what the chart's columns and the ▼ lines below it are numbered by.
         comps = [
             (j, vals[j - 1], vals[j])
             for j in range(1, n)
-            if vals[j - 1] > self._CTX_COMPACT_FLOOR
-            and vals[j] < vals[j - 1] * self._CTX_COMPACT_RATIO
+            if vals[j - 1] > CONTEXT_COMPACT_FLOOR and vals[j] < vals[j - 1] * CONTEXT_COMPACT_RATIO
         ]
         freed = sum(before - after for _j, before, after in comps)
 

@@ -41,7 +41,7 @@ from opentab.pricing import (
     model_price,
 )
 from opentab.themes import DEFAULT_THEME
-from opentab.util import model_row_split, tool_namespace
+from opentab.util import context_size, model_row_split, tool_namespace
 from opentab.webpage import render_html
 
 if TYPE_CHECKING:
@@ -372,6 +372,11 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     "real": _money6(real),
                     "api": _money6(api),
                     "tokens": int(r.get("tokens_total") or 0),
+                    # The live context at this turn (input + cacheRead + cacheWrite), so
+                    # the page can mark compactions in the Turns table with the same rule
+                    # the Context tab draws them with. Subagents run in their own windows
+                    # and never break the main thread's chain, so theirs stays 0.
+                    "ctx": 0 if int(r.get("depth") or 0) else context_size(r),
                     "promptId": r.get("prompt_id") or "",
                     "promptTitle": r.get("prompt_title") or "",
                     "promptFull": r.get("prompt_full") or "",
@@ -416,7 +421,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
         for r in app.session_turn_rows(workflow_id):
             if r.get("depth"):
                 continue
-            size = (r.get("input") or 0) + (r.get("cache_read") or 0) + (r.get("cache_write") or 0)
+            size = context_size(r)
             if size <= 0:
                 continue
             model = r.get("model_name") or model

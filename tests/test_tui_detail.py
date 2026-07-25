@@ -617,7 +617,7 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         # the per-turn rows hidden (no clock stamps, no Cumulative column).
         folded = rnd.detail_turns(wf, 96)
         fj = "\n".join(folded)
-        assert folded[0] == "# Turns — 2 prompts · 3 turns · $3.00"
+        assert folded[0].startswith("# Turns — 2 prompts · 3 turns · $3.00")
         assert "▸ Add feature X" in fj and "▸ Fix the bug" in fj
         assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in folded)  # no turn rows
         assert "Folded to prompts" in fj and "Enter (or a click) unfolds one" in fj
@@ -625,7 +625,7 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         app.turns_full = True
         normal = rnd.detail_turns(wf, 96)
         joined = "\n".join(normal)
-        assert normal[0] == "# Turns — 2 prompts · 3 turns · $3.00"
+        assert normal[0].startswith("# Turns — 2 prompts · 3 turns · $3.00")
         assert "$3.00 · 100%" in joined  # last turn's cumulative cell
         # each row shows the date + clock ("MM-DD HH:MM:SS"), not just the time
         assert any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in normal)
@@ -633,11 +633,73 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         # so the total grows to $1 + $2 + $3 = $6.00 and each shows its estimate.
         app.show_api_prices = True
         priced = rnd.detail_turns(wf, 96)
-        assert priced[0] == "# Turns — 2 prompts · 3 turns · $6.00"
+        assert priced[0].startswith("# Turns — 2 prompts · 3 turns · $6.00")
         pjoined = "\n".join(priced)
         assert "$1.00" in pjoined and "$2.00" in pjoined and "$6.00 · 100%" in pjoined
         # the per-prompt subtotal sits on the group header (u1 = $1+$2 estimate = $3.00)
         assert "Add feature X" in pjoined
+
+
+def test_turns_marks_compactions_even_while_folded():
+    # A compaction is the one event on the Turns tab that is not a turn: the window was
+    # cleared between two of them. It has to survive the tab's DEFAULT folded state --
+    # a marker hidden inside a collapsed group is a marker nobody sees -- and it must
+    # read off the same rule the Context tab draws its ▼ with (util.context_compactions).
+    class CompactStore(FakeStore):
+        # main-thread context: 20k, 900k, 300k (the clear), then a subagent turn whose
+        # own window is unrelated, then 340k -- growth again, no second marker.
+        ROWS = ((0, 20_000), (0, 900_000), (0, 300_000), (1, 5_000), (0, 340_000))
+
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            rows = []
+            for i, (depth, size) in enumerate(self.ROWS):
+                rows.append(
+                    {
+                        "time": f"2026-06-01 12:0{i}:30",
+                        "agent": "explore" if depth else "-",
+                        "depth": depth,
+                        "model_name": "anthropic/claude-sonnet-5",
+                        "cost": 1.0,
+                        "input": 1000,
+                        "output": 50,
+                        "reasoning": 0,
+                        "cache_read": size - 1000,
+                        "cache_write": 0,
+                        "tokens_total": size + 50,
+                        "prompt_id": f"p{i}",
+                        "prompt_title": f"prompt {i}",
+                    }
+                )
+            return rows
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(CompactStore([workflow("ses_1", "2026-06-01 12:00:00", cost=5.0)]), args)
+    app.view = "session"
+    lines = app.renderer.detail_turns(app.current_session(), 100)
+    joined = "\n".join(lines)
+    # Folded is the default -- no turn rows drawn, and the marker there regardless.
+    assert not app.turns_full and not app._turns_expanded
+    assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in lines)
+    marker = next(ln for ln in lines if ln.startswith("▼ "))
+    assert "before turn 3" in marker  # the turn that ran on the cleared window
+    assert "900.0k → 300.0k" in marker and "600.0k freed" in marker
+    # Exactly one: a subagent's own small context neither triggers a marker (it runs in
+    # its own window) nor breaks the main thread's chain (300k → 340k is growth).
+    assert sum(1 for ln in lines if ln.startswith("▼ ")) == 1
+    assert "▼ 1 compaction, ~600.0k freed" in lines[0]
+    # Amber like the Context tab's ▼ rows, so one event reads as one thing on both tabs.
+    orig = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n
+    try:
+        assert app.renderer.line_attr(marker) == (2 | ot.curses.A_BOLD)
+    finally:
+        ot.curses.color_pair = orig
+    # And the Context tab agrees about the count -- one rule, read from util by both.
+    assert "compacted 1×" in "\n".join(app.renderer.detail_context(app.current_session(), 100))
+    assert joined.count("context compacted") == 1
 
 
 def test_subagents_tab_reprices_unpriced_node_in_api_mode():

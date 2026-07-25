@@ -314,6 +314,9 @@ tr.prompt-full-row td{padding:2px 10px 8px 22px}
 .prompt-full{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink2);
   font-size:11.5px;border-left:2px solid var(--line);padding-left:10px}
 td.indent{color:var(--ink2)}
+/* a compaction between two turns: amber like the Context tab's ▼, and never folded away */
+tr.compact-row td{color:var(--accent);font-size:11.5px;padding-top:5px;
+  border-top:1px dashed color-mix(in srgb, var(--accent) 45%, transparent)}
 
 /* tooltip */
 #tip{position:fixed;z-index:100;pointer-events:none;background:var(--panel2);border:1px solid var(--line);
@@ -1642,6 +1645,26 @@ function machinesTable(id, ws) {
   ], rows, { defaultSort: { key: 'cost', desc: true }, onRow: r => { go('M', r.machine); } });
 }
 
+/* One rule, four views (util.CONTEXT_COMPACT_*): a >40% drop from >=50k of context is a
+   clear, not just a smaller prompt. The Turns markers and the Context curve's ▼ both
+   read it here, as their TUI twins read it from util -- two tabs on one page disagreeing
+   about whether the window was cleared would be worse than not marking it at all. */
+const isCompaction = (before, after) => before > 50000 && after < before * 0.6;
+// {index into turns: [before, after]} for every main-thread turn whose context collapsed.
+// Subagents run in their own windows (server ships their ctx as 0), so they neither
+// trigger a marker nor break the main thread's chain.
+function turnCompactions(turns) {
+  const out = new Map();
+  let prev = 0;
+  turns.forEach((t, i) => {
+    const v = t.ctx || 0;
+    if (v <= 0) return;
+    if (isCompaction(prev, v)) out.set(i, [prev, v]);
+    prev = v;
+  });
+  return out;
+}
+
 /* turns stay chronological on purpose: the tab answers *when* the money went. */
 function turnsTable(turns) {
   // Folded to prompts by default (the TUI's Turns fold): one ▸ row per user prompt with
@@ -1654,7 +1677,9 @@ function turnsTable(turns) {
     const key = t.promptId || '';
     groups.set(key, (groups.get(key) || 0) + mCost(t));
   }
-  for (const t of turns) {
+  const comps = turnCompactions(turns);
+  const freed = [...comps.values()].reduce((a, [b, af]) => a + b - af, 0);
+  turns.forEach((t, i) => {
     const key = t.promptId || '';
     if (key !== lastPrompt) {
       lastPrompt = key;
@@ -1675,6 +1700,14 @@ function turnsTable(turns) {
         body.push(fr); rows.push(fr);
       }
     }
+    const c = comps.get(i);
+    if (c)
+      // NOT pushed into `body`: a compaction is a session-level event, and this table is
+      // folded to prompts by default -- hiding the marker inside a collapsed group would
+      // be hiding it outright (the TUI's detail_turns makes the same call).
+      rows.push(h('tr', { class: 'compact-row' }, h('td', { colspan: 6 },
+        '▼ context compacted before turn ' + (i + 1) + ' · ' + t.time.slice(5, 16).replace('T', ' ')
+        + ' — ' + hTok(c[0]) + ' → ' + hTok(c[1]) + ' (~' + hTok(c[0] - c[1]) + ' freed)')));
     cum += mCost(t);
     const tr = h('tr', { class: 'turn-fold', hidden: '' },
       h('td', { class: 'dim' }, t.time.slice(5, 19).replace('T', ' ')),
@@ -1684,9 +1717,10 @@ function turnsTable(turns) {
       h('td', { class: 'r' }, hTok(t.tokens)),
       h('td', { class: 'r dim' }, money(cum)));
     body.push(tr); rows.push(tr);
-  }
+  });
   return h('div', null,
-    h('div', { class: 'hint' }, groups.size + ' prompts — click a ▸ row to expand its turns'),
+    h('div', { class: 'hint' }, groups.size + ' prompts — click a ▸ row to expand its turns'
+      + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Agent'), h('th', null, 'Model'),
         h('th', { class: 'r' }, 'Cost'), h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cumulative'))),
@@ -1867,8 +1901,8 @@ function toolTreemap(rows) {
 
 /* ---------- the Context tab (the TUI's detail_context, in SVG) ---------- */
 // The server ships measured per-turn prompt sizes (points) + the model's window
-// + the estimated composition rows; peak/final/compactions derive here, with the
-// TUI's exact heuristic (a >40% drop from >=50k is a compaction).
+// + the estimated composition rows; peak/final/compactions derive here, through the
+// same isCompaction() the Turns table marks with.
 function ctxHeatColor(v, window) {
   const lvl = Math.max(0, Math.min(4, Math.floor((window > 0 ? v / window : 0) * 5)));
   return TH.priceHeat[lvl];
@@ -1919,7 +1953,7 @@ function contextPane(ctx) {
   const fin = vs[vs.length - 1], peak = Math.max(...vs), start = vs[0];
   const peakAt = vs.indexOf(peak) + 1;
   const comps = [];
-  for (let i = 1; i < vs.length; i++) if (vs[i - 1] > 50000 && vs[i] < vs[i - 1] * 0.6) comps.push(i);
+  for (let i = 1; i < vs.length; i++) if (isCompaction(vs[i - 1], vs[i])) comps.push(i);
   const freed = comps.reduce((a, i) => a + vs[i - 1] - vs[i], 0);
   // end is measured against the live (last) model's window, peak against the window the
   // PEAK TURN actually ran in -- the TUI's split (renderer.detail_context). Measuring

@@ -48,6 +48,11 @@ compaction.
 On the Turns tab, `j`/`k` move a cursor over the `▸` prompt headers and `Enter`
 (or a click) folds/unfolds the selected one — its full prompt text and per-turn
 rows; `g`/`G` jump to the first/last prompt. `z` unfolds every prompt at once.
+A `▼` line marks each **context compaction** — where the window was cleared
+between two turns, with what it dropped from and to. The tab's title counts them
+and the tokens they freed, and the lines stay visible while the prompts are
+folded: a compaction is a session-level event, not a turn. The Context tab charts
+the same events (one rule, both tabs).
 
 ## Scope & filter
 
