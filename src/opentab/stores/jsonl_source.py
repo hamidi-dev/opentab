@@ -173,11 +173,15 @@ class JsonlStore(CsvStore):
         ts_epoch = self._parse_ts_epoch(self._get(obj, "timestamp"))  # absolute, for worked
         project = str(self._get(obj, "project") or "").strip()
         sid = str(self._get(obj, "session") or "").strip()
-        if not sid:
+        synthetic = not sid
+        if synthetic:
             # No session id: one synthetic session per (date, project), stable across
             # reloads/merges -- same fallback CsvStore uses.
             sid = self.SYNTHETIC_ID_PREFIX + (ts[:10] or "?") + "|" + (project or "?")
         s = sessions.setdefault(sid, self._new_session())
+        # What was minted vs what was logged, remembered rather than re-read off the id
+        # prefix -- see CsvStore._parse_row; supports_context_curve reads this.
+        s["synthetic"] = s["synthetic"] or synthetic
 
         rid = str(self._get(obj, "request") or "").strip()
         if rid:

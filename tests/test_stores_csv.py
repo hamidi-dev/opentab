@@ -620,3 +620,21 @@ def test_csv_context_curve_only_with_real_session_ids():
         assert w.id.startswith("csv:")
         assert store2.supports_context_curve(w.id) is False
         assert store2.supports_turns(w.id) is True  # Turns stays
+
+        # The prefix is a naming convention, not a fact: a log whose own session_id
+        # column reads "csv:production" is a REAL single conversation and keeps its
+        # curve (and, with it, the Turns tab's compaction markers). What decides is
+        # what the parser minted, which it now remembers.
+        collide = os.path.join(tmp, "collide.csv")
+        _write_csv(
+            collide,
+            ["timestamp", "model", "input_tokens", "output_tokens", "session_id"],
+            [
+                ["2026-06-18T10:00:00Z", "gpt-4o", 100_000, 300, "csv:production"],
+                ["2026-06-18T10:05:00Z", "gpt-4o", 20_000, 300, "csv:production"],
+            ],
+        )
+        store3 = ot.CsvStore(collide, _csv_args())
+        (w3,) = store3.workflows()
+        assert w3.id == "csv:production"
+        assert store3.supports_context_curve(w3.id) is True

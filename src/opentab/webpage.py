@@ -1645,7 +1645,7 @@ function machinesTable(id, ws) {
   ], rows, { defaultSort: { key: 'cost', desc: true }, onRow: r => { go('M', r.machine); } });
 }
 
-/* One rule, four views (util.CONTEXT_COMPACT_*): a >40% drop from >=50k of context is a
+/* One rule, four views (util.CONTEXT_COMPACT_*): a >40% drop from OVER 50k of context is a
    clear, not just a smaller prompt. The Turns markers and the Context curve's ▼ both
    read it here, as their TUI twins read it from util -- two tabs on one page disagreeing
    about whether the window was cleared would be worse than not marking it at all. */

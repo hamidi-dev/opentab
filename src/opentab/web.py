@@ -353,6 +353,11 @@ def session_extras(app: App, workflow_id: str) -> dict:
     hides the tab rather than showing it empty."""
     turns = []
     if app.session_supports_turns(workflow_id):
+        # Whether a turn's input+cache can be read as that request's context at all --
+        # the Context tab's opt-in, which the Turns table's compaction markers ride on
+        # too (the TUI gates them the same way in detail_turns). A cumulative-delta
+        # backend ships ctx: 0 rather than a number the page would mis-mark.
+        curve = app.session_supports_context_curve(workflow_id)
         for r in app.session_turn_rows(workflow_id):
             real = float(r.get("cost") or 0)
             api = real or api_equivalent_cost(
@@ -376,7 +381,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     # the page can mark compactions in the Turns table with the same rule
                     # the Context tab draws them with. Subagents run in their own windows
                     # and never break the main thread's chain, so theirs stays 0.
-                    "ctx": 0 if int(r.get("depth") or 0) else context_size(r),
+                    "ctx": 0 if (int(r.get("depth") or 0) or not curve) else context_size(r),
                     "promptId": r.get("prompt_id") or "",
                     "promptTitle": r.get("prompt_title") or "",
                     "promptFull": r.get("prompt_full") or "",

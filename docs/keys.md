@@ -52,7 +52,9 @@ A `▼` line marks each **context compaction** — where the window was cleared
 between two turns, with what it dropped from and to. The tab's title counts them
 and the tokens they freed, and the lines stay visible while the prompts are
 folded: a compaction is a session-level event, not a turn. The Context tab charts
-the same events (one rule, both tabs).
+the same events (one rule, both tabs) — and where that tab doesn't apply, because
+the harness records cumulative-total deltas rather than per-request prompts
+(Codex), neither tab marks anything.
 
 ## Scope & filter
 

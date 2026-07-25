@@ -269,6 +269,12 @@ def context_rows(ctx: dict) -> list[dict]:
 # event -- the TUI's Turns markers and Context curve, and the web's twin of each -- and
 # two of them sit on the same screen: disagreeing about whether the window was cleared
 # would be worse than not marking it at all.
+#
+# Both bounds are STRICT: the previous turn must be over the floor and the new one under
+# ratio × it, so an exactly-50,000-token turn is not a compaction candidate. That is the
+# rule the Context curve has always drawn with (0 turns of 37,589 real ones sit on the
+# boundary, so it decides nothing); it is stated here because the prose used to say
+# ">= 50k" while every frontend implemented ">".
 CONTEXT_COMPACT_FLOOR = 50_000
 CONTEXT_COMPACT_RATIO = 0.6
 

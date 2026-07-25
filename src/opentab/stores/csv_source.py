@@ -338,6 +338,7 @@ class CsvStore:
             "models": {},
             "turns": [],  # one per request row, for the Turns tab (chronological)
             "seen": set(),  # request ids already counted (regenerate/append dedup)
+            "synthetic": False,  # minted (date, project) bucket, not a logged session id
         }
 
     # --- parsing -------------------------------------------------------------
@@ -382,11 +383,19 @@ class CsvStore:
         ts_epoch = self._parse_ts_epoch(g("timestamp"))  # absolute, for worked-time
         project = (g("project") or "").strip()
         sid = (g("session") or "").strip()
-        if not sid:
+        synthetic = not sid
+        if synthetic:
             # No session id: one synthetic session per (date, project) keeps the list
             # meaningful. Stable so reloads/merges don't churn ids.
             sid = self.SYNTHETIC_ID_PREFIX + (ts[:10] or "?") + "|" + (project or "?")
         s = sessions.setdefault(sid, self._new_session())
+        # Remembered, not re-derived from the id: the id prefix is a naming convention
+        # a real log is free to collide with (a `session_id` column literally reading
+        # "csv:production"), and everything that keys off "is this a bucket of unrelated
+        # conversations?" -- the Context curve, and now the Turns tab's compaction
+        # markers -- would then be silently off for that user's real session. Sticky:
+        # if ANY row landed here without an id, the session IS a bucket.
+        s["synthetic"] = s["synthetic"] or synthetic
         rid = (g("request") or "").strip()
         if rid:
             if rid in s["seen"]:
@@ -652,10 +661,15 @@ class CsvStore:
     SYNTHETIC_ID_PREFIX = "csv:"
 
     def supports_context_curve(self, workflow_id: str) -> bool:
-        # The Context tab's growth curve needs the rows to be one *conversation's*
-        # consecutive requests. A log row with a real session_id qualifies; a
-        # synthetic (date, project) bucket interleaves unrelated conversations, so a
-        # "curve" over it would be noise and fake compactions.
+        # The Context tab's growth curve -- and the Turns tab's compaction markers, which
+        # ride on this same gate -- need the rows to be one *conversation's* consecutive
+        # requests. A log row with a real session_id qualifies; a synthetic (date, project)
+        # bucket interleaves unrelated conversations, so a "curve" over it would be noise
+        # and fake compactions. Answered from what the parser recorded (see _parse_row),
+        # with the prefix only as the fallback for an id this store never saw.
+        s = self._parse().get(str(workflow_id))
+        if s is not None:
+            return not s.get("synthetic")
         return not str(workflow_id).startswith(self.SYNTHETIC_ID_PREFIX)
 
     def tool_breakdown(self, workflow_id: str) -> list[dict]:

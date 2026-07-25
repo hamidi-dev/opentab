@@ -701,6 +701,39 @@ def test_turns_marks_compactions_even_while_folded():
     assert "compacted 1×" in "\n".join(app.renderer.detail_context(app.current_session(), 100))
     assert joined.count("context compacted") == 1
 
+    # A backend whose rows are deltas of a cumulative total (Codex) or synthetic
+    # multi-conversation rows (CSV/JSONL) opts out of the curve: its input+cache is not
+    # a prompt size, so the same drop must NOT be marked here either. Ungated, a real
+    # Codex session drew "▼ 240.4k → 15.8k" beside a Context tab that had correctly
+    # hidden its curve -- the two tabs contradicting each other on one screen.
+    class NoCurve(CompactStore):
+        def supports_context_curve(self, wid):
+            return False
+
+    flat = ot.App(NoCurve([workflow("ses_1", "2026-06-01 12:00:00", cost=5.0)]), args)
+    flat.view = "session"
+    flat_lines = flat.renderer.detail_turns(flat.current_session(), 100)
+    assert not any(ln.startswith("▼ ") for ln in flat_lines)
+    assert "compaction" not in flat_lines[0]
+
+    # A row with no "time" at all still renders. The marker draws in the tab's DEFAULT
+    # folded state, so an r["time"] there would take the whole tab down on a row the
+    # expanded view merely prints as "--" (a truncated export, a future backend).
+    class NoTime(CompactStore):
+        def message_timeline(self, wid):
+            return [
+                {k: v for k, v in r.items() if k != "time"} for r in super().message_timeline(wid)
+            ]
+
+    timeless = ot.App(NoTime([workflow("ses_1", "2026-06-01 12:00:00", cost=5.0)]), args)
+    timeless.view = "session"
+    assert any(
+        ln.startswith("▼ ")
+        for ln in timeless.renderer.detail_turns(timeless.current_session(), 100)
+    )
+    timeless.turns_full = True
+    assert timeless.renderer.detail_turns(timeless.current_session(), 100)
+
 
 def test_subagents_tab_reprices_unpriced_node_in_api_mode():
     with tempfile.TemporaryDirectory() as tmp:

@@ -167,6 +167,16 @@ def test_web_turns_carry_the_context_size_and_mark_compactions():
     turns = ot.session_extras(ot.App(Compacting([w]), args), "w1")["turns"]
     assert [t["ctx"] for t in turns] == [900_000, 0, 400]
 
+    # ...but only where a turn's input+cache IS that request's prompt: a cumulative-delta
+    # backend (Codex) opts out of the context curve, and ships zeros rather than numbers
+    # the page would mark a compaction on while its own Context tab shows nothing.
+    class Delta(Compacting):
+        def supports_context_curve(self, workflow_id):
+            return False
+
+    flat = ot.session_extras(ot.App(Delta([w]), args), "w1")
+    assert [t["ctx"] for t in flat["turns"]] == [0, 0, 0] and flat["context"] is None
+
     js = _js_source()
     # One rule, both views -- the JS twin of util.CONTEXT_COMPACT_*: the Context curve's
     # ▼ and the Turns markers call the same predicate, so they cannot disagree.

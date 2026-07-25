@@ -3977,7 +3977,16 @@ class Renderer:
         # cleared between two of them, and every row after it starts from a smaller
         # context. It goes in the title and in the flow (below), because a session that
         # compacted three times spent money re-reading what it had already read.
-        comps = context_compactions(rows)
+        #
+        # Gated by the SAME opt-in the Context tab is (supports_context_curve): reading a
+        # drop as a compaction assumes a row's input+cache IS that request's prompt, which
+        # is exactly what a cumulative-delta backend (Codex) and the synthetic CSV/JSONL
+        # sessions do not give. Ungated, a Codex session drew "▼ 240.4k → 15.8k" next to
+        # a Context tab that has (correctly) hidden its curve for the same reason -- two
+        # tabs disagreeing about the same data, which the shared rule exists to prevent.
+        comps = (
+            context_compactions(rows) if self.session_supports_context_curve(workflow.id) else {}
+        )
         head = f"# Turns — {len(subtotal)} prompts · {len(rows)} turns · {money(total)}"
         if comps:
             freed = sum(before - after for before, after in comps.values())
@@ -4021,8 +4030,11 @@ class Renderer:
                 before, after = comp
                 # Minute resolution, like the Context tab's ▼ lines: an event between
                 # two turns, not a turn -- the seconds a turn row carries would make it
-                # read as one more row in the list it is interrupting.
-                when = (r["time"] or "")[5:16]
+                # read as one more row in the list it is interrupting. Read with .get
+                # (like _turn_dt): this line renders in the tab's DEFAULT folded state,
+                # so a row without a time would take the whole tab down, where the same
+                # row only ever reaches the `clock()` cell below with a group expanded.
+                when = (r.get("time") or "")[5:16]
                 lines.append(
                     f"▼ context compacted before turn {n} · {when} — "
                     f"{human_tokens(before)} → {human_tokens(after)} "
@@ -4034,7 +4046,7 @@ class Renderer:
             agent = r["agent"] if r["depth"] else "-"
             cumlabel = f"{money(cum)} · {pct(cum, total)}"
             lines.append(
-                f"  {n:>{idx_w}} {clock(r['time']):<{time_w}} {pad(shorten(r['model_name'], mw), mw)} "
+                f"  {n:>{idx_w}} {clock(r.get('time')):<{time_w}} {pad(shorten(r['model_name'], mw), mw)} "
                 f"{pad(shorten(agent, agent_w), agent_w)} "
                 f"{human_tokens(r['tokens_total']):>9} {money(cost):>9} {cumlabel:>16}"
             )
