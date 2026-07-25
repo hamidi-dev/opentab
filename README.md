@@ -10,6 +10,11 @@
 </p>
 
 <p align="center">
+  <a href="https://www.youtube.com/watch?v=EsJPw4y5zgU"><img src="https://i.ytimg.com/vi/EsJPw4y5zgU/maxresdefault.jpg" alt="Watch the full OpenTab tour on YouTube" width="900"></a>
+  <br><sub><b>▶ The full tour on YouTube</b> — every view, walked through</sub>
+</p>
+
+<p align="center">
   <img src="https://github.com/user-attachments/assets/b497c617-8a6c-4132-b6e2-aaf5078b8a4e" alt="OpenTab web browser — the same data as a self-contained page" width="900">
   <br><sub><b>Also a web browser</b> — <code>opentab --web</code> renders the same data as one self-contained, shareable page</sub>
 </p>
