@@ -72,8 +72,12 @@ the history scannable and feeds the release-notes pass.
   |-------|--------|
   | Backends (one store each) | `opencode` `claude` `codex` `hermes` `copilot` `vscode` `pi` `openclaw` `csv` `jsonl` `combined` |
   | Core modules | `tui` `web` `pricing` `heatmap` `sources` `state` `cli` `models` `formatting` `util` `demo` |
-  | UI features (prefer over bare `tui` when one fits) | `trends` `filter` `sort` `range` `export` `launch` `turns` `tools` |
+  | UI features (prefer over bare `tui` when one fits) | `trends` `filter` `sort` `range` `export` `launch` `turns` `tools` `graph` |
   | Meta | `release` `deps` `ci` `dev` |
+
+  `graph` is for the charts themselves — a new visualization, or a change to one — and it
+  wins over `tui`/`web` even though a chart usually lands in both frontends, because the
+  chart is the unit of work and shipping it in one frontend only is the exception.
 
 ## License
 
