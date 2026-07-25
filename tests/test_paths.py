@@ -270,6 +270,8 @@ def test_requests_default_prefers_data_but_still_finds_a_legacy_config_file():
             assert sources._default_requests_path("requests.csv") == in_cfg  # legacy discovered
             os.makedirs(os.path.join(data, "opentab"))
             open(in_data, "w").close()
-            assert sources._default_requests_path("requests.csv") == in_data  # data wins once present
+            assert (
+                sources._default_requests_path("requests.csv") == in_data
+            )  # data wins once present
         finally:
             restore()

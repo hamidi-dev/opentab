@@ -6,6 +6,7 @@ import contextlib
 import copy
 import csv
 import os
+import re
 import shlex
 import sys
 import time
@@ -122,6 +123,123 @@ class TokenEconomics(NamedTuple):
     @property
     def total_cost(self) -> float:
         return sum(self.cost)
+
+
+# The flamegraph's colour assignment. The root's own work always owns slot 0 of the
+# categorical ramp and the subagents cycle the rest, so no child can ever wear the
+# root's colour -- the one distinction the chart is actually making. Four slots is a
+# long enough cycle that adjacent segments always differ (the band is cost-ordered,
+# so a repeat is far from its twin); the legend and the table below carry identity
+# past that.
+FLAME_SELF_SLOT = 0
+FLAME_CHILD_SLOTS = (1, 2, 3, 4)
+
+# Agent names worth putting on a segment. A segment answers "which AGENT, on which
+# model" -- not "which session", whose title is a sentence that never fits and is one
+# column away in the table below.
+_FLAME_DULL_AGENTS = frozenset({"", "-", "subagent", "unknown", "(untitled)"})
+
+# OpenCode records the agent in the `agent` column for only some sessions; for the rest
+# it writes "-" and puts the name in the TITLE, as "Review browse mode (@code-reviewer)"
+# or "… (@general subagent)". Mining it back out is not a guess about a title's wording,
+# it is reading a field the backend stored in the wrong place: on real data it lifts the
+# share of subagent nodes that can name their agent from 15% to 85%, and the names it
+# recovers (explore, code-reviewer, general, homelab, org, debugger) are exactly the ones
+# the `agent` column holds when it is populated.
+_FLAME_AGENT_TAG = re.compile(r"\(@([\w.-]+)")
+
+
+def flame_label(row: dict) -> str:
+    # A segment's name: the agent that ran it. The recorded column first, then the
+    # "(@name)" tag OpenCode leaves in the title, then the honest "subagent" -- Claude
+    # Code names none of its Tasks, and its titles are a uniform "subagent run", so
+    # falling back to the title there would put a session name on the chart to say
+    # nothing. Deeper-than-direct nodes carry a marker: they are drawn as siblings of the
+    # direct children (see SessionFlame.deep), and a nested execution sitting silently in
+    # that row would read as a direct delegation.
+    agent = str(row.get("agent") or "").strip()
+    name = agent if agent.lower() not in _FLAME_DULL_AGENTS else ""
+    if not name:
+        tag = _FLAME_AGENT_TAG.search(str(row.get("title") or ""))
+        name = tag.group(1) if tag else "subagent"
+    return ("↳ " + name) if int(row.get("depth") or 0) > 1 else name
+
+
+def flame_model(row: dict) -> str:
+    # The segment's model, in its short display spelling: the route prefix dropped and
+    # the release-date/effort suffix stripped (anthropic/claude-haiku-4-5-20251001 ->
+    # claude-haiku-4-5), because a segment has tens of cells, not eighty.
+    return display_model(str(row.get("model_name") or "").rsplit("/", 1)[-1])
+
+
+class FlameSegment(NamedTuple):
+    """One band of the session flamegraph: a slice of the session's spend wide enough
+    to be worth a colour. `depth` 0 is the root's own work (the flamegraph's "self"
+    frame), 1 a direct subagent, 2+ a nested one folded in as a sibling."""
+
+    label: str  # `agent`, made unique across the session -- the key's handle
+    agent: str  # the AGENT that ran it ("explore"), bare and possibly repeated
+    model: str  # short display spelling of the node's dominant model
+    value: float  # dollars, or tokens when the session recorded no cost at all
+    share: float  # of SessionFlame.total, 0..1
+    slot: int  # index into the categorical ramp
+    depth: int
+
+    # Two names for one execution, because the two places they appear need different
+    # things. UNDER THE BAND position already says which slice is which, so the bare
+    # `agent` reads best there -- five slices each labelled "code-reviewer" is the truth,
+    # and "code-reviewer 15:00" would be five clock times nobody asked about. IN THE KEY
+    # there is no position to lean on, so `label` carries whatever App._flame_labels had
+    # to add to tell them apart.
+
+
+class SessionFlame(NamedTuple):
+    """A session's spend as a hierarchy: the whole session on top, partitioned below
+    into the root's own work and each subagent execution. Width is money -- which is
+    the point, and what a tree TABLE cannot say: a table sorted by cost tells you the
+    ranking, an icicle tells you the *proportion*, and "the root kept 42% and five
+    subagents split the rest almost evenly" is one glance rather than six subtractions.
+
+    Widths come from `App._priced_nodes`, i.e. the Cost column's own meaning (recorded
+    spend, list-price-estimated only where nothing was recorded), so the chart and the
+    table under it can never disagree about a node. When a session recorded no cost at
+    all AND "$" is off -- a subscription backend with the estimate turned off -- there
+    are no dollars to divide, so the unit falls back to `tokens` and says so rather
+    than drawing an empty frame.
+
+    Depth is a band in principle and one band in practice: `workflow_nodes` gives each
+    node a depth but no PARENT, so a depth-2 node cannot be placed under the depth-1
+    node it actually ran below. Rather than draw a nesting the stores don't record,
+    those nodes join the same band as siblings (`deep` counts them, the label marks
+    them, and the note names it). Measured on 1,117 real sessions this costs nothing:
+    exactly one session nests deeper than one level, and it spent $0. If a backend
+    ever exposes parent links, this becomes a real N-level icicle without the chart
+    changing shape.
+    """
+
+    segments: tuple[FlameSegment, ...]  # self first, then subagents, cost-descending
+    total: float  # the session's whole spend -- the denominator every share is of
+    unit: str  # "cost" | "tokens"
+    estimated: bool  # a width is a list-price estimate, not recorded spend
+    deep: int  # nodes at depth >= 2, drawn as siblings because parents aren't recorded
+    silent: int  # subagent nodes with no value at all -- no width to draw, so not shown
+
+    @property
+    def self_share(self) -> float:
+        return sum(s.share for s in self.segments if s.depth == 0)
+
+    @property
+    def children(self) -> tuple[FlameSegment, ...]:
+        return tuple(s for s in self.segments if s.depth > 0)
+
+    @property
+    def one_model(self) -> str:
+        # The model every drawn segment ran on, or "" when they differ. 85 of the 135
+        # delegating sessions in real data are single-model end to end, and there the
+        # model belongs in the caption once instead of repeated under every segment --
+        # which is also what buys the other 50 the room to name theirs per segment.
+        models = {s.model for s in self.segments if s.model}
+        return models.pop() if len(models) == 1 else ""
 
 
 class PriceEntry(NamedTuple):
@@ -2063,6 +2181,129 @@ class App:
             return None
         return TokenEconomics(
             tuple(tokens), tuple(cost), saved, estimated, missing_cache_rate, local_tokens
+        )
+
+    @staticmethod
+    def _flame_labels(rows: list[dict]) -> list[str]:
+        # Segment names, made unique. Most backends don't name their subagents -- Claude
+        # Code writes "subagent" for every Task -- so a whole session can collapse to one
+        # repeated label, and a legend of six identical entries identifies nothing.
+        #
+        # A repeated label takes its START TIME, because that is the one distinguishing
+        # field that is also FINDABLE: it is the table's Started column, whichever way
+        # that table happens to be sorted. Minute precision first (short, and enough
+        # when the executions are spread out), seconds when a batch launched inside one
+        # minute -- five parallel Tasks do -- and a plain cost rank if even that ties,
+        # so the labels are unique no matter what the timestamps look like.
+        labels = [flame_label(row) for row in rows]
+        repeated = {lab for lab in labels if labels.count(lab) > 1}
+        if not repeated:
+            return labels
+        for end in (16, 19):  # "HH:MM", then "HH:MM:SS"
+            stamped = [
+                f"{lab} {str(row.get('created_at') or '')[11:end]}".strip()
+                if lab in repeated
+                else lab
+                for lab, row in zip(labels, rows)
+            ]
+            if len(set(stamped)) == len(stamped):
+                return stamped
+        # Last rung: the cost rank, which is the table's default ordering. Ranking alone
+        # is still not a guarantee -- a node genuinely titled "foo #1" beside two titled
+        # "foo" collides with the rank given to one of them -- so whatever is left tied
+        # is separated here. The contract this function's name makes is uniqueness; a
+        # ladder that ALMOST gets there just relocates the indistinguishable pair.
+        seen: set[str] = set()
+        out = []
+        for i, lab in enumerate(labels):
+            name = f"{lab} #{i + 1}" if lab in repeated else lab
+            while name in seen:
+                name += " ·"
+            seen.add(name)
+            out.append(name)
+        return out
+
+    def session_flame(self, workflow: Workflow) -> SessionFlame | None:
+        """This session's spend as a hierarchy -- see SessionFlame for what the shape
+        means and why depth is one band. None when there is nothing to divide.
+
+        Built from the memoized node rows through `_priced_nodes`, so a segment's width
+        IS its row's Cost cell in the table below: same "$" gating, same estimate rule,
+        no second opinion about what a node cost. Zero-value nodes are left out (a
+        segment with no width is not a segment) and counted in `silent`, because a
+        subagent that ran and recorded nothing is a fact about the data, not an absence.
+        """
+        nodes = self.session_node_rows(workflow.id)
+        if not nodes:
+            return None
+        priced = self._priced_nodes(nodes)  # same order as `nodes`, costs "$"-repriced
+        cost = sum(float(row["cost"] or 0) for row in priced)
+        # Dollars unless there are none: a subscription backend with "$" off records $0
+        # everywhere, and a hierarchy of zeros is a blank frame. Tokens still answer
+        # "where did the work go", which is the same question one price list away.
+        unit = "cost" if cost > 0 else "tokens"
+
+        def value(row: dict) -> float:
+            return float(row["cost"] or 0) if unit == "cost" else float(row["tokens_total"] or 0)
+
+        total = cost if unit == "cost" else float(sum(value(r) for r in priced))
+        if total <= 0:
+            return None
+        segments: list[FlameSegment] = []
+        roots = [r for r in priced if int(r["depth"]) == 0]
+        own = sum(value(r) for r in roots)
+        if own > 0:
+            segments.append(
+                FlameSegment(
+                    "root (self)",
+                    "root (self)",
+                    flame_model(roots[0]),
+                    own,
+                    own / total,
+                    FLAME_SELF_SLOT,
+                    0,
+                )
+            )
+        kids = [r for r in priced if int(r["depth"]) > 0]
+        # Cost-descending, with tokens then the title breaking ties -- a stable order,
+        # so two paints of the same session never shuffle the colours.
+        kids.sort(
+            key=lambda r: (value(r), int(r["tokens_total"] or 0), str(r["title"])), reverse=True
+        )
+        drawn = [r for r in kids if value(r) > 0]
+        labels = self._flame_labels(drawn)
+        for i, row in enumerate(drawn):
+            v = value(row)
+            label = labels[i]
+            segments.append(
+                FlameSegment(
+                    label,
+                    flame_label(row),
+                    flame_model(row),
+                    v,
+                    v / total,
+                    FLAME_CHILD_SLOTS[i % len(FLAME_CHILD_SLOTS)],
+                    int(row["depth"]),
+                )
+            )
+        # Estimated exactly when a WIDTH ON SCREEN is an estimate: "$" on, not demo, and
+        # some node that actually got drawn recorded nothing of its own. Asking it of
+        # every node instead would let an aborted $0/0-token child -- which contributes
+        # no segment at all -- put a "~" on a chart whose every width was recorded (one
+        # real session in the corpus is shaped exactly like that).
+        api = self.show_api_prices and not self.store.demo
+        estimated = (
+            unit == "cost"
+            and api
+            and any(not raw["cost"] and value(row) > 0 for raw, row in zip(nodes, priced))
+        )
+        return SessionFlame(
+            tuple(segments),
+            total,
+            unit,
+            estimated,
+            sum(1 for r in drawn if int(r["depth"]) > 1),
+            len(kids) - len(drawn),
         )
 
     def whatif_baseline_is_estimated(self, workflow: Workflow) -> bool:

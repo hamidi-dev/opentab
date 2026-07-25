@@ -215,6 +215,22 @@ button.showall:hover{color:var(--accent);border-color:var(--accent)}
 /* the swatch in the detail table's Type cell -- the table repeats the bars' colour key
    so a row can be matched to its segment without counting across the legend */
 .lgd{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:7px;vertical-align:-1px}
+/* Session flamegraph: one band partitioning the session, with the names positioned in
+   rows beneath it rather than written into the fill -- text punched through a colour
+   fights it, and only ever fits the segments that least needed a label. */
+.flame{margin:2px 0 12px}
+.flame .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--mut);margin-bottom:5px}
+.flame .track{display:flex;gap:1px;height:38px;border-radius:4px;overflow:hidden}
+/* The label rows share the band's flex ratios, so every name sits under its own slice by
+   construction. overflow:hidden keeps a long one inside its slice instead of shoving the
+   next along; the share threshold (NAMED) is what stops a sliver showing one letter. */
+.flame .names{display:flex;gap:1px;margin-top:3px}
+.flame .names > div{min-width:0;overflow:hidden;white-space:nowrap;font-size:11px;
+  font-weight:600;padding-right:4px}
+.flame .seg{display:flex;align-items:center;justify-content:center;min-width:0;overflow:hidden;
+  white-space:nowrap;font-size:11px;font-weight:700;padding:0 2px}
+.flame-head{font-size:12.5px;color:var(--ink2);margin:0 0 10px}
+.flame-head b{color:var(--ink)}
 /* the session Overview money card (mirrors the TUI's Money box: donut + stats, with the
    armed what-if as accent-highlighted rows below a rule) */
 .money{display:flex;flex-wrap:wrap;gap:14px 28px;align-items:center;margin:8px 0 2px}
@@ -1338,6 +1354,203 @@ function tokenEconomicsPane(ws, label) {
     notes.map(n => h('div', { class: 'hint' }, n)));
 }
 
+/* ---------- the session flamegraph (the mirror of App.session_flame) ---------- */
+// A session's spend as a hierarchy: the whole session on top, partitioned below into the
+// root's own work and each subagent. Width is money, which is what the tree TABLE below
+// cannot say -- a table ranks the nodes, an icicle shows the proportion, and "the root
+// kept 42% and five subagents split the rest" is one glance instead of six subtractions.
+//
+// The Python side's docstrings are canonical for the two decisions that matter: widths
+// are the Cost column's own meaning (so chart and table can never disagree about a node),
+// and depth is one band because workflow_nodes records a node's depth but not its PARENT
+// -- a nested execution joins the band as a marked sibling rather than being drawn under
+// a parent the stores never named. Computed here, not shipped precomputed, because the
+// widths follow the live $ toggle.
+const FLAME_SELF_SLOT = 0, FLAME_CHILD_SLOTS = [1, 2, 3, 4];
+// Below this share a segment is a few pixels wide and carries no text of any length.
+// The TUI can measure its cells exactly; the page cannot measure a proportional
+// layout before it lays out, so it thresholds on the share instead and leans on
+// overflow:hidden to keep a long name inside its own slice either way.
+const NAMED = 0.06;
+const FLAME_DULL = new Set(['', '-', 'subagent', 'unknown', '(untitled)']);
+// A share of one session's spend, BOTH ends guarded (Renderer._flame_pct's rule): an
+// icicle prints the parts beside the whole, so "root kept 100%" above five visible
+// subagent segments contradicts itself, and a sub-half-percent segment that exists must
+// not read "0%". Math.round is half-up and Python's round() is half-to-even, so the
+// Python floors (share + 0.5) to keep an exact 12.5% reading the same in both.
+function fPct(frac) {
+  if (frac >= 1) return '100%';
+  if (frac <= 0) return '0%';
+  const share = 100 * frac;
+  if (share >= 99.5) return '>99%';
+  if (share < 0.5) return '<1%';
+  return Math.round(share) + '%';
+}
+// OpenCode records the agent in its own column for only some sessions; for the rest it
+// writes "-" and leaves the name in the TITLE, as "(@code-reviewer)". Mining it back out
+// is not a guess about a title's wording, it is reading a field the backend stored in the
+// wrong place -- on real data it lifts the share of subagent nodes that can name their
+// agent from 15% to 85%. (App._FLAME_AGENT_TAG.)
+const FLAME_AGENT_TAG = /\(@([\w.-]+)/;
+// The model's short display spelling: route prefix dropped, release-date and
+// reasoning-effort suffixes stripped -- pricing.display_model, transcribed, because a
+// segment has tens of pixels of text and not eighty characters.
+const flameModel = m => String(m || '').split('/').pop()
+  .replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, '').replace(/-(?:minimal|low|medium|high|xhigh)$/, '');
+// A segment names the AGENT that ran it, never the session's title: the title is a
+// sentence that never fits, and it is one column away in the table below.
+function flameLabel(n) {
+  const agent = (n.agent || '').trim();
+  let name = FLAME_DULL.has(agent.toLowerCase()) ? '' : agent;
+  if (!name) {
+    const tag = FLAME_AGENT_TAG.exec(n.title || '');
+    name = tag ? tag[1] : 'subagent';
+  }
+  return (n.depth > 1 ? '↳ ' : '') + name;
+}
+// Unique names: most backends don't name their subagents (Claude Code writes "subagent"
+// for every Task), and a key of six identical entries identifies nothing. Fall back to
+// the start time -- distinct AND findable in the table's Started column -- at minute then
+// second precision, and to a cost rank when a batch shares one timestamp exactly.
+function flameLabels(rows) {
+  // A Map, not a plain object: these keys are session titles, and a title of exactly
+  // "constructor", "toString" or "__proto__" reads its value straight off
+  // Object.prototype -- `(n[l] || 0) + 1` then yields NaN (or silently fails to store),
+  // `n[l] > 1` is false, and two identically-named executions are never detected as
+  // repeated. Python counts with list.count() and has no such hole, so this is exactly
+  // the kind of one-sided hazard that makes the two frontends disagree.
+  const base = rows.map(flameLabel), n = new Map();
+  base.forEach(l => n.set(l, (n.get(l) || 0) + 1));
+  const many = l => n.get(l) > 1;
+  if (!base.some(many)) return base;
+  for (const end of [16, 19]) {
+    const stamped = base.map((l, i) => many(l) ? (l + ' ' + (rows[i].date || '').slice(11, end)).trim() : l);
+    if (new Set(stamped).size === stamped.length) return stamped;
+  }
+  // Last rung: the cost rank -- which is still not a guarantee on its own (a node
+  // genuinely titled "foo #1" beside two titled "foo" collides with a rank), so whatever
+  // is left tied is separated here. Uniqueness is the contract; a ladder that ALMOST
+  // reaches it just relocates the indistinguishable pair.
+  const seen = new Set();
+  return base.map((l, i) => {
+    let name = many(l) ? l + ' #' + (i + 1) : l;
+    while (seen.has(name)) name += ' ·';
+    seen.add(name);
+    return name;
+  });
+}
+function sessionFlame(nodes) {
+  if (!nodes || !nodes.length) return null;
+  const paid = nodes.reduce((a, n) => a + mCost(n), 0);
+  // Dollars unless there are none: a subscription backend with $ off records $0
+  // everywhere, and a hierarchy of zeros is a blank frame. Tokens still answer "where
+  // did the work go", which is the same question one price list away. (Costs arrive
+  // rounded to 6dp by web._money6, so a whole session under a millionth of a dollar
+  // reads as tokens here while the TUI still divides its raw floats. Both readings say
+  // "this cost nothing"; the rounding is the payload's, shared with every other figure
+  // on the page, and is not worth a second cost field.)
+  const unit = paid > 0 ? 'cost' : 'tokens';
+  const val = n => unit === 'cost' ? mCost(n) : n.tokens;
+  const total = unit === 'cost' ? paid : nodes.reduce((a, n) => a + n.tokens, 0);
+  if (!(total > 0)) return null;
+  const segments = [];
+  const own = nodes.filter(n => !n.depth).reduce((a, n) => a + val(n), 0);
+  const rootNode = nodes.find(n => !n.depth);
+  // Two names per execution: the bare `agent` (position identifies a slice under the
+  // band, so five slices reading "code-reviewer" is the truth there) and `label`, which
+  // carries whatever flameLabels had to add to tell them apart in the key.
+  if (own > 0) segments.push({ label: 'root (self)', agent: 'root (self)',
+    model: flameModel(rootNode && rootNode.model), value: own, share: own / total,
+    slot: FLAME_SELF_SLOT, depth: 0 });
+  // Cost-descending, tokens then title breaking ties. The title breaks it DESCENDING and
+  // by CODE POINT, because the Python sorts the whole (value, tokens, title) tuple with
+  // reverse=True. Neither shortcut is that: localeCompare's collation disagrees on case
+  // and accents ("Z" vs "a"), and a bare `<` compares UTF-16 code UNITS, which ranks an
+  // astral character below a high BMP one (an emoji title sorts under "�" in JS and
+  // over it in Python). A tie ordered differently between the frontends hands the same
+  // two segments different colours in the TUI and on the page.
+  const byTitle = (a, b) => {
+    const x = Array.from(String(a.title)), y = Array.from(String(b.title));
+    for (let i = 0; i < Math.min(x.length, y.length); i++) {
+      const d = y[i].codePointAt(0) - x[i].codePointAt(0);
+      if (d) return d;
+    }
+    return y.length - x.length;
+  };
+  const kids = nodes.filter(n => n.depth > 0)
+    .sort((a, b) => val(b) - val(a) || b.tokens - a.tokens || byTitle(a, b));
+  const drawn = kids.filter(n => val(n) > 0), labels = flameLabels(drawn);
+  drawn.forEach((n, i) => segments.push({ label: labels[i], agent: flameLabel(n),
+    model: flameModel(n.model), value: val(n), share: val(n) / total,
+    slot: FLAME_CHILD_SLOTS[i % FLAME_CHILD_SLOTS.length], depth: n.depth }));
+  // `est` marks a WIDTH ON SCREEN as an estimate, which needs two guards beyond the $
+  // mode (App.session_flame's rule -- both frontends must mark the same figures
+  // approximate): the unit, since token widths were never priced at all, and val(n) > 0,
+  // since an aborted $0/0-token child contributes no segment and must not put a "~" on a
+  // chart whose every drawn width was recorded.
+  // The model every drawn segment ran on, or '' when they differ: 85 of 135 real
+  // delegating sessions are single-model end to end, and there the model belongs in the
+  // caption once instead of under every segment. (SessionFlame.one_model.)
+  const models = new Set(segments.map(s => s.model).filter(Boolean));
+  return { segments, total, unit,
+    est: unit === 'cost' && MODE === 'api' && nodes.some(n => !n.real && val(n) > 0),
+    deep: drawn.filter(n => n.depth > 1).length, silent: kids.length - drawn.length,
+    selfShare: own / total, oneModel: models.size === 1 ? [...models][0] : '' };
+}
+function flamePane(nodes) {
+  const f = sessionFlame(nodes);
+  if (!f || !f.segments.length) return null;
+  const SER = tokSeries(), fmt = f.unit === 'cost' ? money : hTok, approx = f.est ? '~' : '';
+  const kids = f.segments.filter(s => s.depth > 0);
+  const own = f.total - kids.reduce((a, s) => a + s.value, 0);
+  // The headline is the chart's finding as a sentence -- the part that survives being
+  // read on a phone, where the thinner segments are a few pixels each.
+  const parts = kids.length
+    ? ['root kept ', h('b', null, fPct(f.selfShare)), ' (' + fmt(own) + ') · ',
+       kids.length + ' subagent' + (kids.length === 1 ? '' : 's') + ' split ' + fmt(kids.reduce((a, s) => a + s.value, 0))]
+    : ['root kept all ' + approx + fmt(f.total) + ' — no subagent recorded a share'];
+  // The bare agent in the sentence: it points at one segment, so the handle that tells
+  // five "code-reviewer" runs apart would be noise there.
+  if (kids.length > 1) parts.push(' · biggest ' + kids[0].agent + ' ' + fPct(kids[0].share));
+  const band = h('div', { class: 'track' }, f.segments.map(s => h('div', {
+    class: 'seg',
+    style: 'flex:' + s.share + ' 0 0;background:' + SER[s.slot] + ';color:' + inkOn(SER[s.slot]),
+    title: s.label + (s.model ? ' · ' + s.model : '') + ' · ' + fmt(s.value) + ' · ' + fPct(s.share),
+  // Only the share rides in the fill now; the names sit under the band, where they do
+  // not have to fight the colour they were punched through. A sliver keeps neither.
+  }, s.share > NAMED ? fPct(s.share) : null)));
+  // The label rows: one flex cell per segment, sharing the band's own flex ratios, so a
+  // name is under its slice by construction rather than by arithmetic. Below NAMED a
+  // segment is too narrow for text of any length, and the key picks it up instead.
+  const labelRow = textOf => h('div', { class: 'names' }, f.segments.map(s =>
+    h('div', { style: 'flex:' + s.share + ' 0 0;color:' + SER[s.slot] },
+      s.share > NAMED ? textOf(s) : null)));
+  const notes = [];
+  if (f.unit !== 'cost') notes.push('nothing here recorded a cost, so width is TOKENS — press $ to divide list-price dollars instead');
+  else if (f.est) notes.push('widths include list-price estimates for what recorded no cost');
+  if (f.deep) notes.push(f.deep + ' execution' + (f.deep === 1 ? '' : 's') + ' ran under another subagent (↳) — shown alongside, since the tree records depth but not parents');
+  if (f.silent) notes.push(f.silent + ' subagent' + (f.silent === 1 ? '' : 's') + ' recorded no '
+    + (f.unit === 'cost' ? 'spend' : 'tokens') + ' — no width to draw, still in the table below');
+  // The key carries only what position could not -- the segments too thin to be named
+  // under the band -- and picks up their model too, since it has a whole wrapping line
+  // to spend where they had a few pixels. Name every segment and it disappears entirely.
+  const rest = f.segments.filter(s => !(s.share > NAMED));
+  const caption = 'session · width = ' + (f.unit === 'cost' ? 'dollars' : 'tokens')
+    + (f.oneModel ? ' · all on ' + f.oneModel : '');
+  return pane('Where the money went · ' + approx + fmt(f.total),
+    h('div', { class: 'flame-head' }, ...parts),
+    h('div', { class: 'flame' },
+      h('div', { class: 'lbl' }, h('span', null, caption), h('span', null, approx + fmt(f.total))),
+      band, labelRow(s => s.agent),
+      // A second positioned row for the models, and only when the segments disagree
+      // about them: a uniform tree said it once in the caption already.
+      f.oneModel ? null : labelRow(s => s.model)),
+    rest.length ? h('div', { class: 'tk-legend' }, rest.map(s =>
+      h('span', { title: fmt(s.value) + ' · ' + fPct(s.share) }, h('i', { style: 'background:' + SER[s.slot] }),
+        s.label + (!f.oneModel && s.model ? ' ' + s.model : '')))) : null,
+    notes.map(n => h('div', { class: 'hint' }, n)));
+}
+
 function projectsTable(id, ws, collapse, onRow) {
   const rows = projectRows(ws);
   const peak = Math.max(...rows.map(r => r.cost), 0);
@@ -1920,6 +2133,10 @@ function renderDetail(sc, ws) {
     const nodes = DATA.nodes[sc.id];
     const tree = nodes && nodes.some(n => n.depth > 0);
     const wi = tree ? whatifTotals(sc.id) : null;
+    // The flamegraph rides ABOVE the tree on both variants: it answers "what share" where
+    // the table answers "which node, how much", and it reads recorded/estimated spend
+    // either way, so an armed target leaves it alone (the TUI splits it the same way).
+    if (tree) { const fl = flamePane(nodes); if (fl) root.appendChild(fl); }
     if (!tree) root.appendChild(pane('Session tree', h('div', { class: 'hint' }, 'no subagents in this session')));
     else if (wi) root.appendChild(pane('Session tree · what-if ' + wi.target, whatifTree(nodes, wi)));
     else root.appendChild(pane('Session tree', table('t-s-nodes', [

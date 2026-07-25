@@ -2421,12 +2421,17 @@ class Renderer:
         # spans that own a colour. A line with no recorded runs -- every other line in
         # the app -- costs one dict miss.
         runs, shift = self._token_runs.get(line), 0
-        if runs is None and line[:1] in ("│", "|"):
+        if runs is None and len(line) > 4 and line[0] in "│|" and line[-1] in "│|":
             # The bar lives inside a ruled box, so the painted line is the recorded one
             # wrapped in "│ … │" gutters. Look up the content and shift the runs by the
             # gutter rather than making the builder predict its own wrapping -- it is
             # spliced into six different Overviews and cannot know.
-            runs, shift = self._token_runs.get(line[2:].rstrip(" │|")), 2
+            #
+            # Strip exactly the frame ("│ " + content padded to width + " │") and then
+            # only the PADDING, never trailing content characters: the flamegraph's
+            # labels are session titles, and rstrip("│|") ate the last character of any
+            # label that happened to end in a pipe, so its swatch lost its colour.
+            runs, shift = self._token_runs.get(line[2:-2].rstrip(" ")), 2
         if not runs:
             return
         for col, length, slot in runs:
@@ -2447,7 +2452,39 @@ class Renderer:
         # distinction, so exactly one of them is ever in play.
         return "█" if self._token_series_ok else TOKEN_SERIES_GLYPHS[slot]
 
-    def _token_stack_line(self, rows, total: float, cells: int) -> str:
+    @staticmethod
+    def _stack_widths(rows, total: float, cells: int) -> list[int]:
+        # The 100%-stacked bar's per-segment widths, summing to exactly `cells`.
+        # Split out from _token_stack_line because the flamegraph's label row has to sit
+        # under the segments it names, and geometry computed twice is geometry that
+        # drifts by a cell and puts every name half a segment to the left.
+        #
+        # Cumulative rounding, so there is no drift opening a gap at the right edge, and
+        # every positive value keeps at least one cell -- a type that cost real money is
+        # never invisible. `bump` is that floor, paid per positive row and reserved out
+        # of the width first; both halves of it drop together once the positive segments
+        # outnumber the cells, because paying an unpayable floor builds a line LONGER
+        # than the pane, which the box then clips -- silently dropping whatever sits at
+        # the right edge. (Chart 1 has five segments and cannot reach that; the
+        # flamegraph's count is the session's subagent count.)
+        floor = sum(1 for _, value, _ in rows if value > 0)
+        bump = 1
+        if floor > cells:
+            floor = bump = 0
+        room = max(0, cells - floor)
+        widths, acc, used = [], 0.0, 0
+        for _label, value, _slot in rows:
+            if total > 0:
+                acc += value / total
+            edge = min(room, round(acc * room))
+            widths.append(max(0, edge - used) + (bump if value > 0 else 0))
+            used = edge
+        short = cells - sum(widths)  # rounding can leave a cell unclaimed
+        if short > 0 and widths:
+            widths[widths.index(max(widths))] += short
+        return widths
+
+    def _token_stack_line(self, rows, total: float, cells: int, labels=None, share_fmt=None) -> str:
         # One 100%-stacked bar as a single string, plus the per-segment colour runs it
         # needs, stashed in _token_runs keyed by the line TEXT rather than its index --
         # the box is spliced into a bigger line list by six different Overviews, so it
@@ -2458,35 +2495,38 @@ class Renderer:
         # drift opening a gap at the right edge, and every positive value keeps at least
         # one cell -- a type that cost real money is never invisible. That floor is
         # reserved out of the width first, so honouring it can never overflow the bar.
-        floor = sum(1 for _, value, _ in rows if value > 0)
-        room = max(0, cells - floor)
-        widths, acc, used = [], 0.0, 0
-        for _label, value, _slot in rows:
-            if total > 0:
-                acc += value / total
-            edge = min(room, round(acc * room))
-            widths.append(max(0, edge - used) + (1 if value > 0 else 0))
-            used = edge
-        short = cells - sum(widths)  # rounding can leave a cell unclaimed
-        if short > 0 and widths:
-            widths[widths.index(max(widths))] += short
+        widths = self._stack_widths(rows, total, cells)
         runs: list[tuple[int, int, int]] = []
         text, col = "", 0
-        for (_label, value, slot), w in zip(rows, widths):
+        for i, ((_label, value, slot), w) in enumerate(zip(rows, widths)):
             if w <= 0:
                 continue
             glyph = self._token_glyph(slot)
-            share = f"{round(100.0 * value / total)}%" if total > 0 else ""
+            # `share_fmt` lets a caller impose its own rounding rule (the flamegraph
+            # guards both ends, so a sliver never reads "0%" and a near-total never
+            # reads a flat "100%" beside the segments it is standing next to). Default
+            # is chart 1's plain round, so its five bars are untouched.
+            share = ""
+            if total > 0:
+                share = (
+                    share_fmt(value / total) if share_fmt else f"{round(100.0 * value / total)}%"
+                )
             # The percentage rides INSIDE its segment when it fits with a cell of air on
             # each side; otherwise the legend and the table carry it, rather than
             # smearing two digits across a three-cell sliver. Only when colour is doing
             # the separating -- with glyphs in play the fill itself is the identity and
             # punching a label through it would break the one distinction left.
-            body = (
-                share.center(w, glyph)
-                if self._token_series_ok and share and len(share) + 2 <= w
-                else glyph * w
-            )
+            # `labels` (the flamegraph) offers a NAME to ride in front of the share when
+            # the segment is roomy enough for both -- a wide frame that says what it is
+            # beats a wide frame you have to look up in the legend. It degrades to the
+            # bare share, then to plain fill, so the fallback is chart 1's exact rule.
+            body = glyph * w
+            if self._token_series_ok:
+                named = f"{labels[i]} {share}".strip() if labels else ""
+                for candidate in (named, share):
+                    if candidate and len(candidate) + 2 <= w:
+                        body = candidate.center(w, glyph)
+                        break
             runs.append((col, w, slot))
             text += body
             col += w
@@ -3063,10 +3103,227 @@ class Renderer:
         lines.extend(self._token_economics_box([workflow], width))
         return lines
 
+    _FLAME_LEGEND_MAX = 6  # past this the legend is noise; the table below has them all
+    _FLAME_MIN_INNER = 30  # below this five segments stop being distinguishable at all
+
+    @staticmethod
+    def _flame_pct(frac: float) -> str:
+        # A share of one session's spend, with BOTH ends guarded -- which formatting.pct
+        # only does at the bottom. An icicle prints the parts beside the whole, so
+        # "root kept 100%" above five visible subagent segments contradicts itself on
+        # its own screen: a near-total reads ">99%" and only an exact whole reads 100%.
+        # And a sliver is common (65 segments in the corpus are under half a percent, and
+        # they are exactly the ones a "biggest …" line might name), so the bottom floors
+        # at "<1%" rather than printing a segment that exists as "0%".
+        #
+        # Half-up on purpose: Python rounds .5 to even and JS's Math.round rounds it up,
+        # so an exact 12.5% would read "12%" in the TUI and "13%" on the page.
+        if frac >= 1:
+            return "100%"
+        if frac <= 0:
+            return "0%"
+        share = 100.0 * frac
+        if share >= 99.5:
+            return ">99%"
+        if share < 0.5:
+            return "<1%"
+        return f"{math.floor(share + 0.5):.0f}%"
+
+    @staticmethod
+    def _legend_names(segments, with_model: bool = False) -> list[str]:
+        # Key labels, clipped to the key's column budget -- and re-separated after the
+        # clip. App._flame_labels guarantees the FULL names are unique; shortening can
+        # undo that (two long agent names sharing their first 21 characters), and two
+        # identical key LINES collide in _token_runs, which is keyed by line text: the
+        # second silently overwrites the first's colour runs and both swatches paint in
+        # the second segment's colour.
+        out: list[str] = []
+        used: dict[str, int] = {}
+        for seg in segments:
+            name = shorten(seg.label, 24)
+            if with_model and seg.model:
+                name += f" {seg.model}"
+            used[name] = seen = used.get(name, 0) + 1
+            out.append(name if seen == 1 else f"{name}·{seen}")
+        return out
+
+    def _flame_label_line(self, segments, widths, text_of) -> tuple[str, list[int]]:
+        # One row of labels under the band: each segment's text written at that segment's
+        # own starting column, in that segment's own colour, so the reader maps label to
+        # slice by POSITION rather than by matching a swatch in a key. A label wider than
+        # its segment is dropped rather than shifted -- a name sitting over the wrong
+        # slice is worse than no name, and the key picks those up.
+        #
+        # One cell of air is reserved before the next segment so two labels never run
+        # together into a single unreadable word; the last segment can use its full
+        # width, there being nothing after it to collide with.
+        #
+        # Returns the line and the INDEXES it managed to label, so the caller can give a
+        # key to exactly the segments position could not speak for.
+        text, runs, done = "", [], []
+        for i, (seg, w) in enumerate(zip(segments, widths)):
+            if w <= 0:
+                continue
+            label = str(text_of(seg) or "")
+            room = w - 1 if i < len(widths) - 1 else w
+            if not label or len(label) > room:
+                continue
+            col = sum(widths[:i])
+            text += " " * (col - len(text)) + label
+            runs.append((col, len(label), seg.slot))
+            done.append(i)
+        if not text:
+            return "", []
+        self._token_runs[text] = runs
+        return text, done
+
+    def _flamegraph_box(self, workflow: Workflow, width: int) -> list[str]:
+        # "Where the money went": the session as a spend hierarchy -- one bar for the
+        # whole, the band beneath it split into the root's own work and every subagent,
+        # width = dollars. The tree TABLE below ranks the nodes; this says what share
+        # each one took, which is the question a delegation setup is actually judged on
+        # ("did routing move the work off the expensive model, or did the root keep it?").
+        #
+        # Widths are App.session_flame's, i.e. the table's own Cost column, so the chart
+        # and the table can never quote different figures for the same node.
+        flame = self.app.session_flame(workflow)
+        if flame is None or not flame.segments:
+            return []
+        inner = max(1, width - 4)
+        dollars = flame.unit == "cost"
+
+        def fmt(v: float) -> str:
+            return money(v) if dollars else human_tokens(int(v))
+
+        approx = "~" if flame.estimated else ""
+        kids = flame.children
+        own = flame.total - sum(s.value for s in kids)
+
+        # --- the headline: the chart's finding as a sentence. It survives a pane too
+        # narrow for the bands, because a share you can read beats a bar you can't.
+        parts = [f"root kept {self._flame_pct(flame.self_share)} ({fmt(own)})"]
+        if kids:
+            parts.append(
+                f"{len(kids)} subagent{'s' if len(kids) != 1 else ''} "
+                f"split {fmt(sum(s.value for s in kids))}"
+            )
+            if len(kids) > 1:
+                # The bare agent here too: the sentence points at one segment, so the
+                # handle that tells five "code-reviewer" runs apart is noise in it.
+                parts.append(
+                    f"biggest {shorten(kids[0].agent, 22)} {self._flame_pct(kids[0].share)}"
+                )
+        else:
+            parts = [f"root kept all {approx}{fmt(flame.total)} — no subagent recorded a share"]
+        head = [" · ".join(parts)]
+
+        # --- the band, and the names UNDER it. Writing a name into the fill made the
+        # chart harder to read, not easier: the text fought the colour it was punched
+        # through, and it could only ever appear on the segments wide enough not to need
+        # it. Below the band each name sits at its own segment's column, in its own
+        # segment's colour, so position does the pointing and the fill stays a fill.
+        # The pane has to hold a cell per segment as well as the legibility floor: a
+        # session that delegated more times than the band has columns cannot be
+        # partitioned at all, and the sentence above says more than a row of identical
+        # single cells would.
+        chart: list[str] = []
+        named: list[int] = []
+        if inner >= max(self._FLAME_MIN_INNER, len(flame.segments)):
+            caption = "session · width = " + ("dollars" if dollars else "tokens")
+            # One model for the whole tree (85 of 135 real sessions) says itself once
+            # here rather than repeating under every segment -- which is exactly what
+            # leaves the other 50 the room to name theirs per segment.
+            if flame.one_model:
+                caption += f" · all on {flame.one_model}"
+            figure = approx + fmt(flame.total)
+            chart.append(caption + " " * max(1, inner - len(caption) - len(figure)) + figure)
+            rows = [(s.label, s.value, s.slot) for s in flame.segments]
+            widths = self._stack_widths(rows, flame.total, inner)
+            chart.append(
+                self._token_stack_line(rows, flame.total, inner, share_fmt=self._flame_pct)
+            )
+            names, named = self._flame_label_line(flame.segments, widths, lambda s: s.agent)
+            if names:
+                chart.append(names)
+            # A second positioned row for the models, and only when the segments disagree
+            # about them -- a uniform tree said it once in the caption, and repeating one
+            # model under every segment would spend a row to say nothing. Each row
+            # degrades on its own, so a segment too thin for its model still gets a name.
+            if not flame.one_model:
+                models, _ = self._flame_label_line(flame.segments, widths, lambda s: s.model)
+                if models:
+                    chart.append(models)
+            # The key only carries what position could not: a segment too thin to hold
+            # its own name. When every segment is named below, there is nothing left for
+            # a key to say and it disappears.
+            rest = [s for i, s in enumerate(flame.segments) if i not in set(named)]
+            if rest:
+                chart.append("")
+                legend = rest[: self._FLAME_LEGEND_MAX]
+                # The key has a whole line to wrap in, so it carries the model that the
+                # thin segments below the band had no room for -- otherwise the models
+                # row would answer only for the wide slices.
+                names_ = self._legend_names(legend, with_model=not flame.one_model)
+                chart.extend(
+                    self._token_legend_lines(
+                        list(
+                            zip(
+                                names_,
+                                [0] * len(legend),
+                                [0] * len(legend),
+                                [s.slot for s in legend],
+                            )
+                        ),
+                        inner,
+                    )
+                )
+
+        notes = []
+        unnamed = len(flame.segments) - len(named)
+        if chart and unnamed > self._FLAME_LEGEND_MAX:
+            notes.append(
+                f"· {unnamed - self._FLAME_LEGEND_MAX} thinner segment"
+                f"{'s' if unnamed - self._FLAME_LEGEND_MAX != 1 else ''} left out of the key — "
+                "the table below names every execution"
+            )
+        if not dollars:
+            notes.append(
+                "! nothing here recorded a cost, so width is TOKENS — press "
+                f"{self._key('main', 'api_prices')} to divide list-price dollars instead"
+            )
+        elif flame.estimated:
+            notes.append("! widths include list-price estimates for what recorded no cost")
+        if flame.deep:
+            # The stores record a node's depth but not its parent, so a nested execution
+            # cannot be drawn under the one it ran below. It joins the band as a sibling
+            # (marked "↳") rather than inventing a nesting -- see SessionFlame.
+            notes.append(
+                f"! {flame.deep} execution{'s' if flame.deep != 1 else ''} ran under another "
+                "subagent (↳) — shown alongside, since the tree records depth but not parents"
+            )
+        if flame.silent:
+            notes.append(
+                f"· {flame.silent} subagent{'s' if flame.silent != 1 else ''} recorded no "
+                f"{'spend' if dollars else 'tokens'} — no width to draw, still in the table below"
+            )
+        return self._sectioned_box(
+            f"# Where the money went · {approx}{fmt(flame.total)}",
+            [head, chart],
+            width,
+            notes,
+        ) + [""]
+
     def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
         nodes = self.session_node_rows(workflow.id)
         if not any(row["depth"] > 0 for row in nodes):
             return ["# Subagents", "No subagents used in this workflow."]
+        # The chart rides ABOVE the tree table on both variants: it answers "what share"
+        # where the table answers "which node, how much", and it reads recorded/estimated
+        # spend either way, so an armed `w` target leaves it alone. It is passed IN rather
+        # than prepended after, because the sort-header registration below is keyed by
+        # absolute line index -- a prefix bolted on afterwards would silently move the
+        # clickable header off the header row.
+        head = self._flamegraph_box(workflow, width)
         totals = self.whatif_session_totals(workflow)
         if self.whatif_model and totals:
             # With a what-if target the root (depth 0) joins the table. Normally it's
@@ -3082,11 +3339,12 @@ class Renderer:
                 self.whatif_model,
                 totals,
                 workflow,
+                head,
             )
         rows = self.sorted_subagent_rows(
             self._priced_nodes([row for row in nodes if row["depth"] > 0])
         )
-        lines = [
+        lines = head + [
             "# Subagent Executions",
             f"{self.subagent_sort_heading('date', 'Started'):<16} "
             f"{self.subagent_sort_heading('depth', 'D'):<3} "
@@ -3096,7 +3354,7 @@ class Renderer:
             f"{self.subagent_sort_heading('tokens', 'Tokens'):>9}  "
             f"{self.subagent_sort_heading('title', 'Title')}",
         ]
-        self._line_sort_headers[1] = (self.SUBAGENT_SORT_COLUMNS, "subagent")
+        self._line_sort_headers[len(lines) - 1] = (self.SUBAGENT_SORT_COLUMNS, "subagent")
         for row in rows:
             lines.append(
                 f"{str(row.get('created_at') or '')[:16]:<16} "
@@ -3152,7 +3410,12 @@ class Renderer:
         return lines
 
     def _subagents_whatif(
-        self, rows: list[dict], target: str, totals: tuple[float, float], workflow: Workflow
+        self,
+        rows: list[dict],
+        target: str,
+        totals: tuple[float, float],
+        workflow: Workflow,
+        head: list[str] | None = None,
     ) -> list[str]:
         # The what-if payoff table -- the feature's ONE visible effect, scoped to this
         # session: the whole tree (root + every subagent), each node's cost beside what
@@ -3172,7 +3435,7 @@ class Renderer:
         # "$"-estimated where nothing was recorded -- which is why it does NOT add up to
         # the TOTAL, and says so.
         priced = [(row, self.whatif_node_price(row, target)) for row in rows]
-        lines = [
+        lines = list(head or []) + [
             f"# Session Tree · what-if {target}",
             f"{self.subagent_sort_heading('date', 'Started'):<16} "
             f"{self.subagent_sort_heading('depth', 'D'):<3} "
@@ -3183,7 +3446,7 @@ class Renderer:
             f"{self.subagent_sort_heading('tokens', 'Tokens'):>9}  "
             f"{self.subagent_sort_heading('title', 'Title')}",
         ]
-        self._line_sort_headers[1] = (self.SUBAGENT_SORT_COLUMNS, "subagent")
+        self._line_sort_headers[len(lines) - 1] = (self.SUBAGENT_SORT_COLUMNS, "subagent")
         for row, wi in priced:
             lines.append(
                 f"{str(row.get('created_at') or '')[:16]:<16} "

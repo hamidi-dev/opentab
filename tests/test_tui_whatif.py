@@ -17,6 +17,16 @@ from tests._support import (
 )
 
 
+def _table(lines):
+    # The Subagents tab opens with the flamegraph box ("Where the money went"), which is
+    # about recorded/estimated spend and so is identical with a target armed. Everything
+    # below is about the TABLE, which starts at its own "# ..." heading.
+    start = next(
+        i for i, ln in enumerate(lines) if ln.startswith(("# Session Tree", "# Subagent Ex"))
+    )
+    return lines[start:]
+
+
 def _wi_row(lines, label):
     # The Overview's Money box renders the what-if as accent "★"-marked rows inside a
     # ruled box; a test reads the row carrying a given label (value is right-aligned).
@@ -333,7 +343,7 @@ def test_whatif_subagents_tab_prices_the_session_tree_and_the_savings_footer():
         baseline = opus_in + 2 * haiku_in  # 1M Opus + 2M Haiku, each at its own rates
 
         app.select_whatif_model("anthropic/claude-opus-4.5")
-        lines = app.renderer.detail_subagents(wf, 200)
+        lines = _table(app.renderer.detail_subagents(wf, 200))
         assert "anthropic/claude-opus-4.5" in lines[0]  # header names the target
         assert "What-if" in lines[1] and "Δ" not in lines[1]
         # The root joins the table: both nodes of the tree are listed.
@@ -358,7 +368,7 @@ def test_subagents_tab_is_unchanged_without_a_whatif_target():
     # Strict requirement: no target, no change -- the old columns, no root row, no footer.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
-        lines = app.renderer.detail_subagents(app.loaded[0], 200)
+        lines = _table(app.renderer.detail_subagents(app.loaded[0], 200))
         assert lines[0] == "# Subagent Executions"
         assert "What-if" not in lines[1] and "Δ" not in lines[1]
         assert not any(ln.startswith("TOTAL") for ln in lines)
@@ -496,7 +506,7 @@ def test_whatif_key_opens_the_picker_and_clears_an_active_target():
         # Armed, not applied: the sessions list still reads the actual $1.94, and only
         # the Subagents tab grows the what-if columns.
         assert round(app.loaded[0].total_cost, 2) == 1.94
-        assert "What-if" in app.renderer.detail_subagents(app.loaded[0], 200)[1]
+        assert "What-if" in _table(app.renderer.detail_subagents(app.loaded[0], 200))[1]
 
         # `w` with a target set clears it (no picker), and the tab goes back to normal.
         assert app.handle_key(None, ord("w"))
@@ -603,7 +613,7 @@ def test_whatif_picker_tab_flips_to_the_catalog_and_arms_from_it():
         assert app.whatif_model == rows[0][0]
         assert ot.has_known_price(app.whatif_model)
         # The armed catalog target drives the Subagents tab like any used model.
-        lines = app.renderer.detail_subagents(app.loaded[0], 200)
+        lines = _table(app.renderer.detail_subagents(app.loaded[0], 200))
         assert app.whatif_model in lines[0]
         assert any(ln.startswith("TOTAL (list rates)") for ln in lines)
 
@@ -741,7 +751,7 @@ def test_whatif_is_allowed_in_demo_mode_unlike_the_dollar_toggle():
 
         # The Subagents tab prices the (scaled) tree at the target's rates, both sides at
         # list rates like everywhere else...
-        lines = app.renderer.detail_subagents(wf, 200)
+        lines = _table(app.renderer.detail_subagents(wf, 200))
         assert app.whatif_model in lines[0]
         total = next(ln for ln in lines if ln.startswith("TOTAL"))
         assert total.startswith("TOTAL (list rates)") and "your models" in total

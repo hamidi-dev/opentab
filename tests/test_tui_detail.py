@@ -719,9 +719,13 @@ def test_subagents_tab_header_is_click_sortable_and_shows_started():
     rnd = app.renderer
     rnd._line_sort_headers = {}
     lines = rnd.detail_subagents(app.loaded[0], 120)
-    assert lines[1].startswith("Started")
-    assert "2026-06-01 12:30" in lines[2]  # the subagent row carries its start time
-    cols, target = rnd._line_sort_headers[1]
+    # The tab opens with the flamegraph box, so the table's header is wherever that box
+    # ended -- which is exactly why the sort registration is keyed off the built list's
+    # own length rather than a literal index.
+    head = next(i for i, ln in enumerate(lines) if ln.startswith("Started"))
+    assert lines[head - 1] == "# Subagent Executions"
+    assert "2026-06-01 12:30" in lines[head + 1]  # the subagent row carries its start time
+    cols, target = rnd._line_sort_headers[head]
     assert target == "subagent" and cols == rnd.SUBAGENT_SORT_COLUMNS
 
 

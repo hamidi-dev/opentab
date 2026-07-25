@@ -823,6 +823,113 @@ def test_web_token_economics_pane_is_two_stacked_bars_over_a_fixed_order_table()
     assert "1.05 / (L + 0.05)" in js  # WCAG contrast against white, not 21/(L+0.05)
 
 
+def test_web_flamegraph_divides_the_same_node_costs_as_the_tui():
+    # One chart, two frontends. The target is not the issue here (the flamegraph has
+    # none) -- the SCOPE is: widths follow the live $ toggle, so the page computes them
+    # client-side and the payload has to carry each node's two costs, its depth, and the
+    # fields the labels need. Restating sessionFlame() over the payload has to land on
+    # App.session_flame's segments exactly.
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _whatif_db(tmp)  # a subscription session: root + one Docs subagent, $0
+        app.show_api_prices = True
+        payload = ot.build_payload(app)
+        nodes = payload["nodes"]["root"]
+        # Every field sessionFlame() reads travels.
+        for n in nodes:
+            assert {"depth", "agent", "title", "date", "real", "api", "tokens"} <= set(n)
+        total = sum(n["api"] for n in nodes)
+        own = sum(n["api"] for n in nodes if not n["depth"])
+        flame = app.session_flame(app.loaded[0])
+        assert flame.unit == "cost"
+        assert round(flame.total, 6) == round(total, 6)
+        assert round(flame.self_share, 6) == round(own / total, 6)
+        assert [round(s.value, 6) for s in flame.segments] == [
+            round(own, 6),
+            *(round(n["api"], 6) for n in nodes if n["depth"]),
+        ]
+    # With "$" off a subscription session has no dollars at all, and both sides fall back
+    # to tokens rather than drawing a hierarchy of zeros.
+    with tempfile.TemporaryDirectory() as tmp:
+        sub = _whatif_db(tmp, costs=(0, 0))
+        assert not sub.show_api_prices
+        assert sum(n["real"] for n in ot.build_payload(sub)["nodes"]["root"]) == 0
+        assert sub.session_flame(sub.loaded[0]).unit == "tokens"
+
+    js = _js_source()
+    # The client mirror, and the two rules that keep it honest: widths are the node's
+    # $-gated Cost (mCost, i.e. _priced_nodes), and the fallback is tokens.
+    assert "function sessionFlame(" in js and "function flamePane(" in js
+    assert "const val = n => unit === 'cost' ? mCost(n) : n.tokens;" in js
+    # The root's slot is reserved -- a child cycling onto it would erase the one
+    # distinction the chart makes.
+    assert "const FLAME_SELF_SLOT = 0, FLAME_CHILD_SLOTS = [1, 2, 3, 4];" in js
+    assert "FLAME_CHILD_SLOTS[i % FLAME_CHILD_SLOTS.length]" in js
+    # Two places the mirror can silently drift, both caught once already: the tie-break
+    # must run DESCENDING and by CODE POINT, like the Python's reverse=True tuple sort.
+    # localeCompare is not that -- it disagrees with Python on case and accents ("Z" vs
+    # "a"), and a tie ordered differently gives the same two segments different colours
+    # in the two frontends...
+    sort = next(ln for ln in js.splitlines() if ".sort((a, b) => val(b) - val(a)" in ln)
+    assert sort.endswith("|| byTitle(a, b));") and "localeCompare" not in sort
+    # ...and code POINTS, not code units: a bare `<` compares UTF-16 units, which ranks
+    # an astral character below a high BMP one where Python's code-point sort does not.
+    assert "y[i].codePointAt(0) - x[i].codePointAt(0)" in js
+    # The repeat counter is a Map, not a plain object: a subagent titled exactly
+    # "constructor"/"toString"/"__proto__" would read Object.prototype instead of a
+    # count, so `> 1` is false and two identically-named executions never get
+    # disambiguated -- a hole Python's list.count() does not have, i.e. a divergence
+    # only one of the two frontends can fall into.
+    assert "const base = rows.map(flameLabel), n = new Map();" in js
+    assert "const many = l => n.get(l) > 1;" in js
+    # ...and "~" is gated on the UNIT (token widths were never priced) and on the node
+    # actually being DRAWN (an aborted $0/0-token child must not mark a chart whose every
+    # width was recorded), exactly like App.session_flame.
+    assert "est: unit === 'cost' && MODE === 'api' && nodes.some(n => !n.real && val(n) > 0)" in js
+
+
+def test_web_flamegraph_sits_above_the_tree_and_ignores_an_armed_target():
+    js = _js_source()
+    pane = js.split("else if (TAB === 'Subagents') {", 1)[1].split("} else if (TAB ===", 1)[0]
+    # It is appended BEFORE either tree variant, and outside the what-if branch: the
+    # chart is recorded/estimated spend, the tree's what-if is a counterfactual, and
+    # restating one as the other is the mistake this ordering prevents.
+    assert pane.index("flamePane(nodes)") < pane.index("whatifTree(nodes, wi)")
+    assert "wi ? flamePane" not in pane and "flamePane(nodes, wi" not in pane
+    # A solo session has no tree, so no chart either -- the pane already says so, and a
+    # one-segment icicle would imply a hierarchy that isn't there.
+    assert "if (tree) { const fl = flamePane(nodes); if (fl) root.appendChild(fl); }" in pane
+    # The names sit UNDER the band, in rows that share the band's own flex ratios, so a
+    # name is under its slice by construction rather than by arithmetic -- and only the
+    # share still rides inside the fill.
+    assert "const labelRow = textOf => h('div', { class: 'names' }" in js
+    assert "s.share > NAMED ? fPct(s.share) : null" in js
+    page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-05-01 10:00:00")])))
+    assert ".flame .names{display:flex;gap:1px" in page
+    assert ".flame .names > div{min-width:0;overflow:hidden" in page
+    # A second positioned row for the models, and only when the segments disagree about
+    # them -- a single-model tree says it once in the caption instead.
+    assert "f.oneModel ? null : labelRow(s => s.model)" in js
+    assert "(f.oneModel ? ' · all on ' + f.oneModel : '')" in js
+    # The agent is mined out of OpenCode's "(@name)" title when its own column is empty,
+    # and the title is never used as a label -- it is a sentence, and it is one column
+    # away in the table below.
+    assert "const FLAME_AGENT_TAG = /\\(@([\\w.-]+)/;" in js
+    label = js.split("function flameLabel(", 1)[1].split("\nfunction ", 1)[0]
+    assert "n.title" in label and "tag ? tag[1] : 'subagent'" in label
+    # A label on a fill picks its ink from that fill (chart 1's rule), not from the theme.
+    flame = js.split("function flamePane(", 1)[1].split("\nfunction ", 1)[0]
+    assert "inkOn(SER[s.slot])" in flame
+    # fPct guards BOTH ends like Renderer._flame_pct: an icicle prints the parts beside
+    # the whole, so a near-total must not read a flat "100%" above the segments standing
+    # next to it, and a sub-half-percent segment that is visibly there must not read 0%.
+    pct = js.split("function fPct(", 1)[1].split("\nfunction ", 1)[0]
+    assert "if (share >= 99.5) return '>99%';" in pct
+    assert "if (share < 0.5) return '<1%';" in pct
+    # The label ladder ends on a guaranteed-unique pass, not merely on the cost rank --
+    # a node genuinely titled "foo #1" collides with the rank handed to a repeated "foo".
+    assert "while (seen.has(name)) name += ' ·';" in js
+
+
 def test_web_payload_names_the_local_models_so_the_page_can_exclude_them():
     # Without this list the page cannot apply App.token_economics' rule and would price
     # local tokens at the generic fallback -- inventing spend that no one was billed.
