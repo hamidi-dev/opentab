@@ -8,7 +8,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from opentab import paths
@@ -95,6 +94,11 @@ def read_files_parallel(paths, max_workers: int | None = None):
             if text is not None:
                 yield path, text
         return
+    # Imported here, not at module scope: concurrent.futures drags in logging +
+    # traceback + subprocess (~10ms), which every one-shot `opentab status` would
+    # otherwise pay to reach money() -- and the serial path above never needs it.
+    from concurrent.futures import ThreadPoolExecutor
+
     window = workers * 4  # bound how many files' contents sit in memory at once
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="opentab-read") as ex:
         for start in range(0, len(paths), window):

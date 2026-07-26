@@ -1083,3 +1083,45 @@ def test_web_payload_names_the_local_models_so_the_page_can_exclude_them():
     # It is a subset of `rates` (which covers every used model), so the page can look a
     # model up in both without a missing-key branch.
     assert set(payload["whatif"]["local"]) <= set(payload["whatif"]["rates"])
+
+
+def test_web_names_stay_reachable_from_a_cold_package_import():
+    # opentab/__init__.py re-exports every module eagerly EXCEPT this one: reaching
+    # opentab.web pulls http.server (~13ms) that no TUI start and no `opentab status`
+    # poll should pay, so the five web names and the two modules resolve on demand
+    # (PEP 562). This test lives here because the deferred set is exactly the web
+    # frontend's surface -- if the registry ever generalizes, it moves.
+    #
+    # The trap it guards: `from opentab.web import build_payload` used to bind
+    # `opentab.web` as a side effect, so ot.web.ReportServer worked. With a lazy
+    # registry that only knows FUNCTION names, ot.web resolves only once something
+    # else happened to trigger an import -- passing or failing depending on what ran
+    # first in the process. So the modules are registered too, and a subprocess with
+    # nothing else imported is the only honest way to assert it.
+    import subprocess
+    import sys
+
+    probe = (
+        "import opentab, sys;"
+        "assert 'opentab.web' not in sys.modules, 'web imported eagerly';"
+        "assert opentab.web.ReportServer, 'ot.web unreachable from a cold import';"
+        "assert opentab.webpage.render_html, 'ot.webpage unreachable';"
+        "assert callable(opentab.build_payload) and callable(opentab.render_html);"
+        "assert 'build_payload' in dir(opentab) and 'web' in dir(opentab);"
+        # star-import must still see the deferred names, which it cannot do off the
+        # module dict alone -- hence the explicit __all__
+        "assert {'build_payload', 'render_html', 'web', 'webpage'} <= set(opentab.__all__);"
+        "print('ok')"
+    )
+    # src/ on the path the way tests/__init__.py puts it there, so this runs with no
+    # install like the rest of the suite; the rest of the env is inherited so the
+    # child sees the same temp XDG roots.
+    src = os.path.dirname(os.path.dirname(os.path.abspath(ot.__file__)))
+    out = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": src},
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "ok"

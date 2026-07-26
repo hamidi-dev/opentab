@@ -215,5 +215,50 @@ from opentab.util import (
     validate_date,
     workflow_fuzzy_score,
 )
-from opentab.web import build_payload, html_command, serve_command, session_extras
-from opentab.webpage import render_html
+
+# The web frontend is the one part of the package NOT re-exported eagerly. Its
+# http.server import costs ~13ms, which every `opentab status` poll and every TUI
+# start paid just to have these five names on the package -- cli.web_command has
+# always imported opentab.web lazily for the same reason, so this closes the last
+# eager path to it. PEP 562: the attribute materializes on first access, so
+# `opentab.build_payload` (and patching it) works exactly as before.
+_LAZY_ATTRS = {
+    "build_payload": "opentab.web",
+    "html_command": "opentab.web",
+    "serve_command": "opentab.web",
+    "session_extras": "opentab.web",
+    "render_html": "opentab.webpage",
+}
+# The two MODULES as well, not just the names above. `from opentab.web import ...`
+# used to bind `opentab.web` as a side effect of importing it, and callers rely on
+# that (ot.web.ReportServer, ot.webpage.render_html). Without these entries the
+# attribute exists only once something else has resolved a lazy name -- which is a
+# bug that hides, because it depends on what ran first.
+_LAZY_MODULES = ("web", "webpage")
+
+
+def __getattr__(name: str):
+    import importlib
+
+    if name in _LAZY_MODULES:
+        value = importlib.import_module(f"{__name__}.{name}")
+    else:
+        module = _LAZY_ATTRS.get(name)
+        if module is None:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        value = getattr(importlib.import_module(module), name)
+    globals()[name] = value  # cached, so later reads never reach __getattr__
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted({*globals(), *_LAZY_ATTRS, *_LAZY_MODULES})
+
+
+# Spelled out because a lazy name is invisible to `from opentab import *` until it
+# has been materialized: with no __all__, star-import reads the module dict and
+# would silently skip exactly the deferred names. Built from the eager surface so
+# it stays identical to what star-import exported when everything was eager.
+__all__ = sorted(
+    {n for n in globals() if not n.startswith("_")} | set(_LAZY_ATTRS) | set(_LAZY_MODULES)
+)

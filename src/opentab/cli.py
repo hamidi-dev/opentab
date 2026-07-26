@@ -9,7 +9,6 @@ import sqlite3
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 try:
@@ -1439,6 +1438,11 @@ def pull_command(args: argparse.Namespace) -> None:
     sys.stderr.write(
         f"Pulling {len(targets)} machine(s) in parallel: {', '.join(sorted(targets))}\n"
     )
+    # Local, like util.read_files_parallel's: concurrent.futures costs ~10ms of
+    # imports that only the SSH fan-out needs, and the one-shot commands (--status
+    # polled from a status bar) paid it on every single invocation.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     ok = 0
     with ThreadPoolExecutor(
         max_workers=min(len(targets), 8), thread_name_prefix="opentab-pull"
@@ -1472,6 +1476,8 @@ def _make_refresh_fn(args: argparse.Namespace):
             os.makedirs(remotes_dir, exist_ok=True)
         except OSError as exc:
             return [(k, 0, f"cannot write {remotes_dir}: {exc}") for k in targets]
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         results = []
         with ThreadPoolExecutor(
             max_workers=min(len(targets), 8), thread_name_prefix="opentab-refresh"

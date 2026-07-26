@@ -1,7 +1,6 @@
 """CombinedStore: merge several backends into one view."""
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 
 from opentab.demo import DEMO_ALL
@@ -19,6 +18,11 @@ def _gather(calls: list) -> list:
     calls = list(calls)
     if len(calls) <= 1:
         return [c() for c in calls]
+    # Local import (as util.read_files_parallel): concurrent.futures costs ~6ms of
+    # imports, and sources.py reaches this module for every command -- including the
+    # one-shot `opentab status`, which never merges backends at all.
+    from concurrent.futures import ThreadPoolExecutor
+
     with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="opentab-store") as ex:
         return list(ex.map(lambda c: c(), calls))
 
