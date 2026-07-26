@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import locale
 import os
@@ -361,7 +362,7 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
 
 # The verbs that carry their own subparser. Everything else -- a bare `opentab`, a
 # `opentab requests.csv`, any legacy flag -- is the implicit `tui` command.
-_SUBCOMMANDS = ("tui", "web", "pull", "remote", "export", "forget")
+_SUBCOMMANDS = ("tui", "web", "status", "pull", "remote", "export", "forget")
 
 
 def _focus_help(subparser: argparse.ArgumentParser, common_dests: set, keep: set) -> None:
@@ -395,6 +396,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(
         path=None,
         status=None,
+        status_targets=[],
+        status_batch=False,
         goto=None,
         tab=None,
         export=None,
@@ -452,6 +455,36 @@ def _build_parser() -> argparse.ArgumentParser:
         "data-refresh button are served",
     )
     _focus_help(web, gdests, {"source", "demo", "theme", "port", "bind"})
+    status = subs.add_parser(
+        "status",
+        help="print one line of cost for a session or project (for a status bar)",
+        description="Print the cost of an agent session (subagent subtree included) and "
+        "exit -- the one-shot made for a tmux status line. With no TARGET the current "
+        "directory's most recently active session is priced; every present harness "
+        "backend is consulted unless --harness pins one. Several targets (or --batch) "
+        "print a `<target>\\t<price>` table instead of one bare line, priced in a single "
+        "process -- which is the point: the interpreter start dwarfs the pricing, so a "
+        "shell loop calling this once per pane pays it once per pane.",
+    )
+    _add_global_args(status)
+    status.add_argument(
+        "targets",
+        nargs="*",
+        metavar="TARGET",
+        help="a directory (price that project's latest session) or a session id "
+        "(price exactly that one -- a subagent id resolves to its root). None given = "
+        "the current directory. Several = the keyed table; `-` reads the list from "
+        "stdin, one target per line",
+    )
+    status.add_argument(
+        "--batch",
+        action="store_true",
+        help="print the `<target>\\t<price>` table even for a single target, so a "
+        "script's parsing doesn't change with the number of targets it happened to "
+        "collect. Targets that can't be priced are omitted, so an empty table means "
+        "nothing matched",
+    )
+    _focus_help(status, gdests, {"source", "demo"})
     # --- the fleet: getting other machines' spend (the --pull/--remote/--export/--forget
     # verbs as subcommands). pull/remote open the merged fleet view; export/forget are
     # one-shot. All map onto the legacy fields in _apply_subcommand, so main() dispatches
@@ -548,6 +581,15 @@ def _apply_subcommand(args: argparse.Namespace) -> None:
         args.pull = list(args.hosts)
     elif command == "remote":
         args.remote = True  # open the already-pulled fleet, no fetch (== --remote)
+    elif command == "status":
+        # `opentab status [TARGET]` == `--status [TARGET]`, so main() dispatches both
+        # through status_command. status is set to "" (not None) even with no target,
+        # because None is what "the user didn't ask for status at all" means there.
+        args.status = args.targets[0] if args.targets else ""
+        args.status_targets = list(args.targets)
+        # Arity decides the shape unless --batch forces the table: one target keeps the
+        # bare line every existing status-bar hook already parses.
+        args.status_batch = bool(args.batch) or len(args.targets) > 1
     elif command == "export":
         args.export = args.file  # "-" (stdout) by default (== --export)
     elif command == "forget":
@@ -1137,29 +1179,72 @@ def _status_stores(args: argparse.Namespace) -> list:
     return [sources._build_store(args, k)[0] for k in keys]
 
 
+class _StatusPricer:
+    """Prices --status targets against one shared set of backends.
+
+    A per-target `opentab --status` fan-out repeats three costs N times: the
+    interpreter+import start (~90ms, the shell's to avoid -- hence `status
+    --batch`), each backend's recent_roots scan, and the node parse of every
+    root it prices. This holds the latter two for the life of one process, so a
+    batch of panes sharing a session -- a split, or a subagent id that walks up
+    to the same root -- parses it once. Single-target callers get the same
+    behaviour as before: nothing is precomputed, every memo fills on demand.
+    """
+
+    def __init__(self, stores: list):
+        self._stores = stores
+        self._recent: dict[int, list] = {}
+        self._prices: dict[tuple[int, str], str] = {}
+
+    def _roots(self, index: int) -> list:
+        # recent_roots() is already a list in every backend, and its rows resolve
+        # "directory" lazily on first read (util.LazyStatusRoot), so caching the
+        # list keeps the "a project scan stops paying at the row that matches"
+        # property while letting the next target reuse the head reads this one
+        # paid for -- the rows memoize their own resolved fields.
+        if index not in self._recent:
+            self._recent[index] = list(self._stores[index].recent_roots())
+        return self._recent[index]
+
+    def _candidate(self, index: int, project: str | None) -> tuple[str, int] | None:
+        for row in self._roots(index):
+            if project is None or _project_key(row["directory"]) == project:
+                return row["id"], row["last_active"]
+        return None
+
+    def _price(self, index: int, root: str) -> str:
+        key = (index, root)
+        if key not in self._prices:
+            self._prices[key] = _price_root(self._stores[index], root)
+        return self._prices[key]
+
+    def line(self, target: str | None) -> str:
+        """The status figure for one target -- '' when nothing matches."""
+        if target and _is_session_target(target):
+            # The id itself names its backend: every store's root_of answers from
+            # a cheap filename/dir/SQL lookup (never a parse), so probe each and
+            # let the first claimant price it -- ids are UUIDs or ses_-prefixed,
+            # so a cross-backend collision is not a realistic concern.
+            for index, store in enumerate(self._stores):
+                root = store.root_of(target)
+                if root:
+                    return self._price(index, root)
+            return ""
+        # Directory (or nothing): the most recently active root across the backends
+        # wins, so whichever tool you drove last is the one priced.
+        project = _project_key(target) if target else None
+        best: tuple[int, str, int] | None = None
+        for index in range(len(self._stores)):
+            candidate = self._candidate(index, project)
+            if candidate and (best is None or candidate[1] > best[2]):
+                best = (index, candidate[0], candidate[1])
+        if best is None:
+            return ""
+        return self._price(best[0], best[1])
+
+
 def _status_line_all(args: argparse.Namespace, target: str | None) -> str:
-    stores = _status_stores(args)
-    if target and _is_session_target(target):
-        # The id itself names its backend: every store's root_of answers from a
-        # cheap filename/dir/SQL lookup (never a parse), so probe each and let
-        # the first claimant price it -- ids are UUIDs or ses_-prefixed, so a
-        # cross-backend collision is not a realistic concern.
-        for store in stores:
-            line = status_line(store, target)
-            if line:
-                return line
-        return ""
-    # Directory (or nothing): the most recently active root across the backends
-    # wins, so whichever tool you drove last is the one priced.
-    project = _project_key(target) if target else None
-    best_store, best = None, None
-    for store in stores:
-        candidate = _status_candidate(store, project)
-        if candidate and (best is None or candidate[1] > best[1]):
-            best_store, best = store, candidate
-    if best is None:
-        return ""
-    return _price_root(best_store, best[0])
+    return _StatusPricer(_status_stores(args)).line(target)
 
 
 def _goto_target(args: argparse.Namespace) -> tuple[str, str] | None:
@@ -1201,10 +1286,89 @@ def _goto_hint(target: str) -> str:
     return f"--goto: no session yet in {short_path(target, 40)}"
 
 
+def _read_batch_stdin() -> list[str]:
+    # `-` among the targets means "the rest come from stdin, one per line" (the
+    # `export -` convention). A tty would just hang waiting for EOF, which from a
+    # status-bar hook looks like opentab freezing, so refuse it outright.
+    if sys.stdin is None or sys.stdin.isatty():
+        raise ValueError("status --batch -: stdin is a terminal (pipe the targets in)")
+    return sys.stdin.read().splitlines()
+
+
+def _batch_targets(targets: list[str]) -> list[str]:
+    # The batch target list, cleaned but NOT canonicalized: order and cardinality
+    # are the caller's, because the output is keyed by the exact string asked for
+    # and a caller may legitimately ask twice (pricing it twice is free -- the
+    # pricer memoizes the root). Only three things are dropped:
+    #
+    #  * blank lines, so a trailing newline in a piped list isn't a target;
+    #  * one trailing \r, so a list produced by a Windows-side tool doesn't key
+    #    rows nothing matches -- but NOT a general .strip(), because leading and
+    #    trailing spaces are legal in a Unix path and stripping them would price
+    #    the wrong directory;
+    #  * a target containing a tab or NUL, which a TSV keyed by it cannot
+    #    represent. (An id never contains one; a path could.) A target containing
+    #    a newline is likewise unrepresentable, and the line protocol has already
+    #    split it -- documented in the subcommand's help rather than detected.
+    if targets.count("-") and targets != ["-"]:
+        raise ValueError(
+            "status --batch: `-` reads every target from stdin; don't mix it with others"
+        )
+    out: list[str] = []
+    for raw in targets:
+        for token in _read_batch_stdin() if raw == "-" else [raw]:
+            target = token[:-1] if token.endswith("\r") else token
+            if not target.strip() or "\t" in target or "\0" in target:
+                continue
+            out.append(target)
+    return out
+
+
+def _status_batch(args: argparse.Namespace, targets: list[str]) -> int:
+    # Price many targets in ONE process: `<target>\t<price>` per line, in the
+    # order asked, unpriceable targets omitted (--status's own contract -- an
+    # empty segment rather than an error). Keyed output is what lets the caller
+    # read the table straight into a map without tracking which reply was whose;
+    # the tmux picker's sweep used numbered temp files for exactly that.
+    pricer = _StatusPricer(_status_stores(args))
+    failed = False
+    try:
+        for target in targets:
+            try:
+                line = pricer.line(target)
+            except (sqlite3.Error, OSError, ValueError):
+                failed = True  # one unreadable backend must not cost the other targets
+                continue
+            if line:
+                print(f"{target}\t{line}")
+    except BrokenPipeError:
+        # The reader stopped (`| head -1`): its choice, not our failure. Point stdout
+        # at the void so the interpreter's exit-time flush can't print a traceback
+        # over whatever the caller is doing.
+        with contextlib.suppress(OSError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
+    # A read error means this table is missing rows it should have had. Legacy
+    # --status deliberately swallows that (an empty status segment beats a broken
+    # status bar), but a batch caller is building a table it will PUBLISH: the
+    # tmux collector replaces its cached prices only on a zero exit, so saying
+    # "incomplete" here is what keeps the previous complete table in place.
+    return 1 if failed else 0
+
+
 def status_command(args: argparse.Namespace) -> int:
     # One-shot, curses-free sibling of --refresh-models, polled from a tmux status
     # line -- so every failure mode prints nothing (an empty segment) instead of
     # erroring the whole status bar.
+    if getattr(args, "status_batch", False):
+        # A usage mistake here IS worth shouting about: batch is called by a
+        # script the author is writing, not polled by a status bar mid-session.
+        try:
+            targets = _batch_targets(getattr(args, "status_targets", []) or [])
+        except ValueError as exc:
+            print(f"opentab: {exc}", file=sys.stderr)
+            return 2
+        return _status_batch(args, targets)
     try:
         line = _status_line_all(args, args.status or None)
     except (sqlite3.Error, OSError, ValueError):

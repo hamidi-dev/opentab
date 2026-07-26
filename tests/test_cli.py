@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import tempfile
 
 import opentab as ot
@@ -207,6 +208,161 @@ def test_status_command_prices_whichever_tool_ran_last():
         )
         assert ot.cli._status_line_all(args, repo) == "$2.00"
         assert ot.cli._status_line_all(args, None) == "$2.00"  # no target: newest overall
+
+
+def test_status_batch_prints_a_table_keyed_by_the_target_asked_for():
+    # `status --batch` exists because the interpreter+import start (~90ms) dwarfs the
+    # per-target pricing (~20ms), so a shell loop pays the start once per pane. The
+    # output is keyed BY TARGET so the caller reads it straight into a map instead of
+    # tracking which reply was whose; unpriceable targets are omitted, which is
+    # --status's own contract (an empty segment, never an error).
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_status_db(
+            db,
+            [
+                ("ses_a", None, "/work/alpha", 1760000000000, 1760000100000, 5.0, 10),
+                ("ses_b", None, "/work/beta", 1760000200000, 1760000300000, 2.0, 10),
+            ],
+        )
+        args = ot.cli.parse_args(["status", "--batch", "-"])
+        args.db, args.demo = db, False
+        args.status_targets = ["ses_b", "ses_gone", "ses_a"]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            assert ot.cli.status_command(args) == 0
+        # asked-for order kept, ses_gone omitted rather than given an empty price
+        assert out.getvalue() == "ses_b\t$2.00\nses_a\t$5.00\n"
+
+
+def test_status_batch_prices_a_shared_root_only_once():
+    # The win a fan-out of separate processes cannot have: several panes on ONE
+    # session (a split, or a subagent pane whose id walks up to the same root) parse
+    # that session once. Two ids and a directory all resolving to ses_root must cost
+    # exactly one node walk.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_status_db(
+            db,
+            [
+                ("ses_root", None, "/work/repo", 1760000000000, 1760000100000, 5.0, 10),
+                ("ses_kid", "ses_root", "/work/repo", 1760000001000, 1760000090000, 0.5, 5),
+            ],
+        )
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        priced = []
+        walk = store.workflow_nodes
+        store.workflow_nodes = lambda wid: (priced.append(wid), walk(wid))[1]
+
+        pricer = ot.cli._StatusPricer([store])
+        assert pricer.line("ses_root") == "$5.50"  # subtree included
+        assert pricer.line("ses_kid") == "$5.50"  # subagent id -> the same root
+        assert pricer.line("/work/repo") == "$5.50"  # project's latest -> the same root
+        assert priced == ["ses_root"]  # one walk for all three targets
+
+
+def test_status_batch_targets_keep_the_callers_exact_strings():
+    # The list arrives from a shell pipeline, so blank lines are skipped and ONE
+    # trailing \r is dropped (a list from a Windows-side tool would otherwise key
+    # rows nothing matches). Everything else is left exactly as asked:
+    #  - no .strip(): leading/trailing spaces are legal in a Unix path, and eating
+    #    them would price a different directory than the caller named;
+    #  - no dedup: the output is keyed by the exact string asked for, and asking
+    #    twice is free because the pricer memoizes the resolved root.
+    assert ot.cli._batch_targets(["ses_a", "", "ses_b\r", "ses_a", "  /w/ dir "]) == [
+        "ses_a",
+        "ses_b",
+        "ses_a",
+        "  /w/ dir ",
+    ]
+    # A tab or NUL can't be represented in a TSV keyed by the target, so it's dropped
+    # rather than emitted as a row that won't parse.
+    assert ot.cli._batch_targets(["/work/has\ttab", "ses_ok", "nul\0here"]) == ["ses_ok"]
+    # `-` takes the whole list from stdin; mixing it with literal targets is a
+    # usage mistake, not a merge.
+    try:
+        ot.cli._batch_targets(["ses_a", "-"])
+        raise AssertionError("expected a usage error")
+    except ValueError as exc:
+        assert "don't mix it" in str(exc)
+
+
+def test_status_batch_reports_an_incomplete_table_with_a_nonzero_exit():
+    # The difference between "these are all the prices" and "these are some of
+    # them". A backend that raises mid-sweep still lets the other targets print,
+    # but the exit code must say the table is short: the tmux collector replaces
+    # its cached prices only on a zero exit, so this is what keeps the previous
+    # COMPLETE table instead of publishing one missing live sessions. (Legacy
+    # --status deliberately does the opposite -- see status_command.)
+    class _Boom:
+        def recent_roots(self):
+            return []
+
+        def root_of(self, target):
+            if target == "ses_bad":
+                raise OSError("transcript vanished mid-sweep")
+            return target if target == "ses_ok" else None
+
+        def workflow_nodes(self, wid):
+            return [{"cost": 1.0, "tokens_total": 0, "model_name": "m"}]
+
+    args = ot.cli.parse_args(["status", "--batch", "-"])
+    real = ot.cli._status_stores
+    ot.cli._status_stores = lambda a: [_Boom()]
+    try:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = ot.cli._status_batch(args, ["ses_ok", "ses_bad"])
+        assert out.getvalue() == "ses_ok\t$1.00\n"  # the good target still printed
+        assert rc == 1  # ...but the table is incomplete, and says so
+    finally:
+        ot.cli._status_stores = real
+
+
+def test_status_batch_reads_stdin_but_refuses_a_terminal():
+    # `-` means "targets on stdin" (the `export -` convention). A tty would hang
+    # waiting for EOF, which from a status-bar hook looks exactly like opentab
+    # freezing -- so it's a loud usage error instead. Loud is right here: batch is
+    # called by a script being written, not polled by a status bar mid-session.
+    class _Pipe(io.StringIO):
+        def isatty(self):
+            return False
+
+    stdin = sys.stdin
+    try:
+        sys.stdin = _Pipe("ses_a\n\nses_b\n")
+        assert ot.cli._batch_targets(["-"]) == ["ses_a", "ses_b"]
+
+        sys.stdin = type("T", (io.StringIO,), {"isatty": lambda self: True})("")
+        args = ot.cli.parse_args(["status", "--batch", "-"])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            assert ot.cli.status_command(args) == 2
+        assert "stdin is a terminal" in err.getvalue()
+    finally:
+        sys.stdin = stdin
+
+
+def test_status_subcommand_shape_follows_arity_and_keeps_the_legacy_flag():
+    # One target keeps the bare line every existing status-bar hook already parses;
+    # several switch to the table; --batch forces the table so a script's parsing
+    # doesn't change with the number of targets it happened to collect. The old
+    # --status flag stays single-target -- it's the deprecated alias, not the surface
+    # new callers should reach for.
+    one = ot.cli.parse_args(["status", "ses_a"])
+    assert (one.status, one.status_targets, one.status_batch) == ("ses_a", ["ses_a"], False)
+
+    two = ot.cli.parse_args(["status", "ses_a", "ses_b"])
+    assert (two.status_targets, two.status_batch) == (["ses_a", "ses_b"], True)
+
+    forced = ot.cli.parse_args(["status", "--batch", "ses_a"])
+    assert (forced.status_targets, forced.status_batch) == (["ses_a"], True)
+
+    bare = ot.cli.parse_args(["status"])
+    assert (bare.status, bare.status_targets, bare.status_batch) == ("", [], False)
+
+    legacy = ot.cli.parse_args(["--status", "ses_a"])
+    assert (legacy.status, legacy.status_batch) == ("ses_a", False)
 
 
 def test_status_line_prices_codex_sessions_and_folds_spawned_threads():
