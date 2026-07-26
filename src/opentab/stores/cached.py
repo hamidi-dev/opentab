@@ -30,7 +30,10 @@ from dataclasses import asdict
 from opentab import paths
 from opentab.models import Workflow
 
-CACHE_VERSION = 4  # bump when the cached payload shape changes (invalidates old files)
+CACHE_VERSION = 5  # bump when the cached payload shape changes (invalidates old files)
+# 5: model rows carry the 1h-TTL cache-write subset. Without this bump an unchanged
+#    corpus keeps serving rows that lack the field, so the long-TTL pricing fix would
+#    silently not apply to exactly the machines that had been running opentab longest.
 
 
 def cache_dir() -> str:

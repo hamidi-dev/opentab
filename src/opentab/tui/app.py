@@ -67,9 +67,11 @@ from opentab.util import (
     fuzzy_score,
     in_tmux,
     launcher_hook,
+    model_row_1h_write,
     model_row_split,
     month_bounds,
     month_window_start,
+    node_1h_write,
     open_path,
     parse_range_text,
     resolve_project_root,
@@ -1762,7 +1764,7 @@ class App:
                 r["cost"] = demo_cost(
                     r["tokens_total"], f"{workflow_id}:{r['tool']}:{r['model_name']}"
                 )
-            for f in ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write"):
+            for f in ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h"):  # fmt: skip
                 r[f] = int(round(r.get(f, 0) * k))
             r["cost"] = round(r.get("cost", 0) * k, 4)
         return rows
@@ -1808,7 +1810,7 @@ class App:
                 r["prompt_full"] = demo_title(r.get("prompt_id") or "noprompt")
             if spend and r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
                 r["cost"] = demo_cost(r["tokens_total"], f"{workflow_id}:{n}")
-            for f in ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write"):
+            for f in ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h"):  # fmt: skip
                 r[f] = int(round(r.get(f, 0) * k))
             r["cost"] = round(r.get("cost", 0) * k, 4)
         return rows
@@ -1966,6 +1968,11 @@ class App:
                     m.get("reasoning", 0) if all_unpriced else m.get("unpriced_reasoning", 0),
                     m.get("cache_read", 0) if all_unpriced else m.get("unpriced_cache_read", 0),
                     m.get("cache_write", 0) if all_unpriced else m.get("unpriced_cache_write", 0),
+                    # The 1h-TTL subset of that cache_write, when the backend could see
+                    # one (Claude Code only). Absent => 0 => the old 5m-rate arithmetic.
+                    m.get("cache_write_1h", 0)
+                    if all_unpriced
+                    else m.get("unpriced_cache_write_1h", 0),
                 )
                 if has_root_split:
                     root_delta += api_equivalent_cost(
@@ -1975,6 +1982,7 @@ class App:
                         m.get("root_unpriced_reasoning", 0),
                         m.get("root_unpriced_cache_read", 0),
                         m.get("root_unpriced_cache_write", 0),
+                        m.get("root_unpriced_cache_write_1h", 0),
                     )
             wf = by_id.get(root_id)
             if not wf:
@@ -2120,11 +2128,17 @@ class App:
             return None
         baseline = 0.0
         tokens = [0.0, 0.0, 0.0, 0.0, 0.0]  # input, output, reasoning, cache_read, cache_write
+        long_write = 0.0  # the 1h-TTL subset of that cache_write, billed at the long rate
         for m in rows:
             split = model_row_split(m)
-            baseline += api_equivalent_cost(str(m.get("model_name") or ""), *split)
+            long_1h = model_row_1h_write(m)
+            baseline += api_equivalent_cost(str(m.get("model_name") or ""), *split, long_1h)
             tokens = [a + b for a, b in zip(tokens, split)]
-        return baseline, api_equivalent_cost(target, *tokens)
+            long_write += long_1h
+        # Both sides carry the subset, which is what keeps the invariant exact: arming a
+        # model a single-model session already used is still a $0 change, because the two
+        # sides then price the same tokens -- long-TTL writes included -- at the same rates.
+        return baseline, api_equivalent_cost(target, *tokens, long_write)
 
     def token_economics(self, workflows: list[Workflow]) -> TokenEconomics | None:
         """Split a scope's tokens AND its list-rate cost across the five token types.
@@ -2340,6 +2354,9 @@ class App:
             row["tokens_reasoning"],
             row["tokens_cache_read"],
             row["tokens_cache_write"],
+            # Long-TTL writes stay long-TTL writes on the target model too: the tier is a
+            # property of how the prompt was cached, not of which model answered.
+            node_1h_write(row),
         )
 
     def toggle_whatif(self) -> None:
@@ -3595,6 +3612,7 @@ class App:
                     r["reasoning"],
                     r["cache_read"],
                     r["cache_write"],
+                    r.get("cache_write_1h", 0),
                 )
             rows.append(
                 [
@@ -3637,6 +3655,7 @@ class App:
                     r["reasoning"],
                     r["cache_read"],
                     r["cache_write"],
+                    r.get("cache_write_1h", 0),
                 )
             rows.append(
                 [
@@ -6931,6 +6950,7 @@ class App:
                     d["tokens_reasoning"],
                     d["tokens_cache_read"],
                     d["tokens_cache_write"],
+                    node_1h_write(d),
                 )
             out.append(d)
         return out

@@ -299,12 +299,20 @@ def _js_source():
 
 def _js_whatif_cost(tok, rates):
     # The page's whatifCost(), transcribed: the client mirrors pricing.api_equivalent_cost
-    # over a [input, output, reasoning, cacheRead, cacheWrite] split. Written out here so
-    # the serialized numbers can be repriced exactly the way the page reprices them -- and
-    # so a drift between the two formulas fails a test.
-    inp, out, reason, cr, cw = tok
-    ir, orr, crr, cwr = rates
-    return (inp * ir + (out + reason) * orr + cr * crr + cw * cwr) / 1e6
+    # over a [input, output, reasoning, cacheRead, cacheWrite, cacheWrite1h] split, priced
+    # with (input, output, cacheRead, cacheWrite, cacheWrite1h). Written out here so the
+    # serialized numbers can be repriced exactly the way the page reprices them -- and so a
+    # drift between the two formulas fails a test.
+    #
+    # The trailing token is the 1h-TTL SUBSET of cacheWrite, billed by REPLACEMENT (those
+    # tokens leave the 5m bucket), never by addition -- adding would double-bill them.
+    inp, out, reason, cr, cw = tok[:5]
+    cw1h = tok[5] if len(tok) > 5 else 0
+    ir, orr, crr, cwr = rates[:4]
+    cwr1h = rates[4] if len(rates) > 4 else cwr
+    long = min(max(cw1h, 0), cw)
+    write = (cw - long) * cwr + long * cwr1h
+    return (inp * ir + (out + reason) * orr + cr * crr + write) / 1e6
 
 
 def _js_whatif_totals(payload, session_id, target):
@@ -314,7 +322,8 @@ def _js_whatif_totals(payload, session_id, target):
     if not rows:
         return None
     rates = payload["whatif"]["rates"]
-    actual, tot = 0.0, [0, 0, 0, 0, 0]
+    # six slots: zip() would otherwise truncate the 1h subset off every row
+    actual, tot = 0.0, [0, 0, 0, 0, 0, 0]
     for r in rows:
         actual += _js_whatif_cost(r["tok"], rates[r["model"]])
         tot = [a + b for a, b in zip(tot, r["tok"])]
@@ -329,13 +338,13 @@ def test_web_payload_ships_the_whatif_ingredients():
     with tempfile.TemporaryDirectory() as tmp:
         payload = ot.build_payload(_whatif_db(tmp))
     root, kid = payload["nodes"]["root"]
-    assert root["tok"] == [1_000_000, 0, 0, 0, 0]  # [in, out, reasoning, cacheR, cacheW]
-    assert kid["tok"] == [2_000_000, 0, 0, 0, 0]
+    assert root["tok"] == [1_000_000, 0, 0, 0, 0, 0]  # [in,out,reasoning,cacheR,cacheW,cacheW1h]
+    assert kid["tok"] == [2_000_000, 0, 0, 0, 0, 0]
     # The session's model rows carry the FULL split too -- without input/reasoning the
     # page could not compute the exact per-model baseline at all.
     by_model = {m["model"]: m["tok"] for m in payload["models"]["root"]}
-    assert by_model["anthropic/claude-opus-4.5"] == [1_000_000, 0, 0, 0, 0]
-    assert by_model["anthropic/claude-haiku-4.5"] == [2_000_000, 0, 0, 0, 0]
+    assert by_model["anthropic/claude-opus-4.5"] == [1_000_000, 0, 0, 0, 0, 0]
+    assert by_model["anthropic/claude-haiku-4.5"] == [2_000_000, 0, 0, 0, 0, 0]
     models = payload["whatif"]["models"]
     # The picker's rows: models actually used, most-used first (the haiku subagent burned
     # 2M tokens, the opus root 1M), each with its four list rates in $/M.
@@ -345,8 +354,14 @@ def test_web_payload_ships_the_whatif_ingredients():
     ]
     assert [m["tokens"] for m in models] == [2_000_000, 1_000_000]
     for m in models:
-        assert m["price"] == [round(float(v), 6) for v in ot.model_price(m["model"])]
-        assert len(m["price"]) == 4 and m["price"][0] > 0
+        # Five rates, not four: the catalog's (input, output, cacheRead, cacheWrite) plus
+        # the DERIVED 1h-TTL write rate, which models.dev does not carry. whatifCost needs
+        # it to bill the `tok` split's long-write subset at the long-TTL price.
+        assert m["price"] == [round(float(v), 6) for v in ot.model_price(m["model"])] + [
+            round(ot.cache_write_1h_price(m["model"]), 6)
+        ]
+        assert len(m["price"]) == 5 and m["price"][0] > 0
+        assert m["price"][4] == round(2.0 * m["price"][0], 6)  # 1h write == 2.00x input
     # ...and a rate card for every model used, armable or not: the baseline prices each
     # model's tokens at its own rates, so a model you cannot arm still has to be counted.
     assert set(payload["whatif"]["rates"]) == set(by_model)
@@ -366,7 +381,10 @@ def test_web_payload_ships_the_whatif_catalog_tier():
     assert [c["m"] for c in catalog] == [name for name, _eff, _approx in expected]
     assert len(catalog) > 100  # the whole catalog, not just the two used models
     for c in catalog[:50]:
-        assert c["p"] == [round(float(v), 6) for v in ot.model_price(c["m"])]
+        assert c["p"] == [round(float(v), 6) for v in ot.model_price(c["m"])] + [
+            round(ot.cache_write_1h_price(c["m"]), 6)
+        ]  # the derived 1h-TTL write rate rides last, so arming a catalog row prices
+        # long writes exactly the way arming a used model does
         assert set(c) == {"m", "p"}  # slim on purpose: ~1.5k rows ride in every payload
     # A catalog target the data never used still reprices client-side: whatifTotals
     # reads one rate map, into which the catalog rates pre-merge on load (mirrored
@@ -422,7 +440,11 @@ def test_web_whatif_baseline_is_the_exact_per_model_list_price():
     js = _js_source()
     assert "const rows = DATA.models[id];" in js  # per-model rows, not DATA.nodes
     assert "wiBase" not in js  # the node-cost baseline is gone
-    assert "(inp * ir + (out + reason) * orr + cr * crr + cw * cwr) / 1e6" in js
+    # The drift guard on the JS formula. Cache write is now split by TTL -- the 1h subset
+    # by REPLACEMENT, so those tokens leave the 5m bucket instead of being billed twice.
+    assert "const write = (cw - long) * cwr + long * (cwr1h || cwr);" in js
+    assert "return (inp * ir + (out + reason) * orr + cr * crr + write) / 1e6;" in js
+    assert "const long = Math.min(Math.max(cw1h || 0, 0), cw || 0);" in js
     # One shared reducer behind both panes (tree TOTAL + Overview summary), so they cannot
     # drift, and no per-node Δ column any more (a node's baseline isn't computable).
     assert js.count("function whatifTotals(") == 1
@@ -447,7 +469,7 @@ def test_web_whatif_answers_for_a_solo_session_with_no_nodes():
         ]
         payload = ot.build_payload(_whatif_app(tmp, sessions, messages))
     assert payload["nodes"] == {}  # no tree, no nodes shipped -- for either session
-    assert payload["models"]["root"][0]["tok"] == [1_000_000, 0, 0, 0, 0]
+    assert payload["models"]["root"][0]["tok"] == [1_000_000, 0, 0, 0, 0, 0]
     assert [m["model"] for m in payload["whatif"]["models"]] == [  # ...and both targets
         "anthropic/claude-haiku-4.5",
         "anthropic/claude-opus-4.5",
@@ -805,16 +827,19 @@ def _js_token_economics(payload, session_ids):
     for sid in session_ids:
         for r in payload["models"].get(sid) or []:
             if r["model"] in local:
-                local_tokens += sum(r["tok"])
+                local_tokens += sum(r["tok"][:5])
                 continue
-            ir, orr, crr, cwr = rates[r["model"]]
-            for i, v in enumerate(r["tok"]):
+            ir, orr, crr, cwr = rates[r["model"]][:4]
+            rate_row = rates[r["model"]]
+            for i, v in enumerate(r["tok"][:5]):
                 tokens[i] += v
             cost[0] += r["tok"][0] * ir / 1e6
             cost[1] += r["tok"][1] * orr / 1e6
             cost[2] += r["tok"][2] * orr / 1e6
             cost[3] += r["tok"][3] * crr / 1e6
-            cost[4] += r["tok"][4] * cwr / 1e6
+            long1h = min(max(r["tok"][5] if len(r["tok"]) > 5 else 0, 0), r["tok"][4])
+            cwr1h = rate_row[4] if len(rate_row) > 4 else cwr
+            cost[4] += ((r["tok"][4] - long1h) * cwr + long1h * cwr1h) / 1e6
             if crr > 0:
                 saved += r["tok"][3] * max(0.0, ir - crr) / 1e6
     return tokens, cost, saved, local_tokens

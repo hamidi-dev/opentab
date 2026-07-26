@@ -3872,6 +3872,7 @@ class Renderer:
                     r["reasoning"],
                     r["cache_read"],
                     r["cache_write"],
+                    r.get("cache_write_1h", 0),
                 )
             for bucket, key in ((by_tool, r["tool"]), (by_server, tool_namespace(r["tool"]))):
                 it = bucket[key]
@@ -3950,6 +3951,7 @@ class Renderer:
                     r["reasoning"],
                     r["cache_read"],
                     r["cache_write"],
+                    r.get("cache_write_1h", 0),
                 )
             costs.append(cost)
         total = sum(costs)

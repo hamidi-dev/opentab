@@ -184,7 +184,20 @@ def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
     # with no tool calls don't appear -- this is "tokens spent in turns that used
     # this tool", not the tool's own output size.
     agg: dict[tuple[str, str], dict] = {}
-    fields = ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write", "cost")
+    # cache_write_1h rides along as a plain summed field: it is a SUBSET of cache_write,
+    # and dividing both by the same n keeps it one (a half-share of a turn's long writes
+    # sits inside that turn's half-share of all its writes). Backends that record no TTL
+    # tier simply contribute 0.
+    fields = (
+        "tokens_total",
+        "input",
+        "output",
+        "reasoning",
+        "cache_read",
+        "cache_write",
+        "cache_write_1h",
+        "cost",
+    )
     for t in turns:
         tools = t.get("tools") or []
         n = len(tools)
@@ -224,6 +237,33 @@ def model_row_split(row) -> tuple[float, float, float, float, float]:
             0.0, float(row.get("tokens_total") or 0) - out - reasoning - cache_read - cache_write
         )
     return float(inp), out, reasoning, cache_read, cache_write
+
+
+def model_row_1h_write(row) -> float:
+    """The 1-hour-TTL SUBSET of a model row's cache writes (0 when unknown).
+
+    Deliberately NOT a sixth element of model_row_split: that tuple is the token *mix*
+    every caller blends over (price_token_mix's four-way share, the P overlay's eff
+    $/M), and a subset added there would be counted as extra volume. This is a pricing
+    refinement, so it travels beside the split -- api_equivalent_cost takes it as its
+    own trailing argument. Absent on every backend but Claude Code, which is the only
+    one whose logs record the TTL tier.
+    """
+    return float(row.get("cache_write_1h") or 0)
+
+
+def node_1h_write(node) -> int:
+    """The 1-hour-TTL subset of a subagent-node row's cache writes (0 when unknown).
+
+    Separate from model_row_1h_write because node rows are NOT always dicts: OpenCode's
+    workflow_nodes yields sqlite3.Row, which has no .get -- a missing key raises IndexError
+    there and KeyError on a dict. Only Claude Code records the TTL tier, so every other
+    backend legitimately has no such column and prices as it always did.
+    """
+    try:
+        return int(node["tokens_cache_write_1h"] or 0)
+    except (KeyError, IndexError, TypeError):
+        return 0
 
 
 # --- context-composition estimation (the Context tab) ------------------------

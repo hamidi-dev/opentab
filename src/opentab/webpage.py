@@ -831,8 +831,14 @@ function modelMatches(q, model, routes, familyLabel) {
 // one price list, not a simulated rerun.
 function whatifCost(tok, rates) {
   if (!tok || !rates) return 0;
-  const [inp, out, reason, cr, cw] = tok, [ir, orr, crr, cwr] = rates;
-  return (inp * ir + (out + reason) * orr + cr * crr + cw * cwr) / 1e6;
+  const [inp, out, reason, cr, cw, cw1h] = tok, [ir, orr, crr, cwr, cwr1h] = rates;
+  // cw1h is the 1h-TTL SUBSET of cw, which Anthropic bills at 2.00x input instead of the
+  // 5m tier's 1.25x that the single catalog cache-write rate encodes. Replacement, not
+  // addition: those tokens leave the 5m bucket and enter the 1h one, they are not extra
+  // volume. Both default to 0/absent, which is exactly the old arithmetic.
+  const long = Math.min(Math.max(cw1h || 0, 0), cw || 0);
+  const write = (cw - long) * cwr + long * (cwr1h || cwr);
+  return (inp * ir + (out + reason) * orr + cr * crr + write) / 1e6;
 }
 /* ---------- token economics (the mirror of App.token_economics) ---------- */
 // The five token types, in the payload's `tok` order -- pricing.TOKEN_TYPES.
@@ -852,20 +858,27 @@ function tokenEconomics(ws) {
   const tokens = [0, 0, 0, 0, 0], cost = [0, 0, 0, 0, 0];
   let saved = 0, local = 0, est = false, missingCache = false;
   ws.forEach(w => (DATA.models[w.id] || []).forEach(r => {
-    const tok = r.tok || [0, 0, 0, 0, 0];
+    // Only the first FIVE entries are token TYPES; a sixth, when present, is the 1h-TTL
+    // subset of Cache write -- a pricing refinement, not extra volume, so it must never
+    // be summed into a total or it double-counts every long write.
+    const tok = (r.tok || [0, 0, 0, 0, 0]).slice(0, 5);
+    const long1h = Math.min(Math.max((r.tok || [])[5] || 0, 0), tok[4] || 0);
     if (WI_LOCAL.has(r.model)) { local += tok.reduce((a, b) => a + b, 0); return; }
     // Unreachable by construction -- `rates` is built from the same per-model rows this
     // reduces over, so every model here has an entry. Guarded anyway: skipping one row
     // beats throwing and blanking the whole pane.
     const p = WI_PRICE.get(r.model);
     if (!p) return;
-    const [ir, orr, crr, cwr] = p;
+    const [ir, orr, crr, cwr, cwr1h] = p;
     tok.forEach((v, i) => { tokens[i] += v; });
     cost[0] += tok[0] * ir / 1e6;
     cost[1] += tok[1] * orr / 1e6;
     cost[2] += tok[2] * orr / 1e6;      // reasoning bills at the output rate
     cost[3] += tok[3] * crr / 1e6;
-    cost[4] += tok[4] * cwr / 1e6;
+    // Cache write, split by TTL like whatifCost: the long-TTL subset at its own rate,
+    // the rest at the 5m one. The Cache write ROW stays one row -- the tier changes what
+    // those tokens cost, not what kind of token they are.
+    cost[4] += ((tok[4] - long1h) * cwr + long1h * (cwr1h || cwr)) / 1e6;
     // Only a real, non-zero cache rate is a real discount: counting a MISSING one as
     // free would report the whole input cost as "saved", the opposite of what it means.
     if (crr > 0) saved += tok[3] * Math.max(0, ir - crr) / 1e6;
@@ -899,7 +912,10 @@ function whatifTotals(id) {
   if (!WHATIF.model) return null;
   const rows = DATA.models[id];
   if (!rows || !rows.length) return null;
-  const tot = [0, 0, 0, 0, 0];
+  // Six slots, not five: the trailing one is the 1h-TTL cache-write subset, and BOTH
+  // sides of the comparison have to carry it -- that is what keeps arming a model a
+  // single-model session already used an exactly $0 change.
+  const tot = [0, 0, 0, 0, 0, 0];
   let actual = 0;
   rows.forEach(r => {
     actual += whatifCost(r.tok, WI_PRICE.get(r.model));

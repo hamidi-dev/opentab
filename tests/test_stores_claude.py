@@ -476,3 +476,83 @@ def test_recent_roots_reads_the_directory_from_the_newest_resumed_copy():
         (row,) = store.recent_roots()
         assert row["last_active"] == 200 * 1000  # newest copy's mtime
         assert row["directory"] == "/repo/A"  # ...and ITS cwd, not the older copy's
+
+
+def test_claude_reads_the_cache_write_ttl_split_and_prices_long_writes_higher():
+    # Claude Code records cache writes twice: the flat cache_creation_input_tokens, and
+    # usage.cache_creation splitting that SAME total into 5-minute and 1-hour TTL halves.
+    # opentab read only the flat field, so every 1h write was billed at the 5m rate --
+    # 1.25x input where 2.00x is owed. On a real corpus 91% of cache-write tokens were 1h,
+    # understating Claude Code spend by 7.5%.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        _write_jsonl(
+            os.path.join(root, "s1.jsonl"),
+            [
+                _claude_msg(
+                    "s1",
+                    "claude-opus-4-5",
+                    _usage(0, 0, 0, 1_000_000, cw1h=750_000),
+                    uuid="u0",
+                    cwd=cwd,
+                    ts="2026-06-10T18:46:02.000Z",
+                )
+            ],
+        )
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), _claude_args())
+        rows = store.model_breakdown()
+        assert len(rows) == 1
+        row = rows[0]
+        # The TOTAL keeps its meaning -- the subset never inflates a token count, so every
+        # column, sum and export reads exactly as before.
+        assert row["cache_write"] == 1_000_000
+        assert row["tokens_total"] == 1_000_000
+        # ...and the 1h subset rides beside it, in all three places $ reprices from.
+        assert row["cache_write_1h"] == 750_000
+        assert row["unpriced_cache_write_1h"] == 750_000
+        assert row["root_unpriced_cache_write_1h"] == 750_000
+
+        # The estimate: 250k at the 5m rate + 750k at the 1h rate, NOT 1M at the 5m rate.
+        inp = ot.model_price("anthropic/claude-opus-4-5")[0]
+        expected = (250_000 * inp * 1.25 + 750_000 * inp * 2.0) / 1e6
+        assert (
+            abs(
+                ot.api_equivalent_cost("anthropic/claude-opus-4-5", 0, 0, 0, 0, 1_000_000, 750_000)
+                - expected
+            )
+            < 1e-9
+        )
+        # and it really is more than the old, single-rate answer
+        assert expected > (1_000_000 * inp * 1.25) / 1e6
+
+        # The node rows --status prices carry it too.
+        node = store.workflow_nodes("s1")[0]
+        assert node["tokens_cache_write"] == 1_000_000
+        assert node["tokens_cache_write_1h"] == 750_000
+
+    # A transcript with NO cache_creation block (an older Claude Code) must price exactly
+    # as it always did: subset 0, everything at the 5m rate.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        _write_jsonl(
+            os.path.join(root, "s2.jsonl"),
+            [
+                _claude_msg(
+                    "s2",
+                    "claude-opus-4-5",
+                    _usage(0, 0, 0, 1_000_000),  # no cw1h -> no cache_creation block
+                    uuid="u0",
+                    cwd=os.path.join(tmp, "repo"),
+                    ts="2026-06-10T18:46:02.000Z",
+                )
+            ],
+        )
+        row = ot.ClaudeStore(os.path.join(tmp, "projects"), _claude_args()).model_breakdown()[0]
+        assert row["cache_write"] == 1_000_000 and row["cache_write_1h"] == 0
+
+
+def _claude_args():
+    return type("A", (), {"demo": False})()

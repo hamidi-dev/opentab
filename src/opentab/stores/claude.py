@@ -62,6 +62,11 @@ class ClaudeStore:
             "reasoning": 0,  # thinking tokens are already counted in output_tokens
             "cache_read": 0,
             "cache_write": 0,
+            # The 1-hour-TTL SUBSET of cache_write (never added to tokens_total -- it is
+            # part of cache_write, not extra tokens). Anthropic bills a 1h write at 2.00x
+            # input against the 5m tier's 1.25x, and the catalog only carries the 5m rate,
+            # so without this every long write is undercharged. See pricing.
+            "cache_write_1h": 0,
             "tokens_total": 0,
         }
 
@@ -71,11 +76,21 @@ class ClaudeStore:
         o = int(u.get("output_tokens", 0) or 0)
         cr = int(u.get("cache_read_input_tokens", 0) or 0)
         cw = int(u.get("cache_creation_input_tokens", 0) or 0)  # cache creation == write
+        # usage.cache_creation splits that same total by TTL
+        # ({ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}, summing to the flat
+        # field). Only the 1h half is kept: the 5m half is the remainder, and deriving it
+        # means a transcript that omits the split (or a future third tier) still prices at
+        # the old 5m rate rather than losing tokens.
+        cc = u.get("cache_creation")
+        cw1h = (
+            int((cc or {}).get("ephemeral_1h_input_tokens", 0) or 0) if isinstance(cc, dict) else 0
+        )
         acc["runs"] += 1
         acc["input"] += i
         acc["output"] += o
         acc["cache_read"] += cr
         acc["cache_write"] += cw
+        acc["cache_write_1h"] += min(cw1h, cw)  # a subset, whatever the log claims
         acc["tokens_total"] += i + o + cr + cw
 
     @staticmethod
@@ -87,6 +102,7 @@ class ClaudeStore:
             acc["reasoning"],
             acc["cache_read"],
             acc["cache_write"],
+            acc.get("cache_write_1h", 0),
         )
 
     def _git_root(self, cwd: str) -> str:
@@ -364,6 +380,12 @@ class ClaudeStore:
         out_t = int(usage.get("output_tokens", 0) or 0)
         cr = int(usage.get("cache_read_input_tokens", 0) or 0)
         cw = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        _cc = usage.get("cache_creation")
+        cw1h = (
+            min(int((_cc or {}).get("ephemeral_1h_input_tokens", 0) or 0), cw)
+            if isinstance(_cc, dict)
+            else 0
+        )
         if all(key):
             s["turn_by_key"][key] = len(s["turns"])  # later block records fold in here
         s["turns"].append(
@@ -378,6 +400,7 @@ class ClaudeStore:
                 "reasoning": 0,
                 "cache_read": cr,
                 "cache_write": cw,
+                "cache_write_1h": cw1h,  # subset of cache_write; long-TTL rate under $
                 "tokens_total": i + out_t + cr + cw,
                 "tools": tools,
             }
@@ -509,16 +532,22 @@ class ClaudeStore:
                     "reasoning": tot["reasoning"],
                     "cache_read": tot["cache_read"],
                     "cache_write": tot["cache_write"],
+                    "cache_write_1h": tot["cache_write_1h"],  # subset of cache_write
                     "output": tot["output"],
                     "unpriced_input": tot["input"],
                     "unpriced_reasoning": tot["reasoning"],
                     "unpriced_cache_read": tot["cache_read"],
                     "unpriced_cache_write": tot["cache_write"],
+                    # The 1h-TTL subset of the cache_write above, so App._compute_api_costs
+                    # can bill it at the long-TTL rate instead of the 5m one. A subset, so
+                    # nothing that sums or displays cache_write has to know about it.
+                    "unpriced_cache_write_1h": tot["cache_write_1h"],
                     "unpriced_output": tot["output"],
                     "root_unpriced_input": root["input"],
                     "root_unpriced_reasoning": root["reasoning"],
                     "root_unpriced_cache_read": root["cache_read"],
                     "root_unpriced_cache_write": root["cache_write"],
+                    "root_unpriced_cache_write_1h": root["cache_write_1h"],
                     "root_unpriced_output": root["output"],
                 }
             )
@@ -595,6 +624,10 @@ class ClaudeStore:
             "tokens_reasoning": acc["reasoning"],
             "tokens_cache_read": acc["cache_read"],
             "tokens_cache_write": acc["cache_write"],
+            # Subset of tokens_cache_write, so _price_root (--status) and the Subagents
+            # tab bill long-TTL writes at the long-TTL rate. Readers that don't know the
+            # key see the total and price it the old way.
+            "tokens_cache_write_1h": acc["cache_write_1h"],
             "tokens_total": acc["tokens_total"],
         }
 

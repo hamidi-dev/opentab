@@ -46,7 +46,7 @@ from opentab.sources import (
 from opentab.state import apply_state, load_state, save_state
 from opentab.tui import bindings
 from opentab.tui.app import App
-from opentab.util import git_root, resolve_project_root, unicode_screen
+from opentab.util import git_root, node_1h_write, resolve_project_root, unicode_screen
 
 # --- argument groups ----------------------------------------------------------------
 # The parser is split so subcommands can share it. GLOBAL modifiers (source
@@ -842,9 +842,13 @@ def _fleet_estimated_costs(backends: list) -> dict[str, float]:
     # backend's already-parsed model rows (row[6]); a backend without model rows (older test
     # fixtures) contributes nothing, so the estimate falls back to the real cost.
     # input, output, reasoning, cache_read, cache_write -- api_equivalent_cost's arg order.
+    # Both tuples end with the 1h-TTL cache-write subset, which api_equivalent_cost takes
+    # as its trailing argument -- a machine whose export predates the field contributes 0
+    # and prices exactly as it did before.
     unpriced = ("unpriced_input", "unpriced_output", "unpriced_reasoning",
-                "unpriced_cache_read", "unpriced_cache_write")  # fmt: skip
-    whole = ("input", "output", "reasoning", "cache_read", "cache_write")
+                "unpriced_cache_read", "unpriced_cache_write",
+                "unpriced_cache_write_1h")  # fmt: skip
+    whole = ("input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h")
     delta: dict[str, float] = {}
     for row in backends:
         for m in row[6] if len(row) > 6 and row[6] else ():
@@ -1141,6 +1145,7 @@ def _price_root(store, workflow_id: str) -> str:
                 node["tokens_reasoning"],
                 node["tokens_cache_read"],
                 node["tokens_cache_write"],
+                node_1h_write(node),
             )
     text = money(total + estimated)
     return "~" + text if estimated > 0 else text

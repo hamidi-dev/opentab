@@ -54,6 +54,7 @@ _NODE_INT_FIELDS = (
     "tokens_reasoning",
     "tokens_cache_read",
     "tokens_cache_write",
+    "tokens_cache_write_1h",  # subset of tokens_cache_write; long-TTL pricing
     "tokens_total",
 )
 
@@ -84,6 +85,7 @@ _TURN_INT_FIELDS = (
     "reasoning",
     "cache_read",
     "cache_write",
+    "cache_write_1h",
 )
 _TOOL_INT_FIELDS = (
     "calls",
@@ -93,6 +95,7 @@ _TOOL_INT_FIELDS = (
     "reasoning",
     "cache_read",
     "cache_write",
+    "cache_write_1h",
 )
 
 

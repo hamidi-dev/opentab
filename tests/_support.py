@@ -414,13 +414,23 @@ def _claude_msg(
     }
 
 
-def _usage(inp=0, out=0, cr=0, cw=0):
-    return {
+def _usage(inp=0, out=0, cr=0, cw=0, cw1h=None):
+    # Anthropic-shaped usage. `cw1h` opts into the TTL breakdown Claude Code records
+    # alongside the flat total: cache_creation splits the SAME cw into
+    # {ephemeral_5m, ephemeral_1h}, which sum back to it. Left None the block is absent,
+    # which is what a transcript predating the field looks like.
+    u = {
         "input_tokens": inp,
         "output_tokens": out,
         "cache_read_input_tokens": cr,
         "cache_creation_input_tokens": cw,
     }
+    if cw1h is not None:
+        u["cache_creation"] = {
+            "ephemeral_5m_input_tokens": cw - cw1h,
+            "ephemeral_1h_input_tokens": cw1h,
+        }
+    return u
 
 
 def _write_jsonl(path, rows):

@@ -34,6 +34,7 @@ from urllib.parse import unquote
 from opentab import __version__
 from opentab.pricing import (
     api_equivalent_cost,
+    cache_write_1h_price,
     family_label,
     has_known_price,
     is_local_provider,
@@ -41,7 +42,7 @@ from opentab.pricing import (
     model_price,
 )
 from opentab.themes import DEFAULT_THEME
-from opentab.util import context_size, model_row_split, tool_namespace
+from opentab.util import context_size, model_row_1h_write, model_row_split, tool_namespace
 from opentab.webpage import render_html
 
 if TYPE_CHECKING:
@@ -73,6 +74,7 @@ def _node_api_cost(d: dict) -> float:
         d.get("tokens_reasoning") or 0,
         d.get("tokens_cache_read") or 0,
         d.get("tokens_cache_write") or 0,
+        d.get("tokens_cache_write_1h") or 0,
     )
 
 
@@ -91,12 +93,15 @@ def _model_row(r: dict) -> dict:
         "cacheWrite": int(r.get("cache_write") or 0),
         "output": int(r.get("output") or 0),
         # The row's FULL token split, in api_equivalent_cost's argument order
-        # ([input, output, reasoning, cacheRead, cacheWrite], the nodes' `tok` shape).
+        # ([input, output, reasoning, cacheRead, cacheWrite, cacheWrite1h], the nodes'
+        # `tok` shape). The trailing element is the 1h-TTL SUBSET of cacheWrite, which
+        # Anthropic bills at 2.00x input against the 5m tier's 1.25x -- carried so the
+        # page's own repricing matches the TUI instead of undercharging long writes.
         # These per-model rows are the only place a session's tokens are split per
         # model, which makes them the exact -- and the only exact -- basis for the `w`
         # what-if's baseline (whatifTotals). A node row carries one dominant model
         # label, so it cannot answer for a session that switched models mid-flight.
-        "tok": [int(inp), int(out), int(reasoning), int(cr), int(cw)],
+        "tok": [int(inp), int(out), int(reasoning), int(cr), int(cw), int(model_row_1h_write(r))],
     }
 
 
@@ -117,9 +122,10 @@ def _node_row(row) -> dict:
         "api": _money6(_node_api_cost(d)),
         "tokens": int(d.get("tokens_total") or 0),
         # The full token split, in api_equivalent_cost's argument order:
-        # [input, output, reasoning, cacheRead, cacheWrite]. The `w` what-if cannot
-        # travel precomputed (the target model is picked at view time), so the page
-        # gets the ingredients and prices each node's tokens at the target itself --
+        # [input, output, reasoning, cacheRead, cacheWrite, cacheWrite1h] -- the last a
+        # SUBSET of cacheWrite, billed at Anthropic's long-TTL rate. The `w` what-if
+        # cannot travel precomputed (the target model is picked at view time), so the
+        # page gets the ingredients and prices each node's tokens at the target itself --
         # exact per node, since the target is one model.
         "tok": [
             int(d.get("tokens_input") or 0),
@@ -127,6 +133,7 @@ def _node_row(row) -> dict:
             int(d.get("tokens_reasoning") or 0),
             int(d.get("tokens_cache_read") or 0),
             int(d.get("tokens_cache_write") or 0),
+            int(d.get("tokens_cache_write_1h") or 0),
         ],
     }
 
@@ -150,7 +157,12 @@ def _whatif_payload(app: App) -> dict:
         for m in rows:
             name = str(m.get("model_name") or "")
             if name and name not in rates:
-                rates[name] = [round(float(v), 6) for v in model_price(name)]
+                # 5 elements: the catalog's (input, output, cacheRead, cacheWrite) plus
+                # the DERIVED 1h-TTL write rate, so whatifCost can bill the `tok` split's
+                # long-write subset without reimplementing the derivation in JS.
+                rates[name] = [round(float(v), 6) for v in model_price(name)] + [
+                    round(cache_write_1h_price(name), 6)
+                ]
     # `unpriced` are the used models whose "rate" above is really FALLBACK_PRICE -- a
     # generic guess, not a rate anyone charges. A session containing one still gets every
     # token priced (dropping them would understate the baseline), but the figure stops
@@ -176,7 +188,14 @@ def _whatif_payload(app: App) -> dict:
         ],
         "local": sorted(name for name in rates if is_local_provider(name)),
         "catalog": [
-            {"m": name, "p": [round(float(v), 6) for v in model_price(name)]}
+            # 5 rates like `rates` above (the 1h-TTL write rate last): these pre-merge into
+            # the page's rate map, so a catalog-armed target must price long writes the
+            # same way a used model does or the two tiers would quote different money.
+            {
+                "m": name,
+                "p": [round(float(v), 6) for v in model_price(name)]
+                + [round(cache_write_1h_price(name), 6)],
+            }
             for name, _eff, _approx in app.whatif_catalog_candidates()
         ],
         "rates": rates,

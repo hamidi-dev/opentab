@@ -90,6 +90,7 @@ _NODE_TOKEN_FIELDS = (
     "tokens_reasoning",
     "tokens_cache_read",
     "tokens_cache_write",
+    "tokens_cache_write_1h",
     "tokens_total",
 )
 

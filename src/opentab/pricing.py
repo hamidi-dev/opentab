@@ -588,10 +588,60 @@ def model_context_window(name: str) -> int:
 TOKEN_TYPES = ("Uncached input", "Output", "Reasoning", "Cache read", "Cache write")
 
 
+# Anthropic prices a prompt-cache WRITE by how long the entry is kept: the 5-minute
+# tier costs 1.25x the input rate, the 1-hour tier 2.00x. models.dev carries a single
+# cache_write rate per model, and for every Anthropic row it is exactly input x 1.25 --
+# the 5-minute tier -- so the long tier has to be derived.
+CACHE_WRITE_1H_MULTIPLIER = 2.0
+
+
+def cache_write_1h_price(name: str) -> float:
+    """Per-1M rate for a 1-HOUR-TTL prompt-cache write.
+
+    Derived from the INPUT rate, not by scaling cache_write: a catalog row that lists
+    no cache_write (or 0) would then make hour-long writes silently free, whereas the
+    input rate is the one number every priced row carries. A gateway's markup rides
+    along either way, since a reseller marks up input too. Never below the 5-minute
+    rate, so a strange rate card cannot make the longer TTL look cheaper.
+    """
+    # Gated on the vendor family, not on "the caller passed a 1h count": TTL-tiered
+    # cache writes are an Anthropic pricing rule, and nothing should be able to inflate
+    # another vendor's writes by handing this a number. model_family reads the bare
+    # model name, so a gateway route (github-copilot/claude-*, us.anthropic.*) still
+    # resolves to anthropic.
+    #
+    # Derivation, not lookup: prune_models_dev keeps only (input, output, cache_read,
+    # cache_write), so even if models.dev later publishes a real 1h rate it would be
+    # dropped before reaching here -- extend that pruning first if it ever does.
+    inp, _out, _cr, cw = model_price(name)
+    if model_family(name) != "anthropic" or not inp:
+        return cw  # not TTL-tiered, or unpriced/local: don't invent a rate
+    return max(inp * CACHE_WRITE_1H_MULTIPLIER, cw)
+
+
 def api_equivalent_cost(
-    name: str, inp: float, out: float, reasoning: float, cache_read: float, cache_write: float
+    name: str,
+    inp: float,
+    out: float,
+    reasoning: float,
+    cache_read: float,
+    cache_write: float,
+    cache_write_1h: float = 0.0,
 ) -> float:
     # What this usage would cost at API list prices. Reasoning tokens bill as
     # output; cache reads/writes at their own discounted/surcharged rates.
+    #
+    # cache_write is the TOTAL written; cache_write_1h names the 1-hour-TTL SUBSET of
+    # it, billed at the higher long-TTL rate. Keeping it a subset (rather than a
+    # sixth additive token type) is what makes this safe to add: every token column,
+    # total and export keeps its meaning, and the default 0.0 leaves every caller
+    # that cannot see a TTL split -- which is every backend except Claude Code -- on
+    # exactly the arithmetic it had before.
     ir, orr, crr, cwr = model_price(name)
-    return (inp * ir + (out + reasoning) * orr + cache_read * crr + cache_write * cwr) / 1e6
+    cost = inp * ir + (out + reasoning) * orr + cache_read * crr
+    long = min(max(cache_write_1h, 0.0), cache_write)  # clamp: a bad split can't distort
+    if long:
+        cost += (cache_write - long) * cwr + long * cache_write_1h_price(name)
+    else:
+        cost += cache_write * cwr
+    return cost / 1e6

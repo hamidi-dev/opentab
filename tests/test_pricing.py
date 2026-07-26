@@ -674,3 +674,51 @@ def test_a_zero_rate_card_never_wins_on_being_the_vendor():
     # card would pick up a cache-write rate it never charges.
     assert ot.pricing.model_family("fugu-ultra-20260615") == ""
     assert ot.pricing.model_price("sakana/fugu-ultra-20260615") == (5.0, 30.0, 0.5, 0.0)
+
+
+def test_pricing_bills_long_ttl_cache_writes_at_the_long_ttl_rate():
+    # Anthropic prices a prompt-cache WRITE by how long the entry is kept: 1.25x the input
+    # rate for the 5-minute tier, 2.00x for the 1-hour one. models.dev carries ONE
+    # cache_write rate per model and for every Anthropic row it is exactly input x 1.25 --
+    # the short tier -- so opentab billed every long write at the short price. Measured on
+    # a real corpus: 91% of cache-write tokens were 1h, understating total Claude Code
+    # spend by 7.5%.
+    m = "anthropic/claude-opus-4-5"
+    inp, _out, _cr, cw = ot.model_price(m)
+    assert cw == round(inp * 1.25, 6)  # the catalog rate IS the 5m tier
+    assert ot.cache_write_1h_price(m) == inp * 2.0
+
+    # REPLACEMENT, not addition: a long write leaves the 5m bucket. Billing it as extra
+    # volume would double-charge every one of those tokens.
+    short = ot.api_equivalent_cost(m, 0, 0, 0, 0, 1_000_000)
+    long = ot.api_equivalent_cost(m, 0, 0, 0, 0, 1_000_000, 1_000_000)
+    assert short == cw and long == inp * 2.0
+    assert long != short + inp * 2.0  # would be the double-billing bug
+    half = ot.api_equivalent_cost(m, 0, 0, 0, 0, 1_000_000, 500_000)
+    assert abs(half - (cw + inp * 2.0) / 2) < 1e-9
+
+    # Omitting the argument must reproduce the old arithmetic exactly -- every backend but
+    # Claude Code can't see a TTL tier and must keep pricing as it always did.
+    assert ot.api_equivalent_cost(m, 10, 20, 5, 100, 200) == ot.api_equivalent_cost(
+        m, 10, 20, 5, 100, 200, 0
+    )
+
+    # A malformed split can't distort the total: clamped into [0, cache_write].
+    assert ot.api_equivalent_cost(m, 0, 0, 0, 0, 1000, 10**9) == ot.api_equivalent_cost(
+        m, 0, 0, 0, 0, 1000, 1000
+    )
+    assert ot.api_equivalent_cost(m, 0, 0, 0, 0, 1000, -5) == ot.api_equivalent_cost(
+        m, 0, 0, 0, 0, 1000, 0
+    )
+
+    # Gated on the VENDOR, not on "a count was passed": TTL-tiered writes are an Anthropic
+    # rule, so no other vendor's writes can be inflated by handing this a number.
+    for other in ("openai/gpt-5.6", "google/gemini-3-pro"):
+        assert ot.cache_write_1h_price(other) == ot.model_price(other)[3]
+        assert ot.api_equivalent_cost(other, 0, 0, 0, 0, 1_000, 1_000) == ot.api_equivalent_cost(
+            other, 0, 0, 0, 0, 1_000, 0
+        )
+    # A gateway reselling Claude is still Anthropic (model_family reads the bare name),
+    # and the markup rides along because it marks up input too.
+    resold = "github-copilot/claude-opus-4-5"
+    assert ot.cache_write_1h_price(resold) == ot.model_price(resold)[0] * 2.0
