@@ -999,6 +999,7 @@ class Renderer:
             "Copilot": "cp",
             "VS Code": "vs",
             "Pi": "pi",
+            "Omp": "omp",
             "OpenClaw": "ocl",
             "Zaly": "zy",
         }.get(workflow.source, (workflow.source or "??")[:2].lower())

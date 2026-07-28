@@ -15,6 +15,7 @@ from opentab.stores.copilot import CopilotStore
 from opentab.stores.csv_source import CsvStore
 from opentab.stores.hermes import HermesStore
 from opentab.stores.jsonl_source import JsonlStore
+from opentab.stores.omp import OmpStore
 from opentab.stores.openclaw import OpenClawStore
 from opentab.stores.opencode import Store
 from opentab.stores.pi import PiStore
@@ -48,6 +49,14 @@ def _default_pi_dir() -> str:
     # otherwise its sessions live under ~/.pi/agent/sessions.
     env = (os.environ.get("PI_AGENT_DIR") or "").split(",")[0].strip()
     return env or os.path.expanduser("~/.pi/agent/sessions")
+
+
+def _default_omp_dir() -> str:
+    # omp (a pi-agent fork) has no session-dir env var of its own -- $OMP_AGENT_DIR is
+    # opentab's OWN override (unlike $PI_AGENT_DIR, which pi-agent itself reads),
+    # matching --pi-dir's shape; otherwise its sessions live under ~/.omp/agent/sessions.
+    env = (os.environ.get("OMP_AGENT_DIR") or "").strip()
+    return env or os.path.expanduser("~/.omp/agent/sessions")
 
 
 def _default_vscode_user_dirs() -> list[str]:
@@ -109,6 +118,7 @@ _PATH_SLOT = {
     "copilot": "copilot_dir",
     "vscode": "vscode_dir",
     "pi": "pi_dir",
+    "omp": "omp_dir",
     "openclaw": "openclaw_dir",
     "zaly": "zaly_dir",
 }
@@ -123,7 +133,7 @@ def _infer_source_from_path(path: str) -> str | None:
         return "csv"
     if low.endswith((".jsonl", ".ndjson")):
         return "jsonl"  # a single .jsonl FILE is the logged-request source (the dir-
-        # based JSONL backends -- claude/codex/pi/openclaw/copilot -- want --source)
+        # based JSONL backends -- claude/codex/pi/omp/openclaw/copilot -- want --source)
     if low.endswith((".db", ".sqlite", ".sqlite3")):
         return "opencode"
     return None
@@ -250,6 +260,7 @@ SOURCE_LABELS = {
     "copilot": "Copilot",
     "vscode": "VS Code",
     "pi": "Pi",
+    "omp": "Omp",
     "openclaw": "OpenClaw",
     "zaly": "Zaly",
     "all": "all",
@@ -264,6 +275,7 @@ RESUME_COMMANDS = {
     "Hermes": "hermes --resume",
     "Copilot": "copilot --resume",
     "Pi": "pi --session",
+    "Omp": "omp --resume",
     "Zaly": "zaly --session",
 }
 
@@ -284,6 +296,7 @@ def _detect_fingerprint(args: argparse.Namespace) -> tuple:
             "copilot_dir",
             "vscode_dir",
             "pi_dir",
+            "omp_dir",
             "openclaw_dir",
             "zaly_dir",
         )
@@ -319,6 +332,8 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("vscode")
     if _jsonl_dir_available(getattr(args, "pi_dir", "")):
         keys.append("pi")
+    if _jsonl_dir_available(getattr(args, "omp_dir", "")):
+        keys.append("omp")
     if _openclaw_available(getattr(args, "openclaw_dir", "")):
         keys.append("openclaw")
     if _zaly_available(getattr(args, "zaly_dir", "")):
@@ -458,6 +473,10 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
         if not os.path.isdir(args.pi_dir):
             raise SystemExit(f"pi-agent sessions directory not found: {args.pi_dir}")
         return PiStore(args.pi_dir, args), "OpenTab: loading pi-agent sessions…\r"
+    if key == "omp":
+        if not os.path.isdir(args.omp_dir):
+            raise SystemExit(f"omp sessions directory not found: {args.omp_dir}")
+        return OmpStore(args.omp_dir, args), "OpenTab: loading omp sessions…\r"
     if key == "openclaw":
         if not _openclaw_available(getattr(args, "openclaw_dir", "")):
             raise SystemExit(

@@ -32,7 +32,7 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
 
 - **One tab for every tool** — [OpenCode](https://opencode.ai),
   [Claude Code](https://claude.com/claude-code), [Codex](https://developers.openai.com/codex),
-  Hermes, GitHub Copilot (its CLI and Copilot Chat in VS Code), pi-agent, OpenClaw,
+  Hermes, GitHub Copilot (its CLI and Copilot Chat in VS Code), pi-agent, omp, OpenClaw,
   [zaly](https://github.com/folke/zaly), and
   CSV/JSONL logs of your own API requests — [each detailed in the docs](docs/sources.md).
 - **Every machine, one tab** — code on more than one box? `opentab pull` gathers each
@@ -153,6 +153,7 @@ What each tool's records support on top:
 | GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — | curve |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | curve |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | curve |
+| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | curve |
 | OpenClaw | mixed — metered real, rest estimated | — | ✓ | — | curve |
 | zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
 | CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² | curve ⁴ |
@@ -168,7 +169,7 @@ column — a synthetic per-day session interleaves unrelated conversations.</sub
 
 **[docs/sources.md](docs/sources.md)** has the full detail per harness — where each
 tool's records live, its flags and env vars, how cost is derived, quirks (Copilot's
-opt-in OTEL export, Codex's cumulative counters, the pi/OpenClaw/zaly
+opt-in OTEL export, Codex's cumulative counters, the pi/omp/OpenClaw/zaly
 metered-vs-subscription split, …), the CSV/JSONL schema, and the merged
 `--harness all` view.
 

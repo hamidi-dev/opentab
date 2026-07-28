@@ -36,6 +36,7 @@ from opentab.sources import (
     DEFAULT_CSV_PATH,
     DEFAULT_JSONL_PATH,
     SOURCE_LABELS,
+    _default_omp_dir,
     _default_openclaw_dir,
     _default_pi_dir,
     _default_zaly_dir,
@@ -79,6 +80,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
             "copilot",
             "vscode",
             "pi",
+            "omp",
             "openclaw",
             "zaly",
             "all",
@@ -86,10 +88,10 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         ),
         default="auto",
         help="which harness's spend to browse: opencode · claude · codex · hermes · csv · "
-        "jsonl · copilot · vscode · pi · openclaw · zaly · all (merged) · remote (other "
-        "machines, via pull/export). Default auto merges every present local harness. Or "
-        "just pass a file path -- e.g. `opentab requests.csv`. (--source is a deprecated "
-        "alias for --harness)",
+        "jsonl · copilot · vscode · pi · omp · openclaw · zaly · all (merged) · remote "
+        "(other machines, via pull/export). Default auto merges every present local "
+        "harness. Or just pass a file path -- e.g. `opentab requests.csv`. (--source is a "
+        "deprecated alias for --harness)",
     )
     parser.add_argument("--db", default=os.path.expanduser("~/.local/share/opencode/opencode.db"))
     parser.add_argument(
@@ -127,6 +129,13 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         default=_default_pi_dir(),
         help="pi-agent sessions directory (for --harness pi); honors $PI_AGENT_DIR, "
         "default ~/.pi/agent/sessions",
+    )
+    parser.add_argument(
+        "--omp-dir",
+        default=_default_omp_dir(),
+        help="omp sessions directory (for --harness omp; omp is a pi-agent fork and "
+        "reads the same records); honors $OMP_AGENT_DIR (opentab's own override -- omp "
+        "itself has no session-dir env var), default ~/.omp/agent/sessions",
     )
     parser.add_argument(
         "--openclaw-dir",
@@ -240,7 +249,7 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         metavar="DIR|SESSION",
         help="print the cost of the most recently active agent session (subagent "
         "subtree included) and exit, consulting every present harness backend "
-        "(OpenCode, Claude Code, Codex, Hermes, pi, OpenClaw, Zaly); with DIR only "
+        "(OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, Zaly); with DIR only "
         "sessions of that project count, with a session id (ses_... or a UUID -- the "
         "id is matched to its own backend) exactly that session is priced, and "
         "--harness pins one backend. Made for a tmux status line: set -g "
@@ -1104,14 +1113,14 @@ def _project_key(directory: str) -> str:
 # a live session a tmux pane can point at. The request-log sources (csv/jsonl)
 # have synthetic per-(date, project) sessions with no live identity, and the
 # Copilot/VS Code stores record no terminal session to follow.
-_STATUS_SOURCES = ("opencode", "claude", "codex", "hermes", "pi", "openclaw", "zaly")
+_STATUS_SOURCES = ("opencode", "claude", "codex", "hermes", "pi", "omp", "openclaw", "zaly")
 
 
 def _is_session_target(target: str) -> bool:
     # A --status target is a directory or a session id. An id never contains a
     # path separator and doesn't exist on disk; anything else scopes by project.
     # Which backend an id belongs to is NOT decided here -- ids are probed via
-    # each store's root_of (UUID shapes collide across Claude/Codex/pi/Zaly), and
+    # each store's root_of (UUID shapes collide across Claude/Codex/pi/omp/Zaly), and
     # an id nobody claims yields an empty segment rather than being reinterpreted
     # as a directory, so a stale id can never price the shell's own project.
     if os.sep in target or (os.altsep and os.altsep in target):

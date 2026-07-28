@@ -37,7 +37,7 @@ src/opentab/
   state.py           load_state/save_state/apply_state (state.json in the XDG state dir)
   themes.py          THEMES palettes (single source for the web browser + the TUI)
   stores/            opencode, claude, codex, hermes, csv_source, jsonl_source,
-                     copilot, vscode, pi, openclaw, zaly, combined, cached
+                     copilot, vscode, pi, omp, openclaw, zaly, combined, cached
   tui/               renderer (Renderer), app (App)
   web.py             build_payload/session_extras + html_command/serve_command
   webpage.py         render_html: the self-contained browser page (inline CSS/JS)
@@ -75,7 +75,7 @@ Cost semantics are also part of the contract: a store's `records_cost` says whet
 it records real money. Token-only backends (Claude, Codex, Copilot, VS Code) report
 `cost=0` with tokens in the `unpriced_*` splits, and the normal `$` machinery turns
 that into the $0 / list-price-estimate behavior with no special-casing. Mixed
-backends (Hermes, pi, OpenClaw, zaly, CSV/JSONL) probe `records_cost` per instance.
+backends (Hermes, pi, omp, OpenClaw, zaly, CSV/JSONL) probe `records_cost` per instance.
 
 Notable store internals:
 

@@ -626,6 +626,125 @@ def _pi_write(root, project, sid, rows, ts_prefix="2026-05-15T07-32-15-949Z"):
     _write_jsonl(os.path.join(d, f"{ts_prefix}_{sid}.jsonl"), rows)
 
 
+# --- omp (Oh My Pi): a pi-agent fork with SQLite auth + a real subagent tree -------
+
+OMP_SID = "019fa4fd-9d1d-7000-a6e9-c9e0c7ce25fc"
+
+
+def _omp_args():
+    return type("Args", (), {"demo": False})()
+
+
+def _omp_session(sid, cwd, ts="2026-07-27T19:11:52.093Z", title=None):
+    rec = {"type": "session", "version": 3, "id": sid, "timestamp": ts, "cwd": cwd}
+    if title is not None:  # session.title, one of the three title-precedence rungs
+        rec["title"] = title
+        rec["titleSource"] = "auto"
+    return rec
+
+
+def _omp_title_record(title, ts="2026-07-27T19:11:53.000Z", changed=False):
+    # omp's dedicated title records (pi has neither): {"type":"title",...} and, after
+    # an auto-retitle, {"type":"title_change",...} -- same shape, different type.
+    return {
+        "type": "title_change" if changed else "title",
+        "title": title,
+        "source": "auto",
+        "timestamp": ts,
+    }
+
+
+def _omp_user(text, mid="u1", ts="2026-07-27T19:11:55.000Z"):
+    return {
+        "type": "message",
+        "id": mid,
+        "timestamp": ts,
+        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+    }
+
+
+def _omp_assistant(
+    model,
+    inp,
+    out,
+    cache_read=0,
+    cache_write=0,
+    total=None,
+    cost=None,
+    provider=None,
+    api=None,
+    mid="a1",
+    ts="2026-07-27T19:12:27.452Z",
+    tools=None,
+    reasoning_tokens=None,
+):
+    usage = {"input": inp, "output": out, "cacheRead": cache_read, "cacheWrite": cache_write}
+    usage["totalTokens"] = total if total is not None else inp + out + cache_read + cache_write
+    if reasoning_tokens is not None:  # OpenAI's reasoning_tokens detail -- a SUBSET of
+        usage["reasoningTokens"] = reasoning_tokens  # output, never added to it
+    if cost is not None:
+        usage["cost"] = {"total": cost}
+    # omp records the model BARE and the route as a separate "provider" field (unlike
+    # pi, which already qualifies "model"), so callers pass both to exercise
+    # OmpStore._model_label's join.
+    message = {"role": "assistant", "model": model, "usage": usage}
+    if provider is not None:
+        message["provider"] = provider
+    if api is not None:
+        message["api"] = api
+    if tools:  # the step's toolCall blocks, for the Tools tab
+        message["content"] = [
+            {"type": "toolCall", "id": f"{mid}-t{i}", "name": t, "arguments": {}}
+            for i, t in enumerate(tools)
+        ]
+    return {"type": "message", "id": mid, "timestamp": ts, "message": message}
+
+
+def _omp_write(root, project, sid, rows, ts_prefix="2026-07-27T19-11-52-093Z"):
+    d = os.path.join(root, project)
+    os.makedirs(d, exist_ok=True)
+    _write_jsonl(os.path.join(d, f"{ts_prefix}_{sid}.jsonl"), rows)
+
+
+def _omp_write_subagent(root, project, ts_prefix, parent_sid, agent, rows, chain=()):
+    # A subagent transcript lives in a DIRECTORY named exactly like the transcript
+    # that spawned it, minus ".jsonl"; the file's own basename (sans extension) is
+    # the agent label, never an id -- its own `session` record inside `rows` carries
+    # the real uuid. `chain` names the agents between the root and this one, since
+    # omp applies the same rule recursively: chain=("Impl",) writes
+    # <ts>_<sid>/Impl/<agent>.jsonl, i.e. a grandchild of the root.
+    d = os.path.join(root, project, f"{ts_prefix}_{parent_sid}", *chain)
+    os.makedirs(d, exist_ok=True)
+    _write_jsonl(os.path.join(d, f"{agent}.jsonl"), rows)
+
+
+def _omp_agent_db(path, rows, wal=False):
+    # omp's real auth_credentials schema carries more columns (disabled_cause,
+    # identity_key, ...) but OmpStore._load_oauth_providers selects only
+    # (provider, credential_type) -- the `data` column below stands in for the
+    # LIVE oauth tokens the real file holds, to make it obvious a test that
+    # accidentally read it would be reading something that looks like a secret.
+    conn = sqlite3.connect(path)
+    if wal:
+        # The real agent.db is journal_mode=wal, which is what puts a login change in
+        # the -wal sidecar (and churns -shm on every read). Only the cache-fingerprint
+        # test needs that, so it stays opt-in.
+        conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        "CREATE TABLE auth_credentials ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, "
+        "credential_type TEXT NOT NULL, data TEXT NOT NULL, "
+        "disabled_cause TEXT, identity_key TEXT)"
+    )
+    for provider, credential_type in rows:
+        conn.execute(
+            "INSERT INTO auth_credentials (provider, credential_type, data) VALUES (?, ?, ?)",
+            (provider, credential_type, "FAKE-DO-NOT-READ"),
+        )
+    conn.commit()
+    conn.close()
+
+
 OCL_SID = "01998b2c-7d41-7a90-bf03-2b6e1c9f04aa"
 
 

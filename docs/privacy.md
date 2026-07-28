@@ -9,11 +9,17 @@ OpenTab is just the reader.
 Your tools' own records, read-only:
 
 - OpenCode's SQLite database
-- the JSONL transcripts of Claude Code / Codex / pi-agent / OpenClaw / zaly
+- the JSONL transcripts of Claude Code / Codex / pi-agent / omp / OpenClaw / zaly
 - Hermes' SQLite database
 - the Copilot CLI's OpenTelemetry export
 - VS Code's Copilot Chat session store
 - a CSV/JSONL of logged API requests (`--csv`/`--jsonl`)
+
+To tell a **subscription** route from a **metered** one — the difference between $0 and
+real spend — it also reads how each provider is logged in, from pi's `auth.json`, zaly's
+`auth.json`, OpenClaw's `openclaw.json`, and omp's `agent.db`. Only the provider name and
+its login *type* (`oauth` vs API key) are read; the access and refresh tokens stored
+alongside them are never read, copied, or shown.
 
 To fold git worktrees into their main repo it also reads project `.git` files (no
 `git` process is spawned; disable with `--no-worktrees`).

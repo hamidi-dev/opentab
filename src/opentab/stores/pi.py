@@ -333,6 +333,13 @@ class PiStore:
         if not sid:
             return
         s = sessions.setdefault(sid, self._new_session())
+        self._parse_lines(s, lines)
+
+    def _parse_lines(self, s: dict, lines: list[str]) -> None:
+        # Factored out of _parse_file so OmpStore can feed it a session dict keyed
+        # by content (a subagent transcript's id lives in its own `session` record,
+        # never its filename) instead of one keyed by the caller's filename-derived
+        # id -- the loop body itself is untouched.
         for line in lines:
             if '"type"' not in line:
                 continue
@@ -351,8 +358,10 @@ class PiStore:
                     s["cwd"] = o["cwd"]
                 if o.get("timestamp") and not s["ts_meta"]:
                     s["ts_meta"] = o["timestamp"]
+                self._extra_record(typ, o, s)
                 continue
             if typ != "message":
+                self._extra_record(typ, o, s)
                 continue
             msg = o.get("message")
             if not isinstance(msg, dict):
@@ -379,6 +388,21 @@ class PiStore:
                 s["seen_msgs"].add(mid)
             self._apply_usage(s, msg, ts)
 
+    def _extra_record(self, typ: str, o: dict, s: dict) -> None:
+        # Hook for a subclass that reacts to a record type PiStore itself has
+        # nothing to do with (e.g. omp's dedicated title/title_change records,
+        # or its own `session` record's title). A no-op here, so pi's own parse
+        # is unchanged.
+        pass
+
+    def _model_label(self, msg: dict) -> str:
+        # pi records models already provider-qualified (e.g. "moonshotai/kimi-k2.6"),
+        # so the label is just the recorded string. Factored out so a fork writing
+        # bare model ids alongside a separate provider field (omp) can qualify the
+        # label without duplicating _apply_usage.
+        model = msg.get("model")
+        return model if isinstance(model, str) and model else "unknown"
+
     def _apply_usage(self, s: dict, msg: dict, ts=None) -> None:
         usage = msg["usage"]
         inp = self._int(usage.get("input"))
@@ -389,11 +413,7 @@ class PiStore:
         out += max(0, total - (inp + out + cr + cw))  # only `totalTokens` -> back-fill output
         if inp + out + cr + cw == 0:
             return
-        model = (
-            msg.get("model")
-            if isinstance(msg.get("model"), str) and msg.get("model")
-            else "unknown"
-        )
+        model = self._model_label(msg)
         acc = s["models"].get(model)
         if acc is None:
             acc = s["models"][model] = self._new_acc()

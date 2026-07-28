@@ -18,6 +18,7 @@ opentab --harness hermes                     # Hermes Agent (default ~/.hermes/s
 opentab --harness copilot                    # GitHub Copilot CLI (default ~/.copilot/otel)
 opentab --harness vscode                     # Copilot Chat in VS Code (every installed variant)
 opentab --harness pi                         # pi-agent (default ~/.pi/agent/sessions)
+opentab --harness omp                        # omp (Oh My Pi; pi-agent fork, default ~/.omp/agent/sessions)
 opentab --harness openclaw                   # OpenClaw gateway (default ~/.openclaw)
 opentab --harness zaly                       # zaly (default ~/.local/share/zaly)
 opentab --csv requests.csv                   # a CSV of logged API requests (or --jsonl)
@@ -43,6 +44,7 @@ trends. What each tool's records support on top:
 | GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ |
+| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ |
 | OpenClaw | mixed — metered real, rest estimated | — | ✓ | — |
 | zaly | mixed — metered real, rest estimated | — | ✓ | ✓ |
 | CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² |
@@ -157,6 +159,28 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   routes stay `$0` and are estimated under `$`. The split is read from pi's
   `auth.json`, read-only.
 
+## omp
+
+*Session JSONL · a pi-agent fork · mixed: metered real, subscription estimated*
+
+- **Reads** `~/.omp/agent/sessions/**/*.jsonl` (`--omp-dir`, honors `$OMP_AGENT_DIR` —
+  opentab's own override; unlike `$PI_AGENT_DIR`, omp itself has no session-dir env var).
+- **Cost**: like pi, omp writes a list-price figure for *every* route, so only
+  **metered** routes count as real spend; OAuth/subscription routes stay `$0` and are
+  estimated under `$`. The split is read from omp's own `agent.db` (SQLite) instead of
+  an `auth.json` — just the provider and credential-type columns, read-only, never the
+  stored OAuth tokens.
+- **Notes**: omp is a rename/fork of pi-agent and writes the same record schema, so
+  OpenTab parses it the same way — **with one addition pi lacks**: a session that
+  delegates to the `task` tool writes each subagent to a sibling directory, and its
+  usage folds into a subagent cost tree under the session that spawned it (like Codex's
+  spawned threads), rather than being silently dropped. Nesting counts too — a subagent
+  that itself delegates shows up at its true depth, not flattened onto the root or lost.
+  Models are recorded as a bare id
+  with a separate provider field; OpenTab qualifies them (`provider/model`) so they
+  group correctly under Trends' Providers tab. Session titles come from omp's own title
+  records when set, else the first real user prompt.
+
 ## OpenClaw
 
 *Gateway session JSONL · mixed: metered real, plan routes estimated*
@@ -229,7 +253,7 @@ harness's.
 
 `--harness all` merges every present harness: the same repo across tools rolls up into
 one project row, every session row shows its origin (a `Hns` column,
-`[oc]`/`[cc]`/`[cx]`/`[cp]`/`[vs]`/`[pi]`/`[ocl]`/`[csv]`/`[jl]` tags elsewhere), and
+`[oc]`/`[cc]`/`[cx]`/`[cp]`/`[vs]`/`[pi]`/`[omp]`/`[ocl]`/`[csv]`/`[jl]` tags elsewhere), and
 Trends gains a **Harnesses** tab. `$` reprices the unpriced usage across all of them.
 
 With more than one harness present, `--demo` **defaults to this merged view** and
