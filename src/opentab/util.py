@@ -473,6 +473,24 @@ def launcher_hook() -> str | None:
     return None
 
 
+_LOCAL_MACHINE = ""
+
+
+def local_machine_name() -> str:
+    # This box's hostname -- the ONE label an untagged session belongs to. Two callers
+    # must agree on it or the Machines view splits one box in two: the fleet build
+    # (sources.py) stamps this machine's live sessions with it, and the App labels every
+    # workflow that carries no tag at all (the ordinary, non-fleet run) with the same
+    # string. Memoized: a hostname doesn't change under a running TUI, and the import is
+    # local to keep it off the one-shot `status` import floor.
+    global _LOCAL_MACHINE
+    if not _LOCAL_MACHINE:
+        import socket
+
+        _LOCAL_MACHINE = socket.gethostname() or "this-machine"
+    return _LOCAL_MACHINE
+
+
 def ssh_command(target: str, directory: str, command: str) -> str:
     # One line that reopens a session on ANOTHER box -- what the `L` menu runs (and
     # copies) for a machine you pulled rather than the one you are sitting at.

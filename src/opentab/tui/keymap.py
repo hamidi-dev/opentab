@@ -282,14 +282,7 @@ def _panel_summary(app: App) -> str:
 
 
 def _mode_keys(app: App) -> str:
-    tokens = (
-        ("mode_time", "mode_projects", "mode_machines")
-        if app.machines_present
-        else (
-            "mode_time",
-            "mode_projects",
-        )
-    )
+    tokens = ("mode_time", "mode_projects", "mode_machines")
     return _keys_text(app, "main", tokens, between="  ", within="  ")
 
 
@@ -297,10 +290,14 @@ def _mode_segments(app: App) -> list:
     t = app.keymap.label("main", "mode_time")
     p = app.keymap.label("main", "mode_projects")
     m = app.keymap.label("main", "mode_machines")
-    segs = [(t, app.browse_mode == "time"), ("/", False), (p, app.browse_mode == "projects")]
-    if app.machines_present:
-        segs += [("/", False), (m, app.browse_mode == "machines")]
-    return segs + [(" mode", False)]
+    return [
+        (t, app.browse_mode == "time"),
+        ("/", False),
+        (p, app.browse_mode == "projects"),
+        ("/", False),
+        (m, app.browse_mode == "machines"),
+        (" mode", False),
+    ]
 
 
 def _tab_focus_segments(app: App) -> list:
@@ -597,9 +594,7 @@ KEYS: tuple[Key, ...] = (
         id="mode",
         ctx="main",
         keys=_mode_keys,
-        summary=lambda app: "Time / Projects / Machines browse mode"
-        if app.machines_present
-        else "Time / Projects browse mode",
+        summary="Time / Projects / Machines browse mode",
         section="nav",
         # Works from a drilled-in session too (set_browse_mode snapshots it), so advertise
         # it there -- returning to the mode lands back on that session.

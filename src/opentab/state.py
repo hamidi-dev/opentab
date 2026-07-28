@@ -100,11 +100,7 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     if isinstance(state.get("prices_sort_reverse"), bool):
         app.prices_sort_reverse = state["prices_sort_reverse"]
     mode = state.get("browse_mode")
-    # Machines mode is restored only when the reopened source is still a fleet (>=2
-    # boxes); otherwise it would restore an empty, un-navigable list, so fall to time.
-    if mode == "machines":
-        app.browse_mode = "machines" if app.machines_present else "time"
-    elif mode in ("time", "projects"):
+    if mode in ("time", "projects", "machines"):
         app.browse_mode = mode
     if isinstance(state.get("zoom_maximized"), bool):
         app.zoom_maximized = state["zoom_maximized"]

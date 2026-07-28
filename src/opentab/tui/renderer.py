@@ -1839,6 +1839,11 @@ class Renderer:
                 "Summary only — Turns/Tools/Context aren't exported. "
                 f"Press {self._key('main', 'refresh_machines')} to re-pull.",
             ]
+        elif not self.machines_present:
+            # The one-box case: this view is complete, but it is also where you find out
+            # the axis exists at all -- so say how a second box joins it. One SHORT line:
+            # detail lines are clipped, not wrapped, and this pane can be narrow.
+            lines += ["", "Only this machine. `opentab --pull HOST` adds another."]
         if machine.live:
             # A pulled box carries only rollups -- no per-model rows travel in a summary,
             # so there is nothing to decompose and the box would render "no priceable

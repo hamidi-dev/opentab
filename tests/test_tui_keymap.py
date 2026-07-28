@@ -327,11 +327,15 @@ def test_footer_highlights_the_focused_time_panel():
         scr, line = footer_line()
         for gone in ("s sort", "e export", "o open"):
             assert gone not in line
-        i = line.index("t/p mode")  # Time-first; Machines joins only in a fleet
+        i = line.index("t/p/m mode")  # all three modes, fleet or not
         assert scr.attrs[(23, i)] == accent and scr.attrs[(23, i + 2)] == 4  # time mode: t lit
         app.browse_mode = "projects"
         scr, line = footer_line()
-        i = line.index("t/p mode")
+        i = line.index("t/p/m mode")
         assert scr.attrs[(23, i + 2)] == accent and scr.attrs[(23, i)] == 4  # projects: p lit
+        app.browse_mode = "machines"
+        scr, line = footer_line()
+        i = line.index("t/p/m mode")
+        assert scr.attrs[(23, i + 4)] == accent and scr.attrs[(23, i)] == 4  # machines: m lit
     finally:
         ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip

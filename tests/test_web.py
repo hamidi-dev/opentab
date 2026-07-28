@@ -681,8 +681,38 @@ def test_web_payload_carries_machine_meta_for_the_machines_mode():
     assert mm["server"]["live"] is False
     assert mm["server"]["refreshable"] is True  # a pulled box with a remotes key
     assert mm["server"]["exportedAt"].startswith("2026") and mm["server"]["version"] == "1.6.0"
-    # Off the fleet view the map is empty (no Machines mode).
-    assert ot.build_payload(app_with([workflow("a", "2026-05-01 10:00:00")]))["machineMeta"] == {}
+    # Off the fleet view the Machines mode still renders this one box, so it needs its
+    # entry -- without one the page would draw the box you're on as a pulled summary.
+    solo = app_with([workflow("a", "2026-05-01 10:00:00")])
+    payload = ot.build_payload(solo)
+    assert payload["meta"]["machines"] is False  # ...but no fleet: no Machine column/tab
+    assert payload["machineMeta"] == {
+        solo.local_machine_name: {
+            "live": True,
+            "exportedAt": "",
+            "version": "",
+            "refreshable": False,
+        }
+    }
+    # Every workflow row carries a real machine label, so the page groups them into it.
+    assert {w["machine"] for w in payload["workflows"]} == {solo.local_machine_name}
+    # Regression (Codex): "not a fleet" is not "no machine metadata". A remote source
+    # with ONE pulled box also has machines_present False, but it does carry that box's
+    # pull timestamp/version -- which must not be replaced by a local-live entry (the
+    # page would then lose the ↻ re-pull button and the "pulled 2h ago" line).
+    one_pulled = fleet_app({"server": [workflow("b", "2026-05-02 10:00:00")]}, meta=None)
+    one_pulled.store.machine_meta = {
+        "server": {
+            "live": False,
+            "exported_at": "2026-07-18T09:00:00+00:00",
+            "opentab_version": "1.6.0",
+            "key": "server",
+        }
+    }
+    mm = ot.build_payload(one_pulled)["machineMeta"]
+    assert one_pulled.machines_present is False
+    assert list(mm) == ["server"] and mm["server"]["refreshable"] is True
+    assert mm["server"]["version"] == "1.6.0"
 
 
 def test_web_page_has_the_per_scope_machines_tab_machinery():

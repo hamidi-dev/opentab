@@ -304,7 +304,10 @@ def build_payload(app: App) -> dict:
                 "tokens": w.total_tokens,
                 "unpriced": w.unpriced_tokens,
                 "source": w.source,
-                "machine": w.machine,
+                # Always a real label: untagged (non-fleet) sessions carry this box's
+                # hostname, so the page's Machines mode groups them under one live row
+                # instead of a nameless "unknown". app.machine_of is the TUI's own rule.
+                "machine": app.machine_of(w),
             }
         )
         # The per-model rows are what the `w` what-if reduces over (whatifTotals): they
@@ -328,7 +331,10 @@ def build_payload(app: App) -> dict:
         "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "source": getattr(store, "source_name", "") or app.source_key or "data",
         "combined": bool(getattr(store, "combined", False)),
-        "machines": bool(app.machines_present),  # the fleet view -> Machine column + tab
+        # A FLEET (>=2 boxes) -> the Machine column, the per-scope Machines tab and the
+        # Trends one. NOT the Machines browse mode, which is always available (a lone box
+        # is still a box); a one-row breakdown tab would be a 100% bar, like Harnesses.
+        "machines": bool(app.machines_present),
         "recordsCost": bool(getattr(store, "records_cost", True)),
         "demo": bool(store.demo),
         "range": app.range_label(),
@@ -345,16 +351,30 @@ def build_payload(app: App) -> dict:
         "prices": _prices_payload(app),
         "whatif": _whatif_payload(app),
         # Per-machine niceties for the Machines mode (live vs pulled, export time/version);
-        # empty off the fleet view. The page derives the machine rows from `workflows`.
+        # off a fleet, just this live box. The page derives the machine rows from `workflows`.
         "machineMeta": _machine_meta_payload(app),
     }
 
 
 def _machine_meta_payload(app: App) -> dict:
-    if not app.machines_present:
-        return {}
+    meta_by_name = app.machine_meta()
+    if not meta_by_name:
+        # No meta at all = no fleet build: the store never tagged anything, so the one box
+        # the Machines mode renders is this live one, and without an entry the page would
+        # draw it as `○ pulled summary`. Keyed off the META rather than machines_present:
+        # a remote source with a SINGLE pulled box is also not a fleet, but it does carry
+        # that box's pull timestamp/version, which this must not replace with a local row.
+        # (App.machines applies the same `not meta` rule to its `live` flag.)
+        return {
+            app.local_machine_name: {
+                "live": True,
+                "exportedAt": "",
+                "version": "",
+                "refreshable": False,
+            }
+        }
     out = {}
-    for name, meta in app.machine_meta().items():
+    for name, meta in meta_by_name.items():
         out[name] = {
             "live": bool((meta or {}).get("live")),
             "exportedAt": str((meta or {}).get("exported_at") or ""),

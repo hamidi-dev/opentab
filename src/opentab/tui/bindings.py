@@ -207,7 +207,7 @@ REGISTRY: tuple[Context, ...] = (
             Action("panel_detail", ("0",), "jump to the detail pane"),
             Action("mode_time", ("t",), "Time browse mode"),
             Action("mode_projects", ("p",), "Projects browse mode"),
-            Action("mode_machines", ("m",), "Machines browse mode (fleet)"),
+            Action("mode_machines", ("m",), "Machines browse mode"),
             Action("maximize", ("+",), "maximize / restore the detail pane"),
             Action("sort", ("s", "S"), "sort this list"),
             Action("filter", ("f", "/"), "filter — fuzzy over titles, projects, notes"),

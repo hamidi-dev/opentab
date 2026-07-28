@@ -27,7 +27,7 @@ def test_prices_sort_is_persisted_in_state():
     assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
 
 
-def test_machines_browse_mode_restored_only_into_a_fleet():
+def test_machines_browse_mode_is_restored_fleet_or_not():
     from tests._support import fleet_app
 
     app = fleet_app(
@@ -53,10 +53,12 @@ def test_machines_browse_mode_restored_only_into_a_fleet():
             )
             ot.apply_state(fleet, fleet.args, state)
             assert fleet.browse_mode == "machines"
-            # Reopened as a single non-fleet source -> falls back to time (no empty list).
+            # Reopened as a single non-fleet source -> still Machines mode: the pulled
+            # boxes are gone, the box you're sitting at isn't, so the list is one live row.
             solo = app_with([workflow("a", "2026-06-01 12:00:00")])
             ot.apply_state(solo, solo.args, state)
-            assert solo.browse_mode == "time"
+            assert solo.browse_mode == "machines"
+            assert [m.name for m in solo.machines] == [solo.local_machine_name]
         finally:
             if old_xdg is None:
                 os.environ.pop("XDG_STATE_HOME", None)

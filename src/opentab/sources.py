@@ -6,7 +6,7 @@ import glob
 import os
 import sys
 
-from opentab import paths
+from opentab import paths, util
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import ClaudeStore
 from opentab.stores.codex import CodexStore
@@ -398,15 +398,15 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
             return subs[0], "OpenTab: loading…\r"
         return CombinedStore(subs), "OpenTab: loading all sources…\r"
     if key == "remote":
-        import socket
-
         from opentab.stores.remote import MachineTaggedStore
 
         remotes = getattr(args, "remotes", None) or default_remotes_dir()
         # The fleet view = THIS machine (live, full drill-in, tagged by hostname) + every
         # pulled summary. Including local is what makes `opentab --remote` show the box
-        # you're on, not just the ones you pulled.
-        hostname = socket.gethostname() or "this-machine"
+        # you're on, not just the ones you pulled. The label comes from the shared helper
+        # the App also labels untagged sessions with, so the box you're sitting at is one
+        # row whether or not a fleet is in view.
+        hostname = util.local_machine_name()
         local_subs = [make_store(args, k)[0] for k in available_sources(args)]
         # Live-local sessions win over any pulled summary that re-states them (this
         # machine's own summary left in the remotes dir, or a session synced between

@@ -23,7 +23,14 @@ except ImportError:  # native Windows has no stdlib curses
     curses = None
 
 from opentab import sources, themes, util
-from opentab.demo import DEMO_ALL, DEMO_CATEGORIES, demo_cost, demo_model, demo_title
+from opentab.demo import (
+    DEMO_ALL,
+    DEMO_CATEGORIES,
+    demo_cost,
+    demo_machine,
+    demo_model,
+    demo_title,
+)
 from opentab.formatting import clip, clip_tail, display_width, short_path, shorten
 from opentab.heatmap import (
     HEAT_DEFAULT_LEVELS,
@@ -457,7 +464,8 @@ class App:
         self.month_index = 0
         self.year_index = 0
         self.project_index = 0
-        self.machine_index = 0  # selected box in the Machines-mode sidebar (fleet view)
+        self.machine_index = 0  # selected box in the Machines-mode sidebar
+        self._local_machine_fake = ""  # memoized demo alias for this box (local_machine_name)
         self.workflow_index = 0  # selected session in a zoomed Sessions tab
         # Tab cycles focus across the three stacked left panels. Enter drills:
         # browse -> zoom (year/month/day detail) -> session (one session's detail).
@@ -637,7 +645,7 @@ class App:
         if self.show_bookmarks_only:
             rows = [w for w in rows if w.id in self.bookmarks]
         if self.machine_filter is not None:
-            rows = [w for w in rows if (w.machine or "unknown") == self.machine_filter]
+            rows = [w for w in rows if self.machine_of(w) == self.machine_filter]
         if self.harness_filter is not None:
             rows = [w for w in rows if (w.source or "unknown") == self.harness_filter]
         if self.custom_since or self.custom_until:
@@ -908,11 +916,35 @@ class App:
             return sorted(rows, key=lambda p: p.last_active, reverse=desc)
         return sorted(rows, key=lambda p: (p.cost, p.tokens), reverse=desc)
 
-    # --- Machines mode (the fleet view) --------------------------------------
+    # --- Machines mode (one row per box; a fleet adds the pulled ones) -------
     def machine_meta(self) -> dict[str, dict]:
         # {machine name -> {live, exported_at, opentab_version, key}} from the store,
-        # empty for a non-fleet store (so machines_present is False and the mode hides).
+        # empty for a non-fleet store (whose one box is the live local one -- see
+        # `machines`, which marks it live without any store help).
         return getattr(self.store, "machine_meta", {}) or {}
+
+    @property
+    def local_machine_name(self) -> str:
+        # The box an UNTAGGED session ran on: this one. Only the fleet build stamps
+        # w.machine, so off a fleet every session is untagged and this is the single row
+        # the Machines mode shows -- "just this machine", rather than a nameless "unknown"
+        # box. In a fleet the live local store stamps this exact string (sources.py calls
+        # the same helper), so a mixed batch can never split the local box into two rows.
+        # Scrambled under demo like a pulled label: a hostname is identity, as a title or
+        # a path is.
+        name = util.local_machine_name()
+        if not (self.store.demo and "titles" in self._demo_cats):
+            return name
+        # Memoized: every machine grouping and filter asks once per workflow, and the
+        # scramble hashes. One slot is enough -- the hostname can't change under a
+        # running TUI, so the fake is the same on every `D` flip back.
+        if not self._local_machine_fake:
+            self._local_machine_fake = demo_machine(name)
+        return self._local_machine_fake
+
+    def machine_of(self, workflow: Workflow) -> str:
+        # Which box a session belongs to -- its tag, or this machine when it has none.
+        return workflow.machine or self.local_machine_name
 
     @property
     def machines(self) -> list[MachineSummary]:
@@ -921,9 +953,10 @@ class App:
         # floats first -- it is "you are here", and the only one with full drill-in -- then
         # by spend; the `f`/`/` query fuzzy-ranks by name like the projects list.
         meta = self.machine_meta()
+        local = self.local_machine_name
         grouped: dict[str, list[Workflow]] = defaultdict(list)
         for w in self.all_workflows:
-            grouped[w.machine or "unknown"].append(w)
+            grouped[w.machine or local].append(w)
         rows = [
             MachineSummary(
                 name=name,
@@ -933,7 +966,10 @@ class App:
                 subagents=sum(w.subagents for w in wfs),
                 unpriced_tokens=sum(w.unpriced_tokens for w in wfs),
                 last_active=max(w.created_at for w in wfs),
-                live=bool((meta.get(name) or {}).get("live")),
+                # Off a fleet the store has no machine_meta at all, and the one row is by
+                # definition this live box (full drill-in) -- so it must not render as a
+                # `○ pulled summary` just because nothing stamped it.
+                live=bool((meta.get(name) or {}).get("live")) or (not meta and name == local),
                 exported_at=str((meta.get(name) or {}).get("exported_at") or ""),
                 opentab_version=str((meta.get(name) or {}).get("opentab_version") or ""),
             )
@@ -956,7 +992,7 @@ class App:
         return rows[self.machine_index]
 
     def workflows_for_machine(self, name: str) -> list[Workflow]:
-        return [w for w in self.all_workflows if (w.machine or "unknown") == name]
+        return [w for w in self.all_workflows if self.machine_of(w) == name]
 
     # --- The `M` global machine filter (fleet view) --------------------------
     def machine_filter_options(self) -> list[tuple[str, str, bool]]:
@@ -967,7 +1003,7 @@ class App:
         meta = self.machine_meta()
         grouped: dict[str, float] = defaultdict(float)
         for w in self.loaded:
-            grouped[w.machine or "unknown"] += w.total_cost
+            grouped[self.machine_of(w)] += w.total_cost
         names = sorted(
             grouped,
             key=lambda n: (bool((meta.get(n) or {}).get("live")), grouped[n]),
@@ -1010,7 +1046,7 @@ class App:
         # than silently emptying every view.
         if self.machine_filter is None:
             return
-        names = {w.machine or "unknown" for w in self.loaded}
+        names = {self.machine_of(w) for w in self.loaded}
         if self.machine_filter not in names:
             self.machine_filter = None
 
@@ -1129,12 +1165,11 @@ class App:
             self.open_source_menu()
 
     def mode_tab_list(self) -> list[tuple[str, str]]:
-        # (label, mode) for the top-level browse-mode tab strip. Time/Projects always;
-        # Machines only in a fleet (>=2 boxes) -- the same gate as the `m` key.
-        tabs = [("Time", "time"), ("Projects", "projects")]
-        if self.machines_present:
-            tabs.append(("Machines", "machines"))
-        return tabs
+        # (label, mode) for the top-level browse-mode tab strip. All three, always: off a
+        # fleet the Machines mode is a one-row view of the box you're sitting at (its own
+        # spend, model mix and top projects), which is a real answer -- and the only place
+        # the consolidated view announces itself to someone who has never run `--pull`.
+        return [("Time", "time"), ("Projects", "projects"), ("Machines", "machines")]
 
     def switch_browse_mode(self, mode: str) -> None:
         # The mouse/tab entry point. set_browse_mode now works from a drilled-in session
@@ -2630,6 +2665,10 @@ class App:
         self.zoom_source = None
         self.zoom_model = None
         self.zoom_machine = None
+        # `r` drops the active mode's drills outright, so the dormant modes' drop too --
+        # a reload exists to pick up data that CHANGED, and a snapshot restored unchecked
+        # scopes its Sessions list by a harness/project the reload may have just removed.
+        self._disarm_mode_memory_drills()
         self._revalidate_machine_filter()  # keep the `M` filter iff its box still exists
         self._revalidate_harness_filter()  # keep the `H` filter iff still a fleet w/ that tool
         self.workflow_index = min(self.workflow_index, max(0, len(self.workflows) - 1))
@@ -3015,18 +3054,18 @@ class App:
         self.model_pick_index = 0
         self.zoom_machine = None  # same: a box that may not be in the new data
         self.machine_pick_index = 0
+        # ...and the same for the modes we're NOT standing in (a restore keeps a project
+        # drill that survived the swap, exactly as the restore branch below does).
+        self._disarm_mode_memory_drills(keep_project=restore is not None)
         self._revalidate_machine_filter()  # drop the `M` filter if this source lacks the box
         self._revalidate_harness_filter()  # ...and the `H` harness filter if the fleet is gone
         if restore:
             self.browse_mode = restore["browse_mode"]
             self.focus = restore["focus"]
             self.view = restore["view"]
-            # A source/demo swap can drop the fleet (switch to one non-remote backend),
-            # leaving Machines mode with nothing to show. Fall back to time browse so the
-            # restored view is never an empty, un-obvious Machines list.
-            if self.browse_mode == "machines" and not self.machines_present:
-                self.browse_mode = "time"
-                self.view = "browse"
+            # A source/demo swap can drop the fleet (switch to one non-remote backend);
+            # Machines mode survives it -- the pulled boxes go, the box you're on stays,
+            # so the restored view is one live row rather than an empty list.
             zoom_project = restore["zoom_project"]
             self.zoom_project = (
                 zoom_project
@@ -3062,12 +3101,6 @@ class App:
         self.zoom_project = None
         self.query = ""
         self.view = "browse"
-        # A harness switch (this no-restore path) can drop the fleet: a single non-remote
-        # backend has no machines, so Machines mode would strand on a phantom "unknown" box
-        # the mode strip can't even show. Fall back to time browse -- the same guard the
-        # restore path applies, which select_source (unlike toggle_demo) never reaches.
-        if self.browse_mode == "machines" and not self.machines_present:
-            self.browse_mode = "time"
         self.focus = "days"
         self.tab = self.scroll = 0
         self.workflow_index = self.month_index = self.day_index = self.project_index = 0
@@ -3179,7 +3212,7 @@ class App:
         visible = {
             w.id
             for w in self.loaded
-            if (self.machine_filter is None or (w.machine or "unknown") == self.machine_filter)
+            if (self.machine_filter is None or self.machine_of(w) == self.machine_filter)
             and (self.harness_filter is None or (w.source or "unknown") == self.harness_filter)
         }
         return {rid: rows for rid, rows in self._model_by_root.items() if rid in visible}
@@ -4023,7 +4056,7 @@ class App:
             if exclude != "source" and self.zoom_source:
                 rows = [w for w in rows if (w.source or "unknown") == self.zoom_source]
             if exclude != "machine" and self.zoom_machine:
-                rows = [w for w in rows if (w.machine or "unknown") == self.zoom_machine]
+                rows = [w for w in rows if self.machine_of(w) == self.zoom_machine]
         return self.filtered_sessions(rows)
 
     def zoom_source_rows(self) -> list[tuple[str, dict[str, float | int]]]:
@@ -4098,7 +4131,7 @@ class App:
         if self.zoom_source:
             rows = [w for w in rows if (w.source or "unknown") == self.zoom_source]
         if self.zoom_machine:  # a per-scope Machines-tab drill (fleet view)
-            rows = [w for w in rows if (w.machine or "unknown") == self.zoom_machine]
+            rows = [w for w in rows if self.machine_of(w) == self.zoom_machine]
         return self.filtered_sessions(rows)
 
     def _zooming_ignored_project(self) -> bool:
@@ -4476,6 +4509,31 @@ class App:
             "model_pick_index": self.model_pick_index,
             "machine_pick_index": self.machine_pick_index,
         }
+
+    def _disarm_mode_memory_drills(self, keep_project: bool = False) -> None:
+        # Every reload resets the drills of the mode you're STANDING IN (they name a
+        # harness / project / model / box the new data may not have). The other modes'
+        # snapshots name the same vanished things and were restored unchecked, so coming
+        # back to one re-armed a phantom filter and showed an EMPTY session list beside a
+        # perfectly full dataset (`H` to one backend, then `p`/`m`: still scoped to the
+        # harness you'd drilled before the switch). The rest of a snapshot is anchored by
+        # value and re-found by restore_selection, so only the drills need disarming.
+        #
+        # `keep_project` mirrors what the CALLER does to the active mode, so one reload
+        # can't treat the mode you happen to be in differently from the others: the
+        # restore path keeps a project drill that still exists (and never in Machines
+        # mode, where the drill is per-box), `r` and a fresh swap drop it outright.
+        for mode, saved in self._mode_memory.items():
+            keep = (
+                keep_project
+                and mode != "machines"
+                and saved["zoom_project"]
+                and any(
+                    self.project_root(w.directory) == saved["zoom_project"] for w in self.loaded
+                )
+            )
+            saved["zoom_project"] = saved["zoom_project"] if keep else None
+            saved["zoom_source"] = saved["zoom_model"] = saved["zoom_machine"] = None
 
     def _remember_mode_position(self) -> None:
         # Snapshot the current mode's spot into _mode_memory so a later return restores the
@@ -5340,7 +5398,7 @@ class App:
             lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
         )
         for w in workflows:
-            item = by_machine[w.machine or "unknown"]
+            item = by_machine[self.machine_of(w)]
             item["cost"] = float(item["cost"]) + w.total_cost
             item["tokens"] = int(item["tokens"]) + w.total_tokens
             item["sessions"] = int(item["sessions"]) + 1
@@ -5420,11 +5478,12 @@ class App:
             return []
         kind, key = self.trend_drill
         if kind in ("source", "machine"):
-            field = (lambda w: w.machine) if kind == "machine" else (lambda w: w.source)
+            # The machine key comes from machine_rows, which labels an untagged session
+            # with THIS box -- so match by the same rule, or the drill silently opens on
+            # an empty list for a row the tab just showed.
+            field = self.machine_of if kind == "machine" else (lambda w: w.source or "unknown")
             rows = [
-                (w, w.total_cost, w.total_tokens)
-                for w in self.all_workflows
-                if (field(w) or "unknown") == key
+                (w, w.total_cost, w.total_tokens) for w in self.all_workflows if field(w) == key
             ]
             rows.sort(key=lambda r: (r[1], r[2]), reverse=True)
             return rows
@@ -5979,12 +6038,11 @@ class App:
             self.set_browse_mode("time")
             return True
         if act == "mode_machines":
-            # Machines mode: only meaningful with a fleet (>=2 boxes). Off a fleet it
-            # would be a single all-"unknown" list, so say what's missing instead.
-            if self.machines_present:
-                self.set_browse_mode("machines")
-            else:
-                self.notify("machines view needs a fleet — see --pull", "error")
+            # Always available: with no fleet it shows the one box you're on (see
+            # mode_tab_list). The fleet-only extras (the M filter, the Machine column,
+            # F re-pull) stay gated on machines_present -- they need a second box to
+            # compare against, this view doesn't.
+            self.set_browse_mode("machines")
             return True
         if act == "refresh_machines":
             # Fetch: re-pull the selected box (Machines mode) or every pulled box.

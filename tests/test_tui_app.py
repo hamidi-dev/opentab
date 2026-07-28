@@ -2503,12 +2503,14 @@ def test_machines_mode_refresh_drops_a_project_drill_like_source_and_model():
     assert app.zoom_project is None  # per-box drill dropped, not restored
 
 
-def test_mode_tab_list_gates_machines_on_a_fleet():
-    assert [m for _l, m in app_with([workflow("a", "2026-05-01 10:00:00")]).mode_tab_list()] == [
-        "time",
-        "projects",
-    ]
-    assert [m for _l, m in _fleet().mode_tab_list()] == ["time", "projects", "machines"]
+def test_mode_tab_list_always_offers_machines():
+    # The mode strip is fixed: off a fleet Machines is a one-row view of the box you're
+    # on, not an empty list -- and it is where the consolidated view announces itself.
+    modes = ["time", "projects", "machines"]
+    assert [
+        m for _l, m in app_with([workflow("a", "2026-05-01 10:00:00")]).mode_tab_list()
+    ] == modes
+    assert [m for _l, m in _fleet().mode_tab_list()] == modes
 
 
 def test_mode_tab_click_switches_browse_mode():
@@ -2529,11 +2531,39 @@ def test_machine_row_click_selects_and_double_click_drills():
     assert app.view == "zoom"
 
 
-def test_m_key_needs_a_fleet():
+def test_m_key_off_a_fleet_shows_this_one_machine():
+    # `m` works everywhere: with no fleet the mode holds exactly one row -- this box,
+    # named by its hostname (never "unknown") and LIVE (full drill-in), not a `○ pulled
+    # summary` just because no store stamped it.
     plain = app_with([workflow("a", "2026-05-01 10:00:00")])
     assert plain.handle_key(None, ord("m")) is True
-    assert plain.browse_mode == "time"  # unchanged
-    assert "fleet" in plain.notice.lower()
+    assert plain.browse_mode == "machines"
+    rows = plain.machines
+    assert len(rows) == 1
+    assert rows[0].name == plain.local_machine_name == ot.util.local_machine_name()
+    assert rows[0].live is True and rows[0].workflows == 1
+    # ...and the fleet-only extras stay gated: nothing to filter or compare against.
+    assert plain.machines_present is False
+    assert plain.renderer.mach_col() == ""  # no Machine column
+    plain.open_machine_menu()
+    assert plain.machine_menu is False and "fleet" in plain.notice.lower()
+
+
+def test_this_machines_label_is_scrambled_under_demo():
+    # The one-box row is named by the REAL hostname, so demo must scramble it like any
+    # pulled label -- a hostname is identity, as a title or a path is. And the grouping
+    # must follow the scramble (one row, not one real + one fake).
+    app = app_with([workflow("a", "2026-05-01 10:00:00")])
+    real = app.local_machine_name
+    app.store.demo = True
+    app.store.demo_cats = ot.demo.DEMO_ALL
+    fake = app.local_machine_name
+    assert fake != real and fake == ot.demo.demo_machine(real)
+    assert [m.name for m in app.machines] == [fake]
+    assert app.workflows_for_machine(fake) and not app.workflows_for_machine(real)
+    # `titles` off (a spend-only demo) keeps names real, like every other label.
+    app.store.demo_cats = frozenset({"spend"})
+    assert app.local_machine_name == real
 
 
 def test_switch_browse_mode_steps_out_of_a_session():
@@ -3068,15 +3098,98 @@ def test_armed_harness_filter_is_always_clearable_even_with_one_harness_left():
     assert app.harness_filter_options()[0][:2] == ("", "All harnesses")
 
 
-def test_source_swap_out_of_machines_mode_falls_back_to_time_browse():
-    # Regression (user-reported): switching to a single harness dropped the fleet but left
-    # browse_mode stuck on "machines" over a phantom "unknown" box, in a ZOOM. The
-    # no-restore reload path (select_source's) must fall back to a plain time browse.
+def test_source_swap_out_of_a_fleet_keeps_machines_mode_on_this_box():
+    # Switching to a single harness drops the pulled boxes, but not the one you're on:
+    # Machines mode survives the swap and shows this machine (it used to strand on a
+    # phantom "unknown" box, which is why it fell back to time browse instead).
     app = app_with([workflow("a", "2026-05-01 10:00:00")])  # a non-fleet store
     app.browse_mode = "machines"  # as if we'd been in a fleet's Machines mode
     app.view = "zoom"
     app._reload_for_source()  # the no-restore path select_source uses
-    assert app.browse_mode == "time" and app.view == "browse"
+    assert app.browse_mode == "machines" and app.view == "browse"
+    assert [m.name for m in app.machines] == [app.local_machine_name]
+
+
+def _sourced(wid, source, when):
+    w = workflow(wid, when)
+    w.source = source
+    return w
+
+
+def test_a_source_swap_disarms_the_drills_of_the_modes_you_are_not_in():
+    # Regression (Codex): _reload_for_source cleared the ACTIVE mode's zoom_source/
+    # project/model/machine (they name things the new data may not have) but left the
+    # dormant per-mode snapshots armed, and _restore_mode_memory reinstated them
+    # unchecked -- so `H` to one backend and then `p`/`m` came back scoped to a harness
+    # that is no longer in the data: an empty session list beside a full dataset.
+    both = [
+        _sourced("a", "Claude", "2026-05-01 10:00:00"),
+        _sourced("b", "OpenCode", "2026-05-02 10:00:00"),
+    ]
+    for mode in ("projects", "machines"):
+        app = app_with(list(both))
+        app.set_browse_mode(mode)
+        app.drill_in()
+        app.zoom_source = "Claude"  # as if drilled into the Claude row of the Harnesses tab
+        app.set_browse_mode("time")  # leave the mode -- the drill is snapshotted
+        # `H` -> one backend: the swapped store carries only OpenCode sessions now.
+        app.store._workflows = [_sourced("c", "OpenCode", "2026-05-03 10:00:00")]
+        app._reload_for_source()
+        app.set_browse_mode(mode)  # ...and come back
+        assert app.zoom_source is None, mode
+        assert [w.id for w in app.current_sessions()] == ["c"], mode
+
+
+def test_a_plain_reload_disarms_the_dormant_drills_too():
+    # `r` drops the ACTIVE mode's drills outright (it exists to pick up data that
+    # changed), so the dormant snapshots must drop theirs too -- else returning to a
+    # mode scopes its Sessions by a harness the reload just removed.
+    app = app_with(
+        [
+            _sourced("a", "Claude", "2026-05-01 10:00:00"),
+            _sourced("b", "OpenCode", "2026-05-02 10:00:00"),
+        ]
+    )
+    app.set_browse_mode("projects")
+    app.drill_in()
+    app.zoom_source = "Claude"
+    app.set_browse_mode("time")
+    app.store._workflows = [_sourced("c", "OpenCode", "2026-05-03 10:00:00")]
+    app.reload()
+    app.set_browse_mode("projects")
+    assert app.zoom_source is None
+    assert [w.id for w in app.current_sessions()] == ["c"]
+
+
+def test_a_dormant_project_drill_survives_a_restoring_reload_iff_it_still_exists():
+    # The mode you're standing in and the ones you aren't must come out of ONE reload
+    # the same way: the restore path (a `D` toggle, an `F` re-pull) keeps a project drill
+    # that still exists, so a dormant snapshot's must survive too -- and vanish with the
+    # project, exactly like the active one.
+    def drilled():
+        app = app_with(
+            [
+                workflow("a", "2026-05-01 10:00:00", directory="/work/alpha"),
+                workflow("b", "2026-05-02 10:00:00", directory="/work/beta"),
+            ]
+        )
+        app.set_browse_mode("projects")
+        app.drill_in()
+        app.zoom_project = app.project_root("/work/alpha")
+        app.set_browse_mode("time")  # snapshot it, then reload from the other mode
+        return app
+
+    kept = drilled()
+    kept._reload_for_source(kept.ui_snapshot())  # same data -> the drill is still valid
+    kept.set_browse_mode("projects")
+    assert kept.zoom_project == kept.project_root("/work/alpha")
+
+    gone = drilled()
+    gone.store._workflows = [workflow("b", "2026-05-02 10:00:00", directory="/work/beta")]
+    gone._reload_for_source(gone.ui_snapshot())  # the project is no longer in the data
+    gone.set_browse_mode("projects")
+    assert gone.zoom_project is None
+    assert [w.id for w in gone.current_sessions()] == ["b"]
 
 
 def test_notices_overlay_swallows_mouse_events():
