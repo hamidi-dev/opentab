@@ -216,6 +216,15 @@ class Store:
             return fallback
         return f"coalesce({', '.join(parts)}, {fallback})"
 
+    def _activity_ts_expr(self, alias: str = "s") -> str:
+        # Epoch-ms of a session's most recent update, falling back to its creation
+        # time on schemas that predate time_updated -- recent_roots()'s newest-
+        # activity ordering (the `--status` one-shot); workflows()' own ended_at
+        # rollup below computes the same coalesce inline for its own tree walk.
+        if "time_updated" in self.session_columns:
+            return f"coalesce({alias}.time_updated, {alias}.time_created)"
+        return f"{alias}.time_created"
+
     def cache_inputs(self) -> list[str]:
         # The DB file whose (size, mtime) fingerprints the warm-start cache, plus its
         # WAL sidecars. OpenCode runs SQLite in WAL mode, so new sessions land in
@@ -374,10 +383,7 @@ class Store:
         # without the full workflows() rollup; directories are returned raw -- the
         # caller folds them to git roots.
         directory_expr = self._session_text_expr("root", ["directory", "path"], "'(unknown)'")
-        if "time_updated" in self.session_columns:
-            ts_expr = "coalesce(s.time_updated, s.time_created)"
-        else:
-            ts_expr = "s.time_created"
+        ts_expr = self._activity_ts_expr("s")
         sql = f"""
         with recursive tree(root_id, id) as (
           select id, id from session where parent_id is null

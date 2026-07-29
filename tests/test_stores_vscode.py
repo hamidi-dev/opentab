@@ -115,6 +115,39 @@ def test_vscode_store_replays_journal_and_prefers_cumulative_output():
         assert nodes[0]["tokens_total"] == 32543 + 490
 
 
+def test_vscode_last_active_reflects_the_latest_request_not_the_first():
+    with tempfile.TemporaryDirectory() as tmp:
+        user, _ = _vscode_user_dir(
+            tmp,
+            [
+                {
+                    "kind": 0,
+                    "v": {
+                        "version": 3,
+                        "sessionId": VSCODE_SID,
+                        "creationDate": 1781122762688,
+                        "requests": [],
+                    },
+                },
+                {
+                    "kind": 2,
+                    "k": ["requests"],
+                    "v": [_vscode_request(rid="request_1", ts=1781122800000)],
+                },
+                {
+                    "kind": 2,
+                    "k": ["requests"],
+                    "v": [_vscode_request(rid="request_2", ts=1781200000000)],
+                },
+            ],
+        )
+        store = ot.VscodeStore([user], _vscode_args(user))
+        (w,) = store.workflows()
+        assert w.created_at == store._ms_to_local(1781122800000)
+        assert w.last_active == store._ms_to_local(1781200000000)
+        assert w.last_active != w.created_at
+
+
 def test_vscode_store_reads_legacy_json_and_dedupes_against_journal():
     with tempfile.TemporaryDirectory() as tmp:
         user, _ = _vscode_user_dir(

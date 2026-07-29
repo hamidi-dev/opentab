@@ -62,6 +62,7 @@ the harness records cumulative-total deltas rather than per-request prompts
 |-----|--------|
 | `R` | Set the date range — `all` · `30d` (or `30`) · `2m` · `1y` · `2026` · `2026-05` · `start..end` |
 | `a` | Back to all time, keeping the current selection where possible |
+| `A` | Group Months/Days by last activity instead of session start — also re-keys the active date range (`R`/`a`) to the same timestamp, so the range and the panels always agree on which sessions are in scope. Set on the **Time overview** (the Years/Months/Days panels): `Esc` out of a drill-in, or `t` out of Projects/Machines, first. The grouping itself stays in force everywhere |
 | `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`) |
 | `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id/**note**) and projects; model lists (`P`, `w`) match word-anchored (letters may scatter inside a word, a new word only joins at its first letter — `opus48` works, `opus` no longer drags in `qwen3-c`**`o`**`der-`**`p`**`l`**`us`**), routes by substring. Non-ASCII (`ä`, `界`) can be typed. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
 | `x` | Clear the filter |
@@ -107,7 +108,7 @@ work from anywhere, Trends and Prices included.
 ## What persists between runs
 
 The active **harness, range, sort, ignored projects, bookmarks, pinned price rows,
-theme, and `$` what-if view are remembered between runs**, stored in
+theme, `A` grouping mode, and `$` what-if view are remembered between runs**, stored in
 `~/.local/state/opentab/state.json` (the XDG *state* dir — regenerable prefs). Pass
 `--no-state` to disable; `--demo` never persists.
 

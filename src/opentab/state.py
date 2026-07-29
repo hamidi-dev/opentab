@@ -46,6 +46,7 @@ def save_state(app: App) -> None:
         "bookmarks": sorted(app.bookmarks),  # sessions starred with `b`
         "pinned_models": sorted(app.pinned_models),  # P-overlay pins ("route/canon", space)
         "show_api_prices": app.show_api_prices,
+        "group_by_activity": app.group_by_activity,  # `A`: bucket by last_active vs created_at
         "source": app.source_key,  # restore the last source (opencode/claude/all) next run
         "theme": app.theme_id,  # the colour theme (shared with the web browser)
         "cal_levels": app.cal_levels,  # the Calendar heat-map granularity (+/-)
@@ -129,6 +130,13 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     saved_api = state.get("show_api_prices")
     if saved_api is not None and not app.store.demo:
         app.show_api_prices = bool(saved_api)
+    # Restore the `A` grouping mode. Like the range, it can change which years/
+    # months have data (a session's bucket moves), so re-anchor the default
+    # selection against the restored mode -- same reasoning as the range restore.
+    saved_group_by_activity = state.get("group_by_activity")
+    if isinstance(saved_group_by_activity, bool) and saved_group_by_activity:
+        app.group_by_activity = True
+        app._anchor_default_selection()
     # Restore the last theme, unless an explicit non-default --theme was passed
     # (which App.__init__ already applied and should win, like the range flags).
     if getattr(args, "theme", themes.DEFAULT_THEME) in (None, themes.DEFAULT_THEME):

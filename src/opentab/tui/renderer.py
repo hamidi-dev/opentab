@@ -713,6 +713,8 @@ class Renderer:
         segs = [(range_lbl, active if range_lbl != "all time" else base), (rest_bc, base)]
         if sort_by:
             segs.append((f"  ·  sort: {sort_by}", base))
+        if self.group_by_activity:  # `A`: Months/Days bucket by last activity, not start
+            segs.append(("  ·  by: last activity", base))
         if self.query and not self.filter_active:
             segs.append((f"  ·  filter: {self.query}", active))
         ignored_count = len(self.ignored_projects) + len(self.ignored_sessions)
@@ -961,8 +963,16 @@ class Renderer:
     def _scope_spans_days(self) -> bool:
         # True whenever the session list spans more than the one scoped day: projects and
         # machines modes (a box's whole history), a month, a year, or "All years". Only a
-        # focused single day in time mode shares one date across every row.
-        return self.browse_mode in ("projects", "machines") or self.focus != "days"
+        # focused single day in time mode shares one date across every row -- and even
+        # then only when grouping by session start: under `A`, a day's bucket can mix
+        # sessions whose created_at falls on other calendar dates (a session bucketed
+        # under its LAST activity, days after it started), so a bare clock time would
+        # misrepresent them as same-day.
+        return (
+            self.browse_mode in ("projects", "machines")
+            or self.focus != "days"
+            or self.group_by_activity
+        )
 
     def session_started(self, workflow: Workflow) -> str:
         # Date when the scope spans more than a day; a bare clock time only when every
@@ -2856,7 +2866,7 @@ class Renderer:
         # Top Months is the year's headline breakdown -- the level you drill into next.
         by_month: dict[str, list[Workflow]] = defaultdict(list)
         for w in year_ws:
-            by_month[w.created_at[:7]].append(w)
+            by_month[self._bucket_ts(w)[:7]].append(w)
         lines.extend(["", "# Top Months"])
         for month in sorted(
             by_month, key=lambda m: sum(w.total_cost for w in by_month[m]), reverse=True

@@ -165,6 +165,37 @@ def test_what_if_price_view_is_persisted_in_state():
     assert restored.show_api_prices
 
 
+def test_group_by_activity_is_persisted_in_state():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00")])
+    app.group_by_activity = True
+    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with(
+                [workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00")]
+            )
+            assert not restored.group_by_activity
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+    assert restored.group_by_activity
+    # Restoring it re-anchors the default selection against the new bucketing, same
+    # as a restored range -- the session must show up under its last-active day.
+    assert restored.active_day == "2026-06-05"
+    # A restored browse_mode that isn't "time" (a fleet/projects session) is not a
+    # trap: the flag stays on, the key just waits until `t` brings the panels back.
+    restored.browse_mode = "projects"
+    assert restored.group_by_activity and not restored.can_group_by_activity()
+    restored.set_browse_mode("time")
+    assert restored.can_group_by_activity()
+
+
 def test_calendar_granularity_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.cal_levels = ot.HEAT_MAX_LEVELS

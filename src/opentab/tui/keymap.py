@@ -454,6 +454,20 @@ KEYS: tuple[Key, ...] = (
         section="here",
         when=lambda app: in_main(app) or in_price_list(app),
     ),
+    Key(
+        id="group-by-activity",
+        ctx="main",
+        actions=("group_activity",),
+        summary=lambda app: (
+            "group by session start, not last activity"
+            if app.group_by_activity
+            else "group by last activity, not session start"
+        ),
+        section="here",
+        # Not a global toggle's key -- it only does something on the Years/Months/Days
+        # panels themselves, so it belongs with the other "here" keys, not "Global".
+        when=lambda app: in_main(app) and app.can_group_by_activity(),
+    ),
     # ---- Here: the Trends overlay ---------------------------------------------------
     Key(
         id="trends-tabs",

@@ -54,6 +54,13 @@ trends. What each tool's records support on top:
 per tool call and MCP server · ¹ headerless: the OTEL export captures no prompt text ·
 ² with the optional `tool` column.</sub>
 
+Every harness also derives when a session was last active (not just when it started),
+including activity from its subagent subtree where tracked. This timestamp feeds the
+Months/Days panel's `A` toggle, which switches between grouping by session start
+(`created_at`, default) and last activity (`last_active`) — and re-keys the active date
+range (`R`/`a`) to the same timestamp, so a session's bucket day and whether it's in
+range never disagree.
+
 ### Token-only harnesses
 
 The whole TUI works the same everywhere — with two differences for the token-only

@@ -224,6 +224,7 @@ REGISTRY: tuple[Context, ...] = (
             Action("whatif", ("w",), "what-if — reprice a session at one model"),
             Action("range", ("R",), "set the date range"),
             Action("all_time", ("a",), "all time"),
+            Action("group_activity", ("A",), "group Months/Days by last activity, not start"),
             Action("reload", ("r",), "reload the data"),
             Action("refresh_machines", ("F",), "re-pull machine summaries over ssh (fleet)"),
             Action("harness", ("H",), "switch harness / filter harness (fleet)"),

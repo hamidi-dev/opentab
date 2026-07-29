@@ -5,8 +5,35 @@ import os
 import tempfile
 
 import opentab as ot
+from opentab.formatting import iso_to_local
 
 from tests._support import PI_SID, _pi_args, _pi_assistant, _pi_session, _pi_user, _pi_write
+
+
+def test_pi_store_last_active_reflects_the_latest_assistant_reply():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _pi_session(PI_SID, cwd, ts="2026-05-15T07:32:15.949Z"),
+            _pi_user("go", ts="2026-05-15T07:32:20.000Z"),
+            _pi_assistant(
+                "anthropic/claude-sonnet-4",
+                100,
+                50,
+                cost=0.01,
+                mid="a1",
+                ts="2026-05-15T07:40:00.000Z",  # the latest activity in the session
+            ),
+        ]
+        _pi_write(root, "--proj--", PI_SID, rows)
+        w = ot.PiStore(root, _pi_args()).workflows()[0]
+
+        # iso_to_local renders in the system's local TZ, so compare against its own
+        # conversion of each raw UTC timestamp rather than a hardcoded wall-clock string.
+        assert w.created_at == iso_to_local("2026-05-15T07:32:15.949Z")
+        assert w.last_active == iso_to_local("2026-05-15T07:40:00.000Z")
 
 
 def test_pi_store_meters_cost_splits_cache_and_rolls_up_to_git_root():

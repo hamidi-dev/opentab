@@ -34,12 +34,16 @@ class Workflow:
     # with the exporting machine's label so the consolidated view can tag/group by box.
     # A second, orthogonal dimension to `source` (a session has both a tool and a host).
     machine: str = ""
-    # When the session's LAST recorded activity happened, same local
-    # "YYYY-MM-DD HH:MM:SS" string as created_at. Each backend fills it from data it
-    # already reads (a time_updated column, the max event timestamp of the parse it
-    # runs anyway) -- never a new scan. Empty = the backend can't know (an old
-    # --export, a schema without the column). Purely for the "(until 16:42)" hint on
-    # the detail line; the headline duration is worked_seconds, not this span.
+    # When the session's LAST recorded activity happened (root plus its whole subagent
+    # subtree), same local "YYYY-MM-DD HH:MM:SS" string as created_at. Each backend
+    # fills it from data it already reads (a time_updated column, the max event
+    # timestamp of the parse it runs anyway) -- never a new scan. Empty = the backend
+    # can't know (an old --export, a schema without the column), in which case
+    # day/month/year grouping falls back to created_at. Feeds the "(until 16:42)" hint
+    # on the detail line and the `A` toggle's Months/Days re-bucketing alike -- one
+    # timestamp, both readers. Distinct from ProjectSummary/MachineSummary.last_active,
+    # which is the most recent *session's* created_at across a group of sessions, not
+    # activity inside a single one.
     ended_at: str = ""
     # How long the agent ACTUALLY worked, in seconds -- the sum of its working bursts
     # with the idle gaps (you reading/composing the next prompt) removed, computed at

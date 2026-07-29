@@ -170,6 +170,14 @@ class HermesStore:
         except (OSError, OverflowError, ValueError):
             return ""
 
+    @classmethod
+    def _activity_ms(cls, started_at, last_msg_ts) -> int:
+        # A session's own last-activity instant: its newest message, falling back
+        # to its start time -- state.db has no per-session updated column. Feeds
+        # recent_roots' newest-activity ordering (the `--status` one-shot); the
+        # ended_at/worked_seconds rollup below has its own, subtree-aware walk.
+        return max(cls._epoch_ms(last_msg_ts), cls._epoch_ms(started_at))
+
     @staticmethod
     def _epoch_ms(value) -> int:
         # Epoch milliseconds for the cross-backend recent_roots contract. Hermes
@@ -670,7 +678,7 @@ class HermesStore:
         info = {r["id"]: r for r in rows}
         best: dict[str, list] = {}  # root id -> [last_active ms, directory]
         for r in rows:
-            active = max(self._epoch_ms(last_msg.get(r["id"])), self._epoch_ms(r["started_at"]))
+            active = self._activity_ms(r["started_at"], last_msg.get(r["id"]))
             cur, seen = r["id"], {r["id"]}
             while True:  # walk to the root (cycle-guarded); a busy child bumps its root
                 parent = info[cur]["parent_session_id"]

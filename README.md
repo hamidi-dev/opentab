@@ -234,8 +234,8 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | `K` | **Remap anything** — opens `~/.config/opentab/keymap.conf` in `$EDITOR` and reloads it the moment you return; every key in every view, picker and prompt is configurable, and the footer/help re-label themselves live ([docs](docs/keys.md#remap-any-key)) |
 | `?` / `q` | Help / quit |
 
-The active **harness, range, sort, ignored projects, and `$` what-if view are
-remembered between runs** (stored in `~/.local/state/opentab/state.json`; pass
+The active **harness, range, sort, ignored projects, grouping mode, and `$` what-if view
+are remembered between runs** (stored in `~/.local/state/opentab/state.json`; pass
 `--no-state` to disable, and `--demo` does not persist). A `w` **target model is not** —
 it's a transient analysis mode, and a remembered one would quietly re-frame the next
 run's Subagents tab. Session **notes (`n`) live apart**, in

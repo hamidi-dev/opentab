@@ -84,6 +84,25 @@ def test_csv_groups_by_day_and_project_when_no_session_id():
         assert alpha18.total_tokens == 100 + 10 + 200 + 20  # both rows folded together
 
 
+def test_csv_last_active_tracks_the_latest_row_in_the_session():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "copilot.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "output_tokens", "session_id"],
+            [
+                ["2026-06-18T10:00:00Z", "gpt-4o", 100, 10, "s1"],
+                ["2026-06-18T12:00:00Z", "gpt-4o", 50, 5, "s1"],  # latest -> last_active
+                ["2026-06-18T11:00:00Z", "gpt-4o", 20, 2, "s1"],  # out of order, still earlier
+            ],
+        )
+        store = ot.CsvStore(path, _csv_args())
+        w = store.workflows()[0]
+        assert w.created_at == ot.CsvStore._parse_ts("2026-06-18T10:00:00Z")
+        assert w.last_active == ot.CsvStore._parse_ts("2026-06-18T12:00:00Z")
+        assert w.last_active != w.created_at
+
+
 def test_csv_credits_column_prices_as_real_spend():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "copilot.csv")
@@ -275,6 +294,42 @@ def test_jsonl_store_splits_cache_prefixes_providers_and_supports_turns():
         assert all(t["depth"] == 0 and t["agent"] == "-" for t in turns)
         # time is the canonical local "YYYY-MM-DD HH:MM:SS" the renderer slices
         assert re.match(r"2026-06-18 \d\d:\d\d:\d\d$", turns[0]["time"])
+
+
+def test_jsonl_last_active_tracks_the_latest_line_in_the_session():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.jsonl")
+        _write_jsonl(
+            path,
+            [
+                {
+                    "timestamp": "2026-06-18T10:00:00Z",
+                    "session_id": "s1",
+                    "model": "gpt-4o",
+                    "input_tokens": 100,
+                    "output_tokens": 10,
+                },
+                {
+                    "timestamp": "2026-06-18T12:00:00Z",  # latest -> last_active
+                    "session_id": "s1",
+                    "model": "gpt-4o",
+                    "input_tokens": 50,
+                    "output_tokens": 5,
+                },
+                {
+                    "timestamp": "2026-06-18T11:00:00Z",  # out of order, still earlier
+                    "session_id": "s1",
+                    "model": "gpt-4o",
+                    "input_tokens": 20,
+                    "output_tokens": 2,
+                },
+            ],
+        )
+        store = ot.JsonlStore(path, _jsonl_args())
+        w = store.workflows()[0]
+        assert w.created_at == ot.JsonlStore._parse_ts("2026-06-18T10:00:00Z")
+        assert w.last_active == ot.JsonlStore._parse_ts("2026-06-18T12:00:00Z")
+        assert w.last_active != w.created_at
 
 
 def test_jsonl_cost_and_credits_price_as_real_spend():

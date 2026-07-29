@@ -283,7 +283,8 @@ class CodexStore:
             add(total, model, acc)
             add(own, model, acc)
         for child, _depth in self._descendants(sessions, sid):
-            for model, acc in sessions[child]["models"].items():
+            cs = sessions[child]
+            for model, acc in cs["models"].items():
                 add(total, model, acc)
         rows: list[dict] = []
         for model, acc in total.items():

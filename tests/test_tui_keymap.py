@@ -254,6 +254,28 @@ def test_trends_chips_say_what_the_key_will_actually_do():
     assert enter.chip_segments(app) == [("Enter drill", False)]
 
 
+def test_the_grouping_key_is_listed_only_where_it_works():
+    # The `?` help entry is gated on the same can_group_by_activity() check as
+    # the key itself, so leaving the Time overview must hide it there too.
+    app = _keymap_app()
+    entry = next(e for e in ot.keymap.KEYS if e.id == "group-by-activity")
+    assert entry.shown(app)  # browse + time: the panels are right there
+    assert entry.chip is None  # deliberately footer-silent -- the footer is crowded enough
+    assert "group-by-activity" not in ot.keymap.FOOTER_ORDER
+    # It only does something on the Years/Months/Days panels -- that's "Here", not "Global".
+    assert entry.section == "here"
+    assert [t for t, _ in app.renderer.help_sections() if t.startswith("Here")][0].startswith(
+        "Here — browse"
+    )
+
+    app.view = "zoom"
+    assert not entry.shown(app)
+
+    app.view = "browse"
+    app.browse_mode = "projects"
+    assert not entry.shown(app)
+
+
 def test_a_composite_chip_falls_back_to_its_plain_label():
     # Tab still cycles the focus in a zoom, where the yr/mo/day segments don't apply --
     # an empty segment list must not silently drop the key from the footer.

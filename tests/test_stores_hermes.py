@@ -255,6 +255,73 @@ def test_hermes_store_rolls_child_session_into_parent_subtotal():
         assert root_node["cost"] == 0.0 and child_node["cost"] == 0.0
 
 
+def test_hermes_last_active_reflects_latest_message_in_subtree():
+    # last_active tracks the newest message anywhere in the subtree (root or
+    # subagent alike), not just the root's own started_at.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        cwd = os.path.join(tmp, "project")
+        os.makedirs(cwd)
+        _hermes_db(
+            db,
+            [
+                {
+                    "id": "root1",
+                    "title": "Root task",
+                    "cwd": cwd,
+                    "started_at": 1750000000.0,
+                    "inp": 10,
+                    "out": 5,
+                },
+                {
+                    "id": "child1",
+                    "parent_id": "root1",
+                    "cwd": cwd,
+                    "started_at": 1750001000.0,
+                    "inp": 20,
+                    "out": 10,
+                },
+            ],
+        )
+        conn = sqlite3.connect(db)
+        conn.execute(
+            """CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?,?,?,?)",
+            [
+                ("root1", "user", "go", 1750000000.0),
+                ("child1", "user", "subagent work", 1750005000.0),  # newest, subtree-wide
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        args = type("Args", (), {"demo": False})()
+        (w,) = ot.HermesStore(db, args).workflows()
+        assert w.created_at == ot.HermesStore._ts_to_local(1750000000.0)
+        assert w.last_active == ot.HermesStore._ts_to_local(1750005000.0)
+        assert w.last_active != w.created_at
+
+
+def test_hermes_last_active_falls_back_to_created_at_without_messages_table():
+    # An old/partial state.db without a messages table has nothing better than
+    # started_at to go on -- last_active must fall back to created_at, not go empty.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "started_at": 1750000000.0, "inp": 10, "out": 5}])
+        args = type("Args", (), {"demo": False})()
+        (w,) = ot.HermesStore(db, args).workflows()
+        assert w.last_active == w.created_at
+        assert w.last_active == ot.HermesStore._ts_to_local(1750000000.0)
+
+
 def test_hermes_store_rolls_grandchild_session_into_subtotal():
     """Depth-2+ sessions must be included in aggregate totals and node list."""
     with tempfile.TemporaryDirectory() as tmp:

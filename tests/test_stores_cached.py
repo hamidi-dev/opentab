@@ -154,6 +154,107 @@ def test_cached_store_serves_records_cost_and_survives_field_drift():
                 os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
+def test_cached_store_round_trips_last_active():
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")
+        data = os.path.join(tmp, "data.jsonl")
+        with open(data, "w") as fh:
+            fh.write("one\n")
+
+        class Backend:
+            combined = False
+            records_cost = False
+            demo = False
+            source_name = "Fake"
+
+            def cache_inputs(self):
+                return [data]
+
+            def workflows(self):
+                return [workflow("s1", "2026-06-01 12:00:00", last_active="2026-06-01 15:45:00")]
+
+            def model_breakdown(self):
+                return []
+
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        cid = "fake|" + data
+        try:
+            # Cold: writes the cache with last_active in the payload (the write itself
+            # is triggered from model_breakdown(), which needs both fresh rollups).
+            c1 = ot.CachedStore(Backend(), cid, args)
+            assert c1.workflows()[0].last_active == "2026-06-01 15:45:00"
+            c1.model_breakdown()
+
+            # Warm: served from the cached JSON, last_active survives the round trip.
+            c2 = ot.CachedStore(Backend(), cid, args)
+            wf2 = c2.workflows()
+            assert c2.served_from_cache is True
+            assert wf2[0].last_active == "2026-06-01 15:45:00"
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
+def test_cached_store_invalidates_a_pre_last_active_cache_version():
+    # A cache file written by an older opentab (before last_active existed) carries an
+    # older CACHE_VERSION; that mismatch alone must force a real re-parse rather than
+    # silently serving rows that lack the new field until some unrelated file edit.
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CONFIG_HOME")
+        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")
+        data = os.path.join(tmp, "data.jsonl")
+        with open(data, "w") as fh:
+            fh.write("one\n")
+
+        class Backend:
+            combined = False
+            records_cost = False
+            demo = False
+            source_name = "Fake"
+
+            def __init__(self):
+                self.workflow_calls = 0
+
+            def cache_inputs(self):
+                return [data]
+
+            def workflows(self):
+                self.workflow_calls += 1
+                return [workflow("s1", "2026-06-01 12:00:00")]
+
+            def model_breakdown(self):
+                return []
+
+        args = type("Args", (), {"demo": False, "no_cache": False})()
+        cid = "fake|" + data
+        try:
+            b1 = Backend()
+            c1 = ot.CachedStore(b1, cid, args)
+            c1.workflows()
+            c1.model_breakdown()  # triggers the actual disk write
+            assert b1.workflow_calls == 1
+
+            with open(c1._path) as fh:
+                payload = json.load(fh)
+            payload["version"] = ot.stores.cached.CACHE_VERSION - 1
+            with open(c1._path, "w") as fh:
+                json.dump(payload, fh)
+
+            b2 = Backend()
+            c2 = ot.CachedStore(b2, cid, args)
+            c2.workflows()
+            assert b2.workflow_calls == 1  # a miss, not served from the stale-shaped cache
+            assert c2.served_from_cache is False
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = old_xdg
+
+
 def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
     # OpenCode runs SQLite in WAL mode, so a new session lands in <db>-wal while the
     # main .db's size/mtime don't move until a checkpoint. cache_inputs() must

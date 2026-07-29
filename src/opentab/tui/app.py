@@ -430,6 +430,18 @@ class App:
         self.custom_until = args.until
         self.range_days = None if (args.since or args.until or args.days is None) else args.days
         self.range_months: int | None = None  # set by an "Nm"/"Ny" range, calendar-based
+        # `A` toggles whether sessions are grouped & scoped by when they started
+        # (created_at, default) or by their last recorded activity (ended_at, the
+        # "Worked" feature's own field) -- e.g. a subagent still running long after
+        # the root's first message. Backends that can't derive one leave it "", so
+        # _bucket_ts falls back to created_at per session. The date range
+        # (custom_since/until/range_days/range_months, in ranged_workflows) is keyed
+        # on the SAME timestamp, so a session's bucket day always agrees with whether
+        # it's in the active range -- the Months/Days panels never show a bucket the
+        # header's range doesn't cover. Trends/the Calendar heatmap deliberately stay
+        # on created_at regardless (a separate feature area, out of scope for this
+        # toggle).
+        self.group_by_activity = False
         self.query = ""
         self.filter_active = False  # live `f` filter mode: keys edit the query
         self._filter_before = ""  # the query as it was when `/` opened the mode (Esc restores)
@@ -638,6 +650,14 @@ class App:
             # agrees on the one box / one tool. They compose (machine ⊥ harness).
             self.machine_filter,
             self.harness_filter,
+            # The date range is keyed on the same timestamp the Months/Days panels
+            # bucket by (see _bucket_ts): otherwise a session in range by its bucket
+            # date but not its created_at (or vice versa) would vanish from the
+            # panels while the header still claims it's in scope, or show up in a
+            # month/day the header's range doesn't cover. Toggling `A` must bust
+            # this cache, so it rides in the fingerprint rather than needing an
+            # explicit _invalidate_workflow_cache() call from the toggle itself.
+            self.group_by_activity,
         )
         if getattr(self, "_rw_key", None) == key:
             return self._rw_cache
@@ -650,15 +670,15 @@ class App:
             rows = [w for w in rows if (w.source or "unknown") == self.harness_filter]
         if self.custom_since or self.custom_until:
             if self.custom_since:
-                rows = [w for w in rows if w.created_at[:10] >= self.custom_since]
+                rows = [w for w in rows if self._bucket_ts(w)[:10] >= self.custom_since]
             if self.custom_until:
-                rows = [w for w in rows if w.created_at[:10] <= self.custom_until]
+                rows = [w for w in rows if self._bucket_ts(w)[:10] <= self.custom_until]
         elif self.range_days is not None:
             cutoff = (datetime.now() - timedelta(days=self.range_days)).strftime("%Y-%m-%d")
-            rows = [w for w in rows if w.created_at[:10] >= cutoff]
+            rows = [w for w in rows if self._bucket_ts(w)[:10] >= cutoff]
         elif self.range_months is not None:
             cutoff = month_window_start(self.range_months)
-            rows = [w for w in rows if w.created_at[:10] >= cutoff]
+            rows = [w for w in rows if self._bucket_ts(w)[:10] >= cutoff]
         self._rw_key = key
         self._rw_cache = list(rows)
         return self._rw_cache
@@ -681,6 +701,7 @@ class App:
             tuple(sorted(self.bookmarks)) if self.show_bookmarks_only else None,
             self.machine_filter,
             self.harness_filter,
+            self.group_by_activity,  # mirrors ranged_workflows' fingerprint, see there
         )
         if getattr(self, "_aw_key", None) == key:
             return self._aw_cache
@@ -763,10 +784,21 @@ class App:
         ranked.sort(key=lambda pair: -pair[0])
         return [w for _, w in ranked]
 
+    def _bucket_ts(self, workflow: Workflow) -> str:
+        # The timestamp a session is bucketed/sorted by in the Months/Days panels --
+        # its own start by default, or its last recorded activity under `A`. Reuses
+        # Workflow.ended_at (the "Worked" feature's own last-activity field, subtree
+        # rollup included) rather than a second field for the same fact. Falls back
+        # to created_at when a backend couldn't derive one (empty string), so
+        # toggling never hides a session, only re-buckets it.
+        if self.group_by_activity and workflow.ended_at:
+            return workflow.ended_at
+        return workflow.created_at
+
     def _day_summaries(self, workflows: list[Workflow]) -> list[DaySummary]:
         grouped: dict[str, list[Workflow]] = defaultdict(list)
         for workflow in workflows:
-            grouped[workflow.created_at[:10]].append(workflow)
+            grouped[self._bucket_ts(workflow)[:10]].append(workflow)
         return [
             DaySummary(
                 day=day,
@@ -795,7 +827,7 @@ class App:
     def years(self) -> list[YearSummary]:
         grouped: dict[str, list[Workflow]] = defaultdict(list)
         for workflow in self.all_workflows:
-            grouped[workflow.created_at[:4]].append(workflow)
+            grouped[self._bucket_ts(workflow)[:4]].append(workflow)
         years = [
             YearSummary(
                 year=year,
@@ -833,8 +865,9 @@ class App:
         year = self.focused_year
         grouped: dict[str, list[Workflow]] = defaultdict(list)
         for workflow in self.all_workflows:
-            if year is None or workflow.created_at[:4] == year:
-                grouped[workflow.created_at[:7]].append(workflow)
+            bucket = self._bucket_ts(workflow)
+            if year is None or bucket[:4] == year:
+                grouped[bucket[:7]].append(workflow)
         months = [
             MonthSummary(
                 month=month,
@@ -2562,6 +2595,26 @@ class App:
             "what-if prices (what unpriced usage would cost at API list prices)"
             if self.show_api_prices
             else "actual cost"
+        )
+
+    def can_group_by_activity(self) -> bool:
+        # `A` re-keys the Years/Months/Days panels, so it is offered where those panels
+        # are: the Time-mode overview. Drilled in (zoom/session) they are gone and the
+        # toggle could move the very month/day you are standing in out from under you;
+        # Projects/Machines modes have no such panel at all. self.focus is always one of
+        # FOCUS_CYCLE (just a stale leftover in the other modes), so it adds nothing here
+        # -- browse_mode is the whole gate. The GROUPING itself stays global: this only
+        # says where the key is live, not where the flag applies.
+        return self.view == "browse" and self.browse_mode == "time"
+
+    def toggle_group_by_activity(self) -> None:
+        # See the group_by_activity comment in __init__: this re-keys both the
+        # Months/Days bucketing AND the active date range to the same timestamp.
+        anchor = self.selection_anchor()
+        self.group_by_activity = not self.group_by_activity
+        self.restore_selection(anchor)
+        self.notice = (
+            "grouping by last activity" if self.group_by_activity else "grouping by session start"
         )
 
     def refresh_prices_action(self) -> None:
@@ -5505,47 +5558,68 @@ class App:
     def drill_into_date(self, date: str) -> bool:
         # Jump from the Calendar heat map straight into a day's detail: point the
         # time-browse panels at <date> and zoom in. Returns False (no jump) when that
-        # day has no sessions (an empty cell), so the caller can nudge instead.
-        if not any(w.created_at[:10] == date for w in self.all_workflows):
+        # day has no sessions in the CURRENT bucketing (an empty cell, or -- under `A`
+        # -- every session that Trends' created_at-based cell counted has moved to a
+        # different bucket day), so the caller can nudge instead. Every lookup below
+        # resolves against the bucket-based panels (self.years/months/panel_days,
+        # which already respect `A`) and is checked before any view state is
+        # committed, so a miss never leaves the browse panels pointed at the wrong
+        # year/month.
+        if not any(self._bucket_ts(w)[:10] == date for w in self.all_workflows):
             return False
-        years = self.years
-        yi = next((i for i, y in enumerate(years) if y.year == date[:4]), None)
+        yi = next((i for i, y in enumerate(self.years) if y.year == date[:4]), None)
         if yi is None:
             return False
-        if self.browse_mode != "time":  # leaving Projects/Machines -- remember its spot
-            self._remember_mode_position()
+        if self.browse_mode != "time":  # leaving Projects/Machines -- remember its spot,
+            self._remember_mode_position()  # BEFORE any (even tentative) index mutation
+        prev_year_index = self.year_index
+        self.year_index = yi  # months/panel_days below are scoped to the focused year
+        mi = next((i for i, m in enumerate(self.months) if m.month == date[:7]), None)
+        if mi is None:
+            self.year_index = prev_year_index
+            return False
+        prev_month_index = self.month_index
+        self.month_index = mi  # panel_days is scoped to the focused month
+        di = next((i for i, d in enumerate(self.panel_days) if d.day == date), None)
+        if di is None:
+            self.year_index, self.month_index = prev_year_index, prev_month_index
+            return False
         self.view = "browse"  # the overlay may sit over a zoom; land back in browse first
         self.browse_mode = "time"
         self.focus = "days"
-        self.year_index = yi
+        self.day_index = di
         self.tab = 0
         self.scroll = 0
         self.zoom_project = None
-        # Resolve the month/day indices against the now-scoped panels, then drill.
-        self.month_index = next((i for i, m in enumerate(self.months) if m.month == date[:7]), 0)
-        self.day_index = next((i for i, d in enumerate(self.panel_days) if d.day == date), 0)
         self.drill_in()
         return True
 
     def drill_into_month(self, month: str) -> bool:
         # Jump from the Monthly bar chart straight into a month's detail: point the
         # time-browse panels at <month> and zoom in. Returns False (no jump) when the
-        # month has no sessions (an empty bar), so the caller can nudge instead.
-        if not any(w.created_at[:7] == month for w in self.all_workflows):
+        # month has no sessions in the current bucketing (an empty bar, or -- under
+        # `A` -- every session moved to a different bucket month), checked before any
+        # view state is committed, same reasoning as drill_into_date.
+        if not any(self._bucket_ts(w)[:7] == month for w in self.all_workflows):
             return False
         yi = next((i for i, y in enumerate(self.years) if y.year == month[:4]), None)
         if yi is None:
             return False
-        if self.browse_mode != "time":  # leaving Projects/Machines -- remember its spot
-            self._remember_mode_position()
+        if self.browse_mode != "time":  # leaving Projects/Machines -- remember its spot,
+            self._remember_mode_position()  # BEFORE any (even tentative) index mutation
+        prev_year_index = self.year_index
+        self.year_index = yi
+        mi = next((i for i, m in enumerate(self.months) if m.month == month), None)
+        if mi is None:
+            self.year_index = prev_year_index
+            return False
         self.view = "browse"  # the overlay may sit over a zoom; land back in browse first
         self.browse_mode = "time"
         self.focus = "months"
-        self.year_index = yi
+        self.month_index = mi
         self.tab = 0
         self.scroll = 0
         self.zoom_project = None
-        self.month_index = next((i for i, m in enumerate(self.months) if m.month == month), 0)
         self.day_index = 0
         self.drill_in()
         return True
@@ -5553,9 +5627,12 @@ class App:
     def drill_into_session(self, workflow_id: str, tab: str | None = None) -> bool:
         # Jump from a Trends sessions list straight into that session's detail: zoom
         # its day, land on the Sessions tab with it selected, and drill in. An
-        # optional tab name lands on that session sub-tab instead of Overview.
+        # optional tab name lands on that session sub-tab instead of Overview. The
+        # target day is the session's CURRENT bucket day (_bucket_ts), not always its
+        # created_at -- under `A` that's whatever day panel_days/workflows_for_day
+        # actually files it under, so drill_into_date is guaranteed to find it there.
         w = next((x for x in self.all_workflows if x.id == workflow_id), None)
-        if w is None or not self.drill_into_date(w.created_at[:10]):
+        if w is None or not self.drill_into_date(self._bucket_ts(w)[:10]):
             return False
         tabs = self.current_tabs()
         if "Sessions" in tabs:
@@ -6030,6 +6107,18 @@ class App:
             return True
         if act == "range":
             self.prompt_range(stdscr)
+            return True
+        if act == "group_activity":
+            # Scoped to the overview panels it re-keys -- and there are two ways to not
+            # be there, each with its own way back, so name the right one.
+            if self.can_group_by_activity():
+                self.toggle_group_by_activity()
+            elif self.browse_mode == "time":
+                self.notify(
+                    "grouping is set on the overview — Esc back to Years/Months/Days", "error"
+                )
+            else:
+                self.notify("grouping is set on the Time overview — press t", "error")
             return True
         if act == "mode_projects":
             self.set_browse_mode("projects")
@@ -6933,21 +7022,21 @@ class App:
 
     def workflows_for_day(self, day: str, source: list[Workflow] | None = None) -> list[Workflow]:
         rows = self.all_workflows if source is None else source
-        return [workflow for workflow in rows if workflow.created_at.startswith(day)]
+        return [workflow for workflow in rows if self._bucket_ts(workflow).startswith(day)]
 
     def workflows_for_month(
         self, month: str, source: list[Workflow] | None = None
     ) -> list[Workflow]:
         rows = self.all_workflows if source is None else source
-        return [workflow for workflow in rows if workflow.created_at.startswith(month)]
+        return [workflow for workflow in rows if self._bucket_ts(workflow).startswith(month)]
 
     def workflows_for_year(self, year: str, source: list[Workflow] | None = None) -> list[Workflow]:
-        # A year is just a coarser date prefix than a month (created_at is
+        # A year is just a coarser date prefix than a month (the bucket timestamp is
         # "YYYY-MM-DD ..."), so the same startswith match selects the whole year.
         rows = self.all_workflows if source is None else source
         if year == ALL_YEARS:  # the synthetic "All years" row spans every session
             return list(rows)
-        return [workflow for workflow in rows if workflow.created_at.startswith(year)]
+        return [workflow for workflow in rows if self._bucket_ts(workflow).startswith(year)]
 
     def workflows_for_project(
         self, directory: str, include_ignored: bool = False

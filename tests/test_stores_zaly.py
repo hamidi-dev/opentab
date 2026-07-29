@@ -19,6 +19,32 @@ from tests._support import (
 ZALY_SID = "019f4c95-ffa0-7e39-875c-2e9b34958e7f"
 
 
+def test_zaly_store_last_active_reflects_the_latest_assistant_reply():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "zaly")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _zaly_settings(ZALY_SID, cwd, ts=1783696388553),
+            _zaly_user("go", ts=1783696388555),
+            _zaly_assistant(
+                "anthropic/claude-opus-4-6",
+                100,
+                40,
+                cost={"input": 0.01},
+                ts=1783696500000,  # the latest activity in the session
+            ),
+        ]
+        _zaly_write(root, "+tmp+repo", ZALY_SID, rows)
+        store = _zaly_store(root)
+        w = store.workflows()[0]
+
+        # _fmt_epoch renders in the system's local TZ, so compare against its own
+        # conversion of each raw epoch-ms value rather than a hardcoded wall-clock string.
+        assert w.created_at == store._fmt_epoch(store._epoch(1783696388553))
+        assert w.last_active == store._fmt_epoch(store._epoch(1783696500000))
+
+
 def test_zaly_store_sums_cost_components_and_folds_to_git_root():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "zaly")
