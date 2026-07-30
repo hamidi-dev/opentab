@@ -60,6 +60,26 @@ the theme and the price pins).
 The static file omits the per-session Turns/Tools/Context tabs (embedding them would
 mean scanning every session up front) — that's what the server is for.
 
+## `A` — group by last activity
+
+`A` mirrors the TUI's grouping toggle: it switches whether the Years/Months/Days
+sidebar (and the active date range, `R`/`a`) bucket sessions by when they **started**
+(default) or by their **last recorded activity** — a subagent still running long
+after the root's first message keeps the whole session's spend under today, not the
+day it began. Only available in **Time mode** (`t`), like the sidebar it re-buckets;
+in Projects/Machines mode it's a no-op, same as `Tab`. A lit header chip (`by last
+activity`, clickable) shows when it's on; a session's Overview grows an **updated**
+row alongside its **date**.
+
+**Trends (`T`) deliberately stay pinned to session start** even with `A` on — the
+same carve-out as the TUI (the Daily/Weekly/Monthly charts and the Calendar heatmap
+answer "when did I start this", a separate question from "where does the Months/Days
+panel currently file it").
+
+Unlike the what-if target, `A` **is** remembered per browser (`localStorage`, like the
+theme) — it starts from whatever the TUI last saved, but a click here is yours to
+keep, deep-link or share and all.
+
 ## Served live: `--serve` and `--web`
 
 `opentab --serve` serves the same browser on `http://localhost:8321` (`--port`) and

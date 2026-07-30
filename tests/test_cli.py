@@ -993,18 +993,18 @@ def test_goto_miss_hint_never_buries_the_notes_warning():
         assert not any("no session yet" in t.text for t in app.toasts)
 
 
-def test_web_command_forces_group_by_activity_off_even_if_saved_on():
-    # The web page has no `A` toggle and always buckets/scopes by created_at itself
-    # (webpage.py) -- so a saved group_by_activity=True must not carry into the app
-    # this command builds, or the exported range would be scoped by last_active while
-    # the page groups those same sessions by created_at (exactly the range/bucket
-    # disagreement `A` exists to prevent in the TUI, just moved into the export).
+def test_web_command_carries_a_saved_group_by_activity_through():
+    # The web page now has its own `A` toggle (webpage.py) that re-buckets/re-scopes
+    # client-side, so a saved group_by_activity=True should carry into the app this
+    # command builds -- both the exported range and the page's own default grouping
+    # (meta.groupByActivity) must agree on ended_at, the same coherence the TUI's
+    # `A` guarantees.
     import sys as _sys
 
     with tempfile.TemporaryDirectory() as tmp:
-        cfg = os.path.join(tmp, "xdg")
-        os.makedirs(os.path.join(cfg, "opentab"))
-        with open(os.path.join(cfg, "opentab", "state.json"), "w") as fh:
+        xdg = os.path.join(tmp, "xdg")
+        os.makedirs(os.path.join(xdg, "opentab"))
+        with open(os.path.join(xdg, "opentab", "state.json"), "w") as fh:
             json.dump({"group_by_activity": True}, fh)
         db = os.path.join(tmp, "opencode.db")
         _write_status_db(db, [("s1", None, "/work/repo", 1760000000000, 1760099999000, 1.0, 10)])
@@ -1016,22 +1016,22 @@ def test_web_command_forces_group_by_activity_off_even_if_saved_on():
             return 0
 
         argv = _sys.argv
-        xdg = os.environ.get("XDG_CONFIG_HOME")
+        old_state_home = os.environ.get("XDG_STATE_HOME")
         real_html_command = ot.web.html_command
         _sys.argv = ["opentab", "--source", "opencode", "--db", db, "--html", out, "--no-cache"]
-        os.environ["XDG_CONFIG_HOME"] = cfg
+        os.environ["XDG_STATE_HOME"] = xdg  # state.json lives under $XDG_STATE_HOME/opentab
         ot.web.html_command = _fake_html_command
         try:
             assert ot.cli.main() == 0
         finally:
             _sys.argv = argv
             ot.web.html_command = real_html_command
-            if xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+            if old_state_home is None:
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = xdg
+                os.environ["XDG_STATE_HOME"] = old_state_home
         app = captured["app"]
-        assert app.group_by_activity is False  # the saved True never took effect here
+        assert app.group_by_activity is True  # the saved True now takes effect here too
 
 
 # --- --pull / --remote / --forget: consolidating machines (cli.py) ------------

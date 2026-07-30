@@ -1721,12 +1721,6 @@ def web_command(args: argparse.Namespace) -> int:
         app._refresh_backend = _make_refresh_fn(args)  # the web /api/refresh endpoint
     if use_state:
         apply_state(app, args, state)
-    # The web page has no `A` toggle and always buckets/scopes by created_at itself
-    # (webpage.py), so a restored group_by_activity=True would filter this app's range
-    # by last_active while the page groups the very same sessions by created_at --
-    # the exact range/bucket disagreement `A` exists to prevent, just moved into the
-    # export. Force it off rather than teach the page a toggle it can't offer.
-    app.group_by_activity = False
     app._ensure_models()  # the $ what-if snapshots ride on the per-model breakdown
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()

@@ -1448,10 +1448,10 @@ def test_group_by_activity_toggle_rebuckets_days_and_falls_back_to_created_at():
         [
             # A session started on the 1st but still active on the 5th (e.g. a
             # subagent kept running) -- by default it's a June 1st session; toggled,
-            # it's a June 5th one. A second session has no last_active at all (a
+            # it's a June 5th one. A second session has no ended_at at all (a
             # backend that can't derive one), so it must stay on its created_at day
             # regardless of the toggle.
-            workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00"),
+            workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00"),
             workflow("b", "2026-06-02 12:00:00"),
         ]
     )
@@ -1476,7 +1476,7 @@ def test_group_by_activity_toggle_rebuckets_days_and_falls_back_to_created_at():
 
 
 def test_group_by_activity_only_toggles_from_the_time_overview():
-    app = app_with([workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00")])
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
     assert app.can_group_by_activity()
 
     for view in ("zoom", "session"):
@@ -1500,7 +1500,7 @@ def test_group_by_activity_only_toggles_from_the_time_overview():
 def test_group_by_activity_stays_in_force_after_drilling_in():
     # Only the KEY is scoped to the overview -- the grouping itself keeps bucketing
     # and range-filtering everywhere, so a drill-in must not quietly revert it.
-    app = app_with([workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00")])
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
     app.handle_key(None, ord("A"))
     assert app.active_day == "2026-06-05"
     app.drill_in()
@@ -1515,7 +1515,7 @@ def test_drill_into_session_lands_on_its_bucket_day_under_group_by_activity():
     # session lives there, that unrelated session ends up selected instead).
     app = app_with(
         [
-            workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00"),
+            workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00"),
             workflow("decoy", "2026-06-01 13:00:00"),  # shares "a"'s created_at day
         ]
     )
@@ -1529,9 +1529,9 @@ def test_drill_into_session_lands_on_its_bucket_day_under_group_by_activity():
 def test_drill_into_date_fails_closed_when_the_bucket_moved_off_that_day():
     # Trends/the Calendar heatmap stay on created_at, so a click there can hand
     # drill_into_date a day that -- under `A` -- no longer has any session bucketed on
-    # it (its only session moved to a later last_active day). That must nudge (return
+    # it (its only session moved to a later ended_at day). That must nudge (return
     # False, no state change) rather than silently landing on some other day.
-    app = app_with([workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00")])
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
     app.group_by_activity = True
     before = (app.view, app.browse_mode, app.year_index, app.month_index, app.day_index)
     assert app.drill_into_date("2026-06-01") is False  # "a"'s created_at day: empty now
@@ -1543,10 +1543,10 @@ def test_drill_into_date_fails_closed_when_the_bucket_moved_off_that_day():
 
 
 def test_drill_into_month_fails_closed_when_the_bucket_moved_off_that_month():
-    app = app_with([workflow("a", "2026-05-30 12:00:00", last_active="2026-06-02 09:00:00")])
+    app = app_with([workflow("a", "2026-05-30 12:00:00", ended_at="2026-06-02 09:00:00")])
     app.group_by_activity = True
     assert app.drill_into_month("2026-05") is False  # created_at month: empty under `A`
-    assert app.drill_into_month("2026-06") is True  # last_active month: where it lives
+    assert app.drill_into_month("2026-06") is True  # ended_at month: where it lives
     assert app.view == "zoom" and app.focus == "months"
 
 
@@ -1556,25 +1556,25 @@ def test_range_filter_follows_the_bucket_under_group_by_activity():
     app = app_with(
         [
             # Started in May, last active in June -- belongs in a June range only
-            # once bucketing (and so ranging) follows last_active.
-            workflow("late-start", "2026-05-30 12:00:00", last_active="2026-06-02 09:00:00"),
+            # once bucketing (and so ranging) follows ended_at.
+            workflow("late-start", "2026-05-30 12:00:00", ended_at="2026-06-02 09:00:00"),
             # Started in June, last active in July -- must LEAVE a June range once
-            # ranging follows last_active, even though it displays fine as "in range"
+            # ranging follows ended_at, even though it displays fine as "in range"
             # by created_at.
-            workflow("late-activity", "2026-06-30 12:00:00", last_active="2026-07-03 09:00:00"),
+            workflow("late-activity", "2026-06-30 12:00:00", ended_at="2026-07-03 09:00:00"),
         ]
     )
     app.set_range_from_text("2026-06")
     assert {w.id for w in app.all_workflows} == {"late-activity"}  # by created_at only
 
     app.group_by_activity = True
-    assert {w.id for w in app.all_workflows} == {"late-start"}  # by last_active instead
+    assert {w.id for w in app.all_workflows} == {"late-start"}  # by ended_at instead
     # ...and every month/day the panel shows is inside that same June range.
     assert all(m.month == "2026-06" for m in app.months)
 
 
 def test_year_overview_top_months_uses_the_bucket_not_created_at():
-    app = app_with([workflow("a", "2025-12-30 12:00:00", last_active="2026-01-03 09:00:00")])
+    app = app_with([workflow("a", "2025-12-30 12:00:00", ended_at="2026-01-03 09:00:00")])
     app.group_by_activity = True
     app.focus = "years"
     app.year_index = next(i for i, y in enumerate(app.years) if y.year == "2026")
@@ -1590,7 +1590,7 @@ def test_scope_spans_days_forces_date_form_under_group_by_activity():
     # A single day's bucket can mix sessions whose created_at falls on other calendar
     # dates once `A` is on, so a bare clock time (the single-day-scope shorthand)
     # would misrepresent them as all sharing the panel's day.
-    app = app_with([workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00")])
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
     app.group_by_activity = True
     app.focus = "days"
     assert app.renderer.session_date_label() == "Started"

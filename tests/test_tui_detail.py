@@ -1130,19 +1130,6 @@ def test_pager_lines_dispatch_session_tabs_by_name():
         assert app.renderer.current_pager_lines(100) == table(wf, 96)  # content = width - 4
 
 
-def test_session_overview_shows_started_and_updated():
-    app = app_with([workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00")])
-    lines = app.renderer.detail_overview(app.loaded[0], 80)
-    assert "Started:  2026-06-01 12:00:00" in lines
-    assert "Updated:  2026-06-05 09:00:00" in lines
-
-
-def test_session_overview_updated_falls_back_to_started_without_last_active():
-    app = app_with([workflow("a", "2026-06-01 12:00:00")])  # last_active="" (default)
-    lines = app.renderer.detail_overview(app.loaded[0], 80)
-    assert "Updated:  2026-06-01 12:00:00" in lines
-
-
 def test_subagent_nodes_memoized_per_session():
     def node(workflow_id, depth, agent, title):
         return {

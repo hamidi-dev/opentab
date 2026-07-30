@@ -30,7 +30,7 @@ def _ocl_oauth(root, profiles):
         json.dump(data, fh)
 
 
-def test_openclaw_store_last_active_reflects_the_latest_assistant_reply():
+def test_openclaw_store_ended_at_reflects_the_latest_assistant_reply():
     with tempfile.TemporaryDirectory() as root:
         rows = [
             _ocl_user("go", ts="2026-04-27T16:00:00.000Z"),
@@ -51,7 +51,7 @@ def test_openclaw_store_last_active_reflects_the_latest_assistant_reply():
         # _fmt_epoch renders in the system's local TZ, so compare against its own
         # conversion of each raw timestamp rather than a hardcoded wall-clock string.
         assert w.created_at == store._fmt_epoch(store._epoch("2026-04-27T16:00:00.000Z"))
-        assert w.last_active == store._fmt_epoch(store._epoch("2026-04-27T16:30:00.000Z"))
+        assert w.ended_at == store._fmt_epoch(store._epoch("2026-04-27T16:30:00.000Z"))
 
 
 def test_openclaw_store_meters_cost_splits_cache_and_uses_agent_as_project():

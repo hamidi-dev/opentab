@@ -9,7 +9,7 @@ from opentab.formatting import iso_to_local
 from tests._support import _claude_msg, _usage, _write_jsonl
 
 
-def test_claude_workflow_last_active_reflects_the_latest_sidechain_activity():
+def test_claude_workflow_ended_at_reflects_the_latest_sidechain_activity():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -23,7 +23,7 @@ def test_claude_workflow_last_active_reflects_the_latest_sidechain_activity():
             ts="2026-06-10T18:46:00.000Z",
         )
         # a subagent (sidechain) turn logged AFTER the main thread's last message --
-        # last_active must reflect it, since the subtree is still active.
+        # ended_at must reflect it, since the subtree is still active.
         side = _claude_msg(
             "s1",
             "claude-opus-4-8",
@@ -42,7 +42,7 @@ def test_claude_workflow_last_active_reflects_the_latest_sidechain_activity():
         # iso_to_local renders in the system's local TZ, so compare against its own
         # conversion of each raw UTC timestamp rather than a hardcoded wall-clock string.
         assert w.created_at == iso_to_local("2026-06-10T18:46:00.000Z")
-        assert w.last_active == iso_to_local("2026-06-10T19:10:00.000Z")
+        assert w.ended_at == iso_to_local("2026-06-10T19:10:00.000Z")
 
 
 def test_claude_message_timeline_orders_by_time_and_marks_sidechain():

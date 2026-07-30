@@ -154,10 +154,10 @@ def test_cached_store_serves_records_cost_and_survives_field_drift():
                 os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
-def test_cached_store_round_trips_last_active():
+def test_cached_store_round_trips_ended_at():
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
         data = os.path.join(tmp, "data.jsonl")
         with open(data, "w") as fh:
             fh.write("one\n")
@@ -172,7 +172,7 @@ def test_cached_store_round_trips_last_active():
                 return [data]
 
             def workflows(self):
-                return [workflow("s1", "2026-06-01 12:00:00", last_active="2026-06-01 15:45:00")]
+                return [workflow("s1", "2026-06-01 12:00:00", ended_at="2026-06-01 15:45:00")]
 
             def model_breakdown(self):
                 return []
@@ -180,31 +180,31 @@ def test_cached_store_round_trips_last_active():
         args = type("Args", (), {"demo": False, "no_cache": False})()
         cid = "fake|" + data
         try:
-            # Cold: writes the cache with last_active in the payload (the write itself
+            # Cold: writes the cache with ended_at in the payload (the write itself
             # is triggered from model_breakdown(), which needs both fresh rollups).
             c1 = ot.CachedStore(Backend(), cid, args)
-            assert c1.workflows()[0].last_active == "2026-06-01 15:45:00"
+            assert c1.workflows()[0].ended_at == "2026-06-01 15:45:00"
             c1.model_breakdown()
 
-            # Warm: served from the cached JSON, last_active survives the round trip.
+            # Warm: served from the cached JSON, ended_at survives the round trip.
             c2 = ot.CachedStore(Backend(), cid, args)
             wf2 = c2.workflows()
             assert c2.served_from_cache is True
-            assert wf2[0].last_active == "2026-06-01 15:45:00"
+            assert wf2[0].ended_at == "2026-06-01 15:45:00"
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
-def test_cached_store_invalidates_a_pre_last_active_cache_version():
-    # A cache file written by an older opentab (before last_active existed) carries an
-    # older CACHE_VERSION; that mismatch alone must force a real re-parse rather than
-    # silently serving rows that lack the new field until some unrelated file edit.
+def test_cached_store_invalidates_a_stale_cache_version():
+    # A cache file written by an older opentab carries an older CACHE_VERSION; that
+    # mismatch alone must force a real re-parse rather than silently serving rows
+    # shaped for the old version until some unrelated file edit.
     with tempfile.TemporaryDirectory() as tmp:
-        old_xdg = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = os.path.join(tmp, "cfg")
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
         data = os.path.join(tmp, "data.jsonl")
         with open(data, "w") as fh:
             fh.write("one\n")
@@ -250,9 +250,9 @@ def test_cached_store_invalidates_a_pre_last_active_cache_version():
             assert c2.served_from_cache is False
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_CACHE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_CACHE_HOME"] = old_xdg
 
 
 def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():

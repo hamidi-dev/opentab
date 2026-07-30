@@ -751,8 +751,8 @@ def test_remote_store_workflows_returns_fresh_objects_each_call():
         assert store.workflows()[0].total_cost == 5.0  # the next call is pristine, not 999
 
 
-def test_remote_store_round_trips_last_active():
-    # last_active is a plain Workflow field like any other -- asdict()/Workflow(**clean)
+def test_remote_store_round_trips_ended_at():
+    # ended_at is a plain Workflow field like any other -- asdict()/Workflow(**clean)
     # already carry it through generically, with no remote.py-specific plumbing needed.
     # An older export simply omits the key, and Workflow's default ("") applies.
     with tempfile.TemporaryDirectory() as d:
@@ -761,12 +761,12 @@ def test_remote_store_round_trips_last_active():
             "z.json",
             _summary(
                 "z",
-                [workflow("s1", "2026-07-15 10:00:00", last_active="2026-07-15 12:30:00")],
+                [workflow("s1", "2026-07-15 10:00:00", ended_at="2026-07-15 12:30:00")],
             ),
         )
         store = ot.RemoteStore(d, _parse([]))
         w = store.workflows()[0]
-        assert w.last_active == "2026-07-15 12:30:00"
+        assert w.ended_at == "2026-07-15 12:30:00"
 
 
 def test_remote_store_excludes_given_ids():

@@ -8,7 +8,7 @@ import opentab as ot
 
 
 def workflow(
-    id, created_at, title=None, cost=1.0, tokens=100, directory="/tmp/project", last_active=""
+    id, created_at, title=None, cost=1.0, tokens=100, directory="/tmp/project", ended_at=""
 ):
     return ot.Workflow(
         id=id,
@@ -21,7 +21,7 @@ def workflow(
         model_count=1,
         total_tokens=tokens,
         unpriced_tokens=0,
-        last_active=last_active,
+        ended_at=ended_at,
     )
 
 

@@ -114,6 +114,22 @@ def test_web_payload_carries_both_cost_snapshots():
     assert payload["nodes"] == {}  # no subagents -> no per-session tree queries
 
 
+def test_web_payload_carries_ended_at_and_the_grouping_start_state():
+    # endedAt rides on the workflow row (the JS bts()'s twin of App._bucket_ts), the
+    # same field the "worked ... until" detail line reads; meta.groupByActivity is
+    # the page's seeded `A` state -- what apply_state restored from state.json, no
+    # longer forced off by web_command.
+    app = app_with([workflow("w1", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
+    app.group_by_activity = True
+    payload = ot.build_payload(app)
+    w1 = {w["id"]: w for w in payload["workflows"]}["w1"]
+    assert w1["endedAt"] == "2026-06-05 09:00:00"
+    assert payload["meta"]["groupByActivity"] is True
+
+    app.group_by_activity = False
+    assert ot.build_payload(app)["meta"]["groupByActivity"] is False
+
+
 def test_web_payload_embeds_nodes_and_reprices_unpriced_ones():
     w = workflow("w1", "2026-05-01 10:00:00", cost=2.0, directory="/tmp/alpha")
     w.subagents = 1
@@ -251,6 +267,27 @@ def test_web_daily_trend_charts_only_active_days():
     # own on-top label) instead of squeezing 31 slots and colliding the labels.
     assert "> 0) last = d" in page
     assert "for (let d = 1; d <= last; d++)" in page
+
+
+def test_web_page_has_the_a_grouping_toggle_wired_up():
+    # Lock in the load-bearing hooks the `A` toggle needs: the bucket accessor, the
+    # toggle itself (persisted like the theme), and the context-gated key branch --
+    # a refactor that drops any of them would silently disable the feature.
+    page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-05-01 10:00:00")])))
+    assert "function toggleGroupActivity(" in page
+    assert "const bts = " in page
+    assert "opentab-groupact" in page
+    assert "e.key === 'A' && BROWSE === 'time'" in page
+
+
+def test_web_trends_stay_pinned_to_created_at_under_grouping():
+    # The Trends overlay deliberately does NOT follow `A` (strict TUI parity, see
+    # App.__init__'s group_by_activity comment): its aggregators must keep reading
+    # the wcreated (raw w.date) accessor, never the `A`-aware bts().
+    page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-05-01 10:00:00")])))
+    assert "const trendYears = () => distinctYears(W, wcreated);" in page
+    assert "const rows = monthRows(W, wcreated);" in page  # trendMonthly
+    assert "dayRows(W.filter(w => w.date.startsWith(year)), wcreated)" in page  # trendCalendar
 
 
 def test_web_meta_carries_the_baked_theme():
@@ -502,7 +539,9 @@ def test_web_whatif_target_is_transient_and_app_wide_costs_never_move():
     # later look. And it is session-scoped, so no app-wide figure moves while it's armed.
     js = _js_source()
     keys = set(re.findall(r"localStorage\.setItem\('([^']+)'", js))
-    assert keys == {"opentab-theme", "opentab-pins"}  # nothing what-if shaped
+    # opentab-groupact is the `A` grouping toggle -- persisted like the theme and pins,
+    # since (unlike the what-if target) a remembered grouping mode is the point.
+    assert keys == {"opentab-theme", "opentab-pins", "opentab-groupact"}
     assert "let WHATIF = { model: null, open: false, q: '', i: 0, cat: false };" in js
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)

@@ -462,6 +462,28 @@ const ALL_W = DATA.workflows;      // every embedded session
 let W = ALL_W;                     // the active, range-filtered set (R rescopes it)
 let RANGE = { kind: 'all', label: META.range };  // client-side date scope
 let MODE = META.startApi ? 'api' : 'real';
+// `A`: bucket the Time-mode views (and the range cutoff) by a session's last
+// recorded activity instead of when it started -- the TUI's group_by_activity.
+// Seeded like the theme: the viewer's own saved choice, else what the TUI last
+// saved (meta.groupByActivity), so a shared --html export opens exactly as it
+// looked when generated.
+let GROUPACT = (function () {
+  try {
+    const s = localStorage.getItem('opentab-groupact');
+    if (s !== null) return s === '1';
+  } catch (e) { /* file:// may block storage */ }
+  return !!META.groupByActivity;
+})();
+// The JS twin of App._bucket_ts (app.py) -- reuses endedAt, the same field the
+// "worked ... until" detail line reads (the Worked-time feature's own last-activity
+// stamp, subtree rollup included), rather than a second field for the same fact.
+// The empty-string fallback is load-bearing: toggling never hides a session, it
+// only re-buckets it.
+const bts = w => (GROUPACT && w.endedAt) ? w.endedAt : w.date;
+// Trends (Daily/Weekly/Monthly/Calendar) deliberately stay on created_at even under
+// `A`, mirroring the TUI (App.__init__'s group_by_activity comment): a separate
+// feature area, out of scope for this toggle.
+const wcreated = w => w.date;
 
 /* ---------- themes ---------- */
 // The palettes are the single source of truth in opentab/themes.py, injected here
@@ -710,23 +732,28 @@ function groupBy(rows, keyFn) {
 }
 function scopeStats(ws) {
   return { cost: sum(ws, cost), sessions: ws.length, tokens: sum(ws, w => w.tokens),
-    days: new Set(ws.map(w => w.date.slice(0, 10)).filter(d => /^\d/.test(d))).size,
+    days: new Set(ws.map(w => bts(w).slice(0, 10)).filter(d => /^\d/.test(d))).size,
     subagents: sum(ws, w => w.subagents) };
 }
 /* A rare session may carry no timestamp: it stays in totals and tables but is
-   left out of time-keyed groupings (same slice-based keys the TUI groups by). */
-function monthRows(ws) {
-  return [...groupBy(ws, w => w.date.slice(0, 7))].filter(([m]) => /^\d{4}-\d{2}$/.test(m))
+   left out of time-keyed groupings (same slice-based keys the TUI groups by).
+   `ts` defaults to the bucket accessor (bts, `A`-aware) so every Time-mode caller
+   re-buckets for free; Trends passes `wcreated` to stay pinned to created_at. */
+function monthRows(ws, ts = bts) {
+  return [...groupBy(ws, w => ts(w).slice(0, 7))].filter(([m]) => /^\d{4}-\d{2}$/.test(m))
     .map(([month, g]) =>
       ({ month, cost: sum(g, cost), sessions: g.length, tokens: sum(g, w => w.tokens) }))
     .sort((a, b) => a.month < b.month ? -1 : 1);
 }
-function dayRows(ws) {
-  return [...groupBy(ws, w => w.date.slice(0, 10))].filter(([d]) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+function dayRows(ws, ts = bts) {
+  return [...groupBy(ws, w => ts(w).slice(0, 10))].filter(([d]) => /^\d{4}-\d{2}-\d{2}$/.test(d))
     .map(([day, g]) =>
       ({ day, cost: sum(g, cost), sessions: g.length, tokens: sum(g, w => w.tokens) }));
 }
 function projectRows(ws) {
+  // `last` is a PROJECT's most recent session (ProjectSummary.last_active, models.py)
+  // -- a different concept from a session's own last activity -- so it stays on the
+  // plain start date regardless of `A`, like the TUI.
   return [...groupBy(ws, w => w.project)].map(([project, g]) =>
     ({ project, cost: sum(g, cost), sessions: g.length, tokens: sum(g, w => w.tokens),
        last: g.reduce((a, w) => w.date > a ? w.date : a, '') }));
@@ -1102,8 +1129,8 @@ function curScope() {
   if (kind === 'M' && arg) return { kind: 'M', machine: arg };
   if (kind === 's' && arg) {
     const w = ALL_W.find(x => x.id === arg);  // any session, even outside the active range
-    return { kind: 's', id: arg, session: w, month: w ? w.date.slice(0, 7) : null,
-      day: w ? w.date.slice(0, 10) : null, year: w ? w.date.slice(0, 4) : null };
+    return { kind: 's', id: arg, session: w, month: w ? bts(w).slice(0, 7) : null,
+      day: w ? bts(w).slice(0, 10) : null, year: w ? bts(w).slice(0, 4) : null };
   }
   return { kind: 'all' };
 }
@@ -1113,10 +1140,12 @@ function isoToday() { const d = new Date(); return d.getFullYear() + '-' + Strin
 function isoDaysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function isoMonthsAgo(n) { const d = new Date(); d.setMonth(d.getMonth() - n, 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01'; }
 function filterRange(rows) {
-  const r = RANGE, d = w => w.date.slice(0, 10);
+  // Keyed on the same timestamp Time-mode buckets by (bts), so a session's bucket
+  // day and whether it's in range never disagree -- the App.ranged_workflows rule.
+  const r = RANGE, d = w => bts(w).slice(0, 10);
   if (r.kind === 'days') { const cut = isoDaysAgo(r.n); return rows.filter(w => d(w) >= cut); }
   if (r.kind === 'months') { const cut = isoMonthsAgo(r.n); return rows.filter(w => d(w) >= cut); }
-  if (r.kind === 'ytd') { const y = isoToday().slice(0, 4); return rows.filter(w => w.date.slice(0, 4) === y); }
+  if (r.kind === 'ytd') { const y = isoToday().slice(0, 4); return rows.filter(w => bts(w).slice(0, 4) === y); }
   if (r.kind === 'since') return rows.filter(w => (!r.since || d(w) >= r.since) && (!r.until || d(w) <= r.until));
   return rows;  // 'all'
 }
@@ -1127,6 +1156,17 @@ function applyRange(desc) {
   go('', '');       // reset to the all-time overview of the new range
   render(false);    // in case the hash was already '#/'
 }
+// `A`: bucket Time-mode by last activity instead of session start. The web twin of
+// App.toggle_group_by_activity -- persisted per browser (the theme's pattern), not
+// app-wide like the TUI's state.json.
+function toggleGroupActivity() {
+  GROUPACT = !GROUPACT;
+  try { localStorage.setItem('opentab-groupact', GROUPACT ? '1' : '0'); }
+  catch (e) { /* file:// may block storage */ }
+  W = filterRange(ALL_W);  // the range is keyed on the same timestamp bts() reads
+  go('', '');              // the current scope's bucket may have moved out from under it
+  render(false);           // in case the hash was already '#/'
+}
 function rangeLabel() {
   const r = RANGE;
   if (r.kind === 'days') return 'last ' + r.n + 'd';
@@ -1135,7 +1175,7 @@ function rangeLabel() {
   if (r.kind === 'since') return (r.since || '…') + '..' + (r.until || 'now');
   return r.label || 'all time';
 }
-const distinctYears = ws => [...new Set(ws.map(w => w.date.slice(0, 4)))]
+const distinctYears = (ws, ts = bts) => [...new Set(ws.map(w => ts(w).slice(0, 4)))]
   .filter(y => /^\d{4}$/.test(y)).sort().reverse();
 // The year a scope belongs to (null == "all years"), so the sidebar's Years/Months
 // panels can stay in sync however you got here (a deep link, a bar click, j/k).
@@ -1153,9 +1193,9 @@ function setBrowse(mode) {
   else render(false);
 }
 function scopeWorkflows(sc) {
-  if (sc.kind === 'y') return W.filter(w => w.date.startsWith(sc.year));
-  if (sc.kind === 'm') return W.filter(w => w.date.startsWith(sc.month));
-  if (sc.kind === 'd') return W.filter(w => w.date.startsWith(sc.day));
+  if (sc.kind === 'y') return W.filter(w => bts(w).startsWith(sc.year));
+  if (sc.kind === 'm') return W.filter(w => bts(w).startsWith(sc.month));
+  if (sc.kind === 'd') return W.filter(w => bts(w).startsWith(sc.day));
   if (sc.kind === 'p') return W.filter(w => w.project === sc.project);
   if (sc.kind === 'M') return W.filter(w => (w.machine || 'unknown') === sc.machine);
   if (sc.kind === 's') return sc.session ? [sc.session] : [];
@@ -1237,7 +1277,7 @@ function renderSidebar(sc) {
   const years = distinctYears(W);
   const selYear = scopeYear(sc);
   if (years.length > 1) {
-    const yr = years.map(y => { const g = W.filter(w => w.date.startsWith(y));
+    const yr = years.map(y => { const g = W.filter(w => bts(w).startsWith(y));
       return { year: y, cost: sum(g, cost), sessions: g.length }; });
     const yPeak = Math.max(...yr.map(r => r.cost), 0);
     side.appendChild(sidePane('Years', 'years', [
@@ -1246,7 +1286,7 @@ function renderSidebar(sc) {
         r.year, String(r.sessions), r.cost, yPeak))]));
   }
   // Months panel: scoped to the selected year (all months when "all years").
-  const monthSrc = selYear ? W.filter(w => w.date.startsWith(selYear)) : W;
+  const monthSrc = selYear ? W.filter(w => bts(w).startsWith(selYear)) : W;
   const months = monthRows(monthSrc).slice().reverse(); // newest first, like the TUI
   const mPeak = Math.max(...months.map(r => r.cost), 0);
   const monthRowsUi = [];
@@ -1259,7 +1299,7 @@ function renderSidebar(sc) {
   side.appendChild(sidePane(selYear ? 'Months · ' + selYear : 'Months', 'months', monthRowsUi));
   const dayMonth = sc.month || (months.length ? months[0].month : null);
   if (dayMonth) {
-    const days = dayRows(W.filter(w => w.date.startsWith(dayMonth))).sort((a, b) => b.day < a.day ? -1 : 1);
+    const days = dayRows(W.filter(w => bts(w).startsWith(dayMonth))).sort((a, b) => b.day < a.day ? -1 : 1);
     const dPeak = Math.max(...days.map(r => r.cost), 0);
     side.appendChild(sidePane('Days · ' + dayMonth, 'days',
       days.map(r => sideRow(sc.kind === 'd' && sc.day === r.day, () => go('d', r.day),
@@ -2252,10 +2292,10 @@ function renderOverview(root, sc, ws) {
   if (sc.kind === 'all') {
     const months = monthRows(ws);
     if (months.length) root.appendChild(pane('Spend by month', barChart(months)));
-    const years = [...new Set(ws.map(w => w.date.slice(0, 4)))].filter(y => /^\d{4}$/.test(y)).sort().reverse();
+    const years = distinctYears(ws);
     if (years.length) {
       const year = VIEW.calYear && years.includes(VIEW.calYear) ? VIEW.calYear : years[0];
-      const byDate = new Map(dayRows(ws.filter(w => w.date.startsWith(year))).map(r => [r.day, r]));
+      const byDate = new Map(dayRows(ws.filter(w => bts(w).startsWith(year))).map(r => [r.day, r]));
       root.appendChild(pane('Calendar · daily spend',
         years.length > 1 ? h('div', { class: 'ychips' }, years.map(y =>
           h('button', { class: y === year ? 'on' : null, onclick: () => { VIEW.calYear = y; render(false); } }, y))) : null,
@@ -2444,6 +2484,13 @@ function chrome() {
   // twin of the TUI's lit `w model` footer key -- an honest "a target is set".
   if (WHATIF.model) chips.appendChild(h('span', { class: 'chip wi click', title: 'what-if target (w changes it, w again clears it)',
     onclick: openWhatif }, 'what-if ', h('b', null, WHATIF.model)));
+  // The page's twin of the TUI's header chip (Renderer.draw_header): only shown when
+  // on, unlike `range` -- "by session start" is the unremarkable default, not worth a
+  // permanent chip. Clickable, like the what-if chip above, since there's no `?` help
+  // here to point at the `A` key instead.
+  if (GROUPACT) chips.appendChild(h('span', { class: 'chip click',
+    title: 'grouping by last activity (A toggles)', onclick: toggleGroupActivity },
+    'by ', h('b', null, 'last activity')));
   const right = document.getElementById('hright');
   right.textContent = '';
   if (!META.demo) {
@@ -2462,7 +2509,10 @@ function chrome() {
   const hints = document.getElementById('hints');
   hints.textContent = '';
   [['j/k', 'move'], ['Tab', 'panel'], ['h/l', 'tabs'], ['Esc', 'back'], ['$', 'what-if'], ['w', 'what-if model'],
-   ['t/p/m', 'time/proj/machines'], ['T', 'trends'], ['P', 'prices'], ['C', 'theme'], ['R', 'range']]
+   ['t/p/m', 'time/proj/machines'],
+   BROWSE === 'time' ? ['A', 'grouping'] : null,  // context-gated, like the key itself
+   ['T', 'trends'], ['P', 'prices'], ['C', 'theme'], ['R', 'range']]
+    .filter(Boolean)
     .forEach(([k, lbl]) => hints.append(h('kbd', null, k), ' ' + lbl + '   '));
   document.getElementById('stamp').textContent =
     'generated by OpenTab v' + META.version + ' · ' + META.range + ' · ' + META.generated
@@ -2484,9 +2534,11 @@ function ensureExtras(sc) {
 }
 
 /* ---------- Trends overlay (T): the TUI's 7-tab Trends, over the whole range ---------- */
+// Trends stay pinned to created_at (wcreated) even under `A`, mirroring the TUI --
+// see the wcreated definition above.
 const trendMonths = () => [...new Set(W.map(w => w.date.slice(0, 7)))].filter(m => /^\d{4}-\d{2}$/.test(m)).sort().reverse();
 const trendWeeks = () => [...new Set(W.map(w => weekMonday(w.date)).filter(Boolean))].sort().reverse();
-const trendYears = () => distinctYears(W);
+const trendYears = () => distinctYears(W, wcreated);
 const trendCount = u => (u === 'month' ? trendMonths() : u === 'week' ? trendWeeks() : trendYears()).length;
 function monthSpan(first, last) {
   const out = []; let y = +first.slice(0, 4), m = +first.slice(5, 7);
@@ -2640,7 +2692,7 @@ function trendWeekly() {
   return h('div', null, trendNav('Weekly spend · ' + monday + ' – ' + addDays(monday, 6), idx, weeks.length, 'week'), trendChart(pairs, {}));
 }
 function trendMonthly() {
-  const rows = monthRows(W);
+  const rows = monthRows(W, wcreated);
   if (!rows.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
   const byM = new Map(rows.map(r => [r.month, r]));
   const pairs = monthSpan(rows[0].month, rows[rows.length - 1].month).map(m => {
@@ -2653,7 +2705,7 @@ function trendCalendar() {
   const years = trendYears();
   if (!years.length) return h('div', { class: 'hint' }, 'No spend in the active range.');
   const idx = Math.max(0, Math.min(TRENDS.yearIdx, years.length - 1)), year = years[idx];
-  const byDate = new Map(dayRows(W.filter(w => w.date.startsWith(year))).map(r => [r.day, r]));
+  const byDate = new Map(dayRows(W.filter(w => w.date.startsWith(year)), wcreated).map(r => [r.day, r]));
   const total = [...byDate.values()].reduce((a, r) => a + r.cost, 0);
   return h('div', null,
     trendNav('Spend calendar · ' + year, idx, years.length, 'year'),
@@ -2932,7 +2984,7 @@ function sidebarList(sc) {
   if (FOCUS === 'days') {
     const month = sc.month || (monthRows(W).length ? monthRows(W)[monthRows(W).length - 1].month : null);
     if (!month) return null;
-    const days = dayRows(W.filter(w => w.date.startsWith(month))).sort((a, b) => b.day < a.day ? -1 : 1);
+    const days = dayRows(W.filter(w => bts(w).startsWith(month))).sort((a, b) => b.day < a.day ? -1 : 1);
     // -1 when no day is selected yet (viewing the month), so the first j/k lands
     // on the first day instead of skipping it.
     return { rows: days.map(r => ({ go: () => go('d', r.day) })),
@@ -2940,7 +2992,7 @@ function sidebarList(sc) {
   }
   // Months, scoped to the selected year like the sidebar (App.months does the same).
   const selYear = scopeYear(sc);
-  const src = selYear ? W.filter(w => w.date.startsWith(selYear)) : W;
+  const src = selYear ? W.filter(w => bts(w).startsWith(selYear)) : W;
   const months = monthRows(src).slice().reverse();
   const hasAll = distinctYears(W).length <= 1;  // the "∑ all time" row is only shown then
   const monthGo = months.map(r => ({ go: () => go('m', r.month) }));
@@ -3014,6 +3066,11 @@ document.addEventListener('keydown', e => {
     openRange();
   } else if (e.key === 'a') {
     applyRange({ kind: 'all', label: 'all time' });
+  } else if (e.key === 'A' && BROWSE === 'time') {
+    // Silent no-op outside Time mode, like the other context-gated keys ('Tab' &&
+    // BROWSE === 'time', 'm' && BROWSE !== 'machines') -- there's no panel here to
+    // re-bucket.
+    toggleGroupActivity();
   } else if (e.key === 'j' || e.key === 'ArrowDown' || e.key === 'k' || e.key === 'ArrowUp') {
     const list = sidebarList(sc);
     if (!list || !list.rows.length) return;

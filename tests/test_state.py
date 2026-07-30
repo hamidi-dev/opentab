@@ -166,23 +166,23 @@ def test_what_if_price_view_is_persisted_in_state():
 
 
 def test_group_by_activity_is_persisted_in_state():
-    app = app_with([workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00")])
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
     app.group_by_activity = True
-    old_xdg = os.environ.get("XDG_CONFIG_HOME")
+    old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["XDG_CONFIG_HOME"] = tmp
+        os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with(
-                [workflow("a", "2026-06-01 12:00:00", last_active="2026-06-05 09:00:00")]
+                [workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")]
             )
             assert not restored.group_by_activity
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
+                os.environ.pop("XDG_STATE_HOME", None)
             else:
-                os.environ["XDG_CONFIG_HOME"] = old_xdg
+                os.environ["XDG_STATE_HOME"] = old_xdg
 
     assert restored.group_by_activity
     # Restoring it re-anchors the default selection against the new bucketing, same

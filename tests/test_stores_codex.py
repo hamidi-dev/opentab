@@ -338,9 +338,9 @@ def test_codex_spawned_threads_fold_into_a_subagent_tree():
         assert tools == {"update_plan": 1200, "shell_command": 500}
 
 
-def test_codex_last_active_reflects_the_latest_activity_in_a_spawned_thread():
+def test_codex_ended_at_reflects_the_latest_activity_in_a_spawned_thread():
     # A spawned collab thread logging activity after the parent's own last record
-    # must bump the parent's last_active -- the subtree-wide rollup, same as
+    # must bump the parent's ended_at -- the subtree-wide rollup, same as
     # ClaudeStore's sidechain-inclusive ts_max.
     parent_sid = "11111111-1111-1111-1111-111111111111"
     child_sid = "22222222-2222-2222-2222-222222222222"
@@ -382,11 +382,11 @@ def test_codex_last_active_reflects_the_latest_activity_in_a_spawned_thread():
         # conversion of each raw UTC timestamp rather than a hardcoded wall-clock string.
         assert w.id == parent_sid
         assert w.created_at == iso_to_local("2026-06-10T18:46:00.000Z")
-        assert w.last_active == iso_to_local("2026-06-10T19:10:05.000Z")
-        assert w.last_active > w.created_at
+        assert w.ended_at == iso_to_local("2026-06-10T19:10:05.000Z")
+        assert w.ended_at > w.created_at
 
 
-def test_codex_last_active_falls_back_to_created_at_when_nothing_later():
+def test_codex_ended_at_falls_back_to_created_at_when_nothing_later():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         os.makedirs(root)
@@ -400,4 +400,4 @@ def test_codex_last_active_falls_back_to_created_at_when_nothing_later():
         _codex_rollout(root, CODEX_SID, rows)
         store = ot.CodexStore(root, type("Args", (), {"demo": False})())
         w = store.workflows()[0]
-        assert w.last_active == w.created_at
+        assert w.ended_at == w.created_at

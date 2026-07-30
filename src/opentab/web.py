@@ -296,6 +296,9 @@ def build_payload(app: App) -> dict:
                 # Active working time in seconds, idle waits excluded (null = the
                 # backend can't tell work from waiting); the JS shows it as "Worked".
                 "dur": w.worked_seconds,
+                # The JS `A` toggle's twin of App._bucket_ts -- same field the
+                # "worked ... until" detail line reads for its clock time.
+                "endedAt": w.ended_at,
                 "real": _money6(w.real_total_cost),
                 "api": _money6(w.api_total_cost),
                 "realRoot": _money6(w.real_root_cost),
@@ -338,6 +341,9 @@ def build_payload(app: App) -> dict:
         "recordsCost": bool(getattr(store, "records_cost", True)),
         "demo": bool(store.demo),
         "range": app.range_label(),
+        # The `A` toggle's start state -- what the TUI last saved. The page's own
+        # localStorage choice (like the theme's) takes precedence once a viewer has one.
+        "groupByActivity": bool(app.group_by_activity),
         "theme": getattr(app.args, "theme", DEFAULT_THEME) or DEFAULT_THEME,
         "startApi": bool(app.show_api_prices and not store.demo),
         "home": os.path.expanduser("~"),
