@@ -30,6 +30,30 @@ def _ocl_oauth(root, profiles):
         json.dump(data, fh)
 
 
+def test_openclaw_store_ended_at_reflects_the_latest_assistant_reply():
+    with tempfile.TemporaryDirectory() as root:
+        rows = [
+            _ocl_user("go", ts="2026-04-27T16:00:00.000Z"),
+            _ocl_msg(
+                "claude-opus-4-6",
+                100,
+                40,
+                cost=0.02,
+                provider="anthropic",
+                mid="a1",
+                ts="2026-04-27T16:30:00.000Z",  # the latest activity in the session
+            ),
+        ]
+        _ocl_write(root, "finance-os", OCL_SID, rows)
+        store = ot.OpenClawStore(root, _ocl_args())
+        w = store.workflows()[0]
+
+        # _fmt_epoch renders in the system's local TZ, so compare against its own
+        # conversion of each raw timestamp rather than a hardcoded wall-clock string.
+        assert w.created_at == store._fmt_epoch(store._epoch("2026-04-27T16:00:00.000Z"))
+        assert w.ended_at == store._fmt_epoch(store._epoch("2026-04-27T16:30:00.000Z"))
+
+
 def test_openclaw_store_meters_cost_splits_cache_and_uses_agent_as_project():
     with tempfile.TemporaryDirectory() as root:
         # A direct-Anthropic-key turn: provider isn't OAuth/plan -> metered, real spend.

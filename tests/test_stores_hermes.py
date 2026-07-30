@@ -255,6 +255,75 @@ def test_hermes_store_rolls_child_session_into_parent_subtotal():
         assert root_node["cost"] == 0.0 and child_node["cost"] == 0.0
 
 
+def test_hermes_ended_at_reflects_latest_message_in_subtree():
+    # ended_at tracks the newest message anywhere in the subtree (root or
+    # subagent alike), not just the root's own started_at.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        cwd = os.path.join(tmp, "project")
+        os.makedirs(cwd)
+        _hermes_db(
+            db,
+            [
+                {
+                    "id": "root1",
+                    "title": "Root task",
+                    "cwd": cwd,
+                    "started_at": 1750000000.0,
+                    "inp": 10,
+                    "out": 5,
+                },
+                {
+                    "id": "child1",
+                    "parent_id": "root1",
+                    "cwd": cwd,
+                    "started_at": 1750001000.0,
+                    "inp": 20,
+                    "out": 10,
+                },
+            ],
+        )
+        conn = sqlite3.connect(db)
+        conn.execute(
+            """CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                timestamp REAL NOT NULL
+            )"""
+        )
+        conn.executemany(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?,?,?,?)",
+            [
+                ("root1", "user", "go", 1750000000.0),
+                ("child1", "user", "subagent work", 1750005000.0),  # newest, subtree-wide
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        args = type("Args", (), {"demo": False})()
+        (w,) = ot.HermesStore(db, args).workflows()
+        assert w.created_at == ot.HermesStore._ts_to_local(1750000000.0)
+        assert w.ended_at == ot.HermesStore._ts_to_local(1750005000.0)
+        assert w.ended_at != w.created_at
+
+
+def test_hermes_ended_at_is_blank_without_messages_table():
+    # An old/partial state.db without a messages table has no evidence of activity
+    # beyond the start -- ended_at goes blank (not a same-as-created_at value), so
+    # the "last_activity" sort's own empty-string check is what falls it back to
+    # created_at, not a value HermesStore fabricates here.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "started_at": 1750000000.0, "inp": 10, "out": 5}])
+        args = type("Args", (), {"demo": False})()
+        (w,) = ot.HermesStore(db, args).workflows()
+        assert w.ended_at == ""
+        assert w.worked_seconds is None
+
+
 def test_hermes_store_rolls_grandchild_session_into_subtotal():
     """Depth-2+ sessions must be included in aggregate totals and node list."""
     with tempfile.TemporaryDirectory() as tmp:

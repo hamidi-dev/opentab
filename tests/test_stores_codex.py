@@ -4,6 +4,7 @@ import os
 import tempfile
 
 import opentab as ot
+from opentab.formatting import iso_to_local
 
 from tests._support import (
     FakeStore,
@@ -335,3 +336,68 @@ def test_codex_spawned_threads_fold_into_a_subagent_tree():
         assert [(r["agent"], r["tokens_total"]) for r in t] == [("-", 1200), ("researcher", 500)]
         tools = {r["tool"]: r["tokens_total"] for r in store.tool_breakdown(parent_sid)}
         assert tools == {"update_plan": 1200, "shell_command": 500}
+
+
+def test_codex_ended_at_reflects_the_latest_activity_in_a_spawned_thread():
+    # A spawned collab thread logging activity after the parent's own last record
+    # must bump the parent's ended_at -- the subtree-wide rollup, same as
+    # ClaudeStore's sidechain-inclusive ts_max.
+    parent_sid = "11111111-1111-1111-1111-111111111111"
+    child_sid = "22222222-2222-2222-2222-222222222222"
+    spawn = {
+        "subagent": {
+            "thread_spawn": {
+                "parent_thread_id": parent_sid,
+                "agent_nickname": "researcher",
+            }
+        }
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _codex_rollout(
+            root,
+            parent_sid,
+            [
+                _codex_meta(parent_sid, cwd, ts="2026-06-10T18:46:00.000Z"),
+                _codex_turn("gpt-5-codex", cwd, ts="2026-06-10T18:46:05.000Z"),
+                _codex_tokens(1000, 200, 0, 1200, ts="2026-06-10T18:46:10.000Z"),
+            ],
+        )
+        _codex_rollout(
+            root,
+            child_sid,
+            [
+                _codex_meta(child_sid, cwd, ts="2026-06-10T18:47:00.000Z", source=spawn),
+                _codex_turn("gpt-5-codex", cwd, ts="2026-06-10T19:10:00.000Z"),
+                _codex_tokens(400, 100, 0, 500, ts="2026-06-10T19:10:05.000Z"),
+            ],
+        )
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        w = store.workflows()[0]
+
+        # iso_to_local renders in the system's local TZ, so compare against its own
+        # conversion of each raw UTC timestamp rather than a hardcoded wall-clock string.
+        assert w.id == parent_sid
+        assert w.created_at == iso_to_local("2026-06-10T18:46:00.000Z")
+        assert w.ended_at == iso_to_local("2026-06-10T19:10:05.000Z")
+        assert w.ended_at > w.created_at
+
+
+def test_codex_ended_at_falls_back_to_created_at_when_nothing_later():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _codex_meta(CODEX_SID, cwd, ts="2026-06-10T18:46:00.000Z"),
+            _codex_turn("gpt-5-codex", cwd, ts="2026-06-10T18:46:00.000Z"),
+            _codex_tokens(10, 5, 0, 15, ts="2026-06-10T18:46:00.000Z"),
+        ]
+        _codex_rollout(root, CODEX_SID, rows)
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        w = store.workflows()[0]
+        assert w.ended_at == w.created_at

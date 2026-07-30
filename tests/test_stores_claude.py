@@ -4,8 +4,45 @@ import os
 import tempfile
 
 import opentab as ot
+from opentab.formatting import iso_to_local
 
 from tests._support import _claude_msg, _usage, _write_jsonl
+
+
+def test_claude_workflow_ended_at_reflects_the_latest_sidechain_activity():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        main = _claude_msg(
+            "s1",
+            "claude-opus-4-8",
+            _usage(100, 50, 0, 0),
+            uuid="u0",
+            cwd=cwd,
+            ts="2026-06-10T18:46:00.000Z",
+        )
+        # a subagent (sidechain) turn logged AFTER the main thread's last message --
+        # ended_at must reflect it, since the subtree is still active.
+        side = _claude_msg(
+            "s1",
+            "claude-opus-4-8",
+            _usage(40, 10, 0, 0),
+            uuid="u1",
+            cwd=cwd,
+            parent="u0",
+            side=True,
+            ts="2026-06-10T19:10:00.000Z",
+        )
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [main, side])
+
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        w = store.workflows()[0]
+
+        # iso_to_local renders in the system's local TZ, so compare against its own
+        # conversion of each raw UTC timestamp rather than a hardcoded wall-clock string.
+        assert w.created_at == iso_to_local("2026-06-10T18:46:00.000Z")
+        assert w.ended_at == iso_to_local("2026-06-10T19:10:00.000Z")
 
 
 def test_claude_message_timeline_orders_by_time_and_marks_sidechain():
