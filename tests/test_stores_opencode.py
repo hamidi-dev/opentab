@@ -276,6 +276,106 @@ def test_store_reads_db_without_session_token_columns():
         assert nodes[1]["agent"] == "-"
 
 
+def test_workflows_ended_at_is_the_latest_update_in_the_subtree():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            create table session (
+              id text primary key,
+              parent_id text,
+              title text,
+              directory text,
+              time_created integer,
+              time_updated integer
+            );
+            create table message (session_id text, data text);
+            """
+        )
+        conn.executemany(
+            "insert into session values (?, ?, ?, ?, ?, ?)",
+            [
+                # root's own time_updated is earlier than its subagent child's --
+                # ended_at must reflect the child bumping the whole subtree.
+                ("root", None, "Root", "/tmp/project", 1760000000000, 1760000001000),
+                ("child", "root", "Child", "/tmp/project", 1760000000500, 1760000005000),
+            ],
+        )
+        conn.executemany(
+            "insert into message values (?, ?)",
+            [
+                (
+                    "root",
+                    '{"role":"assistant","providerID":"openai","modelID":"gpt-5-mini","cost":1.0,"tokens":{"input":1,"output":1}}',
+                ),
+                (
+                    "child",
+                    '{"role":"assistant","providerID":"openai","modelID":"gpt-5-mini","cost":0,"tokens":{"input":1,"output":1}}',
+                ),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        args = type("Args", (), {"demo": False})()
+        store = ot.Store(db, args)
+        workflow = store.workflows()[0]
+
+        # localtime rendering is TZ-dependent, so compare against sqlite's own
+        # conversion of each raw epoch-ms rather than a hardcoded wall-clock string.
+        conn = sqlite3.connect(db)
+        expected_created = conn.execute(
+            "select datetime(1760000000000 / 1000, 'unixepoch', 'localtime')"
+        ).fetchone()[0]
+        expected_ended_at = conn.execute(
+            "select datetime(1760000005000 / 1000, 'unixepoch', 'localtime')"
+        ).fetchone()[0]
+        conn.close()
+
+        assert workflow.created_at == expected_created
+        assert workflow.ended_at == expected_ended_at
+        assert workflow.ended_at > workflow.created_at
+
+
+def test_workflows_ended_at_is_blank_without_time_updated():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            create table session (
+              id text primary key, parent_id text, title text, directory text,
+              time_created integer
+            );
+            create table message (session_id text, data text);
+            """
+        )
+        conn.execute(
+            "insert into session values (?, ?, ?, ?, ?)",
+            ("root", None, "Root", "/tmp/project", 1760000000000),
+        )
+        conn.execute(
+            "insert into message values (?, ?)",
+            (
+                "root",
+                '{"role":"assistant","providerID":"openai","modelID":"gpt-5-mini","cost":1.0,"tokens":{"input":1,"output":1}}',
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        args = type("Args", (), {"demo": False})()
+        store = ot.Store(db, args)
+        workflow = store.workflows()[0]
+
+        # Legacy schema: the only signal is the creation time itself, so ended_at is
+        # blanked rather than reported as a same-as-start value (the "last_activity"
+        # sort's own empty-string check is what falls it back to created_at, not this
+        # store).
+        assert workflow.ended_at == ""
+
+
 def test_records_cost_probe_runs_lazily_not_at_construction():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "requests.jsonl")

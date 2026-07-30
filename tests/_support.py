@@ -7,7 +7,9 @@ import sqlite3
 import opentab as ot
 
 
-def workflow(id, created_at, title=None, cost=1.0, tokens=100, directory="/tmp/project"):
+def workflow(
+    id, created_at, title=None, cost=1.0, tokens=100, directory="/tmp/project", ended_at=""
+):
     return ot.Workflow(
         id=id,
         title=title or id,
@@ -19,6 +21,7 @@ def workflow(id, created_at, title=None, cost=1.0, tokens=100, directory="/tmp/p
         model_count=1,
         total_tokens=tokens,
         unpriced_tokens=0,
+        ended_at=ended_at,
     )
 
 

@@ -110,6 +110,27 @@ def test_copilot_store_splits_cache_folds_reasoning_and_stays_unpriced():
         assert nodes[0]["cost"] == 0.0
 
 
+def test_copilot_ended_at_reflects_the_latest_call_not_the_first():
+    with tempfile.TemporaryDirectory() as tmp:
+        otel = os.path.join(tmp, ".copilot", "otel")
+        _write_otel(
+            otel,
+            [
+                _otel_chat(
+                    COPILOT_SID, "gpt-5.4", 100, 50, trace="t1", span="s1", end=(1775934264, 0)
+                ),
+                _otel_chat(
+                    COPILOT_SID, "gpt-5.4", 200, 80, trace="t2", span="s2", end=(1775934500, 0)
+                ),
+            ],
+        )
+        store = ot.CopilotStore(otel, _copilot_args(otel))
+        (w,) = store.workflows()
+        assert w.created_at == store._ms_to_local(1775934264 * 1000)
+        assert w.ended_at == store._ms_to_local(1775934500 * 1000)
+        assert w.ended_at != w.created_at
+
+
 def test_copilot_store_dedupes_redundant_records_keeping_chat_span():
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")
