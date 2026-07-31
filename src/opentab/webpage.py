@@ -1690,11 +1690,19 @@ function turnsTable(turns, expiries) {
   // its subtotal, the per-turn rows (and the full prompt text) hidden until you click the
   // header. A clean overview of every prompt without the per-turn noise.
   const rows = [];
-  let cum = 0, lastPrompt = null, body = null, marker = null;
-  const groups = new Map();
+  let cum = 0, lastPrompt = null, body = null, marker = null, run = -1;
+  // Subtotals per RUN of consecutive turns sharing a prompt id, not per id. A prompt id
+  // is not unique -- a backend without explicit ids groups by the prompt TEXT, so asking
+  // the same thing twice gives A, B, A. Keyed by id, both A headers showed the two runs'
+  // combined cost, so a $6 session rendered $4 + $2 + $4. The headers below already break
+  // on runs (key !== lastPrompt), which is what made the mismatch visible as a total that
+  // did not add up. Same bug the TUI's turn_group_rows had.
+  const groups = [];
+  let runKey = null;
   for (const t of turns) {
     const key = t.promptId || '';
-    groups.set(key, (groups.get(key) || 0) + mCost(t));
+    if (key !== runKey || !groups.length) { runKey = key; groups.push(0); }
+    groups[groups.length - 1] += mCost(t);
   }
   const comps = turnCompactions(turns);
   const freed = [...comps.values()].reduce((a, [b, af]) => a + b - af, 0);
@@ -1716,6 +1724,7 @@ function turnsTable(turns, expiries) {
         + ' bought again for ' + money(x.cost) + ' (it lived ' + hDur(x.ttl) + ')')));
     if (key !== lastPrompt) {
       lastPrompt = key;
+      run += 1;
       const title = (t.promptTitle || '(prompt)').slice(0, 160) + ((t.promptTitle || '').length > 160 ? '…' : '');
       const full = (t.promptFull || t.promptTitle || '').trim();
       body = [];   // this group's collapsible rows (full text + turns), hidden by default
@@ -1726,7 +1735,7 @@ function turnsTable(turns, expiries) {
           grp.forEach(r => r.hidden = !open); mk.textContent = open ? '▾ ' : '▸ '; } },
         h('td', { colspan: 3 }, marker, title),
         h('td', null, ''),
-        h('td', { class: 'r' }, moneyCell(groups.get(key))),
+        h('td', { class: 'r' }, moneyCell(groups[run])),
         h('td', null, ''), h('td', null, '')));
       if (full) {
         const fr = h('tr', { class: 'turn-fold', hidden: '' },
@@ -1754,7 +1763,7 @@ function turnsTable(turns, expiries) {
     body.push(tr); rows.push(tr);
   });
   return h('div', null,
-    h('div', { class: 'hint' }, groups.size + ' prompts — click a ▸ row to expand its turns'
+    h('div', { class: 'hint' }, groups.length + ' prompts — click a ▸ row to expand its turns'
       + ' · Cached = how much of that turn\'s context came from the cache; anything low re-bought it'
       + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')
       + (exp.size ? ' · ❄ ' + exp.size + ' cache expir' + (exp.size > 1 ? 'ies' : 'y') + ', ' + money(burnt) + ' spent re-buying context' : '')),
