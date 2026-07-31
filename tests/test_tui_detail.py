@@ -626,17 +626,19 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in table)
         assert "One row per prompt" in tj and "opens it with its turns" in tj
         # The turns themselves, with their seconds, are one Enter away.
-        app.turn_popup = app.turn_groups(wf.id)[0]
-        popup = rnd.turn_popup_lines(wf, 90)
-        assert any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in popup)
+        app.open_turn_drill(0)
+        drilled = rnd.detail_turn_drill(wf, 90)
+        assert any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in drilled)
+        app.close_turn_drill()  # step back out: detail_turns is the table again
         # Under "$" the two $0 haiku turns estimate at list price (1M+2M @ $1/M),
-        # so the total grows to $1 + $2 + $3 = $6.00 -- in the table and the popup alike.
+        # so the total grows to $1 + $2 + $3 = $6.00 -- in the table and the drill alike.
         app.show_api_prices = True
         priced = rnd.detail_turns(wf, 96)
         assert priced[0].startswith("# Turns — 2 prompts · 3 turns · $6.00")
         pjoined = "\n".join(priced)
         assert "$6.00 · 100%" in pjoined and "Add feature X" in pjoined
-        assert "$1.00" in "\n".join(rnd.turn_popup_lines(wf, 90))
+        app.open_turn_drill(0)
+        assert "$1.00" in "\n".join(rnd.detail_turn_drill(wf, 90))
 
 
 def test_turns_marks_compactions_even_while_folded():
@@ -680,7 +682,7 @@ def test_turns_marks_compactions_even_while_folded():
     lines = app.renderer.detail_turns(app.current_session(), 100)
     joined = "\n".join(lines)
     # Folded is the default -- no turn rows drawn, and the marker there regardless.
-    assert app.turn_popup is None
+    assert app.turn_drill is None
     assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in lines)
     marker = next(ln for ln in lines if ln.startswith("▼ "))
     assert "before turn 3" in marker  # the turn that ran on the cleared window
@@ -731,8 +733,8 @@ def test_turns_marks_compactions_even_while_folded():
         for ln in timeless.renderer.detail_turns(timeless.current_session(), 100)
     )
     # ...and the popup behind Enter survives a row with no timestamp too.
-    timeless.turn_popup = timeless.turn_groups(timeless.current_session().id)[0]
-    assert timeless.renderer.turn_popup_lines(timeless.current_session(), 90)
+    timeless.open_turn_drill(0)
+    assert timeless.renderer.detail_turn_drill(timeless.current_session(), 90)
 
 
 def test_subagents_tab_reprices_unpriced_node_in_api_mode():
@@ -1458,20 +1460,20 @@ def test_turns_cursor_walks_the_prompt_groups_with_jk_and_gG():
     assert app._turn_cursor == 0  # g -> first prompt
 
 
-def test_turns_enter_opens_the_selected_prompt_and_esc_closes_it():
+def test_turns_enter_drills_into_the_selected_prompt_and_esc_steps_back():
     app = _turns_app()
     app.move(1)  # select p2
     assert app._toggle_turn_cursor()  # the Enter path
-    assert app.turn_popup == "p2"
+    assert app.turn_drill == 1  # the ordinal of the selected run
     wf = app.current_session()
-    body = "\n".join(app.renderer.turn_popup_lines(wf, 90))
+    body = "\n".join(app.renderer.detail_turn_drill(wf, 90))
     assert "the full text of p2" in body and "the full text of p1" not in body
     # The table underneath never re-shapes: opening a prompt is not a fold, so no row
     # moves and the reader's place in the list survives the round trip.
     before = app.renderer.detail_turns(wf, 96)
     assert app.renderer.detail_turns(wf, 96) == before
-    assert app.close_turn_popup() and app.turn_popup is None
-    assert app.close_turn_popup() is False  # nothing left to close
+    assert app.close_turn_drill() and app.turn_drill is None
+    assert app.close_turn_drill() is False  # nothing left to close
 
 
 def test_turns_cursor_line_tracks_the_selected_row():
@@ -1500,27 +1502,42 @@ def test_turns_click_moves_the_keyboard_cursor_onto_the_group():
     app = _turns_app()
     rnd = app.renderer
     rnd.detail_turns(app.current_session(), 96)  # a paint records the header lines
-    lines_by_pid = {p: i for i, p in rnd._turn_header_at.items()}
-    app._apply_click(("turnline", lines_by_pid["p3"]), drill=False)
-    assert app._turn_cursor == 2 and app.turn_popup == "p3"
+    line_of = {n: i for i, n in rnd._turn_header_at.items()}
+    app._apply_click(("turnline", line_of[2]), drill=False)
+    assert app._turn_cursor == 2 and app.turn_drill == 2
 
 
-def test_turns_popup_swallows_keys_and_scrolls_with_the_movement_ones():
-    # An open prompt is a modal: movement scrolls it, Esc closes it, and anything else is
-    # swallowed rather than acted on behind it -- a mistyped key must not switch tabs
-    # under a box the reader is still looking at.
+def test_turns_drill_scrolls_the_pane_and_esc_steps_back_out():
+    # A drilled prompt is an ordinary view, not a modal: j/k scroll the PANE (there is no
+    # prompt cursor in there to move), and Esc steps back to the table rather than out of
+    # the session -- the trend_drill rule.
     app = _turns_app()
     app._turn_cursor = 1
     app._toggle_turn_cursor()
-    tab_before = app.tab
-    assert app.handle_key(None, ord("j")) and app.turn_popup_scroll == 1
-    assert app.handle_key(None, ord("k")) and app.turn_popup_scroll == 0
-    app.handle_key(None, ord("k"))
-    assert app.turn_popup_scroll == 0  # never scrolls above the top
-    assert app.handle_key(None, ord("l"))  # would be "next tab" without the popup
-    assert app.tab == tab_before and app.turn_popup == "p2"
+    assert app.turn_drill == 1 and app.scroll == 0
+    app.move(1)
+    assert app.scroll == 1  # the pane, not a cursor
+    assert app._turn_cursor == 1  # which stayed put, ready for the step back
     assert app.handle_key(None, 27)  # Esc
-    assert app.turn_popup is None
+    assert app.turn_drill is None and app.view == "session"  # back to the table, not out
+    assert app.handle_key(None, 27) and app.view != "session"  # a second Esc leaves
+
+
+def test_turns_cursor_hands_the_key_back_at_either_end_so_the_pane_scrolls():
+    # The cursor swallowed j/k unconditionally, so once it reached the last prompt the
+    # pane stopped: everything below the last row -- the tab's own footnotes -- was
+    # unreachable. At an end the key belongs to the pane.
+    app = _turns_app()
+    app._turn_cursor = 0
+    assert app._move_turn_cursor(-1) is False  # already at the top
+    last = len(app.turn_groups(app.current_session().id)) - 1
+    app._turn_cursor = last
+    assert app._move_turn_cursor(1) is False  # ...and at the bottom
+    assert app._move_turn_cursor(-1) is True  # but it still moves in between
+    app._turn_cursor = last
+    app.scroll = 0
+    app.move(1)
+    assert app.scroll == 1  # the pane took the key the cursor could not use
 
 
 def test_machine_overview_shows_live_pulled_and_freshness_niceties():
@@ -1709,15 +1726,445 @@ def test_turn_cursor_and_table_rows_split_the_prompts_the_same_way():
     app = _turns_app()
     wf = app.current_session()
     rows = app.session_turn_rows(wf.id)
-    order, agg = app.renderer.turn_group_rows(rows, app.renderer.turn_costs(rows))
-    assert order == app.turn_groups(wf.id)
+    groups = app.renderer.turn_group_rows(rows, app.renderer.turn_costs(rows))
+    assert [g["id"] for g in groups] == app.turn_groups(wf.id)
 
-    # And every drawn row's line index maps back to its own prompt, in the same order,
-    # so the click ordinal (sorted line index) is the cursor ordinal.
+    # And every drawn row's line index maps back to its own ORDINAL, in order, so the
+    # click ordinal is the cursor ordinal.
     app.renderer.detail_turns(wf, 96)
-    drawn = [pid for _line, pid in sorted(app.renderer._turn_header_at.items())]
-    assert drawn == order
+    drawn = [n for _line, n in sorted(app.renderer._turn_header_at.items())]
+    assert drawn == list(range(len(groups)))
 
     # The aggregate really is the group's turns, not a sample of them.
-    assert sum(g["turns"] for g in agg.values()) == len(rows)
-    assert sum(g["tokens"] for g in agg.values()) == sum(r["tokens_total"] for r in rows)
+    assert sum(g["turns"] for g in groups) == len(rows)
+    assert sum(g["tokens"] for g in groups) == sum(r["tokens_total"] for r in rows)
+
+    # A prompt_id is NOT unique -- a backend without explicit ids groups by the prompt
+    # TEXT, so asking the same thing twice in one session gives A, B, A. Keyed by id the
+    # two A runs merged into one row worth both costs while turn_groups counted three,
+    # leaving the cursor's last ordinal addressing a row that was never drawn.
+    repeated = [dict(rows[0]), dict(rows[0]), dict(rows[0])]
+    for r, pid in zip(repeated, ("A", "B", "A")):
+        r["prompt_id"] = pid
+    runs = app.renderer.turn_group_rows(repeated, [1.0, 2.0, 3.0])
+    assert [g["id"] for g in runs] == ["A", "B", "A"]
+    assert [g["cost"] for g in runs] == [1.0, 2.0, 3.0]  # not one merged $4.00 A row
+
+
+def test_turns_table_budgets_its_optional_columns_against_the_pane():
+    # Optional cells are dropped deliberately rather than left to overflow and be clipped
+    # at paint: a column the frame eats takes the prompt text with it, which is what a
+    # prompt list is read by. The bar goes first (it restates the Cost cell), Cumulative
+    # second, and the prompt keeps its floor.
+    app = _turns_app()
+    wf = app.current_session()
+    wide = app.renderer.detail_turns(wf, 130)
+    assert all(len(ln) <= 130 for ln in wide if ln.startswith("  "))
+    assert "Cumulative" in wide[1] and any("█" in ln or "▏" in ln for ln in wide)
+
+    mid = app.renderer.detail_turns(wf, 88)  # bar dropped, Cumulative kept
+    assert all(len(ln) <= 88 for ln in mid if ln.startswith("  "))
+    assert "Cumulative" in mid[1]
+    assert not any("█" in ln or "▏" in ln for ln in mid if ln.startswith("  "))
+
+    narrow = app.renderer.detail_turns(wf, 72)  # both dropped
+    assert all(len(ln) <= 72 for ln in narrow if ln.startswith("  "))
+    assert "Cumulative" not in narrow[1]
+    # ...and the columns that carry the answer never go.
+    for line in (wide[1], mid[1], narrow[1]):
+        assert "Prompt" in line and "Turns" in line and "Cached" in line and "Cost" in line
+
+
+def test_turns_paints_the_selected_prompt_row_and_the_highlight_follows_j_k():
+    # The cursor has to be VISIBLE, and this is the test that was missing: the highlight
+    # used to be keyed on a "▸ " prefix, so when the headers became ordinary table rows
+    # it silently matched nothing -- j/k moved a selection the eye could not find, with
+    # the whole suite green. Keyed on the line index now, and asserted at PAINT.
+    app = _turns_app()
+    # draw_detail paints a "Loading session" frame until the lazy per-session fetches are
+    # memoized, so fill the memos this tab reads before painting.
+    wid = app.current_session().id
+    app.session_turn_rows(wid)
+    app._nodes_by_session[wid] = []
+    app._tool_by_session[wid] = []
+    app._context_by_session[wid] = []
+    screen = AttrScreen(30, 100)
+    # Headless: color_pair() needs a real terminal, so stand it in with something that
+    # keeps the attribute bits distinguishable (the token-runs test's trick).
+    orig = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n << 8
+
+    def paint():
+        screen.attrs.clear()
+        app.renderer.draw_detail(screen, 0, 0, 26, 100)
+
+    def selected_rows():
+        # The screen rows painted in reverse video -- the pickers' selection look.
+        return sorted({y for (y, _x), a in screen.attrs.items() if a & ot.curses.A_REVERSE})
+
+    try:
+        paint()
+        first = selected_rows()
+        assert len(first) == 1, "exactly one prompt row is selected"
+
+        app.handle_key(None, ord("j"))
+        paint()
+        moved = selected_rows()
+        assert len(moved) == 1 and moved[0] > first[0], "j moves the highlight down a row"
+
+        app.handle_key(None, ord("k"))
+        paint()
+        assert selected_rows() == first, "k brings it back"
+    finally:
+        ot.curses.color_pair = orig
+
+
+def test_turns_cached_reports_the_prompts_first_turn_not_an_average_of_them():
+    # Every turn after the first is warm by construction -- the one before it just wrote
+    # the cache -- so averaging a prompt's turns drags every row toward 100% and buries
+    # the only moment that could have missed. Measured on a real session, the prompt
+    # after an 8h44m expiry averaged to 76% while the turn that mattered read back 5%,
+    # directly under a ❄ marker saying it had re-bought the lot.
+    class ColdStartStore(FakeStore):
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            base = {
+                "depth": 0,
+                "agent": "-",
+                "model_name": "anthropic/claude-opus-4-8",
+                "cost": 1.0,
+                "input": 10,
+                "output": 100,
+                "reasoning": 0,
+                "cache_write_1h": 0,
+                "prompt_id": "p1",
+                "prompt_title": "after the wait",
+                "prompt_full": "after the wait",
+            }
+            return [
+                # cold: bought its whole context again
+                dict(
+                    base,
+                    time="2026-06-10 12:00:00",
+                    cache_read=0,
+                    cache_write=300_000,
+                    tokens_total=300_110,
+                ),
+                # ...then three warm turns, which an average would hide it behind
+                *(
+                    dict(
+                        base,
+                        time=f"2026-06-10 12:0{i}:00",
+                        cache_read=300_000,
+                        cache_write=500,
+                        tokens_total=300_610,
+                    )
+                    for i in (1, 2, 3)
+                ),
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(ColdStartStore([workflow("s1", "2026-06-10 12:00:00", cost=4.0)]), args)
+    wf = app.loaded[0]
+    rows = app.session_turn_rows(wf.id)
+    (g,) = app.renderer.turn_group_rows(rows, app.renderer.turn_costs(rows))
+    assert g["turns"] == 4
+    assert g["cached"] == 0.0  # the first turn's own share, not ~75%
+
+    # A prompt whose turns were ALL subagent work has no main-thread context to answer
+    # for -- subagents run in their own windows -- so it reports nothing, not a number
+    # borrowed from the subagent.
+    for r in rows:
+        r["depth"] = 1
+    assert app.renderer.turn_group_rows(rows, app.renderer.turn_costs(rows))[0]["cached"] is None
+
+
+def _drill_app():
+    class DrillStore(FakeStore):
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            return [
+                {
+                    "depth": 0,
+                    "agent": "-",
+                    "model_name": "anthropic/claude-opus-4-8",
+                    "cost": 1.0,
+                    "input": 10,
+                    "output": 10,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "cache_write_1h": 0,
+                    "tokens_total": 20,
+                    "prompt_id": f"p{i}",
+                    "prompt_title": f"prompt {i}",
+                    "prompt_full": f"prompt {i}",
+                    "time": f"2026-06-01 12:0{i}:00",
+                }
+                for i in range(4)
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(DrillStore([workflow("s1", "2026-06-01 12:00:00", cost=4.0)]), args)
+    app.view = "session"
+    app.tab = app.current_tabs().index("Turns")
+    return app
+
+
+def test_a_drilled_prompt_does_not_leave_the_tables_hit_testing_armed():
+    # draw_detail lays a "turnline" region over whatever the pane is showing, so the
+    # TABLE's line->ordinal map and selected line have to go when the drill takes over.
+    # Left standing, a click on drilled prompt TEXT re-drilled whichever row used to
+    # occupy that screen line, and the stale cursor line highlighted an unrelated line.
+    app = _drill_app()
+    rnd = app.renderer
+    rnd.detail_turns(app.current_session(), 100)  # the table
+    stale_line = min(rnd._turn_header_at)
+    app.open_turn_drill(2)
+    rnd.detail_turns(app.current_session(), 100)  # the drill
+    assert rnd._turn_header_at == {} and rnd._turn_cursor_line is None
+    app._apply_click(("turnline", stale_line), drill=False)
+    assert app.turn_drill == 2  # still where the reader put it
+
+
+def test_jump_keys_belong_to_the_drilled_pane_not_the_hidden_prompt_cursor():
+    # g/G scroll the drilled view. They used to fall through to the table's cursor, so g
+    # left the pane where it was and silently moved a selection nobody could see.
+    app = _drill_app()
+    app.open_turn_drill(2)
+    app.scroll, app._turn_cursor = 5, 2
+    app.jump(to_end=False)
+    assert app.scroll == 0 and app._turn_cursor == 2  # the pane moved, the cursor did not
+    app.jump(to_end=True)
+    assert app._turn_cursor == 2
+
+
+def test_esc_only_leaves_a_drilled_prompt_while_the_turns_tab_is_showing():
+    # Ungated, Esc on Tools or Context tore down an invisible drill and was swallowed --
+    # the key did nothing the reader could see, instead of stepping out of the session.
+    app = _drill_app()
+    app.open_turn_drill(1)
+    app.tab = app.current_tabs().index("Overview")
+    app.handle_key(None, 27)
+    assert app.view != "session"  # Esc stepped out, as the visible tab implies
+    assert app.turn_drill == 1  # ...and the drill it could not see is untouched
+
+
+def test_turns_footnotes_wrap_instead_of_being_clipped_mid_sentence():
+    # Everything else on the tab is width-budgeted; these were not, and ran ~50 characters
+    # past a 100-column pane, where the paint clips rather than wraps.
+    app = _turns_app()
+    for width in (72, 100, 140):
+        lines = app.renderer.detail_turns(app.current_session(), width)
+        assert all(len(ln) <= width for ln in lines if ln.startswith(("· ", "  ")))
+
+
+def test_a_drill_never_follows_the_reader_into_another_session():
+    # An ordinal is only meaningful inside ONE session's prompt list, and unlike the
+    # prompt_id it replaced it is valid in almost any session -- so a drill left armed
+    # while another session comes on screen would silently open THAT session's Nth
+    # prompt. Checked at the point of use rather than cleared on each path that can swap
+    # the session, because _restore_mode_memory did not clear it and enumerating those
+    # paths is the bet that failed.
+    class TwoSessionStore(FakeStore):
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            return [
+                {
+                    "depth": 0,
+                    "agent": "-",
+                    "model_name": "anthropic/claude-opus-4-8",
+                    "cost": 1.0,
+                    "input": 10,
+                    "output": 10,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "cache_write_1h": 0,
+                    "tokens_total": 20,
+                    "prompt_id": f"{wid}-p{i}",
+                    "prompt_title": f"{wid} prompt {i}",
+                    "prompt_full": f"{wid} prompt {i}",
+                    "time": f"2026-06-01 12:0{i}:00",
+                }
+                for i in range(4)
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(
+        TwoSessionStore(
+            [
+                # Same day and project, so both are in scope at once and the selection
+                # can move between them the way the mode-memory restore moves it.
+                workflow("A", "2026-06-01 12:00:00", cost=4.0, directory="/a"),
+                workflow("B", "2026-06-01 13:00:00", cost=4.0, directory="/a"),
+            ]
+        ),
+        args,
+    )
+    app.view = "session"
+    app.workflow_index = 0
+    app.tab = app.current_tabs().index("Turns")
+    assert app.current_session().id == "A"
+    app.open_turn_drill(2)
+    assert "A prompt 2" in "\n".join(app.renderer.detail_turns(app.current_session(), 90))
+
+    # Put session B on screen WITHOUT going through a path that clears the drill -- the
+    # mode-memory restore does exactly this, rebinding view/session/tab and nothing else
+    # (it moves the selection by value and never touches turn_drill).
+    app.workflow_index = 1
+    assert app.current_session().id == "B"
+    assert app.active_turn_drill is None  # ...so B shows its table, not A's third prompt
+    shown = "\n".join(app.renderer.detail_turns(app.current_session(), 90))
+    assert "B prompt 0" in shown and "A prompt" not in shown
+
+
+def test_turns_footnotes_fit_an_eighty_column_terminal():
+    # The wrap fix indented continuations AFTER wrapping, so they ran two cells past the
+    # pane and the longest footnote was still clipped at the minimum supported width.
+    # Needs a session that actually HAS a cache expiry -- the plain fixture never renders
+    # that note, which is why the first version of this test passed while it was broken.
+    app = _cache_miss_app()
+    for width in (74, 80, 100):
+        lines = app.renderer.detail_turns(app.loaded[0], width)
+        assert any("❄ the prompt cache expired" in ln for ln in lines), width
+        assert all(len(ln) <= width for ln in lines), width
+
+
+def test_esc_is_not_swallowed_by_a_drill_the_reader_cannot_see():
+    # The mirror of the Esc-from-another-tab bug, reached the other way: bind the drill to
+    # its session and a drill armed elsewhere is inert but still SET, so an Esc consumed
+    # to tear it down does nothing to the table the reader is actually looking at.
+    class TwoSessionStore(FakeStore):
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            return [
+                {
+                    "depth": 0,
+                    "agent": "-",
+                    "model_name": "anthropic/claude-opus-4-8",
+                    "cost": 1.0,
+                    "input": 10,
+                    "output": 10,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "cache_write_1h": 0,
+                    "tokens_total": 20,
+                    "prompt_id": f"{wid}-p{i}",
+                    "prompt_title": f"{wid} p{i}",
+                    "prompt_full": f"{wid} p{i}",
+                    "time": f"2026-06-01 12:0{i}:00",
+                }
+                for i in range(4)
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(
+        TwoSessionStore(
+            [
+                workflow("A", "2026-06-01 12:00:00", cost=4.0, directory="/a"),
+                workflow("B", "2026-06-01 13:00:00", cost=4.0, directory="/a"),
+            ]
+        ),
+        args,
+    )
+    app.view = "session"
+    app.workflow_index = 0
+    app.tab = app.current_tabs().index("Turns")
+    app.open_turn_drill(2)
+    app.workflow_index = 1  # B on screen; A keeps the armed ordinal
+    assert app.active_turn_drill is None  # the reader sees B's TABLE
+
+    app.handle_key(None, 27)
+    assert app.view != "session"  # Esc stepped out, as the visible pane implies
+    # ...and A's drill is untouched: it is remembered state for the session that owns it
+    # (mode memory keeps the matching scroll offset beside it), so an Esc pressed while
+    # looking at B must not destroy it.
+    assert app.turn_drill == 2
+    app.view = "session"
+    app.workflow_index = 0
+    assert app.active_turn_drill == 2  # back on A, the drill is live again
+
+
+def test_a_drill_survives_a_browse_mode_round_trip_with_its_scroll():
+    # A drill is remembered state for the session that owns it, and mode memory keeps the
+    # matching scroll offset beside it. Tidying an inactive drill away on Esc meant an Esc
+    # pressed in one mode destroyed a drill belonging to another: coming back restored the
+    # session, its tab and its DRILLED scroll, then rendered the prompt table at that
+    # offset. Drives the real mode-memory path, which the single-session test cannot.
+    class TwoProjectStore(FakeStore):
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            return [
+                {
+                    "depth": 0,
+                    "agent": "-",
+                    "model_name": "anthropic/claude-opus-4-8",
+                    "cost": 1.0,
+                    "input": 10,
+                    "output": 10,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "cache_write_1h": 0,
+                    "tokens_total": 20,
+                    "prompt_id": f"{wid}-p{i}",
+                    "prompt_title": f"{wid} p{i}",
+                    "prompt_full": f"{wid} p{i}",
+                    "time": f"2026-06-01 12:0{i}:00",
+                }
+                for i in range(4)
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(
+        TwoProjectStore(
+            [
+                workflow("A", "2026-06-01 12:00:00", cost=4.0, directory="/a"),
+                workflow("B", "2026-06-02 12:00:00", cost=4.0, directory="/b"),
+            ]
+        ),
+        args,
+    )
+
+    def open_turns():
+        app.drill_in()
+        app.tab = app.current_tabs().index("Sessions")
+        app.drill_in()
+        app.tab = app.current_tabs().index("Turns")
+
+    # Projects mode remembers B's Turns table...
+    app.set_browse_mode("projects")
+    app.project_index = next(i for i, p in enumerate(app.projects) if p.directory == "/b")
+    open_turns()
+    assert app.current_session().id == "B"
+
+    # ...while Time mode drills into A.
+    app.set_browse_mode("time")
+    app.focus = "days"
+    app.day_index = next(i for i, d in enumerate(app.panel_days) if d.day == "2026-06-01")
+    open_turns()
+    assert app.current_session().id == "A"
+    app.open_turn_drill(2)
+    app.scroll = 3
+
+    # Esc while looking at B must leave B, and leave A's drill alone.
+    app.set_browse_mode("projects")
+    app.handle_key(None, 27)
+    assert app.view != "session"
+    assert app.turn_drill == 2
+
+    app.set_browse_mode("time")
+    assert app.current_session().id == "A"
+    assert app.active_turn_drill == 2 and app.scroll == 3  # the drill, at its own offset

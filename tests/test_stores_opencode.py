@@ -202,17 +202,17 @@ def test_opencode_turns_carry_the_full_prompt_uncapped():
         table = rnd.detail_turns(wf, 96)
         assert not any(ln.startswith("  │") for ln in table)
         assert not any(" ".join(long_prompt.split()) in ln for ln in table)  # capped
-        app.turn_popup = app.turn_groups(wf.id)[0]
-        body = " ".join(rnd.turn_popup_lines(wf, 90))
+        app.open_turn_drill(0)
+        body = " ".join(rnd.detail_turn_drill(wf, 90))
         assert "then run the whole suite" in body  # the tail survived
         assert " ".join(long_prompt.split()) in " ".join(body.split())  # nothing lost
         # A click on a row opens that prompt, and moves the keyboard cursor onto it.
-        app.turn_popup = None
+        app.turn_drill = None
         rnd.detail_turns(wf, 96)  # a paint pass records the row line indices
         idx, pid = next(iter(rnd._turn_header_at.items()))
         app._apply_click(("turnline", idx), drill=False)
-        assert app.turn_popup == pid
-        assert "then run the whole suite" in " ".join(rnd.turn_popup_lines(wf, 90))
+        assert app.turn_drill == pid
+        assert "then run the whole suite" in " ".join(rnd.detail_turn_drill(wf, 90))
         # The table underneath is unchanged -- opening a prompt never re-shapes it.
         assert rnd.detail_turns(wf, 96) == rnd.detail_turns(wf, 96)
 

@@ -1775,20 +1775,20 @@ def test_drilling_into_a_year_zooms_and_lists_its_sessions():
     assert {w.id for w in app.current_sessions()} == {"a", "b"}
 
 
-def test_opening_a_session_closes_a_leftover_turn_popup():
-    # turn_popup names a prompt in ONE session. Opening another must not inherit it: a
-    # prompt-id collision would show the new session a popup the user never opened, and
-    # a stale id would render an empty box. Reload / source-switch close it alongside
+def test_opening_a_session_steps_out_of_a_leftover_turn_drill():
+    # turn_drill names a prompt in ONE session. Opening another must not inherit it: a
+    # prompt-id collision would show the new session a prompt the user never drilled into, and
+    # a stale id would render an empty view. Reload / source-switch leave it alongside
     # the turn cache it reads from.
     app = app_with([workflow("a", "2026-06-01 12:00:00"), workflow("b", "2026-06-02 12:00:00")])
-    app.turn_popup = "p1"
+    app.turn_drill = "p1"
     assert app.goto_session("b")  # -> drill_into_session -> drill_in -> session view
     assert app.view == "session" and app.current_session().id == "b"
-    assert app.turn_popup is None
+    assert app.turn_drill is None
     # reload closes it too (it indexes into the turn cache that reload rebuilds)
-    app.turn_popup = "q1"
+    app.turn_drill = "q1"
     app.reload()
-    assert app.turn_popup is None
+    assert app.turn_drill is None
 
 
 def test_toasts_coalesce_within_a_frame_cap_and_expire():

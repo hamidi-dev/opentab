@@ -530,12 +530,21 @@ class App:
         # Drilled into a ranked row's sessions: ("model"|"provider"|"source", key).
         self.trend_drill: tuple[str, str] | None = None
         self.trend_drill_index = 0  # cursor within that sessions list
-        # Turns tab: the prompt whose popup is open (Enter / a click), and how far it is
-        # scrolled. The table itself never folds -- every row carries its own numbers, and
-        # the turns behind a row live in here, so a 200-turn prompt costs a keystroke
-        # instead of 200 lines of the pane.
-        self.turn_popup: str | None = None
-        self.turn_popup_scroll = 0
+        # Turns tab: the prompt DRILLED INTO (Enter / a click), or None for the prompt
+        # table. Drilling rather than a modal, because that is what this app does
+        # everywhere -- months, days, projects, sessions, trend rows and price rows all
+        # open in place and step back with Esc -- and a popup would make this one tab the
+        # exception. The table itself never folds: every row carries its own numbers, and
+        # a 200-turn prompt is one row here and its own view in there.
+        self.turn_drill: int | None = None
+        # ...and the session it belongs to. An ordinal is only meaningful inside ONE
+        # session's prompt list, and unlike the prompt_id it replaced it is valid in
+        # almost any session, so a drill left armed while another session comes on screen
+        # silently opens that session's Nth prompt. Rather than clear it on every path
+        # that can swap the session (_restore_mode_memory did not, and enumerating them
+        # is exactly the bet that failed), the ordinal is checked against this id at the
+        # point of use -- see active_turn_drill.
+        self._turn_drill_session: str | None = None
         self._turn_cursor = 0  # Turns tab: selected ▸ prompt group (a run-ordinal); j/k move it
         self._turn_follow = False  # scroll to reveal the Turns cursor on the next draw
         self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
@@ -1898,7 +1907,13 @@ class App:
         groups = self.turn_groups(wf.id) if wf else []
         if not groups:
             return False
-        self._turn_cursor = max(0, min(self._turn_cursor + delta, len(groups) - 1))
+        moved = max(0, min(self._turn_cursor + delta, len(groups) - 1))
+        if moved == self._turn_cursor:
+            # Already at an end: hand the key back so the PANE scrolls instead. Without
+            # this the table's own footnotes are unreachable -- j is swallowed by a cursor
+            # that cannot move, and everything below the last row stays off-screen.
+            return False
+        self._turn_cursor = moved
         self._turn_follow = True
         return True
 
@@ -1911,26 +1926,7 @@ class App:
         if not groups:
             return False
         self._turn_cursor = max(0, min(self._turn_cursor, len(groups) - 1))
-        self.open_turn_popup(groups[self._turn_cursor])
-        return True
-
-    def handle_turn_popup_key(self, key) -> bool:
-        # The open prompt. Scrolls with the ordinary movement keys and closes on Esc/q or
-        # its own opener; anything else is swallowed rather than acted on behind it, the
-        # rule every other modal here follows -- a mistyped key must not switch tabs under
-        # a popup the reader is still looking at.
-        act = self.keymap.action("main", key)
-        if act in ("back", "select"):
-            self.close_turn_popup()
-            return True
-        if act == "down":
-            self.scroll_turn_popup(1)
-        elif act == "up":
-            self.scroll_turn_popup(-1)
-        elif act == "page_down":
-            self.scroll_turn_popup(10)
-        elif act == "page_up":
-            self.scroll_turn_popup(-10)
+        self.open_turn_drill(self._turn_cursor)
         return True
 
     def turn_cursor_ordinal(self) -> str:
@@ -1939,22 +1935,45 @@ class App:
         groups = self.turn_groups(wf.id) if wf else []
         return f"{min(self._turn_cursor + 1, len(groups))} of {len(groups)}" if groups else "-"
 
-    def open_turn_popup(self, prompt_id: str) -> None:
-        self.turn_popup = prompt_id
-        self.turn_popup_scroll = 0
-        self._turn_follow = True
+    @property
+    def active_turn_drill(self) -> int | None:
+        """The drilled prompt's ordinal -- but only for the session actually on screen."""
+        wf = self.current_session()
+        if self.turn_drill is None or wf is None or self._turn_drill_session != wf.id:
+            return None
+        return self.turn_drill
 
-    def close_turn_popup(self) -> bool:
-        # Returns whether it closed anything, so Esc can consume the key here before it
-        # starts popping the view stack (Esc out of a session is the usual meaning).
-        if self.turn_popup is None:
+    def open_turn_drill(self, ordinal: int) -> None:
+        # The ORDINAL of the prompt run, not its id: a prompt_id is not unique (a backend
+        # that groups by prompt TEXT repeats one), so an id cannot name which run.
+        wf = self.current_session()
+        self._turn_drill_session = wf.id if wf else None
+        self.turn_drill = ordinal
+        self.scroll = 0
+        self._turn_follow = False
+
+    def close_turn_drill(self) -> bool:
+        # Whether it stepped back out of a VISIBLE drilled prompt, so Esc can consume the
+        # key here before it starts popping the view stack (Esc out of a session is the
+        # usual meaning) -- the trend_drill / zoom_source rule.
+        #
+        # Gated on active_turn_drill, not on the raw ordinal: a drill armed in another
+        # session is inert but still set, and consuming Esc for it would make the key do
+        # nothing on the table the reader is actually looking at -- the same complaint
+        # that Esc-from-another-tab produced.
+        #
+        # An inactive drill is left ALONE rather than tidied away. It is remembered state
+        # for the session that owns it, exactly like the scroll offset mode memory keeps
+        # beside it: clearing it here meant an Esc pressed in one browse mode destroyed a
+        # drill belonging to another, and returning there restored that session, its tab
+        # and its drilled SCROLL while rendering the prompt table at that offset.
+        if self.active_turn_drill is None:
             return False
-        self.turn_popup = None
-        self.turn_popup_scroll = 0
+        self.turn_drill = None
+        self._turn_drill_session = None
+        self.scroll = 0
+        self._turn_follow = True  # put the table back under the row you came from
         return True
-
-    def scroll_turn_popup(self, delta: int) -> None:
-        self.turn_popup_scroll = max(0, self.turn_popup_scroll + delta)
 
     def session_supports_context(self, workflow_id: str) -> bool:
         # Whether the Context tab's estimated composition section applies (only
@@ -2716,7 +2735,7 @@ class App:
         notes_ok = self.refresh_notes()  # `r` picks up notes another opentab wrote too
         self._tool_by_session.clear()
         self._turns_by_session.clear()
-        self.turn_popup = None  # closed with the turn cache it reads from
+        self.turn_drill = None  # stepped back out with the turn cache it reads from
         self._turn_cursor = 0  # and its cursor, so a fresh session opens on the first prompt
         self._context_by_session.clear()
         self._nodes_by_session.clear()
@@ -3084,7 +3103,7 @@ class App:
         self._models_loaded = False
         self._tool_by_session.clear()
         self._turns_by_session.clear()
-        self.turn_popup = None  # closed with the turn cache it reads from
+        self.turn_drill = None  # stepped back out with the turn cache it reads from
         self._turn_cursor = 0  # and its cursor, so a fresh session opens on the first prompt
         self._context_by_session.clear()
         self._nodes_by_session.clear()
@@ -4790,7 +4809,7 @@ class App:
             # Individually expanded Turns prompts are this session's; a leftover set from
             # the last one would spuriously light the turn-column header (any_open) and,
             # on a prompt-id collision, auto-expand a group that was never opened here.
-            self.turn_popup = None
+            self.turn_drill = None
             self._turn_cursor = 0  # the Turns cursor starts on the first prompt
 
     def drill_out(self) -> None:
@@ -4887,7 +4906,11 @@ class App:
 
     def move(self, delta: int) -> None:
         if self.view == "session":
-            if self._on_turns_tab() and self._move_turn_cursor(delta):
+            if (
+                self.active_turn_drill is None
+                and self._on_turns_tab()
+                and self._move_turn_cursor(delta)
+            ):
                 return
             self.scroll = max(0, self.scroll + delta)
         elif self.view == "zoom":
@@ -5063,7 +5086,7 @@ class App:
                 self.machine_pick_index = len(rows) - 1 if to_end else 0
             return
 
-        if self._on_turns_tab():
+        if self._on_turns_tab() and self.active_turn_drill is None:
             wf = self.current_session()
             groups = self.turn_groups(wf.id) if wf else []
             if groups:
@@ -6069,9 +6092,6 @@ class App:
             return self.handle_filter_key(key)
         if self.launch_menu is not None:
             return self.handle_launch_key(key)
-        if self.turn_popup is not None:
-            return self.handle_turn_popup_key(key)
-
         act = self.keymap.action("main", key)
         if key == 3 or act == "quit":
             return False
@@ -6223,6 +6243,12 @@ class App:
             self.drill_in()
             return True
         if act == "back":
+            # A drilled prompt is the innermost scope on the Turns tab, so Esc leaves it
+            # before it starts popping the view stack -- but ONLY while that tab is the
+            # one on screen. Left ungated, Esc on Tools or Context silently tore down an
+            # invisible drill and was swallowed, so the key appeared to do nothing.
+            if self._on_turns_tab() and self.close_turn_drill():
+                return True
             self.drill_out()  # session -> zoom -> browse; no-op when browsing
             return True
         if act == "cycle_panel_back":
@@ -6753,15 +6779,16 @@ class App:
                 self.drill_in()
             return
         if kind == "turnline":
-            # A click on a Turns-tab prompt row opens it (its full text + its turns);
-            # clicks on the ▼/❄ marker lines between rows are inert.
+            # A click on a Turns-tab prompt row drills into it (its full text + its
+            # turns); clicks on the ▼/❄ marker lines between rows are inert.
             headers = getattr(self.renderer, "_turn_header_at", {})
-            pid = headers.get(value)
-            if pid is not None:
+            ordinal = headers.get(value)
+            if ordinal is not None:
                 # Move the keyboard cursor onto the clicked row first, so j/k pick up
-                # from here (the ordinal is this row's position among all prompt rows).
-                self._turn_cursor = sorted(headers).index(value)
-                self.open_turn_popup(pid)
+                # from here. The map is empty while a prompt is drilled, so a click on
+                # drilled text lands nowhere instead of re-drilling a stale row.
+                self._turn_cursor = ordinal
+                self.open_turn_drill(ordinal)
             return
         if kind in ("year", "month", "day"):
             # The time sidebar: live in browse, and still live behind a zoomed

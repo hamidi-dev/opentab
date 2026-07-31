@@ -829,3 +829,32 @@ def test_cache_miss_prices_a_provider_that_bills_no_cache_write():
     assert miss.cause == "waited" and miss.ttl == ot.CACHE_TTL_SHORT
     ir, _o, crr, _cw = ot.model_price(m)
     assert abs(miss.cost - 200000 * (ir - crr) / 1e6) < 1e-9
+
+
+def test_cache_miss_reads_the_ttl_off_the_entry_that_died_not_the_one_replacing_it():
+    # The lifetime that ran out belongs to the turn that CREATED or last refreshed the
+    # entry -- prev -- never to cur, which is re-buying the context and may write a
+    # different tier. Read off cur, the verdict was wrong on 5.5% of cold turns in a real
+    # corpus, and wrong in both directions.
+    def turn(time, read=0, write=0, write_1h=0, inp=0, prompt="p"):
+        return _turn(time, read=read, write=write, write_1h=write_1h, inp=inp, prompt=prompt)
+
+    # prev bought an HOUR; cur re-buys on the 5-minute tier ten minutes later. The entry
+    # still had 50 minutes to live, so nothing expired -- the prefix changed under it.
+    alive = ot.cache_misses(
+        [
+            turn("2026-06-10 10:00:00", read=200000, write=100000, write_1h=100000, prompt="a"),
+            turn("2026-06-10 10:10:00", write=300000, write_1h=0, prompt="b"),
+        ]
+    )
+    assert alive[0].cause == "invalidated" and alive[0].ttl == ot.CACHE_TTL_LONG
+
+    # The mirror image: prev bought 5 minutes, cur happens to write an hour. Ten minutes
+    # is genuinely past a 5-minute entry, and reading cur's tier would have excused it.
+    dead = ot.cache_misses(
+        [
+            turn("2026-06-10 10:00:00", read=200000, write=100000, write_1h=0, prompt="a"),
+            turn("2026-06-10 10:10:00", write=300000, write_1h=300000, prompt="b"),
+        ]
+    )
+    assert dead[0].cause == "waited" and dead[0].ttl == ot.CACHE_TTL_SHORT

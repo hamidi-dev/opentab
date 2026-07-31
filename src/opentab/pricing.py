@@ -736,7 +736,17 @@ def cache_misses(rows) -> list[CacheMiss]:
         if repaid <= 0:
             continue
         model = cur.get("model_name") or ""
-        ttl = cache_ttl_seconds(model, _int(cur.get("cache_write_1h")), write)
+        # The TTL of the entry that DIED, so it is read off PREV -- the turn that created
+        # or last refreshed it -- never off `cur`, which is re-buying the context and may
+        # well be writing a different tier. Reading it from cur got the verdict wrong on
+        # 5.5% of cold turns in a real corpus, both ways: a 1h entry with 50 minutes left
+        # was called expired because cur happened to write the 5m tier, and a genuinely
+        # dead 5m entry was excused because cur wrote a 1h one.
+        ttl = cache_ttl_seconds(
+            prev.get("model_name") or model,
+            _int(prev.get("cache_write_1h")),
+            _int(prev.get("cache_write")),
+        )
         a, b = _row_epoch(prev), _row_epoch(cur)
         idle = (b - a) if (a is not None and b is not None) else 0.0
         out.append(

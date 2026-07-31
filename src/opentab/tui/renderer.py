@@ -76,7 +76,6 @@ from opentab.pricing import (
     price_source_meta,
 )
 from opentab.util import (
-    CACHED_SHARE_FLOOR,
     CONTEXT_COMPACT_FLOOR,
     CONTEXT_COMPACT_RATIO,
     cached_share,
@@ -642,8 +641,6 @@ class Renderer:
             self.draw_sort_menu(stdscr, height, width)
         elif self.launch_menu is not None:
             self.draw_launch_menu(stdscr, height, width)
-        elif self.turn_popup is not None:
-            self.draw_turn_popup(stdscr, height, width)
 
         # Toasts float over everything, including modals -- they're the topmost layer.
         self.draw_toasts(stdscr, height, width)
@@ -2152,12 +2149,12 @@ class Renderer:
         drawn = lines[self.scroll : self.scroll + visible]
         for offset, line in enumerate(drawn):
             attr = self.line_attr(line)
-            if line.startswith(("▸ ", "▾ ")):  # Turns tab: a user-prompt group header
-                attr = curses.color_pair(6) | curses.A_BOLD
-                if current == "Turns" and self.scroll + offset == self._turn_cursor_line:
-                    attr |= curses.A_REVERSE  # the keyboard-selected ▸ group
-            elif line.startswith("  │"):  # Turns tab: an unfolded prompt's full text
-                attr = curses.color_pair(1)
+            if current == "Turns" and self.scroll + offset == self._turn_cursor_line:
+                # The selected prompt row, in the pickers' own reverse video. Keyed on
+                # the LINE INDEX, never on a leading glyph: the rows are ordinary table
+                # rows now, and a glyph test silently highlighted nothing at all once the
+                # ▸ headers became columns -- j/k moved a cursor the eye could not find.
+                attr = curses.color_pair(6) | curses.A_BOLD | curses.A_REVERSE
             if current == "Context":
                 # The context chart's rows are heat-shaded by how full the window is
                 # at that height; detail_context stashed each line's level by index
@@ -3977,33 +3974,42 @@ class Renderer:
             out.append(cost)
         return out
 
-    def turn_popup_lines(self, workflow: Workflow, width: int) -> list[str]:
-        """One prompt, opened: its full text, its totals, and the turns it took.
+    def detail_turn_drill(self, workflow: Workflow, width: int) -> list[str]:
+        """One prompt, drilled into: its full text, its totals, and the turns it took.
 
-        This is where the per-turn detail went when the tab became a table. Keeping it
-        out of the pane is the whole point -- a prompt that ran 217 turns is one row up
-        there and a scrollable box in here, instead of 217 lines shoved between two
-        rows of the table you were reading.
+        Where the per-turn detail went when the tab became a table -- a prompt that ran
+        217 turns is one row out there and its own view in here, rather than 217 lines
+        shoved between two rows of the table you were reading. Esc steps back out, like
+        every other drill in the app.
         """
         rows = self.session_turn_rows(workflow.id)
         if not rows:
             return []
         costs = self.turn_costs(rows)
-        _order, grouped = self.turn_group_rows(rows, costs)
-        g = grouped.get(self.app.turn_popup)
-        if not g:
+        groups = self.turn_group_rows(rows, costs)
+        i = self.app.active_turn_drill
+        if not isinstance(i, int) or not 0 <= i < len(groups):
             return []
-        lines: list[str] = []
-        for para in (g["full"] or "(no preceding prompt)").splitlines() or [""]:
-            lines += textwrap.wrap(para, max(20, width)) or [""]
+        g = groups[i]
+        # The table's click map and selected line belong to the TABLE. Left standing they
+        # keep answering inside the drill, where draw_detail still lays a "turnline"
+        # region over every line: a click on drilled text re-drilled whatever prompt used
+        # to occupy that row, and the stale cursor line put the selection highlight on an
+        # unrelated line of prompt text.
+        self._turn_header_at = {}
+        self._turn_cursor_line = None
+        n = i + 1
+        order = groups
         share = g["cached"]
-        cached = "-" if share is None else f"{share * 100:.0f}%"
-        lines += [
-            "",
-            f"{g['turns']} turn{'' if g['turns'] == 1 else 's'} · "
-            f"{human_tokens(g['tokens'])} · {money(g['cost'])} · cached {cached}",
+        lines: list[str] = [
+            f"# Turns · prompt {n} of {len(order)} — {g['turns']} turn"
+            f"{'' if g['turns'] == 1 else 's'} · {human_tokens(g['tokens'])} · "
+            f"{money(g['cost'])} · cached {'-' if share is None else f'{share * 100:.0f}%'}",
             "",
         ]
+        for para in (g["full"] or "(no preceding prompt)").splitlines() or [""]:
+            lines += textwrap.wrap(para, max(20, width)) or [""]
+        lines.append("")
         idx_w = max(2, len(str(len(rows))))
         agent_w = min(10, max(5, max((len(rows[i]["agent"]) for i in g["indices"]), default=5)))
         mw = max(12, min(30, width - (idx_w + agent_w + 14 + 6 + 9 + 9 + 6)))
@@ -4011,6 +4017,8 @@ class Renderer:
             f"{'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} {pad('Agent', agent_w)} "
             f"{'Cached':>6} {'Tokens':>9} {'Cost':>9}"
         )
+        # Same picker-header look, same deliberately empty (unsortable) spec.
+        self._line_sort_headers[len(lines) - 1] = ((), "")
         for i in g["indices"]:
             r = rows[i]
             sh = cached_share(r)
@@ -4021,31 +4029,42 @@ class Renderer:
                 f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
                 f"{human_tokens(r['tokens_total']):>9} {money(costs[i]):>9}"
             )
+        lines += ["", f"· {self._key('main', 'back')} back to the prompts."]
         return lines
 
     @staticmethod
     def turn_group_rows(rows, costs):
-        """(ordered prompt ids, {id: aggregate}) -- the Turns table's rows.
+        """The Turns table's rows: one per RUN of consecutive turns sharing a prompt_id.
 
-        A group is a RUN of consecutive turns sharing a prompt_id, matching
-        App.turn_groups so the cursor ordinal and these rows are the same list. Each
-        aggregate carries what the row prints plus the turn indices behind it, which the
-        markers (▼ compaction, ❄ expiry) and the popup both need.
+        Returned as a LIST, and identified downstream by ORDINAL, because a prompt_id is
+        not unique: a backend without explicit ids groups by the prompt TEXT (CsvStore
+        does), so asking "fix the bug" twice in one session yields A, B, A. Keyed by id,
+        the two A runs collapsed into one row worth both their costs while
+        App.turn_groups still counted three -- the cursor's last ordinal addressed a row
+        that was never drawn, and Enter opened the merged first run.
 
-        `cached` is the group's share of context served from cache -- pooled over the
-        group's turns rather than averaged, so one enormous turn cannot be outvoted by
-        several tiny ones sitting at 100%.
+        Each aggregate carries what the row prints plus the turn indices behind it, which
+        the markers (▼ compaction, ❄ expiry) and the drilled view both need.
+
+        `cached` is the share of context the group's FIRST main-thread turn served from
+        cache -- not an average over its turns. Every later turn in a prompt is warm by
+        construction (the one before it just wrote the cache), so averaging drags every
+        row toward 100% and buries the only moment that could have missed: measured on a
+        real session, the prompt that followed an 8h44m expiry read 5% of its context
+        back on the turn that mattered and averaged to 76%, directly under a ❄ marker
+        saying it had re-bought the lot. A prompt with 114 turns hid the same thing at
+        97%. The question this column answers -- did this prompt have to buy its context
+        again -- is decided when the prompt starts.
         """
-        order: list[str] = []
-        agg: dict[str, dict] = {}
+        groups: list[dict] = []
         last = object()
         for i, (r, cost) in enumerate(zip(rows, costs)):
             pid = r.get("prompt_id", "")
             if pid != last:
                 last = pid
-                if pid not in agg:
-                    order.append(pid)
-                    agg[pid] = {
+                groups.append(
+                    {
+                        "id": pid,
                         "title": (r.get("prompt_title") or "").strip(),
                         "full": (r.get("prompt_full") or r.get("prompt_title") or "").strip(),
                         "time": r.get("time") or "",
@@ -4053,20 +4072,23 @@ class Renderer:
                         "tokens": 0,
                         "cost": 0.0,
                         "indices": [],
-                        "_read": 0,
-                        "_ctx": 0,
+                        "_first": None,  # the group's first main-thread turn
                     }
-            g = agg[pid]
+                )
+            g = groups[-1]
             g["turns"] += 1
             g["tokens"] += int(r.get("tokens_total") or 0)
             g["cost"] += cost
             g["indices"].append(i)
-            if not r.get("depth"):  # subagents run in their own windows
-                g["_read"] += int(r.get("cache_read") or 0)
-                g["_ctx"] += context_size(r)
-        for g in agg.values():
-            g["cached"] = (g["_read"] / g["_ctx"]) if g["_ctx"] >= CACHED_SHARE_FLOOR else None
-        return order, agg
+            # Subagents run in their OWN context windows, so they neither answer for the
+            # main thread's cache nor stand in for it: a prompt whose turns were all
+            # subagent work (an interrupt lands like this) reports no share at all rather
+            # than the subagent's.
+            if not r.get("depth") and g["_first"] is None:
+                g["_first"] = r
+        for g in groups:
+            g["cached"] = cached_share(g["_first"]) if g["_first"] is not None else None
+        return groups
 
     def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
         # How this session's cost accrued, in the order you spent it: one row per PROMPT,
@@ -4086,12 +4108,17 @@ class Renderer:
         rows = self.session_turn_rows(workflow.id)
         if not rows:
             return ["# Turns", "No turns recorded for this session."]
+        if self.app.active_turn_drill is not None:
+            drilled = self.detail_turn_drill(workflow, width)
+            if drilled:
+                return drilled
+            self.app.turn_drill = None  # the prompt went away under us (reload)
         costs = self.turn_costs(rows)
         total = sum(costs)
         # One entry per prompt, in the order the prompts ran. Consecutive turns sharing a
         # prompt_id are one group -- the same split App.turn_groups makes, so the cursor
         # ordinal lines up with these rows.
-        groups, grouped = self.turn_group_rows(rows, costs)
+        groups = self.turn_group_rows(rows, costs)
 
         # Compactions and cache expiries are the two things on this tab that are NOT
         # prompts: the window was cleared, or the cache died, between two turns. Both are
@@ -4127,19 +4154,36 @@ class Renderer:
         # which put every number one keystroke away from the only view that listed them.
         idx_w = max(2, len(str(len(groups))))
         time_w = 11  # "MM-DD HH:MM" -- a prompt is a moment, its turns carry the seconds
-        turns_w, cached_w, tok_w, cost_w, cum_w = 5, 6, 8, 9, 14
-        fixed = idx_w + time_w + turns_w + cached_w + tok_w + cost_w + cum_w + 9
-        pw = max(20, width - fixed)  # the prompt text takes whatever is left
+        turns_w, cached_w, tok_w, cost_w = 5, 6, 8, 9
+        # Optional cells, budgeted against the pane like session_columns does rather than
+        # left to overflow and be clipped at paint -- a column the frame eats is worse
+        # than one deliberately dropped, because it takes the prompt text with it. The
+        # bar goes first (it restates the Cost cell), Cumulative second; the prompt keeps
+        # at least PROMPT_MIN, since a prompt list is read by its prompts.
+        PROMPT_MIN = 20
+        base = idx_w + time_w + turns_w + cached_w + tok_w + cost_w + 8
+        cum_w = 14 if width - base - 14 >= PROMPT_MIN else 0
+        bar_w = 8 if width - base - cum_w - 8 >= PROMPT_MIN + 12 else 0
+        fixed = base + cum_w + bar_w + (1 if cum_w else 0) + (1 if bar_w else 0)
+        peak = max((g["cost"] for g in groups), default=0.0)
+        pw = max(PROMPT_MIN, width - fixed)  # the prompt text takes whatever is left
 
         lines.append(
             f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Prompt':<{pw}} {'Turns':>{turns_w}} "
-            f"{'Cached':>{cached_w}} {'Tokens':>{tok_w}} {'Cost':>{cost_w}} {'Cumulative':>{cum_w}}"
+            f"{'Cached':>{cached_w}} {'Tokens':>{tok_w}} {'Cost':>{cost_w}}"
+            + (f" {'':<{bar_w}}" if bar_w else "")
+            + (f" {'Cumulative':>{cum_w}}" if cum_w else "")
         )
+        # Painted like a picker's header (accent bold): this table is NAVIGABLE, so it
+        # takes the sessions/projects picker's look rather than the ruled box the static
+        # Models/Tools tables wear. The column spec is EMPTY on purpose -- that registers
+        # no click-to-sort zones, because these rows are chronological by design (the tab
+        # answers "when did the money go"), so there is nothing here to sort by.
+        self._line_sort_headers[len(lines) - 1] = ((), "")
         cum = 0.0
         self._turn_header_at = {}  # line index -> prompt_id, for the click
         header_lines: list[int] = []
-        for n, pid in enumerate(groups, start=1):
-            g = grouped[pid]
+        for n, g in enumerate(groups, start=1):
             cum += g["cost"]
             # Marker rows first: they describe what happened BEFORE this prompt ran.
             for i in g["indices"]:
@@ -4163,32 +4207,44 @@ class Renderer:
             cached = "-" if share is None else f"{share * 100:.0f}%"
             title = " ".join((g["title"] or "").split()) or "(no preceding prompt)"
             cumlabel = f"{money(cum)} · {pct(cum, total)}"
-            self._turn_header_at[len(lines)] = pid
+            self._turn_header_at[len(lines)] = n - 1  # line -> group ORDINAL
             header_lines.append(len(lines))
             lines.append(
                 f"  {n:>{idx_w}} {g['time'][5:16]:<{time_w}} {pad(shorten(title, pw), pw)} "
                 f"{g['turns']:>{turns_w}} {cached:>{cached_w}} "
-                f"{human_tokens(g['tokens']):>{tok_w}} {money(g['cost']):>{cost_w}} "
-                f"{cumlabel:>{cum_w}}"
+                f"{human_tokens(g['tokens']):>{tok_w}} {money(g['cost']):>{cost_w}}"
+                + (f" {cost_bar(g['cost'], peak, bar_w)}" if bar_w else "")
+                + (f" {cumlabel:>{cum_w}}" if cum_w else "")
             )
         cur = self.app._turn_cursor
         self._turn_cursor_line = header_lines[cur] if 0 <= cur < len(header_lines) else None
-        lines += [
-            "",
+        notes = [
             f"· One row per prompt, in time order — {self._key('main', 'select')} "
             "(or a click) opens it with its turns.",
-            "· Cached: how much of that prompt's context came from the cache — near 100% is "
-            "normal, and anything low re-bought the context it was missing.",
+            "· Cached: how much of the context came from the cache when that prompt STARTED "
+            "— near 100% is normal, and anything low re-bought what it was missing.",
         ]
         if comps:
-            lines.append(
+            notes.append(
                 "· ▼ the context window was cleared before that turn — the Context tab charts it."
             )
         if late:
-            lines.append(
+            notes.append(
                 "· ❄ the prompt cache expired while the session sat idle, so that prompt paid "
                 "again for context it already had — a faster follow-up would have cost less."
             )
+        # WRAPPED, unlike every earlier version of this tab: these run past 140 characters
+        # and the paint clips rather than wraps, so on a real pane they ended mid-sentence
+        # ("...the context it was miss"). Continuations indent under the "· ".
+        lines.append("")
+        for note in notes:
+            # Wrapped to width MINUS the continuation indent, not to width: adding the
+            # two spaces afterwards pushed continuations two cells past the pane, so at
+            # an 80-column terminal the ❄ note was still clipped by the very fix meant
+            # to stop it being clipped.
+            wrapped = textwrap.wrap(note, max(20, width - 2)) or [note]
+            lines.append(wrapped[0])
+            lines += ["  " + piece for piece in wrapped[1:]]
         return lines
 
     # The Context tab's chart geometry: enough rows for the curve's shape without
@@ -5077,32 +5133,6 @@ class Renderer:
         for offset, (text, attr) in enumerate(content[: h - 4]):
             self.write(stdscr, y + 2 + offset, x + 2, pad(shorten(text, field), field), attr)
         return y, x, h, w
-
-    def draw_turn_popup(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
-        # Enter on a Turns row: the prompt in full plus the turns it took. Sized to the
-        # screen rather than to content (a 217-turn prompt would ask for 217 lines), and
-        # scrolled with j/k -- App.turn_popup_scroll.
-        wf = self.current_session()
-        if wf is None:
-            return
-        body = self.turn_popup_lines(wf, max(24, scr_w - 12))
-        if not body:
-            self.app.close_turn_popup()
-            return
-        rows = max(4, scr_h - 8)
-        top = max(0, min(self.app.turn_popup_scroll, max(0, len(body) - rows)))
-        self.app.turn_popup_scroll = top
-        window = body[top : top + rows]
-        if len(body) > rows:
-            window = window + [
-                "",
-                f"— {top + 1}-{top + len(window)} of {len(body)} · "
-                f"{self._keys('main', 'down', 'up')} scroll · {self._key('main', 'back')} close",
-            ]
-        else:
-            window = window + ["", f"— {self._key('main', 'back')} close"]
-        title = f"prompt {self.turn_cursor_ordinal()} · {self._key('main', 'back')} to close"
-        self.draw_modal(stdscr, scr_h, scr_w, title, [(t, self.line_attr(t)) for t in window])
 
     def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `H` picker: a small modal list of every present source. j/k moves the
