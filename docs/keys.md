@@ -106,8 +106,8 @@ work from anywhere, Trends and Prices included.
 
 ## What persists between runs
 
-The active **harness, range, sort, ignored projects, bookmarks, pinned price rows,
-theme, and `$` what-if view are remembered between runs**, stored in
+The active **harness, range, sort, focused sidebar panel, ignored projects, bookmarks,
+pinned price rows, theme, and `$` what-if view are remembered between runs**, stored in
 `~/.local/state/opentab/state.json` (the XDG *state* dir — regenerable prefs). Pass
 `--no-state` to disable; `--demo` never persists.
 

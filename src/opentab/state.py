@@ -40,6 +40,7 @@ def save_state(app: App) -> None:
         "subagent_sort_reverse": app.subagent_sort_reverse,
         "prices_sort_reverse": app.prices_sort_reverse,
         "browse_mode": app.browse_mode,
+        "focus": app.focus,  # which stacked time panel (Years/Months/Days) was active
         "zoom_maximized": app.zoom_maximized,  # + in a zoomed detail: full-screen vs split
         "ignored_projects": sorted(app.ignored_projects),
         "ignored_sessions": sorted(app.ignored_sessions),
@@ -102,6 +103,17 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     mode = state.get("browse_mode")
     if mode in ("time", "projects", "machines"):
         app.browse_mode = mode
+    # The focused sidebar panel is a pref like the browse mode above it: quit reading
+    # a month and you come back to that month, not to today. Assigned directly rather
+    # than through set_focus(), which also resets scroll/zoom state for a LIVE panel
+    # switch -- at restore time those are already at their defaults, and `tab` isn't
+    # persisted, so there is no carried tab index for set_focus to re-map. Only the
+    # three real panels are accepted; a value from a future/edited state.json leaves
+    # __init__'s "days" standing. Restored unconditionally: `focus` is meaningless in
+    # projects/machines mode (it is simply not read there), so gating it on the
+    # restored browse_mode would only lose it for someone who switches back with `t`.
+    if state.get("focus") in app.FOCUS_CYCLE:
+        app.focus = state["focus"]
     if isinstance(state.get("zoom_maximized"), bool):
         app.zoom_maximized = state["zoom_maximized"]
     pinned = state.get("pinned_models")

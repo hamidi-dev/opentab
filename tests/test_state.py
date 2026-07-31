@@ -27,6 +27,44 @@ def test_prices_sort_is_persisted_in_state():
     assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
 
 
+def test_focused_time_panel_is_persisted_in_state():
+    # Quit reading a month and you come back to that month, not to today. This is
+    # also what keeps a saved "last_activity" sort alive across a restart: the sort
+    # is withdrawn on the Days pane, so without the focus the preference would be
+    # silently withdrawn on the first frame of every launch.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
+    assert app.focus == "days"  # the fresh-app default this test has to move off
+    app.set_focus("months")
+    app.sort_by = "last_activity"
+    old_xdg = os.environ.get("XDG_STATE_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_STATE_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with(
+                [workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")]
+            )
+            assert restored.focus == "days"
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_STATE_HOME", None)
+            else:
+                os.environ["XDG_STATE_HOME"] = old_xdg
+    assert restored.focus == "months"
+    assert restored.session_sort_key() == "last_activity"  # the pref survives, not just the key
+
+
+def test_a_bogus_saved_focus_leaves_the_default_panel_standing():
+    # A hand-edited or future-version state.json must not focus a panel that isn't
+    # one of the three -- every other drawer reads self.focus by name.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    ot.apply_state(app, app.args, {"focus": "sidebar"})
+    assert app.focus == "days"
+    ot.apply_state(app, app.args, {"focus": None})
+    assert app.focus == "days"
+
+
 def test_last_activity_sort_is_persisted_in_state():
     # No dedicated save/restore code exists for this -- sort_by/project_sort_by are
     # already generic (state.py validates against app.sort_options/
