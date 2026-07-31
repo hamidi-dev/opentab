@@ -6,6 +6,7 @@ import json
 import os
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from opentab import __version__, paths
@@ -645,3 +646,158 @@ def api_equivalent_cost(
     else:
         cost += cache_write * cwr
     return cost / 1e6
+
+
+# --- cache misses: what a context you had to buy twice cost -------------------
+#
+# A provider caches the prompt prefix and bills a hit at a tenth of the input rate. Let
+# the entry die and the next request re-pays for the SAME context -- at the write rate
+# where writes are billed (Anthropic direct), at the plain input rate where they are not
+# (Claude via GitHub Copilot, OpenAI). Either way it is money for something you already
+# bought, and unlike almost everything else opentab reports, it was avoidable.
+#
+# The clock is the gap between CONSECUTIVE REQUESTS, not since your last message: an
+# entry "is refreshed for no additional cost each time the cached content is used"
+# (Anthropic's prompt-caching docs), so an agent grinding away for two hours keeps its
+# own cache alive the whole time and owes nothing. What kills it is a quiet stretch.
+CACHE_TTL_SHORT = 300  # the default ephemeral tier, and what every gateway resells
+CACHE_TTL_LONG = 3600  # the "1h" tier, opted into per request -- see cache_ttl_seconds
+# Below this there was no meaningful cache to lose. Comfortably over the largest
+# documented minimum cacheable prompt (4,096 tokens), so a prefix that never qualified
+# for caching in the first place is not reported as a lost one.
+CACHE_MISS_MIN_PREFIX = 5000
+CACHE_MISS_COLD_RATIO = 0.5  # read back less than half the prefix -> it was not reused
+CACHE_MISS_KEPT_RATIO = 0.6  # below this the window shrank: a compaction, not a loss
+
+
+def cache_ttl_seconds(name: str, cache_write_1h: float = 0.0, cache_write: float = 0.0):
+    """The lifetime a cache entry for `name` was actually bought with, or None.
+
+    None means the provider publishes no lifetime, and is the important return: measured
+    over 45k turn pairs, Anthropic-family models fall off a CLIFF (100% of entries alive
+    at 55-60 minutes on the 1h tier, 23% past it; 85% at 4-5 minutes on the short tier,
+    20% past it), while OpenAI's decays smoothly with no edge anywhere -- 84% at 4-5
+    minutes, 61% at 10-30, 44% at 30-55. Their cache is opportunistic, so there is no
+    promise to have missed and no honest way to call a gap "too long". Gated on the model
+    FAMILY, never the route: Claude sold through a gateway keeps Anthropic's contract.
+    """
+    if model_family(name) != "anthropic":
+        return None
+    # Only Anthropic's own logs record the tier (usage.cache_creation splits the write
+    # by TTL). Take the majority tier of what this turn wrote; a backend that normalizes
+    # the split away reports 0 and lands on the short tier, which is the default a
+    # request gets when it does not ask for "1h".
+    return CACHE_TTL_LONG if cache_write_1h > cache_write * 0.5 else CACHE_TTL_SHORT
+
+
+@dataclass
+class CacheMiss:
+    """One turn that paid again for a context the previous turn had already cached."""
+
+    index: int  # position in the turn rows, so a renderer can anchor a marker
+    cause: str  # see CACHE_MISS_CAUSES
+    idle: float  # seconds since the previous request -- the gap that killed it
+    ttl: int  # the lifetime it was bought with (0 when the provider publishes none)
+    repaid: int  # tokens bought a second time
+    cost: float  # dollars those tokens cost ABOVE what a cache hit would have
+
+
+# Ordered by how much the reader can do about it. Only "waited" is the user's own
+# doing, and separating it is the whole point: a marker that blames you for a build
+# that ran long, or for a tool change that invalidated the prefix, teaches you to
+# ignore the marker.
+CACHE_MISS_CAUSES = ("waited", "agent", "invalidated", "compacted", "switched")
+
+
+def cache_misses(rows) -> list[CacheMiss]:
+    """Every turn in `rows` (a session's Turns rows) that re-bought its context.
+
+    Backend-agnostic on purpose: every backend's turn rows already carry cache_read,
+    cache_write, input, model_name and a canonical "YYYY-MM-DD HH:MM:SS" local time, so
+    this reads the same on OpenCode, Claude Code, Codex, pi, omp, OpenClaw, Zaly and the
+    request logs without any of them growing a field.
+
+    Subagent rows are not compared against the main thread -- they run in their own
+    context windows, so their traffic neither loses nor refreshes the main thread's
+    entry -- but their TIMESTAMPS are used, because a subagent grinding through the gap
+    means the human was not the one keeping the session idle.
+    """
+    main = [(i, r) for i, r in enumerate(rows) if not r.get("depth")]
+    busy = sorted(t for t in (_row_epoch(r) for r in rows if r.get("depth")) if t is not None)
+    out: list[CacheMiss] = []
+    for (_pi, prev), (ci, cur) in zip(main, main[1:]):
+        prefix = _int(prev.get("cache_read")) + _int(prev.get("cache_write"))
+        if prefix < CACHE_MISS_MIN_PREFIX:
+            continue  # nothing worth caching was alive
+        if _int(cur.get("cache_read")) >= prefix * CACHE_MISS_COLD_RATIO:
+            continue  # it read the prefix back: a hit, whatever the gap
+        write, inp = _int(cur.get("cache_write")), _int(cur.get("input"))
+        repaid = min(prefix, write + inp)
+        if repaid <= 0:
+            continue
+        model = cur.get("model_name") or ""
+        ttl = cache_ttl_seconds(model, _int(cur.get("cache_write_1h")), write)
+        a, b = _row_epoch(prev), _row_epoch(cur)
+        idle = (b - a) if (a is not None and b is not None) else 0.0
+        out.append(
+            CacheMiss(
+                index=ci,
+                cause=_miss_cause(prev, cur, prefix, repaid, idle, ttl, busy, a, b),
+                idle=idle,
+                ttl=ttl or 0,
+                repaid=repaid,
+                cost=_repay_cost(model, repaid, write, _int(cur.get("cache_write_1h"))),
+            )
+        )
+    return out
+
+
+def _miss_cause(prev, cur, prefix, repaid, idle, ttl, busy, a, b) -> str:
+    if (cur.get("model_name") or "") != (prev.get("model_name") or ""):
+        return "switched"  # a different model cannot read another's cache
+    if _int(cur.get("cache_read")) + repaid < prefix * CACHE_MISS_KEPT_RATIO:
+        return "compacted"  # the window was rebuilt smaller, not lost to time
+    if ttl is None or idle <= ttl:
+        # Alive by the clock, so something changed the prefix instead. Anthropic lists
+        # the causes: edited tool definitions, an image added or removed, a changed
+        # tool_choice or thinking config. None of them are the reader's timing.
+        return "invalidated"
+    if a is not None and b is not None and any(a < t < b for t in busy):
+        return "agent"  # a subagent was working through the gap
+    if cur.get("prompt_id") == prev.get("prompt_id"):
+        return "agent"  # same prompt still running: a long tool call or build, not you
+    return "waited"  # the gap ended on a NEW prompt: the follow-up came too late
+
+
+def _repay_cost(model: str, repaid: int, write: int, write_1h: int) -> float:
+    # What the re-bought tokens cost above a cache hit. They arrive either as a cache
+    # write (billed at 1.25x input, 2x on the 1h tier) or as plain uncached input,
+    # depending on whether the provider bills writes at all -- so bill the write part as
+    # a write and the remainder as input, and subtract what a hit would have cost.
+    ir, _out, crr, cwr = model_price(model)
+    w = min(write, repaid)
+    w1h = min(write_1h, w)
+    paid = (w - w1h) * cwr + w1h * cache_write_1h_price(model) + (repaid - w) * ir
+    # A missing cache-read rate is not free reads (effective_price's rule): fall back to
+    # the input rate, which reports no saving rather than inventing a whole-prefix one.
+    return max(0.0, paid - repaid * (crr if crr > 0 else ir)) / 1e6
+
+
+def _int(v) -> int:
+    try:
+        return max(0, int(v or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _row_epoch(row):
+    # Turn rows keep only the canonical local "YYYY-MM-DD HH:MM:SS" -- every backend
+    # converts to it and drops the raw stamp, including two (VS Code, the CSV log) that
+    # never had one -- so the gap is measured off that. Local time makes a DST shift
+    # worth exactly one hour, twice a year, on whichever turn spans it; the alternative
+    # is a new epoch field in nine stores to fix a handful of turns, which is why this
+    # reads the string instead.
+    try:
+        return datetime.strptime(str(row.get("time") or ""), "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        return None

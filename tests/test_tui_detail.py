@@ -1604,3 +1604,83 @@ def test_ranked_group_table_header_lines_up_with_short_names():
     row = next(line for line in lines if "$4.00" in line)
     # The Cost header and the cost it labels must end in the same column.
     assert header.index("Cost") + len("Cost") == row.index("$4.00") + len("$4.00")
+
+
+def _cache_miss_app():
+    # One session whose second prompt landed two hours after the first finished, by
+    # which time the 1h-TTL cache holding 300k tokens of context had died.
+    class MissStore(FakeStore):
+        def supports_turns(self, wid):
+            return True
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(MissStore([workflow("s1", "2026-06-10 10:00:00", directory="/repo")]), args)
+    app._turns_by_session["s1"] = [
+        {
+            "time": "2026-06-10 10:00:00",
+            "depth": 0,
+            "agent": "-",
+            "model_name": "anthropic/claude-opus-4-8",
+            "cost": 1.0,
+            "input": 10,
+            "output": 100,
+            "reasoning": 0,
+            "cache_read": 200000,
+            "cache_write": 100000,
+            "cache_write_1h": 100000,
+            "tokens_total": 300110,
+            "prompt_id": "a",
+            "prompt_title": "first question",
+            "prompt_full": "first question",
+        },
+        {
+            "time": "2026-06-10 12:00:00",
+            "depth": 0,
+            "agent": "-",
+            "model_name": "anthropic/claude-opus-4-8",
+            "cost": 2.0,
+            "input": 10,
+            "output": 100,
+            "reasoning": 0,
+            "cache_read": 0,
+            "cache_write": 300000,
+            "cache_write_1h": 300000,
+            "tokens_total": 300110,
+            "prompt_id": "b",
+            "prompt_title": "the late follow-up",
+            "prompt_full": "the late follow-up",
+        },
+    ]
+    return app
+
+
+def test_detail_turns_marks_the_prompt_that_arrived_after_the_cache_expired():
+    app = _cache_miss_app()
+    lines = ot.Renderer(app).detail_turns(app.loaded[0], 96)
+    joined = "\n".join(lines)
+    # The tab title carries the count and the money, like the ▼ compaction summary.
+    assert "❄ 1 cache expiry, $" in lines[0]
+    mark = next(i for i, ln in enumerate(lines) if ln.startswith("❄ "))
+    # ABOVE the ▸ header it belongs to -- the wait happened before that prompt -- and
+    # flush left, so this tab's DEFAULT folded state still shows it.
+    assert lines[mark + 1].startswith("▸ the late follow-up")
+    assert "2h idle" in lines[mark] and "300.0k bought again" in lines[mark]
+    assert "it lived 1h" in lines[mark]  # the deadline that was missed, not just the gap
+    # The first prompt is untouched: nothing expired before it.
+    assert not lines[mark - 1].startswith("❄ ") if mark else True
+    assert joined.count("❄ cache expired") == 1
+    # Painted off its leading glyph, like every other prefix-styled line in the panes
+    # (line_attr gives "❄ " its own branch -- red, where "! " caveats are amber).
+    assert lines[mark].startswith("❄ ")
+
+
+def test_detail_turns_stays_silent_when_the_backend_cannot_support_the_reading():
+    # Same rows, but a backend whose turn rows are cumulative deltas (Codex) or synthetic
+    # (the CSV/JSONL logs): reading a row's cache split as one request's prompt is exactly
+    # what it cannot support. Gated by the SAME opt-in as the ▼ compaction markers, so the
+    # Turns and Context tabs can never disagree about one session.
+    app = _cache_miss_app()
+    app.store.supports_context_curve = lambda _id: False
+    lines = ot.Renderer(app).detail_turns(app.loaded[0], 96)
+    assert not any(ln.startswith("❄") for ln in lines)
+    assert "❄" not in lines[0]

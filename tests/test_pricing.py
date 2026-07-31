@@ -722,3 +722,110 @@ def test_pricing_bills_long_ttl_cache_writes_at_the_long_ttl_rate():
     # and the markup rides along because it marks up input too.
     resold = "github-copilot/claude-opus-4-5"
     assert ot.cache_write_1h_price(resold) == ot.model_price(resold)[0] * 2.0
+
+
+def _turn(
+    time, model="anthropic/claude-opus-4-8", read=0, write=0, write_1h=0, inp=0, prompt="p", depth=0
+):
+    return {
+        "time": time,
+        "model_name": model,
+        "cache_read": read,
+        "cache_write": write,
+        "cache_write_1h": write_1h,
+        "input": inp,
+        "prompt_id": prompt,
+        "depth": depth,
+    }
+
+
+def test_cache_ttl_is_read_off_the_turn_not_off_a_provider_table():
+    # The tier a request bought is recorded per turn (usage.cache_creation splits the
+    # write by TTL), so it is read there rather than assumed per provider. A table would
+    # get Claude Code exactly wrong: 91.7% of its writes are the 1-hour tier, measured,
+    # so a 5-minute assumption would call every 10-minute break an expiry that never was.
+    assert ot.cache_ttl_seconds("anthropic/claude-opus-4-8", 900, 1000) == ot.CACHE_TTL_LONG
+    assert ot.cache_ttl_seconds("anthropic/claude-opus-4-8", 0, 1000) == ot.CACHE_TTL_SHORT
+    # Claude sold through a gateway keeps Anthropic's contract -- the FAMILY decides,
+    # never the route (github-copilot also resells OpenAI, on different terms).
+    assert ot.cache_ttl_seconds("github-copilot/claude-opus-4.5", 0, 1000) == ot.CACHE_TTL_SHORT
+    # None, not a number, for a provider that publishes no lifetime. Measured over 45k
+    # turn pairs, Anthropic's hit rate falls off a cliff at its TTL while OpenAI's decays
+    # smoothly (84% at 4-5 min, 61% at 10-30, 44% at 30-55) -- there is no deadline to
+    # have missed, so no gap may be called too long.
+    assert ot.cache_ttl_seconds("openai/gpt-5.6-sol", 0, 1000) is None
+
+
+def test_cache_miss_blames_the_wait_only_when_the_gap_was_the_users():
+    # A big cached prefix, then a turn that reads none of it back and re-buys it.
+    rows = [
+        _turn("2026-06-10 10:00:00", read=200000, write=100000, write_1h=100000, prompt="a"),
+        _turn("2026-06-10 12:00:00", write=300000, write_1h=300000, prompt="b"),  # 2h later
+    ]
+    (miss,) = ot.cache_misses(rows)
+    assert miss.cause == "waited"  # the gap ended on a NEW prompt: the follow-up was late
+    assert miss.index == 1 and miss.idle == 7200 and miss.ttl == ot.CACHE_TTL_LONG
+    assert miss.repaid == 300000
+    # Priced as what those tokens cost ABOVE a cache hit: re-bought at the 1h write rate
+    # (2x input) against the 0.1x they would have cost had the entry lived.
+    ir, _o, crr, _cw = ot.model_price("anthropic/claude-opus-4-8")
+    assert abs(miss.cost - 300000 * (ir * 2 - crr) / 1e6) < 1e-9
+
+    # The same 2-hour gap, but the agent was the one filling it -- a long tool call or
+    # build under the SAME prompt. Real money, but not something the reader did.
+    same_prompt = [dict(rows[0]), dict(rows[1], prompt_id="a")]
+    assert ot.cache_misses(same_prompt)[0].cause == "agent"
+
+    # ... and likewise when a subagent ground through the gap. Subagent rows never
+    # compare against the main thread (their own context windows), but their timestamps
+    # prove the session was not idle.
+    with_sub = [rows[0], _turn("2026-06-10 11:00:00", depth=1, read=50000), rows[1]]
+    assert ot.cache_misses(with_sub)[0].cause == "agent"
+
+
+def test_cache_miss_separates_causes_it_must_not_blame_on_waiting():
+    prefix = _turn("2026-06-10 10:00:00", read=200000, write=100000, write_1h=100000, prompt="a")
+
+    # Inside the TTL: the prefix changed under it (edited tools, an added image, a
+    # different tool_choice -- Anthropic lists them), which is not the reader's timing.
+    quick = ot.cache_misses([prefix, _turn("2026-06-10 10:00:30", write=300000, prompt="b")])
+    assert quick[0].cause == "invalidated"
+
+    # A different model cannot read another model's cache, whatever the gap.
+    switched = ot.cache_misses(
+        [
+            prefix,
+            _turn(
+                "2026-06-10 12:00:00", model="anthropic/claude-haiku-4-5", write=300000, prompt="b"
+            ),
+        ]
+    )
+    assert switched[0].cause == "switched"
+
+    # The window was rebuilt smaller: a compaction freed it, it did not expire.
+    small = ot.cache_misses([prefix, _turn("2026-06-10 12:00:00", write=20000, prompt="b")])
+    assert small[0].cause == "compacted"
+
+    # An OpenAI turn never earns a "waited" verdict, however long the gap (above).
+    oa = _turn("2026-06-10 10:00:00", model="openai/gpt-5.6-sol", read=200000, write=100000)
+    late = _turn("2026-06-10 20:00:00", model="openai/gpt-5.6-sol", inp=300000, prompt="b")
+    assert ot.cache_misses([oa, late])[0].cause == "invalidated"
+
+    # A prefix too small to have been cacheable at all is never reported as lost.
+    tiny = _turn("2026-06-10 10:00:00", read=1000, write=500)
+    assert ot.cache_misses([tiny, _turn("2026-06-10 12:00:00", write=1500, prompt="b")]) == []
+
+
+def test_cache_miss_prices_a_provider_that_bills_no_cache_write():
+    # Claude via GitHub Copilot (and OpenAI) record cache reads but no writes, so the
+    # re-bought context comes back as plain uncached INPUT. Same subtraction, and the
+    # feature must not go quiet just because one column is always zero.
+    m = "github-copilot/claude-opus-4.5"
+    rows = [
+        _turn("2026-06-10 10:00:00", model=m, read=200000, prompt="a"),
+        _turn("2026-06-10 10:30:00", model=m, inp=200000, prompt="b"),  # past the 5m TTL
+    ]
+    (miss,) = ot.cache_misses(rows)
+    assert miss.cause == "waited" and miss.ttl == ot.CACHE_TTL_SHORT
+    ir, _o, crr, _cw = ot.model_price(m)
+    assert abs(miss.cost - 200000 * (ir - crr) / 1e6) < 1e-9

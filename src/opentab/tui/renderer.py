@@ -69,6 +69,7 @@ from opentab.models import ALL_YEARS, year_label
 from opentab.pricing import (
     TOKEN_TYPES,
     api_equivalent_cost,
+    cache_misses,
     family_label,
     model_context_window,
     model_price,
@@ -1248,6 +1249,12 @@ class Renderer:
             # A Turns-tab compaction marker: the same amber the Context tab's ▼ rows get
             # from _CTX_MARK, so one event reads as one thing on both tabs.
             return curses.color_pair(2) | curses.A_BOLD
+        if line.startswith("❄ "):
+            # A Turns-tab cache expiry. Red rather than the ▼ amber, and this is the one
+            # place in the panes that earns it: every other number opentab shows is money
+            # already spent on work you got, while this is money spent buying a context
+            # you had already bought -- the only line in the app that reports waste.
+            return curses.color_pair(4) | curses.A_BOLD
         if line.startswith("· "):
             return curses.color_pair(1)
         if line.startswith("TOTAL"):
@@ -4017,11 +4024,30 @@ class Renderer:
         comps = (
             context_compactions(rows) if self.session_supports_context_curve(workflow.id) else {}
         )
+        # Turns that had to buy their context a second time because the provider's cache
+        # had died in the gap before them. Gated by the SAME opt-in as compactions above,
+        # and for the same reason: reading a row's cache split as one request's prompt is
+        # exactly what a cumulative-delta backend (Codex) and the synthetic CSV/JSONL
+        # sessions cannot support, and two tabs disagreeing about one session is what
+        # that shared gate exists to prevent.
+        #
+        # Only "waited" is drawn in the flow. It is the one cause the reader can do
+        # something about (the follow-up came in after the cache expired), while
+        # "invalidated" -- a changed tool set, an added image -- is both the most common
+        # and the least actionable, and a marker on every one of those would be noise
+        # that teaches you to skip the marker you wanted.
+        misses = cache_misses(rows) if self.session_supports_context_curve(workflow.id) else []
+        late = {m.index: m for m in misses if m.cause == "waited"}
         head = f"# Turns — {len(subtotal)} prompts · {len(rows)} turns · {money(total)}"
         if comps:
             freed = sum(before - after for before, after in comps.values())
             head += f" · ▼ {len(comps)} compaction{'s' if len(comps) > 1 else ''}"
             head += f", ~{human_tokens(freed)} freed"
+        if late:
+            burnt = sum(m.cost for m in late.values())
+            head += (
+                f" · ❄ {len(late)} cache expir{'y' if len(late) == 1 else 'ies'}, {money(burnt)}"
+            )
         lines = [head]
         if any_open:
             lines.append(
@@ -4035,6 +4061,18 @@ class Renderer:
         header_lines: list[int] = []  # header line index per ▸ group, in render order
         for n, (r, cost) in enumerate(zip(rows, costs), start=1):
             pid = r.get("prompt_id", "")
+            miss = late.get(n - 1)
+            if miss:
+                # ABOVE the ▸ header, because the wait happened before the prompt, and
+                # flush left for the compaction line's reason: a session-level event, and
+                # folding it inside a collapsed group would hide it in this tab's default
+                # state. Says what it cost and what would have avoided it -- the gap is
+                # only actionable if you know the deadline you missed.
+                lines.append(
+                    f"❄ cache expired — {human_duration(miss.idle)} idle, "
+                    f"{human_tokens(miss.repaid)} bought again for {money(miss.cost)} "
+                    f"(it lived {human_duration(miss.ttl)})"
+                )
             if pid != last_pid:
                 last_pid = pid
                 gc = money(subtotal[pid])
@@ -4095,6 +4133,11 @@ class Renderer:
         if comps:
             lines.append(
                 "· ▼ the context window was cleared before that turn — the Context tab charts it."
+            )
+        if late:
+            lines.append(
+                "· ❄ the prompt cache expired while the session sat idle, so that turn paid "
+                "again for context it already had — a faster follow-up would have cost less."
             )
         return lines
 

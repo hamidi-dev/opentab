@@ -118,13 +118,18 @@ from opentab.notes import (
     update_note,
 )
 from opentab.pricing import (
+    CACHE_TTL_LONG,
+    CACHE_TTL_SHORT,
     DEFAULT_CONTEXT_WINDOW,
     FALLBACK_PRICE,
     LOCAL_PROVIDERS,
     MODEL_CONTEXT_FALLBACKS,
     MODEL_PRICE_FALLBACKS,
     MODELS_DEV_URL,
+    CacheMiss,
     api_equivalent_cost,
+    cache_misses,
+    cache_ttl_seconds,
     cache_write_1h_price,
     canonical_model,
     catalog_models,
