@@ -2726,10 +2726,6 @@ class Renderer:
             f"{'':>6}  {approx + money(econ.total_cost):>{cost_w}}"
         ]
         notes = []
-        if econ.saved > 0:
-            notes.append(
-                f"! cache reads saved {money(econ.saved)} against paying the input rate for them"
-            )
         if econ.estimated:
             notes.append(
                 "! ~ a model here has no known list rate — its tokens use a generic estimate"

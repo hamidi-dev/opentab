@@ -853,7 +853,7 @@ def _js_token_economics(payload, session_ids):
     # implementations fails a test instead of quietly showing two different bills.
     rates = payload["whatif"]["rates"]
     local = set(payload["whatif"].get("local") or [])
-    tokens, cost, saved, local_tokens = [0.0] * 5, [0.0] * 5, 0.0, 0
+    tokens, cost, local_tokens = [0.0] * 5, [0.0] * 5, 0
     for sid in session_ids:
         for r in payload["models"].get(sid) or []:
             if r["model"] in local:
@@ -870,9 +870,7 @@ def _js_token_economics(payload, session_ids):
             long1h = min(max(r["tok"][5] if len(r["tok"]) > 5 else 0, 0), r["tok"][4])
             cwr1h = rate_row[4] if len(rate_row) > 4 else cwr
             cost[4] += ((r["tok"][4] - long1h) * cwr + long1h * cwr1h) / 1e6
-            if crr > 0:
-                saved += r["tok"][3] * max(0.0, ir - crr) / 1e6
-    return tokens, cost, saved, local_tokens
+    return tokens, cost, local_tokens
 
 
 def test_web_token_economics_matches_the_tui_split_exactly():
@@ -883,18 +881,18 @@ def test_web_token_economics_matches_the_tui_split_exactly():
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         payload = ot.build_payload(app)
-        tokens, cost, saved, local_tokens = _js_token_economics(payload, [w.id for w in app.loaded])
+        tokens, cost, local_tokens = _js_token_economics(payload, [w.id for w in app.loaded])
         econ = app.token_economics(app.loaded)
         assert [round(v, 6) for v in tokens] == [round(v, 6) for v in econ.tokens]
         assert [round(v, 9) for v in cost] == [round(v, 9) for v in econ.cost]
-        assert abs(saved - econ.saved) < 1e-9
         assert local_tokens == econ.local_tokens
     js = _js_source()
     # The pieces must stay pieces: summing them here would make the pane's TOTAL a second
     # implementation of the cost rather than a decomposition of the one on screen.
     assert "function tokenEconomics(" in js
     assert "cost[2] += tok[2] * orr / 1e6" in js  # reasoning bills at the output rate
-    assert "if (crr > 0) saved" in js  # a missing cache rate is never a "saving"
+    # A missing cache rate is flagged, never read as free reads (the TUI's rule).
+    assert "if (crr <= 0 && tok[3] > 0 && ir > 0) missingCache = true;" in js
     assert "WI_LOCAL.has(r.model)" in js  # local models leave both rows
 
 

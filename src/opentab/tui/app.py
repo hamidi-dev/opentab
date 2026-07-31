@@ -120,7 +120,6 @@ class TokenEconomics(NamedTuple):
 
     tokens: tuple[float, ...]  # per TOKEN_TYPES
     cost: tuple[float, ...]  # per TOKEN_TYPES, at list rates
-    saved: float  # what the cache reads would have cost at the input rate, minus what they did
     estimated: bool  # a contributing model has no real list rate (FALLBACK_PRICE) -> mark "~"
     missing_cache_rate: bool  # a contributing model has no cache-read rate -> its reads read $0
     local_tokens: int  # tokens from local models, excluded from both rows (no API rate)
@@ -2223,7 +2222,6 @@ class App:
         """
         tokens = [0.0] * len(TOKEN_TYPES)
         cost = [0.0] * len(TOKEN_TYPES)
-        saved = 0.0
         estimated = missing_cache_rate = False
         local_tokens = 0
         for workflow in workflows:
@@ -2242,19 +2240,16 @@ class App:
                 cost[2] += reasoning * orr / 1e6  # reasoning bills at the output rate
                 cost[3] += cache_read * crr / 1e6
                 cost[4] += cache_write * cwr / 1e6
-                if crr > 0:
-                    # Only a real, non-zero cache rate is a real discount: a missing one
-                    # would show the full input cost as "saved", which is the opposite of
-                    # what it means.
-                    saved += cache_read * max(0.0, ir - crr) / 1e6
-                elif cache_read > 0 and ir > 0:
+                # A missing (zero) cache-read rate is not free reads: those tokens price
+                # at $0 here, so the Cache read row understates, and the table says so.
+                if crr <= 0 and cache_read > 0 and ir > 0:
                     missing_cache_rate = True
                 if sum(split) > 0 and not has_known_price(name):
                     estimated = True
         if sum(tokens) <= 0:
             return None
         return TokenEconomics(
-            tuple(tokens), tuple(cost), saved, estimated, missing_cache_rate, local_tokens
+            tuple(tokens), tuple(cost), estimated, missing_cache_rate, local_tokens
         )
 
     @staticmethod

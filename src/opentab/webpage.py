@@ -857,7 +857,7 @@ const TOK_TYPES = ['Uncached input', 'Output', 'Reasoning', 'Cache read', 'Cache
 // five parts add up to the API-equivalent figure shown elsewhere.
 function tokenEconomics(ws) {
   const tokens = [0, 0, 0, 0, 0], cost = [0, 0, 0, 0, 0];
-  let saved = 0, local = 0, est = false, missingCache = false;
+  let local = 0, est = false, missingCache = false;
   ws.forEach(w => (DATA.models[w.id] || []).forEach(r => {
     // Only the first FIVE entries are token TYPES; a sixth, when present, is the 1h-TTL
     // subset of Cache write -- a pricing refinement, not extra volume, so it must never
@@ -880,15 +880,14 @@ function tokenEconomics(ws) {
     // the rest at the 5m one. The Cache write ROW stays one row -- the tier changes what
     // those tokens cost, not what kind of token they are.
     cost[4] += ((tok[4] - long1h) * cwr + long1h * (cwr1h || cwr)) / 1e6;
-    // Only a real, non-zero cache rate is a real discount: counting a MISSING one as
-    // free would report the whole input cost as "saved", the opposite of what it means.
-    if (crr > 0) saved += tok[3] * Math.max(0, ir - crr) / 1e6;
-    else if (tok[3] > 0 && ir > 0) missingCache = true;
+    // A missing (zero) cache-read rate is not free reads: those tokens price at $0 in
+    // the Cache read row, which therefore understates -- the table says so beneath it.
+    if (crr <= 0 && tok[3] > 0 && ir > 0) missingCache = true;
     if (r.tokens > 0 && WI_UNPRICED.has(r.model)) est = true;
   }));
   const totalTokens = tokens.reduce((a, b) => a + b, 0);
   if (totalTokens <= 0) return null;
-  return { tokens, cost, saved, est, missingCache, local,
+  return { tokens, cost, est, missingCache, local,
     totalTokens, totalCost: cost.reduce((a, b) => a + b, 0) };
 }
 
@@ -1370,16 +1369,13 @@ function tokenEconomicsPane(ws, label) {
       h('td', null, '')))));
   const body = h('div', null,
     tiles([['spend · list rates', approx + money(e.totalCost), null, true],
-      ['tokens', hTok(e.totalTokens)],
-      ...(e.saved > 0 ? [['cache reads saved', money(e.saved), 'vs the input rate', true]] : [])]),
+      ['tokens', hTok(e.totalTokens)]]),
     stack('share of tokens sent', e.totalTokens, r => r.tok, hTok),
     stack('share of dollars billed', e.totalCost, r => r.cost, money),
     h('div', { class: 'tk-legend' }, rows.map(r =>
       h('span', null, h('i', { style: 'background:' + SER[r.i] }), r.t))),
     grid);
   const notes = [];
-  if (e.saved > 0) notes.push('cache reads saved ' + money(e.saved)
-    + ' against paying the input rate for them');
   if (e.est) notes.push('~ a model here has no known list rate — its tokens use a generic estimate');
   if (e.missingCache) notes.push('a model here has no cache-read rate on file — its reads '
     + 'price at $0, so Cache read is understated');

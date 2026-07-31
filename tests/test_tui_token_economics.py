@@ -84,11 +84,9 @@ def test_volume_and_spend_shares_disagree_which_is_the_point():
     # output grows. Reading either one alone gives the opposite answer.
     assert vol(read_i) > spend(read_i)
     assert spend(out_i) > vol(out_i) * 20
-    ir, orr, crr, _cw = model_price("anthropic/claude-opus-4.5")
+    _ir, orr, crr, _cw = model_price("anthropic/claude-opus-4.5")
     assert econ.cost[out_i] == 50_000 * orr / 1e6
     assert econ.cost[read_i] == 5_000_000 * crr / 1e6
-    # And the saving those reads bought, against having paid the input rate for them.
-    assert econ.saved == 5_000_000 * (ir - crr) / 1e6
 
 
 def test_reasoning_bills_at_the_output_rate_but_keeps_its_own_row():
@@ -129,11 +127,10 @@ def test_an_unpriced_model_marks_the_figure_as_an_estimate():
     assert not priced.estimated
 
 
-def test_a_missing_cache_read_rate_is_flagged_and_never_counted_as_a_saving():
-    # A 0 cache-read rate is missing data, not a discount. api_equivalent_cost bills it
+def test_a_missing_cache_read_rate_is_flagged_rather_than_read_as_free():
+    # A 0 cache-read rate is missing data, not free reads. api_equivalent_cost bills it
     # at 0, so the decomposition has to as well (or it would stop summing to the total)
-    # -- but calling that "$31k saved" would invert the meaning, so the saving skips it
-    # and the box says the row is understated.
+    # -- which leaves the Cache read row understating, so the box says so beneath it.
     # No shipped rate card has a 0 cache-read rate on a model that charges for input
     # (the generic fallback carries 0.2), so the case has to be staged.
     app = _app({"a": [_row("weird/no-cache-rate", input=1_000, cache_read=9_000_000)]})
@@ -144,7 +141,6 @@ def test_a_missing_cache_read_rate_is_flagged_and_never_counted_as_a_saving():
     finally:
         app_mod.model_price = original
     assert econ.missing_cache_rate
-    assert econ.saved == 0.0
     assert econ.cost[TOKEN_TYPES.index("Cache read")] == 0.0
 
 
@@ -162,7 +158,6 @@ def test_the_box_shows_both_shares_and_says_it_is_list_rates():
     assert "Token economics" in text and "at list rates" in text
     assert "Volume" in text and "Spend" in text
     assert "Cache read" in text and "Output" in text
-    assert "cache reads saved" in text
     # Sub-percent rows keep two decimals: formatting.pct floors them all to "<1%", and
     # "0.98% of the tokens, 34% of the bill" is the entire reading.
     assert "<1%" not in text
@@ -325,7 +320,11 @@ def test_the_frame_wraps_the_chart_and_the_paint_sees_through_its_gutter():
             reasoning=10_000,
             cache_read=5_000_000,
             cache_write=100_000,
-        )
+        ),
+        # A local model earns the box a note (its tokens have no API rate, so they are
+        # excluded from both bars) without touching either bar's composition -- the
+        # subject here is the frame, and the notes have to ride OUTSIDE it.
+        _row("ollama/llama3.1", input=7_000),
     ]
     app = _app({"a": rows})
     r = app.renderer
