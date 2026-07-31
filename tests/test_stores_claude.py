@@ -1,5 +1,6 @@
 """The Claude Code transcript backend (stores/claude.py)."""
 
+import json
 import os
 import tempfile
 
@@ -593,3 +594,104 @@ def test_claude_reads_the_cache_write_ttl_split_and_prices_long_writes_higher():
 
 def _claude_args():
     return type("A", (), {"demo": False})()
+
+
+def _replay_corpus(tmp):
+    # A background session that replays its parent's history: same message ids,
+    # requestIds and uuids, only sessionId rewritten and sessionKind added -- the
+    # shape Claude Code writes. The bg file is named so it sorts FIRST, because the
+    # dedup credits the first claimer and glob order must not be what decides.
+    root = os.path.join(tmp, "projects", "slug")
+    os.makedirs(root)
+    cwd = os.path.join(tmp, "repo")
+    parent = [
+        _claude_msg(
+            "b-parent",
+            "claude-opus-4-8",
+            _usage(100, 50, 0, 0),
+            uuid=f"u{i}",
+            cwd=cwd,
+            mid=f"m{i}",
+            req=f"r{i}",
+            ts=f"2026-06-10T18:4{i}:00.000Z",
+        )
+        for i in range(2)
+    ]
+    replay = []
+    for rec in parent:  # the same calls, re-logged under the background session
+        copy = dict(rec, sessionId="a-bg")
+        copy["sessionKind"] = "bg"
+        replay.append(copy)
+    own = _claude_msg(
+        "a-bg",
+        "claude-opus-4-8",
+        _usage(7, 3, 0, 0),
+        uuid="u9",
+        cwd=cwd,
+        mid="m9",
+        req="r9",
+        ts="2026-06-10T18:49:00.000Z",
+    )
+    own["sessionKind"] = "bg"
+    _write_jsonl(os.path.join(root, "a-bg.jsonl"), replay + [own])
+    _write_jsonl(os.path.join(root, "b-parent.jsonl"), parent)
+    return os.path.join(tmp, "projects")
+
+
+def _adverse_order(store, root):
+    # Force the file order that BREAKS the tie the wrong way, so the test actually
+    # guards _parse()'s sort. Neither write order nor file name controls it for real:
+    # _files() is a glob, and a directory listing is neither alphabetical nor creation
+    # order (APFS returns a stable hash order), so a fixture can only hope to get the
+    # adverse order by luck -- and this test passed with the sort removed until it
+    # stated the order outright.
+    slug = os.path.join(root, "slug")
+    store._files = lambda: [
+        os.path.join(slug, "a-bg.jsonl"),  # the replay, first: it must NOT win
+        os.path.join(slug, "b-parent.jsonl"),
+    ]
+    return store
+
+
+def test_claude_replayed_calls_are_credited_to_the_session_that_made_them():
+    # A background session opens by replaying its parent's transcript verbatim, so both
+    # claim the same (message.id, requestId). Whoever the dedup credits, the calls are
+    # counted ONCE -- but crediting the replay leaves the parent showing 0 tokens and an
+    # empty Turns tab for work it actually did. Ordering (not glob luck) decides.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _replay_corpus(tmp)
+        store = _adverse_order(ot.ClaudeStore(root, _claude_args()), root)
+        rows = {w.id: w for w in store.workflows()}
+        assert rows["b-parent"].total_tokens == 300  # both of its own calls
+        assert rows["a-bg"].total_tokens == 10  # only the one it actually made
+        # Counted once overall, whichever way the tie went.
+        assert sum(w.total_tokens for w in rows.values()) == 310
+
+        # And the sort is what did it: with _replays_history blind, the replay -- first
+        # in this order -- claims the parent's calls and the parent drops to 0.
+        blind = _adverse_order(ot.ClaudeStore(root, _claude_args()), root)
+        blind._replays_history = lambda _path: False
+        blind_rows = {w.id: w.total_tokens for w in blind.workflows()}
+        assert blind_rows["b-parent"] == 0 and blind_rows["a-bg"] == 310
+
+
+def test_claude_session_kind_marker_survives_an_oversized_final_record():
+    # The marker sits near a record's START, and one transcript's last line can be
+    # megabytes (a pasted prompt), so a fixed-size tail read lands mid-record and sees
+    # nothing. The window widens only while it holds no complete record.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _replay_corpus(tmp)
+        bg = os.path.join(root, "slug", "a-bg.jsonl")
+        with open(bg, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        huge = json.loads(lines[-1])
+        # Past 4MiB on purpose: an earlier version capped the widening there, which
+        # re-opened the hole for exactly the biggest records. There is no ceiling.
+        huge["bigPaste"] = "x" * (5 << 20)
+        lines[-1] = json.dumps(huge)
+        with open(bg, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+
+        store = _adverse_order(ot.ClaudeStore(root, _claude_args()), root)
+        assert store._replays_history(bg) is True
+        assert {w.id: w.total_tokens for w in store.workflows()}["b-parent"] == 300

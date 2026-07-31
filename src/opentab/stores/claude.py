@@ -219,12 +219,61 @@ class ClaudeStore:
         )
         return list(dict.fromkeys(main + sidecars))
 
+    # How much of a transcript's TAIL to scan for a sessionKind marker. A background
+    # session replays its parent's history verbatim into its own file -- same message
+    # ids, same requestIds, same uuids and timestamps, only sessionId rewritten -- so
+    # parent and child both claim the same API calls and the (message.id, requestId)
+    # dedup below has to pick one. Measured on a real corpus, the marker first appears
+    # ~157KB in (the replayed prefix carries none, and that prefix is as long as the
+    # history it replays), so a head scan misses it; the tail always carries it,
+    # because the background session is the one still writing.
+    _SESSION_KIND_TAIL_BYTES = 8192
+
+    def _replays_history(self, path: str) -> bool:
+        # Whether this transcript belongs to a marked session kind -- one that may be
+        # replaying another session's records rather than having made those calls.
+        #
+        # The window widens only when it holds no complete record: one transcript's
+        # final line can be megabytes (a pasted prompt -- 1.37MB is the largest in a
+        # real corpus, 141 records over 1MiB), and the marker sits near that record's
+        # START, so a fixed tail would read the middle of it and see nothing. A newline
+        # means we have seen a whole record and the marker really isn't on it, so the
+        # common no costs exactly one 8KB read (measured: 364 files in 10ms, and only
+        # 22 of them needed a second read).
+        #
+        # There is deliberately NO byte ceiling on the widening. One would reopen the
+        # exact hole this loop closes, and it would protect nothing: the only caller
+        # that scans every transcript is _parse(), which is about to read all of them
+        # in full anyway, so the scan can never cost more than the parse behind it.
+        # Termination is `window >= size` -- x8 growth reaches any file in a few steps.
+        try:
+            size = os.path.getsize(path)
+            window = self._SESSION_KIND_TAIL_BYTES
+            with open(path, "rb") as fh:
+                while True:
+                    fh.seek(max(0, size - window))
+                    chunk = fh.read()
+                    if b'"sessionKind"' in chunk:
+                        return True
+                    if b"\n" in chunk.rstrip(b"\n") or window >= size:
+                        return False
+                    window *= 8
+        except OSError:
+            return False
+
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
             return self._sessions
-        self._sessions = self._parse_texts(
-            text for _path, text in read_files_parallel(self._files())
-        )
+        # Replay-capable transcripts go LAST, because the dedup credits the FIRST
+        # claimer of a key: the session that actually made the calls must be parsed
+        # before any session that merely replays them. Left to glob order the winner
+        # was alphabetical luck -- measured, a parent session showed 0 tokens and an
+        # empty Turns tab while its background child held all 96 of its turns. Totals
+        # are unaffected either way (the calls are counted once); this decides WHICH
+        # session they are counted under. A stable sort, so files keep glob order
+        # within each group, and ~10ms of tail reads over a 370-file corpus.
+        files = sorted(self._files(), key=self._replays_history)
+        self._sessions = self._parse_texts(text for _path, text in read_files_parallel(files))
         return self._sessions
 
     def _parse_one(self, workflow_id: str) -> dict | None:

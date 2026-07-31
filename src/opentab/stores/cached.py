@@ -30,7 +30,11 @@ from dataclasses import asdict
 from opentab import paths
 from opentab.models import Workflow
 
-CACHE_VERSION = 5  # bump when the cached payload shape changes (invalidates old files)
+CACHE_VERSION = 6  # bump when the cached payload shape changes (invalidates old files)
+# 6: ClaudeStore credits a replayed API call to the session that made it, not to the
+#    background session that replayed it (ordering in ClaudeStore._parse). Same shape,
+#    different attribution -- so without a bump an unchanged corpus would keep serving
+#    the old rollup, and the session list would disagree with the session detail.
 # 5: model rows carry the 1h-TTL cache-write subset. Without this bump an unchanged
 #    corpus keeps serving rows that lack the field, so the long-TTL pricing fix would
 #    silently not apply to exactly the machines that had been running opentab longest.
