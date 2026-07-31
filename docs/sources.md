@@ -54,6 +54,12 @@ trends. What each tool's records support on top:
 per tool call and MCP server · ¹ headerless: the OTEL export captures no prompt text ·
 ² with the optional `tool` column.</sub>
 
+Every harness also derives when a session was last active (not just when it started),
+including activity from its subagent subtree where tracked. This timestamp
+(`ended_at`) feeds the sessions list's **Last Activity** sort (`s`) — the alternative
+to sorting by when a session started, offered everywhere except the Time overview's
+Days pane (see [`docs/keys.md`](keys.md#scope--filter)).
+
 ### Token-only harnesses
 
 The whole TUI works the same everywhere — with two differences for the token-only

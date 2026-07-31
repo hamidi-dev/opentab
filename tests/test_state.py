@@ -27,6 +27,33 @@ def test_prices_sort_is_persisted_in_state():
     assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
 
 
+def test_last_activity_sort_is_persisted_in_state():
+    # No dedicated save/restore code exists for this -- sort_by/project_sort_by are
+    # already generic (state.py validates against app.sort_options/
+    # project_sort_options), so "last_activity" persists for free once it's part of
+    # those tuples. This locks that in.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
+    app.sort_by = "last_activity"
+    app.project_sort_by = "last_activity"
+    old_xdg = os.environ.get("XDG_STATE_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_STATE_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with(
+                [workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")]
+            )
+            assert restored.sort_by == "cost" and restored.project_sort_by == "cost"
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_STATE_HOME", None)
+            else:
+                os.environ["XDG_STATE_HOME"] = old_xdg
+    assert restored.sort_by == "last_activity"
+    assert restored.project_sort_by == "last_activity"
+
+
 def test_machines_browse_mode_is_restored_fleet_or_not():
     from tests._support import fleet_app
 
