@@ -1261,12 +1261,52 @@ def test_last_activity_sort_falls_back_and_resumes_across_a_day_focus_round_trip
     assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["a", "b"]
 
     app.focus = "days"
-    assert app.session_sort_key() == "cost"  # falls back to sort_options[0], not "date"
+    # Falls back to "date" (SORT_FALLBACKS), NOT to sort_options[0]: withdrawing a
+    # time sort must not silently answer with money. "b" is both the newer start and
+    # the pricier row, so the assertion below can't tell the two apart -- the check
+    # that can is session_sort_key(), plus the dedicated cost/date test underneath.
+    assert app.session_sort_key() == "date"
     assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["b", "a"]
     assert app.sort_by == "last_activity"  # the stored preference itself is untouched
 
     app.focus = "months"
     assert app.session_sort_key() == "last_activity"  # resumes, nothing was lost
+
+
+def test_withdrawn_last_activity_falls_back_to_date_not_cost_on_the_opening_screen():
+    # The Days pane is the DEFAULT focus and `focus` restores from state.json, so a
+    # saved "last_activity" is withdrawn on the first frame of any launch that lands
+    # on Days -- a routine path, not a corrupt-state one. Separating cost from date
+    # needs rows where the two disagree: "cheap-but-recent" started last, "pricey"
+    # costs 99x more. A cost fallback puts "pricey" on top; a date fallback doesn't.
+    app = app_with(
+        [
+            workflow("pricey", "2026-06-01 12:00:00", cost=99),
+            workflow("cheap-but-recent", "2026-06-09 12:00:00", cost=1),
+        ]
+    )
+    app.sort_by = "last_activity"
+    app.focus = "days"
+    assert app.session_sort_key() == "date"
+    assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["cheap-but-recent", "pricey"]
+    # ...and the arrow follows it onto the Date column, so the visible order is
+    # explained by the header rather than by an unmarked column.
+    rnd = app.renderer
+    assert rnd.session_date_column()[0] == "date"
+    assert rnd.sort_heading("date", "Time").endswith(" v")
+    assert rnd.sort_heading("cost", "Cost") == "Cost"  # no arrow: not the active key
+
+
+def test_an_unknown_saved_sort_key_still_falls_back_to_the_head_of_the_vocabulary():
+    # SORT_FALLBACKS is for a key the CONTEXT withdrew, not for one that was never a
+    # session sort key. An unreadable/hand-edited state.json keeps the old escape
+    # hatch: sort_options[0]. (state.apply_state filters these out, so this is the
+    # in-process guard, e.g. a key retired by a future version.)
+    app = app_with([workflow("a", "2026-06-01 12:00:00"), workflow("b", "2026-06-02 12:00:00")])
+    app.sort_by = "no-such-column"
+    for focus in ("days", "months"):
+        app.focus = focus
+        assert app.session_sort_key() == app.sort_options[0] == "cost", focus
 
 
 def test_apply_header_sort_rejects_last_activity_while_the_days_pane_is_focused():

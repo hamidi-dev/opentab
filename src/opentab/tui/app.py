@@ -4236,20 +4236,34 @@ class App:
             return tuple(k for k in self.sort_options if k != "last_activity")
         return self.sort_options
 
+    # Where a key the CONTEXT withdrew lands, as opposed to one that was never a
+    # session sort key at all. The two fallbacks are different questions and want
+    # different answers: sort_options[0] ("cost") is the escape hatch for an
+    # unreadable/pre-split state.json, where any stable column will do. A withdrawn
+    # key has a stored preference behind it, so it falls back inside its own column
+    # family -- "last_activity" to "date", the other timestamp on the same column,
+    # rather than to money. This is a first-frame path, not a corruption path:
+    # `focus` starts on "days", so a saved "last_activity" is withdrawn on the
+    # opening screen of every launch that doesn't restore a different panel.
+    SORT_FALLBACKS = {"last_activity": "date"}
+
     # The three lists' active sort keys, each validated against its own vocabulary.
     # Headers and sorters read these directly (never each other's, and never the
     # context-dependent effective_sort_by) so that when a project list and a session
     # list share the screen neither borrows the other's sort arrow.
     def session_sort_key(self) -> str:
         options = self.active_session_sort_options()
-        return self.sort_by if self.sort_by in options else options[0]
+        if self.sort_by in options:
+            return self.sort_by
+        fallback = self.SORT_FALLBACKS.get(self.sort_by)
+        return fallback if fallback in options else options[0]
 
     def session_sort_reverse(self) -> bool:
         # The direction belongs to the stored column; falling back to a different
         # EFFECTIVE key (active_session_sort_options() dropped "last_activity" while
         # the Days pane is focused) must not carry that column's own reversed flag
-        # onto the fallback column's natural order -- e.g. a direction flip saved
-        # for "last_activity" must not silently sort Cost ascending on the Days pane.
+        # onto the fallback column's natural order -- a direction flip saved for
+        # "last_activity" must not silently sort the Days pane oldest-first.
         return self.sort_reverse if self.sort_by in self.active_session_sort_options() else False
 
     def project_sort_key(self) -> str:
