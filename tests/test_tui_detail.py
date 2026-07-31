@@ -2168,3 +2168,44 @@ def test_a_drill_survives_a_browse_mode_round_trip_with_its_scroll():
     app.set_browse_mode("time")
     assert app.current_session().id == "A"
     assert app.active_turn_drill == 2 and app.scroll == 3  # the drill, at its own offset
+
+
+def test_drilled_turns_show_the_agent_label_the_backend_gave_them():
+    # The page prints a main-thread turn's own agent label; the TUI forced "-" and threw
+    # it away. OpenCode names its main agent, so the two frontends disagreed about a
+    # visible cell on 1,574 turns of a real corpus. A subagent is marked "↳" on both.
+    class AgentStore(FakeStore):
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            base = {
+                "model_name": "anthropic/claude-opus-4-8",
+                "cost": 1.0,
+                "input": 10,
+                "output": 10,
+                "reasoning": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "cache_write_1h": 0,
+                "tokens_total": 20,
+                "prompt_id": "p1",
+                "prompt_title": "t",
+                "prompt_full": "t",
+            }
+            return [
+                dict(base, time="2026-06-01 12:00:00", depth=0, agent="build"),
+                dict(base, time="2026-06-01 12:01:00", depth=1, agent="explore"),
+                dict(base, time="2026-06-01 12:02:00", depth=0, agent="-"),
+            ]
+
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(AgentStore([workflow("s1", "2026-06-01 12:00:00", cost=3.0)]), args)
+    app.view = "session"
+    app.open_turn_drill(0)
+    body = app.renderer.detail_turn_drill(app.current_session(), 100)
+    joined = "\n".join(body)
+    assert "build" in joined  # the main agent's real name, not "-"
+    assert "↳ explore" in joined  # the subagent, marked
+    # A backend that gives no label still shows "-", never a blank cell.
+    assert any(ln.count("-") for ln in body)

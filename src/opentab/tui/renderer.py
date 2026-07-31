@@ -88,6 +88,14 @@ from opentab.util import (
 )
 
 
+def _turn_agent(row) -> str:
+    # The Agent cell for one turn row: a subagent is marked with "↳", a main-thread turn
+    # shows its own label (or "-" when the backend gives none). Mirrors the page's
+    # `t.depth ? '↳ ' + t.agent : t.agent`.
+    label = (row.get("agent") or "-").strip() or "-"
+    return f"↳ {label}" if row.get("depth") else label
+
+
 class Renderer:
     """All terminal drawing for OpenTab.
 
@@ -4011,7 +4019,14 @@ class Renderer:
             lines += textwrap.wrap(para, max(20, width)) or [""]
         lines.append("")
         idx_w = max(2, len(str(len(rows))))
-        agent_w = min(10, max(5, max((len(rows[i]["agent"]) for i in g["indices"]), default=5)))
+        # "↳ " marks a subagent turn, as the page does; a main-thread turn keeps whatever
+        # label its backend gave it. Forcing "-" there threw a real one away -- OpenCode
+        # names its main agent ("build" on 1,574 turns of a real corpus), and the page was
+        # already showing it, so the two frontends disagreed about a visible cell.
+        agent_w = min(
+            12,
+            max(5, max((len(_turn_agent(rows[i])) for i in g["indices"]), default=5)),
+        )
         mw = max(12, min(30, width - (idx_w + agent_w + 14 + 6 + 9 + 9 + 6)))
         lines.append(
             f"{'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} {pad('Agent', agent_w)} "
@@ -4025,7 +4040,7 @@ class Renderer:
             lines.append(
                 f"{i + 1:>{idx_w}} {(r.get('time') or '--')[5:19]:<14} "
                 f"{pad(shorten(r['model_name'], mw), mw)} "
-                f"{pad(shorten(r['agent'] if r['depth'] else '-', agent_w), agent_w)} "
+                f"{pad(shorten(_turn_agent(r), agent_w), agent_w)} "
                 f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
                 f"{human_tokens(r['tokens_total']):>9} {money(costs[i]):>9}"
             )
