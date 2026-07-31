@@ -78,6 +78,7 @@ from opentab.pricing import (
 from opentab.util import (
     CONTEXT_COMPACT_FLOOR,
     CONTEXT_COMPACT_RATIO,
+    cached_share,
     context_compactions,
     context_size,
     fuzzy_score,
@@ -4001,7 +4002,10 @@ class Renderer:
 
         idx_w = max(2, len(str(len(rows))))
         agent_w = min(10, max(5, max((len(r["agent"]) for r in rows), default=5)))
-        mw = max(16, min(34, width - (idx_w + agent_w + time_w + 42)))  # model flexes
+        cached_w = 7  # "Cached" -- the share of this turn's context that was a cache hit
+        mw = max(
+            16, min(34, width - (idx_w + agent_w + time_w + 42 + cached_w + 2))
+        )  # model flexes
         # Folded by default to a clean overview of the prompts: one ▸ header per prompt
         # with its subtotal, the per-turn rows hidden until a group is expanded (z toggles
         # all, a click one). The column header only earns its line when a group is open.
@@ -4048,7 +4052,7 @@ class Renderer:
         if any_open:
             lines.append(
                 f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Model':<{mw}} {'Agent':<{agent_w}} "
-                f"{'Tokens':>9} {'Cost':>9} {'Cumulative':>16}"
+                f"{'Cached':>{cached_w}} {'Tokens':>9} {'Cost':>9} {'Cumulative':>16}"
             )
         cum = 0.0
         last_pid = object()  # sentinel: the first row always opens a group
@@ -4109,9 +4113,13 @@ class Renderer:
                 continue
             agent = r["agent"] if r["depth"] else "-"
             cumlabel = f"{money(cum)} · {pct(cum, total)}"
+            # Blank, never "0%", when the turn is too small for the share to mean
+            # anything -- a confident zero there would read as a total cache miss.
+            share = cached_share(r)
+            cached = "-" if share is None else f"{share * 100:.0f}%"
             lines.append(
                 f"  {n:>{idx_w}} {clock(r.get('time')):<{time_w}} {pad(shorten(r['model_name'], mw), mw)} "
-                f"{pad(shorten(agent, agent_w), agent_w)} "
+                f"{pad(shorten(agent, agent_w), agent_w)} {cached:>{cached_w}} "
                 f"{human_tokens(r['tokens_total']):>9} {money(cost):>9} {cumlabel:>16}"
             )
         # Resolve the App's group-ordinal cursor to a header line index for the paint
@@ -4130,6 +4138,10 @@ class Renderer:
             lines.append(
                 "· ▼ the context window was cleared before that turn — the Context tab charts it."
             )
+        lines.append(
+            "· Cached: how much of that turn's context came from the cache — a normal turn "
+            "sits near 100%, and anything low re-bought the context it is missing."
+        )
         if late:
             lines.append(
                 "· ❄ the prompt cache expired while the session sat idle, so that turn paid "

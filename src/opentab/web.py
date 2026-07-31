@@ -43,7 +43,13 @@ from opentab.pricing import (
     model_price,
 )
 from opentab.themes import DEFAULT_THEME
-from opentab.util import context_size, model_row_1h_write, model_row_split, tool_namespace
+from opentab.util import (
+    cached_share,
+    context_size,
+    model_row_1h_write,
+    model_row_split,
+    tool_namespace,
+)
 from opentab.webpage import render_html
 
 if TYPE_CHECKING:
@@ -428,6 +434,11 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     # the Context tab draws them with. Subagents run in their own windows
                     # and never break the main thread's chain, so theirs stays 0.
                     "ctx": 0 if (int(r.get("depth") or 0) or not curve) else context_size(r),
+                    # Share of this turn's context that was a cache hit (null when the
+                    # turn is too small to say, or the backend can't support the reading).
+                    # Shipped rather than derived: the page has the total tokens but not
+                    # the cache split, and one number beats shipping three.
+                    "cached": None if not curve else cached_share(r),
                     "promptId": r.get("prompt_id") or "",
                     "promptTitle": r.get("prompt_title") or "",
                     "promptFull": r.get("prompt_full") or "",

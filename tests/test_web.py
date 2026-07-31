@@ -1288,3 +1288,37 @@ def test_web_turn_costs_bill_long_ttl_writes_so_an_expiry_fits_inside_its_turn()
         row["cache_write"],
     )
     assert short < exp["cost"] <= turn["api"]
+
+
+def test_web_turns_carry_the_cached_share_and_keep_the_table_rectangular():
+    # The one number that answers "did this turn re-buy its context", shipped rather
+    # than derived: the page has each turn's total tokens but not its cache split.
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(ExpiryFakeStore([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
+    warm, cold = ot.session_extras(app, "w1")["turns"]
+    # 200k read against a 300k context -- it read most of its context back while still
+    # writing the 100k it had just added.
+    assert 0.6 < warm["cached"] < 0.7
+    assert cold["cached"] == 0.0  # read none of it: bought the lot again
+
+    # Adding a column to a table whose marker rows span it: every full-width row has to
+    # widen with it, or the ▸/▼/❄ rows tear the layout in exactly the states (folded,
+    # compacted, expired) that are hardest to notice.
+    js = _js_source()
+    assert "h('th', { class: 'r' }, 'Cached')" in js
+    assert "colspan: 6" not in js  # the turn table's full-width rows all widened
+    assert js.count("colspan: 7") >= 3  # prompt-full, compaction, expiry
+
+
+def test_web_cached_share_is_gated_like_every_other_per_request_reading():
+    # A cumulative-delta backend cannot have one row read as one request's prompt, so it
+    # gets no share at all rather than a plausible wrong one -- the same opt-in behind
+    # the compaction markers, the expiry markers and the Context curve.
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+
+    class NoCurve(ExpiryFakeStore):
+        def supports_context_curve(self, wid):
+            return False
+
+    app = ot.App(NoCurve([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
+    assert all(t["cached"] is None for t in ot.session_extras(app, "w1")["turns"])

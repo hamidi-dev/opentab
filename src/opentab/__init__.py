@@ -198,6 +198,7 @@ from opentab.util import (
     OPENCODE_BUILTIN_TOOLS,
     YEAR_PATTERN,
     anchored_fuzzy_match,
+    cached_share,
     context_add,
     context_rows,
     copy_to_clipboard,

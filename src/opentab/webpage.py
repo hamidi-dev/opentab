@@ -1711,7 +1711,7 @@ function turnsTable(turns, expiries) {
       // Above the ▸ header (the wait happened BEFORE that prompt) and outside `body`,
       // like the compaction row: this table is folded to prompts by default, so a marker
       // tucked into a collapsed group would be a marker nobody sees.
-      rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: 6 },
+      rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: 7 },
         '❄ cache expired — ' + hDur(x.idle) + ' idle, ' + hTok(x.repaid)
         + ' bought again for ' + money(x.cost) + ' (it lived ' + hDur(x.ttl) + ')')));
     if (key !== lastPrompt) {
@@ -1725,11 +1725,12 @@ function turnsTable(turns, expiries) {
         onclick: () => { const open = !grp.length || grp[0].hidden;
           grp.forEach(r => r.hidden = !open); mk.textContent = open ? '▾ ' : '▸ '; } },
         h('td', { colspan: 3 }, marker, title),
+        h('td', null, ''),
         h('td', { class: 'r' }, moneyCell(groups.get(key))),
         h('td', null, ''), h('td', null, '')));
       if (full) {
         const fr = h('tr', { class: 'turn-fold', hidden: '' },
-          h('td', { colspan: 6 }, h('div', { class: 'prompt-full' }, full)));
+          h('td', { colspan: 7 }, h('div', { class: 'prompt-full' }, full)));
         body.push(fr); rows.push(fr);
       }
     }
@@ -1738,7 +1739,7 @@ function turnsTable(turns, expiries) {
       // NOT pushed into `body`: a compaction is a session-level event, and this table is
       // folded to prompts by default -- hiding the marker inside a collapsed group would
       // be hiding it outright (the TUI's detail_turns makes the same call).
-      rows.push(h('tr', { class: 'compact-row' }, h('td', { colspan: 6 },
+      rows.push(h('tr', { class: 'compact-row' }, h('td', { colspan: 7 },
         '▼ context compacted before turn ' + (i + 1) + ' · ' + t.time.slice(5, 16).replace('T', ' ')
         + ' — ' + hTok(c[0]) + ' → ' + hTok(c[1]) + ' (~' + hTok(c[0] - c[1]) + ' freed)')));
     cum += mCost(t);
@@ -1746,6 +1747,7 @@ function turnsTable(turns, expiries) {
       h('td', { class: 'dim' }, t.time.slice(5, 19).replace('T', ' ')),
       h('td', { class: 'indent' }, t.depth ? '↳ ' + t.agent : t.agent),
       h('td', { class: 'grow' }, modelCell(t.model)),
+      h('td', { class: 'r dim' }, t.cached == null ? '·' : Math.round(t.cached * 100) + '%'),
       h('td', { class: 'r' }, moneyCell(mCost(t))),
       h('td', { class: 'r' }, hTok(t.tokens)),
       h('td', { class: 'r dim' }, money(cum)));
@@ -1753,10 +1755,12 @@ function turnsTable(turns, expiries) {
   });
   return h('div', null,
     h('div', { class: 'hint' }, groups.size + ' prompts — click a ▸ row to expand its turns'
+      + ' · Cached = how much of that turn\'s context came from the cache; anything low re-bought it'
       + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')
       + (exp.size ? ' · ❄ ' + exp.size + ' cache expir' + (exp.size > 1 ? 'ies' : 'y') + ', ' + money(burnt) + ' spent re-buying context' : '')),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Agent'), h('th', null, 'Model'),
+        h('th', { class: 'r' }, 'Cached'),
         h('th', { class: 'r' }, 'Cost'), h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cumulative'))),
       h('tbody', null, rows))));
 }

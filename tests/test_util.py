@@ -392,3 +392,28 @@ def test_unicode_screen_prefers_acs_on_the_linux_console():
             os.environ.pop("TERM", None)
         else:
             os.environ["TERM"] = saved_term
+
+
+def test_cached_share_reads_one_turn_without_needing_its_neighbours():
+    # The whole cache story off a SINGLE turn -- no previous row, no clock, no TTL.
+    # Measured across ~37k real turns, a normal turn leaves 0.4-0.7% of its context
+    # uncached while a re-buy leaves 80-89%, so there is no threshold to tune.
+    normal = {"input": 2, "cache_read": 520_000, "cache_write": 900}
+    assert round(ot.cached_share(normal) * 100) == 100
+
+    # A re-buy: nothing read back, the whole context written again.
+    rebuy = {"input": 10, "cache_read": 0, "cache_write": 300_000}
+    assert ot.cached_share(rebuy) == 0.0
+
+    # No per-backend branching: where writes are not billed (Claude via GitHub Copilot
+    # records write:0 even on a miss) the re-buy lands in plain `input`, and the same
+    # subtraction catches it.
+    copilot = {"input": 200_000, "cache_read": 0, "cache_write": 0}
+    assert ot.cached_share(copilot) == 0.0
+    warm_copilot = {"input": 4_000, "cache_read": 196_000, "cache_write": 0}
+    assert 0.97 < ot.cached_share(warm_copilot) < 1.0
+
+    # Too small to mean anything -> None, never a confident 0% that would read as a
+    # total miss (and under every provider's minimum cacheable prompt anyway).
+    assert ot.cached_share({"input": 100, "cache_read": 0, "cache_write": 0}) is None
+    assert ot.cached_share({}) is None
