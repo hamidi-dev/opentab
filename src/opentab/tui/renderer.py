@@ -76,6 +76,7 @@ from opentab.pricing import (
     price_source_meta,
 )
 from opentab.util import (
+    CACHED_SHARE_FLOOR,
     CONTEXT_COMPACT_FLOOR,
     CONTEXT_COMPACT_RATIO,
     cached_share,
@@ -641,6 +642,8 @@ class Renderer:
             self.draw_sort_menu(stdscr, height, width)
         elif self.launch_menu is not None:
             self.draw_launch_menu(stdscr, height, width)
+        elif self.turn_popup is not None:
+            self.draw_turn_popup(stdscr, height, width)
 
         # Toasts float over everything, including modals -- they're the topmost layer.
         self.draw_toasts(stdscr, height, width)
@@ -3954,28 +3957,14 @@ class Renderer:
         ]
         return lines
 
-    def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
-        # How this session's cost accrued, one LLM step ("turn") at a time, in
-        # chronological order -- not sorted by cost -- grouped under the user prompt
-        # that triggered each run. A "▸ <prompt>" header opens each group (with that
-        # prompt's subtotal); the indented turns beneath are the agent's work on it,
-        # so the user-vs-llm split is the header-vs-rows. Subagent (Task) turns are
-        # interleaved by time and tagged in the Agent column. The Cumulative column is
-        # the point: a running total you read top-to-bottom. Wholly-unpriced ($0)
-        # turns are repriced at list price under "$", like every other panel.
-        if not self.session_supports_turns(workflow.id):
-            return [
-                "# Turns",
-                "This session's source records no per-turn usage.",
-            ]
-        rows = self.session_turn_rows(workflow.id)
-        if not rows:
-            return ["# Turns", "No turns recorded for this session."]
+    def turn_costs(self, rows) -> list[float]:
+        # Each turn's cost as the tab shows it: recorded spend, or -- under "$" -- a
+        # wholly-unpriced ($0) turn's tokens at list rates, long-TTL writes included.
         api = self.show_api_prices and not self.store.demo
-        costs = []
+        out = []
         for r in rows:
             cost = r["cost"]
-            if api and not cost:  # a recorded $0 turn is wholly unpriced -- estimate it
+            if api and not cost:
                 cost = api_equivalent_cost(
                     r["model_name"],
                     r["input"],
@@ -3985,60 +3974,140 @@ class Renderer:
                     r["cache_write"],
                     r.get("cache_write_1h", 0),
                 )
-            costs.append(cost)
-        total = sum(costs)
-        subtotal: dict[str, float] = defaultdict(float)  # per-prompt spend, for headers
-        for r, cost in zip(rows, costs):
-            subtotal[r.get("prompt_id", "")] += cost
+            out.append(cost)
+        return out
 
-        # time is the full localtime "YYYY-MM-DD HH:MM:SS"; show date + clock ("MM-DD
-        # HH:MM:SS") on every row. The seconds matter (turns can be seconds apart) and
-        # the date matters too (a resumed session spans days), so keep both. Rows are
-        # indented two spaces to nest under their "▸" prompt header.
-        time_w = 14
+    def turn_popup_lines(self, workflow: Workflow, width: int) -> list[str]:
+        """One prompt, opened: its full text, its totals, and the turns it took.
 
-        def clock(t: str) -> str:
-            return t[5:19] if t else "--"  # "MM-DD HH:MM:SS"
-
+        This is where the per-turn detail went when the tab became a table. Keeping it
+        out of the pane is the whole point -- a prompt that ran 217 turns is one row up
+        there and a scrollable box in here, instead of 217 lines shoved between two
+        rows of the table you were reading.
+        """
+        rows = self.session_turn_rows(workflow.id)
+        if not rows:
+            return []
+        costs = self.turn_costs(rows)
+        _order, grouped = self.turn_group_rows(rows, costs)
+        g = grouped.get(self.app.turn_popup)
+        if not g:
+            return []
+        lines: list[str] = []
+        for para in (g["full"] or "(no preceding prompt)").splitlines() or [""]:
+            lines += textwrap.wrap(para, max(20, width)) or [""]
+        share = g["cached"]
+        cached = "-" if share is None else f"{share * 100:.0f}%"
+        lines += [
+            "",
+            f"{g['turns']} turn{'' if g['turns'] == 1 else 's'} · "
+            f"{human_tokens(g['tokens'])} · {money(g['cost'])} · cached {cached}",
+            "",
+        ]
         idx_w = max(2, len(str(len(rows))))
-        agent_w = min(10, max(5, max((len(r["agent"]) for r in rows), default=5)))
-        cached_w = 7  # "Cached" -- the share of this turn's context that was a cache hit
-        mw = max(
-            16, min(34, width - (idx_w + agent_w + time_w + 42 + cached_w + 2))
-        )  # model flexes
-        # Folded by default to a clean overview of the prompts: one ▸ header per prompt
-        # with its subtotal, the per-turn rows hidden until a group is expanded (z toggles
-        # all, a click one). The column header only earns its line when a group is open.
-        any_open = self.turns_full or bool(self._turns_expanded)
-        # Compactions are the one thing on this tab that is NOT a turn: the window was
-        # cleared between two of them, and every row after it starts from a smaller
-        # context. It goes in the title and in the flow (below), because a session that
-        # compacted three times spent money re-reading what it had already read.
-        #
-        # Gated by the SAME opt-in the Context tab is (supports_context_curve): reading a
-        # drop as a compaction assumes a row's input+cache IS that request's prompt, which
-        # is exactly what a cumulative-delta backend (Codex) and the synthetic CSV/JSONL
-        # sessions do not give. Ungated, a Codex session drew "▼ 240.4k → 15.8k" next to
-        # a Context tab that has (correctly) hidden its curve for the same reason -- two
-        # tabs disagreeing about the same data, which the shared rule exists to prevent.
-        comps = (
-            context_compactions(rows) if self.session_supports_context_curve(workflow.id) else {}
+        agent_w = min(10, max(5, max((len(rows[i]["agent"]) for i in g["indices"]), default=5)))
+        mw = max(12, min(30, width - (idx_w + agent_w + 14 + 6 + 9 + 9 + 6)))
+        lines.append(
+            f"{'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} {pad('Agent', agent_w)} "
+            f"{'Cached':>6} {'Tokens':>9} {'Cost':>9}"
         )
-        # Turns that had to buy their context a second time because the provider's cache
-        # had died in the gap before them. Gated by the SAME opt-in as compactions above,
-        # and for the same reason: reading a row's cache split as one request's prompt is
-        # exactly what a cumulative-delta backend (Codex) and the synthetic CSV/JSONL
-        # sessions cannot support, and two tabs disagreeing about one session is what
-        # that shared gate exists to prevent.
+        for i in g["indices"]:
+            r = rows[i]
+            sh = cached_share(r)
+            lines.append(
+                f"{i + 1:>{idx_w}} {(r.get('time') or '--')[5:19]:<14} "
+                f"{pad(shorten(r['model_name'], mw), mw)} "
+                f"{pad(shorten(r['agent'] if r['depth'] else '-', agent_w), agent_w)} "
+                f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
+                f"{human_tokens(r['tokens_total']):>9} {money(costs[i]):>9}"
+            )
+        return lines
+
+    @staticmethod
+    def turn_group_rows(rows, costs):
+        """(ordered prompt ids, {id: aggregate}) -- the Turns table's rows.
+
+        A group is a RUN of consecutive turns sharing a prompt_id, matching
+        App.turn_groups so the cursor ordinal and these rows are the same list. Each
+        aggregate carries what the row prints plus the turn indices behind it, which the
+        markers (▼ compaction, ❄ expiry) and the popup both need.
+
+        `cached` is the group's share of context served from cache -- pooled over the
+        group's turns rather than averaged, so one enormous turn cannot be outvoted by
+        several tiny ones sitting at 100%.
+        """
+        order: list[str] = []
+        agg: dict[str, dict] = {}
+        last = object()
+        for i, (r, cost) in enumerate(zip(rows, costs)):
+            pid = r.get("prompt_id", "")
+            if pid != last:
+                last = pid
+                if pid not in agg:
+                    order.append(pid)
+                    agg[pid] = {
+                        "title": (r.get("prompt_title") or "").strip(),
+                        "full": (r.get("prompt_full") or r.get("prompt_title") or "").strip(),
+                        "time": r.get("time") or "",
+                        "turns": 0,
+                        "tokens": 0,
+                        "cost": 0.0,
+                        "indices": [],
+                        "_read": 0,
+                        "_ctx": 0,
+                    }
+            g = agg[pid]
+            g["turns"] += 1
+            g["tokens"] += int(r.get("tokens_total") or 0)
+            g["cost"] += cost
+            g["indices"].append(i)
+            if not r.get("depth"):  # subagents run in their own windows
+                g["_read"] += int(r.get("cache_read") or 0)
+                g["_ctx"] += context_size(r)
+        for g in agg.values():
+            g["cached"] = (g["_read"] / g["_ctx"]) if g["_ctx"] >= CACHED_SHARE_FLOOR else None
+        return order, agg
+
+    def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
+        # How this session's cost accrued, in the order you spent it: one row per PROMPT,
+        # each with the turns it took, how much of its context came from cache, its
+        # tokens, its cost and the running total. Chronological, never cost-sorted -- the
+        # point of the tab is WHEN the money went. The individual turns behind a row live
+        # in the popup (Enter / a click), which is what lets every row carry real columns:
+        # they used to be hidden inside a per-prompt expansion, so the only view that
+        # listed them was one keystroke away from the view you were reading, and opening a
+        # 40-turn prompt buried the table. Wholly-unpriced ($0) turns reprice at list
+        # price under "$", like every other panel.
+        if not self.session_supports_turns(workflow.id):
+            return [
+                "# Turns",
+                "This session's source records no per-turn usage.",
+            ]
+        rows = self.session_turn_rows(workflow.id)
+        if not rows:
+            return ["# Turns", "No turns recorded for this session."]
+        costs = self.turn_costs(rows)
+        total = sum(costs)
+        # One entry per prompt, in the order the prompts ran. Consecutive turns sharing a
+        # prompt_id are one group -- the same split App.turn_groups makes, so the cursor
+        # ordinal lines up with these rows.
+        groups, grouped = self.turn_group_rows(rows, costs)
+
+        # Compactions and cache expiries are the two things on this tab that are NOT
+        # prompts: the window was cleared, or the cache died, between two turns. Both are
+        # gated by the SAME opt-in the Context tab is (supports_context_curve) -- reading
+        # a row's cache split as one request's prompt is exactly what a cumulative-delta
+        # backend (Codex) and the synthetic CSV/JSONL sessions cannot support, and two
+        # tabs disagreeing about one session is what that shared gate exists to prevent.
         #
-        # Only "waited" is drawn in the flow. It is the one cause the reader can do
-        # something about (the follow-up came in after the cache expired), while
-        # "invalidated" -- a changed tool set, an added image -- is both the most common
-        # and the least actionable, and a marker on every one of those would be noise
-        # that teaches you to skip the marker you wanted.
-        misses = cache_misses(rows) if self.session_supports_context_curve(workflow.id) else []
-        late = {m.index: m for m in misses if m.cause == "waited"}
-        head = f"# Turns — {len(subtotal)} prompts · {len(rows)} turns · {money(total)}"
+        # Of the expiry causes only "waited" is drawn: it is the one the reader can do
+        # something about, while "invalidated" (a changed tool set, an added image) is
+        # both the most common and the least actionable, and a marker on every one of
+        # those would be noise that teaches you to skip the marker you wanted.
+        curve = self.session_supports_context_curve(workflow.id)
+        comps = context_compactions(rows) if curve else {}
+        late = {m.index: m for m in cache_misses(rows) if m.cause == "waited"} if curve else {}
+        head = f"# Turns — {len(groups)} prompts · {len(rows)} turns · {money(total)}"
         if comps:
             freed = sum(before - after for before, after in comps.values())
             head += f" · ▼ {len(comps)} compaction{'s' if len(comps) > 1 else ''}"
@@ -4049,102 +4118,75 @@ class Renderer:
                 f" · ❄ {len(late)} cache expir{'y' if len(late) == 1 else 'ies'}, {money(burnt)}"
             )
         lines = [head]
-        if any_open:
-            lines.append(
-                f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Model':<{mw}} {'Agent':<{agent_w}} "
-                f"{'Cached':>{cached_w}} {'Tokens':>9} {'Cost':>9} {'Cumulative':>16}"
-            )
+
+        # ONE ROW PER PROMPT -- the thing you actually sent. Every row carries its own
+        # numbers and the header is always drawn, because the columns are the point of
+        # the tab; the per-turn rows live in the popup (Enter / a click), where a prompt
+        # that ran 40 turns costs a keystroke instead of 40 lines of the pane. This tab
+        # used to fold to prompt headers with the columns hidden INSIDE an expansion,
+        # which put every number one keystroke away from the only view that listed them.
+        idx_w = max(2, len(str(len(groups))))
+        time_w = 11  # "MM-DD HH:MM" -- a prompt is a moment, its turns carry the seconds
+        turns_w, cached_w, tok_w, cost_w, cum_w = 5, 6, 8, 9, 14
+        fixed = idx_w + time_w + turns_w + cached_w + tok_w + cost_w + cum_w + 9
+        pw = max(20, width - fixed)  # the prompt text takes whatever is left
+
+        lines.append(
+            f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Prompt':<{pw}} {'Turns':>{turns_w}} "
+            f"{'Cached':>{cached_w}} {'Tokens':>{tok_w}} {'Cost':>{cost_w}} {'Cumulative':>{cum_w}}"
+        )
         cum = 0.0
-        last_pid = object()  # sentinel: the first row always opens a group
-        group_open = False
-        self._turn_header_at = {}  # line index -> prompt_id, for the click toggle
-        header_lines: list[int] = []  # header line index per ▸ group, in render order
-        for n, (r, cost) in enumerate(zip(rows, costs), start=1):
-            pid = r.get("prompt_id", "")
-            miss = late.get(n - 1)
-            if miss:
-                # ABOVE the ▸ header, because the wait happened before the prompt, and
-                # flush left for the compaction line's reason: a session-level event, and
-                # folding it inside a collapsed group would hide it in this tab's default
-                # state. Says what it cost and what would have avoided it -- the gap is
-                # only actionable if you know the deadline you missed.
-                lines.append(
-                    f"❄ cache expired — {human_duration(miss.idle)} idle, "
-                    f"{human_tokens(miss.repaid)} bought again for {money(miss.cost)} "
-                    f"(it lived {human_duration(miss.ttl)})"
-                )
-            if pid != last_pid:
-                last_pid = pid
-                gc = money(subtotal[pid])
-                group_open = self.turns_full or pid in self._turns_expanded
-                title = (r.get("prompt_title") or "").strip() or "(no preceding prompt)"
-                title = shorten(title, max(10, width - len(gc) - 5))
-                head = ("▾ " if group_open else "▸ ") + title
-                self._turn_header_at[len(lines)] = pid
-                header_lines.append(len(lines))
-                lines.append(head + " " * max(1, width - display_width(head) - len(gc)) + gc)
-                if group_open:
-                    # The whole prompt, its own line breaks kept, wrapped to the pane.
-                    full = (r.get("prompt_full") or r.get("prompt_title") or "").strip()
-                    for para in full.splitlines() or [""]:
-                        for piece in textwrap.wrap(para, max(20, width - 4)) or [""]:
-                            lines.append("  │ " + piece)
-            comp = comps.get(n - 1)
-            if comp:
-                # Rendered whether or not the group is open, and flush left like the ▸
-                # headers rather than indented with the turn rows: the compaction is a
-                # session-level event, and hiding it inside a folded group -- the default
-                # state of this tab -- would be hiding it outright.
-                before, after = comp
-                # Minute resolution, like the Context tab's ▼ lines: an event between
-                # two turns, not a turn -- the seconds a turn row carries would make it
-                # read as one more row in the list it is interrupting. Read with .get
-                # (like _turn_dt): this line renders in the tab's DEFAULT folded state,
-                # so a row without a time would take the whole tab down, where the same
-                # row only ever reaches the `clock()` cell below with a group expanded.
-                when = (r.get("time") or "")[5:16]
-                lines.append(
-                    f"▼ context compacted before turn {n} · {when} — "
-                    f"{human_tokens(before)} → {human_tokens(after)} "
-                    f"(~{human_tokens(before - after)} freed)"
-                )
-            cum += cost  # accumulate across every turn, shown or not, so an expanded
-            if not group_open:  # group's Cumulative column stays correct
-                continue
-            agent = r["agent"] if r["depth"] else "-"
-            cumlabel = f"{money(cum)} · {pct(cum, total)}"
-            # Blank, never "0%", when the turn is too small for the share to mean
-            # anything -- a confident zero there would read as a total cache miss.
-            share = cached_share(r)
+        self._turn_header_at = {}  # line index -> prompt_id, for the click
+        header_lines: list[int] = []
+        for n, pid in enumerate(groups, start=1):
+            g = grouped[pid]
+            cum += g["cost"]
+            # Marker rows first: they describe what happened BEFORE this prompt ran.
+            for i in g["indices"]:
+                comp = comps.get(i)
+                if comp:
+                    before, after = comp
+                    when = (rows[i].get("time") or "")[5:16]
+                    lines.append(
+                        f"▼ context compacted before turn {i + 1} · {when} — "
+                        f"{human_tokens(before)} → {human_tokens(after)} "
+                        f"(~{human_tokens(before - after)} freed)"
+                    )
+                miss = late.get(i)
+                if miss:
+                    lines.append(
+                        f"❄ cache expired — {human_duration(miss.idle)} idle, "
+                        f"{human_tokens(miss.repaid)} bought again for {money(miss.cost)} "
+                        f"(it lived {human_duration(miss.ttl)})"
+                    )
+            share = g["cached"]
             cached = "-" if share is None else f"{share * 100:.0f}%"
+            title = " ".join((g["title"] or "").split()) or "(no preceding prompt)"
+            cumlabel = f"{money(cum)} · {pct(cum, total)}"
+            self._turn_header_at[len(lines)] = pid
+            header_lines.append(len(lines))
             lines.append(
-                f"  {n:>{idx_w}} {clock(r.get('time')):<{time_w}} {pad(shorten(r['model_name'], mw), mw)} "
-                f"{pad(shorten(agent, agent_w), agent_w)} {cached:>{cached_w}} "
-                f"{human_tokens(r['tokens_total']):>9} {money(cost):>9} {cumlabel:>16}"
+                f"  {n:>{idx_w}} {g['time'][5:16]:<{time_w}} {pad(shorten(title, pw), pw)} "
+                f"{g['turns']:>{turns_w}} {cached:>{cached_w}} "
+                f"{human_tokens(g['tokens']):>{tok_w}} {money(g['cost']):>{cost_w}} "
+                f"{cumlabel:>{cum_w}}"
             )
-        # Resolve the App's group-ordinal cursor to a header line index for the paint
-        # loop (highlight) and the follow-scroll. header_lines and App.turn_groups both
-        # split on the same consecutive-prompt runs, so the ordinal lines up.
         cur = self.app._turn_cursor
         self._turn_cursor_line = header_lines[cur] if 0 <= cur < len(header_lines) else None
         lines += [
             "",
-            "· One ▸ line per user prompt, its subtotal on the right — time order, not cost.",
-            f"· Folded to prompts: {self._keys('main', 'down', 'up')} pick a ▸ prompt · "
-            f"{self._key('main', 'select')} (or a click) unfolds one · "
-            f"{self._key('main', 'fold_turns')} all.",
+            f"· One row per prompt, in time order — {self._key('main', 'select')} "
+            "(or a click) opens it with its turns.",
+            "· Cached: how much of that prompt's context came from the cache — near 100% is "
+            "normal, and anything low re-bought the context it was missing.",
         ]
         if comps:
             lines.append(
                 "· ▼ the context window was cleared before that turn — the Context tab charts it."
             )
-        lines.append(
-            "· Cached: how much of that turn's context came from the cache — a normal turn "
-            "sits near 100%, and anything low re-bought the context it is missing."
-        )
         if late:
             lines.append(
-                "· ❄ the prompt cache expired while the session sat idle, so that turn paid "
+                "· ❄ the prompt cache expired while the session sat idle, so that prompt paid "
                 "again for context it already had — a faster follow-up would have cost less."
             )
         return lines
@@ -5035,6 +5077,32 @@ class Renderer:
         for offset, (text, attr) in enumerate(content[: h - 4]):
             self.write(stdscr, y + 2 + offset, x + 2, pad(shorten(text, field), field), attr)
         return y, x, h, w
+
+    def draw_turn_popup(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        # Enter on a Turns row: the prompt in full plus the turns it took. Sized to the
+        # screen rather than to content (a 217-turn prompt would ask for 217 lines), and
+        # scrolled with j/k -- App.turn_popup_scroll.
+        wf = self.current_session()
+        if wf is None:
+            return
+        body = self.turn_popup_lines(wf, max(24, scr_w - 12))
+        if not body:
+            self.app.close_turn_popup()
+            return
+        rows = max(4, scr_h - 8)
+        top = max(0, min(self.app.turn_popup_scroll, max(0, len(body) - rows)))
+        self.app.turn_popup_scroll = top
+        window = body[top : top + rows]
+        if len(body) > rows:
+            window = window + [
+                "",
+                f"— {top + 1}-{top + len(window)} of {len(body)} · "
+                f"{self._keys('main', 'down', 'up')} scroll · {self._key('main', 'back')} close",
+            ]
+        else:
+            window = window + ["", f"— {self._key('main', 'back')} close"]
+        title = f"prompt {self.turn_cursor_ordinal()} · {self._key('main', 'back')} to close"
+        self.draw_modal(stdscr, scr_h, scr_w, title, [(t, self.line_attr(t)) for t in window])
 
     def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `H` picker: a small modal list of every present source. j/k moves the

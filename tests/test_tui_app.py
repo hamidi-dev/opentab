@@ -1775,20 +1775,20 @@ def test_drilling_into_a_year_zooms_and_lists_its_sessions():
     assert {w.id for w in app.current_sessions()} == {"a", "b"}
 
 
-def test_opening_a_session_clears_leftover_turn_expansions():
-    # _turns_expanded holds the Turns prompts expanded (by click) in ONE session. Opening
-    # another must not inherit them: a non-empty set lights the turn-column header even
-    # when every group is folded, and a prompt-id collision would auto-expand a group the
-    # user never opened here. Reload / source-switch clear it alongside the turn cache.
+def test_opening_a_session_closes_a_leftover_turn_popup():
+    # turn_popup names a prompt in ONE session. Opening another must not inherit it: a
+    # prompt-id collision would show the new session a popup the user never opened, and
+    # a stale id would render an empty box. Reload / source-switch close it alongside
+    # the turn cache it reads from.
     app = app_with([workflow("a", "2026-06-01 12:00:00"), workflow("b", "2026-06-02 12:00:00")])
-    app._turns_expanded = {"p1"}
+    app.turn_popup = "p1"
     assert app.goto_session("b")  # -> drill_into_session -> drill_in -> session view
     assert app.view == "session" and app.current_session().id == "b"
-    assert app._turns_expanded == set()
-    # reload clears it too (it indexes into the turn cache that reload rebuilds)
-    app._turns_expanded = {"q1"}
+    assert app.turn_popup is None
+    # reload closes it too (it indexes into the turn cache that reload rebuilds)
+    app.turn_popup = "q1"
     app.reload()
-    assert app._turns_expanded == set()
+    assert app.turn_popup is None
 
 
 def test_toasts_coalesce_within_a_frame_cap_and_expire():

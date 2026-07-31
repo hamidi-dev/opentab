@@ -613,31 +613,30 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
         rnd = ot.Renderer(app)
         wf = app.loaded[0]
-        # Folded by default: a clean overview -- one ▸ header per prompt with its subtotal,
-        # the per-turn rows hidden (no clock stamps, no Cumulative column).
-        folded = rnd.detail_turns(wf, 96)
-        fj = "\n".join(folded)
-        assert folded[0].startswith("# Turns — 2 prompts · 3 turns · $3.00")
-        assert "▸ Add feature X" in fj and "▸ Fix the bug" in fj
-        assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in folded)  # no turn rows
-        assert "Folded to prompts" in fj and "Enter (or a click) unfolds one" in fj
-        # Expanded (z): the per-turn rows appear, chronological, ending at $3.00 · 100%.
-        app.turns_full = True
-        normal = rnd.detail_turns(wf, 96)
-        joined = "\n".join(normal)
-        assert normal[0].startswith("# Turns — 2 prompts · 3 turns · $3.00")
-        assert "$3.00 · 100%" in joined  # last turn's cumulative cell
-        # each row shows the date + clock ("MM-DD HH:MM:SS"), not just the time
-        assert any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in normal)
+        # One row per prompt, columns always drawn -- the numbers ARE the tab, so they
+        # never hide inside an expansion the reader has to discover.
+        table = rnd.detail_turns(wf, 96)
+        tj = "\n".join(table)
+        assert table[0].startswith("# Turns — 2 prompts · 3 turns · $3.00")
+        assert "Add feature X" in tj and "Fix the bug" in tj
+        assert "Turns" in table[1] and "Cached" in table[1] and "Cumulative" in table[1]
+        assert "$3.00 · 100%" in tj  # the last prompt's cumulative cell
+        # A prompt row is a moment (MM-DD HH:MM); the seconds belong to its turns, which
+        # live in the popup, so no per-turn clock stamp reaches the table.
+        assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in table)
+        assert "One row per prompt" in tj and "opens it with its turns" in tj
+        # The turns themselves, with their seconds, are one Enter away.
+        app.turn_popup = app.turn_groups(wf.id)[0]
+        popup = rnd.turn_popup_lines(wf, 90)
+        assert any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in popup)
         # Under "$" the two $0 haiku turns estimate at list price (1M+2M @ $1/M),
-        # so the total grows to $1 + $2 + $3 = $6.00 and each shows its estimate.
+        # so the total grows to $1 + $2 + $3 = $6.00 -- in the table and the popup alike.
         app.show_api_prices = True
         priced = rnd.detail_turns(wf, 96)
         assert priced[0].startswith("# Turns — 2 prompts · 3 turns · $6.00")
         pjoined = "\n".join(priced)
-        assert "$1.00" in pjoined and "$2.00" in pjoined and "$6.00 · 100%" in pjoined
-        # the per-prompt subtotal sits on the group header (u1 = $1+$2 estimate = $3.00)
-        assert "Add feature X" in pjoined
+        assert "$6.00 · 100%" in pjoined and "Add feature X" in pjoined
+        assert "$1.00" in "\n".join(rnd.turn_popup_lines(wf, 90))
 
 
 def test_turns_marks_compactions_even_while_folded():
@@ -681,7 +680,7 @@ def test_turns_marks_compactions_even_while_folded():
     lines = app.renderer.detail_turns(app.current_session(), 100)
     joined = "\n".join(lines)
     # Folded is the default -- no turn rows drawn, and the marker there regardless.
-    assert not app.turns_full and not app._turns_expanded
+    assert app.turn_popup is None
     assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in lines)
     marker = next(ln for ln in lines if ln.startswith("▼ "))
     assert "before turn 3" in marker  # the turn that ran on the cleared window
@@ -731,8 +730,9 @@ def test_turns_marks_compactions_even_while_folded():
         ln.startswith("▼ ")
         for ln in timeless.renderer.detail_turns(timeless.current_session(), 100)
     )
-    timeless.turns_full = True
-    assert timeless.renderer.detail_turns(timeless.current_session(), 100)
+    # ...and the popup behind Enter survives a row with no timestamp too.
+    timeless.turn_popup = timeless.turn_groups(timeless.current_session().id)[0]
+    assert timeless.renderer.turn_popup_lines(timeless.current_session(), 90)
 
 
 def test_subagents_tab_reprices_unpriced_node_in_api_mode():
@@ -1458,23 +1458,28 @@ def test_turns_cursor_walks_the_prompt_groups_with_jk_and_gG():
     assert app._turn_cursor == 0  # g -> first prompt
 
 
-def test_turns_enter_toggles_only_the_selected_group():
+def test_turns_enter_opens_the_selected_prompt_and_esc_closes_it():
     app = _turns_app()
     app.move(1)  # select p2
     assert app._toggle_turn_cursor()  # the Enter path
-    assert app._turns_expanded == {"p2"}
-    joined = "\n".join(app.renderer.detail_turns(app.current_session(), 96))
-    assert "the full text of p2" in joined and "the full text of p1" not in joined
-    app._toggle_turn_cursor()  # Enter again folds it back
-    assert app._turns_expanded == set()
+    assert app.turn_popup == "p2"
+    wf = app.current_session()
+    body = "\n".join(app.renderer.turn_popup_lines(wf, 90))
+    assert "the full text of p2" in body and "the full text of p1" not in body
+    # The table underneath never re-shapes: opening a prompt is not a fold, so no row
+    # moves and the reader's place in the list survives the round trip.
+    before = app.renderer.detail_turns(wf, 96)
+    assert app.renderer.detail_turns(wf, 96) == before
+    assert app.close_turn_popup() and app.turn_popup is None
+    assert app.close_turn_popup() is False  # nothing left to close
 
 
-def test_turns_cursor_line_tracks_the_selected_header():
+def test_turns_cursor_line_tracks_the_selected_row():
     app = _turns_app()
     app._turn_cursor = 0
     lines = app.renderer.detail_turns(app.current_session(), 96)
     first = app.renderer._turn_cursor_line
-    assert first is not None and lines[first].startswith(("▸ ", "▾ "))
+    assert first is not None and "p1" in lines[first]  # the first prompt's own row
     app._turn_cursor = 2
     app.renderer.detail_turns(app.current_session(), 96)
     assert app.renderer._turn_cursor_line > first  # a later header line
@@ -1497,17 +1502,25 @@ def test_turns_click_moves_the_keyboard_cursor_onto_the_group():
     rnd.detail_turns(app.current_session(), 96)  # a paint records the header lines
     lines_by_pid = {p: i for i, p in rnd._turn_header_at.items()}
     app._apply_click(("turnline", lines_by_pid["p3"]), drill=False)
-    assert app._turn_cursor == 2 and "p3" in app._turns_expanded
+    assert app._turn_cursor == 2 and app.turn_popup == "p3"
 
 
-def test_turns_z_expand_all_follows_the_cursor():
-    # Regression: z (expand all) inserts bodies before a later cursor, so it must ask
-    # the next draw to scroll the selected header back into view.
+def test_turns_popup_swallows_keys_and_scrolls_with_the_movement_ones():
+    # An open prompt is a modal: movement scrolls it, Esc closes it, and anything else is
+    # swallowed rather than acted on behind it -- a mistyped key must not switch tabs
+    # under a box the reader is still looking at.
     app = _turns_app()
-    app._turn_cursor = 2
-    app._turn_follow = False
-    app.handle_key(None, ord("z"))
-    assert app.turns_full and app._turn_follow
+    app._turn_cursor = 1
+    app._toggle_turn_cursor()
+    tab_before = app.tab
+    assert app.handle_key(None, ord("j")) and app.turn_popup_scroll == 1
+    assert app.handle_key(None, ord("k")) and app.turn_popup_scroll == 0
+    app.handle_key(None, ord("k"))
+    assert app.turn_popup_scroll == 0  # never scrolls above the top
+    assert app.handle_key(None, ord("l"))  # would be "next tab" without the popup
+    assert app.tab == tab_before and app.turn_popup == "p2"
+    assert app.handle_key(None, 27)  # Esc
+    assert app.turn_popup is None
 
 
 def test_machine_overview_shows_live_pulled_and_freshness_niceties():
@@ -1661,9 +1674,10 @@ def test_detail_turns_marks_the_prompt_that_arrived_after_the_cache_expired():
     # The tab title carries the count and the money, like the ▼ compaction summary.
     assert "❄ 1 cache expiry, $" in lines[0]
     mark = next(i for i, ln in enumerate(lines) if ln.startswith("❄ "))
-    # ABOVE the ▸ header it belongs to -- the wait happened before that prompt -- and
-    # flush left, so this tab's DEFAULT folded state still shows it.
-    assert lines[mark + 1].startswith("▸ the late follow-up")
+    # ABOVE the row it belongs to -- the wait happened before that prompt -- and flush
+    # left, outside the table's own columns, because it is an event, not a prompt.
+    assert "the late follow-up" in lines[mark + 1]
+    assert not lines[mark + 1].startswith("❄")
     assert "2h idle" in lines[mark] and "300.0k bought again" in lines[mark]
     assert "it lived 1h" in lines[mark]  # the deadline that was missed, not just the gap
     # The first prompt is untouched: nothing expired before it.
@@ -1684,3 +1698,26 @@ def test_detail_turns_stays_silent_when_the_backend_cannot_support_the_reading()
     lines = ot.Renderer(app).detail_turns(app.loaded[0], 96)
     assert not any(ln.startswith("❄") for ln in lines)
     assert "❄" not in lines[0]
+
+
+def test_turn_cursor_and_table_rows_split_the_prompts_the_same_way():
+    # Two places split the turns into prompts: App.turn_groups (which the cursor, j/k,
+    # g/G and Enter index into, computed without a paint) and Renderer.turn_group_rows
+    # (which builds the drawn rows). If they ever disagree, Enter opens a different
+    # prompt than the highlighted row -- silently, and only on sessions whose shape
+    # happens to differ.
+    app = _turns_app()
+    wf = app.current_session()
+    rows = app.session_turn_rows(wf.id)
+    order, agg = app.renderer.turn_group_rows(rows, app.renderer.turn_costs(rows))
+    assert order == app.turn_groups(wf.id)
+
+    # And every drawn row's line index maps back to its own prompt, in the same order,
+    # so the click ordinal (sorted line index) is the cursor ordinal.
+    app.renderer.detail_turns(wf, 96)
+    drawn = [pid for _line, pid in sorted(app.renderer._turn_header_at.items())]
+    assert drawn == order
+
+    # The aggregate really is the group's turns, not a sample of them.
+    assert sum(g["turns"] for g in agg.values()) == len(rows)
+    assert sum(g["tokens"] for g in agg.values()) == sum(r["tokens_total"] for r in rows)

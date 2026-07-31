@@ -501,7 +501,7 @@ def test_jsonl_detail_turns_groups_and_reprices_under_dollar():
         assert (
             priced[0].startswith("# Turns — 2 prompts · 2 turns · $") and "$0.00" not in priced[0]
         )
-        assert "▸ refactor auth" in joined and "▸ add tests" in joined
+        assert "refactor auth" in joined and "add tests" in joined
         # Toggle the estimate off -> only recorded cost ($0) counts.
         app.show_api_prices = False
         assert rnd.detail_turns(wf, 96)[0] == "# Turns — 2 prompts · 2 turns · $0.00"

@@ -346,3 +346,19 @@ def test_reload_keymap_toasts_every_problem_into_the_scrollback():
                 os.environ.pop("XDG_CONFIG_HOME", None)
             else:
                 os.environ["XDG_CONFIG_HOME"] = xdg
+
+
+def test_a_binding_for_a_retired_action_is_dropped_without_complaining():
+    # keymap.conf is user-authored config, and a user who pinned a key to a command a
+    # later release removed did nothing wrong. Warning them turns every launch after an
+    # upgrade into a chore over a line they can only fix by deleting it -- so a RETIRED
+    # action's binding is dropped in silence, while a genuine typo still warns.
+    km = _load("[main]\nfold_turns = z\nbogus_action = q\n")
+    assert km.warnings == ["[main] unknown action 'bogus_action' ignored"]
+    # ...and the key it claimed is genuinely free again, not bound to a ghost.
+    assert km.action("main", ord("z")) != "fold_turns"
+
+    # Every retired name must be gone from the live registry: a name that is both
+    # retired and current would silence a real warning for a real action.
+    live = {a.name for ctx in bindings.BY_NAME.values() for a in ctx.actions}
+    assert not (bindings.RETIRED_ACTIONS & live)

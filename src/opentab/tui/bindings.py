@@ -194,7 +194,7 @@ REGISTRY: tuple[Context, ...] = (
         "The main views: browse -> zoom -> session. Everything outside an overlay.",
         None,
         (
-            Action("select", ("enter",), "drill into the selection / fold a ▸ prompt"),
+            Action("select", ("enter",), "drill into the selection / open a Turns prompt"),
             Action("back", ("esc", "backspace"), "step back out — session → zoom → browse"),
             *_SCROLL,
             Action("tab_prev", ("h", "left"), "previous detail tab"),
@@ -217,7 +217,6 @@ REGISTRY: tuple[Context, ...] = (
             Action("bookmark", ("b",), "bookmark ★ this session"),
             Action("show_bookmarks", ("B",), "show only bookmarked sessions"),
             Action("note", ("n",), "note ✎ this session"),
-            Action("fold_turns", ("z",), "unfold / fold every ▸ prompt (Turns tab)"),
             Action("export", ("e",), "export this list to CSV"),
             Action("open_dir", ("o",), "open the selection's directory"),
             Action("launch", ("L",), "resume this session in its own tool"),
@@ -660,6 +659,15 @@ _HEADER = """\
 """
 
 
+# Actions that existed in an earlier opentab and no longer do. Their bindings are
+# ignored without complaint (see the loader), so upgrading never turns a customized
+# keymap.conf into an error message. Names are never reused for something else --
+# a stale binding must stay dead, not silently acquire a new meaning.
+#   fold_turns: the Turns tab folded to ▸ prompt headers; it is a table now, and the
+#               per-prompt detail moved into the popup Enter opens.
+RETIRED_ACTIONS = frozenset({"fold_turns"})
+
+
 def default_conf_text() -> str:
     """The full, commented conf file, generated from the registry (so it can't drift)."""
     out = [_HEADER]
@@ -722,7 +730,14 @@ def load_user_keymap(path: str | None = None) -> Keymap:
             known |= {a.name for a in BY_NAME[ctx.fallback].actions}
         for option, value in parser.items(section):
             if option not in known:
-                warnings.append(f"[{section}] unknown action {option!r} ignored")
+                # A binding for a feature this version no longer has is dropped in
+                # SILENCE. keymap.conf is user-authored config, and the user did nothing
+                # wrong by having pinned a key to a command an upgrade later retired --
+                # warning them makes an opentab release into a chore, on every launch,
+                # for a line they cannot act on except by deleting it. A genuine typo
+                # still warns, which is what the warning is for.
+                if option not in RETIRED_ACTIONS:
+                    warnings.append(f"[{section}] unknown action {option!r} ignored")
                 continue
             specs = [t.strip() for t in value.split(",") if t.strip()]
             good = []

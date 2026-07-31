@@ -419,14 +419,6 @@ KEYS: tuple[Key, ...] = (
         when=lambda app: in_main(app) and bool(app.query),
     ),
     Key(
-        id="unfold",
-        ctx="main",
-        actions=("fold_turns",),
-        summary="unfold every ▸ prompt to its full text",
-        section="here",
-        when=_on_turns,
-    ),
-    Key(
         id="launch",
         ctx="main",
         actions=("launch",),

@@ -530,8 +530,12 @@ class App:
         # Drilled into a ranked row's sessions: ("model"|"provider"|"source", key).
         self.trend_drill: tuple[str, str] | None = None
         self.trend_drill_index = 0  # cursor within that sessions list
-        self.turns_full = False  # Turns tab: expand every ▸ prompt group — text + turns (z)
-        self._turns_expanded: set[str] = set()  # individually expanded prompts (click / Enter)
+        # Turns tab: the prompt whose popup is open (Enter / a click), and how far it is
+        # scrolled. The table itself never folds -- every row carries its own numbers, and
+        # the turns behind a row live in here, so a 200-turn prompt costs a keystroke
+        # instead of 200 lines of the pane.
+        self.turn_popup: str | None = None
+        self.turn_popup_scroll = 0
         self._turn_cursor = 0  # Turns tab: selected ▸ prompt group (a run-ordinal); j/k move it
         self._turn_follow = False  # scroll to reveal the Turns cursor on the next draw
         self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
@@ -1899,17 +1903,58 @@ class App:
         return True
 
     def _toggle_turn_cursor(self) -> bool:
-        # Enter on the Turns tab folds/unfolds the selected ▸ group -- exactly what a
-        # click on its header does. Returns False when there's nothing to toggle so
-        # Enter falls back to its usual drill-in.
+        # Enter on the Turns tab opens the selected prompt -- its full text and the turns
+        # it took -- exactly what a click on the row does. Returns False when there is
+        # nothing to open, so Enter falls back to its usual drill-in.
         wf = self.current_session()
         groups = self.turn_groups(wf.id) if wf else []
         if not groups:
             return False
         self._turn_cursor = max(0, min(self._turn_cursor, len(groups) - 1))
-        self._turns_expanded.symmetric_difference_update({groups[self._turn_cursor]})
-        self._turn_follow = True
+        self.open_turn_popup(groups[self._turn_cursor])
         return True
+
+    def handle_turn_popup_key(self, key) -> bool:
+        # The open prompt. Scrolls with the ordinary movement keys and closes on Esc/q or
+        # its own opener; anything else is swallowed rather than acted on behind it, the
+        # rule every other modal here follows -- a mistyped key must not switch tabs under
+        # a popup the reader is still looking at.
+        act = self.keymap.action("main", key)
+        if act in ("back", "select"):
+            self.close_turn_popup()
+            return True
+        if act == "down":
+            self.scroll_turn_popup(1)
+        elif act == "up":
+            self.scroll_turn_popup(-1)
+        elif act == "page_down":
+            self.scroll_turn_popup(10)
+        elif act == "page_up":
+            self.scroll_turn_popup(-10)
+        return True
+
+    def turn_cursor_ordinal(self) -> str:
+        # "11 of 59" for the popup title -- which prompt of the session you have open.
+        wf = self.current_session()
+        groups = self.turn_groups(wf.id) if wf else []
+        return f"{min(self._turn_cursor + 1, len(groups))} of {len(groups)}" if groups else "-"
+
+    def open_turn_popup(self, prompt_id: str) -> None:
+        self.turn_popup = prompt_id
+        self.turn_popup_scroll = 0
+        self._turn_follow = True
+
+    def close_turn_popup(self) -> bool:
+        # Returns whether it closed anything, so Esc can consume the key here before it
+        # starts popping the view stack (Esc out of a session is the usual meaning).
+        if self.turn_popup is None:
+            return False
+        self.turn_popup = None
+        self.turn_popup_scroll = 0
+        return True
+
+    def scroll_turn_popup(self, delta: int) -> None:
+        self.turn_popup_scroll = max(0, self.turn_popup_scroll + delta)
 
     def session_supports_context(self, workflow_id: str) -> bool:
         # Whether the Context tab's estimated composition section applies (only
@@ -2671,7 +2716,7 @@ class App:
         notes_ok = self.refresh_notes()  # `r` picks up notes another opentab wrote too
         self._tool_by_session.clear()
         self._turns_by_session.clear()
-        self._turns_expanded.clear()  # cleared with the turn cache it indexes into
+        self.turn_popup = None  # closed with the turn cache it reads from
         self._turn_cursor = 0  # and its cursor, so a fresh session opens on the first prompt
         self._context_by_session.clear()
         self._nodes_by_session.clear()
@@ -3039,7 +3084,7 @@ class App:
         self._models_loaded = False
         self._tool_by_session.clear()
         self._turns_by_session.clear()
-        self._turns_expanded.clear()  # cleared with the turn cache it indexes into
+        self.turn_popup = None  # closed with the turn cache it reads from
         self._turn_cursor = 0  # and its cursor, so a fresh session opens on the first prompt
         self._context_by_session.clear()
         self._nodes_by_session.clear()
@@ -4745,7 +4790,7 @@ class App:
             # Individually expanded Turns prompts are this session's; a leftover set from
             # the last one would spuriously light the turn-column header (any_open) and,
             # on a prompt-id collision, auto-expand a group that was never opened here.
-            self._turns_expanded.clear()
+            self.turn_popup = None
             self._turn_cursor = 0  # the Turns cursor starts on the first prompt
 
     def drill_out(self) -> None:
@@ -6024,6 +6069,8 @@ class App:
             return self.handle_filter_key(key)
         if self.launch_menu is not None:
             return self.handle_launch_key(key)
+        if self.turn_popup is not None:
+            return self.handle_turn_popup_key(key)
 
         act = self.keymap.action("main", key)
         if key == 3 or act == "quit":
@@ -6142,20 +6189,6 @@ class App:
                 self.notice = "filter cleared"
             else:
                 self.notify("no active filter", "error")
-            return True
-        if act == "fold_turns":
-            # On the Turns tab, z expands/folds every ▸ prompt group — its full text and
-            # per-turn rows (vim's fold key); a click on one header toggles just that group.
-            if self.view == "session":
-                tabs = self.current_tabs()
-                if tabs and tabs[self.tab % len(tabs)] == "Turns":
-                    self.turns_full = not self.turns_full
-                    self._turns_expanded.clear()
-                    # Expanding all inserts bodies before a later cursor -- follow it so
-                    # the highlighted header doesn't slide off-screen with the scroll
-                    # unchanged.
-                    self._turn_follow = True
-                    self.notice = "turns expanded" if self.turns_full else "folded to prompts"
             return True
         if act == "export":
             self.export_current()
@@ -6720,15 +6753,15 @@ class App:
                 self.drill_in()
             return
         if kind == "turnline":
-            # A click on a Turns-tab "▸" prompt header folds/unfolds that one group
-            # (z toggles them all); clicks on the turn rows between headers are inert.
+            # A click on a Turns-tab prompt row opens it (its full text + its turns);
+            # clicks on the ▼/❄ marker lines between rows are inert.
             headers = getattr(self.renderer, "_turn_header_at", {})
             pid = headers.get(value)
             if pid is not None:
-                self._turns_expanded.symmetric_difference_update({pid})
-                # Move the keyboard cursor onto the clicked group so j/k/Enter pick up
-                # from here (the ordinal is this header's position among all headers).
+                # Move the keyboard cursor onto the clicked row first, so j/k pick up
+                # from here (the ordinal is this row's position among all prompt rows).
                 self._turn_cursor = sorted(headers).index(value)
+                self.open_turn_popup(pid)
             return
         if kind in ("year", "month", "day"):
             # The time sidebar: live in browse, and still live behind a zoomed

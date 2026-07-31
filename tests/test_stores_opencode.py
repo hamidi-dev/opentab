@@ -194,32 +194,27 @@ def test_opencode_turns_carry_the_full_prompt_uncapped():
         assert rows[0]["prompt_full"] == long_prompt
         assert rows[0]["prompt_title"] == " ".join(long_prompt.split())[:160]
 
-        # The TUI unfolds it: z flips every ▸ header to ▾ + the wrapped whole text,
-        # and a click on one header (the "turnline" region) toggles just that group.
+        # The table shows the prompt CAPPED to its cell; the whole text lives in the
+        # popup Enter opens, so a pasted essay can never push the table off the pane.
         app = ot.App(store, args())
-        rnd = app.renderer  # the instance _apply_click resolves headers against
+        rnd = app.renderer  # the instance _apply_click resolves rows against
         wf = app.loaded[0]
-        folded = rnd.detail_turns(wf, 96)
-        assert any(ln.startswith("▸ ") for ln in folded)
-        assert not any(ln.startswith("  │") for ln in folded)
-        app.turns_full = True
-        unfolded = rnd.detail_turns(wf, 96)
-        assert any(ln.startswith("▾ ") for ln in unfolded)
-        body = " ".join(ln[4:] for ln in unfolded if ln.startswith("  │"))
-        assert "then run the whole suite" in body  # the tail survived the unfold
-        assert " ".join(long_prompt.split()) == " ".join(body.split())  # nothing lost
-        # Click-toggle one group while the global fold is off.
-        app.turns_full = False
-        rnd.detail_turns(wf, 96)  # a paint pass records the header line indices
+        table = rnd.detail_turns(wf, 96)
+        assert not any(ln.startswith("  │") for ln in table)
+        assert not any(" ".join(long_prompt.split()) in ln for ln in table)  # capped
+        app.turn_popup = app.turn_groups(wf.id)[0]
+        body = " ".join(rnd.turn_popup_lines(wf, 90))
+        assert "then run the whole suite" in body  # the tail survived
+        assert " ".join(long_prompt.split()) in " ".join(body.split())  # nothing lost
+        # A click on a row opens that prompt, and moves the keyboard cursor onto it.
+        app.turn_popup = None
+        rnd.detail_turns(wf, 96)  # a paint pass records the row line indices
         idx, pid = next(iter(rnd._turn_header_at.items()))
         app._apply_click(("turnline", idx), drill=False)
-        assert pid in app._turns_expanded
-        assert any(ln.startswith("▾ ") for ln in rnd.detail_turns(wf, 96))
-        # Expanding added the column-header line, so the header moved -- re-read its index
-        # from the fresh paint, exactly as a real mouse click does (getmouse → regions).
-        idx = next(i for i, p in rnd._turn_header_at.items() if p == pid)
-        app._apply_click(("turnline", idx), drill=False)  # toggles back off
-        assert pid not in app._turns_expanded
+        assert app.turn_popup == pid
+        assert "then run the whole suite" in " ".join(rnd.turn_popup_lines(wf, 90))
+        # The table underneath is unchanged -- opening a prompt never re-shapes it.
+        assert rnd.detail_turns(wf, 96) == rnd.detail_turns(wf, 96)
 
 
 def test_store_reads_db_without_session_token_columns():
