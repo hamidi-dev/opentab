@@ -1,5 +1,5 @@
 {
- "fetched_at": "2026-07-20T19:10:28Z",
+ "fetched_at": "2026-07-31T19:20:31Z",
  "providers": {
   "302ai": {
    "models": {
@@ -1749,6 +1749,15 @@
       0.0
      ],
      "limit": 150000
+    },
+    "abliterated-model-large": {
+     "cost": [
+      5.0,
+      5.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
     }
    },
    "name": "abliteration.ai"
@@ -1802,6 +1811,83 @@
     }
    },
    "name": "AI-ROUTER"
+  },
+  "aiand": {
+   "models": {
+    "deepseek-ai/deepseek-v4-flash": {
+     "cost": [
+      0.15,
+      0.25,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "deepseek-ai/deepseek-v4-pro": {
+     "cost": [
+      1.0,
+      2.5,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "google/gemma-4-31b-it": {
+     "cost": [
+      0.2,
+      0.5,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "moonshotai/kimi-k2.7-code": {
+     "cost": [
+      0.75,
+      3.5,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "moonshotai/kimi-k3": {
+     "cost": [
+      3.0,
+      12.5,
+      0.5,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "openai/gpt-oss-120b": {
+     "cost": [
+      0.15,
+      0.6,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen/qwen3.6-27b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "zai-org/glm-5.2": {
+     "cost": [
+      1.0,
+      4.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
+    }
+   },
+   "name": "ai&"
   },
   "aihubmix": {
    "models": {
@@ -2300,6 +2386,15 @@
      ],
      "limit": 262144
     },
+    "kimi-k3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.3,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "minimax-m2.7": {
      "cost": [
       0.3,
@@ -2401,6 +2496,65 @@
     }
    },
    "name": "AIHubMix"
+  },
+  "aki-io": {
+   "models": {
+    "gemma4-26b": {
+     "cost": [
+      0.1,
+      0.5,
+      0.0,
+      0.0
+     ],
+     "limit": 256000
+    },
+    "gpt-oss-120b": {
+     "cost": [
+      0.15,
+      0.55,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "kimi-k2.7-code-1100b": {
+     "cost": [
+      0.86,
+      3.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "minimax-m2.5-230b": {
+     "cost": [
+      0.25,
+      1.2,
+      0.0,
+      0.0
+     ],
+     "limit": 196608
+    },
+    "mistral4-119b": {
+     "cost": [
+      0.2,
+      0.6,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "qwen3.6-35b": {
+     "cost": [
+      0.15,
+      0.5,
+      0.0,
+      0.0
+     ],
+     "limit": 256000
+    }
+   },
+   "name": "AKI.IO"
   },
   "alibaba": {
    "models": {
@@ -3918,6 +4072,30 @@
      ],
      "limit": 1000000
     },
+    "happyhorse-1.1-i2v": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    "happyhorse-1.1-r2v": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    "happyhorse-1.1-t2v": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
     "kimi-k2.5": {
      "cost": [
       0.0,
@@ -3998,6 +4176,16 @@
       0.0
      ],
      "limit": 1000000
+    },
+    "qwen3.8-max-preview": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000,
+     "status": "beta"
     },
     "wan2.7-image": {
      "cost": [
@@ -4085,6 +4273,30 @@
      ],
      "limit": 1000000
     },
+    "happyhorse-1.1-i2v": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    "happyhorse-1.1-r2v": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    "happyhorse-1.1-t2v": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
     "kimi-k2.5": {
      "cost": [
       0.0,
@@ -4165,6 +4377,16 @@
       0.0
      ],
      "limit": 1000000
+    },
+    "qwen3.8-max-preview": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000,
+     "status": "beta"
     },
     "wan2.7-image": {
      "cost": [
@@ -4250,7 +4472,8 @@
       1.5,
       18.75
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "anthropic.claude-opus-4-5-20251101-v1:0": {
      "cost": [
@@ -4280,6 +4503,15 @@
      "limit": 1000000
     },
     "anthropic.claude-opus-4-8": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "anthropic.claude-opus-5": {
      "cost": [
       5.0,
       25.0,
@@ -4334,6 +4566,15 @@
      "limit": 1000000
     },
     "au.anthropic.claude-opus-4-8": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "au.anthropic.claude-opus-5": {
      "cost": [
       5.0,
       25.0,
@@ -4450,6 +4691,15 @@
      ],
      "limit": 1000000
     },
+    "eu.anthropic.claude-opus-5": {
+     "cost": [
+      5.5,
+      27.5,
+      0.55,
+      6.875
+     ],
+     "limit": 1000000
+    },
     "eu.anthropic.claude-sonnet-4-5-20250929-v1:0": {
      "cost": [
       3.3,
@@ -4531,6 +4781,15 @@
      ],
      "limit": 1000000
     },
+    "global.anthropic.claude-opus-5": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
     "global.anthropic.claude-sonnet-4-5-20250929-v1:0": {
      "cost": [
       3.0,
@@ -4604,6 +4863,15 @@
      "limit": 1000000
     },
     "jp.anthropic.claude-opus-4-8": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "jp.anthropic.claude-opus-5": {
      "cost": [
       5.0,
       25.0,
@@ -4866,28 +5134,28 @@
     },
     "openai.gpt-5.6-luna": {
      "cost": [
-      1.0,
-      6.0,
-      0.1,
-      1.25
+      0.22,
+      1.32,
+      0.022,
+      0.275
      ],
      "limit": 272000
     },
     "openai.gpt-5.6-sol": {
      "cost": [
-      5.0,
-      30.0,
-      0.5,
-      6.25
+      5.5,
+      33.0,
+      0.55,
+      6.88
      ],
      "limit": 272000
     },
     "openai.gpt-5.6-terra": {
      "cost": [
-      2.5,
-      15.0,
-      0.25,
-      3.125
+      2.2,
+      13.2,
+      0.22,
+      2.75
      ],
      "limit": 272000
     },
@@ -5033,7 +5301,8 @@
       1.5,
       18.75
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "us.anthropic.claude-opus-4-5-20251101-v1:0": {
      "cost": [
@@ -5063,6 +5332,15 @@
      "limit": 1000000
     },
     "us.anthropic.claude-opus-4-8": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "us.anthropic.claude-opus-5": {
      "cost": [
       5.0,
       25.0,
@@ -5195,9 +5473,9 @@
     },
     "deepseek/deepseek-v4-flash": {
      "cost": [
-      0.5,
-      0.8,
-      0.2,
+      0.14,
+      0.28,
+      0.028,
       0.0
      ],
      "limit": 1048576
@@ -5213,9 +5491,9 @@
     },
     "moonshotai/kimi-k2.7-code": {
      "cost": [
-      0.85,
-      3.8,
-      0.17,
+      0.73,
+      3.5,
+      0.15,
       0.0
      ],
      "limit": 262144
@@ -5354,6 +5632,15 @@
      "limit": 1000000
     },
     "claude-opus-4-8": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "claude-opus-5": {
      "cost": [
       5.0,
       25.0,
@@ -5647,6 +5934,15 @@
      ],
      "limit": 1000000
     },
+    "claude-opus-5": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
     "claude-sonnet-4-5": {
      "cost": [
       3.0,
@@ -5691,7 +5987,8 @@
       0.375,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "cohere-command-a": {
      "cost": [
@@ -5701,24 +5998,6 @@
       0.0
      ],
      "limit": 131072
-    },
-    "cohere-command-r-08-2024": {
-     "cost": [
-      0.15,
-      0.6,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "cohere-command-r-plus-08-2024": {
-     "cost": [
-      2.5,
-      10.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
     },
     "cohere-embed-v-4-0": {
      "cost": [
@@ -5754,34 +6033,8 @@
       0.0,
       0.0
      ],
-     "limit": 163840
-    },
-    "deepseek-r1-0528": {
-     "cost": [
-      1.35,
-      5.4,
-      0.0,
-      0.0
-     ],
-     "limit": 163840
-    },
-    "deepseek-v3-0324": {
-     "cost": [
-      1.14,
-      4.56,
-      0.0,
-      0.0
-     ],
-     "limit": 131072
-    },
-    "deepseek-v3.1": {
-     "cost": [
-      0.56,
-      1.68,
-      0.0,
-      0.0
-     ],
-     "limit": 131072
+     "limit": 163840,
+     "status": "deprecated"
     },
     "deepseek-v3.2": {
      "cost": [
@@ -5826,25 +6079,8 @@
       0.0,
       0.0
      ],
-     "limit": 16384
-    },
-    "gpt-3.5-turbo-0301": {
-     "cost": [
-      1.5,
-      2.0,
-      0.0,
-      0.0
-     ],
-     "limit": 4096
-    },
-    "gpt-3.5-turbo-0613": {
-     "cost": [
-      3.0,
-      4.0,
-      0.0,
-      0.0
-     ],
-     "limit": 16384
+     "limit": 16384,
+     "status": "deprecated"
     },
     "gpt-3.5-turbo-1106": {
      "cost": [
@@ -5853,7 +6089,8 @@
       0.0,
       0.0
      ],
-     "limit": 16384
+     "limit": 16384,
+     "status": "deprecated"
     },
     "gpt-3.5-turbo-instruct": {
      "cost": [
@@ -5862,25 +6099,8 @@
       0.0,
       0.0
      ],
-     "limit": 4096
-    },
-    "gpt-4": {
-     "cost": [
-      60.0,
-      120.0,
-      0.0,
-      0.0
-     ],
-     "limit": 8192
-    },
-    "gpt-4-32k": {
-     "cost": [
-      60.0,
-      120.0,
-      0.0,
-      0.0
-     ],
-     "limit": 32768
+     "limit": 4096,
+     "status": "deprecated"
     },
     "gpt-4-turbo": {
      "cost": [
@@ -5889,7 +6109,8 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-4-turbo-vision": {
      "cost": [
@@ -5898,7 +6119,8 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-4.1": {
      "cost": [
@@ -5907,7 +6129,8 @@
       0.5,
       0.0
      ],
-     "limit": 1047576
+     "limit": 1047576,
+     "status": "deprecated"
     },
     "gpt-4.1-mini": {
      "cost": [
@@ -5916,7 +6139,8 @@
       0.1,
       0.0
      ],
-     "limit": 1047576
+     "limit": 1047576,
+     "status": "deprecated"
     },
     "gpt-4.1-nano": {
      "cost": [
@@ -5925,7 +6149,8 @@
       0.025,
       0.0
      ],
-     "limit": 1047576
+     "limit": 1047576,
+     "status": "deprecated"
     },
     "gpt-4o": {
      "cost": [
@@ -5934,7 +6159,8 @@
       1.25,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-4o-mini": {
      "cost": [
@@ -5943,7 +6169,8 @@
       0.075,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-5": {
      "cost": [
@@ -5953,15 +6180,6 @@
       0.0
      ],
      "limit": 400000
-    },
-    "gpt-5-chat": {
-     "cost": [
-      1.25,
-      10.0,
-      0.13,
-      0.0
-     ],
-     "limit": 128000
     },
     "gpt-5-codex": {
      "cost": [
@@ -6008,15 +6226,6 @@
      ],
      "limit": 400000
     },
-    "gpt-5.1-chat": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 128000
-    },
     "gpt-5.1-codex": {
      "cost": [
       1.25,
@@ -6053,15 +6262,6 @@
      ],
      "limit": 400000
     },
-    "gpt-5.2-chat": {
-     "cost": [
-      1.75,
-      14.0,
-      0.175,
-      0.0
-     ],
-     "limit": 128000
-    },
     "gpt-5.2-codex": {
      "cost": [
       1.75,
@@ -6070,15 +6270,6 @@
       0.0
      ],
      "limit": 400000
-    },
-    "gpt-5.3-chat": {
-     "cost": [
-      1.75,
-      14.0,
-      0.175,
-      0.0
-     ],
-     "limit": 128000
     },
     "gpt-5.3-codex": {
      "cost": [
@@ -6136,9 +6327,9 @@
     },
     "gpt-5.6-luna": {
      "cost": [
-      1.0,
-      6.0,
-      0.1,
+      0.2,
+      1.2,
+      0.02,
       0.0
      ],
      "limit": 1050000,
@@ -6156,9 +6347,9 @@
     },
     "gpt-5.6-terra": {
      "cost": [
-      2.5,
-      15.0,
-      0.25,
+      2.0,
+      12.0,
+      0.2,
       0.0
      ],
      "limit": 1050000,
@@ -6238,24 +6429,6 @@
      "limit": 262000,
      "status": "beta"
     },
-    "grok-4-fast-reasoning": {
-     "cost": [
-      0.2,
-      0.5,
-      0.05,
-      0.0
-     ],
-     "limit": 2000000
-    },
-    "kimi-k2-thinking": {
-     "cost": [
-      0.6,
-      2.5,
-      0.15,
-      0.0
-     ],
-     "limit": 262144
-    },
     "kimi-k2.5": {
      "cost": [
       0.6,
@@ -6273,24 +6446,6 @@
       0.0
      ],
      "limit": 262144
-    },
-    "llama-3.2-11b-vision-instruct": {
-     "cost": [
-      0.37,
-      0.37,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "llama-3.2-90b-vision-instruct": {
-     "cost": [
-      2.04,
-      2.04,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
     },
     "llama-3.3-70b-instruct": {
      "cost": [
@@ -6319,51 +6474,6 @@
      ],
      "limit": 128000
     },
-    "meta-llama-3-70b-instruct": {
-     "cost": [
-      2.68,
-      3.54,
-      0.0,
-      0.0
-     ],
-     "limit": 8192
-    },
-    "meta-llama-3-8b-instruct": {
-     "cost": [
-      0.3,
-      0.61,
-      0.0,
-      0.0
-     ],
-     "limit": 8192
-    },
-    "meta-llama-3.1-405b-instruct": {
-     "cost": [
-      5.33,
-      16.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "meta-llama-3.1-70b-instruct": {
-     "cost": [
-      2.68,
-      3.54,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "meta-llama-3.1-8b-instruct": {
-     "cost": [
-      0.3,
-      0.61,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
     "ministral-3b": {
      "cost": [
       0.04,
@@ -6373,28 +6483,10 @@
      ],
      "limit": 128000
     },
-    "mistral-large-2411": {
-     "cost": [
-      2.0,
-      6.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
     "mistral-medium-2505": {
      "cost": [
       0.4,
       2.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "mistral-nemo": {
-     "cost": [
-      0.15,
-      0.15,
       0.0,
       0.0
      ],
@@ -6425,16 +6517,8 @@
       7.5,
       0.0
      ],
-     "limit": 200000
-    },
-    "o1-mini": {
-     "cost": [
-      1.1,
-      4.4,
-      0.55,
-      0.0
-     ],
-     "limit": 128000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "o3": {
      "cost": [
@@ -6452,7 +6536,8 @@
       0.55,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "o4-mini": {
      "cost": [
@@ -6461,79 +6546,8 @@
       0.275,
       0.0
      ],
-     "limit": 200000
-    },
-    "phi-3-medium-128k-instruct": {
-     "cost": [
-      0.17,
-      0.68,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "phi-3-medium-4k-instruct": {
-     "cost": [
-      0.17,
-      0.68,
-      0.0,
-      0.0
-     ],
-     "limit": 4096
-    },
-    "phi-3-mini-128k-instruct": {
-     "cost": [
-      0.13,
-      0.52,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "phi-3-mini-4k-instruct": {
-     "cost": [
-      0.13,
-      0.52,
-      0.0,
-      0.0
-     ],
-     "limit": 4096
-    },
-    "phi-3-small-128k-instruct": {
-     "cost": [
-      0.15,
-      0.6,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "phi-3-small-8k-instruct": {
-     "cost": [
-      0.15,
-      0.6,
-      0.0,
-      0.0
-     ],
-     "limit": 8192
-    },
-    "phi-3.5-mini-instruct": {
-     "cost": [
-      0.13,
-      0.52,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "phi-3.5-moe-instruct": {
-     "cost": [
-      0.16,
-      0.64,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "phi-4": {
      "cost": [
@@ -6666,6 +6680,15 @@
      ],
      "limit": 1000000
     },
+    "claude-opus-5": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
     "claude-sonnet-4-5": {
      "cost": [
       3.0,
@@ -6691,7 +6714,8 @@
       0.375,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "cohere-command-a": {
      "cost": [
@@ -6701,24 +6725,6 @@
       0.0
      ],
      "limit": 131072
-    },
-    "cohere-command-r-08-2024": {
-     "cost": [
-      0.15,
-      0.6,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "cohere-command-r-plus-08-2024": {
-     "cost": [
-      2.5,
-      10.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
     },
     "cohere-embed-v-4-0": {
      "cost": [
@@ -6754,34 +6760,8 @@
       0.0,
       0.0
      ],
-     "limit": 163840
-    },
-    "deepseek-r1-0528": {
-     "cost": [
-      1.35,
-      5.4,
-      0.0,
-      0.0
-     ],
-     "limit": 163840
-    },
-    "deepseek-v3-0324": {
-     "cost": [
-      1.14,
-      4.56,
-      0.0,
-      0.0
-     ],
-     "limit": 131072
-    },
-    "deepseek-v3.1": {
-     "cost": [
-      0.56,
-      1.68,
-      0.0,
-      0.0
-     ],
-     "limit": 131072
+     "limit": 163840,
+     "status": "deprecated"
     },
     "deepseek-v3.2": {
      "cost": [
@@ -6808,25 +6788,8 @@
       0.0,
       0.0
      ],
-     "limit": 16384
-    },
-    "gpt-3.5-turbo-0301": {
-     "cost": [
-      1.5,
-      2.0,
-      0.0,
-      0.0
-     ],
-     "limit": 4096
-    },
-    "gpt-3.5-turbo-0613": {
-     "cost": [
-      3.0,
-      4.0,
-      0.0,
-      0.0
-     ],
-     "limit": 16384
+     "limit": 16384,
+     "status": "deprecated"
     },
     "gpt-3.5-turbo-1106": {
      "cost": [
@@ -6835,7 +6798,8 @@
       0.0,
       0.0
      ],
-     "limit": 16384
+     "limit": 16384,
+     "status": "deprecated"
     },
     "gpt-3.5-turbo-instruct": {
      "cost": [
@@ -6844,25 +6808,8 @@
       0.0,
       0.0
      ],
-     "limit": 4096
-    },
-    "gpt-4": {
-     "cost": [
-      60.0,
-      120.0,
-      0.0,
-      0.0
-     ],
-     "limit": 8192
-    },
-    "gpt-4-32k": {
-     "cost": [
-      60.0,
-      120.0,
-      0.0,
-      0.0
-     ],
-     "limit": 32768
+     "limit": 4096,
+     "status": "deprecated"
     },
     "gpt-4-turbo": {
      "cost": [
@@ -6871,7 +6818,8 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-4-turbo-vision": {
      "cost": [
@@ -6880,7 +6828,8 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-4.1": {
      "cost": [
@@ -6889,7 +6838,8 @@
       0.5,
       0.0
      ],
-     "limit": 1047576
+     "limit": 1047576,
+     "status": "deprecated"
     },
     "gpt-4.1-mini": {
      "cost": [
@@ -6898,7 +6848,8 @@
       0.1,
       0.0
      ],
-     "limit": 1047576
+     "limit": 1047576,
+     "status": "deprecated"
     },
     "gpt-4.1-nano": {
      "cost": [
@@ -6907,7 +6858,8 @@
       0.025,
       0.0
      ],
-     "limit": 1047576
+     "limit": 1047576,
+     "status": "deprecated"
     },
     "gpt-4o": {
      "cost": [
@@ -6916,7 +6868,8 @@
       1.25,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-4o-mini": {
      "cost": [
@@ -6925,7 +6878,8 @@
       0.075,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-5": {
      "cost": [
@@ -6935,15 +6889,6 @@
       0.0
      ],
      "limit": 400000
-    },
-    "gpt-5-chat": {
-     "cost": [
-      1.25,
-      10.0,
-      0.13,
-      0.0
-     ],
-     "limit": 128000
     },
     "gpt-5-codex": {
      "cost": [
@@ -6990,15 +6935,6 @@
      ],
      "limit": 400000
     },
-    "gpt-5.1-chat": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 128000
-    },
     "gpt-5.1-codex": {
      "cost": [
       1.25,
@@ -7025,15 +6961,6 @@
       0.0
      ],
      "limit": 400000
-    },
-    "gpt-5.2-chat": {
-     "cost": [
-      1.75,
-      14.0,
-      0.175,
-      0.0
-     ],
-     "limit": 128000
     },
     "gpt-5.2-codex": {
      "cost": [
@@ -7100,9 +7027,9 @@
     },
     "gpt-5.6-luna": {
      "cost": [
-      1.0,
-      6.0,
-      0.1,
+      0.2,
+      1.2,
+      0.02,
       0.0
      ],
      "limit": 1050000,
@@ -7120,9 +7047,9 @@
     },
     "gpt-5.6-terra": {
      "cost": [
-      2.5,
-      15.0,
-      0.25,
+      2.0,
+      12.0,
+      0.2,
       0.0
      ],
      "limit": 1050000,
@@ -7137,24 +7064,6 @@
      ],
      "limit": 128000,
      "status": "beta"
-    },
-    "grok-4-fast-reasoning": {
-     "cost": [
-      0.2,
-      0.5,
-      0.05,
-      0.0
-     ],
-     "limit": 2000000
-    },
-    "kimi-k2-thinking": {
-     "cost": [
-      0.6,
-      2.5,
-      0.15,
-      0.0
-     ],
-     "limit": 262144
     },
     "kimi-k2.5": {
      "cost": [
@@ -7173,24 +7082,6 @@
       0.0
      ],
      "limit": 262144
-    },
-    "llama-3.2-11b-vision-instruct": {
-     "cost": [
-      0.37,
-      0.37,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "llama-3.2-90b-vision-instruct": {
-     "cost": [
-      2.04,
-      2.04,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
     },
     "llama-3.3-70b-instruct": {
      "cost": [
@@ -7219,51 +7110,6 @@
      ],
      "limit": 128000
     },
-    "meta-llama-3-70b-instruct": {
-     "cost": [
-      2.68,
-      3.54,
-      0.0,
-      0.0
-     ],
-     "limit": 8192
-    },
-    "meta-llama-3-8b-instruct": {
-     "cost": [
-      0.3,
-      0.61,
-      0.0,
-      0.0
-     ],
-     "limit": 8192
-    },
-    "meta-llama-3.1-405b-instruct": {
-     "cost": [
-      5.33,
-      16.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "meta-llama-3.1-70b-instruct": {
-     "cost": [
-      2.68,
-      3.54,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "meta-llama-3.1-8b-instruct": {
-     "cost": [
-      0.3,
-      0.61,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
     "ministral-3b": {
      "cost": [
       0.04,
@@ -7273,28 +7119,10 @@
      ],
      "limit": 128000
     },
-    "mistral-large-2411": {
-     "cost": [
-      2.0,
-      6.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
     "mistral-medium-2505": {
      "cost": [
       0.4,
       2.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "mistral-nemo": {
-     "cost": [
-      0.15,
-      0.15,
       0.0,
       0.0
      ],
@@ -7325,16 +7153,8 @@
       7.5,
       0.0
      ],
-     "limit": 200000
-    },
-    "o1-mini": {
-     "cost": [
-      1.1,
-      4.4,
-      0.55,
-      0.0
-     ],
-     "limit": 128000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "o3": {
      "cost": [
@@ -7352,7 +7172,8 @@
       0.55,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "o4-mini": {
      "cost": [
@@ -7361,79 +7182,8 @@
       0.275,
       0.0
      ],
-     "limit": 200000
-    },
-    "phi-3-medium-128k-instruct": {
-     "cost": [
-      0.17,
-      0.68,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "phi-3-medium-4k-instruct": {
-     "cost": [
-      0.17,
-      0.68,
-      0.0,
-      0.0
-     ],
-     "limit": 4096
-    },
-    "phi-3-mini-128k-instruct": {
-     "cost": [
-      0.13,
-      0.52,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "phi-3-mini-4k-instruct": {
-     "cost": [
-      0.13,
-      0.52,
-      0.0,
-      0.0
-     ],
-     "limit": 4096
-    },
-    "phi-3-small-128k-instruct": {
-     "cost": [
-      0.15,
-      0.6,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "phi-3-small-8k-instruct": {
-     "cost": [
-      0.15,
-      0.6,
-      0.0,
-      0.0
-     ],
-     "limit": 8192
-    },
-    "phi-3.5-mini-instruct": {
-     "cost": [
-      0.13,
-      0.52,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "phi-3.5-moe-instruct": {
-     "cost": [
-      0.16,
-      0.64,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "phi-4": {
      "cost": [
@@ -7600,6 +7350,15 @@
      ],
      "limit": 262000
     },
+    "moonshotai/Kimi-K3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": {
      "cost": [
       0.6,
@@ -7670,7 +7429,16 @@
       0.3,
       0.0
      ],
-     "limit": 256000
+     "limit": 1048576
+    },
+    "zai-org/GLM-5.2-Fast": {
+     "cost": [
+      2.1,
+      6.6,
+      0.21,
+      0.0
+     ],
+     "limit": 524288
     }
    },
    "name": "Baseten"
@@ -7721,6 +7489,15 @@
       0.0
      ],
      "limit": 262144
+    },
+    "moonshotai/Kimi-K3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.0,
+      0.0
+     ],
+     "limit": 327680
     },
     "openai/gpt-oss-120b": {
      "cost": [
@@ -7797,6 +7574,15 @@
      ],
      "limit": 196608
     },
+    "Nemotron-3-Nano-Omni-30B-TEE": {
+     "cost": [
+      0.0245,
+      0.0978,
+      0.01225,
+      0.0
+     ],
+     "limit": 131072
+    },
     "Qwen/Qwen3-235B-A22B-Thinking-2507-TEE": {
      "cost": [
       0.2989,
@@ -7869,6 +7655,15 @@
      ],
      "limit": 262144
     },
+    "moonshotai/Kimi-K3-TEE": {
+     "cost": [
+      3.0,
+      15.0,
+      1.5,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "unsloth/Mistral-Nemo-Instruct-2407-TEE": {
      "cost": [
       0.0245,
@@ -7898,9 +7693,9 @@
     },
     "zai-org/GLM-5.2-TEE": {
      "cost": [
-      1.4,
-      4.4,
-      0.7,
+      1.25,
+      3.95,
+      0.625,
       0.0
      ],
      "limit": 1048576
@@ -8043,6 +7838,110 @@
     }
    },
    "name": "Claudinio"
+  },
+  "cline-pass": {
+   "models": {
+    "cline-pass/deepseek-v4-flash": {
+     "cost": [
+      0.14,
+      0.28,
+      0.0028,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "cline-pass/deepseek-v4-pro": {
+     "cost": [
+      1.74,
+      3.48,
+      0.0145,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "cline-pass/glm-5.2": {
+     "cost": [
+      1.4,
+      4.4,
+      0.26,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "cline-pass/kimi-k2.6": {
+     "cost": [
+      0.95,
+      4.0,
+      0.16,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "cline-pass/kimi-k2.7-code": {
+     "cost": [
+      0.95,
+      4.0,
+      0.19,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "cline-pass/kimi-k3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.3,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "cline-pass/mimo-v2.5": {
+     "cost": [
+      0.14,
+      0.28,
+      0.0028,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "cline-pass/mimo-v2.5-pro": {
+     "cost": [
+      1.74,
+      3.48,
+      0.0145,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "cline-pass/minimax-m3": {
+     "cost": [
+      0.3,
+      1.2,
+      0.06,
+      0.0
+     ],
+     "limit": 512000
+    },
+    "cline-pass/qwen3.7-max": {
+     "cost": [
+      2.5,
+      7.5,
+      0.5,
+      3.125
+     ],
+     "limit": 1000000
+    },
+    "cline-pass/qwen3.7-plus": {
+     "cost": [
+      0.4,
+      1.6,
+      0.04,
+      0.5
+     ],
+     "limit": 1000000
+    }
+   },
+   "name": "ClinePass"
   },
   "cloudferro-sherlock": {
    "models": {
@@ -8214,6 +8113,15 @@
      "limit": 1000000
     },
     "anthropic/claude-opus-4-8": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "anthropic/claude-opus-5": {
      "cost": [
       5.0,
       25.0,
@@ -9407,6 +9315,15 @@
      ],
      "limit": 128000
     },
+    "hy3": {
+     "cost": [
+      0.41,
+      1.025,
+      0.103,
+      0.0
+     ],
+     "limit": 262144
+    },
     "intellect-3": {
      "cost": [
       0.219,
@@ -9460,6 +9377,15 @@
       0.0
      ],
      "limit": 262144
+    },
+    "kimi-k3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
     },
     "llama-3.1-405b-instruct": {
      "cost": [
@@ -9817,6 +9743,24 @@
      ],
      "limit": 262144
     },
+    "kimi-k3": {
+     "cost": [
+      2.0,
+      8.0,
+      0.25,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "kimi-k3-eco": {
+     "cost": [
+      1.0,
+      4.0,
+      0.1,
+      0.0
+     ],
+     "limit": 1000000
+    },
     "mimo-v2.5-pro": {
      "cost": [
       0.4,
@@ -9895,6 +9839,15 @@
      "limit": 1000000
     },
     "anthropic/claude-opus-4-8": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "anthropic/claude-opus-5": {
      "cost": [
       5.0,
       25.0,
@@ -9988,6 +9941,15 @@
      "cost": [
       1.5,
       9.0,
+      0.15,
+      1.5
+     ],
+     "limit": 1048576
+    },
+    "gemini/gemini-3.6-flash": {
+     "cost": [
+      1.5,
+      7.5,
       0.15,
       1.5
      ],
@@ -10103,10 +10065,10 @@
     },
     "openai/gpt-5.6-luna": {
      "cost": [
-      1.0,
-      6.0,
-      0.1,
-      1.25
+      0.2,
+      1.2,
+      0.02,
+      0.25
      ],
      "limit": 1050000
     },
@@ -10121,10 +10083,10 @@
     },
     "openai/gpt-5.6-terra": {
      "cost": [
-      2.5,
-      15.0,
-      0.25,
-      3.125
+      2.0,
+      12.0,
+      0.2,
+      2.5
      ],
      "limit": 1050000
     },
@@ -10148,21 +10110,30 @@
     },
     "qwen/qwen3.7-max": {
      "cost": [
-      1.88,
-      5.63,
-      0.375,
-      2.35
+      1.504,
+      4.504,
+      0.3,
+      1.88
      ],
      "limit": 1000000
     },
     "qwen/qwen3.7-plus": {
      "cost": [
-      0.32,
-      1.25,
-      0.032,
-      0.4
+      0.288,
+      1.125,
+      0.0288,
+      0.36
      ],
      "limit": 1000000
+    },
+    "tencent/hy3": {
+     "cost": [
+      0.16,
+      0.64,
+      0.04,
+      0.16
+     ],
+     "limit": 262144
     },
     "tencent/hy3-preview": {
      "cost": [
@@ -10749,7 +10720,7 @@
     },
     "Qwen/Qwen3.6-35B-A3B": {
      "cost": [
-      0.15,
+      0.1,
       0.95,
       0.0,
       0.0
@@ -10891,6 +10862,15 @@
      ],
      "limit": 262144
     },
+    "moonshotai/Kimi-K3": {
+     "cost": [
+      2.7,
+      13.5,
+      0.27,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "nvidia/Llama-3.3-Nemotron-Super-49B-v1.5": {
      "cost": [
       0.4,
@@ -10905,7 +10885,7 @@
      "cost": [
       0.05,
       0.2,
-      0.0,
+      0.025,
       0.0
      ],
      "limit": 262144
@@ -11689,6 +11669,15 @@
      ],
      "limit": 200000
     },
+    "glm-5.2": {
+     "cost": [
+      1.25,
+      3.89,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    },
     "gpt-oss-120b": {
      "cost": [
       0.0675,
@@ -11789,7 +11778,7 @@
      "cost": [
       0.14,
       0.28,
-      0.0,
+      0.14,
       0.0
      ],
      "limit": 1000000
@@ -11798,16 +11787,7 @@
      "cost": [
       1.65,
       3.3,
-      0.0,
-      0.0
-     ],
-     "limit": 1000000
-    },
-    "fugu-ultra": {
-     "cost": [
-      7.5,
-      45.0,
-      1.5,
+      1.65,
       0.0
      ],
      "limit": 1000000
@@ -11852,7 +11832,7 @@
      "cost": [
       1.4,
       4.4,
-      0.0,
+      1.4,
       0.0
      ],
      "limit": 1000000
@@ -11870,7 +11850,7 @@
      "cost": [
       0.95,
       4.0,
-      0.0,
+      0.95,
       0.0
      ],
      "limit": 256000
@@ -11879,7 +11859,7 @@
      "cost": [
       1.9,
       8.0,
-      0.0,
+      1.9,
       0.0
      ],
      "limit": 256000
@@ -11888,7 +11868,7 @@
      "cost": [
       3.0,
       15.0,
-      0.0,
+      3.0,
       0.0
      ],
      "limit": 1000000
@@ -11951,7 +11931,7 @@
      "cost": [
       0.15,
       0.6,
-      0.0,
+      0.15,
       0.0
      ],
      "limit": 256000
@@ -11969,7 +11949,7 @@
      "cost": [
       0.115,
       0.917,
-      0.0,
+      0.115,
       0.0
      ],
      "limit": 256000
@@ -11978,7 +11958,7 @@
      "cost": [
       0.086,
       0.688,
-      0.0,
+      0.086,
       0.0
      ],
      "limit": 256000
@@ -11987,7 +11967,7 @@
      "cost": [
       0.057,
       0.459,
-      0.0,
+      0.057,
       0.0
      ],
      "limit": 256000
@@ -11996,7 +11976,7 @@
      "cost": [
       0.172,
       1.032,
-      0.0,
+      0.172,
       0.0
      ],
      "limit": 256000
@@ -12023,7 +12003,7 @@
      "cost": [
       0.36,
       2.21,
-      0.0,
+      0.36,
       0.0
      ],
      "limit": 1000000
@@ -12032,16 +12012,25 @@
      "cost": [
       0.412564,
       2.475384,
-      0.0,
+      0.412564,
       0.0
      ],
      "limit": 256000
+    },
+    "qwen3-6-35b-a3b": {
+     "cost": [
+      0.07,
+      0.42,
+      0.035,
+      0.0
+     ],
+     "limit": 131072
     },
     "qwen3-6-flash": {
      "cost": [
       0.25,
       1.5,
-      0.0,
+      0.25,
       0.0
      ],
      "limit": 1000000
@@ -12050,7 +12039,7 @@
      "cost": [
       1.31,
       7.88,
-      0.0,
+      1.31,
       0.0
      ],
      "limit": 256000
@@ -12059,7 +12048,7 @@
      "cost": [
       0.5,
       3.0,
-      0.0,
+      0.5,
       0.0
      ],
      "limit": 1000000
@@ -12068,7 +12057,7 @@
      "cost": [
       2.5,
       7.5,
-      0.0,
+      2.5,
       0.0
      ],
      "limit": 1000000
@@ -12077,7 +12066,7 @@
      "cost": [
       0.4,
       1.6,
-      0.0,
+      0.4,
       0.0
      ],
      "limit": 1000000
@@ -12086,7 +12075,7 @@
      "cost": [
       1.08,
       5.52,
-      0.0,
+      1.08,
       0.0
      ],
      "limit": 256000
@@ -12628,15 +12617,6 @@
      ],
      "limit": 1000000
     },
-    "accounts/fireworks/models/glm-5p1": {
-     "cost": [
-      1.4,
-      4.4,
-      0.26,
-      0.0
-     ],
-     "limit": 202800
-    },
     "accounts/fireworks/models/glm-5p2": {
      "cost": [
       1.4,
@@ -12682,6 +12662,15 @@
      ],
      "limit": 262000
     },
+    "accounts/fireworks/models/kimi-k3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.3,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "accounts/fireworks/models/minimax-m2p7": {
      "cost": [
       0.3,
@@ -12708,15 +12697,6 @@
       0.0
      ],
      "limit": 262144
-    },
-    "accounts/fireworks/routers/glm-5p1-fast": {
-     "cost": [
-      2.8,
-      8.8,
-      0.52,
-      0.0
-     ],
-     "limit": 202800
     },
     "accounts/fireworks/routers/glm-5p2-fast": {
      "cost": [
@@ -12753,6 +12733,15 @@
       0.0
      ],
      "limit": 262000
+    },
+    "accounts/fireworks/routers/kimi-k3-fast": {
+     "cost": [
+      4.5,
+      22.5,
+      0.45,
+      0.0
+     ],
+     "limit": 1048576
     }
    },
    "name": "Fireworks AI"
@@ -13205,6 +13194,15 @@
       6.25
      ],
      "limit": 200000
+    },
+    "claude-opus-5": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
     },
     "claude-sonnet-4": {
      "cost": [
@@ -14080,6 +14078,15 @@
      ],
      "limit": 1000000
     },
+    "duo-chat-opus-5": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    },
     "duo-chat-sonnet-4-5": {
      "cost": [
       0.0,
@@ -14234,6 +14241,24 @@
   },
   "google": {
    "models": {
+    "deep-research-max-preview-04-2026": {
+     "cost": [
+      2.0,
+      12.0,
+      0.2,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "deep-research-preview-04-2026": {
+     "cost": [
+      2.0,
+      12.0,
+      0.2,
+      0.0
+     ],
+     "limit": 131072
+    },
     "gemini-2.0-flash": {
      "cost": [
       0.1,
@@ -14253,6 +14278,15 @@
      ],
      "limit": 1048576,
      "status": "deprecated"
+    },
+    "gemini-2.5-computer-use-preview-10-2025": {
+     "cost": [
+      1.25,
+      10.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
     },
     "gemini-2.5-flash": {
      "cost": [
@@ -14317,6 +14351,15 @@
      ],
      "limit": 1048576
     },
+    "gemini-3-pro-image": {
+     "cost": [
+      2.0,
+      120.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
     "gemini-3-pro-image-preview": {
      "cost": [
       2.0,
@@ -14336,6 +14379,15 @@
      "limit": 1048576,
      "status": "deprecated"
     },
+    "gemini-3.1-flash-image": {
+     "cost": [
+      0.5,
+      60.0,
+      0.0,
+      0.0
+     ],
+     "limit": 65536
+    },
     "gemini-3.1-flash-image-preview": {
      "cost": [
       0.5,
@@ -14354,6 +14406,15 @@
      ],
      "limit": 1048576
     },
+    "gemini-3.1-flash-lite-image": {
+     "cost": [
+      0.25,
+      30.0,
+      0.0,
+      0.0
+     ],
+     "limit": 65536
+    },
     "gemini-3.1-flash-lite-preview": {
      "cost": [
       0.25,
@@ -14363,6 +14424,24 @@
      ],
      "limit": 1048576,
      "status": "deprecated"
+    },
+    "gemini-3.1-flash-live-preview": {
+     "cost": [
+      0.75,
+      4.5,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "gemini-3.1-flash-tts-preview": {
+     "cost": [
+      1.0,
+      20.0,
+      0.0,
+      0.0
+     ],
+     "limit": 8192
     },
     "gemini-3.1-pro-preview": {
      "cost": [
@@ -14391,6 +14470,33 @@
      ],
      "limit": 1048576
     },
+    "gemini-3.5-flash-lite": {
+     "cost": [
+      0.3,
+      2.5,
+      0.03,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "gemini-3.5-live-translate-preview": {
+     "cost": [
+      3.5,
+      21.0,
+      0.0,
+      0.0
+     ],
+     "limit": 16384
+    },
+    "gemini-3.6-flash": {
+     "cost": [
+      1.5,
+      7.5,
+      0.15,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "gemini-embedding-001": {
      "cost": [
       0.15,
@@ -14399,6 +14505,15 @@
       0.0
      ],
      "limit": 2048
+    },
+    "gemini-embedding-2": {
+     "cost": [
+      0.2,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 8192
     },
     "gemini-flash-latest": {
      "cost": [
@@ -14426,22 +14541,39 @@
       0.0
      ],
      "limit": 131072
+    },
+    "gemini-robotics-er-1.6-preview": {
+     "cost": [
+      1.0,
+      5.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "lyria-3-clip-preview": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "lyria-3-pro-preview": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
     }
    },
    "name": "Google"
   },
   "google-vertex": {
    "models": {
-    "claude-3-5-haiku@20241022": {
-     "cost": [
-      0.8,
-      4.0,
-      0.08,
-      1.0
-     ],
-     "limit": 200000,
-     "status": "deprecated"
-    },
     "claude-haiku-4-5@20251001": {
      "cost": [
       1.0,
@@ -14507,6 +14639,15 @@
      "limit": 200000,
      "status": "deprecated"
     },
+    "claude-opus-5@default": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
     "claude-sonnet-4-5@20250929": {
      "cost": [
       3.0,
@@ -14551,7 +14692,8 @@
       0.0,
       0.0
      ],
-     "limit": 163840
+     "limit": 163840,
+     "status": "deprecated"
     },
     "deepseek-ai/deepseek-v3.2-maas": {
      "cost": [
@@ -14560,7 +14702,8 @@
       0.056,
       0.0
      ],
-     "limit": 163840
+     "limit": 163840,
+     "status": "deprecated"
     },
     "gemini-2.5-flash": {
      "cost": [
@@ -14689,6 +14832,24 @@
      ],
      "limit": 1048576
     },
+    "gemini-3.5-flash-lite": {
+     "cost": [
+      0.3,
+      2.5,
+      0.03,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "gemini-3.6-flash": {
+     "cost": [
+      1.5,
+      7.5,
+      0.15,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "gemini-embedding-001": {
      "cost": [
       0.15,
@@ -14723,7 +14884,8 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "meta/llama-4-maverick-17b-128e-instruct-maas": {
      "cost": [
@@ -14741,7 +14903,8 @@
       0.0,
       0.0
      ],
-     "limit": 262144
+     "limit": 262144,
+     "status": "deprecated"
     },
     "openai/gpt-oss-120b-maas": {
      "cost": [
@@ -14759,7 +14922,8 @@
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 131072,
+     "status": "deprecated"
     },
     "qwen/qwen3-235b-a22b-instruct-2507-maas": {
      "cost": [
@@ -14768,7 +14932,8 @@
       0.0,
       0.0
      ],
-     "limit": 262144
+     "limit": 262144,
+     "status": "deprecated"
     },
     "zai-org/glm-4.7-maas": {
      "cost": [
@@ -14777,7 +14942,8 @@
       0.0,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "zai-org/glm-5-maas": {
      "cost": [
@@ -14786,23 +14952,14 @@
       0.1,
       0.0
      ],
-     "limit": 202752
+     "limit": 202752,
+     "status": "deprecated"
     }
    },
    "name": "Vertex"
   },
   "google-vertex-anthropic": {
    "models": {
-    "claude-3-5-haiku@20241022": {
-     "cost": [
-      0.8,
-      4.0,
-      0.08,
-      1.0
-     ],
-     "limit": 200000,
-     "status": "deprecated"
-    },
     "claude-haiku-4-5@20251001": {
      "cost": [
       1.0,
@@ -14868,6 +15025,15 @@
      "limit": 200000,
      "status": "deprecated"
     },
+    "claude-opus-5@default": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
     "claude-sonnet-4-5@20250929": {
      "cost": [
       3.0,
@@ -14907,6 +15073,243 @@
     }
    },
    "name": "Vertex (Anthropic)"
+  },
+  "greenpt": {
+   "models": {
+    "devstral-2-123b-instruct-2512": {
+     "cost": [
+      0.57,
+      2.736,
+      0.0,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "gemma-3-27b-it": {
+     "cost": [
+      0.342,
+      0.684,
+      0.0,
+      0.0
+     ],
+     "limit": 40000
+    },
+    "gemma4": {
+     "cost": [
+      0.57,
+      1.71,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "glm-5.1": {
+     "cost": [
+      1.756,
+      5.518,
+      0.0,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "glm-5.2": {
+     "cost": [
+      1.254,
+      5.016,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "gpt-oss-120b": {
+     "cost": [
+      0.228,
+      0.798,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "green-l": {
+     "cost": [
+      0.285,
+      0.912,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "green-l-raw": {
+     "cost": [
+      0.285,
+      0.912,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "green-r": {
+     "cost": [
+      0.399,
+      1.083,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "green-r-raw": {
+     "cost": [
+      0.399,
+      1.083,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "green-s": {
+     "cost": [
+      0.00437,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    "green-s-pro": {
+     "cost": [
+      0.00437,
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    "holo2-30b-a3b": {
+     "cost": [
+      0.399,
+      0.969,
+      0.0,
+      0.0
+     ],
+     "limit": 22016
+    },
+    "kimi-k2.6": {
+     "cost": [
+      0.828,
+      4.389,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "kimi-k2.6-fast": {
+     "cost": [
+      1.655,
+      8.778,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "kimi-k2.7-code": {
+     "cost": [
+      0.941,
+      4.389,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "llama-3.3-70b-instruct": {
+     "cost": [
+      1.254,
+      1.254,
+      0.0,
+      0.0
+     ],
+     "limit": 100000
+    },
+    "minimax-m2.5": {
+     "cost": [
+      0.188,
+      1.129,
+      0.0,
+      0.0
+     ],
+     "limit": 204800
+    },
+    "mistral-medium-3.5-128b": {
+     "cost": [
+      2.052,
+      10.26,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "mistral-small-3.2-24b-instruct-2506": {
+     "cost": [
+      0.228,
+      0.456,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "pixtral-12b-2409": {
+     "cost": [
+      0.285,
+      0.285,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "qwen3-235b-a22b-instruct-2507": {
+     "cost": [
+      1.026,
+      3.078,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "qwen3-coder-30b-a3b-instruct": {
+     "cost": [
+      0.285,
+      1.083,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "qwen3.5-397b-a17b": {
+     "cost": [
+      0.798,
+      4.959,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "qwen3.6-35b-a3b": {
+     "cost": [
+      0.342,
+      2.052,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "voxtral-small-24b-2507": {
+     "cost": [
+      0.228,
+      0.513,
+      0.0,
+      0.0
+     ],
+     "limit": 32768
+    }
+   },
+   "name": "GreenPT"
   },
   "groq": {
    "models": {
@@ -15814,6 +16217,21 @@
    },
    "name": "Helicone"
   },
+  "hetzner": {
+   "models": {
+    "Qwen/Qwen3.6-35B-A3B-FP8": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144,
+     "status": "beta"
+    }
+   },
+   "name": "Hetzner"
+  },
   "hpc-ai": {
    "models": {
     "anthropic/claude-opus-4.7": {
@@ -16109,6 +16527,15 @@
      ],
      "limit": 262144
     },
+    "XiaomiMiMo/MiMo-V2.5": {
+     "cost": [
+      0.4,
+      2.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
     "XiaomiMiMo/MiMo-V2.5-Pro": {
      "cost": [
       1.0,
@@ -16244,6 +16671,15 @@
      ],
      "limit": 262144
     },
+    "moonshotai/Kimi-K3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    },
     "openai/gpt-oss-120b": {
      "cost": [
       0.25,
@@ -16279,6 +16715,24 @@
       0.0
      ],
      "limit": 262144
+    },
+    "tencent/Hy3": {
+     "cost": [
+      0.14,
+      0.58,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "thinkingmachines/Inkling": {
+     "cost": [
+      1.0,
+      4.05,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
     },
     "zai-org/GLM-4.5": {
      "cost": [
@@ -16363,6 +16817,218 @@
     }
    },
    "name": "Hugging Face"
+  },
+  "hyper": {
+   "models": {
+    "deepseek-v4-flash": {
+     "cost": [
+      0.2,
+      0.4,
+      0.04,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "deepseek-v4-pro": {
+     "cost": [
+      2.4,
+      4.8,
+      0.2,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "gemma-4-26b-a4b-it": {
+     "cost": [
+      0.122,
+      0.388,
+      0.0,
+      0.061
+     ],
+     "limit": 256000
+    },
+    "glm-5": {
+     "cost": [
+      0.86,
+      2.784,
+      0.0,
+      0.43
+     ],
+     "limit": 202752
+    },
+    "glm-5.1": {
+     "cost": [
+      1.52432,
+      4.79072,
+      0.283088,
+      0.0
+     ],
+     "limit": 202800
+    },
+    "glm-5.2": {
+     "cost": [
+      1.4,
+      4.4,
+      0.28,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "gpt-oss-120b": {
+     "cost": [
+      0.188,
+      0.7,
+      0.0,
+      0.094
+     ],
+     "limit": 131072
+    },
+    "kimi-k2.5": {
+     "cost": [
+      0.528,
+      2.79,
+      0.0,
+      0.264
+     ],
+     "limit": 262144
+    },
+    "kimi-k2.6": {
+     "cost": [
+      0.95,
+      4.0,
+      0.0,
+      0.16
+     ],
+     "limit": 262000
+    },
+    "kimi-k2.7-code": {
+     "cost": [
+      0.95,
+      4.0,
+      0.19,
+      0.0
+     ],
+     "limit": 256000
+    },
+    "kimi-k3": {
+     "cost": [
+      3.2664,
+      16.332,
+      0.32664,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "llama-3.3-70b-instruct": {
+     "cost": [
+      0.5126,
+      1.0446,
+      0.0,
+      0.2563
+     ],
+     "limit": 128000
+    },
+    "llama-4-maverick-17b-128e-instruct-fp8": {
+     "cost": [
+      0.284,
+      0.934,
+      0.0,
+      0.142
+     ],
+     "limit": 430000
+    },
+    "minimax-m2.7": {
+     "cost": [
+      0.42,
+      1.62,
+      0.0,
+      0.21
+     ],
+     "limit": 204800
+    },
+    "minimax-m3": {
+     "cost": [
+      0.32664,
+      1.30656,
+      0.064239,
+      0.0
+     ],
+     "limit": 512000
+    },
+    "qwen3-coder-480b-a35b-instruct-int4-mixed-ar": {
+     "cost": [
+      0.585,
+      2.245,
+      0.0,
+      0.2925
+     ],
+     "limit": 106000
+    },
+    "qwen3-next-80b-a3b-instruct": {
+     "cost": [
+      0.1175,
+      1.136,
+      0.0,
+      0.05875
+     ],
+     "limit": 262144
+    },
+    "qwen3.6-flash": {
+     "cost": [
+      1.0,
+      4.0,
+      0.1,
+      1.25
+     ],
+     "limit": 1000000
+    },
+    "qwen3.6-max": {
+     "cost": [
+      2.0,
+      12.0,
+      0.2,
+      2.5
+     ],
+     "limit": 256000
+    },
+    "qwen3.6-plus": {
+     "cost": [
+      2.0,
+      6.0,
+      0.2,
+      2.5
+     ],
+     "limit": 1000000
+    },
+    "qwen3.7-flash": {
+     "cost": [
+      0.2,
+      0.8,
+      0.04,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen3.7-max": {
+     "cost": [
+      2.5,
+      7.5,
+      0.5,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen3.7-plus": {
+     "cost": [
+      1.2,
+      4.8,
+      0.24,
+      0.0
+     ],
+     "limit": 1000000
+    }
+   },
+   "name": "Charm Hyper"
   },
   "iflowcn": {
    "models": {
@@ -16675,24 +17341,6 @@
      ],
      "limit": 262144
     },
-    "qwen/qwen3-coder-next-fp8": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 256144
-    },
-    "qwen/qwen3-coder-next-fp8-1m": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 1024000
-    },
     "qwen/qwen3.5-122b-a10b-nvfp4": {
      "cost": [
       0.0,
@@ -16719,6 +17367,24 @@
       0.0
      ],
      "limit": 262000
+    },
+    "qwen3-coder-next-fp8": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 256144
+    },
+    "qwen3-coder-next-fp8-1m": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1024000
     }
    },
    "name": "InferX"
@@ -17437,6 +18103,15 @@
   },
   "kenari": {
    "models": {
+    "claude-fable-5": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    },
     "claude-opus-4-7": {
      "cost": [
       0.0,
@@ -17455,7 +18130,7 @@
      ],
      "limit": 1000000
     },
-    "claude-sonnet-4-6": {
+    "claude-sonnet-5": {
      "cost": [
       0.0,
       0.0,
@@ -17491,14 +18166,32 @@
      ],
      "limit": 1000000
     },
-    "deepseek-v4-pro:free": {
+    "gemini-2-5-flash": {
      "cost": [
       0.0,
       0.0,
       0.0,
       0.0
      ],
-     "limit": 1000000
+     "limit": 1048576
+    },
+    "gemini-2-5-flash-lite": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "gemini-3-1-flash-lite": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
     },
     "gemma-4-31b-it": {
      "cost": [
@@ -17508,6 +18201,15 @@
       0.0
      ],
      "limit": 262144
+    },
+    "glm-4-7-flash:free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 200000
     },
     "glm-5-1": {
      "cost": [
@@ -17545,6 +18247,33 @@
      ],
      "limit": 1050000
     },
+    "gpt-5-6-luna": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1050000
+    },
+    "gpt-5-6-sol": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1050000
+    },
+    "gpt-5-6-terra": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1050000
+    },
     "gpt-image-2": {
      "cost": [
       0.0,
@@ -17572,14 +18301,14 @@
      ],
      "limit": 131072
     },
-    "grok-4-3": {
+    "grok-4-5": {
      "cost": [
       0.0,
       0.0,
       0.0,
       0.0
      ],
-     "limit": 1000000
+     "limit": 500000
     },
     "grok-build-0-1": {
      "cost": [
@@ -17599,6 +18328,15 @@
      ],
      "limit": 262144
     },
+    "kimi-k2-6:free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
     "kimi-k2-7-code": {
      "cost": [
       0.0,
@@ -17607,6 +18345,24 @@
       0.0
      ],
      "limit": 262144
+    },
+    "kimi-k2-7-code:free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "kimi-k3": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
     },
     "mimo-v2-5": {
      "cost": [
@@ -17626,6 +18382,15 @@
      ],
      "limit": 1048576
     },
+    "mimo-v2-5:free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "minimax-m3": {
      "cost": [
       0.0,
@@ -17634,6 +18399,42 @@
       0.0
      ],
      "limit": 512000
+    },
+    "nemotron-3-nano-30b-a3b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "nemotron-3-super-120b-a12b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "nemotron-3-super-120b-a12b:free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "nemotron-3-ultra-550b-a55b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
     },
     "qwen3-7-plus": {
      "cost": [
@@ -20779,6 +21580,15 @@
      ],
      "limit": 1048576
     },
+    "k3-256k": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
     "kimi-for-coding": {
      "cost": [
       0.0,
@@ -21024,6 +21834,15 @@
      ],
      "limit": 1000000
     },
+    "claude-opus-5": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
     "claude-sonnet-4-5": {
      "cost": [
       3.0,
@@ -21069,6 +21888,15 @@
      ],
      "limit": 256000
     },
+    "cosmos3-super-reasoner": {
+     "cost": [
+      0.1,
+      0.3,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
     "custom": {
      "cost": [
       0.0,
@@ -21089,9 +21917,9 @@
     },
     "deepseek-v4-flash": {
      "cost": [
-      0.14,
-      0.28,
-      0.0028,
+      0.076,
+      0.153,
+      0.014,
       0.0
      ],
      "limit": 1050000
@@ -21187,6 +22015,24 @@
      ],
      "limit": 1048576
     },
+    "gemini-3.5-flash-lite": {
+     "cost": [
+      0.3,
+      2.5,
+      0.03,
+      0.08333
+     ],
+     "limit": 1048576
+    },
+    "gemini-3.6-flash": {
+     "cost": [
+      1.5,
+      7.5,
+      0.15,
+      0.08333
+     ],
+     "limit": 1048576
+    },
     "gemini-pro-latest": {
      "cost": [
       2.0,
@@ -21195,6 +22041,15 @@
       0.0
      ],
      "limit": 1048576
+    },
+    "gemma-3-27b": {
+     "cost": [
+      0.1,
+      0.3,
+      0.0,
+      0.0
+     ],
+     "limit": 110000
     },
     "gemma-4-26b-a4b-it": {
      "cost": [
@@ -21207,9 +22062,9 @@
     },
     "gemma-4-31b-it": {
      "cost": [
-      0.13,
-      0.38,
-      0.0,
+      0.102,
+      0.297,
+      0.012,
       0.0
      ],
      "limit": 262144
@@ -21343,12 +22198,12 @@
     },
     "glm-5.2": {
      "cost": [
-      1.26,
-      3.96,
-      0.234,
+      0.8,
+      2.55,
+      0.16,
       0.0
      ],
-     "limit": 1024000
+     "limit": 1048576
     },
     "gpt-3.5-turbo": {
      "cost": [
@@ -21431,6 +22286,15 @@
      ],
      "limit": 128000
     },
+    "gpt-4o-mini-transcribe": {
+     "cost": [
+      1.25,
+      5.0,
+      0.0,
+      0.0
+     ],
+     "limit": 16000
+    },
     "gpt-4o-search-preview": {
      "cost": [
       2.5,
@@ -21439,6 +22303,15 @@
       0.0
      ],
      "limit": 128000
+    },
+    "gpt-4o-transcribe": {
+     "cost": [
+      2.5,
+      10.0,
+      0.0,
+      0.0
+     ],
+     "limit": 16000
     },
     "gpt-5": {
      "cost": [
@@ -21622,10 +22495,10 @@
     },
     "gpt-5.6-luna": {
      "cost": [
-      1.0,
-      6.0,
-      0.1,
-      1.25
+      0.2,
+      1.2,
+      0.02,
+      0.25
      ],
      "limit": 1050000
     },
@@ -21640,18 +22513,18 @@
     },
     "gpt-5.6-terra": {
      "cost": [
-      2.5,
-      15.0,
-      0.25,
-      3.125
+      2.0,
+      12.0,
+      0.2,
+      2.5
      ],
      "limit": 1050000
     },
     "gpt-oss-120b": {
      "cost": [
-      0.05,
-      0.25,
-      0.0,
+      0.032,
+      0.14,
+      0.032,
       0.0
      ],
      "limit": 131072
@@ -21755,6 +22628,33 @@
      ],
      "limit": 256000
     },
+    "hermes-4-405b": {
+     "cost": [
+      1.0,
+      3.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "hermes-4-70b": {
+     "cost": [
+      0.13,
+      0.4,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "hy3": {
+     "cost": [
+      0.14,
+      0.58,
+      0.035,
+      0.0
+     ],
+     "limit": 262144
+    },
     "kimi-k2": {
      "cost": [
       0.57,
@@ -21784,9 +22684,9 @@
     },
     "kimi-k2.6": {
      "cost": [
-      0.4,
-      2.2,
-      0.08,
+      0.22,
+      1.137,
+      0.048,
       0.0
      ],
      "limit": 262144
@@ -21909,6 +22809,15 @@
      ],
      "limit": 1000000
     },
+    "minicpm-v-4.5": {
+     "cost": [
+      0.658,
+      1.11,
+      0.0,
+      0.0
+     ],
+     "limit": 32000
+    },
     "minimax-m2": {
      "cost": [
       0.2,
@@ -21956,9 +22865,9 @@
     },
     "minimax-m2.7": {
      "cost": [
-      0.3,
-      1.2,
-      0.06,
+      0.08,
+      0.32,
+      0.017,
       0.375
      ],
      "limit": 204800
@@ -21979,7 +22888,7 @@
       0.06,
       0.0
      ],
-     "limit": 524288
+     "limit": 1048576
     },
     "minimax-text-01": {
      "cost": [
@@ -22053,6 +22962,33 @@
      ],
      "limit": 1048576
     },
+    "nemotron-3-nano-30b": {
+     "cost": [
+      0.06,
+      0.24,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "nemotron-3-nano-omni": {
+     "cost": [
+      0.06,
+      0.24,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "nemotron-3-super-120b": {
+     "cost": [
+      0.3,
+      0.9,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
     "nemotron-3-ultra-550b": {
      "cost": [
       0.5,
@@ -22060,7 +22996,7 @@
       0.15,
       0.0
      ],
-     "limit": 262144
+     "limit": 1048576
     },
     "o1": {
      "cost": [
@@ -22172,12 +23108,12 @@
     },
     "qwen2-5-vl-72b-instruct": {
      "cost": [
-      0.13,
-      0.4,
+      0.25,
+      0.75,
       0.0,
       0.0
      ],
-     "limit": 32768
+     "limit": 32000
     },
     "qwen3-235b-a22b-fp8": {
      "cost": [
@@ -22199,8 +23135,8 @@
     },
     "qwen3-235b-a22b-thinking-2507": {
      "cost": [
-      0.2,
-      0.6,
+      0.3,
+      3.0,
       0.0,
       0.0
      ],
@@ -22222,7 +23158,7 @@
       0.0,
       0.0
      ],
-     "limit": 32768
+     "limit": 40960
     },
     "qwen3-coder-30b-a3b-instruct": {
      "cost": [
@@ -22298,12 +23234,12 @@
     },
     "qwen3-vl-235b-a22b-instruct": {
      "cost": [
-      0.3,
-      1.5,
-      0.0,
+      0.2,
+      0.88,
+      0.11,
       0.0
      ],
-     "limit": 131072
+     "limit": 262144
     },
     "qwen3-vl-235b-a22b-thinking": {
      "cost": [
@@ -22316,12 +23252,12 @@
     },
     "qwen3-vl-30b-a3b-instruct": {
      "cost": [
-      0.2,
-      0.7,
+      0.15,
+      0.6,
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 262144
     },
     "qwen3-vl-flash": {
      "cost": [
@@ -22361,12 +23297,12 @@
     },
     "qwen3.6-flash": {
      "cost": [
-      0.15,
-      0.9,
-      0.015,
-      0.0
+      0.25,
+      1.5,
+      0.05,
+      0.3125
      ],
-     "limit": 262144
+     "limit": 1000000
     },
     "qwen3.6-max-preview": {
      "cost": [
@@ -22385,6 +23321,15 @@
       0.625
      ],
      "limit": 262144
+    },
+    "qwen3.7-flash": {
+     "cost": [
+      0.03,
+      0.13,
+      0.006,
+      0.0375
+     ],
+     "limit": 1000000
     },
     "qwen3.7-max": {
      "cost": [
@@ -22817,21 +23762,21 @@
   },
   "merge-gateway": {
    "models": {
-    "alibaba/qwen3.6-plus": {
+    "anthropic/claude-3-7-sonnet-20250219": {
      "cost": [
-      0.5,
       3.0,
-      0.0,
-      0.0
+      15.0,
+      0.3,
+      3.75
      ],
-     "limit": 1000000
+     "limit": 200000
     },
-    "alibaba/qwen3.7-max": {
+    "anthropic/claude-fable-5": {
      "cost": [
-      1.65,
-      4.95,
-      0.0,
-      0.0
+      10.0,
+      50.0,
+      1.0,
+      12.5
      ],
      "limit": 1000000
     },
@@ -22893,8 +23838,8 @@
      "cost": [
       5.0,
       25.0,
-      0.0,
-      0.0
+      0.5,
+      6.25
      ],
      "limit": 1000000
     },
@@ -22924,6 +23869,60 @@
       3.75
      ],
      "limit": 1000000
+    },
+    "anthropic/claude-sonnet-5": {
+     "cost": [
+      2.0,
+      10.0,
+      0.2,
+      2.5
+     ],
+     "limit": 1000000
+    },
+    "bytedance/dola-seed-2.0-code": {
+     "cost": [
+      0.4,
+      2.4,
+      0.0,
+      0.0
+     ],
+     "limit": 256000
+    },
+    "bytedance/dola-seed-2.0-code-preview": {
+     "cost": [
+      0.5,
+      3.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "bytedance/dola-seed-2.0-lite": {
+     "cost": [
+      0.25,
+      2.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "bytedance/dola-seed-2.0-mini": {
+     "cost": [
+      0.1,
+      0.4,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "bytedance/dola-seed-2.0-pro": {
+     "cost": [
+      0.5,
+      3.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
     },
     "cohere/command-a-03-2025": {
      "cost": [
@@ -22961,6 +23960,15 @@
      ],
      "limit": 128000
     },
+    "deepseek/deepseek-r1": {
+     "cost": [
+      1.35,
+      5.4,
+      0.0,
+      0.0
+     ],
+     "limit": 163840
+    },
     "deepseek/deepseek-v4-flash": {
      "cost": [
       0.14,
@@ -22995,7 +24003,7 @@
       0.01,
       0.0
      ],
-     "limit": 1048576
+     "limit": 1000000
     },
     "google/gemini-2.5-pro": {
      "cost": [
@@ -23069,6 +24077,15 @@
      ],
      "limit": 1048576
     },
+    "google/gemini-embedding-001": {
+     "cost": [
+      0.15,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 2048
+    },
     "google/gemini-flash-latest": {
      "cost": [
       1.5,
@@ -23087,21 +24104,57 @@
      ],
      "limit": 1048576
     },
+    "google/gemma-4-26b-a4b-it": {
+     "cost": [
+      0.13,
+      0.4,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "google/gemma-4-31b-it": {
+     "cost": [
+      0.14,
+      0.4,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "meta/llama-3.3-70b-instruct": {
+     "cost": [
+      0.22,
+      0.5,
+      0.11,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "meta/muse-spark-1.1": {
+     "cost": [
+      1.25,
+      4.25,
+      0.15,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "minimax/minimax-m2": {
      "cost": [
       0.3,
       1.2,
-      0.0,
-      0.0
+      0.03,
+      0.375
      ],
-     "limit": 196608
+     "limit": 204800
     },
     "minimax/minimax-m2.1": {
      "cost": [
       0.3,
       1.2,
-      0.0,
-      0.0
+      0.03,
+      0.375
      ],
      "limit": 204800
     },
@@ -23143,12 +24196,12 @@
     },
     "minimax/minimax-m3": {
      "cost": [
-      0.6,
-      2.4,
-      0.0,
+      0.3,
+      1.2,
+      0.06,
       0.0
      ],
-     "limit": 512000
+     "limit": 1000000
     },
     "mistral/codestral-latest": {
      "cost": [
@@ -23163,11 +24216,10 @@
      "cost": [
       0.4,
       2.0,
-      0.0,
+      0.04,
       0.0
      ],
-     "limit": 262144,
-     "status": "deprecated"
+     "limit": 256000
     },
     "mistral/devstral-medium-2507": {
      "cost": [
@@ -23221,10 +24273,10 @@
      "cost": [
       0.5,
       1.5,
-      0.0,
+      0.05,
       0.0
      ],
-     "limit": 262144
+     "limit": 256000
     },
     "mistral/mistral-large-latest": {
      "cost": [
@@ -23239,10 +24291,10 @@
      "cost": [
       0.4,
       2.0,
-      0.0,
+      0.04,
       0.0
      ],
-     "limit": 131072
+     "limit": 128000
     },
     "mistral/mistral-medium-latest": {
      "cost": [
@@ -23271,6 +24323,42 @@
      ],
      "limit": 128000
     },
+    "moonshot/kimi-k2.5": {
+     "cost": [
+      0.6,
+      3.0,
+      0.1,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "moonshot/kimi-k2.6": {
+     "cost": [
+      0.95,
+      4.0,
+      0.16,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "moonshot/kimi-k2.7-code": {
+     "cost": [
+      0.95,
+      4.0,
+      0.19,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "moonshot/kimi-k2.7-code-highspeed": {
+     "cost": [
+      1.9,
+      8.0,
+      0.38,
+      0.0
+     ],
+     "limit": 262144
+    },
     "moonshotai/kimi-k2-thinking": {
      "cost": [
       0.6,
@@ -23278,43 +24366,44 @@
       0.0,
       0.0
      ],
-     "limit": 262144
+     "limit": 262144,
+     "status": "deprecated"
     },
-    "moonshotai/kimi-k2.5": {
+    "nvidia/nemotron-nano-9b-v2": {
      "cost": [
-      0.6,
-      3.0,
+      0.06,
+      0.23,
       0.0,
       0.0
      ],
-     "limit": 262144
+     "limit": 128000
     },
-    "moonshotai/kimi-k2.6": {
+    "openai/gpt-3.5-turbo": {
      "cost": [
-      0.95,
-      4.0,
+      0.5,
+      1.5,
       0.0,
       0.0
      ],
-     "limit": 262144
+     "limit": 16385
     },
-    "moonshotai/kimi-k2.7-code": {
+    "openai/gpt-4": {
      "cost": [
-      0.95,
-      4.0,
+      30.0,
+      60.0,
       0.0,
       0.0
      ],
-     "limit": 262144
+     "limit": 8192
     },
-    "moonshotai/kimi-k2.7-code-highspeed": {
+    "openai/gpt-4-turbo": {
      "cost": [
-      1.9,
-      8.0,
+      10.0,
+      30.0,
       0.0,
       0.0
      ],
-     "limit": 262144
+     "limit": 128000
     },
     "openai/gpt-4.1": {
      "cost": [
@@ -23404,7 +24493,7 @@
       0.125,
       0.0
      ],
-     "limit": 400000
+     "limit": 128000
     },
     "openai/gpt-5-mini": {
      "cost": [
@@ -23505,6 +24594,60 @@
      ],
      "limit": 1050000
     },
+    "openai/gpt-5.6-luna": {
+     "cost": [
+      0.75,
+      4.5,
+      0.075,
+      0.0
+     ],
+     "limit": 1050000
+    },
+    "openai/gpt-5.6-sol": {
+     "cost": [
+      3.75,
+      22.5,
+      0.375,
+      0.0
+     ],
+     "limit": 1050000
+    },
+    "openai/gpt-5.6-terra": {
+     "cost": [
+      1.875,
+      11.25,
+      0.1875,
+      0.0
+     ],
+     "limit": 1050000
+    },
+    "openai/gpt-oss-120b": {
+     "cost": [
+      0.09,
+      0.36,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "openai/gpt-oss-20b": {
+     "cost": [
+      0.04,
+      0.2,
+      0.02,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "openai/gpt-oss-safeguard-120b": {
+     "cost": [
+      0.15,
+      0.6,
+      0.0,
+      0.0
+     ],
+     "limit": 4096
+    },
     "openai/o1": {
      "cost": [
       15.0,
@@ -23541,6 +24684,258 @@
      ],
      "limit": 200000
     },
+    "qwen/qwen-flash": {
+     "cost": [
+      0.022,
+      0.216,
+      0.0044,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen/qwen-plus": {
+     "cost": [
+      0.115,
+      0.287,
+      0.023,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen/qwen3-235b-a22b": {
+     "cost": [
+      0.287,
+      1.147,
+      0.0574,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen/qwen3-32b": {
+     "cost": [
+      0.15,
+      0.6,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen/qwen3-coder-480b-a35b-instruct": {
+     "cost": [
+      0.22,
+      1.8,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen/qwen3-coder-flash": {
+     "cost": [
+      0.144,
+      0.574,
+      0.0288,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen/qwen3-coder-plus": {
+     "cost": [
+      0.574,
+      2.294,
+      0.1148,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen/qwen3-max": {
+     "cost": [
+      0.359,
+      1.434,
+      0.0718,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "qwen/qwen3-next-80b-a3b-instruct": {
+     "cost": [
+      0.144,
+      0.574,
+      0.0288,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen/qwen3-next-80b-a3b-thinking": {
+     "cost": [
+      0.15,
+      1.2,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen/qwen3-vl-plus": {
+     "cost": [
+      0.143,
+      1.434,
+      0.0286,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "qwen/qwen3.5-122b-a10b": {
+     "cost": [
+      0.115,
+      0.917,
+      0.023,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen/qwen3.5-27b": {
+     "cost": [
+      0.086,
+      0.688,
+      0.0172,
+      0.0
+     ],
+     "limit": 256000
+    },
+    "qwen/qwen3.5-35b-a3b": {
+     "cost": [
+      0.057,
+      0.459,
+      0.020357,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen/qwen3.5-397b-a17b": {
+     "cost": [
+      0.172,
+      1.032,
+      0.0344,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen/qwen3.5-9b": {
+     "cost": [
+      0.09,
+      0.13,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "qwen/qwen3.5-plus": {
+     "cost": [
+      0.115,
+      0.688,
+      0.023,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen/qwen3.6-27b": {
+     "cost": [
+      0.4126,
+      2.4754,
+      0.0,
+      0.0
+     ],
+     "limit": 256000
+    },
+    "qwen/qwen3.6-35b-a3b": {
+     "cost": [
+      0.248,
+      1.485,
+      0.0496,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "qwen/qwen3.6-flash": {
+     "cost": [
+      0.165,
+      0.99,
+      0.033,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen/qwen3.6-max-preview": {
+     "cost": [
+      1.31,
+      7.88,
+      0.0,
+      0.0
+     ],
+     "limit": 256000
+    },
+    "qwen/qwen3.6-plus": {
+     "cost": [
+      0.276,
+      1.651,
+      0.0552,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen/qwen3.7-max": {
+     "cost": [
+      0.825,
+      2.4755,
+      0.165,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "qwen/qwen3.7-plus": {
+     "cost": [
+      0.4,
+      1.6,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "sakana/fugu-ultra": {
+     "cost": [
+      5.0,
+      30.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "writer/palmyra-x4": {
+     "cost": [
+      2.5,
+      10.0,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "writer/palmyra-x5": {
+     "cost": [
+      0.6,
+      6.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "xai/grok-4.20-0309-non-reasoning": {
+     "cost": [
+      1.25,
+      2.5,
+      0.2,
+      0.0
+     ],
+     "limit": 1000000
+    },
     "xai/grok-4.20-0309-reasoning": {
      "cost": [
       1.25,
@@ -23559,6 +24954,24 @@
      ],
      "limit": 1000000
     },
+    "xai/grok-4.5": {
+     "cost": [
+      2.0,
+      6.0,
+      0.5,
+      0.0
+     ],
+     "limit": 500000
+    },
+    "xai/grok-build-0.1": {
+     "cost": [
+      1.0,
+      2.0,
+      0.2,
+      0.0
+     ],
+     "limit": 256000
+    },
     "zai/glm-4.5": {
      "cost": [
       0.6,
@@ -23566,7 +24979,7 @@
       0.11,
       0.0
      ],
-     "limit": 131072
+     "limit": 128000
     },
     "zai/glm-4.5-air": {
      "cost": [
@@ -23575,7 +24988,16 @@
       0.03,
       0.0
      ],
-     "limit": 131072
+     "limit": 128000
+    },
+    "zai/glm-4.5v": {
+     "cost": [
+      0.6,
+      1.8,
+      0.11,
+      0.0
+     ],
+     "limit": 128000
     },
     "zai/glm-4.6": {
      "cost": [
@@ -23584,7 +25006,7 @@
       0.11,
       0.0
      ],
-     "limit": 204800
+     "limit": 200000
     },
     "zai/glm-4.7": {
      "cost": [
@@ -23593,7 +25015,16 @@
       0.11,
       0.0
      ],
-     "limit": 204800
+     "limit": 200000
+    },
+    "zai/glm-4.7-flash": {
+     "cost": [
+      0.07,
+      0.4,
+      0.0,
+      0.0
+     ],
+     "limit": 200000
     },
     "zai/glm-4.7-flashx": {
      "cost": [
@@ -23611,7 +25042,7 @@
       0.2,
       0.0
      ],
-     "limit": 204800
+     "limit": 200000
     },
     "zai/glm-5-turbo": {
      "cost": [
@@ -23633,9 +25064,9 @@
     },
     "zai/glm-5.2": {
      "cost": [
-      1.4,
-      4.4,
-      0.0,
+      1.05,
+      3.3,
+      0.195,
       0.0
      ],
      "limit": 1000000
@@ -24284,6 +25715,20 @@
     }
    },
    "name": "Moark"
+  },
+  "modal": {
+   "models": {
+    "thinkingmachines/Inkling-NVFP4": {
+     "cost": [
+      1.2,
+      5.0,
+      0.27,
+      0.0
+     ],
+     "limit": 1048576
+    }
+   },
+   "name": "Modal"
   },
   "modelscope": {
    "models": {
@@ -30698,6 +32143,15 @@
      ],
      "limit": 262144
     },
+    "moonshotai/Kimi-K3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1": {
      "cost": [
       0.6,
@@ -31123,6 +32577,24 @@
       0.0
      ],
      "limit": 131056
+    },
+    "deepseek-v4-flash": {
+     "cost": [
+      0.104,
+      0.207,
+      0.026,
+      0.0
+     ],
+     "limit": 1048560
+    },
+    "gemma-4-31b": {
+     "cost": [
+      0.144,
+      0.42,
+      0.036,
+      0.0
+     ],
+     "limit": 262128
     },
     "glm-5.2": {
      "cost": [
@@ -32264,7 +33736,7 @@
   },
   "nvidia": {
    "models": {
-    "abacusai/dracarys-llama-3_1-70b-instruct": {
+    "abacusai/dracarys-llama-3.1-70b-instruct": {
      "cost": [
       0.0,
       0.0,
@@ -32353,6 +33825,24 @@
       0.0
      ],
      "limit": 128000
+    },
+    "google/gemma-3-12b-it": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "google/gemma-3-4b-it": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
     },
     "google/gemma-3n-e2b-it": {
      "cost": [
@@ -32534,7 +34024,16 @@
      ],
      "limit": 32768
     },
-    "mistralai/mistral-7b-instruct-v03": {
+    "mistralai/ministral-14b-instruct-2512": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "mistralai/mistral-7b-instruct-v0.3": {
      "cost": [
       0.0,
       0.0,
@@ -32560,6 +34059,15 @@
       0.0
      ],
      "limit": 131072
+    },
+    "mistralai/mistral-medium-3.5-128b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
     },
     "mistralai/mistral-nemotron": {
      "cost": [
@@ -32642,6 +34150,15 @@
       0.0
      ]
     },
+    "nvidia/cosmos-reason2-8b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
     "nvidia/cosmos-transfer1-7b": {
      "cost": [
       0.0,
@@ -32667,7 +34184,7 @@
      ],
      "limit": 128000
     },
-    "nvidia/llama-3_1-nemotron-safety-guard-8b-v3": {
+    "nvidia/llama-3.1-nemotron-70b-instruct": {
      "cost": [
       0.0,
       0.0,
@@ -32675,6 +34192,60 @@
       0.0
      ],
      "limit": 128000
+    },
+    "nvidia/llama-3.1-nemotron-nano-8b-v1": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "nvidia/llama-3.1-nemotron-nano-vl-8b-v1": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 32768
+    },
+    "nvidia/llama-3.1-nemotron-safety-guard-8b-v3": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "nvidia/llama-3.1-nemotron-ultra-253b-v1": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "nvidia/llama-3.3-nemotron-super-49b-v1": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "nvidia/llama-3.3-nemotron-super-49b-v1.5": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
     },
     "nvidia/llama-3_2-nemoretriever-300m-embed-v1": {
      "cost": [
@@ -32774,6 +34345,15 @@
      ],
      "limit": 128000
     },
+    "nvidia/nemotron-nano-12b-v2-vl": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 128000
+    },
     "nvidia/nemotron-voicechat": {
      "cost": [
       0.0,
@@ -32819,7 +34399,7 @@
      ],
      "limit": 128000
     },
-    "nvidia/riva-translate-4b-instruct-v1_1": {
+    "nvidia/riva-translate-4b-instruct-v1.1": {
      "cost": [
       0.0,
       0.0,
@@ -32905,6 +34485,15 @@
       0.0,
       0.0
      ]
+    },
+    "poolside/laguna-xs-2.1": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
     },
     "qwen/qwen-image": {
      "cost": [
@@ -32994,7 +34583,16 @@
      ],
      "limit": 256000
     },
-    "upstage/solar-10_7b-instruct": {
+    "thinkingmachines/inkling": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "upstage/solar-10.7b-instruct": {
      "cost": [
       0.0,
       0.0,
@@ -33015,6 +34613,128 @@
    },
    "name": "Nvidia"
   },
+  "ofox": {
+   "models": {
+    "anthropic/claude-fable-5": {
+     "cost": [
+      10.0,
+      50.0,
+      1.0,
+      12.5
+     ],
+     "limit": 1000000
+    },
+    "anthropic/claude-opus-4.8": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "anthropic/claude-sonnet-5": {
+     "cost": [
+      2.0,
+      10.0,
+      0.2,
+      2.5
+     ],
+     "limit": 1000000
+    },
+    "bailian/qwen3.7-max": {
+     "cost": [
+      2.5,
+      7.5,
+      0.5,
+      3.125
+     ],
+     "limit": 1000000
+    },
+    "deepseek/deepseek-v4-pro": {
+     "cost": [
+      0.45,
+      0.88,
+      0.0037,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "google/gemini-3.1-pro-preview": {
+     "cost": [
+      2.0,
+      12.0,
+      0.2,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "moonshotai/kimi-k2.6": {
+     "cost": [
+      0.95,
+      4.0,
+      0.16,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "openai/gpt-5.5": {
+     "cost": [
+      5.0,
+      30.0,
+      0.5,
+      0.0
+     ],
+     "limit": 1050000
+    },
+    "openai/gpt-5.6-luna": {
+     "cost": [
+      1.0,
+      6.0,
+      0.1,
+      1.25
+     ],
+     "limit": 1050000
+    },
+    "openai/gpt-5.6-sol": {
+     "cost": [
+      5.0,
+      30.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1050000
+    },
+    "openai/gpt-5.6-terra": {
+     "cost": [
+      2.5,
+      15.0,
+      0.25,
+      3.125
+     ],
+     "limit": 1050000
+    },
+    "x-ai/grok-4.3": {
+     "cost": [
+      1.25,
+      2.5,
+      0.2,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "z-ai/glm-5.2": {
+     "cost": [
+      1.4,
+      4.4,
+      0.26,
+      0.0
+     ],
+     "limit": 1000000
+    }
+   },
+   "name": "Ofox"
+  },
   "openai": {
    "models": {
     "gpt-3.5-turbo": {
@@ -33024,7 +34744,8 @@
       0.0,
       0.0
      ],
-     "limit": 16385
+     "limit": 16385,
+     "status": "deprecated"
     },
     "gpt-4": {
      "cost": [
@@ -33033,7 +34754,8 @@
       0.0,
       0.0
      ],
-     "limit": 8192
+     "limit": 8192,
+     "status": "deprecated"
     },
     "gpt-4-turbo": {
      "cost": [
@@ -33042,7 +34764,8 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-4.1": {
      "cost": [
@@ -33069,7 +34792,8 @@
       0.025,
       0.0
      ],
-     "limit": 1047576
+     "limit": 1047576,
+     "status": "deprecated"
     },
     "gpt-4o": {
      "cost": [
@@ -33087,7 +34811,8 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "gpt-4o-2024-08-06": {
      "cost": [
@@ -33117,24 +34842,6 @@
      "limit": 128000
     },
     "gpt-5": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 400000
-    },
-    "gpt-5-chat-latest": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 400000
-    },
-    "gpt-5-codex": {
      "cost": [
       1.25,
       10.0,
@@ -33179,42 +34886,6 @@
      ],
      "limit": 400000
     },
-    "gpt-5.1-chat-latest": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "gpt-5.1-codex": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 400000
-    },
-    "gpt-5.1-codex-max": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 400000
-    },
-    "gpt-5.1-codex-mini": {
-     "cost": [
-      0.25,
-      2.0,
-      0.025,
-      0.0
-     ],
-     "limit": 400000
-    },
     "gpt-5.2": {
      "cost": [
       1.75,
@@ -33232,15 +34903,6 @@
       0.0
      ],
      "limit": 128000
-    },
-    "gpt-5.2-codex": {
-     "cost": [
-      1.75,
-      14.0,
-      0.175,
-      0.0
-     ],
-     "limit": 400000
     },
     "gpt-5.2-pro": {
      "cost": [
@@ -33343,10 +35005,10 @@
     },
     "gpt-5.6-luna": {
      "cost": [
-      1.0,
-      6.0,
-      0.1,
-      1.25
+      0.2,
+      1.2,
+      0.02,
+      0.25
      ],
      "limit": 1050000
     },
@@ -33361,10 +35023,10 @@
     },
     "gpt-5.6-terra": {
      "cost": [
-      2.5,
-      15.0,
-      0.25,
-      3.125
+      2.0,
+      12.0,
+      0.2,
+      2.5
      ],
      "limit": 1050000
     },
@@ -33392,7 +35054,8 @@
       7.5,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "o1-pro": {
      "cost": [
@@ -33401,22 +35064,14 @@
       0.0,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "o3": {
      "cost": [
       2.0,
       8.0,
       0.5,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "o3-deep-research": {
-     "cost": [
-      10.0,
-      40.0,
-      2.5,
       0.0
      ],
      "limit": 200000
@@ -33428,7 +35083,8 @@
       0.55,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "o3-pro": {
      "cost": [
@@ -33446,16 +35102,8 @@
       0.275,
       0.0
      ],
-     "limit": 200000
-    },
-    "o4-mini-deep-research": {
-     "cost": [
-      2.0,
-      8.0,
-      0.5,
-      0.0
-     ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "text-embedding-3-large": {
      "cost": [
@@ -33571,6 +35219,15 @@
      ],
      "limit": 1000000
     },
+    "claude-opus-5": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
     "claude-sonnet-4": {
      "cost": [
       3.0,
@@ -33666,6 +35323,24 @@
      "cost": [
       1.5,
       9.0,
+      0.15,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "gemini-3.5-flash-lite": {
+     "cost": [
+      0.3,
+      2.5,
+      0.03,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "gemini-3.6-flash": {
+     "cost": [
+      1.5,
+      7.5,
       0.15,
       0.0
      ],
@@ -33893,10 +35568,10 @@
     },
     "gpt-5.6-luna": {
      "cost": [
-      1.0,
-      6.0,
-      0.1,
-      1.25
+      0.2,
+      1.2,
+      0.02,
+      0.25
      ],
      "limit": 1050000
     },
@@ -33953,7 +35628,8 @@
       0.0,
       0.0
      ],
-     "limit": 190000
+     "limit": 190000,
+     "status": "deprecated"
     },
     "hy3-preview-free": {
      "cost": [
@@ -34022,6 +35698,24 @@
      ],
      "limit": 262144
     },
+    "kimi-k3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.3,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "laguna-s-2.1-free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 256000
+    },
     "ling-2.6-flash-free": {
      "cost": [
       0.0,
@@ -34031,6 +35725,15 @@
      ],
      "limit": 262100,
      "status": "deprecated"
+    },
+    "ling-3.0-flash-free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
     },
     "mimo-v2-flash-free": {
      "cost": [
@@ -34275,6 +35978,15 @@
      ],
      "limit": 1000000
     },
+    "gpt-5.6-luna": {
+     "cost": [
+      0.1,
+      0.6,
+      0.01,
+      0.125
+     ],
+     "limit": 1050000
+    },
     "grok-4.5": {
      "cost": [
       2.0,
@@ -34283,6 +35995,15 @@
       0.0
      ],
      "limit": 500000
+    },
+    "hy3": {
+     "cost": [
+      0.14,
+      0.58,
+      0.035,
+      0.0
+     ],
+     "limit": 256000
     },
     "kimi-k2.5": {
      "cost": [
@@ -34535,7 +36256,7 @@
       0.0,
       0.0
      ],
-     "limit": 32768
+     "limit": 16384
     },
     "anthropic/claude-3-haiku": {
      "cost": [
@@ -34636,6 +36357,24 @@
      ],
      "limit": 1000000
     },
+    "anthropic/claude-opus-5": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "anthropic/claude-opus-5-fast": {
+     "cost": [
+      10.0,
+      50.0,
+      1.0,
+      12.5
+     ],
+     "limit": 1000000
+    },
     "anthropic/claude-sonnet-4": {
      "cost": [
       3.0,
@@ -34674,8 +36413,8 @@
     },
     "arcee-ai/trinity-large-thinking": {
      "cost": [
-      0.25,
-      0.8,
+      0.22,
+      0.85,
       0.06,
       0.0
      ],
@@ -34697,7 +36436,7 @@
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 123000
     },
     "bytedance-seed/seed-1.6": {
      "cost": [
@@ -34809,12 +36548,12 @@
     },
     "deepseek/deepseek-chat": {
      "cost": [
-      0.2002,
-      0.8001,
+      0.2574,
+      1.0287,
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 163840
     },
     "deepseek/deepseek-chat-v3-0324": {
      "cost": [
@@ -34859,7 +36598,7 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 8192
     },
     "deepseek/deepseek-v3.1-terminus": {
      "cost": [
@@ -34868,7 +36607,7 @@
       0.135,
       0.0
      ],
-     "limit": 131072
+     "limit": 163840
     },
     "deepseek/deepseek-v3.2": {
      "cost": [
@@ -34890,9 +36629,18 @@
     },
     "deepseek/deepseek-v4-flash": {
      "cost": [
-      0.098,
-      0.196,
-      0.0196,
+      0.14,
+      0.28,
+      0.028,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "deepseek/deepseek-v4-flash-0731": {
+     "cost": [
+      0.14,
+      0.28,
+      0.0028,
       0.0
      ],
      "limit": 1048576
@@ -34976,7 +36724,7 @@
       0.2,
       0.375
      ],
-     "limit": 65536
+     "limit": 131072
     },
     "google/gemini-3-pro-image-preview": {
      "cost": [
@@ -35003,7 +36751,7 @@
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 65536
     },
     "google/gemini-3.1-flash-lite": {
      "cost": [
@@ -35048,12 +36796,30 @@
       0.2,
       0.375
      ],
-     "limit": 1048756
+     "limit": 1048576
     },
     "google/gemini-3.5-flash": {
      "cost": [
       1.5,
       9.0,
+      0.15,
+      0.083333
+     ],
+     "limit": 1048576
+    },
+    "google/gemini-3.5-flash-lite": {
+     "cost": [
+      0.3,
+      2.5,
+      0.03,
+      0.083333
+     ],
+     "limit": 1048576
+    },
+    "google/gemini-3.6-flash": {
+     "cost": [
+      1.5,
+      7.5,
       0.15,
       0.083333
      ],
@@ -35079,12 +36845,12 @@
     },
     "google/gemma-3-27b-it": {
      "cost": [
-      0.1,
-      0.3,
-      0.0,
+      0.08,
+      0.45,
+      0.04,
       0.0
      ],
-     "limit": 131072
+     "limit": 262144
     },
     "google/gemma-3-4b-it": {
      "cost": [
@@ -35124,9 +36890,9 @@
     },
     "google/gemma-4-31b-it": {
      "cost": [
-      0.22,
-      0.55,
-      0.12,
+      0.1,
+      0.34,
+      0.1,
       0.0
      ],
      "limit": 262144
@@ -35165,7 +36931,7 @@
       0.0,
       0.0
      ],
-     "limit": 4096
+     "limit": 8192
     },
     "ibm-granite/granite-4.0-h-micro": {
      "cost": [
@@ -35212,6 +36978,15 @@
      ],
      "limit": 262144
     },
+    "inclusionai/ling-3.0-flash:free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
     "inclusionai/ring-2.6-1t": {
      "cost": [
       0.075,
@@ -35220,24 +36995,6 @@
       0.0
      ],
      "limit": 262144
-    },
-    "inflection/inflection-3-pi": {
-     "cost": [
-      2.5,
-      10.0,
-      0.0,
-      0.0
-     ],
-     "limit": 8000
-    },
-    "inflection/inflection-3-productivity": {
-     "cost": [
-      2.5,
-      10.0,
-      0.0,
-      0.0
-     ],
-     "limit": 8000
     },
     "kwaipilot/kat-coder-air-v2.5": {
      "cost": [
@@ -35255,7 +37012,7 @@
       0.06,
       0.0
      ],
-     "limit": 256000
+     "limit": 262144
     },
     "kwaipilot/kat-coder-pro-v2.5": {
      "cost": [
@@ -35309,12 +37066,12 @@
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 60000
     },
     "meta-llama/llama-3.2-3b-instruct": {
      "cost": [
-      0.0509,
-      0.335,
+      0.05,
+      0.33,
       0.0,
       0.0
      ],
@@ -35345,7 +37102,7 @@
       0.0,
       0.0
      ],
-     "limit": 10000000
+     "limit": 1310720
     },
     "meta-llama/llama-guard-4-12b": {
      "cost": [
@@ -35354,7 +37111,7 @@
       0.0,
       0.0
      ],
-     "limit": 163840
+     "limit": 1048576
     },
     "meta/muse-spark-1.1": {
      "cost": [
@@ -35381,7 +37138,7 @@
       0.0,
       0.0
      ],
-     "limit": 65536
+     "limit": 65535
     },
     "minimax/minimax-01": {
      "cost": [
@@ -35403,9 +37160,9 @@
     },
     "minimax/minimax-m2": {
      "cost": [
-      0.3,
-      1.2,
-      0.03,
+      0.255,
+      1.02,
+      0.0,
       0.0
      ],
      "limit": 204800
@@ -35463,16 +37220,6 @@
       0.0
      ],
      "limit": 256000
-    },
-    "mistralai/devstral-2512": {
-     "cost": [
-      0.4,
-      2.0,
-      0.04,
-      0.0
-     ],
-     "limit": 262144,
-     "status": "deprecated"
     },
     "mistralai/ministral-14b-2512": {
      "cost": [
@@ -35602,12 +37349,12 @@
     },
     "mistralai/mistral-small-3.2-24b-instruct": {
      "cost": [
-      0.1,
-      0.3,
-      0.01,
+      0.075,
+      0.2,
+      0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 256000
     },
     "mistralai/mixtral-8x22b-instruct": {
      "cost": [
@@ -35665,18 +37412,18 @@
     },
     "moonshotai/kimi-k2.6": {
      "cost": [
-      0.684,
-      3.42,
-      0.144,
+      0.589,
+      2.48,
+      0.0992,
       0.0
      ],
      "limit": 262144
     },
     "moonshotai/kimi-k2.7-code": {
      "cost": [
-      0.85,
-      3.8,
-      0.17,
+      0.73,
+      3.5,
+      0.15,
       0.0
      ],
      "limit": 262144
@@ -35766,7 +37513,7 @@
      "cost": [
       0.05,
       0.2,
-      0.0,
+      0.03,
       0.0
      ],
      "limit": 262144
@@ -35805,7 +37552,7 @@
       0.0,
       0.0
      ],
-     "limit": 1000000
+     "limit": 262144
     },
     "nvidia/nemotron-3-ultra-550b-a55b": {
      "cost": [
@@ -35814,7 +37561,7 @@
       0.2,
       0.0
      ],
-     "limit": 1000000
+     "limit": 512288
     },
     "nvidia/nemotron-3-ultra-550b-a55b:free": {
      "cost": [
@@ -35996,43 +37743,7 @@
      ],
      "limit": 128000
     },
-    "openai/gpt-4o-mini-search-preview": {
-     "cost": [
-      0.15,
-      0.6,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "openai/gpt-4o-search-preview": {
-     "cost": [
-      2.5,
-      10.0,
-      0.0,
-      0.0
-     ],
-     "limit": 128000
-    },
     "openai/gpt-5": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 400000
-    },
-    "openai/gpt-5-chat": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "openai/gpt-5-codex": {
      "cost": [
       1.25,
       10.0,
@@ -36095,20 +37806,11 @@
      ],
      "limit": 400000
     },
-    "openai/gpt-5.1-chat": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 128000
-    },
     "openai/gpt-5.1-codex": {
      "cost": [
       1.25,
       10.0,
-      0.125,
+      0.13,
       0.0
      ],
      "limit": 400000
@@ -36126,7 +37828,7 @@
      "cost": [
       0.25,
       2.0,
-      0.025,
+      0.03,
       0.0
      ],
      "limit": 400000
@@ -36250,19 +37952,19 @@
     },
     "openai/gpt-5.6-luna": {
      "cost": [
-      1.0,
-      6.0,
       0.1,
-      1.25
+      0.6,
+      0.01,
+      0.125
      ],
      "limit": 1050000
     },
     "openai/gpt-5.6-luna-pro": {
      "cost": [
-      1.0,
-      6.0,
       0.1,
-      1.25
+      0.6,
+      0.01,
+      0.125
      ],
      "limit": 1050000
     },
@@ -36286,19 +37988,19 @@
     },
     "openai/gpt-5.6-terra": {
      "cost": [
-      2.5,
-      15.0,
-      0.25,
-      3.125
+      1.0,
+      6.0,
+      0.1,
+      1.25
      ],
      "limit": 1050000
     },
     "openai/gpt-5.6-terra-pro": {
      "cost": [
-      2.5,
-      15.0,
-      0.25,
-      3.125
+      1.0,
+      6.0,
+      0.1,
+      1.25
      ],
      "limit": 1050000
     },
@@ -36341,8 +38043,8 @@
     "openai/gpt-oss-20b": {
      "cost": [
       0.03,
-      0.13,
-      0.03,
+      0.14,
+      0.0,
       0.0
      ],
      "limit": 131072
@@ -36392,15 +38094,6 @@
      ],
      "limit": 200000
     },
-    "openai/o3-deep-research": {
-     "cost": [
-      10.0,
-      40.0,
-      2.5,
-      0.0
-     ],
-     "limit": 200000
-    },
     "openai/o3-mini": {
      "cost": [
       1.1,
@@ -36433,15 +38126,6 @@
       1.1,
       4.4,
       0.275,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "openai/o4-mini-deep-research": {
-     "cost": [
-      2.0,
-      8.0,
-      0.5,
       0.0
      ],
      "limit": 200000
@@ -36518,16 +38202,16 @@
      ],
      "limit": 128000
     },
-    "poolside/laguna-m.1": {
+    "poolside/laguna-s-2.1": {
      "cost": [
-      0.2,
-      0.4,
-      0.1,
+      0.09,
+      0.18,
+      0.009,
       0.0
      ],
-     "limit": 262144
+     "limit": 1048576
     },
-    "poolside/laguna-m.1:free": {
+    "poolside/laguna-s-2.1:free": {
      "cost": [
       0.0,
       0.0,
@@ -36561,16 +38245,16 @@
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 32768
     },
     "qwen/qwen-2.5-7b-instruct": {
      "cost": [
-      0.04,
       0.1,
+      0.2,
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 32768
     },
     "qwen/qwen-2.5-coder-32b-instruct": {
      "cost": [
@@ -36579,7 +38263,7 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 32768
     },
     "qwen/qwen-plus": {
      "cost": [
@@ -36601,10 +38285,10 @@
     },
     "qwen/qwen-plus-2025-07-28:thinking": {
      "cost": [
-      0.26,
-      0.78,
+      0.4,
+      1.2,
       0.0,
-      0.325
+      0.5
      ],
      "limit": 1000000
     },
@@ -36615,16 +38299,16 @@
       0.4,
       0.0
      ],
-     "limit": 131072
+     "limit": 128000
     },
     "qwen/qwen3-14b": {
      "cost": [
-      0.12,
-      0.24,
+      0.2275,
+      0.91,
       0.0,
       0.0
      ],
-     "limit": 131702
+     "limit": 131072
     },
     "qwen/qwen3-235b-a22b": {
      "cost": [
@@ -36646,8 +38330,8 @@
     },
     "qwen/qwen3-235b-a22b-thinking-2507": {
      "cost": [
-      0.3,
-      3.0,
+      0.23,
+      2.3,
       0.0,
       0.0
      ],
@@ -36655,8 +38339,8 @@
     },
     "qwen/qwen3-30b-a3b": {
      "cost": [
-      0.13,
-      0.52,
+      0.12,
+      0.5,
       0.0,
       0.0
      ],
@@ -36664,8 +38348,8 @@
     },
     "qwen/qwen3-30b-a3b-instruct-2507": {
      "cost": [
-      0.1,
-      0.3,
+      0.04815,
+      0.19305,
       0.0,
       0.0
      ],
@@ -36673,12 +38357,12 @@
     },
     "qwen/qwen3-30b-a3b-thinking-2507": {
      "cost": [
-      0.13,
-      1.56,
+      0.2,
+      2.4,
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 81920
     },
     "qwen/qwen3-32b": {
      "cost": [
@@ -36705,7 +38389,7 @@
       0.1,
       0.0
      ],
-     "limit": 1048576
+     "limit": 262144
     },
     "qwen/qwen3-coder-30b-a3b-instruct": {
      "cost": [
@@ -36714,7 +38398,7 @@
       0.0,
       0.0
      ],
-     "limit": 160000
+     "limit": 262144
     },
     "qwen/qwen3-coder-flash": {
      "cost": [
@@ -36727,7 +38411,7 @@
     },
     "qwen/qwen3-coder-next": {
      "cost": [
-      0.11,
+      0.12,
       0.8,
       0.07,
       0.0
@@ -36772,8 +38456,8 @@
     },
     "qwen/qwen3-next-80b-a3b-thinking": {
      "cost": [
-      0.0975,
-      0.78,
+      0.15,
+      1.2,
       0.0,
       0.0
      ],
@@ -36786,12 +38470,12 @@
       0.1,
       0.0
      ],
-     "limit": 131072
+     "limit": 262144
     },
     "qwen/qwen3-vl-235b-a22b-thinking": {
      "cost": [
-      0.26,
-      2.6,
+      0.4,
+      4.0,
       0.0,
       0.0
      ],
@@ -36808,12 +38492,12 @@
     },
     "qwen/qwen3-vl-30b-a3b-thinking": {
      "cost": [
-      0.13,
-      1.56,
+      0.2,
+      2.4,
       0.0,
       0.0
      ],
-     "limit": 131072
+     "limit": 262144
     },
     "qwen/qwen3-vl-32b-instruct": {
      "cost": [
@@ -36822,7 +38506,7 @@
       0.0,
       0.0
      ],
-     "limit": 262144
+     "limit": 131072
     },
     "qwen/qwen3-vl-8b-instruct": {
      "cost": [
@@ -36831,16 +38515,16 @@
       0.0,
       0.0
      ],
-     "limit": 256000
+     "limit": 262144
     },
     "qwen/qwen3-vl-8b-thinking": {
      "cost": [
-      0.117,
-      1.365,
+      0.18,
+      2.1,
       0.0,
       0.0
      ],
-     "limit": 256000
+     "limit": 131072
     },
     "qwen/qwen3.5-122b-a10b": {
      "cost": [
@@ -36853,8 +38537,8 @@
     },
     "qwen/qwen3.5-27b": {
      "cost": [
-      0.26,
-      2.6,
+      0.195,
+      1.56,
       0.0,
       0.0
      ],
@@ -36916,9 +38600,9 @@
     },
     "qwen/qwen3.6-27b": {
      "cost": [
-      0.45,
-      2.7,
-      0.0,
+      0.3,
+      2.0,
+      0.15,
       0.0
      ],
      "limit": 262144
@@ -36943,10 +38627,10 @@
     },
     "qwen/qwen3.6-max-preview": {
      "cost": [
-      1.04,
-      6.24,
+      1.027,
+      6.162,
       0.0,
-      1.3
+      1.28375
      ],
      "limit": 262144
     },
@@ -36956,6 +38640,15 @@
       1.95,
       0.0,
       0.40625
+     ],
+     "limit": 1000000
+    },
+    "qwen/qwen3.7-flash": {
+     "cost": [
+      0.03,
+      0.13,
+      0.006,
+      0.038
      ],
      "limit": 1000000
     },
@@ -37065,7 +38758,7 @@
       0.04,
       0.0
      ],
-     "limit": 256000
+     "limit": 262144
     },
     "tencent/hunyuan-a13b-instruct": {
      "cost": [
@@ -37078,9 +38771,9 @@
     },
     "tencent/hy3": {
      "cost": [
-      0.2,
-      0.8,
-      0.05,
+      0.132,
+      0.528,
+      0.033,
       0.0
      ],
      "limit": 262144
@@ -37090,15 +38783,6 @@
       0.063,
       0.21,
       0.021,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "tencent/hy3:free": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
       0.0
      ],
      "limit": 262144
@@ -37137,7 +38821,7 @@
       0.0,
       0.0
      ],
-     "limit": 32768
+     "limit": 1024000
     },
     "thinkingmachines/inkling": {
      "cost": [
@@ -37147,6 +38831,15 @@
       0.0
      ],
      "limit": 1048576
+    },
+    "thinkingmachines/inkling-small": {
+     "cost": [
+      0.58,
+      1.44,
+      0.116,
+      0.0
+     ],
+     "limit": 524288
     },
     "undi95/remm-slerp-l2-13b": {
      "cost": [
@@ -37227,7 +38920,7 @@
       0.0028,
       0.0
      ],
-     "limit": 1048576
+     "limit": 1050000
     },
     "xiaomi/mimo-v2.5-pro": {
      "cost": [
@@ -37236,7 +38929,7 @@
       0.0036,
       0.0
      ],
-     "limit": 1048576
+     "limit": 1050000
     },
     "z-ai/glm-4.5": {
      "cost": [
@@ -37272,7 +38965,7 @@
       0.1,
       0.0
      ],
-     "limit": 202752
+     "limit": 204800
     },
     "z-ai/glm-4.6v": {
      "cost": [
@@ -37290,16 +38983,16 @@
       0.08,
       0.0
      ],
-     "limit": 202752
+     "limit": 204800
     },
     "z-ai/glm-4.7-flash": {
      "cost": [
-      0.0605,
+      0.06,
       0.4,
-      0.0,
+      0.01,
       0.0
      ],
-     "limit": 200000
+     "limit": 202752
     },
     "z-ai/glm-5": {
      "cost": [
@@ -37326,13 +39019,13 @@
       0.1794,
       0.0
      ],
-     "limit": 202752
+     "limit": 204800
     },
     "z-ai/glm-5.2": {
      "cost": [
-      0.9688,
-      3.0448,
-      0.17992,
+      1.12,
+      3.52,
+      0.208,
       0.0
      ],
      "limit": 1048576
@@ -37385,7 +39078,7 @@
     "~google/gemini-flash-latest": {
      "cost": [
       1.5,
-      9.0,
+      7.5,
       0.15,
       0.083333
      ],
@@ -37402,9 +39095,9 @@
     },
     "~moonshotai/kimi-latest": {
      "cost": [
-      3.0,
-      15.0,
-      0.3,
+      2.9,
+      14.0,
+      0.29,
       0.0
      ],
      "limit": 1048576
@@ -38415,6 +40108,24 @@
       2.0,
       12.0,
       0.2,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "moonshot-ai/kimi-k2.7-code": {
+     "cost": [
+      0.95,
+      4.0,
+      0.19,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "moonshot-ai/kimi-k3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.3,
       0.0
      ],
      "limit": 1048576
@@ -40033,16 +41744,16 @@
      ],
      "limit": 262144
     },
-    "poolside/laguna-xs-2.1": {
+    "poolside/laguna-s-2.1": {
      "cost": [
       0.0,
       0.0,
       0.0,
       0.0
      ],
-     "limit": 262144
+     "limit": 1048576
     },
-    "poolside/laguna-xs.2": {
+    "poolside/laguna-xs-2.1": {
      "cost": [
       0.0,
       0.0,
@@ -40211,6 +41922,92 @@
     }
    },
    "name": "Qiniu"
+  },
+  "qvac": {
+   "models": {
+    "gemma4-31b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gpt-oss-120b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "gpt-oss-20b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 131072
+    },
+    "qwen3.5-0.8b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 32768
+    },
+    "qwen3.5-2b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 32768
+    },
+    "qwen3.5-4b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 32768
+    },
+    "qwen3.5-9b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 32768
+    },
+    "qwen3.6-27b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "qwen3.6-35b-a3b": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    }
+   },
+   "name": "QVAC"
   },
   "regolo-ai": {
    "models": {
@@ -41243,25 +43040,6 @@
      ],
      "limit": 8191
     },
-    "devstral-2-123b-instruct-2512": {
-     "cost": [
-      0.4,
-      2.0,
-      0.0,
-      0.0
-     ],
-     "limit": 256000,
-     "status": "deprecated"
-    },
-    "gemma-3-27b-it": {
-     "cost": [
-      0.25,
-      0.5,
-      0.0,
-      0.0
-     ],
-     "limit": 40000
-    },
     "gemma-4-26b-a4b-it": {
      "cost": [
       0.25,
@@ -41371,15 +43149,6 @@
      ],
      "limit": 128000,
      "status": "beta"
-    },
-    "voxtral-small-24b-2507": {
-     "cost": [
-      0.15,
-      0.35,
-      0.0,
-      0.0
-     ],
-     "limit": 32000
     },
     "whisper-large-v3": {
      "cost": [
@@ -42581,6 +44350,15 @@
      ],
      "limit": 262144
     },
+    "hf:moonshotai/Kimi-K3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.45,
+      0.0
+     ],
+     "limit": 524288
+    },
     "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4": {
      "cost": [
       0.3,
@@ -42736,14 +44514,23 @@
   },
   "thinkingmachines": {
    "models": {
-    "inkling": {
+    "thinkingmachines/Inkling": {
+     "cost": [
+      1.87,
+      4.68,
+      0.374,
+      0.0
+     ],
+     "limit": 65536
+    },
+    "thinkingmachines/Inkling:peft:262144": {
      "cost": [
       3.74,
       9.36,
       0.748,
       0.0
      ],
-     "limit": 256000
+     "limit": 262144
     }
    },
    "name": "Thinking Machines"
@@ -42763,7 +44550,7 @@
      "cost": [
       1.5,
       5.25,
-      0.0,
+      0.375,
       0.0
      ],
      "limit": 384000
@@ -43052,6 +44839,15 @@
       0.0
      ],
      "limit": 262144
+    },
+    "moonshotai/Kimi-K3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.3,
+      0.0
+     ],
+     "limit": 1048576
     },
     "nvidia/nemotron-3-ultra-550b-a55b": {
      "cost": [
@@ -43571,15 +45367,6 @@
      ],
      "limit": 1000000
     },
-    "claude-opus-4-7-fast": {
-     "cost": [
-      36.0,
-      180.0,
-      3.6,
-      45.0
-     ],
-     "limit": 1000000
-    },
     "claude-opus-4-8": {
      "cost": [
       6.0,
@@ -43590,6 +45377,24 @@
      "limit": 1000000
     },
     "claude-opus-4-8-fast": {
+     "cost": [
+      12.0,
+      60.0,
+      1.2,
+      15.0
+     ],
+     "limit": 1000000
+    },
+    "claude-opus-5": {
+     "cost": [
+      6.0,
+      30.0,
+      0.6,
+      7.5
+     ],
+     "limit": 1000000
+    },
+    "claude-opus-5-fast": {
      "cost": [
       12.0,
       60.0,
@@ -43667,6 +45472,24 @@
       9.45,
       0.155,
       0.086
+     ],
+     "limit": 1000000
+    },
+    "gemini-3-5-flash-lite": {
+     "cost": [
+      0.375,
+      3.125,
+      0.0375,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "gemini-3-6-flash": {
+     "cost": [
+      1.875,
+      9.375,
+      0.1875,
+      0.0
      ],
      "limit": 1000000
     },
@@ -43776,7 +45599,7 @@
       0.2125,
       0.0
      ],
-     "limit": 1000000
+     "limit": 524288
     },
     "kimi-k2-5": {
      "cost": [
@@ -43900,15 +45723,6 @@
       0.625,
       3.125,
       0.1875,
-      0.0
-     ],
-     "limit": 256000
-    },
-    "nvidia-nemotron-cascade-2-30b-a3b": {
-     "cost": [
-      0.14,
-      0.8,
-      0.0,
       0.0
      ],
      "limit": 256000
@@ -44156,6 +45970,15 @@
      ],
      "limit": 256000
     },
+    "qwen3-6-35b-a3b": {
+     "cost": [
+      0.1,
+      1.0,
+      0.0,
+      0.0
+     ],
+     "limit": 256000
+    },
     "qwen3-coder-480b-a35b-instruct-turbo": {
      "cost": [
       0.35,
@@ -44182,6 +46005,15 @@
       0.0
      ],
      "limit": 128000
+    },
+    "seed-2-1-turbo": {
+     "cost": [
+      0.625,
+      3.125,
+      0.125,
+      0.0
+     ],
+     "limit": 256000
     },
     "venice-uncensored-1-2": {
      "cost": [
@@ -44485,12 +46317,21 @@
      ],
      "limit": 1000000
     },
+    "alibaba/qwen3.7-flash": {
+     "cost": [
+      0.03,
+      0.13,
+      0.006,
+      0.038
+     ],
+     "limit": 991000
+    },
     "alibaba/qwen3.7-max": {
      "cost": [
-      1.25,
-      3.75,
-      0.25,
-      1.5625
+      2.5,
+      7.5,
+      0.5,
+      3.125
      ],
      "limit": 991000
     },
@@ -44612,15 +46453,6 @@
      ],
      "limit": 1000000
     },
-    "anthropic/claude-opus-4.7-fast": {
-     "cost": [
-      30.0,
-      150.0,
-      3.0,
-      37.5
-     ],
-     "limit": 1000000
-    },
     "anthropic/claude-opus-4.8": {
      "cost": [
       5.0,
@@ -44631,6 +46463,24 @@
      "limit": 1000000
     },
     "anthropic/claude-opus-4.8-fast": {
+     "cost": [
+      10.0,
+      50.0,
+      1.0,
+      12.5
+     ],
+     "limit": 1000000
+    },
+    "anthropic/claude-opus-5": {
+     "cost": [
+      5.0,
+      25.0,
+      0.5,
+      6.25
+     ],
+     "limit": 1000000
+    },
+    "anthropic/claude-opus-5-fast": {
      "cost": [
       10.0,
       50.0,
@@ -44778,7 +46628,7 @@
      "cost": [
       0.14,
       0.28,
-      0.028,
+      0.0028,
       0.0
      ],
      "limit": 1000000
@@ -44846,15 +46696,6 @@
      ],
      "limit": 65536
     },
-    "google/gemini-3-pro-preview": {
-     "cost": [
-      2.0,
-      12.0,
-      0.2,
-      0.0
-     ],
-     "limit": 1000000
-    },
     "google/gemini-3.1-flash-image": {
      "cost": [
       0.5,
@@ -44891,15 +46732,6 @@
      ],
      "limit": 65536
     },
-    "google/gemini-3.1-flash-lite-preview": {
-     "cost": [
-      0.25,
-      1.5,
-      0.03,
-      0.0
-     ],
-     "limit": 1000000
-    },
     "google/gemini-3.1-pro-preview": {
      "cost": [
       2.0,
@@ -44913,6 +46745,24 @@
      "cost": [
       1.5,
       9.0,
+      0.15,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "google/gemini-3.5-flash-lite": {
+     "cost": [
+      0.3,
+      2.5,
+      0.03,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "google/gemini-3.6-flash": {
+     "cost": [
+      1.5,
+      7.5,
       0.15,
       0.0
      ],
@@ -44962,6 +46812,15 @@
       0.0
      ],
      "limit": 32000
+    },
+    "inclusionai/ling-3.0-flash-free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 256000
     },
     "interfaze/interfaze-beta": {
      "cost": [
@@ -45323,6 +47182,15 @@
      ],
      "limit": 1000000
     },
+    "moonshotai/kimi-k3-fast": {
+     "cost": [
+      4.5,
+      22.5,
+      0.45,
+      0.0
+     ],
+     "limit": 1000000
+    },
     "morph/morph-v3-fast": {
      "cost": [
       0.8,
@@ -45402,7 +47270,8 @@
       0.0,
       0.0
      ],
-     "limit": 128000
+     "limit": 128000,
+     "status": "deprecated"
     },
     "openai/gpt-4.1": {
      "cost": [
@@ -45429,7 +47298,8 @@
       0.025,
       0.0
      ],
-     "limit": 1047576
+     "limit": 1047576,
+     "status": "deprecated"
     },
     "openai/gpt-4o": {
      "cost": [
@@ -45483,20 +47353,11 @@
      ],
      "limit": 400000
     },
-    "openai/gpt-5-chat": {
-     "cost": [
-      1.25,
-      10.0,
-      0.125,
-      0.0
-     ],
-     "limit": 128000
-    },
     "openai/gpt-5-codex": {
      "cost": [
       1.25,
       10.0,
-      0.125,
+      0.13,
       0.0
      ],
      "limit": 400000
@@ -45532,7 +47393,7 @@
      "cost": [
       1.25,
       10.0,
-      0.125,
+      0.13,
       0.0
      ],
      "limit": 400000
@@ -45550,7 +47411,7 @@
      "cost": [
       0.25,
       2.0,
-      0.025,
+      0.03,
       0.0
      ],
      "limit": 400000
@@ -45559,7 +47420,7 @@
      "cost": [
       1.25,
       10.0,
-      0.125,
+      0.13,
       0.0
      ],
      "limit": 128000
@@ -45581,15 +47442,6 @@
       0.0
      ],
      "limit": 400000
-    },
-    "openai/gpt-5.2-chat": {
-     "cost": [
-      1.75,
-      14.0,
-      0.175,
-      0.0
-     ],
-     "limit": 128000
     },
     "openai/gpt-5.2-codex": {
      "cost": [
@@ -45683,10 +47535,10 @@
     },
     "openai/gpt-5.6-luna": {
      "cost": [
-      1.0,
-      6.0,
-      0.1,
-      1.25
+      0.2,
+      1.2,
+      0.02,
+      0.25
      ],
      "limit": 1050000
     },
@@ -45701,10 +47553,10 @@
     },
     "openai/gpt-5.6-terra": {
      "cost": [
-      2.5,
-      15.0,
-      0.25,
-      3.125
+      2.0,
+      12.0,
+      0.2,
+      2.5
      ],
      "limit": 1050000
     },
@@ -45807,7 +47659,8 @@
       7.5,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "openai/o3": {
      "cost": [
@@ -45834,7 +47687,8 @@
       0.55,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
     },
     "openai/o3-pro": {
      "cost": [
@@ -45852,7 +47706,26 @@
       0.275,
       0.0
      ],
-     "limit": 200000
+     "limit": 200000,
+     "status": "deprecated"
+    },
+    "poolside/laguna-s-2.1": {
+     "cost": [
+      0.1,
+      0.2,
+      0.01,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "poolside/laguna-s-2.1-free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 256000
     },
     "sakana/fugu-ultra": {
      "cost": [
@@ -45881,6 +47754,15 @@
      ],
      "limit": 256000
     },
+    "tencent/hy3": {
+     "cost": [
+      0.14,
+      0.58,
+      0.035,
+      0.0
+     ],
+     "limit": 262144
+    },
     "thinkingmachines/inkling": {
      "cost": [
       1.0,
@@ -45889,6 +47771,15 @@
       0.0
      ],
      "limit": 256000
+    },
+    "thinkingmachines/inkling-small": {
+     "cost": [
+      0.5,
+      1.2,
+      0.1,
+      0.0
+     ],
+     "limit": 1000000
     },
     "xai/grok-4.1-fast-non-reasoning": {
      "cost": [
@@ -46081,9 +47972,9 @@
     },
     "zai/glm-5": {
      "cost": [
-      0.95,
-      3.15,
-      0.2,
+      1.0,
+      3.2,
+      0.0,
       0.0
      ],
      "limit": 202800
@@ -46099,8 +47990,8 @@
     },
     "zai/glm-5.1": {
      "cost": [
-      1.3,
-      4.3,
+      1.4,
+      4.4,
       0.26,
       0.0
      ],
@@ -46108,12 +47999,12 @@
     },
     "zai/glm-5.2": {
      "cost": [
-      1.4,
-      4.4,
-      0.26,
+      1.1,
+      3.851,
+      0.275,
       0.0
      ],
-     "limit": 1040000
+     "limit": 1000000
     },
     "zai/glm-5.2-fast": {
      "cost": [
@@ -46459,6 +48350,15 @@
      ],
      "limit": 196608
     },
+    "MiniMaxAI/MiniMax-M3": {
+     "cost": [
+      0.23,
+      0.96,
+      0.05,
+      0.0
+     ],
+     "limit": 262144
+    },
     "OpenPipe/Qwen3-14B-Instruct": {
      "cost": [
       0.05,
@@ -46572,9 +48472,9 @@
     },
     "google/gemma-4-31B-it": {
      "cost": [
-      0.12,
-      0.35,
-      0.09,
+      0.1,
+      0.34,
+      0.1,
       0.0
      ],
      "limit": 262144
@@ -46636,21 +48536,30 @@
     },
     "moonshotai/Kimi-K2.6": {
      "cost": [
-      0.95,
-      4.0,
-      0.16,
+      0.65,
+      3.41,
+      0.15,
       0.0
      ],
      "limit": 262144
     },
     "moonshotai/Kimi-K2.7-Code": {
      "cost": [
-      0.94,
-      4.0,
-      0.19,
+      0.71,
+      3.5,
+      0.15,
       0.0
      ],
      "limit": 262144
+    },
+    "moonshotai/Kimi-K3": {
+     "cost": [
+      3.0,
+      15.0,
+      0.3,
+      0.0
+     ],
+     "limit": 1048576
     },
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8": {
      "cost": [
@@ -46672,9 +48581,9 @@
     },
     "openai/gpt-oss-120b": {
      "cost": [
-      0.04,
-      0.14,
-      0.04,
+      0.03,
+      0.17,
+      0.03,
       0.0
      ],
      "limit": 131072
@@ -46699,9 +48608,9 @@
     },
     "zai-org/GLM-5.2": {
      "cost": [
-      1.39,
-      4.4,
-      0.26,
+      0.76,
+      2.42,
+      0.14,
       0.0
      ],
      "limit": 262144
@@ -47043,11 +48952,101 @@
     "claude-fable-5": {
      "cost": [
       3.0,
-      18.0,
+      18.5,
       0.3,
       0.0
      ],
      "limit": 1000000
+    },
+    "claude-haiku-4-5": {
+     "cost": [
+      0.6,
+      3.7,
+      0.06,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "claude-opus-4-8": {
+     "cost": [
+      1.5,
+      9.25,
+      0.15,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "claude-sonnet-4-6": {
+     "cost": [
+      0.9,
+      5.55,
+      0.09,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "gemini-3.5-flash": {
+     "cost": [
+      1.55,
+      12.2,
+      0.155,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "gpt-5.4": {
+     "cost": [
+      0.75,
+      6.0,
+      0.075,
+      0.0
+     ],
+     "limit": 1050000
+    },
+    "gpt-5.4-mini": {
+     "cost": [
+      0.375,
+      4.0,
+      0.0375,
+      0.0
+     ],
+     "limit": 272000
+    },
+    "gpt-5.5": {
+     "cost": [
+      1.5,
+      12.0,
+      0.15,
+      0.0
+     ],
+     "limit": 1050000
+    },
+    "gpt-5.6": {
+     "cost": [
+      1.5,
+      12.0,
+      0.15,
+      0.0
+     ],
+     "limit": 372000
+    },
+    "gpt-5.6-sol": {
+     "cost": [
+      1.5,
+      12.0,
+      0.15,
+      0.0
+     ],
+     "limit": 372000
+    },
+    "gpt-5.6-terra": {
+     "cost": [
+      1.5,
+      2.0,
+      0.15,
+      0.0
+     ],
+     "limit": 372000
     },
     "xpersona-frieren-coder": {
      "cost": [
@@ -47203,15 +49202,6 @@
   },
   "zai-coding-plan": {
    "models": {
-    "glm-4.5-air": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 131072
-    },
     "glm-4.7": {
      "cost": [
       0.0,
@@ -47230,15 +49220,6 @@
      ],
      "limit": 200000
     },
-    "glm-5.1": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 200000
-    },
     "glm-5.2": {
      "cost": [
       0.0,
@@ -47248,14 +49229,14 @@
      ],
      "limit": 1000000
     },
-    "glm-5v-turbo": {
+    "glm-5.2-highspeed[1m]": {
      "cost": [
       0.0,
       0.0,
       0.0,
       0.0
      ],
-     "limit": 200000
+     "limit": 1000000
     }
    },
    "name": "Z.AI Coding Plan"
@@ -48497,15 +50478,6 @@
   },
   "zhipuai-coding-plan": {
    "models": {
-    "glm-4.5-air": {
-     "cost": [
-      0.0,
-      0.0,
-      0.0,
-      0.0
-     ],
-     "limit": 131072
-    },
     "glm-4.6v": {
      "cost": [
       0.3,
@@ -48543,6 +50515,15 @@
      "limit": 200000
     },
     "glm-5.2": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "glm-5.2-highspeed[1m]": {
      "cost": [
       0.0,
       0.0,
