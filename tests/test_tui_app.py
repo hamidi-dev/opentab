@@ -1188,6 +1188,165 @@ def test_clicking_active_column_header_toggles_direction():
     assert app.sort_by == "title" and app.sort_reverse is False
 
 
+def test_last_activity_sort_orders_by_activity_and_falls_back_to_created_at():
+    app = app_with(
+        [
+            # Started first but stayed active longest -- last_activity ranks it above
+            # "b"/"c", even though "date" (created_at) ranks it near the bottom.
+            workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00"),
+            workflow("b", "2026-06-03 12:00:00"),  # no ended_at -> falls back to created_at
+            workflow("c", "2026-06-02 12:00:00"),  # no ended_at -> falls back to created_at
+            # No ended_at, but its OWN created_at is later than "a"'s ended_at -- this
+            # only ranks first if the fallback key is really (ended_at or created_at),
+            # not bare ended_at (which would leave it with an empty-string key and
+            # stuck behind every session that has any ended_at at all).
+            workflow("d", "2026-06-07 12:00:00"),
+        ]
+    )
+    app.focus = "months"  # last_activity is unreachable while the Days pane is focused
+    app.sort_by = "last_activity"
+    assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["d", "a", "b", "c"]
+
+    app.sort_by = "date"
+    assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["d", "b", "c", "a"]
+
+
+def test_last_activity_sort_is_unavailable_while_the_days_pane_is_focused():
+    # Per spec, "last_activity" is a Months/Years feature -- the Days pane's Sessions
+    # list is by definition every session that STARTED that day, so ranking it by an
+    # out-of-day activity timestamp doesn't apply there. It must not even be offered.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00"),
+            workflow("b", "2026-06-02 12:00:00"),
+        ]
+    )
+    app.focus = "months"
+    app.tab = len(app.current_tabs()) - 1  # the Sessions tab (always last, day/month/year)
+    assert "last_activity" in app.current_sort_options()
+    assert "last_activity" in app.sort_menu_options()
+
+    app.focus = "years"
+    app.tab = len(app.current_tabs()) - 1  # re-set: day/month/year tabs aren't all the same length
+    assert "last_activity" in app.current_sort_options()
+
+    app.focus = "days"
+    app.tab = len(app.current_tabs()) - 1  # day_tabs is a different tuple/length
+    options = app.current_sort_options()
+    # "cost" staying present is what makes the negative checks below meaningful --
+    # without it they'd pass just as well if current_sort_options() returned ()
+    # entirely (e.g. on_sessions_tab wrongly False), which is a different bug.
+    assert "cost" in options and "last_activity" not in options
+    assert "last_activity" not in app.sort_menu_options()
+    # A leftover self.focus from a previous Time-mode session must not leak the
+    # restriction into Projects mode, where "days" means nothing.
+    app.set_browse_mode("projects")
+    app.tab = len(app.current_tabs()) - 1
+    assert "last_activity" in app.current_sort_options()
+
+
+def test_last_activity_sort_falls_back_and_resumes_across_a_day_focus_round_trip():
+    # Switching focus never mutates sort_by -- it's the same non-destructive fallback
+    # pattern session_sort_key() already uses for any out-of-vocabulary value, just
+    # with a context-dependent vocabulary instead of the static one.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, ended_at="2026-06-05 09:00:00"),
+            workflow("b", "2026-06-02 12:00:00", cost=5),
+        ]
+    )
+    app.sort_by = "last_activity"
+    app.focus = "months"
+    assert app.session_sort_key() == "last_activity"
+    assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["a", "b"]
+
+    app.focus = "days"
+    assert app.session_sort_key() == "cost"  # falls back to sort_options[0], not "date"
+    assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["b", "a"]
+    assert app.sort_by == "last_activity"  # the stored preference itself is untouched
+
+    app.focus = "months"
+    assert app.session_sort_key() == "last_activity"  # resumes, nothing was lost
+
+
+def test_apply_header_sort_rejects_last_activity_while_the_days_pane_is_focused():
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
+    app.focus = "days"
+    app.apply_header_sort("last_activity", "session")
+    # Nothing mutated at all -- an early return, not a silent substitution.
+    assert app.sort_by == "cost" and app.sort_reverse is False
+
+
+def test_apply_header_sort_still_accepts_last_activity_in_projects_mode_with_stale_days_focus():
+    # set_browse_mode("projects") leaves self.focus wherever it was (it's meaningless
+    # there) -- and "days" is the DEFAULT, so this is the common case, not an edge
+    # case: a fresh app that never touched Time mode's sidebar is already in it.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=1, ended_at="2026-06-05 09:00:00"),
+            workflow("b", "2026-06-02 12:00:00", cost=5),
+        ]
+    )
+    app.set_browse_mode("projects")
+    assert app.focus == "days"  # confirms this exercises the leak-guard, not a no-op
+    app.apply_header_sort("last_activity", "session")
+    assert app.sort_by == "last_activity" and app.sort_reverse is False
+
+
+def test_clicking_the_last_activity_column_sets_it_and_re_click_flips_direction():
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00"),
+            workflow("b", "2026-06-02 12:00:00"),
+        ]
+    )
+    app.focus = "months"  # last_activity is unreachable while the Days pane is focused
+    app.apply_header_sort("last_activity", "session")
+    assert app.sort_by == "last_activity" and app.sort_reverse is False
+    assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["a", "b"]
+    app.apply_header_sort("last_activity", "session")  # re-click flips direction
+    assert app.sort_reverse is True
+    assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["b", "a"]
+
+
+def test_session_date_column_follows_the_active_sort():
+    # The Date column is what both the browse preview and the zoom picker draw off
+    # (session_header_text/session_row_text/session_sort_columns feed both), so
+    # testing these three is testing both frames at once.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
+    app.focus = "months"  # a scope spanning more than one day, so the date form is "Started"
+    rnd = app.renderer
+    assert rnd.session_date_column() == ("date", "Started")
+    assert "Started" in rnd.session_header_text(False, 0)
+    assert rnd.session_sort_columns(0)[0] == ("date", "Started")  # first column, not just present
+
+    app.sort_by = "last_activity"
+    assert rnd.session_date_column() == ("last_activity", "Last act")
+    assert "Last act" in rnd.session_header_text(False, 0)
+    assert rnd.session_sort_columns(0)[0] == ("last_activity", "Last act")
+
+    w = app.all_workflows[0]
+    assert rnd.session_date_cell(w) == "2026-06-05"  # the activity date, not the start
+    assert "2026-06-05" in rnd.session_row_text(w, " ", False, 0)
+
+
+def test_session_date_column_header_never_overflows_its_field():
+    # "Last act" plus sort_heading()'s " v"/" ^" arrow must still fit the header's
+    # `:<10` field -- a longer label would push every column after it out of
+    # alignment with the rows beneath (regression: "Last act." + " v" was 11 chars).
+    app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
+    app.focus = "months"  # last_activity is unreachable while the Days pane is focused
+    app.sort_by = "last_activity"
+    rnd = app.renderer
+    heading = rnd.sort_heading(*rnd.session_date_column())  # includes the " v"/" ^" arrow
+    assert len(heading) <= 10
+    # Every subsequent column starts at the same offset as under any other sort key.
+    cost_offset_here = rnd.session_header_text(False, 0).index("Cost")
+    app.sort_by = "date"
+    cost_offset_under_date = rnd.session_header_text(False, 0).index("Cost")
+    assert cost_offset_here == cost_offset_under_date
+
+
 def test_header_arrow_reflects_sort_direction():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/a")])
     app.set_browse_mode("projects")

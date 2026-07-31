@@ -285,8 +285,25 @@ class App:
     # its sessions, its model mix, and which projects ran on it. "Harnesses" is injected
     # after Overview by current_tabs like every other scope (the fleet is always combined).
     machine_tabs = ("Overview", "Sessions", "Models", "Projects")
-    sort_options = ("cost", "tokens", "date", "duration", "subagents", "project", "title")
-    project_sort_options = ("cost", "tokens", "sessions", "subagents", "project", "recency")
+    sort_options = (
+        "cost",
+        "tokens",
+        "date",
+        "last_activity",
+        "duration",
+        "subagents",
+        "project",
+        "title",
+    )
+    project_sort_options = (
+        "cost",
+        "tokens",
+        "sessions",
+        "subagents",
+        "project",
+        "recency",
+        "last_activity",
+    )
     subagent_sort_options = ("cost", "tokens", "date", "title", "model", "agent", "depth")
     # The P overlay's price table sorts by model name, the blended eff column, your
     # usage share, or any of the four list-price columns. "eff" is the default and
@@ -886,6 +903,7 @@ class App:
                 subagents=sum(w.subagents for w in workflows),
                 unpriced_tokens=sum(w.unpriced_tokens for w in workflows),
                 last_active=max(w.created_at for w in workflows),
+                last_activity=max((w.ended_at or w.created_at) for w in workflows),
                 ignored=directory in self.ignored_projects,
             )
             for directory, workflows in grouped.items()
@@ -914,6 +932,8 @@ class App:
             return sorted(rows, key=lambda p: p.directory.lower(), reverse=desc)
         if sort_by == "recency":
             return sorted(rows, key=lambda p: p.last_active, reverse=desc)
+        if sort_by == "last_activity":
+            return sorted(rows, key=lambda p: p.last_activity, reverse=desc)
         return sorted(rows, key=lambda p: (p.cost, p.tokens), reverse=desc)
 
     # --- Machines mode (one row per box; a fleet adds the pulled ones) -------
@@ -3960,7 +3980,7 @@ class App:
 
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
         sort_by = self.session_sort_key()
-        desc = self.sort_descending(sort_by, self.sort_reverse)
+        desc = self.sort_descending(sort_by, self.session_sort_reverse())
         if sort_by == "cost":
             return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=desc)
         if sort_by == "tokens":
@@ -3987,6 +4007,12 @@ class App:
             )
             return sorted(
                 by_cost, key=lambda item: self.project_root(item.directory).lower(), reverse=desc
+            )
+        if sort_by == "last_activity":
+            return sorted(
+                rows,
+                key=lambda item: (item.ended_at or item.created_at, item.created_at),
+                reverse=desc,
             )
         return sorted(rows, key=lambda item: item.created_at, reverse=desc)
 
@@ -4200,12 +4226,31 @@ class App:
         # The session view's Subagents tab; its own sort pair, like project lists.
         return self.view == "session" and self.on_subagents_tab
 
+    def active_session_sort_options(self) -> tuple[str, ...]:
+        # "last_activity" is a Months/Years feature, per spec, deliberately not Days:
+        # a single Day's Sessions list is read by start time, and an activity can run
+        # into a LATER day than the one the row is filed under -- ranking the list by
+        # a timestamp that can point outside its own scope would be more confusing
+        # than useful there, even though the values themselves are perfectly valid.
+        if self.browse_mode == "time" and self.focus == "days":
+            return tuple(k for k in self.sort_options if k != "last_activity")
+        return self.sort_options
+
     # The three lists' active sort keys, each validated against its own vocabulary.
     # Headers and sorters read these directly (never each other's, and never the
     # context-dependent effective_sort_by) so that when a project list and a session
     # list share the screen neither borrows the other's sort arrow.
     def session_sort_key(self) -> str:
-        return self.sort_by if self.sort_by in self.sort_options else self.sort_options[0]
+        options = self.active_session_sort_options()
+        return self.sort_by if self.sort_by in options else options[0]
+
+    def session_sort_reverse(self) -> bool:
+        # The direction belongs to the stored column; falling back to a different
+        # EFFECTIVE key (active_session_sort_options() dropped "last_activity" while
+        # the Days pane is focused) must not carry that column's own reversed flag
+        # onto the fallback column's natural order -- e.g. a direction flip saved
+        # for "last_activity" must not silently sort Cost ascending on the Days pane.
+        return self.sort_reverse if self.sort_by in self.active_session_sort_options() else False
 
     def project_sort_key(self) -> str:
         return (
@@ -4349,7 +4394,7 @@ class App:
                 self.project_sort_reverse = False
             self.project_index = 0
         else:
-            if key not in self.sort_options:
+            if key not in self.active_session_sort_options():
                 return
             if self.sort_by == key:
                 self.sort_reverse = not self.sort_reverse
@@ -6928,7 +6973,7 @@ class App:
         if self.view == "session" and self.on_subagents_tab:
             return self.subagent_sort_options
         if self.view != "session" and self.on_sessions_tab:
-            return self.sort_options
+            return self.active_session_sort_options()
         return ()
 
     def workflows_for_day(self, day: str, source: list[Workflow] | None = None) -> list[Workflow]:

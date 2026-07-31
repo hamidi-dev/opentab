@@ -925,6 +925,32 @@ def test_projects_sort_by_recency():
     assert by_dir["/tmp/new"].last_active == "2026-06-10 09:00:00"
 
 
+def test_projects_sort_by_last_activity_differs_from_recency():
+    # /tmp/new's session started later than /tmp/old's, so recency (newest session
+    # START) ranks it first -- but /tmp/old's session ran on well past that, so
+    # last_activity (newest ended_at-or-created_at) must rank /tmp/old first instead.
+    app = app_with(
+        [
+            workflow(
+                "o1",
+                "2026-06-01 09:00:00",
+                cost=99,
+                directory="/tmp/old",
+                ended_at="2026-06-12 09:00:00",
+            ),
+            workflow("n1", "2026-06-10 09:00:00", cost=1, directory="/tmp/new"),
+        ]
+    )
+    app.project_sort_by = "recency"
+    assert [p.directory for p in app.projects] == ["/tmp/new", "/tmp/old"]
+
+    app.project_sort_by = "last_activity"
+    assert [p.directory for p in app.projects] == ["/tmp/old", "/tmp/new"]
+    by_dir = {p.directory: p for p in app.projects}
+    assert by_dir["/tmp/old"].last_activity == "2026-06-12 09:00:00"
+    assert by_dir["/tmp/new"].last_activity == "2026-06-10 09:00:00"  # falls back to created_at
+
+
 def test_project_header_aligns_with_project_rows():
     app = app_with(
         [workflow("a", "2026-06-01 12:00:00", cost=12.34, tokens=1500, directory="/tmp/project")]

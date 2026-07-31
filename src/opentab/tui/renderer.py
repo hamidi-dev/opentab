@@ -943,7 +943,7 @@ class Renderer:
     def sort_heading(self, key: str, label: str) -> str:
         if self.session_sort_key() != key:
             return label
-        desc = self.sort_descending(key, self.sort_reverse)
+        desc = self.sort_descending(key, self.session_sort_reverse())
         return f"{label} {'v' if desc else '^'}"
 
     def project_sort_heading(self, key: str, label: str) -> str:
@@ -971,6 +971,28 @@ class Renderer:
 
     def session_date_label(self) -> str:
         return "Started" if self._scope_spans_days() else "Time"
+
+    def session_date_column(self) -> tuple[str, str]:
+        # The Date column's (sort key, header label) pair -- swaps to the activity
+        # timestamp under a "last_activity" sort so the visible order is legible: the
+        # column you're sorted by is the one shown, not always the session's start.
+        # "Last act" (not "Last act.") is deliberate: the header field is `:<10` and
+        # sort_heading() always appends a " v"/" ^" arrow, so anything over 8 chars
+        # overflows the column and shifts every header after it -- "Started"/"Time"
+        # both clear it too, just with room to spare.
+        if self.session_sort_key() == "last_activity":
+            return ("last_activity", "Last act")
+        return ("date", self.session_date_label())
+
+    def session_date_cell(self, workflow: Workflow) -> str:
+        if self.session_sort_key() != "last_activity":
+            return self.session_started(workflow)
+        # Always a date, never a bare clock time: App.active_session_sort_options()
+        # makes "last_activity" unreachable in a single-day scope (browse_mode=="time"
+        # and focus=="days" -- the one case _scope_spans_days() is False), so a session
+        # sorted by activity is always shown across a scope wide enough that a clock
+        # time alone would be ambiguous anyway.
+        return (workflow.ended_at or workflow.created_at)[:10]
 
     def _mark_session_header(self, lines: list[str], columns: tuple) -> None:
         # The just-appended line is a session-list column header (browse preview);
@@ -1102,7 +1124,7 @@ class Renderer:
         return False, 0, False
 
     def session_header_text(self, models: bool, proj_w: int, dur: bool = True) -> str:
-        header = f"  {self.sort_heading('date', self.session_date_label()):<10} "
+        header = f"  {self.sort_heading(*self.session_date_column()):<10} "
         if dur:
             header += f"{self.sort_heading('duration', 'Worked'):>8} "
         header += (
@@ -1142,7 +1164,7 @@ class Renderer:
     def session_row_text(
         self, workflow: Workflow, marker: str, models: bool, proj_w: int, dur: bool = True
     ) -> str:
-        text = f"{marker} {self.session_started(workflow):<10} "
+        text = f"{marker} {self.session_date_cell(workflow):<10} "
         if dur:
             text += f"{self.session_duration(workflow):>8} "
         text += (
@@ -1163,7 +1185,7 @@ class Renderer:
 
     def session_sort_columns(self, proj_w: int, dur: bool = True) -> tuple:
         # (sort_key, label) in drawn order, for the clickable headers of both frames.
-        columns = [("date", self.session_date_label()), *self.SESSION_SORT_COLUMNS]
+        columns = [self.session_date_column(), *self.SESSION_SORT_COLUMNS]
         if dur:
             columns.insert(1, ("duration", "Worked"))  # right after the date cell
         if proj_w:
@@ -5167,7 +5189,8 @@ class Renderer:
     SORT_LABELS = {
         "cost": "Cost",
         "tokens": "Tokens",
-        "date": "Date",
+        "date": "Start Date",
+        "last_activity": "Last Activity",
         "duration": "Worked",
         "recency": "Recency",
         "subagents": "Subagents",
