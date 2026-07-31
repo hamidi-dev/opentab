@@ -695,3 +695,39 @@ def test_claude_session_kind_marker_survives_an_oversized_final_record():
         store = _adverse_order(ot.ClaudeStore(root, _claude_args()), root)
         assert store._replays_history(bg) is True
         assert {w.id: w.total_tokens for w in store.workflows()}["b-parent"] == 300
+
+
+def test_claude_drill_in_reads_one_transcript_without_parsing_the_corpus():
+    # The --goto path: opening a session must not re-read every transcript under
+    # ~/.claude/projects (measured 2.2s on a 367-file corpus, paid even with the
+    # warm-start cache hot, because CachedStore serves workflows() without parsing).
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ot.ClaudeStore(_replay_corpus(tmp), _claude_args())
+        rows = store.message_timeline("b-parent")
+        assert store._sessions is None  # no corpus parse
+        assert [r["tokens_total"] for r in rows] == [150, 150]
+        assert len(store.workflow_nodes("b-parent")) == 1
+        assert store._sessions is None  # still not, and the memo served the second call
+
+
+def test_claude_drill_in_widens_to_the_corpus_for_a_replaying_transcript():
+    # The one session that CANNOT be read alone: its file holds its parent's records
+    # too, and the marker tags the whole session rather than the replayed rows, so
+    # nothing inside the file separates them. Reading it alone would report 310 tokens
+    # against a list row of 10 -- so the drill-in widens to the corpus and they agree.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ot.ClaudeStore(_replay_corpus(tmp), _claude_args())
+        rows = store.message_timeline("a-bg")
+        assert store._sessions is not None  # widened, deliberately
+        assert [r["tokens_total"] for r in rows] == [10]
+
+
+def test_claude_status_nodes_never_widens_to_the_corpus():
+    # --status polls a tmux status line; it must answer off the single transcript even
+    # for a replaying session, where widening would make every poll read the tree.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ot.ClaudeStore(_replay_corpus(tmp), _claude_args())
+        assert len(store.status_nodes("a-bg")) == 1
+        assert store._sessions is None
+        assert store.status_nodes("nope-not-a-session") == []
+        assert store._sessions is None

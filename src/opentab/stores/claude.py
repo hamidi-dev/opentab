@@ -50,6 +50,7 @@ class ClaudeStore:
         # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
+        self._one: tuple[str, dict] | None = None  # last single-transcript parse (_session)
         self._git_root_cache: dict[str, str] = {}
 
     # --- token accumulation helpers ------------------------------------------
@@ -276,17 +277,62 @@ class ClaudeStore:
         self._sessions = self._parse_texts(text for _path, text in read_files_parallel(files))
         return self._sessions
 
-    def _parse_one(self, workflow_id: str) -> dict | None:
+    def _parse_one(self, workflow_id: str, paths: list[str] | None = None) -> dict | None:
         # Parse only this session's own transcript(s) -- the --status fast path, so
         # pricing one session never pays for the whole ~/.claude/projects tree. A
         # transcript can replay resumed/forked history under other sessionIds; the
         # grouping lands those rows under their own ids and we return just ours.
-        paths = self._transcripts(workflow_id)
+        if paths is None:
+            paths = self._transcripts(workflow_id)
         if not paths:
             return None
         return self._parse_texts(text for _path, text in read_files_parallel(paths)).get(
             workflow_id
         )
+
+    def _session(self, workflow_id: str, fallback: bool = True) -> dict | None:
+        # One session's parsed state for the per-session extras (subagent tree, Turns,
+        # Tools, Context), off the single-transcript parse when the whole corpus hasn't
+        # been read yet. Those four used to call _parse() each, so opening ONE session
+        # read every transcript under ~/.claude/projects: 2.2s on a 367-file corpus, and
+        # paid even with the warm-start cache HOT -- CachedStore serves workflows() from
+        # disk without ever parsing, so the drill-in was the first thing that did, which
+        # made `--goto` (a tmux popup that lands straight in a session) slow no matter
+        # what. _parse_one reads just this session's own transcripts + sidecars: ~5ms.
+        #
+        # fallback=False is the --status contract (status_nodes): never widen to the
+        # whole tree.
+        if self._sessions is not None:
+            return self._sessions.get(workflow_id)  # already parsed: nothing to save
+        if self._one is not None and self._one[0] == workflow_id:
+            return self._one[1]
+        paths = self._transcripts(workflow_id)
+        # A replay-capable transcript is the one case that CANNOT be read alone: it
+        # holds its parent's records as well as its own, and the marker tags the whole
+        # session rather than the replayed rows (measured: all 257 replayed records and
+        # all 29 own-new ones carry it alike), so nothing in the file separates them.
+        # Only the corpus parse can, by letting the parent claim its keys first.
+        if paths and not any(self._replays_history(p) for p in paths):
+            s = self._parse_one(workflow_id, paths)
+            if s is not None:
+                # Single-entry, not a growing map: App.prefetch_session_data asks for
+                # all four extras of the same session back to back (that burst is the
+                # whole point), while browsing N sessions in turn must not accumulate a
+                # second copy of the corpus in memory.
+                self._one = (workflow_id, s)
+                return s
+        if not fallback:
+            # --status must answer without reading the tree, so it keeps the
+            # single-transcript answer even for a replaying session (where that
+            # over-reports by the history it replayed -- what --status already did
+            # before this fast path existed).
+            return self._parse_one(workflow_id, paths) if paths else None
+        # Either a replaying transcript (above), or _parse_one came up empty while the
+        # session still exists: a resumed/forked transcript replays records under their
+        # ORIGINAL sessionId, so a session whose own file was since deleted or rotated
+        # survives only inside another session's file -- _transcripts() can't find it by
+        # name, the corpus parse still groups it.
+        return self._parse().get(workflow_id)
 
     def _parse_texts(self, texts) -> dict[str, dict]:
         sessions: dict[str, dict] = {}
@@ -543,7 +589,7 @@ class ClaudeStore:
         # Estimated composition rows for the Context tab (what filled the window),
         # flattened by util.context_rows; the measured growth curve comes from the
         # turn rows, not from here.
-        s = self._parse().get(workflow_id)
+        s = self._session(workflow_id)
         return context_rows(s["context"]) if s else []
 
     def supports_context(self, workflow_id: str) -> bool:
@@ -683,6 +729,7 @@ class ClaudeStore:
     # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
+        self._one = None  # ... and so must the single-transcript memo behind _session
         sessions = self._parse()
         rows = []
         for sid, s in sessions.items():
@@ -807,18 +854,18 @@ class ClaudeStore:
         return session_id if self._transcripts(session_id) else None
 
     def workflow_nodes(self, workflow_id: str) -> list[dict]:
-        s = self._parse().get(workflow_id)
+        s = self._session(workflow_id)
         if not s:
             return []
         return self._nodes(workflow_id, s)
 
     def status_nodes(self, workflow_id: str) -> list[dict]:
-        # workflow_nodes for the --status one-shot: identical rows, but off the
-        # single-transcript parse when nothing is loaded yet -- a status poll must
-        # never trigger the full-tree parse.
-        if self._sessions is not None:
-            return self.workflow_nodes(workflow_id)
-        s = self._parse_one(workflow_id)
+        # workflow_nodes for the --status one-shot: identical rows off the same
+        # single-transcript parse, minus the full-corpus fallback. _price_root only
+        # asks after root_of confirmed the transcript, so nothing here means "not this
+        # backend's session" -- and a status poll must answer that without reading
+        # the tree.
+        s = self._session(workflow_id, fallback=False)
         if not s:
             return []
         return self._nodes(workflow_id, s)
@@ -847,7 +894,7 @@ class ClaudeStore:
         # ts <= the turn's ts owns it -- so each turn is tagged with the prompt that
         # triggered it (sidechain turns inherit the main thread's current prompt).
         # Real rows -- App._scale_demo_turns hides magnitudes in demo, like Tools.
-        s = self._parse().get(workflow_id)
+        s = self._session(workflow_id)
         if not s:
             return []
         prompts = sorted(s["prompts"], key=lambda p: p["ts"])
@@ -876,7 +923,7 @@ class ClaudeStore:
         # across the tool_use blocks it invoked (sidechain steps included -- the
         # subtree is one transcript). Cost stays $0 (recorded); the "$" view
         # reprices per (tool, model) row like every other Claude panel.
-        s = self._parse().get(workflow_id)
+        s = self._session(workflow_id)
         return tool_rows_from_turns(s["turns"]) if s else []
 
     def supports_tools(self, workflow_id: str) -> bool:
