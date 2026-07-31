@@ -34,6 +34,7 @@ from urllib.parse import unquote
 from opentab import __version__
 from opentab.pricing import (
     api_equivalent_cost,
+    cache_misses,
     cache_write_1h_price,
     family_label,
     has_known_price,
@@ -406,6 +407,12 @@ def session_extras(app: App, workflow_id: str) -> dict:
                 r.get("reasoning") or 0,
                 r.get("cache_read") or 0,
                 r.get("cache_write") or 0,
+                # The 1h-TTL SUBSET of that cache write, billed at 2.00x input against
+                # the 5m tier's 1.25x. The TUI's detail_turns/detail_tools have always
+                # passed it; omitting it here understated every long-write turn on the
+                # page by ~37% (measured), which is how the Turns tab came to show a
+                # $4.81 cache expiry inside a turn it priced at $3.27.
+                r.get("cache_write_1h") or 0,
             )
             turns.append(
                 {
@@ -426,6 +433,26 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     "promptFull": r.get("prompt_full") or "",
                 }
             )
+    # Turns that had to buy their context a second time because the provider's cache had
+    # died in the gap before them, computed HERE rather than in the page: unlike the
+    # what-if (armed at view time) or the compaction markers (three lines off the `ctx`
+    # each turn already ships), this needs list rates and the TTL rules, and nothing about
+    # it changes with the `$` toggle, the range or a picker. A JS twin could only drift.
+    # Only the "waited" ones travel -- the sole cause the reader can act on, and the same
+    # filter the TUI's detail_turns draws (see cache_misses for the others).
+    expiries = []
+    if turns and curve:
+        for m in cache_misses(app.session_turn_rows(workflow_id)):
+            if m.cause == "waited":
+                expiries.append(
+                    {
+                        "i": m.index,
+                        "idle": int(m.idle),
+                        "ttl": int(m.ttl),
+                        "repaid": int(m.repaid),
+                        "cost": _money6(m.cost),
+                    }
+                )
     tools = []
     if app.session_supports_tools(workflow_id):
         for r in app.session_tool_rows(workflow_id):
@@ -437,6 +464,12 @@ def session_extras(app: App, workflow_id: str) -> dict:
                 r.get("reasoning") or 0,
                 r.get("cache_read") or 0,
                 r.get("cache_write") or 0,
+                # The 1h-TTL SUBSET of that cache write, billed at 2.00x input against
+                # the 5m tier's 1.25x. The TUI's detail_turns/detail_tools have always
+                # passed it; omitting it here understated every long-write turn on the
+                # page by ~37% (measured), which is how the Turns tab came to show a
+                # $4.81 cache expiry inside a turn it priced at $3.27.
+                r.get("cache_write_1h") or 0,
             )
             tools.append(
                 {
@@ -498,7 +531,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
                 "points": points,
                 "comp": comp,
             }
-    return {"turns": turns, "tools": tools, "context": context}
+    return {"turns": turns, "tools": tools, "context": context, "expiries": expiries}
 
 
 def html_command(app: App, args: argparse.Namespace) -> int:

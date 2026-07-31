@@ -317,6 +317,11 @@ td.indent{color:var(--ink2)}
 /* a compaction between two turns: amber like the Context tab's ▼, and never folded away */
 tr.compact-row td{color:var(--accent);font-size:11.5px;padding-top:5px;
   border-top:1px dashed color-mix(in srgb, var(--accent) 45%, transparent)}
+/* an expired prompt cache before a turn. Red, not the ▼ amber, and the one place on the
+   page that earns it: every other number is money spent on work you got, while this is
+   money spent buying a context you had already bought. Never folded away either. */
+tr.expiry-row td{color:var(--bad);font-size:11.5px;padding-top:5px;
+  border-top:1px dashed color-mix(in srgb, var(--bad) 45%, transparent)}
 
 /* tooltip */
 #tip{position:fixed;z-index:100;pointer-events:none;background:var(--panel2);border:1px solid var(--line);
@@ -550,7 +555,7 @@ let FILTER = '';
 const SORT = {};
 const EXPANDED = new Set(); // table ids whose "show all" is open (reset per view)
 const VIEW = { calYear: null };
-let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null }; // per-session Turns/Tools/Context (serve)
+let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null, expiries: [] }; // per-session Turns/Tools/Context (serve)
 // The Trends overlay (T) -- mirrors the TUI's 7-tab Trends over the whole range.
 const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
 let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null };
@@ -1680,7 +1685,7 @@ function turnCompactions(turns) {
 }
 
 /* turns stay chronological on purpose: the tab answers *when* the money went. */
-function turnsTable(turns) {
+function turnsTable(turns, expiries) {
   // Folded to prompts by default (the TUI's Turns fold): one ▸ row per user prompt with
   // its subtotal, the per-turn rows (and the full prompt text) hidden until you click the
   // header. A clean overview of every prompt without the per-turn noise.
@@ -1693,8 +1698,22 @@ function turnsTable(turns) {
   }
   const comps = turnCompactions(turns);
   const freed = [...comps.values()].reduce((a, [b, af]) => a + b - af, 0);
+  // Computed server-side (web.session_extras) rather than mirrored here: unlike the
+  // compactions above -- three lines off the `ctx` each turn already carries -- this one
+  // needs list rates and the cache-TTL rules, and nothing about it moves with the $
+  // toggle or the range. One implementation, so the two frontends cannot disagree.
+  const exp = new Map((expiries || []).map(e => [e.i, e]));
+  const burnt = (expiries || []).reduce((a, e) => a + e.cost, 0);
   turns.forEach((t, i) => {
     const key = t.promptId || '';
+    const x = exp.get(i);
+    if (x)
+      // Above the ▸ header (the wait happened BEFORE that prompt) and outside `body`,
+      // like the compaction row: this table is folded to prompts by default, so a marker
+      // tucked into a collapsed group would be a marker nobody sees.
+      rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: 6 },
+        '❄ cache expired — ' + hDur(x.idle) + ' idle, ' + hTok(x.repaid)
+        + ' bought again for ' + money(x.cost) + ' (it lived ' + hDur(x.ttl) + ')')));
     if (key !== lastPrompt) {
       lastPrompt = key;
       const title = (t.promptTitle || '(prompt)').slice(0, 160) + ((t.promptTitle || '').length > 160 ? '…' : '');
@@ -1734,7 +1753,8 @@ function turnsTable(turns) {
   });
   return h('div', null,
     h('div', { class: 'hint' }, groups.size + ' prompts — click a ▸ row to expand its turns'
-      + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')),
+      + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')
+      + (exp.size ? ' · ❄ ' + exp.size + ' cache expir' + (exp.size > 1 ? 'ies' : 'y') + ', ' + money(burnt) + ' spent re-buying context' : '')),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Agent'), h('th', null, 'Model'),
         h('th', { class: 'r' }, 'Cost'), h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cumulative'))),
@@ -2373,7 +2393,7 @@ function renderDetail(sc, ws) {
       { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
     ], nodes)));
   } else if (TAB === 'Turns') root.appendChild(pane('Turns · cost over time',
-    EXTRAS.loading ? h('div', { class: 'hint' }, 'loading turns…') : turnsTable(EXTRAS.turns)));
+    EXTRAS.loading ? h('div', { class: 'hint' }, 'loading turns…') : turnsTable(EXTRAS.turns, EXTRAS.expiries)));
   else if (TAB === 'Tools') root.appendChild(pane('Tools',
     EXTRAS.loading ? h('div', { class: 'hint' }, 'loading tools…') : toolsTable(EXTRAS.tools)));
   else if (TAB === 'Context') {
@@ -2468,13 +2488,13 @@ function chrome() {
 /* ---------- session extras (the --serve drill-in fetch) ---------- */
 function ensureExtras(sc) {
   if (sc.kind !== 's' || !META.serve || EXTRAS.id === sc.id) return;
-  EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], context: null };
+  EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], context: null, expiries: [] };
   fetch('/api/session/' + encodeURIComponent(sc.id)).then(r => r.json()).then(x => {
-    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], context: x.context || null };
+    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], context: x.context || null, expiries: x.expiries || [] };
     render(false);
   }).catch(err => {
     console.error('session extras failed:', err);
-    EXTRAS = { id: sc.id, loading: false, turns: [], tools: [], context: null };
+    EXTRAS = { id: sc.id, loading: false, turns: [], tools: [], context: null, expiries: [] };
     render(false);
   });
 }

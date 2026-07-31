@@ -530,7 +530,7 @@ def test_web_report_server_serves_page_extras_and_404():
         assert '"serve":true' in page  # the served page knows the extras exist
         extras = json.loads(urllib.request.urlopen(base + "/api/session/w1").read().decode("utf-8"))
         # FakeStore: no turns/tools support, and no turns means no context curve
-        assert extras == {"turns": [], "tools": [], "context": None}
+        assert extras == {"turns": [], "tools": [], "context": None, "expiries": []}
         try:
             urllib.request.urlopen(base + "/nope")
             raise AssertionError("expected a 404")
@@ -1178,3 +1178,113 @@ def test_web_names_stay_reachable_from_a_cold_package_import():
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "ok"
+
+
+class ExpiryFakeStore(FakeStore):
+    # Two turns holding 300k of cached context, the second arriving two hours later --
+    # by which time the 1h-TTL entry it would have read back was gone.
+    def supports_turns(self, wid):
+        return True
+
+    def message_timeline(self, wid):
+        base = {
+            "depth": 0,
+            "agent": "-",
+            "model_name": "anthropic/claude-opus-4-8",
+            "cost": 0.0,
+            "input": 10,
+            "output": 100,
+            "reasoning": 0,
+            "tokens_total": 300110,
+        }
+        return [
+            dict(
+                base,
+                time="2026-06-10 10:00:00",
+                cache_read=200000,
+                cache_write=100000,
+                cache_write_1h=100000,
+                prompt_id="a",
+                prompt_title="first",
+                prompt_full="first",
+            ),
+            dict(
+                base,
+                time="2026-06-10 12:00:00",
+                cache_read=0,
+                cache_write=300000,
+                cache_write_1h=300000,
+                prompt_id="b",
+                prompt_title="the late one",
+                prompt_full="the late one",
+            ),
+        ]
+
+
+def test_web_ships_cache_expiries_precomputed_rather_than_mirroring_the_rule():
+    # Unlike the what-if (armed at view time) and the compaction markers (three lines off
+    # the `ctx` each turn already carries), this needs list rates and the TTL rules and
+    # moves with nothing on the page -- so it is computed once, in Python, and the page
+    # only draws it. A JS twin here could only drift away from the TUI.
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(ExpiryFakeStore([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
+    (exp,) = ot.session_extras(app, "w1")["expiries"]
+    assert exp["i"] == 1 and exp["idle"] == 7200 and exp["ttl"] == ot.CACHE_TTL_LONG
+    assert exp["repaid"] == 300000
+    # The same figure the TUI's ❄ line quotes, from the same helper.
+    (miss,) = (m for m in ot.cache_misses(app.session_turn_rows("w1")) if m.cause == "waited")
+    assert exp["cost"] == round(miss.cost, 6) > 0
+
+    js = _js_source()
+    # Drawn above its ▸ prompt header and OUTSIDE the collapsible group, like the ▼
+    # compaction row: this table folds to prompts by default.
+    assert "class: 'expiry-row'" in js and "'❄ cache expired — '" in js
+    # The seam between the two halves above, which nothing else covers: EXTRAS is rebuilt
+    # field by field on every drill-in, so a field the fetch handler forgets is served by
+    # the API and silently never drawn. Caught exactly once, in a browser, with the API
+    # returning three expiries and the page rendering none.
+    assert "expiries: x.expiries || []" in js
+    # Waste reads red, where the ▼ compaction row is amber (the TUI makes the same split).
+    assert "tr.expiry-row td{color:var(--bad)" in ot.webpage._CSS
+
+
+def test_web_expiries_stay_empty_when_the_backend_cannot_support_the_reading():
+    # The Context-curve opt-in gates it, exactly as it gates the TUI's marker and the
+    # compaction rows -- a cumulative-delta backend cannot have its cache split read as
+    # one request's prompt, and the two frontends must not disagree about that.
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+
+    class NoCurve(ExpiryFakeStore):
+        def supports_context_curve(self, wid):
+            return False
+
+    app = ot.App(NoCurve([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
+    assert ot.session_extras(app, "w1")["expiries"] == []
+
+
+def test_web_turn_costs_bill_long_ttl_writes_so_an_expiry_fits_inside_its_turn():
+    # A cache expiry's cost is not a separate charge -- it is the part of the FOLLOWING
+    # turn's cost that went on re-buying context, so it can never exceed that turn. The
+    # page broke the invariant by pricing turns without the 1h-TTL cache-write subset
+    # (2.00x input, against the 5m tier's 1.25x) while the marker priced the re-buy with
+    # it: measured on a real session, a $4.81 expiry sat inside a turn the page called
+    # $3.27. The TUI's detail_turns/detail_tools always passed it; the page now does too.
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(ExpiryFakeStore([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
+    extras = ot.session_extras(app, "w1")
+    (exp,) = extras["expiries"]
+    turn = extras["turns"][exp["i"]]
+    assert exp["cost"] <= turn["api"]  # the miss is a slice of the turn, never more
+
+    # It is the long-TTL rate specifically: the same tokens at the 5m rate would price
+    # the turn BELOW its own expiry, which is the bug this guards.
+    row = app.session_turn_rows("w1")[exp["i"]]
+    short = ot.api_equivalent_cost(
+        row["model_name"],
+        row["input"],
+        row["output"],
+        row["reasoning"],
+        row["cache_read"],
+        row["cache_write"],
+    )
+    assert short < exp["cost"] <= turn["api"]
