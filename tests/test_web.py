@@ -1326,19 +1326,17 @@ def test_web_cached_share_is_gated_like_every_other_per_request_reading():
 
 def test_web_turns_subtotal_each_run_not_each_prompt_id():
     # A prompt id is not unique -- a backend without explicit ids groups by the prompt
-    # TEXT, so asking the same thing twice in one session gives A, B, A. The page draws a
+    # TEXT, so asking the same thing twice in one session gives A, B, A. The page drew a
     # header per RUN but looked its subtotal up in a Map keyed by ID, so both A headers
     # showed the two runs' combined cost and a $6 session rendered $4 + $2 + $4. Same bug
     # the TUI's turn_group_rows had, in the page's own copy of the grouping.
     js = _js_source()
-    assert "const groups = [];" in js  # runs, in order
+    # turnGroupRows is the page's mirror of Renderer.turn_group_rows: a LIST of runs
+    # addressed by ordinal, never a map keyed by the id.
+    assert "function turnGroupRows(turns)" in js
+    assert "if (!groups.length || key !== last)" in js  # a new entry per RUN
     assert "groups.get(key)" not in js  # never keyed by a repeatable id
-    assert "groups[groups.length - 1] += mCost(t);" in js
-    assert "moneyCell(groups[run])" in js  # each header reads ITS run's subtotal
-
-    # The header break and the subtotal must advance together, or they desynchronise on
-    # exactly the input that exposed the bug.
-    assert "run += 1;" in js
-    body = js[js.index("function turnsTable(") :]
-    body = body[: body.index("\nfunction ")]
-    assert body.count("run += 1;") == 1 and body.index("run += 1;") < body.index("groups[run]")
+    # Each drawn row reads its OWN group, so a repeated id cannot make two rows quote one
+    # merged subtotal.
+    assert "groups.forEach((g, n) =>" in js
+    assert "moneyCell(g.cost)" in js

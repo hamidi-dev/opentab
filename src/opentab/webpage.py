@@ -555,6 +555,11 @@ let FILTER = '';
 const SORT = {};
 const EXPANDED = new Set(); // table ids whose "show all" is open (reset per view)
 const VIEW = { calYear: null };
+// The Turns tab's drilled prompt, as an ORDINAL into turnGroupRows' list (a prompt id is
+// not unique, so it cannot name a run). Transient like the active tab -- not hash-routed,
+// not stored -- and cleared whenever the extras it indexes into are refetched, which is
+// every session change.
+let TURN_DRILL = null;
 let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null, expiries: [] }; // per-session Turns/Tools/Context (serve)
 // The Trends overlay (T) -- mirrors the TUI's 7-tab Trends over the whole range.
 const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
@@ -1685,94 +1690,120 @@ function turnCompactions(turns) {
 }
 
 /* turns stay chronological on purpose: the tab answers *when* the money went. */
-function turnsTable(turns, expiries) {
-  // Folded to prompts by default (the TUI's Turns fold): one ▸ row per user prompt with
-  // its subtotal, the per-turn rows (and the full prompt text) hidden until you click the
-  // header. A clean overview of every prompt without the per-turn noise.
-  const rows = [];
-  let cum = 0, lastPrompt = null, body = null, marker = null, run = -1;
-  // Subtotals per RUN of consecutive turns sharing a prompt id, not per id. A prompt id
-  // is not unique -- a backend without explicit ids groups by the prompt TEXT, so asking
-  // the same thing twice gives A, B, A. Keyed by id, both A headers showed the two runs'
-  // combined cost, so a $6 session rendered $4 + $2 + $4. The headers below already break
-  // on runs (key !== lastPrompt), which is what made the mismatch visible as a total that
-  // did not add up. Same bug the TUI's turn_group_rows had.
+function turnGroupRows(turns) {
+  // The mirror of Renderer.turn_group_rows: one entry per RUN of consecutive turns
+  // sharing a prompt id, in order. A LIST, addressed by ordinal, because a prompt id is
+  // not unique -- a backend without explicit ids groups by the prompt TEXT, so asking the
+  // same thing twice gives A, B, A and an id cannot name which run.
   const groups = [];
-  let runKey = null;
-  for (const t of turns) {
-    const key = t.promptId || '';
-    if (key !== runKey || !groups.length) { runKey = key; groups.push(0); }
-    groups[groups.length - 1] += mCost(t);
-  }
-  const comps = turnCompactions(turns);
-  const freed = [...comps.values()].reduce((a, [b, af]) => a + b - af, 0);
-  // Computed server-side (web.session_extras) rather than mirrored here: unlike the
-  // compactions above -- three lines off the `ctx` each turn already carries -- this one
-  // needs list rates and the cache-TTL rules, and nothing about it moves with the $
-  // toggle or the range. One implementation, so the two frontends cannot disagree.
-  const exp = new Map((expiries || []).map(e => [e.i, e]));
-  const burnt = (expiries || []).reduce((a, e) => a + e.cost, 0);
+  let last = null;
   turns.forEach((t, i) => {
     const key = t.promptId || '';
-    const x = exp.get(i);
-    if (x)
-      // Above the ▸ header (the wait happened BEFORE that prompt) and outside `body`,
-      // like the compaction row: this table is folded to prompts by default, so a marker
-      // tucked into a collapsed group would be a marker nobody sees.
-      rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: 7 },
+    if (!groups.length || key !== last) {
+      last = key;
+      groups.push({ id: key, title: t.promptTitle || '', full: t.promptFull || t.promptTitle || '',
+                    time: t.time || '', turns: 0, tokens: 0, cost: 0, indices: [], first: null });
+    }
+    const g = groups[groups.length - 1];
+    g.turns += 1; g.tokens += t.tokens || 0; g.cost += mCost(t); g.indices.push(i);
+    // Cached is the FIRST main-thread turn's share, never an average of the group's:
+    // every later turn is warm by construction, so averaging buries the one moment that
+    // could have missed. Subagents run in their own windows and cannot answer for it.
+    if (!t.depth && g.first === null) g.first = t;
+  });
+  groups.forEach(g => { g.cached = g.first ? g.first.cached : null; });
+  return groups;
+}
+
+function turnsTable(turns, expiries) {
+  // ONE ROW PER PROMPT -- the thing you actually sent -- with every column on the rows you
+  // scan, and the turns behind a row one click away. The TUI's Turns tab, mirrored.
+  const groups = turnGroupRows(turns);
+  const comps = turnCompactions(turns);
+  const freed = [...comps.values()].reduce((a, [b, af]) => a + b - af, 0);
+  const exp = new Map((expiries || []).map(e => [e.i, e]));
+  const burnt = (expiries || []).reduce((a, e) => a + e.cost, 0);
+
+  if (TURN_DRILL != null && TURN_DRILL >= 0 && TURN_DRILL < groups.length)
+    return turnDrillPane(turns, groups, TURN_DRILL);
+
+  const pct = (v) => v == null ? '·' : Math.round(v * 100) + '%';
+  const rows = [];
+  let cum = 0;
+  groups.forEach((g, n) => {
+    cum += g.cost;
+    // Markers first: they describe what happened BEFORE this prompt ran, and ride
+    // full-width outside the columns because they are events, not prompts.
+    g.indices.forEach(i => {
+      const c = comps.get(i);
+      if (c) rows.push(h('tr', { class: 'compact-row' }, h('td', { colspan: 8 },
+        '▼ context compacted before turn ' + (i + 1) + ' · ' + turns[i].time.slice(5, 16).replace('T', ' ')
+        + ' — ' + hTok(c[0]) + ' → ' + hTok(c[1]) + ' (~' + hTok(c[0] - c[1]) + ' freed)')));
+      const x = exp.get(i);
+      if (x) rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: 8 },
         '❄ cache expired — ' + hDur(x.idle) + ' idle, ' + hTok(x.repaid)
         + ' bought again for ' + money(x.cost) + ' (it lived ' + hDur(x.ttl) + ')')));
-    if (key !== lastPrompt) {
-      lastPrompt = key;
-      run += 1;
-      const title = (t.promptTitle || '(prompt)').slice(0, 160) + ((t.promptTitle || '').length > 160 ? '…' : '');
-      const full = (t.promptFull || t.promptTitle || '').trim();
-      body = [];   // this group's collapsible rows (full text + turns), hidden by default
-      marker = h('span', null, '▸ ');
-      const grp = body, mk = marker;   // capture for the toggle closure
-      rows.push(h('tr', { class: 'prompt-row rowlink', title: full || null,
-        onclick: () => { const open = !grp.length || grp[0].hidden;
-          grp.forEach(r => r.hidden = !open); mk.textContent = open ? '▾ ' : '▸ '; } },
-        h('td', { colspan: 3 }, marker, title),
-        h('td', null, ''),
-        h('td', { class: 'r' }, moneyCell(groups[run])),
-        h('td', null, ''), h('td', null, '')));
-      if (full) {
-        const fr = h('tr', { class: 'turn-fold', hidden: '' },
-          h('td', { colspan: 7 }, h('div', { class: 'prompt-full' }, full)));
-        body.push(fr); rows.push(fr);
-      }
-    }
-    const c = comps.get(i);
-    if (c)
-      // NOT pushed into `body`: a compaction is a session-level event, and this table is
-      // folded to prompts by default -- hiding the marker inside a collapsed group would
-      // be hiding it outright (the TUI's detail_turns makes the same call).
-      rows.push(h('tr', { class: 'compact-row' }, h('td', { colspan: 7 },
-        '▼ context compacted before turn ' + (i + 1) + ' · ' + t.time.slice(5, 16).replace('T', ' ')
-        + ' — ' + hTok(c[0]) + ' → ' + hTok(c[1]) + ' (~' + hTok(c[0] - c[1]) + ' freed)')));
-    cum += mCost(t);
-    const tr = h('tr', { class: 'turn-fold', hidden: '' },
-      h('td', { class: 'dim' }, t.time.slice(5, 19).replace('T', ' ')),
-      h('td', { class: 'indent' }, t.depth ? '↳ ' + t.agent : t.agent),
-      h('td', { class: 'grow' }, modelCell(t.model)),
-      h('td', { class: 'r dim' }, t.cached == null ? '·' : Math.round(t.cached * 100) + '%'),
-      h('td', { class: 'r' }, moneyCell(mCost(t))),
-      h('td', { class: 'r' }, hTok(t.tokens)),
-      h('td', { class: 'r dim' }, money(cum)));
-    body.push(tr); rows.push(tr);
+    });
+    rows.push(h('tr', { class: 'prompt-row rowlink', title: g.full || null,
+        onclick: () => { TURN_DRILL = n; render(false); } },
+      h('td', { class: 'r dim' }, String(n + 1)),
+      h('td', { class: 'dim' }, (g.time || '').slice(5, 16).replace('T', ' ')),
+      h('td', { class: 'grow' }, g.title || '(no preceding prompt)'),
+      h('td', { class: 'r dim' }, String(g.turns)),
+      h('td', { class: 'r dim' }, pct(g.cached)),
+      h('td', { class: 'r' }, hTok(g.tokens)),
+      h('td', { class: 'r' }, moneyCell(g.cost)),
+      h('td', { class: 'r dim' }, money(cum))));
   });
   return h('div', null,
-    h('div', { class: 'hint' }, groups.length + ' prompts — click a ▸ row to expand its turns'
-      + ' · Cached = how much of that turn\'s context came from the cache; anything low re-bought it'
+    h('div', { class: 'hint' }, groups.length + ' prompts — click a row to open it with its turns'
+      + ' · Cached = how much of the context came from the cache when that prompt STARTED;'
+      + ' anything low re-bought what it was missing'
       + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')
       + (exp.size ? ' · ❄ ' + exp.size + ' cache expir' + (exp.size > 1 ? 'ies' : 'y') + ', ' + money(burnt) + ' spent re-buying context' : '')),
     h('div', { class: 'scroll' }, h('table', null,
-      h('thead', null, h('tr', null, h('th', null, 'Time'), h('th', null, 'Agent'), h('th', null, 'Model'),
-        h('th', { class: 'r' }, 'Cached'),
-        h('th', { class: 'r' }, 'Cost'), h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cumulative'))),
+      h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
+        h('th', null, 'Prompt'), h('th', { class: 'r' }, 'Turns'), h('th', { class: 'r' }, 'Cached'),
+        h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cost'),
+        h('th', { class: 'r' }, 'Cumulative'))),
       h('tbody', null, rows))));
 }
+
+function turnDrillPane(turns, groups, n) {
+  // One prompt, opened: its full text, its totals, and its own turns with their seconds.
+  // Esc or the back link returns to the table -- the TUI drills here rather than popping a
+  // modal, and so does this.
+  const g = groups[n];
+  const pct = (v) => v == null ? '·' : Math.round(v * 100) + '%';
+  let cum = 0;
+  const rows = g.indices.map(i => {
+    const t = turns[i];
+    cum += mCost(t);
+    return h('tr', null,
+      h('td', { class: 'r dim' }, String(i + 1)),
+      h('td', { class: 'dim' }, t.time.slice(5, 19).replace('T', ' ')),
+      h('td', { class: 'grow' }, modelCell(t.model)),
+      h('td', { class: 'indent' }, t.depth ? '↳ ' + t.agent : t.agent),
+      h('td', { class: 'r dim' }, pct(t.cached)),
+      h('td', { class: 'r' }, hTok(t.tokens)),
+      h('td', { class: 'r' }, moneyCell(mCost(t))),
+      h('td', { class: 'r dim' }, money(cum)));
+  });
+  return h('div', null,
+    h('div', { class: 'hint' },
+      h('a', { class: 'rowlink', onclick: () => { TURN_DRILL = null; render(false); } }, '← back to the prompts'),
+      '  ·  prompt ' + (n + 1) + ' of ' + groups.length + ' — ' + g.turns + ' turn'
+      + (g.turns === 1 ? '' : 's') + ' · ' + hTok(g.tokens) + ' · ' + money(g.cost)
+      + ' · cached ' + pct(g.cached)),
+    h('div', { class: 'prompt-full' }, g.full || '(no preceding prompt)'),
+    h('div', { class: 'scroll' }, h('table', null,
+      h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
+        h('th', null, 'Model'), h('th', null, 'Agent'), h('th', { class: 'r' }, 'Cached'),
+        h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cost'),
+        h('th', { class: 'r' }, 'Cumulative'))),
+      h('tbody', null, rows))));
+}
+
 function toolsTable(toolRows) {
   const agg = new Map();
   for (const r of toolRows) {
@@ -2501,6 +2532,7 @@ function chrome() {
 /* ---------- session extras (the --serve drill-in fetch) ---------- */
 function ensureExtras(sc) {
   if (sc.kind !== 's' || !META.serve || EXTRAS.id === sc.id) return;
+  TURN_DRILL = null;  // an ordinal is only meaningful inside ONE session's prompts
   EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], context: null, expiries: [] };
   fetch('/api/session/' + encodeURIComponent(sc.id)).then(r => r.json()).then(x => {
     EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], context: x.context || null, expiries: x.expiries || [] };
@@ -3062,6 +3094,11 @@ document.addEventListener('keydown', e => {
     TAB = tabs[(i + step + tabs.length) % tabs.length];
     render(false);
   } else if (e.key === 'Escape') {
+    // A drilled prompt is the innermost scope on the Turns tab, so Esc leaves it before
+    // it starts popping the scope stack -- the TUI's rule, and TRENDS.drill's above.
+    // Gated on the tab actually showing, or Esc would tear down an invisible drill from
+    // another tab and appear to do nothing.
+    if (TURN_DRILL != null && TAB === 'Turns') { TURN_DRILL = null; render(false); e.preventDefault(); return; }
     const multiYear = distinctYears(W).length > 1;
     if (sc.kind === 's') sc.day ? go('d', sc.day) : go('', '');
     else if (sc.kind === 'd') go('m', sc.month);
