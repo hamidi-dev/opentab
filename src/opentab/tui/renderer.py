@@ -180,6 +180,10 @@ class Renderer:
         # (_token_stack_line). draw() clears it per frame; seeded here so a line-builder
         # called on its own -- which the suite does a lot -- has somewhere to record.
         self._token_runs: dict[str, list[tuple[int, int, int]]] = {}
+        # Palette bookkeeping, re-seeded by init_theme_colors; here too so _color_index
+        # works on a renderer the suite drives without a curses screen.
+        self._theme_color_cache: dict[str, int] = {}
+        self._fallback_used: set[int] = set()
         # Tools treemap fills are keyed by detail-line index: most chart rows are
         # spaces, so unlike Token economics their line text is not a unique key.
         self._tool_tree_runs: dict[int, list[tuple[int, int, int]]] = {}
@@ -5976,14 +5980,17 @@ class Renderer:
             cx = left + max(0, (width - len(text)) // 2)  # center each line under the grid
             self.write_rich(stdscr, row_y, cx, text, line_attr)
 
-    # Custom-color index blocks (only touched when the terminal can redefine colors):
-    # roles allocate up from _THEME_COLOR_BASE, the two heat ramps get fixed slots so
-    # they can be re-init_color'd every frame without exhausting the palette.
-    _THEME_COLOR_BASE = 16
-    _HEAT_COLOR_BASE = 40  # calendar heat colours (up to HEAT_MAX_LEVELS)
-    _PRICE_COLOR_BASE = 56  # price-heat colours (PRICE_HEAT_LEVELS)
-    _TOKEN_COLOR_BASE = 72  # the token-type categorical ramp (TOKEN_SERIES)
-    _TOOL_COLOR_BASE = 80  # Tools treemap fill colours (TOOL_HEAT_LEVELS)
+    # Custom-color SLOT NUMBERS (only touched when the terminal can redefine colors):
+    # roles allocate up from 0, the heat ramps get fixed numbers so they can be
+    # re-init_color'd every frame without exhausting the palette. A slot number is not
+    # a palette index -- `_slot()` maps it to one, and every colour is written TWICE.
+    # See `_slot`/`_write_color` for why.
+    _THEME_COLOR_BASE = 16  # palette index the first slot maps to
+    _ROLE_SLOTS = 16  # slots 0..15 for the theme roles (11 used); the ramps start after
+    _HEAT_COLOR_BASE = 16  # calendar heat colours (up to HEAT_MAX_LEVELS)
+    _PRICE_COLOR_BASE = 32  # price-heat colours (PRICE_HEAT_LEVELS)
+    _TOKEN_COLOR_BASE = 40  # the token-type categorical ramp (TOKEN_SERIES)
+    _TOOL_COLOR_BASE = 48  # Tools treemap fill colours (TOOL_HEAT_LEVELS)
     _BASE_PAIR = 32  # the window background pair (ink on theme bg); clear of heat/price
     _TAB_PAIR = 25  # inactive-tab chip (ink2 on panel2); free slot after the price ramp
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
@@ -5992,6 +5999,43 @@ class Renderer:
     # (the line-builders are unit-tested headless) still answers.
     _token_series_ok = True
     _tool_heat_ok = True
+
+    @classmethod
+    def _slot(cls, number: int) -> int:
+        # Slot number -> palette index, kept in the half-blocks whose BIT 3 IS CLEAR:
+        # 16..23, 32..39, 48..55, ... The gaps are not waste, they are the point.
+        #
+        # A terminal with "bold is bright" applies the classic fg -> fg|8 bump, and some
+        # apply it across the whole 256-palette rather than just the 8 base colours.
+        # Every index we hand out therefore needs its |8 twin (== +8 here, bit 3 being
+        # clear, so it covers a terminal that adds instead of ors) to hold the SAME
+        # colour -- otherwise a bold cell silently reads whichever slot happens to sit
+        # 8 higher. Measured on a real report: roles landed at 16..26, so bold ink2
+        # (18) read slot 26, which `_init_tool_heat` had loaded with `ink_on`'s near
+        # black -- the breadcrumb, inactive panel titles and the selected row of an
+        # unfocused sidebar panel all rendered #101014 on a #1a1b26 background, i.e.
+        # invisible. Bold accent/good/accent_bright (19/20/23) likewise read the
+        # untouched cube colours at 27/28/31.
+        return cls._THEME_COLOR_BASE + (number // 8) * 16 + (number % 8)
+
+    def _write_color(self, number: int, hexcolor: str) -> int | None:
+        # init_color one slot AND its bold twin, returning the palette index to use
+        # (None when the terminal can't take it). Writing the twin is what makes a
+        # bold-is-bright terminal render bold text in the theme's colour instead of an
+        # unrelated slot's; a terminal that doesn't do the bump never reads it.
+        idx = self._slot(number)
+        if idx + 8 >= getattr(curses, "COLORS", 0):
+            return None
+        rgb = hex_rgb1000(hexcolor)
+        try:
+            curses.init_color(idx, *rgb)
+        except (curses.error, ValueError):
+            return None
+        try:
+            curses.init_color(idx + 8, *rgb)
+        except (curses.error, ValueError):
+            pass  # no twin: bold may shift hue, but the un-bolded colour is still right
+        return idx
 
     def _color_index(self, hexcolor: str) -> int:
         # A curses color index for a hex: a fresh init_color slot on truecolor
@@ -6003,16 +6047,24 @@ class Renderer:
         cache = self._theme_color_cache
         if hexcolor in cache:
             return cache[hexcolor]
-        idx = (
-            nearest_256(hexcolor) if getattr(curses, "COLORS", 256) >= 256 else nearest_8(hexcolor)
-        )
-        if self._can_change and self._next_color < curses.COLORS:
-            try:
-                curses.init_color(self._next_color, *hex_rgb1000(hexcolor))
-                idx = self._next_color
+        # Roles get slots 0.._ROLE_SLOTS-1; past that the ramps' fixed slots begin, so a
+        # theme that grew more roles than the block holds falls back to nearest-256
+        # rather than overwriting the calendar's colours.
+        if self._can_change and self._next_color < self._ROLE_SLOTS:
+            written = self._write_color(self._next_color, hexcolor)
+            if written is not None:
                 self._next_color += 1
-            except curses.error:
-                pass
+                cache[hexcolor] = written
+                return written
+        if getattr(curses, "COLORS", 256) < 256:
+            idx = nearest_8(hexcolor)  # 8 colours for ~9 roles: collisions are inevitable
+        else:
+            # Approximating: claim a distinct index per role, so two roles that both
+            # round to the same entry stay tellable apart (a focused border must not
+            # look like ordinary accent text). Allocation order gives the earlier role
+            # the better match, and bg -- which fills every cell -- goes first.
+            idx = nearest_256(hexcolor, frozenset(self._fallback_used))
+            self._fallback_used.add(idx)
         cache[hexcolor] = idx
         return idx
 
@@ -6029,14 +6081,27 @@ class Renderer:
         # *means*; ncurses still erases to the terminal default, which is why it stayed
         # dark -- so we colour every cell instead.)
         self._theme_color_cache = {}
-        self._next_color = self._THEME_COLOR_BASE
+        self._next_color = 0  # slot NUMBER, not a palette index -- see _slot()
+        self._fallback_used = set()  # indices claimed on the nearest-256 path this theme
         self._themed_bg = False
         self._can_change = False
         self._tool_heat_ok = False
         if not self.colors_ok:  # monochrome: every pair stays "terminal default"
             return
+        # `can_change_color()` only reports what terminfo CLAIMS (the `ccc` capability).
+        # A terminal can advertise it, accept every init_color without error, and drop
+        # the palette write on the floor -- then all eleven roles paint as whatever the
+        # default cube holds at 16.., i.e. one blue mush, identically under every theme
+        # (issue #12). Nothing readable back from ncurses distinguishes that case
+        # (color_content reports ncurses' own idea of the palette, not the terminal's),
+        # so the known hosts are detected up front (util.palette_writes_ignored) and
+        # $OPENTAB_NO_INIT_COLOR overrides that either way. Both land here as
+        # allow_init_color=False, dropping us onto the nearest-256 path -- the standard
+        # palette every terminal renders.
         self._can_change = bool(
-            self.has256 and getattr(curses, "can_change_color", lambda: False)()
+            self.app.allow_init_color
+            and self.has256
+            and getattr(curses, "can_change_color", lambda: False)()
         )
         roles = self.app.theme["roles"]
         r = self._color_index
@@ -6152,13 +6217,14 @@ class Renderer:
 
     def _heat_index(self, slot: int, hexcolor: str) -> int:
         # A reusable fixed-slot heat colour: re-init_color the slot on truecolor
-        # terminals (so per-frame ramps don't leak indices), else nearest-256.
+        # terminals (so per-frame ramps don't leak indices), else nearest-256. `slot` is
+        # a slot NUMBER, not a palette index -- it goes through _write_color so the heat
+        # colours get their bold twin like the roles do (the heat cells are drawn
+        # A_BOLD, so on a bold-is-bright terminal they are the first thing to shift).
         if self._can_change:
-            try:
-                curses.init_color(slot, *hex_rgb1000(hexcolor))
-                return slot
-            except curses.error:
-                pass
+            written = self._write_color(slot, hexcolor)
+            if written is not None:
+                return written
         return nearest_256(hexcolor)
 
     def _sync_heat_palette(self) -> None:

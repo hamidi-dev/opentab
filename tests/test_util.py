@@ -417,3 +417,49 @@ def test_cached_share_reads_one_turn_without_needing_its_neighbours():
     # total miss (and under every provider's minimum cacheable prompt anyway).
     assert ot.cached_share({"input": 100, "cache_read": 0, "cache_write": 0}) is None
     assert ot.cached_share({}) is None
+
+
+def test_env_flag_reads_a_falsey_value_as_off():
+    # bool(os.environ.get(...)) reads "0" and "false" as ON -- any non-empty string is
+    # truthy -- so a user turning something off would have turned it on.
+    saved = os.environ.get("OPENTAB_TEST_FLAG")
+    try:
+        for value, want in (
+            ("1", True),
+            ("true", True),
+            ("YES", True),
+            ("on", True),
+            ("0", False),
+            ("false", False),
+            ("no", False),
+            ("Off", False),
+        ):
+            os.environ["OPENTAB_TEST_FLAG"] = value
+            assert ot.util.env_flag("OPENTAB_TEST_FLAG") is want, value
+        os.environ["OPENTAB_TEST_FLAG"] = "   "
+        assert ot.util.env_flag("OPENTAB_TEST_FLAG") is None  # blank == unset
+        os.environ.pop("OPENTAB_TEST_FLAG")
+        assert ot.util.env_flag("OPENTAB_TEST_FLAG") is None
+    finally:
+        os.environ.pop("OPENTAB_TEST_FLAG", None)
+        if saved is not None:
+            os.environ["OPENTAB_TEST_FLAG"] = saved
+
+
+def test_palette_writes_ignored_detects_herdr_only_by_its_own_marker():
+    # herdr runs each pane under libghostty-vt and re-emits the parsed cells, forwarding
+    # a palette-indexed cell as an INDEX -- so the host terminal resolves it against its
+    # own palette and an init_color write is structurally discarded (issue #12). It
+    # cannot be probed, so it is a denylist keyed on the marker herdr sets itself.
+    saved = os.environ.get("HERDR_ENV")
+    try:
+        os.environ.pop("HERDR_ENV", None)
+        assert ot.util.palette_writes_ignored() is False
+        os.environ["HERDR_ENV"] = "1"
+        assert ot.util.palette_writes_ignored() is True
+        os.environ["HERDR_ENV"] = "0"  # never a guess: an explicit off is off
+        assert ot.util.palette_writes_ignored() is False
+    finally:
+        os.environ.pop("HERDR_ENV", None)
+        if saved is not None:
+            os.environ["HERDR_ENV"] = saved

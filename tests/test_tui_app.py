@@ -215,7 +215,71 @@ def test_color_index_never_exceeds_an_8_color_palette():
             ot.curses.COLORS = saved
 
 
-def test_theme_picker_opens_from_inside_overlays():
+@contextlib.contextmanager
+def _truecolor_curses(recorded_colors, recorded_pairs):
+    # A 256-colour terminal that accepts init_color, with both calls recorded.
+    keys = ("COLORS", "COLOR_PAIRS", "init_color", "init_pair", "can_change_color")
+    saved = {k: getattr(ot.curses, k, None) for k in keys}
+    try:
+        ot.curses.COLORS = 256
+        ot.curses.COLOR_PAIRS = 256
+        ot.curses.can_change_color = lambda: True
+        ot.curses.init_color = lambda idx, r, g, b: recorded_colors.__setitem__(idx, (r, g, b))
+        ot.curses.init_pair = lambda pair, fg, bg: recorded_pairs.__setitem__(pair, (fg, bg))
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                delattr(ot.curses, key)
+            else:
+                setattr(ot.curses, key, value)
+
+
+def test_every_custom_colour_is_written_to_its_bold_twin():
+    # Some terminals apply "bold is bright" (fg -> fg|8) across the WHOLE 256-palette,
+    # not just the 8 base colours. Every index we redefine therefore needs the slot 8
+    # higher to hold the same colour, or a bold cell reads an unrelated one. It did:
+    # roles used to land at 16.., so bold ink2 (18) read slot 26 -- which the Tools
+    # treemap had loaded with ink_on's near-black -- and the breadcrumb, inactive panel
+    # titles and the selected row of an unfocused sidebar panel all painted #101014 on
+    # a #1a1b26 background (issue #12). Nothing on screen may depend on that bump.
+    colors, pairs = {}, {}
+    renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
+    renderer.app.colors_ok = True
+    renderer.app.has256 = True
+    with _truecolor_curses(colors, pairs):
+        renderer.init_theme_colors()
+    assert colors, "a truecolor terminal must still get exact colours"
+    primaries = [idx for idx in colors if idx & 8 == 0]
+    assert primaries, "primary slots must sit in the bit-3-clear half-blocks"
+    for idx in primaries:
+        assert colors.get(idx + 8) == colors[idx], f"slot {idx} has no matching bold twin"
+    # The exact regression: bold secondary text must stay secondary text.
+    ink2 = renderer._color_index(renderer.app.theme["roles"]["ink2"])
+    assert pairs[1][0] == ink2
+    assert colors[ink2 | 8] == colors[ink2]
+    assert colors[ink2 | 8] != ot.themes.hex_rgb1000("#101014")
+
+
+def test_no_init_color_keeps_themes_distinguishable_on_a_lying_terminal():
+    # A terminal can advertise `ccc`, accept every init_color, and ignore it -- then all
+    # eleven roles paint as the default cube at 16.., identically under every theme
+    # (issue #12: "always dark blue no matter which theme I pick"). --no-init-color
+    # drops onto the nearest-256 path, which uses the standard palette every terminal
+    # renders, so the themes differ again.
+    colors, pairs = {}, {}
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.colors_ok = True
+    app.has256 = True
+    app.allow_init_color = False
+    seen = []
+    with _truecolor_curses(colors, pairs):
+        for theme_id in ("tokyo-night", "gruvbox", "tokyo-night-day"):
+            app.select_theme(theme_id, announce=False)
+            seen.append(tuple(pairs[n][0] for n in range(1, 8)))
+    assert not colors, "--no-init-color must not redefine a single palette slot"
+    assert len(set(seen)) == 3, "each theme must land on its own standard-palette colours"
+    assert all(0 <= fg <= 255 for row in seen for fg in row)
     # C works from anywhere: inside Trends and P it floats the Colours picker above
     # the overlay (which stays open as the live-preview swatch), the picker owns the
     # keys while it's up, and Esc reverts + lands back on the overlay.

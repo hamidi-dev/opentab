@@ -550,6 +550,11 @@ class App:
         self.cal_levels = HEAT_DEFAULT_LEVELS  # heat-map granularity, live-adjustable with +/-
         self.has256 = False  # set in run() once curses knows the terminal's color depth
         self.colors_ok = True  # run() clears it on a monochrome terminal (no start_color)
+        # May the renderer REDEFINE palette slots (init_color) to hit the theme's exact
+        # hexes? cli._resolve_init_color clears it for terminals that accept the call
+        # and ignore it -- detected, or forced with $OPENTAB_NO_INIT_COLOR. See
+        # init_theme_colors.
+        self.allow_init_color = True
         self._cal_geom: tuple | None = None  # last calendar grid geometry, for mouse hit-testing
         self._trend_bar_geom: tuple | None = None  # last bar-chart geometry, for mouse hit-testing
         # Scope drilled into from the Trends overlay; Esc out of it returns there.

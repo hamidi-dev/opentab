@@ -166,6 +166,34 @@ otherwise), painting an explicit theme background on every cell so light themes
 actually render light. Adding a theme is one `THEMES` entry — both pickers, the
 `--theme` choices, and the web injection enumerate it.
 
+Two terminal quirks shape the `init_color` path, both from issue #12. **Every colour
+is written twice** — to slot `i` and to `i|8` — because a terminal may apply "bold is
+bright" across the whole 256-palette, and a bold cell then reads the slot 8 higher;
+`Renderer._slot` keeps primaries in the bit-3-clear half-blocks (16–23, 32–39, …) so
+`i|8 == i+8` is always the free twin. And because `can_change_color()` only reports
+what terminfo *claims* — a terminal can accept every `init_color` and drop it, which
+makes all themes look identical — `util.palette_writes_ignored()` auto-detects the
+known hosts (herdr, via the `HERDR_ENV` marker it sets itself — never a guess from
+`TERM`) and drops them onto the nearest-256 path. `$OPENTAB_NO_INIT_COLOR` overrides
+that either way: `=1` for an affected terminal not on the list, `=0` to force the exact
+path back on so a host that fixes its rendering isn't stuck approximating. It is an env
+var rather than a CLI flag, and never persisted to state, for the same reason — it
+describes the *terminal*, so it wants setting once in that terminal's profile, not
+remembering per launch or imposing on the next emulator.
+
+That fallback path is what most terminals with the quirk end up on, so its quality
+matters: `nearest_256` measures distance in **CIE L\*a\*b\***, searching all 240
+addressable entries, rather than rounding each channel to its nearest cube level. The
+cube's levels are unevenly spaced (0, 95, 135, 175, 215, 255), so per-channel rounding
+sends neighbouring channels opposite ways and distorts the hue — Tokyo Night's `ink`
+landed on `#afd7ff`, a 19° swing reading as a green cast over the whole UI. Roles also
+claim **distinct** indices (`nearest_256(..., avoid=…)`, tracked by
+`Renderer._fallback_used`), because the global-nearest search otherwise pulls two roles
+onto one entry and a focused border stops being distinguishable from accent text. Net
+across the 30 themes: mean ΔE 9.7 → 8.3, worst-case ΔE 37.6 → 20.4, role collisions
+3 → 0. Ramps deliberately pass no `avoid` — there, levels may legitimately collapse and
+monotonicity matters more than distinctness.
+
 ## The web frontend
 
 `web.py` builds a headless `App` (same rollups, prefs, cost snapshots) and

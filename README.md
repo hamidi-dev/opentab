@@ -314,6 +314,23 @@ prefs, notes and caches under the standard XDG dirs (`~/.config`, `~/.local/stat
 runs external programs only on the key you press. The full list of
 everything it reads, writes, and runs: **[docs/privacy.md](docs/privacy.md)**.
 
+## If the colours look wrong
+
+OpenTab hits its themes' exact colours by redefining palette slots (`init_color`).
+Most terminals honour that; a few accept the call and quietly ignore it, and then
+**every theme looks the same** — `C` cycles through them with nothing on screen
+changing. That's the tell (other apps re-colouring fine is not evidence — they use
+truecolor escapes, which take a different path).
+
+Known hosts — currently [herdr](https://herdr.dev), which re-emits each pane's cells
+and forwards a palette index rather than the colour behind it — are detected and
+switched over automatically, so there's nothing to set. Anywhere else, export
+`OPENTAB_NO_INIT_COLOR=1` and OpenTab picks the nearest standard 256-colour instead
+(matched in CIE Lab, so hues survive); `=0` forces the exact colours back on if your
+terminal has since been fixed. It's an environment variable rather than a flag
+because it describes the terminal, not the run — set it once in that terminal's
+profile.
+
 ## Windows
 
 OpenTab uses Python's `curses`, which native Windows Python doesn't bundle — so

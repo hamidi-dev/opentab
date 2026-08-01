@@ -51,6 +51,40 @@ def unicode_screen() -> bool:
     return _UNICODE_SCREEN
 
 
+def env_flag(name: str) -> bool | None:
+    """A tri-state environment switch: True, False, or None when it isn't set.
+
+    `bool(os.environ.get(...))` would read "0" and "false" as *on*, since any non-empty
+    string is truthy -- so a user trying to turn something off would turn it on.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def palette_writes_ignored() -> bool:
+    """Is this a terminal that accepts `init_color` and then throws the write away?
+
+    Such a terminal can't be probed: `color_content()` reports ncurses' own idea of the
+    palette rather than the screen's, and a host that answers `OSC 4;n;?` truthfully
+    from a palette it never renders through looks identical to one that works. So this
+    is a deliberate denylist of programs known to do it, keyed on an identifier the
+    program sets itself -- never a guess from TERM.
+
+    **herdr** (`HERDR_ENV`) is a terminal multiplexer that runs each pane under
+    libghostty-vt and re-emits the parsed cells to the real terminal. It stores an
+    OSC 4 palette write (its OSC 4 *query* even answers with it), but a cell that
+    carries a palette index is forwarded as an INDEX, not as the redefined colour --
+    so the host terminal resolves it against its own palette and the write is
+    structurally discarded. Truecolor cells pass through untouched, which is why other
+    TUIs re-colour correctly inside it and opentab did not (issue #12). Verified
+    against herdr 0.7.5: `ghostty_cell_color()` maps `CellColor::Palette(i)` to
+    `Color::Indexed(i)`, and the resolved palette is read only to answer queries.
+    """
+    return env_flag("HERDR_ENV") is True
+
+
 def _read_text(path: str) -> str | None:
     # Text mode: universal-newline translation (\r\n -> \n) matches what `for line in
     # fh` yields, so a caller that splits on "\n" gets exactly the same lines. Returns

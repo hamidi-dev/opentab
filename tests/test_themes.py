@@ -18,6 +18,33 @@ def test_themes_are_complete_and_consistent():
     assert ot.themes.resolve_theme("nonsense") is ot.THEMES[ot.DEFAULT_THEME]
 
 
+def test_nearest_256_preserves_hue_and_can_avoid_taken_indices():
+    # The approximation terminals fall back to (--no-init-color) must not tint the UI.
+    # Rounding each channel to its nearest cube level independently sent neighbouring
+    # channels opposite ways -- Tokyo Night's `ink` #c0caf5 rounded red DOWN to 175 and
+    # green UP to 215, landing on #afd7ff: a 19 degree hue swing that reads as a green
+    # cast over the whole screen (issue #12). A Lab search keeps the hue.
+    def rgb_of(index):
+        if index >= 232:
+            v = 8 + 10 * (index - 232)
+            return (v, v, v)
+        j = index - 16
+        cube = (0, 95, 135, 175, 215, 255)
+        return (cube[j // 36], cube[(j // 6) % 6], cube[j % 6])
+
+    got = rgb_of(ot.nearest_256("#c0caf5"))
+    assert got == (215, 215, 255), "the lavender ink must not gain green over red"
+    assert got[1] - got[0] <= 40  # green never runs away from red the way #afd7ff did
+    # `avoid` keeps two roles that round to the same entry tellable apart -- without it
+    # a focused border can render identically to ordinary accent text.
+    first = ot.nearest_256("#7aa2f7")  # accent
+    assert ot.nearest_256("#9cb8ff") == first  # accent_bright collides unconstrained
+    assert ot.nearest_256("#9cb8ff", frozenset({first})) != first  # ...but not when told
+    # An exhausted palette degrades to the plain nearest rather than raising.
+    everything = frozenset(range(16, 256))
+    assert 16 <= ot.nearest_256("#7aa2f7", everything) <= 255
+
+
 def test_theme_color_math():
     # nearest_256 lands in the palette range; pure black/white hit the ends.
     assert 16 <= ot.nearest_256("#e0a458") <= 255

@@ -47,7 +47,14 @@ from opentab.sources import (
 from opentab.state import apply_state, load_state, save_state
 from opentab.tui import bindings
 from opentab.tui.app import App
-from opentab.util import git_root, node_1h_write, resolve_project_root, unicode_screen
+from opentab.util import (
+    env_flag,
+    git_root,
+    node_1h_write,
+    palette_writes_ignored,
+    resolve_project_root,
+    unicode_screen,
+)
 
 # --- argument groups ----------------------------------------------------------------
 # The parser is split so subcommands can share it. GLOBAL modifiers (source
@@ -1160,6 +1167,26 @@ def _price_root(store, workflow_id: str) -> str:
     return "~" + text if estimated > 0 else text
 
 
+def _resolve_init_color() -> bool:
+    """May the renderer redefine palette slots to hit the theme's exact colours?
+
+    An explicit $OPENTAB_NO_INIT_COLOR wins over the detection, in BOTH directions:
+    `=1` for an affected terminal we don't know about yet (the denylist is provably
+    incomplete, and the failure can't be probed -- see util.palette_writes_ignored), and
+    `=0` to force the exact colours back on inside a host we do detect, so one that
+    fixes its rendering doesn't leave opentab approximating forever.
+
+    Deliberately an env var and not a CLI flag: this describes the TERMINAL, not the
+    invocation, so it wants to be set once in that terminal's profile rather than
+    remembered on every launch. It's the same reason it is never saved to state.json --
+    one emulator's run must not impose it on the next.
+    """
+    forced = env_flag("OPENTAB_NO_INIT_COLOR")
+    if forced is not None:
+        return not forced
+    return not palette_writes_ignored()
+
+
 def status_line(store, target: str | None = None) -> str:
     # The figure for the tmux segment: recorded cost of the most recently active
     # session's whole subtree. Empty when nothing matches, so the segment simply
@@ -1819,6 +1846,7 @@ def main() -> int:
         app._refresh_backend = _make_refresh_fn(args)
         app._ssh_targets = _make_ssh_targets_fn()
     app.allow_price_prompt = use_state  # no startup prompt under --no-state/--demo
+    app.allow_init_color = _resolve_init_color()
     # Session notes are authored data, so they live in their own file and carry their own
     # gate: --no-state turns them off for the run, while demo is re-checked live (`D`
     # toggles it) inside App.allow_notes. refresh_notes applies both.

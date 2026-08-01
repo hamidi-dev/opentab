@@ -1544,3 +1544,28 @@ def test_export_under_demo_does_not_leak_the_real_hostname():
         assert export("--demo")["label"] != socket.gethostname()
         # `titles` off means names stay real everywhere, so the label must follow.
         assert export("--demo", "spend")["label"] == (socket.gethostname() or "machine")
+
+
+def test_init_color_env_overrides_the_detection_in_both_directions():
+    # The denylist is provably incomplete and the failure can't be probed, so =1 has to
+    # rescue an affected terminal we don't know about yet; =0 has to force the exact
+    # colours back on inside a host we DO detect, or one that fixes its rendering leaves
+    # opentab approximating forever.
+    saved = {k: os.environ.get(k) for k in ("HERDR_ENV", "OPENTAB_NO_INIT_COLOR")}
+    try:
+        for key in saved:
+            os.environ.pop(key, None)
+        resolve = ot.cli._resolve_init_color
+        assert resolve() is True  # ordinary terminal: exact colours
+        os.environ["HERDR_ENV"] = "1"
+        assert resolve() is False  # detected, nothing for the user to set
+        os.environ["OPENTAB_NO_INIT_COLOR"] = "0"
+        assert resolve() is True  # ...and forced back on
+        os.environ["OPENTAB_NO_INIT_COLOR"] = "1"
+        os.environ.pop("HERDR_ENV")
+        assert resolve() is False  # forces off on a terminal we don't detect
+    finally:
+        for key, value in saved.items():
+            os.environ.pop(key, None)
+            if value is not None:
+                os.environ[key] = value

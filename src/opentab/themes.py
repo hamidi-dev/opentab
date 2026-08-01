@@ -762,24 +762,85 @@ def ink_on(color: str) -> str:
 _CUBE = (0, 95, 135, 175, 215, 255)
 
 
-def nearest_256(color: str) -> int:
+def _cielab(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
+    """sRGB 0..255 -> CIE L*a*b* (D65), the space nearest_256 measures distance in."""
+    lin = [v / 255 for v in rgb]
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in lin]
+    r, g, b = lin
+    # sRGB -> XYZ, normalised by the D65 white point.
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+    def f(t: float) -> float:
+        return t ** (1 / 3) if t > 216 / 24389 else t * 841 / 108 + 4 / 29
+
+    fx, fy, fz = f(x), f(y), f(z)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+def _palette_256() -> list[tuple[int, tuple[float, float, float]]]:
+    """The 240 addressable xterm-256 entries (cube + grey ramp) with their Lab values,
+    built once. 0..15 are excluded on purpose: those are the slots the user's own
+    terminal theme redefines, so matching against xterm's nominal values for them would
+    pick colours that render as something else entirely."""
+    global _PALETTE_LAB
+    if _PALETTE_LAB is None:
+        entries = []
+        for i in range(16, 232):
+            j = i - 16
+            entries.append((i, (_CUBE[j // 36], _CUBE[(j // 6) % 6], _CUBE[j % 6])))
+        entries.extend((i, (8 + 10 * (i - 232),) * 3) for i in range(232, 256))
+        _PALETTE_LAB = [(i, _cielab(rgb)) for i, rgb in entries]
+    return _PALETTE_LAB
+
+
+_PALETTE_LAB: list[tuple[int, tuple[float, float, float]]] | None = None
+_NEAREST_256_CACHE: dict[str, int] = {}
+
+
+def nearest_256(color: str, avoid: frozenset[int] | None = None) -> int:
     """The xterm-256 palette index closest to a hex color, for terminals that can't
-    redefine colors. Considers both the 6×6×6 color cube and the 24-step grey ramp."""
-    r, g, b = hex_rgb(color)
+    redefine colors. Searches all 240 entries (the 6×6×6 cube and the 24-step grey ramp)
+    for the smallest CIE76 ΔE.
 
-    def closest(v):  # nearest cube axis level for one channel
-        return min(range(6), key=lambda i: abs(_CUBE[i] - v))
+    `avoid` excludes indices already handed to a *different* colour, so a theme's roles
+    stay distinguishable from one another. Searching for the globally closest entry
+    makes each role more accurate but pulls neighbouring roles onto the SAME index --
+    measured across the 30 themes, role collisions went 3 -> 13, which is how a focused
+    border stops being distinguishable from ordinary accent text. Second-nearest for the
+    later role beats an exact match nobody can tell apart; callers that want a ramp
+    (where levels legitimately collapse, and monotonicity matters more than
+    distinctness) pass nothing.
 
-    ci = 16 + 36 * closest(r) + 6 * closest(g) + closest(b)
-    cr, cg, cb = _CUBE[closest(r)], _CUBE[closest(g)], _CUBE[closest(b)]
-    cube_d = (cr - r) ** 2 + (cg - g) ** 2 + (cb - b) ** 2
-    # Grey ramp: 232..255 are 8,18,...,238; index by the average channel.
-    grey_level = round((r + g + b) / 3 / 255 * 23) if r or g or b else 0
-    gv = 8 + 10 * grey_level if grey_level < 24 else 238
-    gv = min(gv, 238)
-    grey_i = 232 + min(grey_level, 23)
-    grey_d = (gv - r) ** 2 + (gv - g) ** 2 + (gv - b) ** 2
-    return grey_i if grey_d < cube_d else ci
+    The distance is measured in Lab, not RGB, and the whole palette is searched rather
+    than each channel being rounded to its nearest cube level independently. Both
+    matter, because the cube's levels are unevenly spaced (0, 95, 135, 175, 215, 255):
+    per-channel rounding sends neighbouring channels in OPPOSITE directions, which
+    distorts the ratio between them -- i.e. the hue. Measured on Tokyo Night's `ink`
+    (#c0caf5, the colour most of the screen is painted in), that rounded red down to 175
+    while rounding green up to 215, landing on #afd7ff: a 19° hue swing that reads as a
+    green cast over the whole UI (issue #12). The Lab search picks #d7d7ff instead --
+    ΔE 6.4 rather than 10.0, hue error 11° rather than 19°. Across all 30 themes' roles
+    it cuts mean ΔE 9.7 -> 8.1 and, more visibly, WORST-case ΔE 37.6 -> 22.9.
+    """
+    if not avoid:
+        hit = _NEAREST_256_CACHE.get(color)
+        if hit is not None:
+            return hit
+    want = _cielab(hex_rgb(color))
+    entries = _palette_256()
+    if avoid:
+        entries = [e for e in entries if e[0] not in avoid] or entries
+    best = min(
+        entries,
+        key=lambda e: (want[0] - e[1][0]) ** 2
+        + (want[1] - e[1][1]) ** 2
+        + (want[2] - e[1][2]) ** 2,
+    )[0]
+    if not avoid:
+        _NEAREST_256_CACHE[color] = best
+    return best
 
 
 # The 8 basic ANSI colors at xterm's default RGB, index == the curses COLOR_* constant.
