@@ -167,6 +167,19 @@ def relative_age(ts: str, now: datetime | None = None) -> str:
     return f"{int(secs // 86400)}d ago"
 
 
+def human_bytes(n: int) -> str:
+    # Compact on-disk size: the --timings machine table (a pulled summary file is where
+    # the v2 Turns/Tools/Context extras land, so its size is a real signal) and every
+    # file `opentab doctor` reports on.
+    if n >= 1024**3:
+        return f"{n / 1024**3:,.1f} GB"
+    if n >= 1024 * 1024:
+        return f"{n / 1024 / 1024:,.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:,.0f} KB"
+    return f"{n:,} B"
+
+
 def tokens(value: int) -> str:
     return f"{value:,}"
 

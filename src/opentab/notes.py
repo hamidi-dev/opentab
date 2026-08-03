@@ -34,9 +34,12 @@ except ImportError:
 NOTES_VERSION = 1
 
 
-def notes_path() -> str:
+def notes_path(migrate: bool = True) -> str:
     # Authored, unrebuildable -> XDG data dir; migrated from the old config dir on read.
-    return paths.migrated(os.path.join(paths.data_dir(), "notes.json"))
+    # migrate=False looks without moving -- `opentab doctor`'s, and only doctor's; see
+    # paths.resolved for why that distinction has to exist.
+    target = os.path.join(paths.data_dir(), "notes.json")
+    return paths.migrated(target) if migrate else paths.resolved(target)
 
 
 @contextlib.contextmanager
@@ -78,7 +81,7 @@ def _locked():
             handle.close()
 
 
-def _read_raw() -> tuple[dict, bool]:
+def _read_raw(path: str | None = None) -> tuple[dict, bool]:
     """(the notes mapping exactly as stored, readable). Values are NOT validated here.
 
     `readable` is False only when a file IS there and we could not make sense of it —
@@ -90,8 +93,15 @@ def _read_raw() -> tuple[dict, bool]:
 
     The mapping comes back raw so that a save can write back entries this version
     doesn't understand (a hand-edit, a newer opentab) instead of quietly dropping them.
+
+    `path` overrides where to look, and exists for exactly one caller: `opentab doctor`,
+    which must not touch the disk and so cannot go through `notes_path()` — that
+    resolves through `paths.migrated()`, which MOVES a pre-XDG-split file as a side
+    effect of being asked where it is. The readability rule above is the whole point of
+    the parameter: doctor has to report the same verdict the writer will act on, and a
+    second copy of these six lines is how the two would come to disagree.
     """
-    path = notes_path()
+    path = path or notes_path()
     if not os.path.exists(path):
         return {}, True
     try:
@@ -114,9 +124,10 @@ def _valid(notes: dict) -> dict[str, str]:
     }
 
 
-def read_notes() -> tuple[dict[str, str], bool]:
-    """(notes the UI can show, readable). See _read_raw for what `readable` means."""
-    notes, readable = _read_raw()
+def read_notes(path: str | None = None) -> tuple[dict[str, str], bool]:
+    """(notes the UI can show, readable). See _read_raw for what `readable` means, and
+    for why `path` exists (it is `opentab doctor`'s, and only doctor's)."""
+    notes, readable = _read_raw(path)
     return _valid(notes), readable
 
 

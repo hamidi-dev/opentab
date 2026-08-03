@@ -21,6 +21,7 @@ from opentab import __version__, paths, sources, themes
 from opentab.demo import DEMO_CATEGORIES, demo_config, demo_machine
 from opentab.formatting import (
     cost_bar,
+    human_bytes,
     human_tokens,
     money,
     relative_age,
@@ -48,10 +49,9 @@ from opentab.state import apply_state, load_state, save_state
 from opentab.tui import bindings
 from opentab.tui.app import App
 from opentab.util import (
-    env_flag,
     git_root,
+    init_color_allowed,
     node_1h_write,
-    palette_writes_ignored,
     resolve_project_root,
     unicode_screen,
 )
@@ -378,7 +378,7 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
 
 # The verbs that carry their own subparser. Everything else -- a bare `opentab`, a
 # `opentab requests.csv`, any legacy flag -- is the implicit `tui` command.
-_SUBCOMMANDS = ("tui", "web", "status", "pull", "remote", "export", "forget")
+_SUBCOMMANDS = ("tui", "web", "status", "doctor", "pull", "remote", "export", "forget")
 
 
 def _focus_help(subparser: argparse.ArgumentParser, common_dests: set, keep: set) -> None:
@@ -501,6 +501,46 @@ def _build_parser() -> argparse.ArgumentParser:
         "nothing matched",
     )
     _focus_help(status, gdests, {"source", "demo"})
+    doctor = subs.add_parser(
+        "doctor",
+        help="report the environment, the harnesses found, and what's misconfigured",
+        description="Print a health report -- this opentab and Python, every harness "
+        "backend and why one isn't showing up, the terminal's colour/glyph capabilities, "
+        "the price catalog, and opentab's own files -- then exit. Made to be pasted into "
+        "a bug report: paths are folded to ~ and machine names are counted rather than "
+        "named, no transcript is ever read, and nothing is created or repaired. Exits 1 "
+        "if something is actually broken (a warning alone doesn't).",
+    )
+    _add_global_args(doctor)
+    doctor.add_argument(
+        "--full",
+        action="store_true",
+        help="don't redact: print absolute paths and the names of pulled machines. For "
+        "reading yourself, not for pasting into a public issue",
+    )
+    # Every harness path override stays advertised here -- "why doesn't opentab see the
+    # store at THIS path" is the question the verb exists to answer, so pointing it
+    # somewhere has to be discoverable from its own --help.
+    _focus_help(
+        doctor,
+        gdests,
+        {
+            "source",
+            "db",
+            "claude_dir",
+            "codex_dir",
+            "hermes_db",
+            "copilot_dir",
+            "vscode_dir",
+            "pi_dir",
+            "omp_dir",
+            "openclaw_dir",
+            "zaly_dir",
+            "csv",
+            "jsonl",
+            "remotes",
+        },
+    )
     # --- the fleet: getting other machines' spend (the --pull/--remote/--export/--forget
     # verbs as subcommands). pull/remote open the merged fleet view; export/forget are
     # one-shot. All map onto the legacy fields in _apply_subcommand, so main() dispatches
@@ -783,16 +823,6 @@ def _fmt_ms(ms: float) -> str:
     return f"{ms:.1f} ms"
 
 
-def _human_bytes(n: int) -> str:
-    # Compact on-disk size for the --timings machine table -- the summary file is where
-    # the v2 Turns/Tools/Context extras land, so its size is a real signal.
-    if n >= 1024 * 1024:
-        return f"{n / 1024 / 1024:,.1f} MB"
-    if n >= 1024:
-        return f"{n / 1024:,.0f} KB"
-    return f"{n:,} B"
-
-
 # Light box-drawing for the --timings tables, with the ASCII set the frame falls back
 # to where the locale can't encode the glyphs (util.unicode_screen -- the same gate the
 # TUI's panels use). Multibyte, so these only ever go to a UTF-8 stdout.
@@ -998,7 +1028,7 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
             sess, toks, cost, est = by_machine[name]
             live = name == live_label
             mark = live_mark if live else pull_mark
-            size = dash if live else _human_bytes(byte_by_machine.get(name, 0))
+            size = dash if live else human_bytes(byte_by_machine.get(name, 0))
             age = "live" if live else relative_age(meta.get(name, {}).get("exported_at", ""))
             row = [mark + name, f"{sess:,}", human_tokens(toks), money(cost)]
             if show_est:
@@ -1009,7 +1039,7 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
         total_row = ["fleet", f"{tsess:,}", human_tokens(ttoks), money(tcost)]
         if show_est:
             total_row.append(money(test))
-        total_row += [_human_bytes(total_bytes), _fmt_ms(live_load_ms + remote_ms), ""]
+        total_row += [human_bytes(total_bytes), _fmt_ms(live_load_ms + remote_ms), ""]
         rows.append(total_row)
         headers = (
             ["machine", "sess", "tokens", "cost"]
@@ -1167,24 +1197,11 @@ def _price_root(store, workflow_id: str) -> str:
     return "~" + text if estimated > 0 else text
 
 
-def _resolve_init_color() -> bool:
-    """May the renderer redefine palette slots to hit the theme's exact colours?
-
-    An explicit $OPENTAB_NO_INIT_COLOR wins over the detection, in BOTH directions:
-    `=1` for an affected terminal we don't know about yet (the denylist is provably
-    incomplete, and the failure can't be probed -- see util.palette_writes_ignored), and
-    `=0` to force the exact colours back on inside a host we do detect, so one that
-    fixes its rendering doesn't leave opentab approximating forever.
-
-    Deliberately an env var and not a CLI flag: this describes the TERMINAL, not the
-    invocation, so it wants to be set once in that terminal's profile rather than
-    remembered on every launch. It's the same reason it is never saved to state.json --
-    one emulator's run must not impose it on the next.
-    """
-    forced = env_flag("OPENTAB_NO_INIT_COLOR")
-    if forced is not None:
-        return not forced
-    return not palette_writes_ignored()
+# Moved to util (beside env_flag/palette_writes_ignored, its only inputs) so `opentab
+# doctor` can report which colour path the renderer will take without a second copy of
+# the rule. Kept under the old name here: it is what main() reads and what the test that
+# pins the both-directions override asks for.
+_resolve_init_color = init_color_allowed
 
 
 def status_line(store, target: str | None = None) -> str:
@@ -1764,6 +1781,20 @@ def main() -> int:
         )
     enable_unicode_locale()
     args = parse_args()  # handles --help first, so it works even without curses
+    if getattr(args, "command", None) == "doctor":
+        # The first verb with no legacy flag twin, deliberately: a --doctor alias would
+        # be new deprecated surface on the day it shipped, so this dispatches on the
+        # subcommand itself rather than through a namespace field.
+        #
+        # It goes FIRST -- above even the legacy-cache migration below. Doctor's contract
+        # is that it reports and never repairs, and a report is worth having precisely on
+        # the machine where something is wrong; running the upgrade tidy first would make
+        # it describe the state it had just created rather than the one that produced the
+        # bug (and would move the files its own "legacy" row exists to point out).
+        # Imported lazily so a one-shot verb stays off `status`'s import floor.
+        from opentab import doctor as doctor_module
+
+        return doctor_module.doctor_command(args)
     if not getattr(args, "demo", False):
         # One-time upgrade tidy: relocate the pre-split caches (cache/, prices.json,
         # remotes/) out of ~/.config into the XDG cache dir. Not in a path getter — those

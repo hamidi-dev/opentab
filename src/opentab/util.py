@@ -85,6 +85,77 @@ def palette_writes_ignored() -> bool:
     return env_flag("HERDR_ENV") is True
 
 
+# Terminal multiplexers, each keyed on a marker the program sets ITSELF -- the same
+# denylist discipline palette_writes_ignored explains, and for the same reason: a
+# multiplexer is invisible from inside except for what it advertises, and TERM is a
+# guess (tmux and screen share `screen-256color`, and a bare `xterm-256color` says
+# nothing either way).
+#
+# Presence, NOT env_flag: zellij sets $ZELLIJ to the string "0", which env_flag reads
+# as *off* -- it is tri-state for switches a user turns on and off, and these are not
+# switches. herdr is the exception, and deliberately: palette_writes_ignored decides
+# the colour path from env_flag("HERDR_ENV") is True, so detecting it any other way
+# would let the two rows of a doctor report disagree about the same terminal.
+_MULTIPLEXERS = (
+    ("tmux", "TMUX"),
+    ("GNU screen", "STY"),
+    ("zellij", "ZELLIJ"),
+    ("herdr", "HERDR_ENV"),
+    ("dvtm", "DVTM"),
+)
+
+
+def terminal_multiplexers() -> list[str]:
+    """Every terminal multiplexer this process is running inside.
+
+    Usually zero or one; more than one means genuine nesting (tmux inside screen over
+    ssh is the classic), which is worth knowing because each layer re-emits the cells
+    the layer below produced and any of them can be the one mangling colour or glyphs.
+    Nesting order is not recoverable from the environment, so this is a set, not a
+    stack.
+
+    Byobu rides along as a qualifier rather than a layer: it is a *configuration* of
+    tmux or screen, not something wrapped around one, and counting it would report a
+    plain byobu session as two-deep.
+    """
+
+    def running(name: str, var: str) -> bool:
+        if name == "herdr":
+            return env_flag(var) is True  # match palette_writes_ignored exactly
+        return bool(os.environ.get(var))
+
+    found = [name for name, var in _MULTIPLEXERS if running(name, var)]
+    backend = (os.environ.get("BYOBU_BACKEND") or "").strip().lower()
+    for i, name in enumerate(found):
+        if (backend == "tmux" and name == "tmux") or (backend == "screen" and name == "GNU screen"):
+            found[i] = f"byobu ({name})"
+    return found
+
+
+def init_color_allowed() -> bool:
+    """May the renderer redefine palette slots to hit the theme's exact colours?
+
+    An explicit $OPENTAB_NO_INIT_COLOR wins over the detection, in BOTH directions:
+    `=1` for an affected terminal we don't know about yet (the denylist is provably
+    incomplete, and the failure can't be probed -- see palette_writes_ignored), and
+    `=0` to force the exact colours back on inside a host we do detect, so one that
+    fixes its rendering doesn't leave opentab approximating forever.
+
+    Deliberately an env var and not a CLI flag: this describes the TERMINAL, not the
+    invocation, so it wants to be set once in that terminal's profile rather than
+    remembered on every launch. It's the same reason it is never saved to state.json --
+    one emulator's run must not impose it on the next.
+
+    Lives here, beside its two inputs, rather than in cli: `opentab doctor` reports
+    which path the renderer will take and why, and a second copy of these two lines is
+    exactly how the report would come to disagree with the renderer it describes.
+    """
+    forced = env_flag("OPENTAB_NO_INIT_COLOR")
+    if forced is not None:
+        return not forced
+    return not palette_writes_ignored()
+
+
 def _read_text(path: str) -> str | None:
     # Text mode: universal-newline translation (\r\n -> \n) matches what `for line in
     # fh` yields, so a caller that splits on "\n" gets exactly the same lines. Returns
@@ -514,6 +585,12 @@ def open_path(path: str) -> bool:
 def in_tmux() -> bool:
     # Inside a tmux session (not merely "tmux installed"): only then can the
     # launch menu create windows/splits/popups next to opentab's own pane.
+    #
+    # Deliberately NOT terminal_multiplexers()'s tmux entry, despite reading the same
+    # variable: this asks "can I run `tmux split-window` and have it land next to me",
+    # which is true of tmux alone, while that one asks "what is between opentab and the
+    # terminal", which any of five programs answers. Folding them would make the launch
+    # menu offer tmux splits inside zellij.
     return bool(os.environ.get("TMUX"))
 
 

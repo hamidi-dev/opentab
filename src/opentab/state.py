@@ -13,14 +13,19 @@ if TYPE_CHECKING:
     from opentab.tui.app import App
 
 
-def state_path() -> str:
+def state_path(migrate: bool = True) -> str:
     # Regenerable UI prefs -> XDG state dir; migrated from the old config dir on read.
-    return paths.migrated(os.path.join(paths.state_dir(), "state.json"))
+    # migrate=False looks without moving -- `opentab doctor`'s, and only doctor's; see
+    # paths.resolved for why that distinction has to exist.
+    target = os.path.join(paths.state_dir(), "state.json")
+    return paths.migrated(target) if migrate else paths.resolved(target)
 
 
-def load_state() -> dict:
+def load_state(path: str | None = None) -> dict:
+    # `path` overrides where to read, for the one caller that must not touch the disk:
+    # `opentab doctor` pairs it with state_path(migrate=False). See paths.resolved.
     try:
-        with open(state_path()) as fh:
+        with open(path or state_path()) as fh:
             data = json.load(fh)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):

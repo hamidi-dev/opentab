@@ -707,6 +707,12 @@ def load_user_keymap(path: str | None = None) -> Keymap:
             text = fh.read()
     except OSError:
         return Keymap()  # no file (or unreadable): pure defaults, not an error
+    except UnicodeDecodeError:
+        # A conf saved in a non-UTF-8 encoding (or a stray binary byte) used to escape
+        # this function -- UnicodeDecodeError is a ValueError, not an OSError -- and
+        # take the whole TUI down at launch, which is exactly the "a typo must not lock
+        # you out" promise above. It becomes a warning like every other problem.
+        return Keymap(warnings=[f"{path}: not valid UTF-8; using the built-in keys"])
     import configparser
 
     # RawConfigParser: no %-interpolation (a spec may BE "%"); strict=False lets a

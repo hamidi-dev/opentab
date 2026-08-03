@@ -126,6 +126,7 @@ opentab --since 2026-05-01 --until 2026-05-31
 opentab --harness claude         # one tool only (switch live with H)
 opentab --demo                   # safe for live demos / screenshots
 opentab --web                    # the same browser, in your web browser
+opentab doctor                   # what's found, what isn't, and why — paste this into a bug report
 ```
 
 Everything is discoverable in-app — **`?` shows the full keymap**, every panel and
@@ -313,6 +314,28 @@ prefs, notes and caches under the standard XDG dirs (`~/.config`, `~/.local/stat
 `~/.local/share`, `~/.cache`), plus the CSV/HTML exports you explicitly ask for — and
 runs external programs only on the key you press. The full list of
 everything it reads, writes, and runs: **[docs/privacy.md](docs/privacy.md)**.
+
+## Something looks wrong: `opentab doctor`
+
+```sh
+opentab doctor
+```
+
+One block covering this OpenTab — version, **how it was installed**, and whether the
+`opentab` on your PATH is even the copy that just answered — every harness backend
+(found, or **not found and why**, with the fix), the terminal's colour and glyph
+capabilities including any multiplexer in the way, the price catalog, and OpenTab's own
+files. It answers the questions that otherwise take a round-trip: why a tool you use
+isn't showing up (a Copilot export that's opt-in, a `--zaly-dir` pointed one level too
+deep, VS Code sessions that recorded no tokens), why only one harness is in view (a
+remembered `H`), and why the colours or the box frames look off. Anything it tells you to
+set is written in your own shell's syntax.
+
+It reports and never repairs — nothing is created, warmed or fetched — and it reads no
+transcript, so it can't print a prompt or a session title. Paths are folded to `~` and
+pulled machines are counted rather than named, which makes the output safe to paste into
+a public issue as-is; `--full` opts out for your own eyes. Exit code is 1 only if
+something is genuinely broken.
 
 ## If the colours look wrong
 

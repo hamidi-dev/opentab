@@ -122,6 +122,25 @@ def migrate_legacy_caches() -> None:
         _remove(os.path.join(cfg, "state.json"))
 
 
+def resolved(new_path: str) -> str:
+    """Where a file that moved in the XDG split actually is — WITHOUT moving it.
+
+    The look-only twin of :func:`migrated`, which relocates a pre-split copy as a side
+    effect of being *asked where a file lives*. That side effect is right for every
+    ordinary read/write (the move is the point, and it happens once), and wrong for
+    exactly one caller: ``opentab doctor``, whose contract is that it reports and never
+    repairs. Asking `migrated()` there would move the user's state.json and notes.json
+    out from under the launch the report is describing — and move the very files
+    doctor's "legacy" row exists to point out. Lives here, beside `migrated`, so the
+    two can never disagree about where a pre-split file is; only about whether to
+    touch it.
+    """
+    if os.path.exists(new_path):
+        return new_path
+    legacy = os.path.join(config_dir(), os.path.basename(new_path))
+    return legacy if legacy != new_path and os.path.exists(legacy) else new_path
+
+
 def migrated(new_path: str) -> str:
     """Path for a file that moved out of the old config dir in the XDG split.
 

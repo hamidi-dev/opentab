@@ -232,19 +232,23 @@ from opentab.util import (
 # always imported opentab.web lazily for the same reason, so this closes the last
 # eager path to it. PEP 562: the attribute materializes on first access, so
 # `opentab.build_payload` (and patching it) works exactly as before.
+# `doctor` rides the same mechanism for the same reason: a one-shot verb nobody runs
+# in a loop has no business on the import path of one that is polled per tmux pane.
 _LAZY_ATTRS = {
     "build_payload": "opentab.web",
     "html_command": "opentab.web",
     "serve_command": "opentab.web",
     "session_extras": "opentab.web",
     "render_html": "opentab.webpage",
+    "build_report": "opentab.doctor",
+    "doctor_command": "opentab.doctor",
 }
 # The two MODULES as well, not just the names above. `from opentab.web import ...`
 # used to bind `opentab.web` as a side effect of importing it, and callers rely on
 # that (ot.web.ReportServer, ot.webpage.render_html). Without these entries the
 # attribute exists only once something else has resolved a lazy name -- which is a
 # bug that hides, because it depends on what ran first.
-_LAZY_MODULES = ("web", "webpage")
+_LAZY_MODULES = ("web", "webpage", "doctor")
 
 
 def __getattr__(name: str):
