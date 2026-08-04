@@ -14,6 +14,8 @@ from tests._support import (
     _write_opencode_db_with_tools,
     _write_opencode_db_with_turns,
     app_with,
+    box_cells,
+    box_title,
     workflow,
 )
 
@@ -223,7 +225,7 @@ def test_sources_tab_appears_in_combined_view_and_aggregates_by_source():
     # It renders a per-source breakdown scoped to that slice.
     month = app.months[0]
     lines = app.renderer.month_sources(month, 120)
-    assert lines[0].startswith("# Spend by harness")
+    assert box_title(lines).startswith("Spend by harness")
     assert any("OpenCode" in ln for ln in lines)
     assert any("Codex" in ln for ln in lines)
 
@@ -253,7 +255,7 @@ def test_year_sources_tab_appears_in_combined_view():
     app.focus = "years"
     assert app.current_tabs()[:2] == ("Overview", "Harnesses")
     lines = app.renderer.year_sources(app.selected_year_summary, 100)
-    assert lines[0].startswith("# Spend by harness")
+    assert box_title(lines).startswith("Spend by harness")
     assert any("OpenCode" in ln for ln in lines) and any("Codex" in ln for ln in lines)
 
 
@@ -328,7 +330,7 @@ def test_combined_sessions_tables_get_a_src_column():
     app = ot.App(MergedStore([a, b]), args)
     month = app.months[0]
     lines = app.renderer.month_workflows(month, 120)
-    assert "Hns" in lines[0]  # header gains the column
+    assert "Hns" in box_cells(lines)[0]  # header gains the column
     assert any("oc " in ln and "opencode session" in ln for ln in lines)
     assert any("cc " in ln and "claude session" in ln for ln in lines)
     # Top Sessions in the overview carries the bracket tag instead

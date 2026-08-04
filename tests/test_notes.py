@@ -5,7 +5,7 @@ import os
 
 import opentab as ot
 
-from tests._support import FakeScreen, _app_on_session, app_with, workflow
+from tests._support import FakeScreen, _app_on_session, app_with, box_cells, workflow
 
 
 def test_note_saves_to_its_own_file_and_survives_a_restart():
@@ -234,10 +234,10 @@ def test_note_marks_the_session_in_lists_and_shows_in_the_overview():
     assert any("✎ Refactor" in line for line in renderer.month_workflows(app.months[0], 80))
 
     lines = renderer.detail_overview(session, 80)
-    assert any(line.startswith("Note:     the expensive one") for line in lines)
+    assert any(c.startswith("Note:     the expensive one") for c in box_cells(lines))
     # It sits in the Session block, above the Money card -- it says what the money was for.
     money_i = next(i for i, ln in enumerate(lines) if "Money" in ln and ln[:1] in ("┌", "+"))
-    assert next(i for i, ln in enumerate(lines) if ln.startswith("Note:")) < money_i
+    assert next(i for i, ln in enumerate(lines) if "Note:" in ln) < money_i
 
 
 def test_note_wraps_to_the_pane_with_a_hanging_indent():

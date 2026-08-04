@@ -99,6 +99,27 @@ def fleet_app(rows_by_machine, meta=None):
     return ot.App(FleetStore(wfs, meta), args)
 
 
+# Every boxed table opens its rows with this marker gutter, so a stack of boxes in one
+# pane has one left inset (Renderer._model_table explains why). Tests that read a cell
+# off the start of a row strip it.
+TABLE_LEAD = "  "
+
+
+def box_cells(lines, lead=False):
+    # The content rows of a ruled box (header, data rows, TOTAL row) with the "| ... |"
+    # frame gutters stripped -- so a test can read the columns regardless of the box's
+    # Unicode/ASCII glyphs or where the rules land. `lead=True` also strips the shared
+    # marker gutter, for the tests that assert on a row's first column.
+    rows = [ln[2:-2] for ln in lines if ln[:1] in ("│", "|")]
+    return [r[len(TABLE_LEAD) :] if lead else r for r in rows]
+
+
+def box_title(lines):
+    # The title a ruled box carries on its top border, e.g. "Sessions · 12".
+    top = next(ln for ln in lines if ln[:1] in ("┌", "+"))
+    return top.strip("┌┐+-─ ").strip()
+
+
 class FakeScreen:
     # Just enough curses surface for the self-painting draw_* methods (which only
     # addstr onto a sized grid) plus the addch/hline/vline the box frame is drawn

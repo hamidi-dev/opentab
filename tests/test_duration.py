@@ -18,6 +18,7 @@ from tests._support import (
     _write_jsonl,
     _write_opencode_db_with_turns,
     app_with,
+    box_cells,
     workflow,
 )
 
@@ -645,9 +646,9 @@ def test_duration_sort_puts_the_hardest_worked_first_and_unknown_last():
 
 def test_session_list_shows_a_worked_column_blank_when_unknown():
     app = _session_app()
-    rows = app.renderer.session_table(app.current_sessions(), 120)
+    rows = box_cells(app.renderer.session_table(app.current_sessions(), 120))
     assert "Worked" in rows[0]  # the header no longer says the ambiguous "Duration"
-    by_id = {r.split()[-1]: r for r in rows[1:]}
+    by_id = {r.split()[-1]: r for r in rows[1:] if not r.strip().startswith("TOTAL")}
     assert "2h" in by_id["long"]
     assert "5m" in by_id["short"]
     assert "2h" not in by_id["unknown"] and "5m" not in by_id["unknown"]
@@ -666,7 +667,12 @@ def test_session_detail_says_how_long_the_agent_worked():
     app = _session_app()
     w = next(x for x in app.loaded if x.id == "long")
     assert app.renderer._worked_suffix(w) == "   · worked 2h (until 15:00)"
-    started = [ln for ln in app.renderer.detail_overview(w, 100) if ln.startswith("Started")]
+    # rstrip: a boxed card pads its rows out to the frame's inner width.
+    started = [
+        c.rstrip()
+        for c in box_cells(app.renderer.detail_overview(w, 100))
+        if c.startswith("Started")
+    ]
     assert started == ["Started:  2026-06-01 13:00:00   · worked 2h (until 15:00)"]
     w.ended_at = "2026-06-02 01:30:00"  # ran past midnight: keep the date visible
     assert "until 2026-06-02 01:30" in app.renderer._worked_suffix(w)

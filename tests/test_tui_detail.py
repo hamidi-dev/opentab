@@ -18,16 +18,14 @@ from tests._support import (
     _write_opencode_db_with_tools,
     _write_opencode_db_with_turns,
     app_with,
+    box_cells,
+    box_title,
     screen_text,
     workflow,
 )
 
-
-def _cells(lines):
-    # The content rows of a _ruled_box model/tool table (header, data rows, and the
-    # TOTAL row), with the "| ... |" frame gutters stripped -- so a test can read the
-    # columns regardless of the box's Unicode/ASCII glyphs or where the rules land.
-    return [ln[2:-2] for ln in lines if ln[:1] in ("│", "|")]
+# Moved to _support once a second module needed it (every table is a ruled box now).
+_cells = box_cells
 
 
 def test_top_models_is_a_ruled_box_with_full_model_columns():
@@ -73,8 +71,9 @@ def _models_tab_app():
 def test_the_zoomed_models_tab_is_the_browse_table_plus_a_cursor():
     # The tab renders ONE table, twice. Zooming used to swap the eight-column ruled box
     # for a four-column ranked picker, which is exactly the drift the Sessions/Projects
-    # tables were unified to end -- so Enter may add a cursor and nothing else: same
-    # rows, same columns, same TOTAL row, byte for byte.
+    # tables were unified to end -- so Enter may add a cursor and NOTHING else: same
+    # rows, same columns, same TOTAL row, same width, byte for byte apart from the ">"
+    # in the marker gutter every boxed table reserves.
     app = _models_tab_app()
     month = app.selected_month_summary
     preview = app.renderer.month_models(month, 116)
@@ -82,11 +81,17 @@ def test_the_zoomed_models_tab_is_the_browse_table_plus_a_cursor():
     app.drill_in()
     app.tab = app.current_tabs().index("Models")
     zoomed = app.renderer.month_models(month, 116)
-    assert zoomed == preview
+    cursor = app.renderer._model_cursor_line
+    assert [ln for i, ln in enumerate(zoomed) if i != cursor] == [
+        ln for i, ln in enumerate(preview) if i != cursor
+    ]
+    # The one differing line differs by exactly the marker cell -- no reflow, no column
+    # the zoom conjured up.
+    assert zoomed[cursor].replace("> ", "  ", 1) == preview[cursor]
+    assert len(zoomed[cursor]) == len(preview[cursor])
     # ...and the cursor points at a real data row of that very table.
     rows = app.renderer._model_row_at
     assert sorted(rows.values()) == [0, 1]
-    cursor = app.renderer._model_cursor_line
     assert rows[cursor] == 0 and "opus" in zoomed[cursor]
 
 
@@ -339,7 +344,7 @@ def test_top_sessions_box_widens_cost_column_for_six_figure_spend():
     # stay under their headers instead of every row shoving one cell right.
     app = app_with([])
     ws = [workflow("a", "2026-06-01 12:00:00", cost=123456.78)]
-    content = _cells(app.renderer._top_sessions_box(ws, 200000.0, 120))
+    content = box_cells(app.renderer._top_sessions_box(ws, 200000.0, 120), lead=True)
     header, row = content[0], next(ln for ln in content if "$123,456.78" in ln)
     cw = len("$123,456.78")  # 11: the widened Cost column
     assert row[:cw] == "$123,456.78"  # full cost, not clipped to 10
@@ -350,7 +355,7 @@ def test_top_sessions_box_widens_cost_column_for_six_figure_spend():
 def test_top_projects_box_widens_cost_column_for_six_figure_spend():
     app = app_with([])
     ws = [workflow("a", "2026-06-01 12:00:00", cost=123456.78, directory="/repo/x")]
-    content = _cells(app.renderer._top_projects_box(ws, 200000.0, 120))
+    content = box_cells(app.renderer._top_projects_box(ws, 200000.0, 120), lead=True)
     header, row = content[0], next(ln for ln in content if "$123,456.78" in ln)
     cw = len("$123,456.78")
     assert row[:cw] == "$123,456.78"
@@ -395,6 +400,82 @@ def _paint_sessions_picker(app, width=100):
     finally:
         ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
     return screen_text(screen).splitlines()
+
+
+def _sessions_app(n):
+    app = app_with(
+        [workflow(f"s{i}", f"2026-06-{i + 1:02d} 12:00:00", title=f"t{i}") for i in range(n)]
+    )
+    app.focus = "months"
+    app.view = "zoom"
+    app.tab = app.month_tabs.index("Sessions")
+    return app
+
+
+def test_a_picker_is_a_ruled_box_and_pays_the_frame_out_of_its_row_budget():
+    # The scrolling pickers wear the same box the static tables do, which costs four of
+    # the pane's rows: the titled top, the header, the rule under it and the bottom. The
+    # budget has to come off the LIST, not off the frame -- a picker that drew as many
+    # rows as before would paint its own bottom border over the last one.
+    app = _sessions_app(40)
+    painted = _paint_sessions_picker(app, 100)
+    assert painted[0].startswith("┌ Sessions · 40")
+    assert painted[1][:1] == "│" and "Title" in painted[1]  # header inside the gutters
+    assert set(painted[2]) <= set("├┤─")  # the rule under the header
+    assert painted[-1][:1] == "└"
+    rows = [ln for ln in painted if re.search(r"\bt\d+\b", ln)]
+    # 24-row screen: 3 chrome rows above the box, the box's own 4, one bottom border.
+    assert len(rows) == 24 - 5 - ot.Renderer.PICKER_CHROME
+    assert all(ln[:1] == "│" and ln[-1:] == "│" for ln in rows)  # every row inside the frame
+
+
+def test_the_picker_cursor_reverses_only_the_cells_between_the_gutters():
+    # A full-width reverse bar would punch a hole through the box's own vertical rules,
+    # so the selection stops at the gutters -- the rule _paint_model_cursor established
+    # for the Models table, now shared by every navigable one.
+    app = _sessions_app(3)
+    app.workflow_index = 1
+    screen = AttrScreen(24, 100)
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: n * 100
+    ot.curses.init_pair = lambda *a: None
+    try:
+        app.renderer.draw_sessions_picker(screen, 0, 0, 24, 100)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    # x=2 is the left gutter, x=4 the first content cell (the ">" marker), x=97 the right.
+    y = next(i for i in range(24) if screen.cells.get((i, 4)) == ">")
+    assert screen.cells[(y, 2)] == "│" and not screen.attrs[(y, 2)] & ot.curses.A_REVERSE
+    assert screen.attrs[(y, 4)] & ot.curses.A_REVERSE
+    assert screen.cells[(y, 97)] == "│" and not screen.attrs[(y, 97)] & ot.curses.A_REVERSE
+
+
+def test_every_boxed_column_header_is_found_and_lit_the_same_way():
+    # One header look across every table, in both of a table's frames. The lookup is by
+    # the framed header STRING, not by position -- _sectioned_box opens the Token
+    # economics card with a chart, so "the row after the top border" would light a bar
+    # caption and miss the real header three sections down.
+    app = _sessions_app(3)
+    app._model_by_root = {"s0": [_model_row("opus", 9.0, 900)]}
+    rnd = app.renderer
+    rnd._box_headers = set()
+    lines = rnd.detail_overview(app.loaded[0], 116)
+    heads = rnd.box_header_lines(lines)
+    assert len(heads) == 2  # the Token economics table and the model table
+    assert all("Type" in lines[i] or "Model" in lines[i] for i in heads)
+    # The chart caption right below the Token economics title is NOT a header.
+    top = next(i for i, ln in enumerate(lines) if ln.startswith("┌ Token economics"))
+    assert top + 1 not in heads and "share of tokens sent" in lines[top + 1]
+    # Painted: the labels light up, the gutters stay in the frame's plain attribute.
+    screen = AttrScreen(6, 120)
+    orig_cp = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n * 100
+    try:
+        rnd._paint_box_header(screen, 0, 0, lines[min(heads)], 116)
+        lit = ot.curses.color_pair(ot.Renderer.HEADER_PAIR) | ot.curses.A_BOLD
+    finally:
+        ot.curses.color_pair = orig_cp
+    assert screen.attrs[(0, 0)] == 0 and screen.attrs[(0, 2)] == lit
 
 
 def test_zoom_pickers_paint_no_enter_hint():
@@ -505,17 +586,22 @@ def test_browse_preview_and_zoom_picker_are_the_same_session_table():
     app.tab = app.month_tabs.index("Sessions")
     # The picker draws into a 100-wide pane, i.e. a content width of w - 4.
     preview = app.renderer.month_workflows(app.selected_month_summary, 96)
-    assert not preview[0].startswith("#")  # no heading line to shift the rows down
+    # Both frames are the SAME ruled box: the tab name rides the top border, so the
+    # picker takes over on Enter without a single row shifting.
+    cells = box_cells(preview)
 
     app.view = "zoom"
     painted = _paint_sessions_picker(app, 100)
 
-    header = next(ln for ln in painted if "Title" in ln)
-    assert header.strip() == preview[0].strip()  # same columns, same sort arrows
-    rows = [ln.strip() for ln in painted if "first" in ln or "second" in ln]
-    assert rows and len(rows) == len(preview) - 1
-    # The cursor is the only difference: strip it and the rows are identical.
-    assert [r.lstrip(">").strip() for r in rows] == [p.strip() for p in preview[1:]]
+    # The painted picker IS a ruled box too, so both sides unwrap the same way.
+    painted_cells = box_cells(painted)
+    header = next(ln for ln in painted_cells if "Title" in ln)
+    assert header.strip() == cells[0].strip()  # same columns, same sort arrows
+    rows = [c for c in painted_cells if "first" in c or "second" in c]
+    body = [c for c in cells[1:] if not c.strip().startswith("TOTAL")]
+    assert rows and len(rows) == len(body)
+    # The cursor marker is the only difference: strip it and the rows are identical.
+    assert [r.strip().lstrip(">").strip() for r in rows] == [p.strip() for p in body]
 
 
 def test_detail_tools_reprices_unpriced_under_dollar():
@@ -543,7 +629,9 @@ def test_detail_tools_reprices_unpriced_under_dollar():
         app.show_api_prices = True
         app._ensure_models()
         serena_line = next(
-            c for c in _cells(rnd.detail_tools(wf, 92)) if c.startswith("serena_read_file")
+            c
+            for c in box_cells(rnd.detail_tools(wf, 92), lead=True)
+            if c.startswith("serena_read_file")
         )
         assert "$1.00" in serena_line
         api_lines = "\n".join(rnd.detail_tools(wf, 92))
@@ -683,9 +771,11 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         # never hide inside an expansion the reader has to discover.
         table = rnd.detail_turns(wf, 96)
         tj = "\n".join(table)
-        assert table[0].startswith("# Turns — 2 prompts · 3 turns · $3.00")
+        # The tab's summary rides the box's top border now, not a heading line above it.
+        assert box_title(table).startswith("Turns — 2 prompts · 3 turns · $3.00")
+        cells = box_cells(table)
         assert "Add feature X" in tj and "Fix the bug" in tj
-        assert "Turns" in table[1] and "Cached" in table[1] and "Cumulative" in table[1]
+        assert "Turns" in cells[0] and "Cached" in cells[0] and "Cumulative" in cells[0]
         assert "$3.00 · 100%" in tj  # the last prompt's cumulative cell
         # A prompt row is a moment (MM-DD HH:MM); the seconds belong to its turns, which
         # live in the popup, so no per-turn clock stamp reaches the table.
@@ -700,7 +790,7 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         # so the total grows to $1 + $2 + $3 = $6.00 -- in the table and the drill alike.
         app.show_api_prices = True
         priced = rnd.detail_turns(wf, 96)
-        assert priced[0].startswith("# Turns — 2 prompts · 3 turns · $6.00")
+        assert box_title(priced).startswith("Turns — 2 prompts · 3 turns · $6.00")
         pjoined = "\n".join(priced)
         assert "$6.00 · 100%" in pjoined and "Add feature X" in pjoined
         app.open_turn_drill(0)
@@ -750,13 +840,15 @@ def test_turns_marks_compactions_even_while_folded():
     # Folded is the default -- no turn rows drawn, and the marker there regardless.
     assert app.turn_drill is None
     assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in lines)
-    marker = next(ln for ln in lines if ln.startswith("▼ "))
+    # The markers ride INSIDE the box, between the rows they happened between.
+    cells = box_cells(lines)
+    marker = next(c for c in cells if c.startswith("▼ "))
     assert "before turn 3" in marker  # the turn that ran on the cleared window
     assert "900.0k → 300.0k" in marker and "600.0k freed" in marker
     # Exactly one: a subagent's own small context neither triggers a marker (it runs in
     # its own window) nor breaks the main thread's chain (300k → 340k is growth).
-    assert sum(1 for ln in lines if ln.startswith("▼ ")) == 1
-    assert "▼ 1 compaction, ~600.0k freed" in lines[0]
+    assert sum(1 for c in cells if c.startswith("▼ ")) == 1
+    assert "▼ 1 compaction, ~600.0k freed" in box_title(lines)
     # Amber like the Context tab's ▼ rows, so one event reads as one thing on both tabs.
     orig = ot.curses.color_pair
     ot.curses.color_pair = lambda n: n
@@ -795,8 +887,8 @@ def test_turns_marks_compactions_even_while_folded():
     timeless = ot.App(NoTime([workflow("ses_1", "2026-06-01 12:00:00", cost=5.0)]), args)
     timeless.view = "session"
     assert any(
-        ln.startswith("▼ ")
-        for ln in timeless.renderer.detail_turns(timeless.current_session(), 100)
+        c.startswith("▼ ")
+        for c in box_cells(timeless.renderer.detail_turns(timeless.current_session(), 100))
     )
     # ...and the popup behind Enter survives a row with no timestamp too.
     timeless.open_turn_drill(0)
@@ -870,14 +962,14 @@ def test_subagents_tab_reprices_unpriced_node_in_api_mode():
         # Real mode: the unpriced subagent reads as $0.00.
         real = app._priced_nodes([r for r in store.workflow_nodes("root") if r["depth"] > 0])
         assert real[0]["cost"] == 0.0
-        assert "$0.00" in app.renderer.detail_subagents(app.loaded[0], 200)[-1]
+        assert "$0.00" in box_cells(app.renderer.detail_subagents(app.loaded[0], 200))[-1]
 
         # API mode: it is repriced to the Opus API-equivalent. _priced_nodes feeds
         # both the rendered tab and the CSV export, so asserting it covers both.
         app.toggle_api_prices()
         priced = app._priced_nodes([r for r in store.workflow_nodes("root") if r["depth"] > 0])
         assert round(priced[0]["cost"], 6) == round(expected, 6)
-        sub_line = app.renderer.detail_subagents(app.loaded[0], 200)[-1]
+        sub_line = box_cells(app.renderer.detail_subagents(app.loaded[0], 200))[-1]
         assert ot.money(expected) in sub_line
         assert "$0.00" not in sub_line
 
@@ -1071,9 +1163,9 @@ def test_subagents_tab_header_is_click_sortable_and_shows_started():
     # The tab opens with the flamegraph box, so the table's header is wherever that box
     # ended -- which is exactly why the sort registration is keyed off the built list's
     # own length rather than a literal index.
-    head = next(i for i, ln in enumerate(lines) if ln.startswith("Started"))
-    assert lines[head - 1] == "# Subagent Executions"
-    assert "2026-06-01 12:30" in lines[head + 1]  # the subagent row carries its start time
+    head = next(i for i, ln in enumerate(lines) if "Started" in ln and ln[:1] in ("│", "|"))
+    assert box_title(lines[head - 1 :]) == "Subagent Executions"
+    assert "2026-06-01 12:30" in lines[head + 2]  # past the rule, the subagent's row
     cols, target = rnd._line_sort_headers[head]
     assert target == "subagent" and cols == rnd.SUBAGENT_SORT_COLUMNS
 
@@ -1102,8 +1194,9 @@ def test_month_projects_are_scoped_and_sortable():
 
     lines = app.renderer.month_projects(app.selected_month_summary, 100)
 
-    assert "/tmp/a" in lines[1]  # lines[0] is the column header (no heading above it)
-    assert "/tmp/b" in lines[2]
+    rows = box_cells(lines)
+    assert "/tmp/a" in rows[1]  # rows[0] is the column header (the title rides the border)
+    assert "/tmp/b" in rows[2]
     assert all("/tmp/old" not in line for line in lines)
     assert app.handle_key(None, ord("s"))  # opens the project-sort picker
     assert app.sort_menu and app.sort_menu_index == 1  # current is tokens
@@ -1755,20 +1848,24 @@ def test_detail_turns_marks_the_prompt_that_arrived_after_the_cache_expired():
     lines = ot.Renderer(app).detail_turns(app.loaded[0], 96)
     joined = "\n".join(lines)
     # The tab title carries the count and the money, like the ▼ compaction summary.
-    assert "❄ 1 cache expiry, $" in lines[0]
-    mark = next(i for i, ln in enumerate(lines) if ln.startswith("❄ "))
+    assert "❄ 1 cache expiry, $" in box_title(lines)
+    cells = box_cells(lines)
+    mark = next(i for i, c in enumerate(cells) if c.startswith("❄ "))
     # ABOVE the row it belongs to -- the wait happened before that prompt -- and flush
     # left, outside the table's own columns, because it is an event, not a prompt.
-    assert "the late follow-up" in lines[mark + 1]
-    assert not lines[mark + 1].startswith("❄")
-    assert "2h idle" in lines[mark] and "300.0k bought again" in lines[mark]
-    assert "it lived 1h" in lines[mark]  # the deadline that was missed, not just the gap
+    assert "the late follow-up" in cells[mark + 1]
+    assert not cells[mark + 1].startswith("❄")
+    assert "2h idle" in cells[mark] and "300.0k bought again" in cells[mark]
+    assert "it lived 1h" in cells[mark]  # the deadline that was missed, not just the gap
     # The first prompt is untouched: nothing expired before it.
-    assert not lines[mark - 1].startswith("❄ ") if mark else True
+    assert not cells[mark - 1].startswith("❄ ") if mark else True
     assert joined.count("❄ cache expired") == 1
     # Painted off its leading glyph, like every other prefix-styled line in the panes
-    # (line_attr gives "❄ " its own branch -- red, where "! " caveats are amber).
-    assert lines[mark].startswith("❄ ")
+    # (line_attr gives "❄ " its own branch -- red, where "! " caveats are amber). Inside
+    # the box the glyph has to be the FIRST content cell for line_attr to reach it past
+    # the gutter, so the marker keeps its colour instead of flattening into a table row.
+    boxed = next(ln for ln in lines if "cache expired" in ln)
+    assert boxed[2:].lstrip().startswith("❄ ")
 
 
 def test_detail_turns_stays_silent_when_the_backend_cannot_support_the_reading():
@@ -1826,18 +1923,21 @@ def test_turns_table_budgets_its_optional_columns_against_the_pane():
     wf = app.current_session()
     wide = app.renderer.detail_turns(wf, 130)
     assert all(len(ln) <= 130 for ln in wide if ln.startswith("  "))
-    assert "Cumulative" in wide[1] and any("█" in ln or "▏" in ln for ln in wide)
+    assert "Cumulative" in box_cells(wide)[0] and any("█" in ln or "▏" in ln for ln in wide)
 
     mid = app.renderer.detail_turns(wf, 88)  # bar dropped, Cumulative kept
-    assert all(len(ln) <= 88 for ln in mid if ln.startswith("  "))
-    assert "Cumulative" in mid[1]
-    assert not any("█" in ln or "▏" in ln for ln in mid if ln.startswith("  "))
+    assert all(len(ln) <= 88 for ln in mid)
+    assert "Cumulative" in box_cells(mid)[0]
+    assert not any("█" in ln or "▏" in ln for ln in mid)
 
-    narrow = app.renderer.detail_turns(wf, 72)  # both dropped
-    assert all(len(ln) <= 72 for ln in narrow if ln.startswith("  "))
-    assert "Cumulative" not in narrow[1]
+    # 76, not 72: the ruled box takes four cells off the table's own budget, and below
+    # ~76 the PROMPT_MIN floor starts overflowing the frame rather than yielding.
+    narrow = app.renderer.detail_turns(wf, 76)  # both dropped
+    assert all(len(ln) <= 76 for ln in narrow)
+    assert "Cumulative" not in box_cells(narrow)[0]
     # ...and the columns that carry the answer never go.
-    for line in (wide[1], mid[1], narrow[1]):
+    for lines_ in (wide, mid, narrow):
+        line = box_cells(lines_)[0]
         assert "Prompt" in line and "Turns" in line and "Cached" in line and "Cost" in line
 
 

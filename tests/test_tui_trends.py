@@ -2,7 +2,16 @@
 
 import opentab as ot
 
-from tests._support import AttrScreen, FakeScreen, _model_row, app_with, screen_text, workflow
+from tests._support import (
+    AttrScreen,
+    FakeScreen,
+    _model_row,
+    app_with,
+    box_cells,
+    box_title,
+    screen_text,
+    workflow,
+)
 
 
 def open_calendar(app):
@@ -592,7 +601,7 @@ def test_trend_models_ranks_priced_models():
         ]
     }
     lines = app.renderer.trend_models(80, 12)
-    assert lines[0].startswith("# Model spend")
+    assert box_title(lines).startswith("Model spend")
     assert any("anthropic/m" in ln and "$5.00" in ln and "█" in ln for ln in lines)
 
 
@@ -626,14 +635,15 @@ def test_trend_providers_rolls_models_up_to_provider():
         ]
     }
     lines = app.renderer.trend_providers(80, 12)
-    assert lines[0].startswith("# Spend by provider")
+    assert box_title(lines).startswith("Spend by provider")
+    cells = box_cells(lines, lead=True)
     # The two Anthropic models collapse into one "anthropic" row at $6.00 (5 + 1).
-    anthropic = next(ln for ln in lines if ln.startswith("anthropic"))
+    anthropic = next(c for c in cells if c.startswith("anthropic"))
     assert "$6.00" in anthropic and "█" in anthropic
-    openai = next(ln for ln in lines if ln.startswith("openai"))
+    openai = next(c for c in cells if c.startswith("openai"))
     assert "$2.00" in openai
     # Anthropic outspends OpenAI, so it ranks first.
-    assert lines.index(anthropic) < lines.index(openai)
+    assert cells.index(anthropic) < cells.index(openai)
 
 
 def test_trend_providers_lists_unpriced_provider_and_hints_at_dollar():
@@ -641,7 +651,7 @@ def test_trend_providers_lists_unpriced_provider_and_hints_at_dollar():
     app._model_by_root = {"a": [_model_row("github-copilot/gpt-5", 0.0, 5_000)]}
     lines = app.renderer.trend_providers(80, 12)
     # A subscription/credit provider records $0 but still shows its token volume...
-    row = next(ln for ln in lines if ln.startswith("github-copilot"))
+    row = next(c for c in box_cells(lines, lead=True) if c.startswith("github-copilot"))
     assert "$0.00" in row and "5.0k" in row
     # ...and the view nudges toward "$" to price it.
     assert any("$ prices subscription" in ln for ln in lines)
@@ -672,7 +682,7 @@ def test_trend_models_rows_drill_into_sessions_and_a_session():
     rows = app.trend_drill_sessions()
     assert [w.id for w, _c, _t in rows] == ["b"] and rows[0][1] == 2.0
     lines = app.renderer.trend_drill_lines(80, 12)
-    assert lines[0] == "# Sessions · openai/gpt-5"
+    assert box_title(lines).startswith("Sessions · openai/gpt-5")
     assert any("2026-06-02" in ln and "$2.00" in ln for ln in lines)
     app.handle_key(None, 10)  # Enter again -> straight into that session
     assert not app.trends and app.view == "session"

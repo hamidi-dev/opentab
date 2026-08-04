@@ -387,7 +387,7 @@ def test_the_chart_sits_above_both_tables_and_takes_the_sort_header_with_it():
         r._line_sort_headers = {}
         lines = r.detail_subagents(app.loaded[0], 120)
         assert lines[0].startswith("┌ Where the money went")
-        head = next(i for i, ln in enumerate(lines) if ln.startswith("Started"))
+        head = next(i for i, ln in enumerate(lines) if "Started" in ln and ln[:1] in ("│", "|"))
         assert head > 1  # the chart really is above it
         cols, target = r._line_sort_headers[head]
         assert target == "subagent" and cols == r.SUBAGENT_SORT_COLUMNS

@@ -11,6 +11,7 @@ from tests._support import (
     _app_on_session,
     _model_row,
     app_with,
+    box_title,
     screen_text,
     workflow,
 )
@@ -1487,11 +1488,14 @@ def test_preview_session_lists_register_clickable_sort_headers():
     rnd = app.renderer
     rnd._line_sort_headers = {}
     lines = rnd.month_workflows(app.selected_month_summary, 100)
-    cols, target = rnd._line_sort_headers[0]  # the header is the pane's first line
+    head = rnd.BOX_HEADER_LINE  # line 0 is the box's titled top border
+    cols, target = rnd._line_sort_headers[head]
     assert target == "session"
     assert ("date", "Started") in cols and ("subagents", "Subagents") in cols
+    # The zones are located in the text as DRAWN, so the box's gutter shifts them right
+    # by exactly the cells the paint shifts the line by.
     rnd.sort_regions = []
-    rnd._register_line_sort_header(5, 2, 0, lines[0], 96)
+    rnd._register_line_sort_header(5, 2, head, lines[head], 96)
     keys = {(k, t) for _y, _x0, _x1, k, t in rnd.sort_regions}
     assert ("date", "session") in keys and ("subagents", "session") in keys
 
@@ -1832,7 +1836,7 @@ def test_drilling_into_a_year_zooms_and_lists_its_sessions():
     app.drill_in()
     assert app.view == "zoom"
     lines = app.renderer.year_overview(app.selected_year_summary, 100)
-    assert lines[0] == "# Yearly Insight"
+    assert box_title(lines) == "Yearly Insight"
     assert any("Year:" in ln and "2026" in ln for ln in lines)
     # The Sessions tab is scoped to the focused year (2026 sessions only).
     app.tab = app.current_tabs().index("Sessions")
@@ -2882,7 +2886,7 @@ def test_the_models_tab_only_offers_models_the_armed_drill_can_open():
     # ...and the DRAWN table agrees, so the cursor indexes what is on screen
     lines = app.renderer.month_models(app.selected_month_summary, 116)
     drawn = [
-        lines[i][2:-2].split("  ")[0].strip()
+        lines[i][2:-2].lstrip("> ").split("  ")[0].strip()
         for i, _ in sorted(app.renderer._model_row_at.items(), key=lambda kv: kv[1])
     ]
     assert drawn == ["opus", "sonnet"]

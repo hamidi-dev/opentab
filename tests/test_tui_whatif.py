@@ -12,6 +12,7 @@ from tests._support import (
     _whatif_db,
     _whatif_msg,
     app_with,
+    box_cells,
     screen_text,
     workflow,
 )
@@ -20,11 +21,18 @@ from tests._support import (
 def _table(lines):
     # The Subagents tab opens with the flamegraph box ("Where the money went"), which is
     # about recorded/estimated spend and so is identical with a target armed. Everything
-    # below is about the TABLE, which starts at its own "# ..." heading.
+    # below is about the TABLE, whose own ruled box carries its title on the top border.
     start = next(
-        i for i, ln in enumerate(lines) if ln.startswith(("# Session Tree", "# Subagent Ex"))
+        i
+        for i, ln in enumerate(lines)
+        if ln[:1] in ("┌", "+") and ("Session Tree" in ln or "Subagent Ex" in ln)
     )
     return lines[start:]
+
+
+def _table_cells(lines):
+    # The table's content rows (header, data, TOTAL) with the box gutters stripped.
+    return box_cells(_table(lines))
 
 
 def _wi_row(lines, label):
@@ -46,7 +54,11 @@ def test_local_usage_stays_zero_in_what_if_view():
     app.show_api_prices = True
     app._apply_price_mode()
     assert app.loaded[0].api_total_cost == 0.0  # no invented spend
-    ollama = next(ln for ln in app.renderer.trend_providers(80, 12) if ln.startswith("ollama"))
+    ollama = next(
+        c
+        for c in box_cells(app.renderer.trend_providers(80, 12), lead=True)
+        if c.startswith("ollama")
+    )
     assert "$0.00" in ollama
 
 
@@ -344,10 +356,11 @@ def test_whatif_subagents_tab_prices_the_session_tree_and_the_savings_footer():
 
         app.select_whatif_model("anthropic/claude-opus-4.5")
         lines = _table(app.renderer.detail_subagents(wf, 200))
-        assert "anthropic/claude-opus-4.5" in lines[0]  # header names the target
-        assert "What-if" in lines[1] and "Δ" not in lines[1]
+        cells = box_cells(lines)
+        assert "anthropic/claude-opus-4.5" in lines[0]  # the box title names the target
+        assert "What-if" in cells[0] and "Δ" not in cells[0]
         # The root joins the table: both nodes of the tree are listed.
-        depths = [ln.split()[2] for ln in lines[2:4]]
+        depths = [c.split()[2] for c in cells[1:3]]
         assert sorted(depths) == ["0", "1"]
         # Cost is what was recorded (the ordinary $-gated column); What-if is that node's
         # own tokens at the target's rates -- exact, one model, one rate card.
@@ -369,10 +382,11 @@ def test_subagents_tab_is_unchanged_without_a_whatif_target():
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         lines = _table(app.renderer.detail_subagents(app.loaded[0], 200))
-        assert lines[0] == "# Subagent Executions"
-        assert "What-if" not in lines[1] and "Δ" not in lines[1]
+        assert "Subagent Executions" in lines[0]  # the title, on the box's top border
+        cells = box_cells(lines)
+        assert "What-if" not in cells[0] and "Δ" not in cells[0]
         assert not any(ln.startswith("TOTAL") for ln in lines)
-        rows = [ln for ln in lines[2:] if ln.strip()]
+        rows = [c for c in cells[1:] if c.strip()]
         assert len(rows) == 1 and "Docs" in rows[0]  # the subagent only, never the root
 
 
@@ -506,7 +520,7 @@ def test_whatif_key_opens_the_picker_and_clears_an_active_target():
         # Armed, not applied: the sessions list still reads the actual $1.94, and only
         # the Subagents tab grows the what-if columns.
         assert round(app.loaded[0].total_cost, 2) == 1.94
-        assert "What-if" in _table(app.renderer.detail_subagents(app.loaded[0], 200))[1]
+        assert "What-if" in _table_cells(app.renderer.detail_subagents(app.loaded[0], 200))[0]
 
         # `w` with a target set clears it (no picker), and the tab goes back to normal.
         assert app.handle_key(None, ord("w"))

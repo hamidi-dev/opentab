@@ -224,6 +224,10 @@ class Renderer:
         # built, never counted off its prologue (the treemap-offset rule): a box grows
         # a rule between header and body only when the body is non-empty.
         self._ruled_body_start: int | None = None
+        # The framed column-header strings the builders have emitted, so the paint can
+        # give each one the header band (_mark_box_header explains why it's keyed by
+        # text). Cleared each frame by draw().
+        self._box_headers: set[str] = set()
 
     def __getattr__(self, name: str):
         # Misses are App state/logic; read them from the App. (Renderer's own
@@ -274,6 +278,49 @@ class Renderer:
                 return key, target
         return None
 
+    def _mark_box_header(self, text: str, width: int) -> None:
+        # Record a box's COLUMN HEADER by the exact framed string it will be drawn as,
+        # so the paint can find it again. Keyed by TEXT, deliberately not by line index:
+        # a pane stacks several boxes (an Overview has four) and each builder only knows
+        # offsets within its own block, so an index recorded here is one every caller has
+        # to keep re-basing -- which is exactly how the Subagents sort zone drifted off
+        # its header once already. Position can't answer it either: _sectioned_box opens
+        # the Token economics card with a CHART, so "the row after the top border" would
+        # band a bar caption and miss the real header three sections down.
+        self._box_headers.add(self.box_row(text, width))
+
+    def box_header_lines(self, lines: list[str]) -> set[int]:
+        # Which lines of a built pane are a column header. A stale entry from an earlier
+        # pane can only match a line that is byte-identical to some box's header, which
+        # makes it one too -- so the lookup stays correct between the per-frame clears.
+        return {i for i, line in enumerate(lines) if line in self._box_headers}
+
+    # The column header: accent_bright, bold -- the focus colour, the brightest ink the
+    # theme has. Text only, deliberately NOT a filled band: a pane stacks up to five boxes
+    # (an Overview has four before the model table), and five solid bars down one screen
+    # read as chrome competing with the data rather than labelling it. What it replaced
+    # was the structural grey (pair 4, the keybar's colour), which sat a shade BELOW the
+    # numbers it labelled and vanished under the box's own title. The row cursor is the
+    # same accent REVERSED (paint_cursor_row), so a header and a selection are the same
+    # family and still unmistakable for each other -- one is ink, one is a bar.
+    HEADER_PAIR = 6
+
+    def _paint_box_header(
+        self, stdscr: curses.window, y: int, x: int, line: str, width: int
+    ) -> None:
+        # A boxed column header: the gutters stay in the frame's plain attribute so only
+        # the labels light up (draw_picker_frame paints its own through here too, so a
+        # table reads identically in both of its frames).
+        row = shorten(line, width)
+        attr = curses.color_pair(self.HEADER_PAIR) | curses.A_BOLD
+        if len(row) > self.BOX_CHROME and row[:1] in ("│", "|") and row[-1:] in ("│", "|"):
+            head, cells, tail = row[:2], row[2:-2], row[-2:]
+            self.write(stdscr, y, x, head, curses.A_NORMAL)
+            self.write(stdscr, y, x + display_width(head), cells, attr)
+            self.write(stdscr, y, x + display_width(head + cells), tail, curses.A_NORMAL)
+            return
+        self.write(stdscr, y, x, row, attr)
+
     def _register_line_sort_header(
         self, sy: int, sx: int, line_index: int, line: str, max_w: int
     ) -> None:
@@ -302,19 +349,21 @@ class Renderer:
             self._scroll_line_into_view(self._model_cursor_line, visible)
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         drawn = lines[self.scroll : self.scroll + visible]
+        # A column header reads as one (accent, bold) wherever it is drawn -- the pickers
+        # paint theirs that way, and these are the same headers.
+        headers = self.box_header_lines(lines) | set(self._line_sort_headers)
         for offset, line in enumerate(drawn):
             index = self.scroll + offset
             if models and index == self._model_cursor_line:
                 self._paint_model_cursor(stdscr, y + 3 + offset, x + 2, line, w - 4)
                 continue
-            # A column header reads as one (accent, bold) wherever it is drawn -- the
-            # pickers paint theirs that way, and these are the same headers.
-            attr = (
-                curses.color_pair(4) | curses.A_BOLD
-                if index in self._line_sort_headers
-                else self.line_attr(line)
+            if index in headers:
+                self._paint_box_header(stdscr, y + 3 + offset, x + 2, line, w - 4)
+                self._register_line_sort_header(y + 3 + offset, x + 2, index, line, w - 4)
+                continue
+            self.write_rich(
+                stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), self.line_attr(line)
             )
-            self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
             self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
             self._register_line_sort_header(y + 3 + offset, x + 2, index, line, w - 4)
         if models:
@@ -322,17 +371,25 @@ class Renderer:
             # index; _apply_click resolves that to an ordinal via _model_row_at.
             self._add_rows_region("zoommodel", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
 
-    def _paint_model_cursor(
-        self, stdscr: curses.window, y: int, x: int, line: str, width: int
+    def paint_cursor_row(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        line: str,
+        width: int,
+        attr: int | None = None,
+        bars: bool = False,
     ) -> None:
-        # The selected model row, in the pickers' own reverse video. Painted with write(),
+        # The selected row of ANY navigable table, boxed or not. Painted with write(),
         # deliberately NOT write_rich(): the rich pass overpaints every money/token span
-        # with its own colour, and a model row is almost entirely money and tokens -- the
+        # with its own colour, and a table row is almost entirely money and tokens -- the
         # highlight would come out in shreds around the one cell that isn't a number.
-        # (The pickers dodge this the same way: write() + write_selected_bars.)
-        attr = curses.color_pair(6) | curses.A_BOLD | curses.A_REVERSE
+        # `bars` overdraws block-glyph runs so a cost bar doesn't read as a hole in the
+        # highlight band (see write_selected_bars).
+        attr = curses.color_pair(6) | curses.A_BOLD | curses.A_REVERSE if attr is None else attr
         row = shorten(line, width)
-        if len(row) > 4 and row[:1] in ("│", "|") and row[-1:] in ("│", "|"):
+        if len(row) > self.BOX_CHROME and row[:1] in ("│", "|") and row[-1:] in ("│", "|"):
             # Reverse only the CELLS between the ruled box's gutters, so the selection
             # bar sits inside the table instead of punching a hole through its vertical
             # rules. A pane too narrow to keep the closing gutter falls through below.
@@ -340,9 +397,19 @@ class Renderer:
             frame = self.line_attr(line)
             self.write(stdscr, y, x, head, frame)
             self.write(stdscr, y, x + display_width(head), cells, attr)
+            if bars:
+                self.write_selected_bars(stdscr, y, x + display_width(head), cells)
             self.write(stdscr, y, x + display_width(head + cells), tail, frame)
             return
-        self.write(stdscr, y, x, pad(row, width), attr)
+        row = pad(row, width)
+        self.write(stdscr, y, x, row, attr)
+        if bars:
+            self.write_selected_bars(stdscr, y, x, row)
+
+    def _paint_model_cursor(
+        self, stdscr: curses.window, y: int, x: int, line: str, width: int
+    ) -> None:
+        self.paint_cursor_row(stdscr, y, x, line, width)
 
     def year_row_text(self, year: YearSummary, marker: str) -> str:
         return (
@@ -375,6 +442,18 @@ class Renderer:
             f"{marker} {pad(name, name_width)} "
             f"{money(project.cost):>9} {human_tokens(project.tokens):>7} "
             f"{project.workflows:>3} ses {project.subagents:>6} subs"
+        )
+
+    def project_total_text(self, rows: list[ProjectSummary], width: int) -> str:
+        # The boxed TOTAL row, in project_row_text's own columns so the sums land under
+        # the numbers they sum. Only the line-based frame draws one -- the picker's rows
+        # scroll, and a total pinned to the bottom border would sum a window, not a list.
+        name_width = self.project_name_width(width)
+        return (
+            f"  {pad('TOTAL', name_width)} "
+            f"{money(sum(p.cost for p in rows)):>9} "
+            f"{human_tokens(sum(p.tokens for p in rows)):>7} "
+            f"{sum(p.workflows for p in rows):>3} ses {sum(p.subagents for p in rows):>6} subs"
         )
 
     def project_header_text(self, width: int) -> str:
@@ -596,6 +675,7 @@ class Renderer:
         self.regions = []  # rebuilt below as panels draw, for this frame's clicks
         self.sort_regions = []  # column-header sort zones, same lifecycle as regions
         self._line_sort_headers = {}  # refilled by the line-based drawers below
+        self._box_headers = set()  # ditto: the framed header strings, for the header band
         # Per-segment colour runs for the Token economics bars, keyed by the line's own
         # text (see _token_stack_line). Cleared per frame like the other paint
         # side-channels, so a stale bar can never colour a line that outlived it.
@@ -1060,11 +1140,9 @@ class Renderer:
         # time alone would be ambiguous anyway.
         return (workflow.ended_at or workflow.created_at)[:10]
 
-    def _mark_session_header(self, lines: list[str], columns: tuple) -> None:
-        # The just-appended line is a session-list column header (browse preview);
-        # record it in _line_sort_headers so the paint loop makes it click-sortable
-        # (and paints it like the pickers' headers).
-        self._line_sort_headers[len(lines) - 1] = (columns, "session")
+    # The line a ruled box's column header sits on: index 0 is the titled top border.
+    # Boxed line-based tables register their sort zones against this.
+    BOX_HEADER_LINE = 1
 
     TOP_SESSIONS_LIMIT = 20  # the Overview previews are leaderboards, not the full list
 
@@ -1249,6 +1327,30 @@ class Renderer:
             f"{self.ignored_session_tag(workflow)}{workflow.title}"
         )
 
+    def session_total_text(
+        self, sessions: list[Workflow], models: bool, proj_w: int, dur: bool = True
+    ) -> str:
+        # The boxed TOTAL row, laid out by session_row_text's own fields so the sums sit
+        # under the columns they sum. Everything past Subagents is identity, not quantity
+        # (a model count, a harness, a title), so those cells stay blank rather than
+        # inventing a sum. Worked time sums only the sessions whose backend recorded it --
+        # a blank stays blank, never a fake 0s.
+        worked = [wf.worked_seconds for wf in sessions if wf.worked_seconds is not None]
+        text = f"  {pad('TOTAL', 10)} "
+        if dur:
+            text += f"{human_duration(sum(worked)) if worked else '':>8} "
+        text += (
+            f"{money(sum(wf.total_cost for wf in sessions)):>9} "
+            f"{human_tokens(sum(wf.total_tokens for wf in sessions)):>8} "
+            f"{sum(wf.subagents for wf in sessions):>11} "
+        )
+        if models:
+            text += f"{'':>6}  "
+        text += " " * display_width(self.src_col() + self.mach_col())
+        if proj_w:
+            text += f"{'':<{proj_w}}  "
+        return text
+
     def session_sort_columns(self, proj_w: int, dur: bool = True) -> tuple:
         # (sort_key, label) in drawn order, for the clickable headers of both frames.
         columns = [self.session_date_column(), *self.SESSION_SORT_COLUMNS]
@@ -1277,18 +1379,41 @@ class Renderer:
         # that Enter on it then refuses to open.
         return self.filtered_sessions(rows)
 
+    @staticmethod
+    def sessions_box_title(sessions: list) -> str:
+        return f"Sessions · {len(sessions)}" if sessions else "Sessions"
+
+    @staticmethod
+    def projects_box_title(projects: list) -> str:
+        return f"Projects · {len(projects)}" if projects else "Projects"
+
     def session_table(self, rows: list[Workflow], width: int) -> list[str]:
-        # The browse preview of a Sessions tab: the picker's table minus the cursor.
-        # No "# ... Sessions" heading -- the tab strip above already names it, and the
-        # extra line would shift every row when the picker takes over on Enter.
+        # The browse preview of a Sessions tab: the picker's table minus the cursor, in the
+        # same ruled box. The tab's name rides the BORDER rather than a heading line above
+        # the table -- a heading would shift every row when the picker takes over on Enter,
+        # which is why this table had none at all before it was boxed.
         sessions = self.filtered_sessions(rows)
-        models, proj_w, dur = self.session_columns(sessions, width)
-        lines = [self.session_header_text(models, proj_w, dur)]
-        self._mark_session_header(lines, self.session_sort_columns(proj_w, dur))
+        inner = max(1, width - self.BOX_CHROME)
+        models, proj_w, dur = self.session_columns(sessions, inner)
+        header = self.session_header_text(models, proj_w, dur)
+        title = self.sessions_box_title(sessions)
         if not sessions:
-            lines.append("No sessions.")
-            return lines
-        lines.extend(self.session_row_text(wf, " ", models, proj_w, dur) for wf in sessions)
+            lines = self._ruled_box(title, header, ["No sessions."], None, [], width)
+        else:
+            body = [self.session_row_text(wf, " ", models, proj_w, dur) for wf in sessions]
+            total = (
+                self.session_total_text(sessions, models, proj_w, dur)
+                if len(sessions) > 1
+                else None
+            )
+            lines = self._ruled_box(title, header, body, total, [], width)
+        # The header is line 1 of the box (below the titled top border), and the click
+        # zones are located in the text actually drawn -- so the gutters shift them right
+        # by exactly the two cells the paint also shifts the line by.
+        self._line_sort_headers[self.BOX_HEADER_LINE] = (
+            self.session_sort_columns(proj_w, dur),
+            "session",
+        )
         return lines
 
     def unpriced_hint(self) -> str:
@@ -1342,6 +1467,11 @@ class Renderer:
             return curses.A_NORMAL
         if first in ("│", "|"):
             content = line[2:].lstrip()
+            # A Turns-tab marker row inside the box: the ▼/❄ events sit between the prompt
+            # rows they happened between, so the glyph tests above have to reach past the
+            # gutter to keep them amber/red rather than flattening them into table rows.
+            if content[:1] in ("▼", "❄"):
+                return self.line_attr(content)
             # The Money card's armed what-if rows are marked with a leading ★ and painted
             # in the orange accent (pair 6 -- the same state-emphasis colour as the Turns
             # ▸ headers and the narrowed-view chip), so the counterfactual pops off the
@@ -1397,86 +1527,163 @@ class Renderer:
                 self.token_attr(token_text),
             )
 
+    # What the picker frame costs a scrolling list: the top border, the header row and
+    # the rule under it, plus the bottom border. Subtracted from the rows a pane can
+    # show, and added back by the callers that size a body against `h`.
+    PICKER_CHROME = 4
+
+    def picker_box_width(self, w: int) -> int:
+        # The content width a boxed picker's rows get from a pane `w` wide. The browse
+        # PREVIEW of the same table must measure with this too -- both frames size their
+        # optional columns off it, and a column that appeared on Enter and vanished on
+        # Esc is exactly the drift the shared builders exist to prevent.
+        return max(1, w - 4 - self.BOX_CHROME)
+
+    def draw_picker_frame(
+        self,
+        stdscr: curses.window,
+        cy: int,
+        x: int,
+        w: int,
+        title: str,
+        header: str,
+        nrows: int,
+        sort_columns: tuple = (),
+        sort_target: str = "",
+    ) -> tuple[int, int, int]:
+        # The ruled box a NAVIGABLE list sits in -- the static tables' frame (_ruled_box)
+        # made scrollable. The static ones can assemble their whole box as strings up
+        # front; a picker only knows how many rows it will draw after it has clamped its
+        # window against the pane, so the frame is painted around it in pieces instead.
+        # Same glyphs, same titled top border, same rule under the header, so the two
+        # cannot drift apart.
+        #
+        # Returns (first body y, content x, inner width). The caller paints `nrows` rows
+        # at that x and MUST NOT draw more than it declared -- the bottom border is
+        # painted here, below them.
+        outer = max(5, w - 4)
+        inner = outer - self.BOX_CHROME
+        cx = x + 2 + 2
+        self.write(
+            stdscr, cy, x + 2, self.box_top(title, outer), curses.color_pair(2) | curses.A_BOLD
+        )
+        # The framed header, painted by the same helper the line-based tables use, so the
+        # two frames of one table cannot end up wearing different headers.
+        self._paint_box_header(stdscr, cy + 1, x + 2, self.box_row(header, outer), outer)
+        if sort_columns:
+            self._register_sort_header(cy + 1, cx, header, sort_columns, sort_target, inner)
+        self.write(stdscr, cy + 2, x + 2, self.box_rule(outer), curses.A_NORMAL)
+        self.write(stdscr, cy + 3 + nrows, x + 2, self.box_rule(outer, "bl", "br"), curses.A_NORMAL)
+        return cy + 3, cx, inner
+
+    def paint_picker_row(
+        self,
+        stdscr: curses.window,
+        ry: int,
+        x: int,
+        cx: int,
+        inner: int,
+        text: str,
+        selected: bool,
+        cost: str = "",
+        token_text: str = "",
+        bars: bool = False,
+    ) -> None:
+        # One row inside a draw_picker_frame box: the gutters, then the cells. A selected
+        # row reverses only the cells (paint_cursor_row), so the highlight sits inside the
+        # table rather than punching a hole through its vertical rules.
+        g = self.box_glyphs()["v"]
+        self.write(stdscr, ry, x + 2, f"{g} ", curses.A_NORMAL)
+        self.write(stdscr, ry, cx + inner, f" {g}", curses.A_NORMAL)
+        if selected:
+            self.paint_cursor_row(
+                stdscr, ry, cx, pad(shorten(text, inner), inner), inner, bars=bars
+            )
+        elif cost or token_text:
+            self.write_colored_summary_row(stdscr, ry, cx, text, cost, token_text, inner)
+        else:
+            self.write_rich(stdscr, ry, cx, pad(shorten(text, inner), inner))
+
     def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # Navigable session list on the Sessions tab of a zoomed month/day/project:
         # the browse preview's table (session_table), made selectable.
         sessions = self.current_sessions()
         cy = y + 3
-        models, proj_w, dur = self.session_columns(sessions, w - 4)
+        # Measured against the BOXED width, exactly as session_table's preview is, so a
+        # column can't appear on Enter and vanish on Esc.
+        models, proj_w, dur = self.session_columns(sessions, self.picker_box_width(w))
         header = self.session_header_text(models, proj_w, dur)
-        self.write(
-            stdscr,
-            cy,
-            x + 2,
-            shorten(header, w - 4),
-            curses.color_pair(4) | curses.A_BOLD,
-        )
-        self._register_sort_header(
-            cy,
-            x + 2,
-            header,
-            self.session_sort_columns(proj_w, dur),
-            "session",
-            w - 4,
-        )
+        columns = self.session_sort_columns(proj_w, dur)
         if not sessions:
-            self.write(stdscr, cy + 1, x + 2, "No sessions.", curses.color_pair(1))
+            body_y, cx, inner = self.draw_picker_frame(
+                stdscr, cy, x, w, self.sessions_box_title(sessions), header, 1, columns, "session"
+            )
+            self.paint_picker_row(stdscr, body_y, x, cx, inner, "No sessions.", False)
             return
-        visible = max(1, h - 5)
+        visible = max(1, h - 5 - self.PICKER_CHROME)
         idx = max(0, min(self.workflow_index, len(sessions) - 1))
         start = max(0, min(idx - visible // 2, max(0, len(sessions) - visible)))
-        self._add_rows_region(
-            "session", cy + 1, x, x + w - 1, start, len(sessions[start : start + visible])
+        shown = sessions[start : start + visible]
+        body_y, cx, inner = self.draw_picker_frame(
+            stdscr,
+            cy,
+            x,
+            w,
+            self.sessions_box_title(sessions),
+            header,
+            len(shown),
+            columns,
+            "session",
         )
-        for off, wf in enumerate(sessions[start : start + visible]):
-            ry = cy + 1 + off
+        self._add_rows_region("session", body_y, x, x + w - 1, start, len(shown))
+        for off, wf in enumerate(shown):
             marker = ">" if start + off == idx else " "
-            cost = money(wf.total_cost)
-            tok = human_tokens(wf.total_tokens)
-            text = self.session_row_text(wf, marker, models, proj_w, dur)
-            if start + off == idx:
-                self.write(
-                    stdscr,
-                    ry,
-                    x + 2,
-                    pad(shorten(text, w - 4), w - 4),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
-            else:
-                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
+            self.paint_picker_row(
+                stdscr,
+                body_y + off,
+                x,
+                cx,
+                inner,
+                self.session_row_text(wf, marker, models, proj_w, dur),
+                start + off == idx,
+                money(wf.total_cost),
+                human_tokens(wf.total_tokens),
+            )
 
     def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # Navigable project list on the Projects tab of a zoomed month/day.
         projects = self.zoom_projects()
         cy = y + 3
-        header = self.project_header_text(w - 4)
-        self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
-        self._register_sort_header(cy, x + 2, header, self.PROJECT_SORT_COLUMNS, "project", w - 4)
+        inner_w = self.picker_box_width(w)
+        header = self.project_header_text(inner_w)
+        title = self.projects_box_title(projects)
         if not projects:
-            self.write(stdscr, cy + 1, x + 2, "No projects.", curses.color_pair(1))
+            body_y, cx, inner = self.draw_picker_frame(
+                stdscr, cy, x, w, title, header, 1, self.PROJECT_SORT_COLUMNS, "project"
+            )
+            self.paint_picker_row(stdscr, body_y, x, cx, inner, "No projects.", False)
             return
-        visible = max(1, h - 5)
+        visible = max(1, h - 5 - self.PICKER_CHROME)
         idx = max(0, min(self.project_index, len(projects) - 1))
         start = max(0, min(idx - visible // 2, max(0, len(projects) - visible)))
-        self._add_rows_region(
-            "zoomproject", cy + 1, x, x + w - 1, start, len(projects[start : start + visible])
+        shown = projects[start : start + visible]
+        body_y, cx, inner = self.draw_picker_frame(
+            stdscr, cy, x, w, title, header, len(shown), self.PROJECT_SORT_COLUMNS, "project"
         )
-        for off, project in enumerate(projects[start : start + visible]):
-            ry = cy + 1 + off
+        self._add_rows_region("zoomproject", body_y, x, x + w - 1, start, len(shown))
+        for off, project in enumerate(shown):
             marker = ">" if start + off == idx else " "
-            cost = money(project.cost)
-            tok = human_tokens(project.tokens)
-            text = self.project_row_text(project, marker, w - 4)
-            if start + off == idx:
-                self.write(
-                    stdscr,
-                    ry,
-                    x + 2,
-                    pad(shorten(text, w - 4), w - 4),
-                    curses.A_REVERSE | curses.A_BOLD,
-                )
-            else:
-                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
+            self.paint_picker_row(
+                stdscr,
+                body_y + off,
+                x,
+                cx,
+                inner,
+                self.project_row_text(project, marker, inner_w),
+                start + off == idx,
+                money(project.cost),
+                human_tokens(project.tokens),
+            )
 
     def draw_sources_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # Navigable source list on the Sources tab of a zoomed scope (merged view):
@@ -1517,42 +1724,41 @@ class Renderer:
         # narrow the Sessions list to the selected row. `col` is the name-column header,
         # `region_kind` the click region (zoomsource / zoommachine).
         cy = y + 3
+        inner_w = self.picker_box_width(w)
+        title = f"Spend by {col.lower()}"
         if not rows:
-            self.write(stdscr, cy, x + 2, "No sessions in this scope.", curses.color_pair(1))
+            nw, bw = self._group_widths([], col, inner_w)
+            body_y, cx, inner = self.draw_picker_frame(
+                stdscr, cy, x, w, title, self._group_header(col, nw, bw), 1
+            )
+            self.paint_picker_row(stdscr, body_y, x, cx, inner, "No sessions in this scope.", False)
             return
         total = sum(float(it["cost"]) for _, it in rows)
         peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
-        # Size the name column to its HEADER too, not just the data: with every name
-        # shorter than the label ("Harness", "Machine"), the header's own field overflowed
-        # and shifted Cost/Share/Tokens/Sess right of the numbers they label. Short
-        # hostnames make that the default in a fleet view. _model_table guards the same way.
-        namew = min(max([len(s) for s, _ in rows] + [len(col)]), max(10, w - 48))
-        barw = max(3, min(20, w - namew - 44))
-        header = (
-            f"  {col:<{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}"
-        )
-        self.write(stdscr, cy, x + 2, shorten(header, w - 4), curses.color_pair(4) | curses.A_BOLD)
-        visible = max(1, h - 5)
+        namew, barw = self._group_widths(rows, col, inner_w)
+        header = self._group_header(col, namew, barw)
+        visible = max(1, h - 5 - self.PICKER_CHROME)
         idx = max(0, min(sel_index, len(rows) - 1))
         start = max(0, min(idx - visible // 2, max(0, len(rows) - visible)))
         shown = rows[start : start + visible]
-        self._add_rows_region(region_kind, cy + 1, x, x + w - 1, start, len(shown))
+        body_y, cx, inner = self.draw_picker_frame(stdscr, cy, x, w, title, header, len(shown))
+        self._add_rows_region(region_kind, body_y, x, x + w - 1, start, len(shown))
         for off, (source, it) in enumerate(shown):
-            ry = cy + 1 + off
             marker = ">" if start + off == idx else " "
             cost = money(float(it["cost"]))
             tok = human_tokens(int(it["tokens"]))
-            bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
-            text = (
-                f"{marker} {shorten(source, namew):{namew}}  {bar:<{barw}} "
-                f"{cost:>11} {pct(float(it['cost']), total):>5} {tok:>9} {int(it['sessions']):>7}"
+            self.paint_picker_row(
+                stdscr,
+                body_y + off,
+                x,
+                cx,
+                inner,
+                self._group_row(source, it, marker, namew, barw, peak, total),
+                start + off == idx,
+                cost,
+                tok,
+                bars=True,
             )
-            if start + off == idx:
-                row = pad(shorten(text, w - 4), w - 4)
-                self.write(stdscr, ry, x + 2, row, curses.A_REVERSE | curses.A_BOLD)
-                self.write_selected_bars(stdscr, ry, x + 2, row)
-            else:
-                self.write_colored_summary_row(stdscr, ry, x + 2, text, cost, tok, w - 4)
         if not self.show_api_prices and any(
             float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
         ):
@@ -1560,14 +1766,9 @@ class Renderer:
                 f"· {self._key('main', 'api_prices')} prices subscription/credit "
                 "usage at API list rates"
             )
-            if cy + 2 + len(shown) < y + h - 1:
-                self.write(
-                    stdscr,
-                    cy + 2 + len(shown),
-                    x + 2,
-                    shorten(caption, w - 4),
-                    curses.color_pair(1),
-                )
+            note_y = body_y + len(shown) + 2  # clear of the box's bottom border
+            if note_y < y + h - 1:
+                self.write(stdscr, note_y, x + 2, shorten(caption, w - 4), curses.color_pair(1))
 
     def draw_tabs(
         self,
@@ -1897,8 +2098,7 @@ class Renderer:
         # pulled, when it was last pulled and by which opentab, plus this box's model mix
         # and its top projects (the "different machines had different stories" cut).
         workflows = self.workflows_for_machine(machine.name)
-        lines = [
-            "# Machine",
+        rows = [
             f"Machine:      {machine.name}",
             f"Status:       {'● live — full drill-in' if machine.live else '○ pulled summary'}",
         ]
@@ -1906,10 +2106,10 @@ class Renderer:
             when = iso_to_local(machine.exported_at)
             age = relative_age(machine.exported_at)
             if when:
-                lines.append(f"Pulled:       {when}" + (f"  ({age})" if age else ""))
+                rows.append(f"Pulled:       {when}" + (f"  ({age})" if age else ""))
             if machine.opentab_version:
-                lines.append(f"opentab:      {machine.opentab_version}")
-        lines += [
+                rows.append(f"opentab:      {machine.opentab_version}")
+        rows += [
             f"Cost:         {money(machine.cost)}",
             f"Share:        {pct(machine.cost, self.range_cost_total())}",
             f"Tokens:       {tokens(machine.tokens)}",
@@ -1917,6 +2117,7 @@ class Renderer:
             f"Subagents:    {machine.subagents}",
             f"Last active:  {machine.last_active[:16]}",
         ]
+        lines = self._stat_card("# Machine", rows, width)
         if not machine.live:
             lines += [
                 "",
@@ -1934,15 +2135,11 @@ class Renderer:
             # usage" beside a real cost. Live boxes have the rows.
             lines.append("")
             lines.extend(self._token_economics_box(workflows, width))
-        top_projects = self.projects_for_workflows(workflows)
-        if top_projects:
-            lines.extend(["", "# Top Projects"])
-            for project in top_projects[:6]:
-                lines.append(
-                    f"{money(project.cost):>10} {pct(project.cost, machine.cost):>5} "
-                    f"{human_tokens(project.tokens):>8}  "
-                    f"{short_path(project.directory, max(10, width - 30))}"
-                )
+        if self.projects_for_workflows(workflows):
+            # The shared Top Projects box, not this view's own spelling of it -- same
+            # leaderboard, same columns, wherever it appears.
+            lines.append("")
+            lines.extend(self._top_projects_box(workflows, machine.cost, width))
         lines.append("")
         agg = self.aggregate_models(workflows)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
@@ -2203,6 +2400,7 @@ class Renderer:
             self.app._turn_follow = False
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         drawn = lines[self.scroll : self.scroll + visible]
+        headers = self.box_header_lines(lines) | set(self._line_sort_headers)
         for offset, line in enumerate(drawn):
             attr = self.line_attr(line)
             if current == "Turns" and self.scroll + offset == self._turn_cursor_line:
@@ -2210,7 +2408,17 @@ class Renderer:
                 # the LINE INDEX, never on a leading glyph: the rows are ordinary table
                 # rows now, and a glyph test silently highlighted nothing at all once the
                 # ▸ headers became columns -- j/k moved a cursor the eye could not find.
-                attr = curses.color_pair(6) | curses.A_BOLD | curses.A_REVERSE
+                # Painted like every other table cursor: reversed BETWEEN the box gutters,
+                # and with write() rather than write_rich(), whose money/token overpaint
+                # would shred a highlight on a row that is almost all numbers.
+                self.paint_cursor_row(stdscr, y + 3 + offset, x + 2, line, w - 4)
+                continue
+            if self.scroll + offset in headers:
+                self._paint_box_header(stdscr, y + 3 + offset, x + 2, line, w - 4)
+                self._register_line_sort_header(
+                    y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
+                )
+                continue
             if current == "Context":
                 # The context chart's rows are heat-shaded by how full the window is
                 # at that height; detail_context stashed each line's level by index
@@ -2284,7 +2492,14 @@ class Renderer:
         # and cascade a 1-char shove that clips the rightmost column.
         cw_ = max(4, len(count_label), len(str(sum(int(r[1]) for r in rows))) if rows else 0)
         longest = max([len(str(r[0])) for r in rows] + [len(name_label)])
-        inner = max(1, width - 4)  # the box frame eats "| " on the left and " |" on the right
+        # Every boxed table opens with the same 2-cell marker gutter (blank here -- this
+        # table marks its selection with the reverse bar, not a ">"), so a stack of boxes
+        # in one pane has ONE left inset and the columns of adjacent tables line up.
+        # Without it the Models/Tools tables started flush at the gutter while the session,
+        # project and harness tables above them were indented, and the pane read as two
+        # different grids.
+        lead = "  "
+        inner = max(1, width - self.BOX_CHROME - len(lead))
         # In wide panes the CacheR/CacheW/Output cells carry the tokens' attributed
         # share of the Cost column too -- "811.6k ($10)" -- because counts alone hide
         # how skewed the money is (cache writes bill at 12.5x the cache-read rate on
@@ -2310,7 +2525,7 @@ class Renderer:
         else:
             tail_head = sep.join((f"{'CacheR':>9}", f"{'CacheW':>9}", f"{'Output':>8}"))
         header = (
-            f"{name_label:{mw}}{sep}{count_label:>{cw_}}{sep}{'Cost':>10}{sep}"
+            f"{lead}{name_label:{mw}}{sep}{count_label:>{cw_}}{sep}{'Cost':>10}{sep}"
             f"{'Share':>5}{sep}{'Tokens':>9}{sep}{tail_head}"
         )
         body = []
@@ -2329,7 +2544,7 @@ class Renderer:
                     )
                 )
             body.append(
-                f"{pad(shorten(name, mw), mw)}{sep}{int(runs):>{cw_}}{sep}{money(float(cost)):>10}{sep}"
+                f"{lead}{pad(shorten(name, mw), mw)}{sep}{int(runs):>{cw_}}{sep}{money(float(cost)):>10}{sep}"
                 f"{pct(float(cost), total_cost):>5}{sep}"
                 f"{human_tokens(int(tok)):>9}{sep}{tail}"
             )
@@ -2358,7 +2573,7 @@ class Renderer:
                     )
                 )
             total = (
-                f"{pad('TOTAL', mw)}{sep}{truns:>{cw_}}{sep}{money(total_cost):>10}{sep}{'':>5}{sep}"
+                f"{lead}{pad('TOTAL', mw)}{sep}{truns:>{cw_}}{sep}{money(total_cost):>10}{sep}{'':>5}{sep}"
                 f"{human_tokens(ttok):>9}{sep}{tail}"
             )
         notes = []
@@ -2367,18 +2582,25 @@ class Renderer:
                 "",
                 "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
             ]
+        # CLAMP, exactly as App.zoom_selected_model does -- never bail on an out-of-range
+        # index. Anything that shrinks the list without moving the cursor (typing an `f`
+        # query is the easy one: the move handlers clamp, a keystroke in the filter does
+        # not) would otherwise leave Enter drilling the clamped last row while the pane
+        # highlighted nothing at all.
+        picked = min(max(0, self.app.model_pick_index), len(body) - 1) if body else 0
+        if selectable and body:
+            # The ">" every navigable table marks its selection with, in the gutter the
+            # lead reserves. The reverse bar says the same thing in colour; this says it
+            # in ink, which is what a screenshot, a monochrome terminal and a colour-blind
+            # reader are left with -- and what made this table the odd one out.
+            body[picked] = ">" + body[picked][1:]
         lines = self._ruled_box(title, header, body, total, notes, width)
         self._model_row_at = {}
         self._model_cursor_line = None
         if selectable and self._ruled_body_start is not None:
             start = self._ruled_body_start
             self._model_row_at = {start + i: i for i in range(len(body))}
-            # CLAMP, exactly as App.zoom_selected_model does -- never bail on an
-            # out-of-range index. Anything that shrinks the list without moving the
-            # cursor (typing an `f` query is the easy one: the move handlers clamp, a
-            # keystroke in the filter does not) would otherwise leave Enter drilling the
-            # clamped last row while the pane highlighted nothing at all.
-            self._model_cursor_line = start + min(max(0, self.app.model_pick_index), len(body) - 1)
+            self._model_cursor_line = start + picked
         return lines
 
     # The ruled-box glyphs. Unicode on a UTF-8 screen; the locale-independent ASCII set
@@ -2406,6 +2628,50 @@ class Renderer:
         "v": "|",
     }
 
+    # -- the ruled box, in pieces ------------------------------------------------
+    #
+    # Every table in the app is drawn in this one frame, whether it is a static block
+    # of text (the Models/Tools tables), a line-based pane with a cursor (Turns), or a
+    # self-painting scrolling picker (Sessions/Projects/Harnesses). The pieces are split
+    # out because those three build their box differently -- the first two assemble a
+    # list of strings up front, the third paints borders around a window it only sizes
+    # at draw time -- and a second hand-rolled frame is exactly how the two frames drift
+    # apart (they did, once: the Sessions preview and its picker grew different columns).
+    # BOX_CHROME is what a box costs a caller sizing content against a pane.
+
+    BOX_CHROME = 4  # "| " + " |": the cells a box takes off the content width
+
+    @classmethod
+    def box_glyphs(cls) -> dict:
+        # Unicode on a UTF-8 screen, the locale-independent ASCII set otherwise. Asked,
+        # never caught -- see the _TABLE_GLYPHS note.
+        return cls._TABLE_GLYPHS if unicode_screen() else cls._TABLE_GLYPHS_ASCII
+
+    @classmethod
+    def box_top(cls, title: str, width: int) -> str:
+        # The titled top border. A titled box needs at least "| x |" (5 cells); below
+        # that the frame can't be square, so `width` is clamped and the paint clips the
+        # clamped box to the actual pane.
+        g = cls.box_glyphs()
+        width = max(5, width)
+        heading = shorten(title[2:] if title.startswith("# ") else title, max(1, width - 6))
+        prefix = f"{g['tl']} {heading} "
+        return prefix + g["h"] * max(0, width - display_width(prefix) - 1) + g["tr"]
+
+    @classmethod
+    def box_rule(cls, width: int, left: str = "lt", right: str = "rt") -> str:
+        g = cls.box_glyphs()
+        return g[left] + g["h"] * max(0, max(5, width) - 2) + g[right]
+
+    @classmethod
+    def box_row(cls, text: str, width: int) -> str:
+        # One content line inside the gutters, padded/clipped to the inner width so the
+        # frame stays square even on a narrow pane -- at the cost of the rightmost column
+        # there (the pre-box tables just overflowed the pane and were clipped at paint).
+        g = cls.box_glyphs()
+        inner = max(5, width) - cls.BOX_CHROME
+        return f"{g['v']} {pad(shorten(text, inner), inner)} {g['v']}"
+
     def _ruled_box(
         self,
         title: str,
@@ -2415,42 +2681,22 @@ class Renderer:
         notes: list[str],
         width: int,
     ) -> list[str]:
-        # Wrap a column-aligned model/tool table in a ruled box: the title on the top
-        # border, a rule under the header, the data rows, an optional rule + TOTAL row,
-        # then the bottom border. width is the OUTER width; the "| " + " |" gutters eat 4,
-        # so each content string is padded/clipped to `inner` -- keeping the frame square
-        # even on a narrow pane, at the cost of the rightmost column there (the pre-box
-        # table just overflowed the pane and was clipped at paint). line_attr colours the
-        # pieces by their leading glyph: the titled top in the accent, the TOTAL row bold.
-        # Any "! ..." caveat rides OUTSIDE the box, below it, as its own amber line.
-        g = self._TABLE_GLYPHS if unicode_screen() else self._TABLE_GLYPHS_ASCII
-        # A titled box needs at least "| x |" (5 cells); below that the frame can't be
-        # square. Clamp so every emitted line is exactly `width` wide (a real pane is never
-        # this narrow -- the paint then clips the clamped box to the actual pane).
-        width = max(5, width)
-        inner = width - 4
-        heading = shorten(title[2:] if title.startswith("# ") else title, max(1, width - 6))
-
-        def content(s: str) -> str:
-            return f"{g['v']} {pad(shorten(s, inner), inner)} {g['v']}"
-
-        def rule(left: str, right: str) -> str:
-            return left + g["h"] * max(0, width - 2) + right
-
-        prefix = f"{g['tl']} {heading} "
-        lines = [
-            prefix + g["h"] * max(0, width - display_width(prefix) - 1) + g["tr"],
-            content(header),
-        ]
+        # Wrap a column-aligned table in a ruled box: the title on the top border, a rule
+        # under the header, the data rows, an optional rule + TOTAL row, then the bottom
+        # border. width is the OUTER width. line_attr colours the pieces by their leading
+        # glyph: the titled top in the accent, the TOTAL row bold. Any "! ..." caveat
+        # rides OUTSIDE the box, below it, as its own amber line.
+        lines = [self.box_top(title, width), self.box_row(header, width)]
+        self._mark_box_header(header, width)
         self._ruled_body_start = None
         if body:
-            lines.append(rule(g["lt"], g["rt"]))
+            lines.append(self.box_rule(width))
             self._ruled_body_start = len(lines)
-            lines.extend(content(b) for b in body)
+            lines.extend(self.box_row(b, width) for b in body)
             if total is not None:
-                lines.append(rule(g["lt"], g["rt"]))
-                lines.append(content(total))
-        lines.append(rule(g["bl"], g["br"]))
+                lines.append(self.box_rule(width))
+                lines.append(self.box_row(total, width))
+        lines.append(self.box_rule(width, "bl", "br"))
         lines.extend(notes)
         return lines
 
@@ -2462,24 +2708,12 @@ class Renderer:
         # the armed what-if rows. Same glyphs, same titled top border (line_attr paints it
         # in the accent), same "! ..." notes riding outside the box below it. Empty groups
         # are dropped so a rule never opens onto nothing.
-        g = self._TABLE_GLYPHS if unicode_screen() else self._TABLE_GLYPHS_ASCII
-        width = max(5, width)
-        inner = width - 4
-        heading = shorten(title[2:] if title.startswith("# ") else title, max(1, width - 6))
-
-        def content(s: str) -> str:
-            return f"{g['v']} {pad(shorten(s, inner), inner)} {g['v']}"
-
-        def rule(left: str, right: str) -> str:
-            return left + g["h"] * max(0, width - 2) + right
-
-        prefix = f"{g['tl']} {heading} "
-        lines = [prefix + g["h"] * max(0, width - display_width(prefix) - 1) + g["tr"]]
+        lines = [self.box_top(title, width)]
         for i, group in enumerate(g2 for g2 in groups if g2):
             if i:
-                lines.append(rule(g["lt"], g["rt"]))
-            lines.extend(content(row) for row in group)
-        lines.append(rule(g["bl"], g["br"]))
+                lines.append(self.box_rule(width))
+            lines.extend(self.box_row(row, width) for row in group)
+        lines.append(self.box_rule(width, "bl", "br"))
         lines.extend(notes)
         return lines
 
@@ -2799,17 +3033,20 @@ class Renderer:
         # --- section 2: the numbers behind the bars
         type_w = max(max((len(label) for label, *_ in rows), default=4), len("TOTAL"))
         cost_w = max(8, *(len(money(c)) for _, _, c, _ in rows), len(money(econ.total_cost)) + 1)
+        # The 2-cell marker gutter every boxed table opens with (see _model_table): the
+        # bars above are a chart and start flush, but the numbers below them are a table
+        # and line up with every other one on the pane.
         table = [
-            f"{'Type':<{type_w}}  {'Tokens':>8}  {'Volume':>6}  {'Cost':>{cost_w}}  {'Spend':>6}"
+            f"  {'Type':<{type_w}}  {'Tokens':>8}  {'Volume':>6}  {'Cost':>{cost_w}}  {'Spend':>6}"
         ]
         table += [
-            f"{label:<{type_w}}  {human_tokens(int(toks)):>8}  "
+            f"  {label:<{type_w}}  {human_tokens(int(toks)):>8}  "
             f"{share_text(toks, econ.total_tokens):>6}  {money(cost):>{cost_w}}  "
             f"{share_text(cost, econ.total_cost):>6}"
             for label, toks, cost, _slot in rows
         ]
         total_row = [
-            f"{'TOTAL':<{type_w}}  {human_tokens(int(econ.total_tokens)):>8}  "
+            f"  {'TOTAL':<{type_w}}  {human_tokens(int(econ.total_tokens)):>8}  "
             f"{'':>6}  {approx + money(econ.total_cost):>{cost_w}}"
         ]
         notes = []
@@ -2827,6 +3064,7 @@ class Renderer:
                 f"! {human_tokens(econ.local_tokens)} local-model tokens excluded — "
                 "no API rate to price them at"
             )
+        self._mark_box_header(table[0], width)
         title = f"# Token economics · {approx}{money(econ.total_cost)} at list rates"
         return self._sectioned_box(title, [chart, table, total_row], width, notes)
 
@@ -2839,7 +3077,7 @@ class Renderer:
         rows = self.top_sessions(workflows)
         if not rows:
             return self._ruled_box("# Top Sessions", "no sessions in range", [], None, [], width)
-        inner = max(1, width - 4)
+        inner = max(1, width - self.BOX_CHROME - 2)  # -2: the shared marker gutter
         # Size Cost/Subs to their widest value so a 6-figure cost ($100,000.00 is 11
         # cells, not 10) or a 5-digit subagent count doesn't overflow a fixed field and
         # shove every following column one cell right of its header.
@@ -2847,9 +3085,9 @@ class Renderer:
         subs_w = max(4, *(len(str(w.subagents)) for w in rows))
         prefix = cost_w + 2 + 5 + 2 + 8 + 2 + subs_w + 2  # Cost·Share·Tokens·Subs + gaps
         title_w = max(10, inner - prefix)
-        header = f"{'Cost':>{cost_w}}  {'Share':>5}  {'Tokens':>8}  {'Subs':>{subs_w}}  Title"
+        header = f"  {'Cost':>{cost_w}}  {'Share':>5}  {'Tokens':>8}  {'Subs':>{subs_w}}  Title"
         body = [
-            f"{money(w.total_cost):>{cost_w}}  {pct(w.total_cost, scope_cost):>5}  "
+            f"  {money(w.total_cost):>{cost_w}}  {pct(w.total_cost, scope_cost):>5}  "
             f"{human_tokens(w.total_tokens):>8}  {w.subagents:>{subs_w}}  "
             f"{shorten(self.source_tag(w) + self.session_marks(w) + w.title, title_w)}"
             for w in rows
@@ -2886,34 +3124,36 @@ class Renderer:
             )
             for directory, ws in ranked
         ]
-        inner = max(1, width - 4)
+        inner = max(1, width - self.BOX_CHROME - 2)  # -2: the shared marker gutter
         # Size Cost/Sess to their widest value (see _top_sessions_box) so a 6-figure
         # project cost or a 4-digit session count doesn't overflow and shift the columns.
         cost_w = max(10, *(len(money(cost)) for _, cost, _, _ in agg))
         sess_w = max(4, *(len(str(n)) for _, _, _, n in agg))
         prefix = cost_w + 2 + 5 + 2 + 8 + 2 + sess_w + 2  # Cost·Share·Tokens·Sess + gaps
         path_w = max(10, inner - prefix)
-        header = f"{'Cost':>{cost_w}}  {'Share':>5}  {'Tokens':>8}  {'Sess':>{sess_w}}  Project"
+        header = f"  {'Cost':>{cost_w}}  {'Share':>5}  {'Tokens':>8}  {'Sess':>{sess_w}}  Project"
         body = [
-            f"{money(cost):>{cost_w}}  {pct(cost, scope_cost):>5}  "
+            f"  {money(cost):>{cost_w}}  {pct(cost, scope_cost):>5}  "
             f"{human_tokens(toks):>8}  {n:>{sess_w}}  {short_path(directory, path_w)}"
             for directory, cost, toks, n in agg
         ]
         return self._ruled_box("# Top Projects", header, body, None, [], width)
 
     def month_overview(self, month: MonthSummary, width: int) -> list[str]:
-        lines = [
+        lines = self._stat_card(
             "# Monthly Insight",
-            f"Month:           {month.month}",
-            f"Cost:            {money(month.cost)}",
-            f"Share of range:  {pct(month.cost, self.range_cost_total())}",
-            f"Tokens:          {tokens(month.tokens)}",
-            f"Sessions:        {month.workflows}",
-            f"Subagents:       {month.subagents}",
-            f"Unpriced tokens: {tokens(month.unpriced_tokens)}",
-        ]
-        if month.unpriced_tokens:
-            lines.extend(["", self.unpriced_hint()])
+            [
+                f"Month:           {month.month}",
+                f"Cost:            {money(month.cost)}",
+                f"Share of range:  {pct(month.cost, self.range_cost_total())}",
+                f"Tokens:          {tokens(month.tokens)}",
+                f"Sessions:        {month.workflows}",
+                f"Subagents:       {month.subagents}",
+                f"Unpriced tokens: {tokens(month.unpriced_tokens)}",
+            ],
+            width,
+            [self.unpriced_hint()] if month.unpriced_tokens else [],
+        )
         month_ws = self.workflows_for_month(month.month)
         lines.append("")
         lines.extend(self._token_economics_box(month_ws, width))
@@ -2952,34 +3192,54 @@ class Renderer:
         )
 
     def year_overview(self, year: YearSummary, width: int) -> list[str]:
-        lines = [
+        lines = self._stat_card(
             "# Yearly Insight",
-            f"Year:            {year_label(year.year)}",
-            f"Cost:            {money(year.cost)}",
-            f"Share of range:  {pct(year.cost, self.range_cost_total())}",
-            f"Tokens:          {tokens(year.tokens)}",
-            f"Sessions:        {year.workflows}",
-            f"Subagents:       {year.subagents}",
-            f"Unpriced tokens: {tokens(year.unpriced_tokens)}",
-        ]
-        if year.unpriced_tokens:
-            lines.extend(["", self.unpriced_hint()])
+            [
+                f"Year:            {year_label(year.year)}",
+                f"Cost:            {money(year.cost)}",
+                f"Share of range:  {pct(year.cost, self.range_cost_total())}",
+                f"Tokens:          {tokens(year.tokens)}",
+                f"Sessions:        {year.workflows}",
+                f"Subagents:       {year.subagents}",
+                f"Unpriced tokens: {tokens(year.unpriced_tokens)}",
+            ],
+            width,
+            [self.unpriced_hint()] if year.unpriced_tokens else [],
+        )
         year_ws = self.workflows_for_year(year.year)
         # Top Months is the year's headline breakdown -- the level you drill into next.
         by_month: dict[str, list[Workflow]] = defaultdict(list)
         for w in year_ws:
             by_month[w.created_at[:7]].append(w)
-        lines.extend(["", "# Top Months"])
-        for month in sorted(
+        ranked = sorted(
             by_month, key=lambda m: sum(w.total_cost for w in by_month[m]), reverse=True
-        ):
+        )
+        month_rows = []
+        for month in ranked:
             ws = by_month[month]
             cost = sum(w.total_cost for w in ws)
-            lines.append(
-                f"{month:<10} {money(cost):>10} {pct(cost, year.cost):>5} "
+            month_rows.append(
+                f"  {month:<10} {money(cost):>10} {pct(cost, year.cost):>5} "
                 f"{human_tokens(sum(w.total_tokens for w in ws)):>9} "
                 f"{len(ws):>4} sess"
             )
+        month_total = None
+        if len(ranked) > 1:
+            month_total = (
+                f"  {pad('TOTAL', 10)} {money(year.cost):>10} {'':>5} "
+                f"{human_tokens(year.tokens):>9} {year.workflows:>4} sess"
+            )
+        lines.append("")
+        lines.extend(
+            self._ruled_box(
+                "# Top Months",
+                f"  {'Month':<10} {'Cost':>10} {'Share':>5} {'Tokens':>9} {'Sess':>9}",
+                month_rows,
+                month_total,
+                [],
+                width,
+            )
+        )
         lines.append("")
         lines.extend(self._token_economics_box(year_ws, width))
         lines.append("")
@@ -3022,18 +3282,20 @@ class Renderer:
         )
 
     def day_overview(self, day: DaySummary, width: int) -> list[str]:
-        lines = [
+        lines = self._stat_card(
             "# Day Burn",
-            f"Day:             {day.day}",
-            f"Cost:            {money(day.cost)}",
-            f"Share of range:  {pct(day.cost, self.range_cost_total())}",
-            f"Tokens:          {tokens(day.tokens)}",
-            f"Sessions:        {day.workflows}",
-            f"Subagents:       {day.subagents}",
-            f"Unpriced tokens: {tokens(day.unpriced_tokens)}",
-        ]
-        if day.unpriced_tokens:
-            lines.extend(["", self.unpriced_hint()])
+            [
+                f"Day:             {day.day}",
+                f"Cost:            {money(day.cost)}",
+                f"Share of range:  {pct(day.cost, self.range_cost_total())}",
+                f"Tokens:          {tokens(day.tokens)}",
+                f"Sessions:        {day.workflows}",
+                f"Subagents:       {day.subagents}",
+                f"Unpriced tokens: {tokens(day.unpriced_tokens)}",
+            ],
+            width,
+            [self.unpriced_hint()] if day.unpriced_tokens else [],
+        )
         day_ws = self.workflows_for_day(day.day)
         lines.append("")
         lines.extend(self._token_economics_box(day_ws, width))
@@ -3071,29 +3333,28 @@ class Renderer:
             if include_ignored
             else self.range_cost_total()
         )
-        lines = [
+        card = min(width, self.CARD_WIDTH)
+        lines = self._stat_card(
             "# Project Spend",
-            f"Project:         {short_path(project.directory, max(20, width - 17))}",
-            f"Ignored:         {'yes' if project.ignored else 'no'}",
-            f"Cost:            {money(project.cost)}",
-            f"Share of range:  {pct(project.cost, share_total)}",
-            f"Tokens:          {tokens(project.tokens)}",
-            f"Sessions:        {project.workflows}",
-            f"Subagents:       {project.subagents}",
-            f"Unpriced tokens: {tokens(project.unpriced_tokens)}",
-        ]
-        if project.unpriced_tokens:
-            lines.extend(["", self.unpriced_hint()])
+            [
+                f"Project:         {short_path(project.directory, max(20, card - 21))}",
+                f"Ignored:         {'yes' if project.ignored else 'no'}",
+                f"Cost:            {money(project.cost)}",
+                f"Share of range:  {pct(project.cost, share_total)}",
+                f"Tokens:          {tokens(project.tokens)}",
+                f"Sessions:        {project.workflows}",
+                f"Subagents:       {project.subagents}",
+                f"Unpriced tokens: {tokens(project.unpriced_tokens)}",
+            ],
+            width,
+            [self.unpriced_hint()] if project.unpriced_tokens else [],
+        )
         lines.append("")
         lines.extend(self._token_economics_box(workflows, width))
-        lines.extend(["", "# Top Sessions"])
-        for workflow in self.top_sessions(workflows):
-            lines.append(
-                f"{workflow.created_at[:10]:<10} {money(workflow.total_cost):>10} "
-                f"{pct(workflow.total_cost, project.cost):>5} "
-                f"{human_tokens(workflow.total_tokens):>8} subagents {workflow.subagents:<3} "
-                f"{shorten(self.source_tag(workflow) + self.session_marks(workflow) + workflow.title, max(20, width - 53))}"
-            )
+        # The same Top Sessions box every other scope's Overview closes with, rather than
+        # this scope's own hand-rolled spelling of it -- one leaderboard, one layout.
+        lines.append("")
+        lines.extend(self._top_sessions_box(workflows, project.cost, width))
         lines.append("")
         agg = self.aggregate_models(workflows)
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
@@ -3134,14 +3395,19 @@ class Renderer:
 
     def project_table(self, rows: list[ProjectSummary], width: int) -> list[str]:
         # The browse preview of a Projects tab: draw_projects_picker's table minus the
-        # cursor — same builders, same header line, no heading above it (see
-        # session_table), so the picker takes over in place on Enter.
-        lines = [self.project_header_text(width)]
-        self._line_sort_headers[0] = (self.PROJECT_SORT_COLUMNS, "project")
-        if not rows:
-            lines.append("No projects.")
-            return lines
-        lines.extend(self.project_row_text(project, " ", width) for project in rows)
+        # cursor — same builders, same ruled box, so the picker takes over in place on
+        # Enter without a single row shifting.
+        inner = max(1, width - self.BOX_CHROME)
+        header = self.project_header_text(inner)
+        title = self.projects_box_title(rows)
+        body = (
+            [self.project_row_text(project, " ", inner) for project in rows]
+            if rows
+            else ["No projects."]
+        )
+        total = self.project_total_text(rows, inner) if len(rows) > 1 else None
+        lines = self._ruled_box(title, header, body, total, [], width)
+        self._line_sort_headers[self.BOX_HEADER_LINE] = (self.PROJECT_SORT_COLUMNS, "project")
         return lines
 
     def month_projects(self, month: MonthSummary, width: int) -> list[str]:
@@ -3257,19 +3523,35 @@ class Renderer:
             notes.append(self.unpriced_hint())
         return self._sectioned_box(title, [money_rows, whatif_rows], width, notes)
 
+    # A summary card is capped rather than filled: a label/value block stretched across a
+    # wide pane strands its values a hundred columns from their labels. The Money card
+    # already read this way; the stat blocks above it did not, which is what made them
+    # look like loose text above a row of designed boxes.
+    CARD_WIDTH = 76
+
+    def _stat_card(
+        self, title: str, rows: list[str], width: int, notes: list[str] = ()
+    ) -> list[str]:
+        # The identity/stat blocks that open every Overview -- "# Session", "# Monthly
+        # Insight", "# Project Spend" -- as the same ruled card the Money box below them
+        # wears. They are label/value pairs, not columns, so they carry NO header row and
+        # no marker gutter: _sectioned_box gives a titled box whose whole body is data.
+        return self._sectioned_box(title, [list(rows)], min(width, self.CARD_WIDTH), list(notes))
+
     def detail_overview(self, workflow: Workflow, width: int) -> list[str]:
-        lines = [
-            "# Session",
+        card = min(width, self.CARD_WIDTH)
+        rows = [
             f"ID:       {workflow.id}",
             f"Started:  {workflow.created_at}{self._worked_suffix(workflow)}",
-            f"Project:  {short_path(workflow.directory, max(20, width - 10))}",
+            f"Project:  {short_path(workflow.directory, max(20, card - 14))}",
             f"Title:    {workflow.title}",
         ]
         if workflow.source:
-            lines.append(f"Harness:  {workflow.source}")
+            rows.append(f"Harness:  {workflow.source}")
         if workflow.machine:
-            lines.append(f"Machine:  {workflow.machine}")
-        lines += self.note_lines(workflow, width)
+            rows.append(f"Machine:  {workflow.machine}")
+        rows += self.note_lines(workflow, card - self.BOX_CHROME)
+        lines = self._stat_card("# Session", rows, width)
         lines.append("")
         lines += self._money_overview(workflow, width)
         lines.append("")
@@ -3515,33 +3797,47 @@ class Renderer:
                 self.whatif_model,
                 totals,
                 workflow,
+                width,
                 head,
             )
         rows = self.sorted_subagent_rows(
             self._priced_nodes([row for row in nodes if row["depth"] > 0])
         )
-        lines = head + [
-            "# Subagent Executions",
-            f"{self.subagent_sort_heading('date', 'Started'):<16} "
+        header = (
+            f"  {self.subagent_sort_heading('date', 'Started'):<16} "
             f"{self.subagent_sort_heading('depth', 'D'):<3} "
             f"{self.subagent_sort_heading('agent', 'Agent'):14} "
             f"{self.subagent_sort_heading('model', 'Model'):31} "
             f"{self.subagent_sort_heading('cost', 'Cost'):>8} "
             f"{self.subagent_sort_heading('tokens', 'Tokens'):>9}  "
-            f"{self.subagent_sort_heading('title', 'Title')}",
+            f"{self.subagent_sort_heading('title', 'Title')}"
+        )
+        body = [
+            f"  {str(row.get('created_at') or '')[:16]:<16} "
+            f"{row['depth']:<3} "
+            f"{pad(shorten(row['agent'], 14), 14)} "
+            f"{pad(shorten(row['model_name'], 31), 31)} "
+            f"{money(row['cost']):>8} "
+            f"{human_tokens(row['tokens_total']):>9}  "
+            f"{row['title']}"
+            for row in rows
         ]
-        self._line_sort_headers[len(lines) - 1] = (self.SUBAGENT_SORT_COLUMNS, "subagent")
-        for row in rows:
-            lines.append(
-                f"{str(row.get('created_at') or '')[:16]:<16} "
-                f"{row['depth']:<3} "
-                f"{pad(shorten(row['agent'], 14), 14)} "
-                f"{pad(shorten(row['model_name'], 31), 31)} "
-                f"{money(row['cost']):>8} "
-                f"{human_tokens(row['tokens_total']):>9}  "
-                f"{row['title']}"
+        total = None
+        if len(rows) > 1:
+            total = (
+                f"  {pad('TOTAL', 16)} {'':<3} {'':14} {'':31} "
+                f"{money(sum(row['cost'] for row in rows)):>8} "
+                f"{human_tokens(sum(row['tokens_total'] for row in rows)):>9}  "
             )
-        return lines
+        box = self._ruled_box("# Subagent Executions", header, body, total, [], width)
+        # The header is line 1 of the box, offset by however many lines the flamegraph
+        # above it took -- the sort zones are keyed by ABSOLUTE line index, so this must
+        # be derived from the prefix, never written as a constant.
+        self._line_sort_headers[len(head) + self.BOX_HEADER_LINE] = (
+            self.SUBAGENT_SORT_COLUMNS,
+            "subagent",
+        )
+        return head + box
 
     @staticmethod
     def signed_pct(part: float, whole: float, sign: str) -> str:
@@ -3591,6 +3887,7 @@ class Renderer:
         target: str,
         totals: tuple[float, float],
         workflow: Workflow,
+        width: int,
         head: list[str] | None = None,
     ) -> list[str]:
         # The what-if payoff table -- the feature's ONE visible effect, scoped to this
@@ -3611,29 +3908,40 @@ class Renderer:
         # "$"-estimated where nothing was recorded -- which is why it does NOT add up to
         # the TOTAL, and says so.
         priced = [(row, self.whatif_node_price(row, target)) for row in rows]
-        lines = list(head or []) + [
-            f"# Session Tree · what-if {target}",
-            f"{self.subagent_sort_heading('date', 'Started'):<16} "
+        prefix = list(head or [])
+        header = (
+            f"  {self.subagent_sort_heading('date', 'Started'):<16} "
             f"{self.subagent_sort_heading('depth', 'D'):<3} "
             f"{self.subagent_sort_heading('agent', 'Agent'):14} "
             f"{self.subagent_sort_heading('model', 'Model'):26} "
             f"{self.subagent_sort_heading('cost', 'Cost'):>9} "
             f"{'What-if':>9} "
             f"{self.subagent_sort_heading('tokens', 'Tokens'):>9}  "
-            f"{self.subagent_sort_heading('title', 'Title')}",
+            f"{self.subagent_sort_heading('title', 'Title')}"
+        )
+        body = [
+            f"  {str(row.get('created_at') or '')[:16]:<16} "
+            f"{row['depth']:<3} "
+            f"{pad(shorten(row['agent'], 14), 14)} "
+            f"{pad(shorten(row['model_name'], 26), 26)} "
+            f"{money(row['cost']):>9} "
+            f"{money(wi):>9} "
+            f"{human_tokens(row['tokens_total']):>9}  "
+            f"{row['title']}"
+            for row, wi in priced
         ]
-        self._line_sort_headers[len(lines) - 1] = (self.SUBAGENT_SORT_COLUMNS, "subagent")
-        for row, wi in priced:
-            lines.append(
-                f"{str(row.get('created_at') or '')[:16]:<16} "
-                f"{row['depth']:<3} "
-                f"{pad(shorten(row['agent'], 14), 14)} "
-                f"{pad(shorten(row['model_name'], 26), 26)} "
-                f"{money(row['cost']):>9} "
-                f"{money(wi):>9} "
-                f"{human_tokens(row['tokens_total']):>9}  "
-                f"{row['title']}"
-            )
+        # No boxed TOTAL row here, unlike every other multi-row table: this tab's total is
+        # the session-level footer below, and its two figures deliberately do NOT equal
+        # the columns above them (the Cost column is recorded spend, $0 wherever a
+        # subscription recorded none). A column sum ruled into the box would sit two lines
+        # above a different TOTAL and read as an arithmetic bug.
+        lines = prefix + self._ruled_box(
+            f"# Session Tree · what-if {target}", header, body, None, [], width
+        )
+        self._line_sort_headers[len(prefix) + self.BOX_HEADER_LINE] = (
+            self.SUBAGENT_SORT_COLUMNS,
+            "subagent",
+        )
         actual, total = totals
         # Signed from the TARGET's point of view: what running all of it on the target
         # would have saved (or cost extra) against the models that actually ran it.
@@ -4107,23 +4415,30 @@ class Renderer:
             12,
             max(5, max((len(_turn_agent(rows[i])) for i in g["indices"]), default=5)),
         )
-        mw = max(12, min(30, width - (idx_w + agent_w + 14 + 6 + 9 + 9 + 6)))
-        lines.append(
-            f"{'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} {pad('Agent', agent_w)} "
+        inner = max(1, width - self.BOX_CHROME - 2)
+        mw = max(12, min(30, inner - (idx_w + agent_w + 14 + 6 + 9 + 9 + 6)))
+        header = (
+            f"  {'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} {pad('Agent', agent_w)} "
             f"{'Cached':>6} {'Tokens':>9} {'Cost':>9}"
         )
-        # Same picker-header look, same deliberately empty (unsortable) spec.
-        self._line_sort_headers[len(lines) - 1] = ((), "")
+        body = []
         for i in g["indices"]:
             r = rows[i]
             sh = cached_share(r)
-            lines.append(
-                f"{i + 1:>{idx_w}} {(r.get('time') or '--')[5:19]:<14} "
+            body.append(
+                f"  {i + 1:>{idx_w}} {(r.get('time') or '--')[5:19]:<14} "
                 f"{pad(shorten(r['model_name'], mw), mw)} "
                 f"{pad(shorten(_turn_agent(r), agent_w), agent_w)} "
                 f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
                 f"{human_tokens(r['tokens_total']):>9} {money(costs[i]):>9}"
             )
+        totals_row = None
+        if len(body) > 1:
+            totals_row = (
+                f"  {'':>{idx_w}} {pad('TOTAL', 14)} {pad('', mw)} {pad('', agent_w)} "
+                f"{'':>6} {human_tokens(g['tokens']):>9} {money(g['cost']):>9}"
+            )
+        lines += self._ruled_box(f"# Turns of prompt {n}", header, body, totals_row, [], width)
         lines += ["", f"· {self._key('main', 'back')} back to the prompts."]
         return lines
 
@@ -4239,8 +4554,6 @@ class Renderer:
             head += (
                 f" · ❄ {len(late)} cache expir{'y' if len(late) == 1 else 'ies'}, {money(burnt)}"
             )
-        lines = [head]
-
         # ONE ROW PER PROMPT -- the thing you actually sent. Every row carries its own
         # numbers and the header is always drawn, because the columns are the point of
         # the tab; the per-turn rows live in the popup (Enter / a click), where a prompt
@@ -4256,44 +4569,42 @@ class Renderer:
         # bar goes first (it restates the Cost cell), Cumulative second; the prompt keeps
         # at least PROMPT_MIN, since a prompt list is read by its prompts.
         PROMPT_MIN = 20
+        inner = max(1, width - self.BOX_CHROME)  # the ruled box's gutters
         base = idx_w + time_w + turns_w + cached_w + tok_w + cost_w + 8
-        cum_w = 14 if width - base - 14 >= PROMPT_MIN else 0
-        bar_w = 8 if width - base - cum_w - 8 >= PROMPT_MIN + 12 else 0
+        cum_w = 14 if inner - base - 14 >= PROMPT_MIN else 0
+        bar_w = 8 if inner - base - cum_w - 8 >= PROMPT_MIN + 12 else 0
         fixed = base + cum_w + bar_w + (1 if cum_w else 0) + (1 if bar_w else 0)
         peak = max((g["cost"] for g in groups), default=0.0)
-        pw = max(PROMPT_MIN, width - fixed)  # the prompt text takes whatever is left
+        pw = max(PROMPT_MIN, inner - fixed)  # the prompt text takes whatever is left
 
-        lines.append(
+        header = (
             f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Prompt':<{pw}} {'Turns':>{turns_w}} "
             f"{'Cached':>{cached_w}} {'Tokens':>{tok_w}} {'Cost':>{cost_w}}"
             + (f" {'':<{bar_w}}" if bar_w else "")
             + (f" {'Cumulative':>{cum_w}}" if cum_w else "")
         )
-        # Painted like a picker's header (accent bold): this table is NAVIGABLE, so it
-        # takes the sessions/projects picker's look rather than the ruled box the static
-        # Models/Tools tables wear. The column spec is EMPTY on purpose -- that registers
-        # no click-to-sort zones, because these rows are chronological by design (the tab
-        # answers "when did the money go"), so there is nothing here to sort by.
-        self._line_sort_headers[len(lines) - 1] = ((), "")
         cum = 0.0
-        self._turn_header_at = {}  # line index -> prompt_id, for the click
-        header_lines: list[int] = []
+        body: list[str] = []
+        cursor_rows: list[int] = []  # body-relative index of each prompt row
         for n, g in enumerate(groups, start=1):
             cum += g["cost"]
-            # Marker rows first: they describe what happened BEFORE this prompt ran.
+            # Marker rows first: they describe what happened BEFORE this prompt ran. They
+            # ride INSIDE the box, between the rows they sit between -- they are events in
+            # the same chronology, and line_attr reaches past the gutter to keep their
+            # amber/red.
             for i in g["indices"]:
                 comp = comps.get(i)
                 if comp:
                     before, after = comp
                     when = (rows[i].get("time") or "")[5:16]
-                    lines.append(
+                    body.append(
                         f"▼ context compacted before turn {i + 1} · {when} — "
                         f"{human_tokens(before)} → {human_tokens(after)} "
                         f"(~{human_tokens(before - after)} freed)"
                     )
                 miss = late.get(i)
                 if miss:
-                    lines.append(
+                    body.append(
                         f"❄ cache expired — {human_duration(miss.idle)} idle, "
                         f"{human_tokens(miss.repaid)} bought again for {money(miss.cost)} "
                         f"(it lived {human_duration(miss.ttl)})"
@@ -4302,17 +4613,34 @@ class Renderer:
             cached = "-" if share is None else f"{share * 100:.0f}%"
             title = " ".join((g["title"] or "").split()) or "(no preceding prompt)"
             cumlabel = f"{money(cum)} · {pct(cum, total)}"
-            self._turn_header_at[len(lines)] = n - 1  # line -> group ORDINAL
-            header_lines.append(len(lines))
-            lines.append(
+            cursor_rows.append(len(body))
+            body.append(
                 f"  {n:>{idx_w}} {g['time'][5:16]:<{time_w}} {pad(shorten(title, pw), pw)} "
                 f"{g['turns']:>{turns_w}} {cached:>{cached_w}} "
                 f"{human_tokens(g['tokens']):>{tok_w}} {money(g['cost']):>{cost_w}}"
                 + (f" {cost_bar(g['cost'], peak, bar_w)}" if bar_w else "")
                 + (f" {cumlabel:>{cum_w}}" if cum_w else "")
             )
+        totals_row = None
+        if len(groups) > 1:
+            # Turns and tokens summed; Cost too, which the last Cumulative cell already
+            # equals -- the row is here because every multi-row table has one, and reading
+            # the sum off the bottom beats reading it off the last row of a running total.
+            # Cached is a per-prompt ratio, not a quantity, so it stays blank.
+            totals_row = (
+                f"  {'':>{idx_w}} {pad('TOTAL', time_w)} {'':<{pw}} "
+                f"{sum(g['turns'] for g in groups):>{turns_w}} {'':>{cached_w}} "
+                f"{human_tokens(sum(g['tokens'] for g in groups)):>{tok_w}} "
+                f"{money(total):>{cost_w}}"
+            )
+        lines = self._ruled_box(head, header, body, totals_row, [], width)
+        # The click/cursor maps are ABSOLUTE line indices, so they rebase onto wherever
+        # the box actually put its first body row -- derived from the box, never counted
+        # off its prologue.
+        start = self._ruled_body_start or 0
+        self._turn_header_at = {start + row: n for n, row in enumerate(cursor_rows)}
         cur = self.app._turn_cursor
-        self._turn_cursor_line = header_lines[cur] if 0 <= cur < len(header_lines) else None
+        self._turn_cursor_line = start + cursor_rows[cur] if 0 <= cur < len(cursor_rows) else None
         notes = [
             f"· One row per prompt, in time order — {self._key('main', 'select')} "
             "(or a click) opens it with its turns.",
@@ -5623,13 +5951,19 @@ class Renderer:
             cursor = self.trend_drill_index if self.trend_drill else self.trend_row_index
             if start <= cursor < start + drawn:
                 sel_line = line0 + (cursor - start)
+        headers = self.box_header_lines(content)
         for i, line in enumerate(content):
             is_title = line.startswith("# ")
             is_marker = line.lstrip().startswith("▲")  # the bar cursor's pointer line
             if i == sel_line:
-                row = pad(line, inner_w - graph_off)
-                self.write(stdscr, y + 3 + i, 2 + graph_off, row, curses.A_REVERSE | curses.A_BOLD)
-                self.write_selected_bars(stdscr, y + 3 + i, 2 + graph_off, row)
+                # The same cursor every table in the app wears: reversed BETWEEN the box
+                # gutters, bars overdrawn so a spend bar isn't a hole in the highlight.
+                self.paint_cursor_row(
+                    stdscr, y + 3 + i, 2 + graph_off, line, inner_w - graph_off, bars=True
+                )
+                continue
+            if i in headers:
+                self._paint_box_header(stdscr, y + 3 + i, 2 + graph_off, line, inner_w - graph_off)
                 continue
             if is_title:
                 attr = curses.color_pair(4) | curses.A_BOLD
@@ -6348,16 +6682,32 @@ class Renderer:
         # Names get priority so long ids like claude-opus-4-5-20251101 show in
         # full; the bar takes only the leftover (kept modest) instead of eating
         # the width and forcing names to truncate.
-        tail = 20  # spacing + money (>=11) + percent (5)
-        namew = min(max(len(n) for n, _ in rows), max(12, width - tail - 4))
-        barw = max(3, min(24, width - namew - tail))
-        lines = ["# Model spend (priced, in range)", ""]
-        self._trend_rows_at = (len(lines), len(rows), start)
+        tail = 22  # marker gutter + spacing + money (>=11) + percent (5)
+        inner = max(1, width - self.BOX_CHROME)
+        namew = min(max(len(n) for n, _ in rows), max(12, inner - tail - 4))
+        barw = max(3, min(24, inner - namew - tail))
+        body = []
         for name, cost in rows:
             bar = "█" * max(0, round((cost / peak) * barw))
-            lines.append(
-                f"{pad(shorten(name, namew), namew)}  {bar:<{barw}} {money(cost):>11} {pct(cost, total):>5}"
+            body.append(
+                f"  {pad(shorten(name, namew), namew)}  {bar:<{barw}} "
+                f"{money(cost):>11} {pct(cost, total):>5}"
             )
+        totals_row = None
+        if len(all_rows) > 1:
+            # Sums the WHOLE ranking, not the scrolled window -- the window is a viewport
+            # onto it, and a total that changed as you scrolled would be a different
+            # number every frame.
+            totals_row = f"  {pad('TOTAL', namew)}  {'':{barw}} {money(total):>11} {'':>5}"
+        lines = self._ruled_box(
+            "# Model spend (priced, in range)",
+            f"  {'Model':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5}",
+            body,
+            totals_row,
+            [],
+            width,
+        )
+        self._trend_rows_at = (self._ruled_body_start or 0, len(rows), start)
         return lines
 
     def trend_providers(self, width: int, height: int) -> list[str]:
@@ -6374,29 +6724,40 @@ class Renderer:
         peak = max((float(it["cost"]) for _, it in all_rows), default=0.0) or 1.0
         _idx, start, shown = self._trend_cursor_window(len(all_rows), height - 4)
         rows = all_rows[start : start + shown]
-        namew = min(max([len(p) for p, _ in rows] + [len("Provider")]), max(10, width - 44))
-        barw = max(3, min(20, width - namew - 38))
-        lines = [
-            "# Spend by provider",
-            "",
-            f"{'Provider':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Msgs':>7}",
-        ]
-        self._trend_rows_at = (len(lines), len(rows), start)
+        inner = max(1, width - self.BOX_CHROME)
+        namew = min(max([len(p) for p, _ in rows] + [len("Provider")]), max(10, inner - 44))
+        barw = max(3, min(20, inner - namew - 40))
+        header = (
+            f"  {'Provider':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} "
+            f"{'Tokens':>9} {'Msgs':>7}"
+        )
+        body = []
         for provider, it in rows:
             bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
-            lines.append(
-                f"{pad(shorten(provider, namew), namew)}  {bar:<{barw}} "
+            body.append(
+                f"  {pad(shorten(provider, namew), namew)}  {bar:<{barw}} "
                 f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total_cost):>5} "
                 f"{human_tokens(int(it['tokens'])):>9} {int(it['runs']):>7}"
             )
+        totals_row = None
+        if len(all_rows) > 1:
+            # The whole ranking, not the scrolled window (see trend_models).
+            totals_row = (
+                f"  {pad('TOTAL', namew)}  {'':{barw}} {money(total_cost):>11} {'':>5} "
+                f"{human_tokens(sum(int(it['tokens']) for _, it in all_rows)):>9} "
+                f"{sum(int(it['runs']) for _, it in all_rows):>7}"
+            )
+        notes = []
         if not self.show_api_prices and any(
             float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
         ):
-            lines += [
+            notes = [
                 "",
                 f"{self._key('trends', 'api_prices')} prices subscription/credit "
                 "usage at API list rates",
             ]
+        lines = self._ruled_box("# Spend by provider", header, body, totals_row, notes, width)
+        self._trend_rows_at = (self._ruled_body_start or 0, len(rows), start)
         return lines
 
     def trend_sources(self, width: int, height: int) -> list[str]:
@@ -6435,6 +6796,39 @@ class Renderer:
             self.machine_rows(workflows), width, "machine", "Machine", limit, selectable
         )
 
+    # What a _group_row spends on everything but the name and the bar: the marker, the
+    # column gutters and the Cost/Share/Tokens/Sess cells. Both frames of this table --
+    # the line-based preview (_group_table) and the zoom picker (_draw_dimension_picker)
+    # -- size themselves with it, so a column can't shift on Enter.
+    _GROUP_FIXED = 40
+
+    @staticmethod
+    def _group_widths(rows: list, col: str, width: int) -> tuple[int, int]:
+        # Size the name column to its HEADER too, not just the data: with every name
+        # shorter than the label ("Harness", "Machine"), the header's own field overflowed
+        # and shifted Cost/Share/Tokens/Sess right of the numbers they label. Short
+        # hostnames make that the default in a fleet view. _model_table guards the same way.
+        namew = min(
+            max([len(s) for s, _ in rows] + [len(col)]),
+            max(10, width - Renderer._GROUP_FIXED - 3),
+        )
+        return namew, max(3, min(20, width - namew - Renderer._GROUP_FIXED))
+
+    @staticmethod
+    def _group_header(col: str, namew: int, barw: int) -> str:
+        return f"  {col:<{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}"
+
+    @staticmethod
+    def _group_row(
+        name: str, it, marker: str, namew: int, barw: int, peak: float, total: float
+    ) -> str:
+        bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
+        return (
+            f"{marker} {shorten(name, namew):{namew}}  {bar:<{barw}} "
+            f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total):>5} "
+            f"{human_tokens(int(it['tokens'])):>9} {int(it['sessions']):>7}"
+        )
+
     def _group_table(
         self,
         all_rows: list,
@@ -6445,10 +6839,16 @@ class Renderer:
         selectable: bool = False,
     ) -> list[str]:
         # The shared ranked-spend table behind source_table/machine_table: a name column,
-        # a cost bar, then Cost/Share/Tokens/Sess. `noun` is the heading word, `col` the
-        # name-column header. Selectable rows carry the Trends cursor + Enter drill.
+        # a cost bar, then Cost/Share/Tokens/Sess, in the same ruled box every other table
+        # wears. `noun` is the box title's word, `col` the name-column header. Selectable
+        # rows carry the Trends cursor + Enter drill. The rows themselves come from the
+        # builders above, which the zoom picker paints too.
+        title = f"# Spend by {noun}"
         if not all_rows:
-            return [f"# Spend by {noun}", "", "No sessions in the active range."]
+            namew, barw = self._group_widths([], col, max(1, width - self.BOX_CHROME))
+            return self._ruled_box(
+                title, self._group_header(col, namew, barw), [], None, [], width
+            ) + ["", "No sessions in the active range."]
         if selectable and limit is not None:
             _idx, start, shown = self._trend_cursor_window(len(all_rows), limit)
             rows = all_rows[start : start + shown]
@@ -6461,30 +6861,35 @@ class Renderer:
             rows = all_rows if limit is None else all_rows[:limit]
             total_cost = sum(float(it["cost"]) for _, it in rows)
             peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
-        namew = min(max([len(s) for s, _ in rows] + [len(col)]), max(10, width - 44))
-        barw = max(3, min(20, width - namew - 38))
-        lines = [
-            f"# Spend by {noun}",
-            "",
-            f"{col:{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}",
-        ]
-        if selectable:
-            self._trend_rows_at = (len(lines), len(rows), start)
-        for name, it in rows:
-            bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
-            lines.append(
-                f"{shorten(name, namew):{namew}}  {bar:<{barw}} "
-                f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total_cost):>5} "
-                f"{human_tokens(int(it['tokens'])):>9} {int(it['sessions']):>7}"
+        inner = max(1, width - self.BOX_CHROME)
+        namew, barw = self._group_widths(rows, col, inner)
+        body = [self._group_row(name, it, " ", namew, barw, peak, total_cost) for name, it in rows]
+        total = None
+        if len(rows) > 1:
+            # The TOTAL row every multi-row table closes with. Counts and tokens summed;
+            # Share stays blank (it is definitionally 100%) and so does the bar, which
+            # measures rows against the peak, not against the sum.
+            tcost = sum(float(it["cost"]) for _, it in rows)
+            ttok = sum(int(it["tokens"]) for _, it in rows)
+            tses = sum(int(it["sessions"]) for _, it in rows)
+            total = (
+                f"  {pad('TOTAL', namew)}  {'':{barw}} {money(tcost):>11} {'':>5} "
+                f"{human_tokens(ttok):>9} {tses:>7}"
             )
+        notes = []
         if not self.show_api_prices and any(
             float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
         ):
-            lines += [
+            notes = [
                 "",
                 f"{self._key('trends', 'api_prices')} prices subscription/credit "
                 "usage at API list rates",
             ]
+        lines = self._ruled_box(
+            title, self._group_header(col, namew, barw), body, total, notes, width
+        )
+        if selectable and self._ruled_body_start is not None:
+            self._trend_rows_at = (self._ruled_body_start, len(rows), start)
         return lines
 
     def trend_machines(self, width: int, height: int) -> list[str]:
@@ -6503,23 +6908,34 @@ class Renderer:
         if not rows:
             return [title, "", f"No sessions used {key} in the active range."]
         subtotal = sum(cost for _w, cost, _t in rows)
-        lines = [
-            title,
-            "",
-            f"{len(rows)} session(s) · {money(subtotal)} on this {kind} · most spend first",
-            f"{'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}",
-        ]
+        inner = max(1, width - self.BOX_CHROME)
+        header = f"  {'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}"
         idx = max(0, min(self.app.trend_drill_index, len(rows) - 1))
         self.app.trend_drill_index = idx
-        fit = max(1, height - len(lines))
+        fit = max(1, height - 4 - self.PICKER_CHROME)  # the box's own four lines
         start = max(0, min(idx - fit // 2, len(rows) - fit))
         shown = rows[start : start + min(fit, len(rows) - start)]
-        self._trend_rows_at = (len(lines), len(shown), start)
-        for w, cost, tok in shown:
-            lines.append(
-                f"{w.created_at[:10]:<10} {money(cost):>9} {human_tokens(tok):>8}  "
-                f"{self.src_col(w)}{shorten(self.session_marks(w) + w.title, max(8, width - 34))}"
+        body = [
+            f"  {w.created_at[:10]:<10} {money(cost):>9} {human_tokens(tok):>8}  "
+            f"{self.src_col(w)}{shorten(self.session_marks(w) + w.title, max(8, inner - 34))}"
+            for w, cost, tok in shown
+        ]
+        totals_row = None
+        if len(rows) > 1:
+            # The whole drilled list, not the window (see trend_models).
+            totals_row = (
+                f"  {pad('TOTAL', 10)} {money(subtotal):>9} "
+                f"{human_tokens(sum(t for _w, _c, t in rows)):>8}  "
             )
+        lines = self._ruled_box(
+            f"{title} · {len(rows)} session(s), most spend first",
+            header,
+            body,
+            totals_row,
+            [],
+            width,
+        )
+        self._trend_rows_at = (self._ruled_body_start or 0, len(shown), start)
         return lines
 
     # The frame every panel/overlay/modal is drawn with: heavy box-drawing glyphs.
