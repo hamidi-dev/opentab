@@ -2663,12 +2663,9 @@ def test_machines_mode_models_tab_drills_into_sessions_using_a_model():
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
     c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
     app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
-    app._model_by_root = {  # seed the per-model breakdown the picker/drill read
-        "b": [{"model_name": "opus", "cost": 9.0, "tokens_total": 900}],
-        "c": [
-            {"model_name": "opus", "cost": 0.6, "tokens_total": 60},
-            {"model_name": "haiku", "cost": 0.4, "tokens_total": 40},
-        ],
+    app._model_by_root = {  # seed the per-model breakdown the table/drill read
+        "b": [_model_row("opus", 9.0, 900)],
+        "c": [_model_row("opus", 0.6, 60), _model_row("haiku", 0.4, 40)],
     }
     app.set_browse_mode("machines")
     app.machine_index = 1  # server: b (opus), c (opus + haiku)
@@ -2686,6 +2683,264 @@ def test_machines_mode_models_tab_drills_into_sessions_using_a_model():
     app.model_pick_index = keys.index("haiku")
     app.drill_in()  # haiku only by c
     assert {w.id for w in app.current_sessions()} == {"c"}
+
+
+def _month_app_with_models():
+    # Two sessions in one month: b ran opus, c ran opus + haiku.
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0, directory="/work/beta")
+    app = app_with([b, c])
+    app._model_by_root = {
+        "b": [_model_row("opus", 9.0, 900)],
+        "c": [_model_row("opus", 0.6, 60), _model_row("haiku", 0.4, 40)],
+    }
+    return app
+
+
+def test_month_models_tab_drills_into_sessions_using_a_model():
+    # The Models tab drills in EVERY zoom that has one, not just a fleet box: "which
+    # sessions this month ran opus" had no other path (Trends' and P's model drills are
+    # both app-wide, so neither can answer it for one month).
+    app = _month_app_with_models()
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    keys = [m for m, _ in app.zoom_model_rows()]
+    assert keys == ["opus", "haiku"]  # cost-ranked, like the table
+    app.model_pick_index = keys.index("haiku")
+    app.drill_in()
+    assert app.zoom_model == "haiku" and app.on_sessions_tab
+    assert {w.id for w in app.current_sessions()} == {"c"}
+    app.drill_out()
+    assert app.zoom_model is None and app.on_models_tab
+    assert {w.id for w in app.current_sessions()} == {"b", "c"}
+
+
+def test_a_model_drill_layers_on_another_drill_and_pops_first():
+    # Outside a fleet box a model drill is a membership filter stacked ON TOP of an armed
+    # partition (it clears nothing), so both apply -- and Esc has to undo the inner one
+    # first or the model filter would outlive the project scope it was chosen within.
+    app = _month_app_with_models()
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Projects")
+    app.project_index = [p.directory for p in app.zoom_projects()].index(
+        app.project_root("/work/beta")
+    )
+    app.drill_in()
+    assert app.zoom_project == app.project_root("/work/beta")
+    app.tab = app.current_tabs().index("Models")
+    app.model_pick_index = [m for m, _ in app.zoom_model_rows()].index("opus")
+    app.drill_in()
+    assert app.zoom_model == "opus" and app.zoom_project  # composed, not replaced
+    assert {w.id for w in app.current_sessions()} == {"c"}  # beta AND opus
+    app.drill_out()  # the model pops first...
+    assert app.zoom_model is None and app.zoom_project and app.on_models_tab
+    app.drill_out()  # ...then the project
+    assert app.zoom_project is None and app.on_projects_tab
+
+
+def test_re_scoping_from_the_sidebar_disarms_the_model_drill():
+    # The sidebar stays clickable behind a zoom, and a row click re-scopes in place. An
+    # armed model drill must go with the scope: the next month may never have run that
+    # model, so it would silently empty the Sessions list -- and a Day has no Models tab
+    # to show the filter on at all, leaving it invisible and eating the next Esc.
+    may = workflow("m", "2026-05-02 10:00:00", cost=9.0)
+    jun = workflow("j", "2026-06-02 10:00:00", cost=5.0)
+    app = app_with([may, jun])
+    app._model_by_root = {
+        "m": [_model_row("haiku", 9.0, 900)],
+        "j": [_model_row("opus", 5.0, 500)],  # June never ran haiku
+    }
+    app.focus = "months"
+    app.month_index = [s.month for s in app.months].index("2026-05")
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.drill_in()
+    assert app.zoom_model == "haiku" and [w.id for w in app.current_sessions()] == ["m"]
+    app._apply_click(("month", [s.month for s in app.months].index("2026-06")), drill=False)
+    assert app.zoom_model is None and app.model_pick_index == 0
+    assert [w.id for w in app.current_sessions()] == ["j"]  # not hidden by May's model
+
+
+def test_wheeling_the_sidebar_onto_a_new_scope_disarms_the_model_drill():
+    # The wheel re-scopes the sidebar just like a click does, so it has to drop the model
+    # drill for the same reason -- but only when the row actually CHANGED, matching the
+    # Machines branch: wheeling against the end of the list must not disarm what you armed.
+    may = workflow("m", "2026-05-02 10:00:00", cost=9.0)
+    jun = workflow("j", "2026-06-02 10:00:00", cost=5.0)
+    app = app_with([may, jun])
+    app._model_by_root = {
+        "m": [_model_row("haiku", 9.0, 900)],
+        "j": [_model_row("opus", 5.0, 500)],
+    }
+    app.focus = "months"
+    months = [s.month for s in app.months]
+    app.month_index = months.index("2026-05")
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.drill_in()
+    assert app.zoom_model == "haiku"
+    app.renderer.hit = lambda my, mx: ("month", 0)  # put the wheel over the Months list
+    toward_end = 1 if months.index("2026-05") == len(months) - 1 else -1
+    app._wheel(0, 0, toward_end * 5)  # already at that end: the row cannot change
+    assert app.zoom_model == "haiku"
+    app._wheel(0, 0, -toward_end)  # a real move, onto June
+    assert app.zoom_model is None and app.model_pick_index == 0
+    assert [w.id for w in app.current_sessions()] == ["j"]
+
+
+def test_a_model_drill_disarms_itself_when_its_data_moves_away():
+    # The safety net. The drill is a name plus an ordinal into a ranking that the range,
+    # `i`, `M`, `H`, `B`, a reload and every sidebar move all rebuild; clearing it at each
+    # of those is how it gets missed. So a drill that can only ever produce an EMPTY list
+    # drops itself where it is applied, and the list heals instead of reading empty.
+    may = workflow("m", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
+    jun = workflow("j", "2026-06-02 10:00:00", cost=5.0, directory="/work/beta")
+
+    def armed():
+        a = app_with([may, jun])
+        a._model_by_root = {
+            "m": [_model_row("haiku", 9.0, 900)],
+            "j": [_model_row("opus", 5.0, 500)],  # June never ran haiku
+        }
+        a.focus = "months"
+        a.month_index = [s.month for s in a.months].index("2026-05")
+        a.drill_in()
+        a.tab = a.current_tabs().index("Models")
+        a.drill_in()
+        assert a.zoom_model == "haiku"
+        return a
+
+    app = armed()
+    app.set_range_from_text("2026-06")  # a range that excludes every haiku session
+    assert [w.id for w in app.current_sessions()] == ["j"]
+    assert app.zoom_model is None and app.model_pick_index == 0
+
+    app = armed()
+    app.toggle_ignore()  # ignoring the project drops the drill's sessions from view
+    assert [w.id for w in app.current_sessions()] == ["j"]
+    assert app.zoom_model is None
+
+
+def test_a_model_drill_survives_a_scope_emptied_by_something_else():
+    # The net must not misattribute: when the scope is empty for a reason that has
+    # nothing to do with the model (bookmarks-only with nothing bookmarked), the drill
+    # is not the cause and must still be armed when that filter comes back off.
+    may = workflow("m", "2026-05-02 10:00:00", cost=9.0)
+    app = app_with([may])
+    app._model_by_root = {"m": [_model_row("haiku", 9.0, 900)]}
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.drill_in()
+    app.show_bookmarks_only = True
+    app._invalidate_workflow_cache()
+    assert app.current_sessions() == [] and app.zoom_model == "haiku"  # kept, not blamed
+    app.show_bookmarks_only = False
+    app._invalidate_workflow_cache()
+    assert [w.id for w in app.current_sessions()] == ["m"] and app.zoom_model == "haiku"
+
+
+def test_the_models_cursor_moves_on_the_first_press_after_the_list_reorders():
+    # The ranking can shrink or re-order with no keypress (`x` clearing the filter, `$`
+    # re-ranking). The paint clamps what it highlights, so stepping from the RAW index
+    # would spend the first press re-clamping onto the row already highlighted -- a key
+    # that visibly does nothing. Clamp before stepping instead.
+    app = app_with([workflow("a", "2026-05-02 10:00:00", cost=9.0)])
+    app._model_by_root = {"a": [_model_row(f"m{i}", float(9 - i), 100) for i in range(6)]}
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.model_pick_index = 5
+    app.query = "m0"  # the list is now one row; the cursor is stale at 5
+    app.move(-1)
+    assert app.model_pick_index == 0
+
+
+def test_changing_focus_snaps_the_models_cursor_back():
+    # Tab from a year (many models) to a month (few) rebuilds the row set under the
+    # cursor. set_focus already dropped the drill; the cursor is half of the same
+    # selection, and left stale it makes the first j/k read as a dead keystroke.
+    app = app_with(
+        [
+            workflow("a", "2026-05-02 10:00:00", cost=9.0),
+            workflow("b", "2025-05-02 10:00:00", cost=9.0),
+        ]
+    )
+    app._model_by_root = {
+        "a": [_model_row("m0", 9.0, 100), _model_row("m1", 8.0, 100)],
+        "b": [_model_row(f"x{i}", float(7 - i), 100) for i in range(5)],
+    }
+    app.focus = "years"
+    app.year_index = 0
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.model_pick_index = 4  # valid for the year's 7 models
+    app.set_focus("months")
+    assert app.model_pick_index == 0 and len(app.zoom_model_rows()) == 2
+
+
+def test_editing_the_filter_snaps_the_models_cursor_back():
+    # The query filters this list by model NAME, so a keystroke can shrink it under the
+    # cursor. Left dangling past the end, the first j/k clamps to where the highlight
+    # already was and reads as a dead keystroke.
+    app = app_with([workflow("a", "2026-05-02 10:00:00", cost=9.0)])
+    app._model_by_root = {
+        "a": [
+            _model_row("opus", 9.0, 900),
+            _model_row("sonnet", 7.0, 700),
+            _model_row("haiku-fast", 5.0, 500),
+            _model_row("haiku", 3.0, 300),
+        ]
+    }
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.model_pick_index = 3
+    for ch in "haiku":
+        app.query += ch
+        app._filter_edited()
+    assert [m for m, _ in app.zoom_model_rows()] == ["haiku-fast", "haiku"]
+    assert app.model_pick_index == 0  # snapped, not left at 3
+    app.renderer.month_models(app.selected_month_summary, 116)
+    line = app.renderer._model_cursor_line
+    assert app.renderer._model_row_at[line] == 0 and app.zoom_selected_model() == "haiku-fast"
+
+
+def test_the_breadcrumb_names_an_armed_model_drill():
+    # Once you leave the Models tab, the crumb is the drill's only trace: the Sessions
+    # list would otherwise just read short, which is how a filter gets mistaken for a
+    # bug. Innermost last, matching the order Esc pops them in.
+    app = _month_app_with_models()
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.model_pick_index = [m for m, _ in app.zoom_model_rows()].index("opus")
+    app.drill_in()
+    crumb = app.renderer.breadcrumb()
+    assert crumb == "all time › 2026-05 › opus › Sessions"
+    app.drill_out()
+    assert "opus" not in app.renderer.breadcrumb()
+
+
+def test_a_models_tab_click_maps_a_line_to_its_row():
+    # The tab is a lines-rendered table, so its click region carries a LINE index; only
+    # the data rows resolve to an ordinal (the frame, header and TOTAL rows land nowhere,
+    # where a picker's region would have had every row be a row).
+    app = _month_app_with_models()
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.renderer.month_models(app.selected_month_summary, 116)
+    rows = app.renderer._model_row_at
+    assert sorted(rows.values()) == [0, 1]  # exactly the two model rows
+    haiku_line = [ln for ln, ordinal in rows.items() if ordinal == 1][0]
+    app._apply_click(("zoommodel", haiku_line), drill=True)
+    assert app.zoom_model == "haiku"
+    app.drill_out()
+    app._apply_click(("zoommodel", 0), drill=True)  # the box's top border
+    assert app.zoom_model is None and app.model_pick_index == 1  # cursor unmoved
 
 
 def test_machines_mode_drills_are_mutually_exclusive():

@@ -12,6 +12,7 @@ from tests._support import (
     FakeScreen,
     FakeStore,
     _claude_msg,
+    _model_row,
     _usage,
     _write_jsonl,
     _write_opencode_db_with_tools,
@@ -52,6 +53,71 @@ def test_top_models_is_a_ruled_box_with_full_model_columns():
     assert "$1.00" in first
     assert "205.6M" in first
     assert "3648" in first
+
+
+def _models_tab_app():
+    app = app_with(
+        [
+            workflow("b", "2026-05-02 10:00:00", cost=9.0),
+            workflow("c", "2026-05-03 10:00:00", cost=1.0),
+        ]
+    )
+    app._model_by_root = {
+        "b": [_model_row("opus", 9.0, 900)],
+        "c": [_model_row("opus", 0.6, 60), _model_row("haiku", 0.4, 40)],
+    }
+    app.focus = "months"
+    return app
+
+
+def test_the_zoomed_models_tab_is_the_browse_table_plus_a_cursor():
+    # The tab renders ONE table, twice. Zooming used to swap the eight-column ruled box
+    # for a four-column ranked picker, which is exactly the drift the Sessions/Projects
+    # tables were unified to end -- so Enter may add a cursor and nothing else: same
+    # rows, same columns, same TOTAL row, byte for byte.
+    app = _models_tab_app()
+    month = app.selected_month_summary
+    preview = app.renderer.month_models(month, 116)
+    assert app.renderer._model_row_at == {}  # browse has no cursor
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    zoomed = app.renderer.month_models(month, 116)
+    assert zoomed == preview
+    # ...and the cursor points at a real data row of that very table.
+    rows = app.renderer._model_row_at
+    assert sorted(rows.values()) == [0, 1]
+    cursor = app.renderer._model_cursor_line
+    assert rows[cursor] == 0 and "opus" in zoomed[cursor]
+
+
+def test_the_models_filter_still_narrows_model_names_in_a_zoom():
+    # `f` on this tab has always matched MODEL NAMES. The old picker ran the query
+    # against session titles/paths instead, so focusing the tab silently re-pointed the
+    # filter and a query that had narrowed the list stopped matching anything.
+    app = _models_tab_app()
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.query = "haiku"
+    assert [m for m, _ in app.zoom_model_rows()] == ["haiku"]
+    lines = app.renderer.month_models(app.selected_month_summary, 116)
+    assert any("haiku" in ln for ln in lines) and not any("opus" in ln for ln in lines)
+    assert len(app.renderer._model_row_at) == 1  # the cursor indexes the FILTERED rows
+
+
+def test_a_shrinking_model_list_never_strands_the_cursor_off_screen():
+    # Typing an `f` query shrinks the list without moving the cursor (the j/k handlers
+    # clamp, a keystroke in the filter does not). The paint must clamp the SAME way
+    # zoom_selected_model does, or Enter drills the clamped last row while the pane
+    # highlights nothing -- a selection you cannot see acting on a row you did not pick.
+    app = _models_tab_app()
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.model_pick_index = 1  # sitting on the second row...
+    app.query = "haiku"  # ...of a list the filter cuts to one
+    lines = app.renderer.month_models(app.selected_month_summary, 116)
+    cursor = app.renderer._model_cursor_line
+    assert app.renderer._model_row_at[cursor] == 0
+    assert "haiku" in lines[cursor] and app.zoom_selected_model() == "haiku"
 
 
 def test_model_table_splits_cost_across_token_categories_in_wide_panes():

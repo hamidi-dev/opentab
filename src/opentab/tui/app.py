@@ -2747,7 +2747,7 @@ class App:
         self._load_model_cache()
         self.zoom_project = None
         self.zoom_source = None
-        self.zoom_model = None
+        self._clear_model_drill()
         self.zoom_machine = None
         # `r` drops the active mode's drills outright, so the dormant modes' drop too --
         # a reload exists to pick up data that CHANGED, and a snapshot restored unchecked
@@ -4153,9 +4153,41 @@ class App:
         # The navigable Sources tab of a zoomed scope (merged view), grouped by harness.
         return self.source_rows(self._zoom_picker_scope("source"))
 
+    def models_tab_workflows(self) -> list[Workflow]:
+        # The sessions the Models tab covers -- the SAME scope machine_models /
+        # project_models / month_models / year_models build their table from, so the
+        # cursor's ordinal indexes exactly the rows on screen. (Day has no Models tab:
+        # its models stay folded into the Overview.)
+        #
+        # Deliberately NOT _zoom_picker_scope, which the Harnesses/Machines pickers use:
+        # that applies the `f` query to SESSIONS, while the Models tab has always applied
+        # it to MODEL NAMES. One tab must mean one thing by one key -- pressing Enter
+        # used to swap which, so a query narrowing the list stopped matching the moment
+        # you focused it.
+        if self.browse_mode == "machines":
+            item = self.selected_machine_summary
+            return self.workflows_for_machine(item.name) if item else []
+        if self.browse_mode == "projects":
+            item = self.selected_project_summary
+            return (
+                self.workflows_for_project(
+                    item.directory,
+                    include_ignored=self.include_ignored_for_project(item),
+                )
+                if item
+                else []
+            )
+        return self.zoom_scope_workflows()
+
     def zoom_model_rows(self) -> list[tuple[str, dict[str, float | int]]]:
-        # The navigable Models tab of a zoomed box (Machines mode), grouped by model.
-        return self.model_rows(self._zoom_picker_scope("model"))
+        # The Models tab's rows in display order -- cost-ranked by aggregate_models and
+        # narrowed by `f` on model names, exactly as Renderer._models_tab renders them.
+        # model_pick_index is a plain ordinal into this list (the _turn_groups pattern:
+        # App owns the list, the renderer only maps a clicked LINE back to an ordinal).
+        rows = self.aggregate_models(self.models_tab_workflows())
+        if self.query:
+            rows = [r for r in rows if fuzzy_score(self.query, str(r[0])) is not None]
+        return rows
 
     def zoom_selected_model(self) -> str | None:
         rows = self.zoom_model_rows()
@@ -4222,7 +4254,31 @@ class App:
             rows = [w for w in rows if (w.source or "unknown") == self.zoom_source]
         if self.zoom_machine:  # a per-scope Machines-tab drill (fleet view)
             rows = [w for w in rows if self.machine_of(w) == self.zoom_machine]
+        if self.zoom_model:  # a Models-tab drill: sessions that USED the model
+            rows = self._model_drilled(rows)
         return self.filtered_sessions(rows)
+
+    def _model_drilled(self, rows: list[Workflow]) -> list[Workflow]:
+        # Apply an armed model drill -- and DISARM it when this scope has nothing that
+        # ran the model, rather than serving an empty list.
+        #
+        # This is the safety net, and it is here rather than at the mutation sites on
+        # purpose. The drill is an ordinal-plus-name into a ranking that a dozen
+        # unrelated things rebuild: the range, `i`, `M`, `H`, `B`, a reload, a source or
+        # demo swap, every sidebar move by key, click or wheel. Clearing it at each of
+        # those is how it gets missed -- three review rounds over this feature each found
+        # more such paths than the one before, and any path added later would be a fresh
+        # instance of the same bug. A filter that can only ever produce an empty list is
+        # not filtering, it is stuck, and it is invisible except as "why is this list
+        # empty" -- so it drops itself, once, where it is applied. The eager clears on a
+        # deliberate re-scope stay (they disarm it the moment you move, which reads
+        # better than a list that empties and then heals).
+        kept = [w for w in rows if self._session_used_model(w.id, self.zoom_model)]
+        if kept or not rows:
+            return kept
+        self.zoom_model = None
+        self.model_pick_index = 0
+        return rows
 
     def _zooming_ignored_project(self) -> bool:
         return bool(
@@ -4533,7 +4589,7 @@ class App:
         self.scroll = 0
         self.zoom_project = None
         self.zoom_source = None
-        self.zoom_model = None
+        self._clear_model_drill()
         self.zoom_machine = None
 
     def cycle_focus(self, step: int = 1) -> None:
@@ -4579,7 +4635,7 @@ class App:
         self.scroll = 0
         self.zoom_project = None
         self.zoom_source = None
-        self.zoom_model = None
+        self._clear_model_drill()
         self.zoom_machine = None
         return True
 
@@ -4686,7 +4742,7 @@ class App:
             self.machine_index = 0
         self.zoom_project = None
         self.zoom_source = None
-        self.zoom_model = None
+        self._clear_model_drill()
         self.zoom_machine = None
 
     def _restore_mode_memory(self, saved: dict) -> None:
@@ -4783,13 +4839,18 @@ class App:
                     self.tab = tabs.index("Sessions")
                 self.workflow_index = 0
                 self.scroll = 0
-        elif self.view == "zoom" and self.on_models_tab and self.browse_mode == "machines":
-            # Pick a model in a zoomed box -> the box's sessions that used it (a membership
-            # filter, since a session can use several models). Machines-mode only.
+        elif self.view == "zoom" and self.on_models_tab:
+            # Pick a model -> this scope's sessions that used it. A membership filter, not
+            # a partition like source/project/machine: a session can use several models, so
+            # it layers ON TOP of whatever else is armed rather than replacing it (in a box
+            # the drills stay mutually exclusive, below). Available in every zoom with a
+            # Models tab, not just a box -- "which sessions this month ran Opus" had no
+            # other path: the Trends and `P` model drills are both app-wide.
             model = self.zoom_selected_model()
             if model is not None:
                 self.zoom_model = model
-                self.zoom_source = self.zoom_project = None
+                if self.browse_mode == "machines":  # a box's drills are mutually exclusive
+                    self.zoom_source = self.zoom_project = None
                 tabs = self.current_tabs()
                 if "Sessions" in tabs:
                     self.tab = tabs.index("Sessions")
@@ -4823,7 +4884,15 @@ class App:
             tabs = self.current_tabs()  # land back on the Sessions tab we came from
             self.tab = tabs.index("Sessions") if "Sessions" in tabs else 0
         elif self.view == "zoom":
-            if self.zoom_source:
+            if self.zoom_model:
+                # Popped FIRST: a model drill is a membership filter layered on top of
+                # whatever partition was already armed (it clears nothing outside a box),
+                # so it is always the innermost scope -- Esc has to undo it before the
+                # project/harness drill it was stacked on.
+                self.zoom_model = None
+                tabs = self.current_tabs()
+                self.tab = tabs.index("Models") if "Models" in tabs else 0
+            elif self.zoom_source:
                 # Leave a source's sessions, back to the Sources list of this zoom
                 # (popped before a project drill: it was layered on top of one).
                 self.zoom_source = None
@@ -4839,11 +4908,6 @@ class App:
                 self.zoom_project = None
                 tabs = self.current_tabs()
                 self.tab = tabs.index("Projects") if "Projects" in tabs else 0
-            elif self.zoom_model:
-                # Leave a model's sessions, back to the box's Models list.
-                self.zoom_model = None
-                tabs = self.current_tabs()
-                self.tab = tabs.index("Models") if "Models" in tabs else 0
             else:
                 self.view = "browse"
                 self.zoom_project = None
@@ -4931,10 +4995,17 @@ class App:
                 n = len(self.zoom_source_rows())
                 if n:
                     self.source_index = max(0, min(self.source_index + delta, n - 1))
-            elif self.on_models_tab and self.browse_mode == "machines":
+            elif self.on_models_tab:
                 n = len(self.zoom_model_rows())
                 if n:
-                    self.model_pick_index = max(0, min(self.model_pick_index + delta, n - 1))
+                    # Clamp BEFORE stepping. The ranking can shrink or re-order under the
+                    # cursor without any keypress (`x` clearing the filter, `$` re-ranking
+                    # by a different cost, a restored mode snapshot), and the paint already
+                    # clamps what it highlights -- so stepping from the raw index spends
+                    # the first press re-clamping to the row the highlight is on and reads
+                    # as a dead key. Same reason the renderer clamps rather than bails.
+                    cur = max(0, min(self.model_pick_index, n - 1))
+                    self.model_pick_index = max(0, min(cur + delta, n - 1))
             elif self.on_machines_tab:
                 n = len(self.zoom_machine_rows())
                 if n:
@@ -4979,6 +5050,29 @@ class App:
         self.project_index = 0
         self.model_pick_index = 0
 
+    def _clear_model_drill(self) -> None:
+        # Drop the model drill AND its cursor together -- they are one selection. The
+        # cursor is an ordinal into a row set that any scope, mode or reload change
+        # rebuilds, so clearing only the drill leaves j/k counting from a row that no
+        # longer exists: the first press clamps back onto the row already highlighted and
+        # reads as a dead key. (drill_out's own pop deliberately KEEPS the cursor -- it
+        # returns to the same table, on the row you drilled from.)
+        self.zoom_model = None
+        self.model_pick_index = 0
+
+    def _wheel_rescoped(self, changed: bool) -> None:
+        # Wheeling the sidebar onto a DIFFERENT scope disarms the model drill, exactly as
+        # a sidebar click does (_apply_click) and as the Machines branch does through
+        # _clear_box_drills -- and, like that branch, only when the row actually changed,
+        # so wheeling against the end of the list keeps the drill. The model one has to go
+        # because it HIDES: the new month/project may never have run that model, and the
+        # survivor silently empties its Sessions list. (The wheel leaves the source and
+        # project drills armed, as it always has -- that is pre-existing behaviour, not
+        # this tab's to change.)
+        if changed and self.view == "zoom":
+            self.zoom_model = None
+            self.model_pick_index = 0
+
     def _wheel(self, my: int, mx: int, delta: int) -> None:
         # Scroll the panel the cursor is over -- active or not. The wheel used to always
         # move the active pane, so hovering a non-focused panel scrolled the wrong one.
@@ -4987,15 +5081,29 @@ class App:
         hit = self.renderer.hit(my, mx)
         kind = hit[0] if hit else None
         if kind == "year" and self.years:
-            self.year_index = max(0, min(self.year_index + delta, len(self.years) - 1))
+            new = max(0, min(self.year_index + delta, len(self.years) - 1))
+            # The DEPENDENT panels re-anchor to 0 whether or not the year itself moved,
+            # and that re-scopes the detail just as much: wheeling past the end of a
+            # one-row Years panel leaves the year alone but still drops the month panel
+            # onto a different month. So the predicate has to count those resets too.
+            self._wheel_rescoped(
+                new != self.year_index or bool(self.month_index) or bool(self.day_index)
+            )
+            self.year_index = new
             self.month_index = self.day_index = 0  # the months list rebuilds under it
         elif kind == "month" and self.months:
-            self.month_index = max(0, min(self.month_index + delta, len(self.months) - 1))
+            new = max(0, min(self.month_index + delta, len(self.months) - 1))
+            self._wheel_rescoped(new != self.month_index or bool(self.day_index))
+            self.month_index = new
             self.day_index = 0  # re-anchor the day panel when the month changes
         elif kind == "day" and self.panel_days:
-            self.day_index = max(0, min(self.day_index + delta, len(self.panel_days) - 1))
+            new = max(0, min(self.day_index + delta, len(self.panel_days) - 1))
+            self._wheel_rescoped(new != self.day_index)
+            self.day_index = new
         elif kind == "project" and self.projects:
-            self.project_index = max(0, min(self.project_index + delta, len(self.projects) - 1))
+            new = max(0, min(self.project_index + delta, len(self.projects) - 1))
+            self._wheel_rescoped(new != self.project_index)
+            self.project_index = new
         elif kind == "machine" and self.machines:
             new = max(0, min(self.machine_index + delta, len(self.machines) - 1))
             if new != self.machine_index and self.view == "zoom":
@@ -5079,7 +5187,7 @@ class App:
                 self.source_index = len(rows) - 1 if to_end else 0
             return
 
-        if self.view == "zoom" and self.on_models_tab and self.browse_mode == "machines":
+        if self.view == "zoom" and self.on_models_tab:
             rows = self.zoom_model_rows()
             if rows:
                 self.model_pick_index = len(rows) - 1 if to_end else 0
@@ -5540,30 +5648,6 @@ class App:
         # test the Models-tab drill filters by (a session can use several models, so this
         # is a filter, not a partition like source/project/machine).
         return any(row["model_name"] == model for row in self.model_mix(session_id))
-
-    def model_rows(self, workflows: list[Workflow]) -> list[tuple[str, dict[str, float | int]]]:
-        # Spend grouped by model, cost-sorted -- the Machines-mode Models picker's rows.
-        # `sessions` counts DISTINCT sessions that used the model (not per-model rows), so
-        # a row's Sess equals what its drill opens (current_sessions' membership filter).
-        # Cost/tokens come from model_mix, so they follow the "$" mode like the Models tab.
-        by_model: dict[str, dict[str, float | int]] = defaultdict(
-            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
-        )
-        for w in workflows:
-            seen_here: set[str] = set()
-            for row in self.model_mix(w.id):
-                name = row["model_name"]
-                item = by_model[name]
-                item["cost"] = float(item["cost"]) + float(row["cost"] or 0)
-                item["tokens"] = int(item["tokens"]) + int(row["tokens_total"] or 0)
-                if name not in seen_here:
-                    item["sessions"] = int(item["sessions"]) + 1
-                    seen_here.add(name)
-        return sorted(
-            by_model.items(),
-            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
-            reverse=True,
-        )
 
     def source_rows(self, workflows: list[Workflow]) -> list[tuple[str, dict[str, float | int]]]:
         # Spend grouped by the tool it came from, cost-sorted -- the Sources tab's
@@ -6499,6 +6583,12 @@ class App:
         self.project_index = 0
         self.prices_scroll = 0
         self.prices_index = 0
+        # The Models cursor too -- the query filters that list by model NAME, so a
+        # keystroke can shrink it under the cursor. The renderer clamps what it PAINTS,
+        # but a stale index here is still the number j/k move from: with the cursor left
+        # past the end, the first press clamps back to where the highlight already was
+        # and reads as a dead keystroke.
+        self.model_pick_index = 0
 
     def handle_mouse(self) -> bool:
         # The screen's clickable regions were registered by the last draw(), so a
@@ -6823,6 +6913,13 @@ class App:
                 self.zoom_project = None
                 self.zoom_source = None
                 self.zoom_machine = None
+                # The model drill goes with them, and it is the one that HIDES when it
+                # survives: clicking a month whose models differ leaves its Sessions list
+                # filtered to a model it never ran (i.e. empty), and clicking a Day --
+                # which has no Models tab to show it on -- leaves that filter with nothing
+                # on screen naming it, silently eating the next Esc.
+                self.zoom_model = None
+                self.model_pick_index = 0
                 self.workflow_index = 0
                 self.scroll = 0
                 return
@@ -6831,6 +6928,8 @@ class App:
             if self.view == "zoom":
                 self.zoom_source = None
                 self.zoom_machine = None
+                self.zoom_model = None  # same: a model this project may never have run
+                self.model_pick_index = 0
                 self.workflow_index = 0
                 self.scroll = 0
                 return
@@ -6852,7 +6951,13 @@ class App:
         elif kind == "zoomsource":
             self.source_index = value
         elif kind == "zoommodel":
-            self.model_pick_index = value
+            # The Models tab is a lines-rendered table, not a picker, so its region
+            # carries a LINE index; the renderer's map resolves it to the row ordinal
+            # (the turnline rule). Clicks on the frame/header/TOTAL rows land nowhere.
+            ordinal = getattr(self.renderer, "_model_row_at", {}).get(value)
+            if ordinal is None:
+                return
+            self.model_pick_index = ordinal
         elif kind == "zoommachine":
             self.machine_pick_index = value
         else:

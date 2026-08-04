@@ -214,6 +214,16 @@ class Renderer:
         # loops turn a visible one into sort_regions at its on-screen y, so header
         # clicks sort these lists exactly like the zoom pickers' headers.
         self._line_sort_headers: dict[int, tuple[tuple, str]] = {}
+        # Models tab: which detail-line indices are model rows, as line_index -> row
+        # ordinal, plus the line the cursor sits on (App.model_pick_index resolved
+        # against the drawn rows). The turnline pattern -- the table stays a list of
+        # plain strings, and the selection resolves to a colour pair only at paint.
+        self._model_row_at: dict[int, int] = {}
+        self._model_cursor_line: int | None = None
+        # Where the last _ruled_box put its first body row. DERIVED as the box is
+        # built, never counted off its prologue (the treemap-offset rule): a box grows
+        # a rule between header and body only when the body is non-empty.
+        self._ruled_body_start: int | None = None
 
     def __getattr__(self, name: str):
         # Misses are App state/logic; read them from the App. (Renderer's own
@@ -280,9 +290,23 @@ class Renderer:
         # zoom tabs without a picker): clamp the scroll, paint the visible window,
         # and make any sortable header line clickable.
         visible = h - 4
+        # The zoomed Models tab is one of those line-based panes WITH a cursor. Gate on
+        # the tab rather than on the map being non-empty: _model_row_at is only rewritten
+        # by _model_table, so another tab's paint would otherwise consult a stale one
+        # (the same reason draw_detail gates its "turnline" region on current == "Turns").
+        models = self.view == "zoom" and self.on_models_tab
+        if models:
+            # Scrolling this tab IS moving the cursor (the wheel and j/k both drive
+            # model_pick_index), so there is no manual scroll to fight -- keep the
+            # selected row on screen unconditionally.
+            self._scroll_line_into_view(self._model_cursor_line, visible)
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
-        for offset, line in enumerate(lines[self.scroll : self.scroll + visible]):
+        drawn = lines[self.scroll : self.scroll + visible]
+        for offset, line in enumerate(drawn):
             index = self.scroll + offset
+            if models and index == self._model_cursor_line:
+                self._paint_model_cursor(stdscr, y + 3 + offset, x + 2, line, w - 4)
+                continue
             # A column header reads as one (accent, bold) wherever it is drawn -- the
             # pickers paint theirs that way, and these are the same headers.
             attr = (
@@ -293,6 +317,32 @@ class Renderer:
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
             self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
             self._register_line_sort_header(y + 3 + offset, x + 2, index, line, w - 4)
+        if models:
+            # Make the model rows clickable: the region maps a row back to its line
+            # index; _apply_click resolves that to an ordinal via _model_row_at.
+            self._add_rows_region("zoommodel", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
+
+    def _paint_model_cursor(
+        self, stdscr: curses.window, y: int, x: int, line: str, width: int
+    ) -> None:
+        # The selected model row, in the pickers' own reverse video. Painted with write(),
+        # deliberately NOT write_rich(): the rich pass overpaints every money/token span
+        # with its own colour, and a model row is almost entirely money and tokens -- the
+        # highlight would come out in shreds around the one cell that isn't a number.
+        # (The pickers dodge this the same way: write() + write_selected_bars.)
+        attr = curses.color_pair(6) | curses.A_BOLD | curses.A_REVERSE
+        row = shorten(line, width)
+        if len(row) > 4 and row[:1] in ("│", "|") and row[-1:] in ("│", "|"):
+            # Reverse only the CELLS between the ruled box's gutters, so the selection
+            # bar sits inside the table instead of punching a hole through its vertical
+            # rules. A pane too narrow to keep the closing gutter falls through below.
+            head, cells, tail = row[:2], row[2:-2], row[-2:]
+            frame = self.line_attr(line)
+            self.write(stdscr, y, x, head, frame)
+            self.write(stdscr, y, x + display_width(head), cells, attr)
+            self.write(stdscr, y, x + display_width(head + cells), tail, frame)
+            return
+        self.write(stdscr, y, x, pad(row, width), attr)
 
     def year_row_text(self, year: YearSummary, marker: str) -> str:
         return (
@@ -798,6 +848,8 @@ class Renderer:
         tabs = self.current_tabs()
         tab_name = tabs[self.tab % len(tabs)]
         segs = [self.range_label()]
+        # (Machines mode returns below without any drill crumb -- a box's drills are
+        # mutually exclusive and its breadcrumb is already machines : <box> : <tab>.)
         if self.browse_mode == "machines" and self.view != "session":
             machine = self.selected_machine_summary
             segs.append("machines")
@@ -810,10 +862,7 @@ class Renderer:
             segs.append("projects")
             if project:
                 segs.append(short_path(project.directory, 34))
-            if self.zoom_source and self.on_sessions_tab:
-                segs.append(self.zoom_source)
-            if self.zoom_machine and self.on_sessions_tab:
-                segs.append(self.zoom_machine)
+            segs.extend(self._drill_crumbs(self.on_sessions_tab))
             segs.append(tab_name)
             return sep.join(s for s in segs if s)
         if self.view == "session":
@@ -836,10 +885,7 @@ class Renderer:
                 segs.append(self.active_day)
             if self.browse_mode == "time" and self.zoom_project:
                 segs.append(short_path(self.zoom_project, 24))
-            if self.zoom_source:
-                segs.append(self.zoom_source)
-            if self.zoom_machine:
-                segs.append(self.zoom_machine)
+            segs.extend(self._drill_crumbs())
             sess = self.current_session()
             segs.append(shorten(sess.title, 28) if sess else "session")
             segs.append(tab_name)
@@ -848,20 +894,14 @@ class Renderer:
                 segs.append(self.focused_year)
             if self.zoom_project and self.on_sessions_tab:
                 segs.append(short_path(self.zoom_project, 24))
-            if self.zoom_source and self.on_sessions_tab:
-                segs.append(self.zoom_source)
-            if self.zoom_machine and self.on_sessions_tab:
-                segs.append(self.zoom_machine)
+            segs.extend(self._drill_crumbs(self.on_sessions_tab))
             segs.append(tab_name)
         elif self.focus == "months":
             if self.focused_month:
                 segs.append(self.focused_month)
             if self.zoom_project and self.on_sessions_tab:
                 segs.append(short_path(self.zoom_project, 24))
-            if self.zoom_source and self.on_sessions_tab:
-                segs.append(self.zoom_source)
-            if self.zoom_machine and self.on_sessions_tab:
-                segs.append(self.zoom_machine)
+            segs.extend(self._drill_crumbs(self.on_sessions_tab))
             segs.append(tab_name)
         else:
             if self.focused_month:
@@ -870,12 +910,19 @@ class Renderer:
                 segs.append(self.active_day)
             if self.zoom_project and self.on_sessions_tab:
                 segs.append(short_path(self.zoom_project, 24))
-            if self.zoom_source and self.on_sessions_tab:
-                segs.append(self.zoom_source)
-            if self.zoom_machine and self.on_sessions_tab:
-                segs.append(self.zoom_machine)
+            segs.extend(self._drill_crumbs(self.on_sessions_tab))
             segs.append(tab_name)
         return sep.join(s for s in segs if s)
+
+    def _drill_crumbs(self, armed: bool = True) -> list[str]:
+        # The drills armed inside a zoom, innermost last. A model drill goes after the
+        # partitions because it LAYERS on them (a membership filter), so it reads as the
+        # deepest scope and matches the order Esc pops them in. Without a crumb an armed
+        # model is invisible the moment you leave the Models tab you set it from -- the
+        # Sessions list just reads short, which is how a filter gets mistaken for a bug.
+        if not armed:
+            return []
+        return [c for c in (self.zoom_source, self.zoom_machine, self.zoom_model) if c]
 
     def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
         # Context-sensitive: show only keys that do something in the current view, so
@@ -1433,13 +1480,6 @@ class Renderer:
             stdscr, y, x, h, w, self.zoom_source_rows(), self.source_index, "Harness", "zoomsource"
         )
 
-    def draw_models_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        # The Sources picker's twin on the Machines-mode Models tab: j/k pick a model, Enter
-        # the box's sessions that used it. Shared body, so the three can't drift.
-        self._draw_dimension_picker(
-            stdscr, y, x, h, w, self.zoom_model_rows(), self.model_pick_index, "Model", "zoommodel"
-        )
-
     def draw_machines_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         # The Sources picker's twin on the fleet's per-scope Machines tab: j/k pick a box,
         # Enter its sessions within this scope. Shared body, so the two can't drift.
@@ -1834,9 +1874,6 @@ class Renderer:
         if current == "Projects" and self.view == "zoom":
             self.draw_projects_picker(stdscr, y, x, h, w)
             return
-        if current == "Models" and self.view == "zoom":
-            self.draw_models_picker(stdscr, y, x, h, w)
-            return
         if current == "Overview":
             lines = self.machine_overview(machine, w - 4)
         elif current == "Harnesses":
@@ -2191,10 +2228,13 @@ class Renderer:
             self._add_rows_region("turnline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
 
     def _scroll_turn_cursor_into_view(self, visible: int) -> None:
-        # Nudge the scroll so the selected ▸ header sits within the visible window --
-        # only when it's off-screen, so following the cursor never yanks a header
-        # that's already comfortably in view. Its expanded body flows below it.
-        line = self._turn_cursor_line
+        # The Turns tab's selected ▸ header. Its expanded body flows below it.
+        self._scroll_line_into_view(self._turn_cursor_line, visible)
+
+    def _scroll_line_into_view(self, line: int | None, visible: int) -> None:
+        # Nudge the scroll so `line` sits within the visible window -- only when it's
+        # off-screen, so following a cursor never yanks a row that's already
+        # comfortably in view. Shared by the Turns and Models cursors.
         if line is None or visible <= 0:
             return
         top = self.app.scroll
@@ -2211,6 +2251,7 @@ class Renderer:
         name_label: str = "Model",
         count_label: str = "Msgs",
         price_split: bool = True,
+        selectable: bool = False,
     ) -> list[str]:
         # rows: (name, count, cost, tokens, cache_read, cache_write, output).
         #
@@ -2228,7 +2269,9 @@ class Renderer:
         # name column fits the longest entry (so the numbers sit right after it), capped by
         # the box-reduced width so long names aren't cut when there's room. name_label/
         # count_label let the Tools tab reuse this as Tool/Calls (which also turns
-        # price_split off -- tool names don't resolve to model rates).
+        # price_split off -- tool names don't resolve to model rates). `selectable`
+        # adds a CURSOR and nothing else: the zoomed Models tab is this same table with
+        # one row picked out, never a slimmer picker beside it (see _models_tab).
         # The count column fits its widest value -- the TOTAL row's sum, which is >= any
         # single row -- so a 5-digit Msgs count (10,484) doesn't overflow a 4-wide field
         # and cascade a 1-char shove that clips the rightmost column.
@@ -2317,7 +2360,19 @@ class Renderer:
                 "",
                 "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
             ]
-        return self._ruled_box(title, header, body, total, notes, width)
+        lines = self._ruled_box(title, header, body, total, notes, width)
+        self._model_row_at = {}
+        self._model_cursor_line = None
+        if selectable and self._ruled_body_start is not None:
+            start = self._ruled_body_start
+            self._model_row_at = {start + i: i for i in range(len(body))}
+            # CLAMP, exactly as App.zoom_selected_model does -- never bail on an
+            # out-of-range index. Anything that shrinks the list without moving the
+            # cursor (typing an `f` query is the easy one: the move handlers clamp, a
+            # keystroke in the filter does not) would otherwise leave Enter drilling the
+            # clamped last row while the pane highlighted nothing at all.
+            self._model_cursor_line = start + min(max(0, self.app.model_pick_index), len(body) - 1)
+        return lines
 
     # The ruled-box glyphs. Unicode on a UTF-8 screen; the locale-independent ASCII set
     # where a multibyte glyph would land as a garbage byte (util.unicode_screen: a
@@ -2380,8 +2435,10 @@ class Renderer:
             prefix + g["h"] * max(0, width - display_width(prefix) - 1) + g["tr"],
             content(header),
         ]
+        self._ruled_body_start = None
         if body:
             lines.append(rule(g["lt"], g["rt"]))
+            self._ruled_body_start = len(lines)
             lines.extend(content(b) for b in body)
             if total is not None:
                 lines.append(rule(g["lt"], g["rt"]))
@@ -2462,11 +2519,21 @@ class Renderer:
         # The Models tab body, with the live `f` filter applied to model names.
         # Unlike sessions we keep the cost ranking rather than re-ranking by fuzzy
         # score: model lists are short and the cost order is the useful one.
+        #
+        # In a zoom the SAME table becomes navigable -- a cursor plus Enter, drilling to
+        # the scope's sessions that used the model. Deliberately not a separate picker
+        # beside it: this tab used to render one table in browse (eight columns, price
+        # splits, a TOTAL row) and a four-column ranked list on Enter, which is exactly
+        # the drift the Sessions/Projects tables were unified to end -- and it silently
+        # re-pointed `f` from model names at session titles on the way. So `selectable`
+        # adds a cursor and nothing else: same rows, same columns, same filter.
         if self.query:
             rows = [r for r in rows if fuzzy_score(self.query, str(r[0])) is not None]
             if not rows:
+                self._model_row_at = {}
+                self._model_cursor_line = None
                 return [title, f"No models match the filter: {self.query}"]
-        return self._model_table(rows, title, width)
+        return self._model_table(rows, title, width, selectable=self.view == "zoom")
 
     @staticmethod
     def _agg_rows(aggregate: list[tuple[str, dict]]) -> list[tuple]:

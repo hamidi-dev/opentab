@@ -918,6 +918,24 @@ def test_web_token_economics_pane_is_two_stacked_bars_over_a_fixed_order_table()
     assert "1.05 / (L + 0.05)" in js  # WCAG contrast against white, not 21/(L+0.05)
 
 
+def test_web_models_tab_drills_in_place_in_every_scope():
+    # The TUI's Models drill, mirrored: a model row arms the in-place sub-drill in EVERY
+    # scope that has a Models tab, not just the Machines box -- there is no model scope to
+    # navigate to instead. Harnesses/Projects stay box-gated (they DO have their own
+    # scope), and the clearable chip is no longer box-gated either, or an armed model
+    # drill outside a box would have no way back out.
+    js = _js_source()
+    body = js.split("function renderDetail(", 1)[1].split("\nfunction ", 1)[0]
+    models = body.index("modelsTable('t-tab-models'")
+    assert "box ?" not in body[models : body.index("TAB === 'Projects'")]
+    assert "setMsub('model', r.model)" in body
+    # the two that keep the gate, and the sessions list that reflects any armed drill
+    assert "box ? (r => setMsub('project', r.project))" in body
+    assert "box ? (r => setMsub('source', r.source))" in body
+    assert "sessionsTable('t-tab-sessions', msubFilter(ws))" in body
+    assert "if (MSUB) {" in js and "sc.kind === 'M' && MSUB" not in js
+
+
 def test_web_overview_closes_with_the_models_table():
     # The TUI's rule (renderer._model_table), mirrored: the models table is the widest
     # block and the least likely answer to "where did the money go", so every Overview

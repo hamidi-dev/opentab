@@ -2397,19 +2397,23 @@ function renderDetail(sc, ws) {
   const root = document.getElementById('view');
   root.querySelectorAll('.tool-map').forEach(el => el._resizeObserver?.disconnect());
   root.textContent = '';
-  // In the Machines scope, the Harnesses/Projects/Models tabs drill IN PLACE (MSUB) rather
-  // than jumping to another scope, and the Sessions list reflects that sub-drill -- the
-  // web twin of the TUI's Machines-mode zoom_source/zoom_project/zoom_model.
+  // Drilling IN PLACE (MSUB) rather than jumping to another scope -- the web twin of the
+  // TUI's zoom_source/zoom_project/zoom_model. Harnesses and Projects do it only in the
+  // Machines scope (elsewhere they navigate to their own scope, which a box has no axis
+  // for). MODELS does it everywhere, because there is no model scope to navigate to:
+  // "which sessions here ran opus" is otherwise unanswerable per-scope, exactly as in the
+  // TUI -- and being the only armable dimension outside a box, the single MSUB slot is
+  // never contested there.
   const box = sc.kind === 'M';
   if (TAB === 'Overview') renderOverview(root, sc, ws);
   else if (TAB === 'Models') {
     const rows = sc.kind === 's' ? (DATA.models[sc.id] || []).map(r => ({ ...r })) : modelAgg(ws);
     root.appendChild(pane('Models · ' + scopeLabel(sc),
-      modelsTable('t-tab-models', rows, undefined, box ? (r => setMsub('model', r.model)) : null)));
+      modelsTable('t-tab-models', rows, undefined, r => setMsub('model', r.model))));
   } else if (TAB === 'Projects') root.appendChild(pane('Projects · ' + scopeLabel(sc),
     projectsTable('t-tab-projects', ws, undefined, box ? (r => setMsub('project', r.project)) : undefined)));
   else if (TAB === 'Sessions') root.appendChild(pane('Sessions · ' + scopeLabel(sc),
-    sessionsTable('t-tab-sessions', box ? msubFilter(ws) : ws)));
+    sessionsTable('t-tab-sessions', msubFilter(ws))));
   else if (TAB === 'Harnesses') root.appendChild(pane('Harnesses · ' + scopeLabel(sc),
     sourcesTable('t-tab-sources', ws, box ? (r => setMsub('source', r.source)) : null)));
   else if (TAB === 'Machines') root.appendChild(pane('Machines · ' + scopeLabel(sc), machinesTable('t-tab-machines', ws)));
@@ -2482,8 +2486,10 @@ function renderCrumbs(sc) {
     if (i) el.appendChild(h('span', { class: 'sep' }, '/'));
     el.appendChild(href ? h('a', { href }, label) : h('span', { class: 'here' }, label));
   });
-  // The Machines-scope sub-drill (MSUB): a clearable chip, visible from any tab.
-  if (sc.kind === 'M' && MSUB) {
+  // The in-place sub-drill (MSUB): a clearable chip, visible from any tab. It is the
+  // page's only way back out of one -- the TUI pops it with Esc, but here Esc steps out
+  // of the whole scope, so an armed model drill with no chip would be a dead end.
+  if (MSUB) {
     const lab = { source: 'harness', project: 'project', model: 'model' }[MSUB.dim];
     const val = MSUB.dim === 'project' ? projName(MSUB.value) : MSUB.value;
     el.appendChild(h('span', { class: 'sep' }, '·'));
