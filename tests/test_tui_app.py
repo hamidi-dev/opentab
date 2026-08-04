@@ -6,12 +6,14 @@ import os
 import opentab as ot
 
 from tests._support import (
+    AttrScreen,
     FakeScreen,
     FakeStore,
     _app_on_session,
     _model_row,
     app_with,
     box_title,
+    fleet_app,
     screen_text,
     workflow,
 )
@@ -970,6 +972,34 @@ def test_digit_keys_jump_to_a_panel_lazygit_style():
     app.tab = app.month_tabs.index("Models")
     app.handle_key(None, ord("1"))
     assert app.current_tabs()[app.tab] == "Models"
+
+
+def test_the_sidebar_column_headers_wear_the_shared_table_header_look():
+    # Projects and Machines mode are the two sidebars with a COLUMN HEADER, and they were
+    # the last two painting it in the structural grey (pair 4, the keybar's colour) after
+    # every table moved to the shared look. They carry no ruled box of their own -- the
+    # panel frame around the sidebar already is one, and a second frame inside a
+    # 40-column list would spend four of them on chrome -- so they take the look without
+    # the gutters, through the same painter.
+    app = fleet_app({"alpha": [workflow("a", "2026-06-01 12:00:00", directory="/repo/x")]})
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: n * 100
+    ot.curses.init_pair = lambda *a: None
+    try:
+        lit = ot.curses.color_pair(ot.Renderer.HEADER_PAIR) | ot.curses.A_BOLD
+        grey = ot.curses.color_pair(4) | ot.curses.A_BOLD  # what it used to be
+        for draw, label in (
+            (app.renderer.draw_project_list, "Project"),
+            (app.renderer.draw_machine_list, "Machine"),
+        ):
+            screen = AttrScreen(27, 60)
+            draw(screen, 0, 0, 27, 40)
+            # Row 1 is the header, right under the panel's top border.
+            row = "".join(screen.cells.get((1, x), " ") for x in range(40))
+            assert label in row and "Cost" in row
+            assert screen.attrs[(1, 1)] == lit and screen.attrs[(1, 1)] != grey
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
 
 
 def _panel_titles(app):

@@ -1929,10 +1929,12 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(1))
             return
 
+        # The same header every table in the app wears (_paint_box_header). This one
+        # carries no box -- the panel frame around the sidebar already is one, and a
+        # second frame inside a ~40-column list would spend four of them on chrome --
+        # so it takes the LOOK without the gutters.
         header = self.project_header_text(w - 2)
-        self.write(
-            stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD
-        )
+        self._paint_box_header(stdscr, y + 1, x + 1, header, w - 2)
         self._register_sort_header(
             y + 1, x + 1, header, self.PROJECT_SORT_COLUMNS, "project", w - 2
         )
@@ -2016,10 +2018,8 @@ class Renderer:
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No machines in range.", curses.color_pair(1))
             return
-        header = self.machine_header_text(w - 2)
-        self.write(
-            stdscr, y + 1, x + 1, shorten(header, w - 2), curses.color_pair(4) | curses.A_BOLD
-        )
+        header = self.machine_header_text(w - 2)  # the shared header look, see draw_project_list
+        self._paint_box_header(stdscr, y + 1, x + 1, header, w - 2)
         visible = h - 4
         start = max(0, min(self.machine_index - visible // 2, max(0, len(rows) - visible)))
         self._add_rows_region(
@@ -5276,9 +5276,7 @@ class Renderer:
             return
         namew = self._price_namew(entries, inner_w)
         header = self._price_header(namew)
-        self.write(
-            stdscr, head_y, 2, shorten(header, inner_w), curses.color_pair(4) | curses.A_BOLD
-        )
+        self._paint_box_header(stdscr, head_y, 2, header, inner_w)
         # Clicking a column header sorts by it (re-click flips); zones match the
         # drawn text, arrows included, via the base labels in PRICE_SORT_COLUMNS.
         self._register_sort_header(head_y, 2, header, self.PRICE_SORT_COLUMNS, "prices", inner_w)
@@ -5401,9 +5399,7 @@ class Renderer:
             self.write(stdscr, top, 2, shorten(lines[0], inner_w))
             return
         self.write(stdscr, top, 2, shorten(lines[0], inner_w), curses.color_pair(4))
-        self.write(
-            stdscr, top + 1, 2, shorten(lines[1], inner_w), curses.color_pair(4) | curses.A_BOLD
-        )
+        self._paint_box_header(stdscr, top + 1, 2, lines[1], inner_w)
         body = lines[2:]
         list_top = top + 2
         visible = max(1, bottom - list_top - 1)
