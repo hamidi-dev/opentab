@@ -2823,6 +2823,247 @@ def test_a_model_drill_disarms_itself_when_its_data_moves_away():
     assert app.zoom_model is None
 
 
+def _drill_app():
+    # One month/harness/project per session, so any drill armed in May excludes June.
+    may = workflow("m", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
+    jun = workflow("j", "2026-06-02 10:00:00", cost=5.0, directory="/work/beta")
+    may.source, jun.source = "OpenCode", "Claude Code"
+    app = app_with([may, jun])
+    app.store.combined = True  # the merged view is what grows a Harnesses tab
+    app._model_by_root = {
+        "m": [_model_row("haiku", 9.0, 900)],
+        "j": [_model_row("opus", 5.0, 500)],
+    }
+    app.focus = "months"
+    app.month_index = [s.month for s in app.months].index("2026-05")
+    return app
+
+
+def test_a_range_change_disarms_every_drill_not_just_the_project_one():
+    # Changing the range changes which sessions exist. Only the project drill used to be
+    # dropped, so a harness or model drill stayed armed against a window that may contain
+    # neither -- a Sessions list that is empty for no visible reason.
+    for tab, attr, armed in (
+        ("Harnesses", "zoom_source", "OpenCode"),
+        ("Models", "zoom_model", "haiku"),
+    ):
+        app = _drill_app()
+        app.drill_in()
+        app.tab = app.current_tabs().index(tab)
+        app.drill_in()
+        assert getattr(app, attr) == armed
+        app.set_range_from_text("2026-06")
+        assert getattr(app, attr) is None
+        assert [w.id for w in app.current_sessions()] == ["j"]
+
+
+def test_the_models_tab_only_offers_models_the_armed_drill_can_open():
+    # A picker must never offer a row its Enter cannot open. The Models ranking covered
+    # the whole zoom, ignoring an armed project drill, so it listed a model that project
+    # never ran -- picking it armed a drill matching nothing, which the net then dropped,
+    # so the pick silently did nothing and Esc popped the project instead.
+    alpha1 = workflow("a", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
+    alpha2 = workflow("a2", "2026-05-02 11:00:00", cost=3.0, directory="/work/alpha")
+    beta = workflow("b", "2026-05-03 10:00:00", cost=5.0, directory="/work/beta")
+    app = app_with([alpha1, alpha2, beta])
+    app._model_by_root = {
+        "a": [_model_row("opus", 9.0, 900)],
+        "a2": [_model_row("sonnet", 3.0, 300)],
+        "b": [_model_row("haiku", 5.0, 500)],  # beta's model, alpha never ran it
+    }
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Projects")
+    alpha = app.project_root("/work/alpha")
+    app.project_index = [p.directory for p in app.zoom_projects()].index(alpha)
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    assert [m for m, _ in app.zoom_model_rows()] == ["opus", "sonnet"]  # no haiku
+    # ...and the DRAWN table agrees, so the cursor indexes what is on screen
+    lines = app.renderer.month_models(app.selected_month_summary, 116)
+    drawn = [
+        lines[i][2:-2].split("  ")[0].strip()
+        for i, _ in sorted(app.renderer._model_row_at.items(), key=lambda kv: kv[1])
+    ]
+    assert drawn == ["opus", "sonnet"]
+    app.model_pick_index = 1
+    app.drill_in()
+    assert app.zoom_model == "sonnet"
+    assert [w.id for w in app.current_sessions()] == ["a2"]  # the pick actually took
+    app.drill_out()
+    assert app.zoom_model is None and app.zoom_project == alpha  # model popped, not project
+
+
+def test_wheeling_a_panel_below_the_focused_one_keeps_the_drills():
+    # The wheel scrolls whatever panel the pointer is over without moving focus, and the
+    # detail follows the FOCUSED panel -- so spinning Months while Years has focus
+    # re-anchors a list the detail never reads. Disarming there throws away a drill for a
+    # scope that did not change.
+    ws = []
+    for i in range(4):
+        w = workflow(f"w{i}", f"2026-0{5 + i // 2}-0{i % 2 + 1} 10:00:00", cost=float(9 - i))
+        w.source = "OpenCode" if i % 2 == 0 else "Claude Code"
+        ws.append(w)
+
+    def armed(focus):
+        app = app_with(ws)
+        app.store.combined = True
+        app._model_by_root = {w.id: [_model_row("opus", w.total_cost, 100)] for w in ws}
+        app.focus = focus
+        app.drill_in()
+        app.tab = app.current_tabs().index("Harnesses")
+        app.source_index = 0
+        app.drill_in()
+        return app
+
+    for focus, panel in (("years", "month"), ("years", "day"), ("months", "day")):
+        app = armed(focus)
+        app.renderer.hit = lambda my, mx, p=panel: (p, 0)
+        app._wheel(0, 0, 1)
+        assert app.zoom_source is not None, f"{panel} under {focus} must not disarm"
+    # ...but the focused panel itself still re-scopes and still disarms
+    app = armed("months")
+    app.renderer.hit = lambda my, mx: ("month", 0)
+    app._wheel(0, 0, 1)
+    assert app.zoom_source is None
+
+
+def test_a_frame_never_paints_a_crumb_for_a_drill_its_own_list_dropped():
+    # The net disarms inside current_sessions, which the breadcrumb is drawn ahead of.
+    # settle_drills runs it once up front so the healing frame is internally consistent.
+    may = workflow("m", "2026-05-02 10:00:00", cost=9.0)
+    jun = workflow("j", "2026-06-02 10:00:00", cost=5.0)
+    app = app_with([may, jun])
+    app._model_by_root = {
+        "m": [_model_row("haiku", 9.0, 900)],
+        "j": [_model_row("opus", 5.0, 500)],
+    }
+    app.focus = "months"
+    app.month_index = [s.month for s in app.months].index("2026-05")
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.drill_in()
+    assert app.zoom_model == "haiku"
+    app.month_index = [s.month for s in app.months].index("2026-06")  # re-scope behind it
+    assert "haiku" in app.renderer.breadcrumb()  # stale until something settles it
+    app.settle_drills()
+    assert app.zoom_model is None and "haiku" not in app.renderer.breadcrumb()
+
+
+def test_a_range_change_keeps_the_selected_session_while_disarming_drills():
+    # selection_anchor() names the session at workflow_index in the CURRENT (drilled)
+    # list, so it has to be taken before the drills are cleared -- clearing first widens
+    # the list under the cursor and anchors the wrong session, which restore_selection
+    # then faithfully restores.
+    ws = []
+    for i, src in enumerate(["Claude Code", "OpenCode", "OpenCode"]):
+        w = workflow(f"w{i}", f"2026-05-0{i + 1} 10:00:00", cost=float(9 - i))
+        w.source = src
+        ws.append(w)
+
+    def drilled():
+        app = app_with(ws)
+        app.store.combined = True
+        app._model_by_root = {w.id: [_model_row("opus", w.total_cost, 100)] for w in ws}
+        app.focus = "months"
+        app.drill_in()
+        app.tab = app.current_tabs().index("Harnesses")
+        app.source_index = [s for s, _ in app.zoom_source_rows()].index("OpenCode")
+        app.drill_in()
+        app.workflow_index = 1  # the SECOND session of the drilled pair
+        return app
+
+    app = drilled()
+    assert app.current_session().id == "w2"
+    app.set_range_from_text("2026-05")
+    assert app.current_session().id == "w2" and app.zoom_source is None
+
+    app = drilled()
+    app.set_all_time()
+    assert app.current_session().id == "w2"
+
+
+def test_clearing_the_project_drill_never_moves_the_projects_mode_sidebar():
+    # project_index wears two hats: the zoom Projects-tab PICKER cursor in time/machines
+    # mode, but in projects mode the sidebar selection itself -- the project you are
+    # looking at, which no drill owns. Zeroing it there walks you back to the first
+    # project on any range change.
+    ws = [
+        workflow("a", "2026-05-02 10:00:00", cost=1.0, directory="/work/alpha"),
+        workflow("b", "2026-05-03 10:00:00", cost=9.0, directory="/work/beta"),
+        workflow("c", "2026-05-04 10:00:00", cost=5.0, directory="/work/gamma"),
+    ]
+    app = app_with(ws)
+    app._model_by_root = {w.id: [_model_row("opus", w.total_cost, 100)] for w in ws}
+    app.set_browse_mode("projects")
+    app.project_index = 2
+    here = app.projects[2].directory
+    app.set_range_from_text("2026-05")
+    assert app.projects[app.project_index].directory == here
+    app.set_all_time()
+    assert app.projects[app.project_index].directory == here
+    # ...and outside projects mode, where it IS the picker cursor, a range change disarms
+    # the drill but restore_selection re-finds the row BY VALUE -- the codebase's rule
+    # everywhere else (never a wrong-but-valid neighbour by index).
+    app = app_with(ws)
+    app._model_by_root = {w.id: [_model_row("opus", w.total_cost, 100)] for w in ws}
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Projects")
+    gamma = app.project_root("/work/gamma")
+    app.project_index = [p.directory for p in app.zoom_projects()].index(gamma)
+    app.drill_in()
+    assert app.zoom_project == gamma
+    app.set_range_from_text("2026-05")
+    assert app.zoom_project is None
+    assert app.zoom_projects()[app.project_index].directory == gamma
+
+
+def test_wheeling_the_sidebar_disarms_every_drill_not_just_the_model_one():
+    # The wheel is the same re-scope a click is, and the click path has always dropped
+    # these. It was the one route that kept them.
+    app = _drill_app()
+    app.drill_in()
+    app.tab = app.current_tabs().index("Harnesses")
+    app.drill_in()
+    assert app.zoom_source == "OpenCode"
+    months = [s.month for s in app.months]
+    app.renderer.hit = lambda my, mx: ("month", 0)
+    app._wheel(0, 0, -1 if months.index("2026-06") < months.index("2026-05") else 1)
+    assert app.zoom_source is None
+    assert [w.id for w in app.current_sessions()] == ["j"]
+
+
+def test_editing_the_filter_snaps_every_zoom_cursor_back():
+    # The query narrows the Harnesses/Machines rankings too (by the sessions behind each
+    # row), so their cursors go stale exactly like the Models one.
+    app = _drill_app()
+    app.drill_in()
+    app.tab = app.current_tabs().index("Harnesses")
+    app.source_index, app.machine_pick_index = 1, 3
+    for ch in "alpha":
+        app.query += ch
+        app._filter_edited()
+    assert app.source_index == 0 and app.machine_pick_index == 0
+
+
+def test_esc_returns_the_cursor_to_the_row_it_drilled_even_after_a_rerank():
+    # Esc's contract is "back to the row you came from", and a stored ordinal cannot keep
+    # it: `$` re-ranks these tables by a different cost while the drill is armed, so the
+    # old ordinal lands on whatever has since taken that position.
+    app = _drill_app()
+    app._model_by_root = {"m": [_model_row("cheap", 1.0, 100), _model_row("pricey", 9.0, 900)]}
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.model_pick_index = [m for m, _ in app.zoom_model_rows()].index("cheap")
+    app.drill_in()
+    assert app.zoom_model == "cheap"
+    # the ranking flips under the armed drill (what a `$` toggle does)
+    app._model_by_root = {"m": [_model_row("cheap", 99.0, 100), _model_row("pricey", 9.0, 900)]}
+    app.drill_out()
+    assert [m for m, _ in app.zoom_model_rows()][app.model_pick_index] == "cheap"
+
+
 def test_a_model_drill_survives_a_scope_emptied_by_something_else():
     # The net must not misattribute: when the scope is empty for a reason that has
     # nothing to do with the model (bookmarks-only with nothing bookmarked), the drill

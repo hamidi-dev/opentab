@@ -586,6 +586,11 @@ class Renderer:
         return []
 
     def draw(self, stdscr: curses.window) -> None:
+        # Settle any drill whose data moved BEFORE a single cell is painted. The disarm
+        # lives inside current_sessions (App._drilled), which the breadcrumb is drawn
+        # ahead of -- so without this the frame that heals shows a crumb naming a drill
+        # its own session list has already dropped.
+        self.app.settle_drills()
         self.apply_background(stdscr)  # theme bg fills the screen (before erase reads it)
         stdscr.erase()
         self.regions = []  # rebuilt below as panels draw, for this frame's clicks
@@ -1944,7 +1949,9 @@ class Renderer:
         return lines
 
     def machine_models(self, machine: MachineSummary, width: int) -> list[str]:
-        agg = self.aggregate_models(self.workflows_for_machine(machine.name))
+        agg = self.aggregate_models(
+            self.compose_zoom_drills(self.workflows_for_machine(machine.name))
+        )
         return self._models_tab(self._agg_rows(agg), "# Machine Model Spend", width)
 
     def machine_sources(self, machine: MachineSummary, width: int) -> list[str]:
@@ -2920,7 +2927,7 @@ class Renderer:
         return lines
 
     def month_models(self, month: MonthSummary, width: int) -> list[str]:
-        agg = self.aggregate_models(self.workflows_for_month(month.month))
+        agg = self.aggregate_models(self.compose_zoom_drills(self.workflows_for_month(month.month)))
         return self._models_tab(self._agg_rows(agg), "# Monthly Model Spend", width)
 
     def month_sources(self, month: MonthSummary, width: int) -> list[str]:
@@ -2985,7 +2992,7 @@ class Renderer:
         return lines
 
     def year_models(self, year: YearSummary, width: int) -> list[str]:
-        agg = self.aggregate_models(self.workflows_for_year(year.year))
+        agg = self.aggregate_models(self.compose_zoom_drills(self.workflows_for_year(year.year)))
         return self._models_tab(self._agg_rows(agg), "# Yearly Model Spend", width)
 
     def year_sources(self, year: YearSummary, width: int) -> list[str]:
@@ -3094,9 +3101,11 @@ class Renderer:
 
     def project_models(self, project: ProjectSummary, width: int) -> list[str]:
         agg = self.aggregate_models(
-            self.workflows_for_project(
-                project.directory,
-                include_ignored=self.include_ignored_for_project(project),
+            self.compose_zoom_drills(
+                self.workflows_for_project(
+                    project.directory,
+                    include_ignored=self.include_ignored_for_project(project),
+                )
             )
         )
         return self._models_tab(self._agg_rows(agg), "# Project Model Spend", width)
