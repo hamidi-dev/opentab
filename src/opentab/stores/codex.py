@@ -10,7 +10,13 @@ import re
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
-from opentab.util import LazyStatusRoot, git_root, read_files_parallel, tool_rows_from_turns
+from opentab.util import (
+    LazyStatusRoot,
+    git_root,
+    read_files_parallel,
+    safe_int,
+    tool_rows_from_turns,
+)
 
 
 class CodexStore:
@@ -330,6 +336,8 @@ class CodexStore:
                 o = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(o, dict):
+                continue  # `[]` / `"x"` / `0` parse fine; .get() would kill the backend
             typ = o.get("type")
             p = o.get("payload") if isinstance(o.get("payload"), dict) else None
             # session metadata: wrapped (type session_meta) or a rare legacy file
@@ -389,6 +397,14 @@ class CodexStore:
             elif typ == "event_msg" and p.get("type") == "token_count":
                 prev = self._apply_token_count(s, p.get("info"), cur_model, prev, ts, pending_tools)
 
+    @staticmethod
+    def _int(value) -> int:
+        # A usage field is whatever the rollout says it is, and a bare int() takes the
+        # WHOLE backend down on a string, a nested object, or a number JSON allows and
+        # float cannot hold. util.safe_int is the one rule the file backends coerce
+        # through.
+        return safe_int(value)
+
     def _apply_token_count(
         self,
         s: dict,
@@ -405,10 +421,10 @@ class CodexStore:
         if not isinstance(tt, dict):
             return prev
         cur = (
-            int(tt.get("input_tokens", 0) or 0),
-            int(tt.get("output_tokens", 0) or 0),
-            int(tt.get("cached_input_tokens", 0) or 0),
-            int(tt.get("total_tokens", 0) or 0),
+            self._int(tt.get("input_tokens", 0) or 0),
+            self._int(tt.get("output_tokens", 0) or 0),
+            self._int(tt.get("cached_input_tokens", 0) or 0),
+            self._int(tt.get("total_tokens", 0) or 0),
         )
         if cur[3] > prev[3]:  # new turn: usage is the growth in the running total
             d_in, d_out, d_cached = cur[0] - prev[0], cur[1] - prev[1], cur[2] - prev[2]

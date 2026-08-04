@@ -483,6 +483,23 @@ def _harness_row(args: argparse.Namespace, spec: tuple, present: bool, full: boo
     if kind == _FILE:
         if present:
             return Row(OK, label, f"{shown} · {human_bytes(_size(path))} · {_age(_mtime(path))}")
+        if key == "opencode" and os.path.exists(path):
+            # available_sources() drops an OpenCode db opentab can't use (else `all`
+            # would die on a sqlite traceback), so the borrowed verdict is still the
+            # verdict -- but "not found" would be a lie about a file sitting right there
+            # at the path this row prints, which is the shape of wrongness this report
+            # can least afford. sources' own kind separates "you pointed at the wrong
+            # file" from "nobody can open this one", which are opposite next steps; it
+            # is borrowed rather than re-derived here for the usual reason.
+            kind = sources.opencode_db_verdict(path)[0]
+            if kind == "unreadable":
+                return Row(
+                    BAD,
+                    label,
+                    f"{shown} · exists, but cannot be read — locked or permission denied",
+                    "check the permissions on that file (opentab opens it read-only)",
+                )
+            return Row(WARN, label, f"{shown} · exists, but is not an OpenCode database", hint)
         return Row(INFO, label, f"{shown} · not found", "")
     keep = _name_filter(key)
     if present:

@@ -374,20 +374,17 @@ class OmpStore(PiStore):
         )
 
     # --- Store interface, subagent-aware ---------------------------------------
-    def cache_inputs(self) -> list[str]:
-        # The transcripts pi fingerprints, PLUS agent.db: the oauth/api-key split
-        # lives there, not in the JSONL, so a login switched between launches
-        # changes every cost in the rollup while leaving the transcripts untouched.
-        # Without it a warm start would keep serving the pre-login split forever.
-        # agent.db is in **WAL** mode (verified on a real install), so a login can
-        # land entirely in the -wal sidecar while the main db's size and mtime never
-        # move -- fingerprint that too, or the change is invisible until a checkpoint.
-        # NOT -shm: it is shared-memory index state that SQLite rewrites on every
-        # open, including opentab's own read, so including it changes the fingerprint
-        # on every launch and the warm start could never hit (measured). Paths that
-        # don't exist are simply skipped by CachedStore._fingerprint's stat().
+    def _auth_paths(self) -> list[str]:
+        # What pi fingerprints as auth.json is agent.db here (PiStore.cache_inputs adds
+        # these to the transcripts, and says why the login state has to be in there at
+        # all). agent.db is in **WAL** mode (verified on a real install), so a
+        # login can land entirely in the -wal sidecar while the main db's size and mtime
+        # never move -- fingerprint that too, or the change is invisible until a
+        # checkpoint. NOT -shm: it is shared-memory index state that SQLite rewrites on
+        # every open, including opentab's own read, so including it changes the
+        # fingerprint on every launch and the warm start could never hit (measured).
         db = self._auth_db_path()
-        return super().cache_inputs() + [db, db + "-wal"]
+        return [db, db + "-wal"]
 
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache

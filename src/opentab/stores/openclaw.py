@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, worked_seconds
 from opentab.models import Workflow
-from opentab.util import read_files_parallel
+from opentab.util import read_files_parallel, safe_float, safe_int
 
 
 class OpenClawStore:
@@ -113,8 +113,13 @@ class OpenClawStore:
         return f"{prov}/{model}" if prov else model
 
     # --- billing classification ----------------------------------------------
+    def _auth_path(self) -> str:
+        # The file that decides the oauth-vs-metered split. cache_inputs() fingerprints
+        # it alongside the transcripts (see there for why).
+        return os.path.join(self.root_dir, "openclaw.json")
+
     def _load_oauth_providers(self) -> set[str]:
-        path = os.path.join(self.root_dir, "openclaw.json")
+        path = self._auth_path()
         out: set[str] = set()
         try:
             with open(path, encoding="utf-8") as fh:
@@ -167,16 +172,15 @@ class OpenClawStore:
 
     @staticmethod
     def _int(value) -> int:
-        try:
-            return max(0, int(value))
-        except (TypeError, ValueError):
-            return 0
+        # util.safe_int is the one rule every backend coerces usage through -- see there
+        # for the three ways an untrusted number takes a whole backend down.
+        return safe_int(value)
 
     @staticmethod
     def _cost_total(usage: dict) -> float:
         cost = usage.get("cost")
         if isinstance(cost, dict) and isinstance(cost.get("total"), (int, float)):
-            return max(0.0, float(cost["total"]))
+            return max(0.0, safe_float(cost["total"]))
         return 0.0
 
     @staticmethod
@@ -270,8 +274,15 @@ class OpenClawStore:
 
     # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
-        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
-        return self._files()
+        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore) --
+        # the transcripts PLUS openclaw.json, because the oauth/metered split lives
+        # there rather than in the JSONL: switch a profile between an API key and a
+        # plan login and every cost in the rollup changes (and records_cost with it,
+        # which drives the "$"/ESTIMATED framing) while no transcript is touched. Left
+        # out, the fingerprint still matches, so the warm start serves the pre-login
+        # split and `r` re-fingerprints to the same value -- it never self-corrects.
+        # Paths that don't exist are skipped by CachedStore._fingerprint's stat().
+        return self._files() + [self._auth_path()]
 
     def _files(self) -> list[str]:
         out = []
@@ -384,6 +395,8 @@ class OpenClawStore:
                         o = json.loads(line)
                     except ValueError:
                         continue
+                    if not isinstance(o, dict):
+                        continue  # a valid-JSON non-object (`["cost"]`) has no .get()
                     msg = o.get("message") if o.get("type") == "message" else None
                     if not isinstance(msg, dict) or msg.get("role") != "assistant":
                         continue
@@ -622,6 +635,9 @@ class OpenClawStore:
     # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
+        # Re-read the login state too: `r` exists to pick up changes, and a profile
+        # that switched to an oauth plan since launch must stop counting as spend.
+        self._oauth_providers = self._load_oauth_providers()
         sessions = self._parse()
         rows = []
         for sid, s in sessions.items():

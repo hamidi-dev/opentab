@@ -5,6 +5,7 @@ import argparse
 import glob
 import json
 import os
+import re
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
@@ -17,6 +18,7 @@ from opentab.util import (
     est_tokens,
     git_root,
     read_files_parallel,
+    safe_int,
     tool_rows_from_turns,
 )
 
@@ -72,20 +74,26 @@ class ClaudeStore:
         }
 
     @staticmethod
-    def _add_usage(acc: dict[str, int], u: dict) -> None:
-        i = int(u.get("input_tokens", 0) or 0)
-        o = int(u.get("output_tokens", 0) or 0)
-        cr = int(u.get("cache_read_input_tokens", 0) or 0)
-        cw = int(u.get("cache_creation_input_tokens", 0) or 0)  # cache creation == write
+    def _int(value) -> int:
+        # A usage field is whatever the transcript says it is, and a bare int() takes
+        # the WHOLE backend down on a string, a nested object, or a number JSON allows
+        # and float cannot hold. util.safe_int is the one rule the file backends coerce
+        # through; Claude's usage read had no coercion at all.
+        return safe_int(value)
+
+    @classmethod
+    def _add_usage(cls, acc: dict[str, int], u: dict) -> None:
+        i = cls._int(u.get("input_tokens", 0) or 0)
+        o = cls._int(u.get("output_tokens", 0) or 0)
+        cr = cls._int(u.get("cache_read_input_tokens", 0) or 0)
+        cw = cls._int(u.get("cache_creation_input_tokens", 0) or 0)  # cache creation == write
         # usage.cache_creation splits that same total by TTL
         # ({ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}, summing to the flat
         # field). Only the 1h half is kept: the 5m half is the remainder, and deriving it
         # means a transcript that omits the split (or a future third tier) still prices at
         # the old 5m rate rather than losing tokens.
         cc = u.get("cache_creation")
-        cw1h = (
-            int((cc or {}).get("ephemeral_1h_input_tokens", 0) or 0) if isinstance(cc, dict) else 0
-        )
+        cw1h = cls._int(cc.get("ephemeral_1h_input_tokens", 0) or 0) if isinstance(cc, dict) else 0
         acc["runs"] += 1
         acc["input"] += i
         acc["output"] += o
@@ -334,18 +342,151 @@ class ClaudeStore:
         # name, the corpus parse still groups it.
         return self._parse().get(workflow_id)
 
+    # A record whose JSON string holds a LITERAL control character is not the record the
+    # writer meant to emit, and the plain `except ValueError: continue` dropped it with
+    # no trace. Two shapes, one cause:
+    #
+    #   - a literal NEWLINE splits it across two or more physical lines, so each half
+    #     fails json.loads on its own. Measured on a real corpus: 345 files / 96k lines,
+    #     one dropped record -- a `user` one carrying no usage, so 0 tokens lost and at
+    #     worst a missing Turns-tab prompt header.
+    #   - a literal TAB (or a lone \r) keeps the record on one line but still fails.
+    #
+    # `strict=False` is exactly the rule that rejects a literal control character inside
+    # a string, so parsing non-strict throughout recovers the second shape outright --
+    # and it is used for EVERY line, not just for a rejoin, so that the arming signal
+    # below cannot depend on WHICH control character split the record. Strict, a half
+    # ending `..."a` fails with "Unterminated string" but one ending `..."a\r` fails
+    # with "Invalid control character"; non-strict, both say "Unterminated string".
+    # (`util._read_text` reads in text mode, so \r\n and a lone \r are already \n by the
+    # time they get here -- this keeps _records correct for a caller that doesn't, which
+    # is worth more than assuming every future one will.)
+    #
+    # The relaxation is narrowed to the three characters the recovery is ABOUT (tab, LF,
+    # CR), because "tolerate control characters" is wider than "tolerate the ones that
+    # split a record". Strict parsing rejects every literal byte below 0x20; the
+    # difference is a literal ESC, backspace or NUL, none of which a JSON writer emits
+    # unescaped, all of which end up in a title, and one of which curses acts on -- a
+    # title of "AB\x08C" paints as "AC", and a run of backspaces walks back over the
+    # column beside it. So a line carrying any OTHER literal control is refused exactly
+    # as before. (This is only about LITERAL bytes: `\b`/`` written properly is
+    # ordinary JSON that strict mode has always accepted and still does, so the
+    # rendering question that raises is a separate one, unchanged by any of this.)
+    _BAD_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+    # The rejoin is bounded on both axes, because the recovery must not cost more than
+    # it saves: the buffer is armed only by that "Unterminated string" failure (garbage
+    # fails with "Expecting value" and never arms it) and dropped the moment it stops
+    # looking like one or outgrows either cap. Without that, a stray text file with a
+    # quote in it would accumulate to EOF and re-parse a growing buffer per line.
+    _SPLIT_MAX_LINES = 64
+    _SPLIT_MAX_BYTES = 1 << 20
+
+    @staticmethod
+    def _unterminated(exc: ValueError) -> bool:
+        # "this text is a record cut off inside a string", the one failure a rejoin can
+        # fix. Read off JSONDecodeError.msg, which is the stable half of the message
+        # (str(exc) appends a line/column that varies).
+        return str(getattr(exc, "msg", "")).startswith("Unterminated string")
+
+    @classmethod
+    def _one(cls, raw: str) -> tuple:
+        # (record, cut-off?) for ONE physical line. The record is None when the line is
+        # not a complete one; `cut-off` says the failure was "Unterminated string", the
+        # only one a rejoin can fix.
+        #
+        # Judged on the STRIPPED line, because that is what the plain parser judged and
+        # the recovery may not lose what it kept: `str.strip()` removes \x0b, \x0c and
+        # \x1c..\x1f as whitespace, so a record padded with a form feed parsed fine
+        # before -- and would be refused here by a control scan over the raw line, which
+        # cannot tell padding from content. Inside the line those same bytes still
+        # count, and a REJOIN buffers the raw line instead, where every character is
+        # part of the string being reassembled.
+        #
+        # Parsed STRICT first, relaxed only after that fails, so the recovery costs
+        # nothing on the ~100% of lines that are simply valid: running the
+        # control-character scan on every line instead cost 1.6s on a 650MB corpus
+        # (2.1s -> 3.7s, measured) -- the whole warm-start budget, spent on a record
+        # that turns up once in 96k lines.
+        line = raw.strip()
+        if not line:
+            return None, False
+        try:
+            return json.loads(line), False
+        except ValueError:
+            pass
+        if cls._BAD_CONTROL.search(line):
+            return None, False  # refused exactly as strict refused it
+        try:
+            return json.loads(line, strict=False), False
+        except ValueError as exc:
+            return None, cls._unterminated(exc)
+
+    @classmethod
+    def _records(cls, text: str):
+        # Every JSON *object* in one NDJSON blob. Non-objects are skipped, not ingested:
+        # `[]`, `"x"` and `0` are all valid JSON that survive the except and would then
+        # raise AttributeError out of .get(), taking down the whole backend rather than
+        # the one line. Lines are fed unstripped so a rejoin keeps the string's own
+        # characters; json.loads ignores surrounding whitespace anyway.
+        pending: list[str] = []
+        size = 0
+        for raw in text.split("\n"):
+            # A line that is a complete RECORD is one -- never a continuation, whatever
+            # an open buffer would have made of it. That ordering is the whole safety
+            # property: the recovery may only ever ADD records the old parser dropped,
+            # never absorb one it kept. Found by fuzzing, because the counter-example
+            # is not the obvious one -- a following `{"type":…}` closes the buffer's
+            # dangling string on its first quote and fails, so it falls out safely, but
+            # a record with NO quote in it (`{}`) just extends that string and vanished
+            # into the buffer (10 losses in 120k blobs).
+            #
+            # A complete non-DICT is deliberately not authoritative: `2`, `null` and
+            # `"x"` are valid JSON that this parser skips anyway, so letting one break
+            # the buffer would cost the recovery for nothing -- a prompt whose second
+            # line reads `2` splits into a middle line that is a perfectly good JSON
+            # number.
+            obj, cut_off = cls._one(raw)
+            if isinstance(obj, dict):
+                pending, size = [], 0  # the buffer was never going to close
+                yield obj
+                continue
+            if pending:
+                if cls._BAD_CONTROL.search(raw):
+                    pending, size = [], 0  # can neither join nor stand on its own
+                    continue
+                pending.append(raw)
+                size += len(raw) + 1
+                try:
+                    joined = json.loads("\n".join(pending), strict=False)
+                except ValueError as exc:
+                    if (
+                        len(pending) < cls._SPLIT_MAX_LINES
+                        and size < cls._SPLIT_MAX_BYTES
+                        and cls._unterminated(exc)
+                    ):
+                        continue  # still inside the split string -- keep joining
+                    pending, size = [], 0  # give up on it
+                else:
+                    pending, size = [], 0
+                    if isinstance(joined, dict):
+                        yield joined
+                continue
+            if cut_off and not cls._BAD_CONTROL.search(raw):
+                # Armed on the RAW line, and only when the raw line is clean: _one
+                # judged it stripped (padding is not content), but a buffer keeps every
+                # character, so a trailing \x0c that was mere padding on a standalone
+                # line becomes string content once something is joined onto it -- the
+                # refused byte back in through the side door. A padded line that is
+                # already a whole record never reaches here; one that isn't was dropped
+                # by the plain parser anyway, so refusing to rejoin it loses nothing.
+                pending, size = [raw], len(raw)
+
     def _parse_texts(self, texts) -> dict[str, dict]:
         sessions: dict[str, dict] = {}
         seen: set = set()  # dedupe resumed/forked overlap on (message.id, requestId)
         for text in texts:
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except ValueError:
-                    continue
+            for obj in self._records(text):
                 self._ingest(obj, sessions, seen)
         for sid, s in sessions.items():
             self._finalize(sid, s)
@@ -471,13 +612,13 @@ class ClaudeStore:
         # with its own timestamp; sidechain turns are depth-1 so the renderer marks
         # them, mirroring the subagent split. Cost is $0 (recorded) -- the "$" view
         # reprices from the token columns, like every other Claude panel.
-        i = int(usage.get("input_tokens", 0) or 0)
-        out_t = int(usage.get("output_tokens", 0) or 0)
-        cr = int(usage.get("cache_read_input_tokens", 0) or 0)
-        cw = int(usage.get("cache_creation_input_tokens", 0) or 0)
+        i = self._int(usage.get("input_tokens", 0) or 0)
+        out_t = self._int(usage.get("output_tokens", 0) or 0)
+        cr = self._int(usage.get("cache_read_input_tokens", 0) or 0)
+        cw = self._int(usage.get("cache_creation_input_tokens", 0) or 0)
         _cc = usage.get("cache_creation")
         cw1h = (
-            min(int((_cc or {}).get("ephemeral_1h_input_tokens", 0) or 0), cw)
+            min(self._int(_cc.get("ephemeral_1h_input_tokens", 0) or 0), cw)
             if isinstance(_cc, dict)
             else 0
         )

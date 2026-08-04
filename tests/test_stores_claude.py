@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 import tempfile
 
 import opentab as ot
@@ -731,3 +732,228 @@ def test_claude_status_nodes_never_widens_to_the_corpus():
         assert store._sessions is None
         assert store.status_nodes("nope-not-a-session") == []
         assert store._sessions is None
+
+
+def test_claude_survives_a_valid_json_line_that_is_not_an_object():
+    # `[]`, `"hello"` and `0` are all valid JSON: they pass the `except ValueError` and
+    # then raise AttributeError out of .get() -- taking down the WHOLE backend at
+    # startup, not the one line. _files() globs ~/.claude/projects/**/*.jsonl, so any
+    # stray .jsonl a user or another tool drops anywhere in that tree is enough.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        msg = _claude_msg("s1", "claude-opus-4-8", _usage(inp=10, out=5), uuid="u1", cwd=cwd)
+        with open(os.path.join(root, "s1.jsonl"), "w") as fh:
+            fh.write("[]\n" + '"hello"\n' + "0\n" + json.dumps(msg) + "\n")
+        w = ot.ClaudeStore(os.path.join(tmp, "projects"), _claude_args()).workflows()
+        assert len(w) == 1 and w[0].total_tokens == 15
+
+
+def test_claude_survives_a_token_count_json_parses_as_infinity():
+    # A usage field is whatever the transcript says. `1e400` is valid JSON that json maps
+    # to inf, and a bare int(inf) raises OverflowError -- an ArithmeticError, so it isn't
+    # even caught as a ValueError, and the whole backend dies at workflows().
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        with open(os.path.join(root, "s1.jsonl"), "w") as fh:
+            fh.write(
+                '{"type": "assistant", "sessionId": "s1", "cwd": %s, "timestamp": '
+                '"2026-06-10T18:46:00.000Z", "uuid": "u1", "parentUuid": null, '
+                '"requestId": "r1", "message": {"id": "m1", "model": "claude-opus-4-8", '
+                '"role": "assistant", "usage": {"input_tokens": 1e400, "output_tokens": 5, '
+                '"cache_read_input_tokens": "twelve"}}}\n' % json.dumps(cwd)
+            )
+        w = ot.ClaudeStore(os.path.join(tmp, "projects"), _claude_args()).workflows()
+        assert len(w) == 1 and w[0].total_tokens == 5  # both bad fields drop to 0
+
+
+def test_claude_rejoins_a_record_split_by_a_literal_newline():
+    # A record whose JSON string holds a LITERAL newline arrives split across physical
+    # lines: each half fails json.loads on its own, so the plain skip drops the whole
+    # record with no trace (measured once in a real 345-file corpus). Rejoining and
+    # re-parsing with strict=False recovers it -- `strict` is exactly the rule that
+    # rejects a literal control character inside a string.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        prompt = "first line\nsecond line\n\nfourth"  # splits into FOUR physical lines
+        user = {
+            "type": "user",
+            "sessionId": "s1",
+            "cwd": cwd,
+            "timestamp": "2026-06-10T18:45:00.000Z",
+            "uuid": "u0",
+            "parentUuid": None,
+            "message": {"role": "user", "content": prompt},
+        }
+        msg = _claude_msg("s1", "claude-opus-4-8", _usage(inp=10, out=5), uuid="u1", cwd=cwd)
+        with open(os.path.join(root, "s1.jsonl"), "w") as fh:
+            fh.write(json.dumps(user).replace("\\n", "\n") + "\n")  # unescape -> split
+            fh.write(json.dumps(msg) + "\n")
+        w = ot.ClaudeStore(os.path.join(tmp, "projects"), _claude_args()).workflows()
+        assert len(w) == 1 and w[0].title == prompt  # the whole prompt, breaks intact
+
+
+def test_claude_keeps_a_record_whose_string_holds_a_literal_control_character():
+    # The rejoin's sibling case, and the one that needs no rejoin: a literal TAB keeps
+    # the record on ONE line and still fails a strict json.loads, so it was dropped
+    # outright. Every line is parsed non-strict now, which keeps it -- and which is what
+    # makes the arming signal below independent of WHICH control character split a
+    # record: strict, a half ending `..."a` says "Unterminated string" while one ending
+    # `..."a\r` says "Invalid control character". (util._read_text reads in text mode,
+    # so \r\n and a lone \r reach the parser as \n; _records is checked directly here so
+    # it stays correct for a caller that hands it untranslated text.)
+    assert list(ot.ClaudeStore._records('{"a": "x\r\ny"}\r\n{"b": 2}\r\n')) == [
+        {"a": "x\r\ny"},
+        {"b": 2},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        user = {
+            "type": "user",
+            "sessionId": "s1",
+            "cwd": cwd,
+            "timestamp": "2026-06-10T18:45:00.000Z",
+            "uuid": "u0",
+            "message": {"role": "user", "content": "first\tsecond"},
+        }
+        msg = _claude_msg("s1", "claude-opus-4-8", _usage(inp=10, out=5), uuid="u1", cwd=cwd)
+        with open(os.path.join(root, "s1.jsonl"), "w") as fh:
+            fh.write(json.dumps(user).replace("\\t", "\t") + "\n")  # unescape the tab
+            fh.write(json.dumps(msg) + "\n")
+        w = ot.ClaudeStore(os.path.join(tmp, "projects"), _claude_args()).workflows()
+        assert len(w) == 1 and w[0].title == "first\tsecond"
+
+
+def test_claude_still_refuses_a_literal_control_character_it_cannot_be_split_by():
+    # The relaxation is narrowed to the three characters the recovery is ABOUT, because
+    # "tolerate control characters" is wider than "tolerate the ones that split a
+    # record". A literal ESC, backspace or NUL is not something a JSON writer emits
+    # unescaped; it lands in a title, and curses ACTS on it -- "AB\x08C" paints as "AC",
+    # and a run of backspaces walks back over the column beside it. Strict parsing
+    # refused those lines and so does this, so the recovery widens the intake by exactly
+    # the split it exists to fix and nothing else.
+    for ctrl in ("\x08", "\x1b", "\x00", "\x0b", "\x1f"):
+        text = '{"a": "x%sy"}\n{"b": 2}\n' % ctrl
+        assert list(ot.ClaudeStore._records(text)) == [{"b": 2}], ctrl
+    # ...including one riding inside an otherwise-recoverable split.
+    assert list(ot.ClaudeStore._records('{"a": "one\nA\x08B"}\n{"b": 2}\n')) == [{"b": 2}]
+
+    # But a line is judged STRIPPED, because that is what the plain parser judged:
+    # str.strip() eats \x0b, \x0c and \x1c..\x1f as whitespace, so a record padded with
+    # a form feed has always parsed, and a control scan over the RAW line -- which
+    # cannot tell padding from content -- would refuse it. Interior bytes still count.
+    rec = '{"type": "assistant", "sessionId": "s1"}'
+    for pad in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\t", " "):
+        blob = pad + rec + pad + "\n"
+        assert list(ot.ClaudeStore._records(blob)) == [json.loads(rec)], repr(pad)
+        # and the same, arriving while a rejoin buffer is open
+        assert list(ot.ClaudeStore._records('{"cut": "x\n' + blob)) == [json.loads(rec)]
+    assert list(ot.ClaudeStore._records('{"a": "x\x0cy"}\n{"b": 2}\n')) == [{"b": 2}]
+
+    # ...and it may not come back in through the rejoin, which buffers the RAW line:
+    # a trailing \x0c that was mere padding on a standalone line becomes string content
+    # the moment something is joined onto it, so a line is only ever ARMED when its raw
+    # form is clean. (A padded whole record never reaches the arming branch; a padded
+    # fragment was dropped by the plain parser anyway, so refusing it loses nothing.)
+    for pad in ("\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x1f", "\x08", "\x1b", "\x00"):
+        assert list(ot.ClaudeStore._records('{"a":"x%s\ny"}\n' % pad)) == [], repr(pad)
+
+    # Exhaustive rather than sampled, because "which bytes does str.strip() eat" is
+    # exactly the question a hand-picked list gets wrong: every byte 0x00..0x20, in
+    # every placement, must still yield what the plain parser yielded.
+    for code in range(0x00, 0x21):
+        ch = chr(code)
+        for blob in (
+            ch + rec + ch + "\n",  # padded both ends
+            ch + rec + "\n",  # leading
+            rec + ch + "\n",  # trailing
+            ch + "\n" + rec + "\n",  # a line of nothing but the byte
+            '{"cut": "x\n' + ch + rec + ch + "\n",  # padded, with a buffer open
+        ):
+            kept = [
+                o
+                for o in (_json_or_none(x.strip()) for x in blob.split("\n") if x.strip())
+                if isinstance(o, dict)
+            ]
+            got = list(ot.ClaudeStore._records(blob))
+            assert not [r for r in kept if r not in got], (hex(code), blob)
+    # An ESCAPED control is ordinary JSON that strict mode always took, and still is --
+    # this is only ever about LITERAL bytes.
+    assert list(ot.ClaudeStore._records('{"a": "AB\\u0008C"}\n')) == [{"a": "AB\x08C"}]
+
+
+def test_claude_record_recovery_never_absorbs_a_record_the_plain_parser_kept():
+    # THE invariant, and the reason the rejoin is safe to have at all: it may only ever
+    # ADD records the old `json.loads(line); except: continue` dropped -- never swallow
+    # one it kept. A line that is a complete RECORD is one, whatever an open buffer
+    # would have made of it.
+    #
+    # The counter-example is not the obvious one, which is why this is fuzzed rather
+    # than reasoned about: a following `{"type":…}` closes the buffer's dangling string
+    # on its own first quote and then fails to parse, so it falls out safely -- but a
+    # record with NO quote in it just extends that string and disappeared into the
+    # buffer (found at 10 losses in 120k blobs). A complete NON-dict is deliberately not
+    # authoritative the same way: `2` / `null` / `"x"` are valid JSON this parser skips
+    # anyway, and a prompt whose second line reads `2` splits into exactly that.
+    plain = lambda blob: [  # noqa: E731 - the pre-recovery parser, verbatim
+        o
+        for o in (_json_or_none(line.strip()) for line in blob.split("\n") if line.strip())
+        if isinstance(o, dict)
+    ]
+    assert list(ot.ClaudeStore._records('":}\n{}\n{"c": 3}\n')) == [{}, {"c": 3}]
+    assert list(ot.ClaudeStore._records('{"a":"1\n2\n3"}\n')) == [{"a": "1\n2\n3"}]
+    assert list(ot.ClaudeStore._records('{"a":"1\nnull\n3"}\n')) == [{"a": "1\nnull\n3"}]
+
+    rng = random.Random(99)
+    fill = ("abc ", '"', "{", "}", ":", ",", "\t", "\r", "\x08", "\x1b", "\n", "\\", "0", "2")
+    lost = recovered = 0
+    for _ in range(4000):
+        parts = []
+        for _ in range(rng.randrange(1, 4)):
+            if rng.random() < 0.5:  # a real record, sometimes with its escapes undone
+                body = "".join(rng.choice(fill) for _ in range(rng.randrange(0, 12)))
+                one = json.dumps({"k": body})
+                if rng.random() < 0.5:
+                    one = one.replace("\\n", "\n").replace("\\t", "\t")
+                parts.append(one)
+            else:
+                parts.append("".join(rng.choice(fill) for _ in range(rng.randrange(1, 20))))
+        blob = "\n".join(parts) + "\n"
+        before, after = plain(blob), list(ot.ClaudeStore._records(blob))
+        assert not [r for r in before if r not in after], blob
+        lost += 0
+        recovered += len(after) > len(before)
+    assert recovered > 100  # ...and the recovery really is firing on this corpus
+
+
+def _json_or_none(line):
+    try:
+        return json.loads(line)
+    except ValueError:
+        return None
+
+
+def test_claude_does_not_accumulate_a_buffer_over_a_file_of_unterminated_garbage():
+    # The rejoin is armed only by an "Unterminated string" failure and bounded on both
+    # lines and bytes, because a stray text file full of quotes would otherwise
+    # accumulate to EOF and re-parse a growing buffer per line -- quadratic on a corpus
+    # measured in hundreds of MB. The real session in the same tree must still parse.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        with open(os.path.join(root, "junk.jsonl"), "w") as fh:
+            for i in range(5000):
+                fh.write('he said "hello %d and this line never terminates\n' % i)
+        msg = _claude_msg("s1", "claude-opus-4-8", _usage(inp=10, out=5), uuid="u1", cwd=cwd)
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [msg])
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), _claude_args())
+        w = store.workflows()
+        assert len(w) == 1 and w[0].total_tokens == 15

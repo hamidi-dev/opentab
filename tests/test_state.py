@@ -5,7 +5,15 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import _claude_msg, _price_sort_app, _usage, _write_jsonl, app_with, workflow
+from tests._support import (
+    _claude_msg,
+    _empty_opencode_db,
+    _price_sort_app,
+    _usage,
+    _write_jsonl,
+    app_with,
+    workflow,
+)
 
 
 def test_prices_sort_is_persisted_in_state():
@@ -254,7 +262,7 @@ def test_source_is_persisted_and_restored():
     with tempfile.TemporaryDirectory() as tmp:
         # make both sources "present" so the cycle is opencode / claude / all
         db = os.path.join(tmp, "opencode.db")
-        open(db, "w").close()
+        _empty_opencode_db(db)
         cdir = os.path.join(tmp, "projects", "slug")
         os.makedirs(cdir)
         _write_jsonl(

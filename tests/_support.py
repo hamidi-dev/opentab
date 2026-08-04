@@ -199,6 +199,34 @@ def _app_on_session(sessions, session_id):
     return _select_session(app_with(sessions), session_id)
 
 
+def _empty_opencode_db(db):
+    # An OpenCode database with the schema and no rows -- what a test means when it only
+    # needs "the opencode source is PRESENT" (a source cycle, a saved-source restore).
+    # A zero-byte file used to serve: detection was os.path.exists. It no longer does,
+    # and deliberately -- sources._opencode_problem asks whether the file really is an
+    # OpenCode db, so that pointing --db at the wrong .db says so instead of dying on a
+    # sqlite traceback, and so `all` can't be taken down by one unreadable file. A 0-byte
+    # file is a valid *empty* sqlite db with no `session` table, i.e. exactly the case
+    # that check exists to reject -- and Store.workflows() would raise "no such table"
+    # on it anyway, so the old fixture stood for a state that never works.
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        create table session (
+          id text primary key, parent_id text, title text, directory text,
+          time_created integer, cost real default 0 not null,
+          tokens_input integer default 0 not null, tokens_output integer default 0 not null,
+          tokens_reasoning integer default 0 not null,
+          tokens_cache_read integer default 0 not null,
+          tokens_cache_write integer default 0 not null
+        );
+        create table message (id text primary key, session_id text, data text);
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
 def _write_opencode_db_with_tools(db):
     # Minimal OpenCode-shaped DB exercising the `part` table the Tools tab reads.
     # One subscription ($0) step calls TWO tools in parallel; one priced ($6) step

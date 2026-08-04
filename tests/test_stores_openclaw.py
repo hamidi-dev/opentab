@@ -260,3 +260,82 @@ def test_openclaw_turns_timeline_groups_by_prompt():
         assert t[0]["cost"] == 0.02 and t[1]["cost"] == 0.01  # metered: real spend
         assert t[0]["model_name"] == "anthropic/claude-opus-4-6"
         assert t[0]["time"] <= t[1]["time"] and t[0]["time"].startswith("2026-04-27")
+
+
+def test_openclaw_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_cache():
+    # The oauth/metered split lives in openclaw.json, NOT in the transcripts: switch a
+    # profile between a token and a plan login and every cost in the rollup changes
+    # (records_cost with it, which drives the "$"/ESTIMATED framing) while no transcript
+    # is touched. Without openclaw.json in cache_inputs() the fingerprint still matches,
+    # the warm start serves the pre-login split, and `r` never self-corrects.
+    with tempfile.TemporaryDirectory() as root:
+        rows = [_ocl_msg("model-x", 1000, 500, cost=1.23, provider="acme-cloud")]
+        _ocl_write(root, "bot", OCL_SID, rows)
+        conf = os.path.join(root, "openclaw.json")
+        assert conf in ot.OpenClawStore(root, _ocl_args()).cache_inputs()
+
+        args = type("A", (), {"demo": False, "no_cache": False})()
+        cold = ot.CachedStore(ot.OpenClawStore(root, _ocl_args()), "openclaw|" + root, args)
+        assert cold.workflows()[0].total_cost == 1.23 and cold.records_cost is True
+        cold.model_breakdown()  # what App's deferred scan does -- this writes the cache
+        warm = ot.CachedStore(ot.OpenClawStore(root, _ocl_args()), "openclaw|" + root, args)
+        assert warm.workflows() and warm.served_from_cache  # unchanged corpus -> a hit
+
+        _ocl_oauth(root, {"acme-cloud": "oauth"})
+        after = ot.CachedStore(ot.OpenClawStore(root, _ocl_args()), "openclaw|" + root, args)
+        w = after.workflows()[0]
+        assert after.served_from_cache is False  # the login change misses the fingerprint
+        assert w.total_cost == 0.0 and w.unpriced_tokens == 1500
+        assert after.records_cost is False  # and the whole frame flips to ESTIMATED
+
+
+def test_openclaw_reload_re_reads_the_login_state():
+    # `r` exists to pick up changes, and the login is one: a profile that switched to a
+    # plan since launch must stop counting as spend without a restart.
+    with tempfile.TemporaryDirectory() as root:
+        _ocl_write(
+            root, "bot", OCL_SID, [_ocl_msg("model-x", 1000, 500, cost=1.23, provider="acme-cloud")]
+        )
+        store = ot.OpenClawStore(root, _ocl_args())
+        assert store.workflows()[0].total_cost == 1.23
+        _ocl_oauth(root, {"acme-cloud": "oauth"})
+        assert store.workflows()[0].total_cost == 0.0  # reload, same instance
+
+
+def test_openclaw_survives_junk_lines_that_are_valid_json_but_not_objects():
+    # `["cost"]` is valid JSON that passes `except ValueError` and then raises
+    # AttributeError out of .get() -- taking down the WHOLE backend, not the line. It
+    # also carries the `"cost"` substring the records_cost probe prefilters on, so both
+    # readers see it. `1e400` parses to inf, and int(inf) raises OverflowError (an
+    # ArithmeticError, missed by `except (TypeError, ValueError)`).
+    with tempfile.TemporaryDirectory() as root:
+        d = os.path.join(root, "agents", "bot", "sessions")
+        os.makedirs(d)
+        with open(os.path.join(d, f"{OCL_SID}.jsonl"), "w") as fh:
+            fh.write('["cost"]\n')
+            fh.write('["provider"]\n')
+            fh.write(
+                '{"type": "message", "id": "a1", "timestamp": "2026-04-27T16:00:16.401Z", '
+                '"message": {"role": "assistant", "model": "model-x", "provider": '
+                '"openrouter", "usage": {"input": 1e400, "output": 50, "cost": '
+                '{"total": 1e400}}}}\n'
+            )
+            fh.write(
+                json.dumps(
+                    _ocl_msg(
+                        "model-x",
+                        100,
+                        50,
+                        cost=0.5,
+                        provider="openrouter",
+                        mid="a2",
+                        ts="2026-04-27T16:01:00.000Z",
+                    )
+                )
+                + "\n"
+            )
+        assert ot.OpenClawStore(root, _ocl_args()).records_cost is True  # the probe path
+        w = ot.OpenClawStore(root, _ocl_args()).workflows()
+        assert len(w) == 1
+        assert w[0].total_tokens == 200  # inf -> 0, both records survive
+        assert w[0].total_cost == 0.5  # and no inf reaches a total

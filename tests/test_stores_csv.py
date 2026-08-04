@@ -7,7 +7,15 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import FakeStore, _jsonl_args, _parse, _write_csv, _write_jsonl, workflow
+from tests._support import (
+    FakeStore,
+    _empty_opencode_db,
+    _jsonl_args,
+    _parse,
+    _write_csv,
+    _write_jsonl,
+    workflow,
+)
 
 
 def _csv_args():
@@ -182,7 +190,7 @@ def test_csv_tolerates_missing_empty_and_garbage_files():
 def test_csv_joins_the_source_cycle_and_has_no_resume_command():
     with tempfile.TemporaryDirectory() as tmp:
         oc_db = os.path.join(tmp, "opencode.db")
-        open(oc_db, "w").close()
+        _empty_opencode_db(oc_db)
         csv_path = os.path.join(tmp, "requests.csv")
         _write_csv(
             csv_path,
@@ -532,7 +540,7 @@ def test_jsonl_path_routing_and_source_cycle():
         assert bare.jsonl == ot.DEFAULT_JSONL_PATH
 
         oc_db = os.path.join(tmp, "opencode.db")
-        open(oc_db, "w").close()
+        _empty_opencode_db(oc_db)
         args = type(
             "Args",
             (),
@@ -693,3 +701,41 @@ def test_csv_context_curve_only_with_real_session_ids():
         (w3,) = store3.workflows()
         assert w3.id == "csv:production"
         assert store3.supports_context_curve(w3.id) is True
+
+
+def test_csv_and_jsonl_coerce_a_number_that_parses_as_infinity():
+    # `1e400` is valid JSON *and* an ordinary CSV cell, and float() maps it to inf. The
+    # token coercer's int(inf) raises OverflowError -- an ArithmeticError, so `except
+    # ValueError` misses it and the backend dies at workflows(). The cost coercer is
+    # worse: max(0.0, inf) doesn't raise at all, it silently poisons every sum it
+    # reaches. Both clamp to 0 now, and the rest of the row still counts.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            path,
+            ["timestamp", "model", "input_tokens", "output_tokens", "cost_usd", "session_id"],
+            [
+                ["2026-06-18T10:00:00Z", "claude-sonnet-4", "1e400", 5, 0.5, "s1"],
+                ["2026-06-18T10:01:00Z", "claude-sonnet-4", 10, 5, "1e400", "s1"],
+                ["2026-06-18T10:02:00Z", "claude-sonnet-4", 10, 5, 0.25, "s1"],
+            ],
+        )
+        w = ot.CsvStore(path, _csv_args()).workflows()
+        assert len(w) == 1
+        assert w[0].total_tokens == 5 + 15 + 15  # the inf token field drops to 0
+        assert w[0].total_cost == 0.75  # and no inf reaches a total
+
+        jpath = os.path.join(tmp, "requests.jsonl")
+        with open(jpath, "w") as fh:
+            fh.write(
+                '{"timestamp": "2026-06-18T10:00:00Z", "model": "claude-sonnet-4", '
+                '"input_tokens": 1e400, "output_tokens": 5, "cost_usd": 0.5, '
+                '"session_id": "s1"}\n'
+            )
+            fh.write(
+                '{"timestamp": "2026-06-18T10:01:00Z", "model": "claude-sonnet-4", '
+                '"input_tokens": 10, "output_tokens": 5, "cost_usd": 1e400, '
+                '"session_id": "s1"}\n'
+            )
+        jw = ot.JsonlStore(jpath, _jsonl_args()).workflows()
+        assert len(jw) == 1 and jw[0].total_tokens == 5 + 15 and jw[0].total_cost == 0.5

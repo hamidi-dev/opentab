@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import glob
 import os
+import sqlite3
 import sys
+from urllib.parse import quote
 
 from opentab import paths, util
 from opentab.stores.cached import CachedStore
@@ -17,7 +19,7 @@ from opentab.stores.hermes import HermesStore
 from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.omp import OmpStore
 from opentab.stores.openclaw import OpenClawStore
-from opentab.stores.opencode import Store
+from opentab.stores.opencode import REQUIRED_SCHEMA, Store
 from opentab.stores.pi import PiStore
 from opentab.stores.remote import RemoteStore
 from opentab.stores.vscode import VscodeStore
@@ -192,6 +194,71 @@ def _jsonl_dir_available(directory: str) -> bool:
     )
 
 
+def opencode_db_verdict(db: str) -> tuple[str, str]:
+    """Whether `db` is an OpenCode database: `("", "")` when it is, else a
+    ``(kind, message)`` pair — kind ``missing`` / ``unreadable`` / ``foreign``.
+
+    Existence alone is not enough: ``--db`` (and the documented
+    ``opentab path/to/opencode.db`` shortcut) names an arbitrary file, and picking the
+    wrong ``.db`` is an ordinary mistake whose reply used to be a raw traceback out of
+    sqlite ("no such table: session", or "file is not a database" for a non-sqlite
+    file) rather than the clean SystemExit every neighbouring backend produces.
+    ``HermesStore``'s schema probe is the model. One open plus a ``pragma table_info``
+    per table, so it is cheap enough for the detection path too.
+
+    It checks **columns**, not table names, against ``opencode.REQUIRED_SCHEMA`` — the
+    columns every query path uses unconditionally, declared beside the SQL that uses
+    them so the two cannot drift. Names alone are not enough twice over: `session` is
+    what any web app's session store calls its own, and a foreign pair of `session` +
+    `message` tables passes a name check and then dies on "no such column: child.id".
+    Requiring these costs nothing real — a database missing any of them cannot survive
+    ``workflows()`` or the ``model_breakdown()`` scan ``App.run()`` starts one frame
+    later, so it never worked, it only failed later. Nothing *else* may be required:
+    cost, tokens_*, time_updated, title, directory and agent are all probed with
+    fallbacks (`_has_session_token_columns` and friends), and demanding one of those
+    would reject a real OpenCode database that works today.
+
+    The **kind** is what keeps the report honest, and it is the reason this returns a
+    pair rather than a string: a database that is merely *locked* or unreadable is not
+    evidence about its schema, and calling it "not an OpenCode database" sends someone
+    hunting for the wrong file. Every kind still makes the backend unavailable — one
+    opentab cannot read is one it cannot show, and dropping it keeps the other eleven
+    alive under ``all`` — but only ``foreign`` means "you pointed at the wrong file".
+    """
+    if not db:
+        return "missing", "No OpenCode database configured (--db)."
+    if not os.path.exists(db):
+        return "missing", f"OpenCode database not found: {db}"
+    try:
+        conn = sqlite3.connect("file:" + quote(os.path.abspath(db)) + "?mode=ro", uri=True)
+    except sqlite3.OperationalError as exc:
+        return "unreadable", f"OpenCode database could not be opened: {db} ({exc})"
+    except sqlite3.Error as exc:  # e.g. "file is not a database" -- a real verdict
+        return "foreign", f"Not an OpenCode database: {db} ({exc})"
+    missing = []
+    try:
+        for table, columns in REQUIRED_SCHEMA.items():
+            # table_info returns nothing for a table that isn't there, so this covers
+            # "no such table" too. The names are module constants, never user input.
+            have = {row[1] for row in conn.execute(f"pragma table_info({table})")}
+            missing += [f"{table}.{c}" for c in columns if c not in have]
+    except sqlite3.OperationalError as exc:  # locked / busy: transient, not a schema fact
+        return "unreadable", f"OpenCode database could not be read: {db} ({exc})"
+    except sqlite3.Error as exc:
+        return "foreign", f"Not an OpenCode database: {db} ({exc})"
+    finally:
+        conn.close()
+    if missing:
+        lacks = ", ".join(missing[:4]) + (" …" if len(missing) > 4 else "")
+        return (
+            "foreign",
+            f"Not an OpenCode database (no {lacks}): {db}. "
+            "Point --db at OpenCode's own database, or name the right backend with "
+            "--source (--hermes-db for Hermes, --csv/--jsonl for a request log).",
+        )
+    return "", ""
+
+
 def _openclaw_available(root_dir: str) -> bool:
     # OpenClaw sessions live at <root>/agents/<agent>/sessions/<id>.jsonl (plus archives);
     # check that precise shape so an unrelated ~/.openclaw/**/*.jsonl never trips detection.
@@ -314,7 +381,9 @@ def available_sources(args: argparse.Namespace) -> list[str]:
     if cached is not None and cached[0] == fp:
         return list(cached[1])  # a copy -- source_cycle() appends "all" to its result
     keys = []
-    if os.path.exists(args.db):
+    # Not just exists(): a db opentab cannot read (or one that isn't OpenCode's) would
+    # be merged into `all` and take the whole run down with a sqlite traceback.
+    if not opencode_db_verdict(args.db)[0]:
         keys.append("opencode")
     if _jsonl_dir_available(args.claude_dir):
         keys.append("claude")
@@ -492,6 +561,7 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
                 f"(looked in {getattr(args, 'zaly_dir', '')})."
             )
         return ZalyStore(args.zaly_dir, args), "OpenTab: loading Zaly sessions…\r"
-    if not os.path.exists(args.db):
-        raise SystemExit(f"OpenCode database not found: {args.db}")
+    kind, problem = opencode_db_verdict(args.db)
+    if kind:
+        raise SystemExit(problem)
     return Store(args.db, args), "OpenTab: loading OpenCode database…\r"

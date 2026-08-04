@@ -279,3 +279,108 @@ def test_pi_tool_breakdown_splits_metered_cost_across_tool_calls():
         assert rows["bash"]["tokens_total"] == 75 and rows["read"]["tokens_total"] == 75
         assert abs(rows["bash"]["cost"] - 0.005) < 1e-9  # the metered cost, split
         assert rows["edit"]["cost"] == 0.0  # plan route: estimate, not spend
+
+
+def test_pi_auth_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_cache():
+    # The oauth/metered split lives in auth.json, NOT in the transcripts: switch a
+    # provider between an API key and a plan login and every cost in the rollup changes
+    # (records_cost with it, which drives the "$"/ESTIMATED framing) while no transcript
+    # is touched. cache_inputs() must name auth.json or CachedStore's fingerprint still
+    # matches, the warm start keeps serving the pre-login split, and `r` re-fingerprints
+    # to the same value -- it never self-corrects. OmpStore documents and fixes exactly
+    # this for its agent.db; pi/OpenClaw/Zaly had the same shape and not the fix.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        auth = os.path.join(tmp, "auth.json")
+        rows = [
+            _pi_session(PI_SID, cwd),
+            _pi_assistant("acme/model-x", 1000, 500, cost=1.23, provider="acme-cloud"),
+        ]
+        _pi_write(root, "--proj--", PI_SID, rows)
+        assert auth in ot.PiStore(root, _pi_args()).cache_inputs()
+
+        args = type("A", (), {"demo": False, "no_cache": False})()
+        cold = ot.CachedStore(ot.PiStore(root, _pi_args()), "pi|" + root, args)
+        assert cold.workflows()[0].total_cost == 1.23 and cold.records_cost is True
+        cold.model_breakdown()  # what App's deferred scan does -- this writes the cache
+        warm = ot.CachedStore(ot.PiStore(root, _pi_args()), "pi|" + root, args)
+        assert warm.workflows() and warm.served_from_cache  # unchanged corpus -> a hit
+
+        with open(auth, "w") as fh:
+            json.dump({"acme-cloud": {"type": "oauth"}}, fh)
+        after = ot.CachedStore(ot.PiStore(root, _pi_args()), "pi|" + root, args)
+        w = after.workflows()[0]
+        assert after.served_from_cache is False  # the login change misses the fingerprint
+        assert w.total_cost == 0.0 and w.unpriced_tokens == 1500
+        assert after.records_cost is False  # and the whole frame flips to ESTIMATED
+
+
+def test_pi_reload_re_reads_the_login_state():
+    # `r` exists to pick up changes, and the login is one: a provider that switched to a
+    # plan since launch must stop counting as spend without a restart. The store re-reads
+    # auth.json in workflows() (OmpStore's rule), so the same instance answers correctly.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _pi_session(PI_SID, cwd),
+            _pi_assistant("acme/model-x", 1000, 500, cost=1.23, provider="acme-cloud"),
+        ]
+        _pi_write(root, "--proj--", PI_SID, rows)
+        store = ot.PiStore(root, _pi_args())
+        assert store.workflows()[0].total_cost == 1.23
+        with open(os.path.join(tmp, "auth.json"), "w") as fh:
+            json.dump({"acme-cloud": {"type": "oauth"}}, fh)
+        assert store.workflows()[0].total_cost == 0.0  # reload, same instance
+
+
+def test_pi_survives_a_valid_json_line_that_is_not_an_object():
+    # `["type"]` and `["cost"]` are valid JSON that pass the `except ValueError` and then
+    # raise AttributeError out of .get() -- taking down the WHOLE backend, not the line.
+    # Both the parse and the records_cost probe read these lines, so both are covered.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _pi_write(
+            root,
+            "--proj--",
+            PI_SID,
+            [
+                ["type"],  # a list, not an object
+                ["cost"],
+                _pi_session(PI_SID, cwd),
+                _pi_assistant("acme/model-x", 100, 50, cost=0.5, provider="openrouter"),
+            ],
+        )
+        assert ot.PiStore(root, _pi_args()).records_cost is True  # the probe path
+        w = ot.PiStore(root, _pi_args()).workflows()
+        assert len(w) == 1 and w[0].total_tokens == 150
+
+
+def test_pi_survives_a_token_count_json_parses_as_infinity():
+    # `1e400` is valid JSON that json maps to inf, and int(inf) raises OverflowError --
+    # an ArithmeticError, so `except (TypeError, ValueError)` misses it and the backend
+    # dies at workflows(). An inf *cost* doesn't raise at all: it silently poisons every
+    # sum it reaches, which is worse.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        d = os.path.join(root, "--proj--")
+        os.makedirs(d)
+        with open(os.path.join(d, f"2026-05-15T07-32-15-949Z_{PI_SID}.jsonl"), "w") as fh:
+            fh.write(json.dumps(_pi_session(PI_SID, cwd)) + "\n")
+            fh.write(
+                '{"type": "message", "id": "a1", "timestamp": "2026-05-15T07:32:36.257Z", '
+                '"message": {"role": "assistant", "model": "acme/model-x", "provider": '
+                '"openrouter", "usage": {"input": 1e400, "output": 50, "cost": '
+                '{"total": 1e400}}}}\n'
+            )
+        w = ot.PiStore(root, _pi_args()).workflows()
+        assert len(w) == 1
+        assert w[0].total_tokens == 50  # the inf field drops to 0, the record survives
+        assert w[0].total_cost == 0.0  # and no inf reaches a total

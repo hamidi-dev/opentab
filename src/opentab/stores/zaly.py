@@ -19,6 +19,8 @@ from opentab.util import (
     est_tokens,
     git_root,
     read_files_parallel,
+    safe_float,
+    safe_int,
     tool_rows_from_turns,
 )
 
@@ -128,7 +130,12 @@ class ZalyStore:
         self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
         self._git_root_cache: dict[str, str] = {}
         # zaly's auth.json lives in its STATE dir (not beside the data dir): providers with
-        # type "oauth" are consumer-plan logins whose recorded cost is not spend.
+        # type "oauth" are consumer-plan logins whose recorded cost is not spend. Resolved
+        # ONCE, here: _default_zaly_state_dir() reads $ZALY_STATE/$ZALY_ROOT live, and this
+        # path is now read on every workflows() (reload) and every cache_inputs()
+        # (fingerprint) -- a store must keep answering about the tree it was built against,
+        # the way root_dir does, rather than following the ambient environment mid-run.
+        self._auth_file = os.path.join(_default_zaly_state_dir(), "auth.json")
         self._oauth_providers = self._load_oauth_providers()
         self._records_cost: bool | None = None  # resolved lazily (records_cost property)
 
@@ -138,11 +145,17 @@ class ZalyStore:
             self._git_root_cache[cwd] = git_root(cwd)
         return self._git_root_cache[cwd]
 
+    def _auth_path(self) -> str:
+        # The file that decides the oauth-vs-metered split, pinned at construction. It
+        # lives in zaly's STATE dir -- a different directory tree from the sessions
+        # entirely, which is why cache_inputs() has to name it explicitly (see there).
+        return self._auth_file
+
     def _load_oauth_providers(self) -> set[str]:
         # <state>/auth.json maps provider -> {type: "oauth" | "api-key", ...}; "oauth"
         # means a consumer-plan login (subscription), not a metered API key. Read-only; we
         # read only each provider's "type", never the tokens.
-        path = os.path.join(_default_zaly_state_dir(), "auth.json")
+        path = self._auth_path()
         out: set[str] = set()
         try:
             with open(path, encoding="utf-8") as fh:
@@ -169,10 +182,9 @@ class ZalyStore:
 
     @staticmethod
     def _int(value) -> int:
-        try:
-            return max(0, int(value))
-        except (TypeError, ValueError):
-            return 0
+        # util.safe_int is the one rule every backend coerces usage through -- see there
+        # for the three ways an untrusted number takes a whole backend down.
+        return safe_int(value)
 
     @staticmethod
     def _cost_total(usage: dict) -> float:
@@ -183,8 +195,11 @@ class ZalyStore:
             return 0.0
         total = 0.0
         for v in cost.values():
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
-                total += float(v)
+            # safe_float, not float(): an inf component doesn't raise, it silently
+            # poisons every sum it reaches (and `inf > 0` is True, so the positivity
+            # check lets it straight through), while a huge JSON integer raises.
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                total += max(0.0, safe_float(v))
         return total
 
     @staticmethod
@@ -268,8 +283,15 @@ class ZalyStore:
 
     # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
-        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
-        return self._files()
+        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore) --
+        # the transcripts PLUS <state>/auth.json, because the oauth/metered split lives
+        # there rather than in the JSONL: switch a provider between an API key and a
+        # plan login and every cost in the rollup changes (and records_cost with it,
+        # which drives the "$"/ESTIMATED framing) while no transcript is touched. Left
+        # out, the fingerprint still matches, so the warm start serves the pre-login
+        # split and `r` re-fingerprints to the same value -- it never self-corrects.
+        # Paths that don't exist are skipped by CachedStore._fingerprint's stat().
+        return self._files() + [self._auth_path()]
 
     def _files(self) -> list[str]:
         return glob.glob(os.path.join(self.root_dir, "sessions", "*", "*", "session.jsonl"))
@@ -733,6 +755,9 @@ class ZalyStore:
     # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
+        # Re-read the login state too: `r` exists to pick up changes, and a provider
+        # that switched to an oauth plan since launch must stop counting as spend.
+        self._oauth_providers = self._load_oauth_providers()
         sessions = self._parse()
         rows = []
         for sid, s in sessions.items():

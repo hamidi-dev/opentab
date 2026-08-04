@@ -156,6 +156,54 @@ def init_color_allowed() -> bool:
     return not palette_writes_ignored()
 
 
+# The largest integer a float holds exactly, and the ceiling for BOTH coercers below.
+# JSON has no size limit on a number and Python's int has no ceiling either, so a
+# 400-digit count parses fine, sums fine, and then raises `OverflowError: int too large
+# to convert to float` out of the FIRST float it meets -- api_equivalent_cost's multiply
+# under "$", or the tokens() formatter's divide. That is a crash one whole layer away
+# from the parse that let it in, in a store that never touched the bad file.
+#
+# The float side needs the same ceiling and not merely a finiteness check, because
+# finite is not the same as safe to ADD UP: `1e308` is a perfectly finite float, and two
+# of them sum to inf -- which raises nothing and silently poisons every session, day and
+# month total downstream. Bounded here instead, so no caller has to re-check a sum.
+# Nothing real is within nine orders of magnitude of this, in tokens or in dollars.
+_NUMERIC_LIMIT = 1 << 53
+
+
+def safe_int(value) -> int:
+    """A non-negative token count read from an untrusted log field, or 0.
+
+    Every file backend coerces its usage fields through this one rule, because each
+    way of getting it wrong is a whole backend lost rather than one record skipped:
+    a string or a nested object raises TypeError/ValueError; `1e400` is valid JSON
+    that parses to inf, and `int(inf)` raises **OverflowError** — an ArithmeticError,
+    so the obvious `except (TypeError, ValueError)` misses it; and a huge JSON
+    *integer* raises nothing at all here (see `_NUMERIC_LIMIT`).
+    """
+    try:
+        num = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return num if 0 <= num <= _NUMERIC_LIMIT else 0
+
+
+def safe_float(value, default: float = 0.0) -> float:
+    """A finite, summable float read from an untrusted log field, or `default`.
+
+    The cost twin of `safe_int`, and the more dangerous half: an inf cost does not
+    raise anywhere, it silently poisons every sum it reaches — every session, day and
+    month total downstream reads `$inf`. (A huge JSON integer *does* raise here, out
+    of float() itself.) Bounded by magnitude, not just checked for finiteness, because
+    two finite `1e308` costs still sum to inf — see `_NUMERIC_LIMIT`.
+    """
+    try:
+        num = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return num if -_NUMERIC_LIMIT <= num <= _NUMERIC_LIMIT else default
+
+
 def _read_text(path: str) -> str | None:
     # Text mode: universal-newline translation (\r\n -> \n) matches what `for line in
     # fh` yields, so a caller that splits on "\n" gets exactly the same lines. Returns

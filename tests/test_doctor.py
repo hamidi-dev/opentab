@@ -5,6 +5,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 
 import opentab as ot
@@ -982,3 +983,30 @@ def test_every_harness_key_has_a_row():
     # A backend added to sources without a doctor spec would silently never be reported.
     keys = {spec[0] for spec in doctor._HARNESSES}
     assert keys == set(ot.sources.SOURCE_LABELS) - {"all"}
+
+
+def test_a_db_that_is_not_opencodes_is_reported_as_such_not_as_missing():
+    # available_sources() drops an OpenCode db whose schema isn't OpenCode's -- else one
+    # unusable file takes `all` down with a sqlite traceback -- and doctor borrows that
+    # verdict as always. But the plain absent-harness wording would then say "not found"
+    # about a file sitting right there at the path the row prints, which is the shape of
+    # wrongness this report can least afford.
+    with tempfile.TemporaryDirectory() as tmp, _clean_env():
+        db = os.path.join(tmp, "opencode.db")
+        conn = sqlite3.connect(db)
+        conn.execute("create table unrelated (id integer)")
+        conn.commit()
+        conn.close()
+        row = _by_label(doctor.build_report(_args(tmp, db=db)), "harnesses", "OpenCode")
+        assert row.status == doctor.WARN
+        assert "not an OpenCode database" in row.detail and "not found" not in row.detail
+        assert row.hint  # and it says where the real one lives
+
+        # An unreadable one is separated: "not an OpenCode database" about a database
+        # nobody can open sends someone hunting for the wrong file.
+        os.chmod(db, 0o000)
+        try:
+            row = _by_label(doctor.build_report(_args(tmp, db=db)), "harnesses", "OpenCode")
+        finally:
+            os.chmod(db, 0o644)
+        assert row.status == doctor.BAD and "cannot be read" in row.detail

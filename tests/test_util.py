@@ -463,3 +463,69 @@ def test_palette_writes_ignored_detects_herdr_only_by_its_own_marker():
         os.environ.pop("HERDR_ENV", None)
         if saved is not None:
             os.environ["HERDR_ENV"] = saved
+
+
+def test_safe_int_and_safe_float_reject_every_number_a_log_can_hold_but_a_float_cannot():
+    # The one coercion rule every file backend reads its usage through, because each way
+    # of getting it wrong loses a whole BACKEND rather than one record. Three shapes, and
+    # the third is the one that looks harmless:
+    #   * a string / object / None -> TypeError or ValueError,
+    #   * `1e400` -> valid JSON, parses to inf, and int(inf) raises OverflowError (an
+    #     ArithmeticError, which `except (TypeError, ValueError)` does NOT catch),
+    #   * a 400-digit JSON *integer* -> raises nothing at all here. Python's int has no
+    #     ceiling, so it parses, sums, and then raises "int too large to convert to
+    #     float" out of the first float it meets: api_equivalent_cost's multiply under
+    #     "$", or the tokens() formatter's divide -- a crash a whole layer away from the
+    #     parse that admitted it.
+    huge = int("1" + "0" * 400)  # what json.loads gives for a 401-digit literal
+    assert ot.util.safe_int(huge) == 0
+    assert ot.util.safe_float(huge) == 0.0
+
+    # ...and finite is not the same as safe to ADD UP, which is why safe_float bounds
+    # the magnitude rather than only checking isfinite: 1e308 is a perfectly good float
+    # and two of them sum to inf -- raising nothing, poisoning every session, day and
+    # month total downstream. Bounded in the coercer, so no caller has to re-check a sum.
+    assert ot.util.safe_float(10**308) == 0.0
+    assert ot.util.safe_float(-(10**308)) == 0.0
+    assert ot.ZalyStore._cost_total({"cost": {"input": 10**308, "output": 10**308}}) == 0.0
+    assert ot.PiStore._cost_total({"cost": {"total": 10**308}}) == 0.0
+    for bad in (float("inf"), float("-inf"), float("nan"), "abc", None, {}, [], "1e400"):
+        assert ot.util.safe_int(bad) == 0, bad
+        assert ot.util.safe_float(bad) == 0.0, bad
+    assert ot.util.safe_float("abc", default=-1.0) == -1.0
+
+    # Ordinary values are untouched, negatives clamp to 0 (a token count is a count),
+    # and the ceiling is the largest integer a float holds exactly.
+    assert ot.util.safe_int(0) == 0 and ot.util.safe_int(12345) == 12345
+    assert ot.util.safe_int("42") == 42 and ot.util.safe_int(1.9) == 1
+    assert ot.util.safe_int(-5) == 0
+    assert ot.util.safe_int(1 << 53) == 1 << 53 and ot.util.safe_int((1 << 53) + 1) == 0
+    assert ot.util.safe_float(1.25) == 1.25 and ot.util.safe_float("0.5") == 0.5
+    assert ot.util.safe_float(-3.5) == -3.5  # the sign survives; callers clamp if they must
+    assert ot.util.safe_float(float(1 << 53)) == float(1 << 53)  # the same ceiling, both sides
+
+    # ...and every backend's coercer is that rule, not a copy of it that drifted.
+    for store in (
+        ot.PiStore,
+        ot.OmpStore,
+        ot.OpenClawStore,
+        ot.ZalyStore,
+        ot.ClaudeStore,
+        ot.CodexStore,
+    ):
+        assert store._int(huge) == 0 and store._int(float("inf")) == 0, store.__name__
+        assert store._int(9_000) == 9_000, store.__name__
+    for store in (ot.PiStore, ot.OpenClawStore):
+        assert store._cost_total({"cost": {"total": huge}}) == 0.0
+        assert store._cost_total({"cost": {"total": float("inf")}}) == 0.0
+        assert store._cost_total({"cost": {"total": 1.5}}) == 1.5
+    # zaly sums per-component costs: a poisoned component drops, the rest still counts.
+    assert ot.ZalyStore._cost_total({"cost": {"input": huge, "output": 0.25}}) == 0.25
+    # CSV/JSONL clean their cell (strip, drop "," and "$") and then coerce through the
+    # same rule -- a token count of "1e308" is finite and would still have flowed into
+    # every total, and shown as 309 digits.
+    assert ot.CsvStore._to_int("1" + "0" * 400) == 0
+    assert ot.CsvStore._to_float("1" + "0" * 400) == 0.0
+    assert ot.CsvStore._to_int("1e308") == 0 and ot.CsvStore._to_float("1e308") == 0.0
+    assert ot.CsvStore._to_int("12,345") == 12345 and ot.CsvStore._to_int("1e3") == 1000
+    assert ot.CsvStore._to_float("$1,000.50") == 1000.5

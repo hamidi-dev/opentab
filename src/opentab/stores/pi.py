@@ -10,7 +10,14 @@ import re
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
-from opentab.util import LazyStatusRoot, git_root, read_files_parallel, tool_rows_from_turns
+from opentab.util import (
+    LazyStatusRoot,
+    git_root,
+    read_files_parallel,
+    safe_float,
+    safe_int,
+    tool_rows_from_turns,
+)
 
 
 class PiStore:
@@ -88,11 +95,17 @@ class PiStore:
         "chatgpt",
     )
 
+    def _auth_paths(self) -> list[str]:
+        # The files that decide the oauth-vs-metered split -- a list, and a seam, because
+        # omp keeps the same split in a SQLite db with a WAL sidecar. cache_inputs()
+        # fingerprints these alongside the transcripts (see there for why).
+        return [os.path.join(os.path.dirname(os.path.normpath(self.root_dir)), "auth.json")]
+
     def _load_oauth_providers(self) -> set[str]:
         # auth.json (beside the sessions dir) maps provider -> auth info; type "oauth" means
         # a consumer-plan login (subscription), not a metered API key. Read-only; we only
         # read each provider's "type", never the tokens.
-        path = os.path.join(os.path.dirname(os.path.normpath(self.root_dir)), "auth.json")
+        path = self._auth_paths()[0]
         out: set[str] = set()
         try:
             with open(path, encoding="utf-8") as fh:
@@ -124,16 +137,15 @@ class PiStore:
 
     @staticmethod
     def _int(value) -> int:
-        try:
-            return max(0, int(value))
-        except (TypeError, ValueError):
-            return 0
+        # util.safe_int is the one rule every backend coerces usage through -- see there
+        # for the three ways an untrusted number takes a whole backend down.
+        return safe_int(value)
 
     @staticmethod
     def _cost_total(usage: dict) -> float:
         cost = usage.get("cost")
         if isinstance(cost, dict) and isinstance(cost.get("total"), (int, float)):
-            return max(0.0, float(cost["total"]))
+            return max(0.0, safe_float(cost["total"]))
         return 0.0
 
     @staticmethod
@@ -186,8 +198,15 @@ class PiStore:
 
     # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
-        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
-        return self._files()
+        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore) --
+        # the transcripts PLUS the auth file, because the oauth/metered split lives
+        # there rather than in the JSONL: switch a provider between an API key and a
+        # plan login and every cost in the rollup changes (and records_cost with it,
+        # which drives the "$"/ESTIMATED framing) while no transcript is touched. Left
+        # out, the fingerprint still matches, so the warm start serves the pre-login
+        # split and `r` re-fingerprints to the same value -- it never self-corrects.
+        # Paths that don't exist are skipped by CachedStore._fingerprint's stat().
+        return self._files() + self._auth_paths()
 
     def _files(self) -> list[str]:
         return glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
@@ -307,6 +326,8 @@ class PiStore:
                         o = json.loads(line)
                     except ValueError:
                         continue
+                    if not isinstance(o, dict):
+                        continue  # a valid-JSON non-object (`["cost"]`) has no .get()
                     msg = o.get("message") if o.get("type") == "message" else None
                     if not isinstance(msg, dict) or not isinstance(msg.get("usage"), dict):
                         continue
@@ -347,6 +368,8 @@ class PiStore:
                 o = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(o, dict):
+                continue  # a valid-JSON non-object (`["type"]`) has no .get()
             typ = o.get("type")
             ts = o.get("timestamp")
             if ts and (s["ts_min"] is None or ts < s["ts_min"]):
@@ -552,6 +575,9 @@ class PiStore:
     # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
+        # Re-read the login state too: `r` exists to pick up changes, and a provider
+        # that switched to an oauth plan since launch must stop counting as spend.
+        self._oauth_providers = self._load_oauth_providers()
         sessions = self._parse()
         rows = []
         for sid, s in sessions.items():

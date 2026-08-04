@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
-from opentab.util import git_root, tool_rows_from_turns
+from opentab.util import git_root, safe_float, safe_int, tool_rows_from_turns
 
 
 class CsvStore:
@@ -142,27 +142,21 @@ class CsvStore:
 
     @staticmethod
     def _to_int(raw) -> int:
+        # Via float() because a cell may spell a count "1.0" or "1e3", then through the
+        # one shared bound (util.safe_int/safe_float) the JSONL backends use -- a cell of
+        # "1e400" is inf and "1e308" is a finite number that still poisons every sum it
+        # reaches. The string cleaning above it is CSV's own.
         if raw is None:
             return 0
         s = str(raw).strip().replace(",", "")
-        if not s:
-            return 0
-        try:
-            return max(0, int(float(s)))
-        except ValueError:
-            return 0
+        return safe_int(safe_float(s)) if s else 0
 
     @staticmethod
     def _to_float(raw) -> float:
         if raw is None:
             return 0.0
         s = str(raw).strip().replace(",", "").replace("$", "")
-        if not s:
-            return 0.0
-        try:
-            return max(0.0, float(s))
-        except ValueError:
-            return 0.0
+        return max(0.0, safe_float(s)) if s else 0.0
 
     @staticmethod
     def _split_tools(raw) -> list[str]:

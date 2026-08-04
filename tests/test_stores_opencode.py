@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 
 import opentab as ot
+from opentab.stores.opencode import REQUIRED_SCHEMA
 
 from tests._support import (
     PI_SID,
@@ -421,3 +422,78 @@ def test_records_cost_probe_runs_lazily_not_at_construction():
         sub = ot.PiStore(root, _pi_args())
         sub.workflows()  # parse first: no probe needed
         assert sub.records_cost is False
+
+
+def _minimal_db(path, session_cols, message_cols, rows=True):
+    conn = sqlite3.connect(path)
+    conn.execute("create table session (%s)" % ", ".join(session_cols))
+    conn.execute("create table message (%s)" % ", ".join(message_cols))
+    if rows:
+        data = json.dumps(
+            {
+                "role": "assistant",
+                "providerID": "anthropic",
+                "modelID": "claude-opus-4-6",
+                "tokens": {"input": 10, "output": 5, "cache": {"read": 0, "write": 0}},
+                "time": {"created": 1780000000000},
+            }
+        )
+        conn.execute(
+            "insert into session (id, parent_id, time_created) values ('s1', null, 1780000000000)"
+        )
+        conn.execute("insert into message (id, session_id, data) values ('m1', 's1', ?)", (data,))
+    conn.commit()
+    conn.close()
+
+
+def test_required_schema_is_exactly_what_every_query_path_needs():
+    # REQUIRED_SCHEMA is what `sources.opencode_db_verdict` refuses a database for, so it
+    # is wrong in BOTH directions and the expensive direction is "too large": a column
+    # that is really optional would reject a real OpenCode database that works today.
+    # It lives beside these queries so it cannot drift from them; this test is what makes
+    # that true. Everything else the Store touches (cost, tokens_*, time_updated, title,
+    # directory, agent, the part table) is probed with a fallback and must stay out.
+    args = type("A", (), {"demo": False})()
+    session_cols = list(REQUIRED_SCHEMA["session"])
+    message_cols = list(REQUIRED_SCHEMA["message"])
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # NOT TOO SMALL: a database with only these columns answers every method,
+        # including the Turns/Tools opt-ins its supports_* gates say it offers.
+        db = os.path.join(tmp, "minimum.db")
+        _minimal_db(db, session_cols, message_cols)
+        store = ot.Store(db, args)
+        workflows = store.workflows()
+        assert [w.id for w in workflows] == ["s1"] and workflows[0].total_tokens == 15
+        assert store.summary(workflows)["tokens"] == 15
+        assert len(store.model_breakdown()) == 1
+        assert len(store.workflow_nodes("s1")) == 1
+        assert store.root_of("s1") == "s1" and len(store.recent_roots()) == 1
+        assert store.supports_turns("s1") and len(store.message_timeline("s1")) == 1
+        assert store.supports_tools("s1") is False  # no `part` table: probed, not required
+        assert store.tool_breakdown("s1") == []
+
+        # NOT TOO LARGE: drop any one of them and a query path really does break, so
+        # none of them is there "just in case".
+        for table, col in [("session", c) for c in session_cols] + [
+            ("message", c) for c in message_cols
+        ]:
+            path = os.path.join(tmp, f"without-{table}-{col}.db")
+            _minimal_db(
+                path,
+                [c for c in session_cols if not (table == "session" and c == col)] or ["dummy"],
+                [c for c in message_cols if not (table == "message" and c == col)] or ["dummy"],
+                rows=False,
+            )
+            assert ot.sources.opencode_db_verdict(path)[0] == "foreign", f"{table}.{col}"
+            try:
+                broken = ot.Store(path, args)
+                broken.workflows()
+                broken.model_breakdown()
+                broken.workflow_nodes("x")
+                broken.message_timeline("x")
+                broken.recent_roots()
+            except sqlite3.Error:
+                pass  # what the verdict is standing in front of
+            else:
+                raise AssertionError(f"{table}.{col} is required by nothing -- drop it")

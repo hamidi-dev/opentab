@@ -45,6 +45,18 @@ MSG_TOKEN_TOTAL_EXPR = " + ".join(
 # table carries a time_created column.
 _TL_TS = "json_extract(m.data, '$.time.created')"
 
+# What makes a database this Store can actually open, as opposed to one that merely has
+# tables by these names -- the columns EVERY query path uses unconditionally. It lives
+# here, beside the SQL that uses them, so the schema check in `sources` can never drift
+# from what the queries need. Deliberately short: everything else this Store touches
+# (cost, tokens_*, time_updated, title, directory, agent, part) is probed and has a
+# fallback -- see `_has_session_token_columns` and friends -- so requiring any of THOSE
+# would reject a real OpenCode database that works today.
+REQUIRED_SCHEMA = {
+    "session": ("id", "parent_id", "time_created"),
+    "message": ("id", "session_id", "data"),
+}
+
 
 def _process_timeline(rows: list[dict]) -> list[dict]:
     # Turn the time-ordered (user + assistant) rows of ONE session into the Turns tab's

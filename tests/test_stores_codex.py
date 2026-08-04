@@ -1,5 +1,6 @@
 """The Codex CLI rollout backend: cumulative-delta tokens, spawned threads (stores/codex.py)."""
 
+import json
 import os
 import tempfile
 
@@ -12,6 +13,7 @@ from tests._support import (
     _codex_meta,
     _codex_tokens,
     _codex_turn,
+    _empty_opencode_db,
     _usage,
     _write_jsonl,
     workflow,
@@ -171,7 +173,7 @@ def test_codex_store_treats_a_shrinking_total_as_a_compaction_reset():
 def test_codex_joins_the_source_cycle_and_builds_a_resume_command():
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
-        open(db, "w").close()
+        _empty_opencode_db(db)
         cdir = os.path.join(tmp, "claude", "slug")
         os.makedirs(cdir)
         _write_jsonl(
@@ -401,3 +403,55 @@ def test_codex_ended_at_falls_back_to_created_at_when_nothing_later():
         store = ot.CodexStore(root, type("Args", (), {"demo": False})())
         w = store.workflows()[0]
         assert w.ended_at == w.created_at
+
+
+def test_codex_survives_a_valid_json_line_that_is_not_an_object():
+    # `[]`, `"hello"` and `0` are all valid JSON: they pass the `except ValueError` and
+    # then raise AttributeError out of .get() -- taking down the WHOLE backend, not the
+    # one rollout. The sibling JSONL backends all guard with an isinstance check.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions", "2025", "10", "03")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        path = os.path.join(root, f"rollout-2025-10-03T16-51-03-{CODEX_SID}.jsonl")
+        rows = [
+            _codex_meta(CODEX_SID, cwd),
+            _codex_turn("gpt-5-codex", cwd),
+            _codex_tokens(100, 50, 0, 150),
+        ]
+        with open(path, "w") as fh:
+            fh.write("[]\n" + '"hello"\n' + "0\n")
+            for row in rows:
+                fh.write(json.dumps(row) + "\n")
+        w = ot.CodexStore(
+            os.path.join(tmp, "sessions"), type("Args", (), {"demo": False})()
+        ).workflows()
+        assert len(w) == 1 and w[0].total_tokens == 150
+
+
+def test_codex_survives_a_token_count_json_parses_as_infinity():
+    # A cumulative total is whatever the rollout says. `1e400` is valid JSON that json
+    # maps to inf, and a bare int(inf) raises OverflowError -- an ArithmeticError, so it
+    # isn't caught as a ValueError and the whole backend dies at workflows().
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions", "2025", "10", "03")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        path = os.path.join(root, f"rollout-2025-10-03T16-51-03-{CODEX_SID}.jsonl")
+        with open(path, "w") as fh:
+            for row in (_codex_meta(CODEX_SID, cwd), _codex_turn("gpt-5-codex", cwd)):
+                fh.write(json.dumps(row) + "\n")
+            fh.write(
+                '{"timestamp": "2025-10-03T14:51:20.000Z", "type": "event_msg", "payload": '
+                '{"type": "token_count", "info": {"total_token_usage": {"input_tokens": '
+                '1e400, "output_tokens": 50, "cached_input_tokens": 0, "total_tokens": '
+                "150}}}}\n"
+            )
+        store = ot.CodexStore(os.path.join(tmp, "sessions"), type("Args", (), {"demo": False})())
+        w = store.workflows()
+        # The inf field drops to 0 and the turn is still counted off its other
+        # components -- a token lost beats the backend lost.
+        assert len(w) == 1 and w[0].total_tokens == 50
+        assert store.model_breakdown()[0]["unpriced_output"] == 50

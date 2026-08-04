@@ -6,7 +6,7 @@ import tempfile
 
 import opentab as ot
 
-from tests._support import FakeStore, _hermes_db_full, workflow
+from tests._support import FakeStore, _empty_opencode_db, _hermes_db_full, workflow
 
 # --- Hermes Agent database helpers (~/.hermes/state.db) ----------------------
 
@@ -638,7 +638,7 @@ def test_hermes_tolerates_minimal_schema():
 def test_hermes_joins_the_source_cycle_and_builds_a_resume_command():
     with tempfile.TemporaryDirectory() as tmp:
         oc_db = os.path.join(tmp, "opencode.db")
-        open(oc_db, "w").close()
+        _empty_opencode_db(oc_db)
         hermes_db = os.path.join(tmp, "hermes_state.db")
         cwd = os.path.join(tmp, "project")
         os.makedirs(cwd)

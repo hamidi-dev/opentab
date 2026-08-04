@@ -8,6 +8,7 @@ import opentab as ot
 
 from tests._support import (
     FakeStore,
+    _empty_opencode_db,
     _zaly_assistant,
     _zaly_settings,
     _zaly_store,
@@ -227,7 +228,7 @@ def test_zaly_turns_timeline_groups_by_prompt_and_feeds_tools():
 def test_zaly_joins_the_source_cycle_and_builds_a_resume_command():
     with tempfile.TemporaryDirectory() as tmp:
         oc_db = os.path.join(tmp, "opencode.db")
-        open(oc_db, "w").close()
+        _empty_opencode_db(oc_db)
         root = os.path.join(tmp, "zaly")
         cwd = os.path.join(tmp, "repo")
         os.makedirs(cwd)
@@ -308,3 +309,94 @@ def test_zaly_context_breakdown_mirrors_its_own_estimator():
         assert ("tool call params", "bash") in got
         assert got[("injected context", "system")]["est_tokens"] == 6  # 23 chars / 4
         assert got[("user prompts", "")]["count"] == 1  # the system text stayed out
+
+
+def test_zaly_auth_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_cache():
+    # The oauth/metered split lives in <state>/auth.json, NOT in the transcripts -- and
+    # in a DIFFERENT directory tree from the sessions, so nothing about the data dir
+    # implies it. Switch a provider between an API key and a plan login and every cost
+    # in the rollup changes (records_cost with it, which drives the "$"/ESTIMATED
+    # framing) while no transcript is touched. Without auth.json in cache_inputs() the
+    # fingerprint still matches, the warm start serves the pre-login split, and `r`
+    # never self-corrects.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "zaly")
+        cwd = os.path.join(tmp, "repo")
+        state = os.path.join(tmp, "state")
+        os.makedirs(cwd)
+        os.makedirs(state)
+        rows = [
+            _zaly_settings(ZALY_SID, cwd, model="acme-cloud/model-x"),
+            _zaly_assistant("acme-cloud/model-x", 1000, 500, cost={"input": 1.0, "output": 0.23}),
+        ]
+        _zaly_write(root, "+tmp+repo", ZALY_SID, rows)
+        auth = os.path.join(state, "auth.json")
+        assert auth in _zaly_store(root, state_dir=state).cache_inputs()
+
+        args = type("A", (), {"demo": False, "no_cache": False})()
+        key = "zaly|" + root
+        cold = ot.CachedStore(_zaly_store(root, state_dir=state), key, args)
+        assert cold.workflows()[0].total_cost == 1.23 and cold.records_cost is True
+        cold.model_breakdown()  # what App's deferred scan does -- this writes the cache
+        warm = ot.CachedStore(_zaly_store(root, state_dir=state), key, args)
+        assert warm.workflows() and warm.served_from_cache  # unchanged corpus -> a hit
+
+        with open(auth, "w") as fh:
+            json.dump({"acme-cloud": {"type": "oauth"}}, fh)
+        after = ot.CachedStore(_zaly_store(root, state_dir=state), key, args)
+        w = after.workflows()[0]
+        assert after.served_from_cache is False  # the login change misses the fingerprint
+        assert w.total_cost == 0.0 and w.unpriced_tokens == 1500
+        assert after.records_cost is False  # and the whole frame flips to ESTIMATED
+
+
+def test_zaly_reload_re_reads_the_login_state_from_the_dir_it_was_built_against():
+    # `r` re-reads auth.json, so a provider that switched to a plan since launch stops
+    # counting as spend without a restart. The path is resolved ONCE, at construction:
+    # _default_zaly_state_dir() reads $ZALY_STATE live, and a store must keep answering
+    # about the tree it was built against rather than follow the ambient environment.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "zaly")
+        cwd = os.path.join(tmp, "repo")
+        state = os.path.join(tmp, "state")
+        os.makedirs(cwd)
+        os.makedirs(state)
+        _zaly_write(
+            root,
+            "+tmp+repo",
+            ZALY_SID,
+            [
+                _zaly_settings(ZALY_SID, cwd, model="acme-cloud/model-x"),
+                _zaly_assistant("acme-cloud/model-x", 1000, 500, cost={"input": 1.23}),
+            ],
+        )
+        store = _zaly_store(root, state_dir=state)  # $ZALY_STATE is unset again after this
+        assert store.workflows()[0].total_cost == 1.23
+        with open(os.path.join(state, "auth.json"), "w") as fh:
+            json.dump({"acme-cloud": {"type": "oauth"}}, fh)
+        assert store.workflows()[0].total_cost == 0.0  # reload, same instance, same dir
+
+
+def test_zaly_survives_a_token_count_json_parses_as_infinity():
+    # `1e400` is valid JSON that json maps to inf, and int(inf) raises OverflowError --
+    # an ArithmeticError, so `except (TypeError, ValueError)` misses it and the backend
+    # dies at workflows(). An inf cost component doesn't raise at all (and `inf > 0`
+    # passes the positivity check): it silently poisons every sum it reaches.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "zaly")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        d = os.path.join(root, "sessions", "+tmp+repo", ZALY_SID)
+        os.makedirs(d)
+        with open(os.path.join(d, "session.jsonl"), "w") as fh:
+            fh.write(json.dumps(_zaly_settings(ZALY_SID, cwd, model="openrouter/model-x")) + "\n")
+            fh.write(
+                '{"type": "message", "uuid": "n-a1", "message": {"id": "a1", "role": '
+                '"assistant", "meta": {"modelId": "openrouter/model-x", "time": '
+                '1783696394242, "usage": {"input": 1e400, "output": 50, "cost": '
+                '{"input": 1e400, "output": 0.25}}}}}\n'
+            )
+        w = _zaly_store(root).workflows()
+        assert len(w) == 1
+        assert w[0].total_tokens == 50  # the inf field drops to 0, the record survives
+        assert w[0].total_cost == 0.25  # the finite component still counts
