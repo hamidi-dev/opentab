@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit auto-reviews only pull requests whose BASE is the repository's
+# default branch (main) unless the base is listed below. Every contribution to
+# opentab targets `develop` — main only ever receives release merges — so
+# without this file no PR is ever reviewed ("Review skipped: auto reviews are
+# disabled on base/target branches other than the default branch").
+language: en-US
+reviews:
+  auto_review:
+    enabled: true
+    base_branches:
+      - develop
