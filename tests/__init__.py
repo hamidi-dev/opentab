@@ -32,6 +32,18 @@ for _var, _sub in (
 ):
     os.environ[_var] = os.path.join(_ISOLATED_HOME.name, _sub)
 
+# Multiplexer markers describe the developer's terminal, not the isolated test process.
+for _var in (
+    "TMUX",
+    "TMUX_PANE",
+    "HERDR_ENV",
+    "HERDR_BIN_PATH",
+    "HERDR_PANE_ID",
+    "HERDR_WORKSPACE_ID",
+    "OPENTAB_LAUNCHER",
+):
+    os.environ.pop(_var, None)
+
 import opentab as ot  # noqa: E402  (must follow the sys.path shim and XDG isolation above)
 
 ot.invalidate_price_cache()

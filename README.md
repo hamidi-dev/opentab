@@ -199,9 +199,10 @@ Once pulled, the fleet behaves like any other harness:
 
 - **`M`** filters every view to one machine — the harness picker (`H`)'s twin; Trends and
   the web browser gain a per-machine breakdown.
-- **`L`** on a pulled session reopens it **on the box it ran on**: the launch targets wrap
-  the resume command in `ssh -t <that machine> 'cd <its project> && …'` (`y` yanks the same
-  line), because the session id and the path belong over there, not here.
+- **`L`** on a pulled session reopens it **on the box it ran on** only when that machine has
+  an SSH target in `remotes.json`: the launch targets wrap the resume command in `ssh -t
+  <that machine> 'cd <its project> && …'` (`y` yanks the same line). URL-based pulls have no
+  SSH target and therefore offer only the copied command.
 - **`opentab remote`** reopens the last pull offline, with no SSH round-trip.
 - **`opentab export box.json`** writes one box's summary by hand (so
   `ssh box opentab export > box.json` works), and **`opentab forget <machine>`** drops one
@@ -229,7 +230,7 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | `f` | Live fuzzy filter, fzf-style |
 | `H` / `C` / `D` | Switch data harness · colour theme · demo mode — from anywhere, overlays included |
 | `M` | Filter every view to one **machine** (fleet only) — the harness picker's twin, for `--pull`/`--remote` boxes |
-| `L` | Relaunch the session in its own tool — tmux window/split/popup, or [your own launcher](docs/keys.md#custom-launchers); a session pulled from another machine reopens **on that machine**, over SSH |
+| `L` | Relaunch the session in its own tool — tmux window/split/popup, Herdr tab/split, or [your own launcher](docs/keys.md#custom-launchers); a session pulled from another machine reopens **on that machine** over SSH only when its `remotes.json` entry has an SSH target; URL-based pulls offer only the copied command |
 | `n` | Note ✎ the selected session — why it cost what it did. Searchable, exported, kept in its own file |
 | `e` / `o` | Export the current view to CSV / open the project's directory |
 | `K` | **Remap anything** — opens `~/.config/opentab/keymap.conf` in `$EDITOR` and reloads it the moment you return; every key in every view, picker and prompt is configurable, and the footer/help re-label themselves live ([docs](docs/keys.md#remap-any-key)) |

@@ -82,7 +82,6 @@ from opentab.util import (
     context_compactions,
     context_size,
     fuzzy_score,
-    launcher_hook,
     tool_namespace,
     unicode_screen,
 )
@@ -5804,9 +5803,11 @@ class Renderer:
         if unreachable:
             headline = f"pulled from {unreachable} — no ssh target, copy instead:"
         elif not self.launch_available():
-            headline = "no tmux / launcher hook — copy instead:"
+            headline = "no tmux / herdr / launcher hook — copy instead:"
         else:
-            via = "launcher hook" if launcher_hook() else "tmux"
+            via = (
+                "launcher hook" if self.launch_menu_backend == "hook" else self.launch_menu_backend
+            )
             headline = f"open in {via}:" if not remote else f"open on {remote} (ssh) in {via}:"
         idx = self.launch_menu_index % len(targets)
         lines = [
