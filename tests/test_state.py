@@ -35,6 +35,31 @@ def test_prices_sort_is_persisted_in_state():
     assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
 
 
+def test_trend_sort_is_persisted_in_state():
+    # The Trends ranking column, like every other list's sort. Validated against the
+    # UNION of the ranked tabs' vocabularies, not one tab's: the key is per-overlay and
+    # re-validated per tab at draw time, so a saved "tokens" must survive a launch that
+    # opens on Models -- which withdraws that column.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.trend_sort, app.trend_sort_reverse = "tokens", True
+    old_xdg = os.environ.get("XDG_STATE_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_STATE_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+            assert restored.trend_sort == "cost"  # a fresh app ranks by spend
+            ot.apply_state(restored, restored.args, ot.load_state())
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_STATE_HOME", None)
+            else:
+                os.environ["XDG_STATE_HOME"] = old_xdg
+    assert restored.trend_sort == "tokens" and restored.trend_sort_reverse
+    assert restored.trend_sort_key("Models") == "cost"  # withdrawn there, kept in state
+    assert restored.trend_sort_key("Providers") == "tokens"
+
+
 def test_focused_time_panel_is_persisted_in_state():
     # Quit reading a month and you come back to that month, not to today. This is
     # also what keeps a saved "last_activity" sort alive across a restart: the sort

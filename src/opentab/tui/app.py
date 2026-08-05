@@ -308,6 +308,31 @@ class App:
     # sorts cheapest-first (it's in ascending_sort_keys); model sorts a->z; the raw
     # price columns and "use" sort high->low, so the priciest/most-used surface first.
     prices_sort_options = ("model", "eff", "use", "input", "output", "cache_read", "cache_write")
+    # The Trends overlay's four RANKED tabs sort by their own columns -- the ranking
+    # is the tab, so "which harness did I use most sessions on" and "which models do I
+    # have alphabetically" had no answer while every one of them was hard-wired to
+    # cost. Each tab offers exactly the columns it DRAWS: the Models table trades its
+    # Tokens/Msgs cells for name width (long model ids show in full), so it offers only
+    # the two it shows -- sorting by a column that isn't on screen is a ranking the user
+    # cannot check. "cost" is in every tab's set, which is what makes it the fallback
+    # when a tab withdraws the stored key (the SORT_FALLBACKS rule: fall back inside the
+    # column family every ranked tab shares, not to an arbitrary first option).
+    _TREND_SORT_COLUMNS = {
+        "Models": ("cost", "name"),
+        "Providers": ("cost", "name", "tokens", "count"),
+        "Harnesses": ("cost", "name", "tokens", "count"),
+        "Machines": ("cost", "name", "tokens", "count"),
+    }
+    # ...and what those two shared keys are CALLED per tab, since the picker names a
+    # column the user is looking at ("Harness"/"Sessions", not "name"/"count"). The keys
+    # stay shared so a sort survives a tab flip: ranking Harnesses by sessions and
+    # tabbing to Providers keeps you on the count column rather than snapping to cost.
+    _TREND_SORT_LABELS = {
+        "Models": {"name": "Model"},
+        "Providers": {"name": "Provider", "count": "Msgs"},
+        "Harnesses": {"name": "Harness", "count": "Sessions"},
+        "Machines": {"name": "Machine", "count": "Sessions"},
+    }
     # The P overlay's layout modes, cycled by `p`: "flat" (the default) is one
     # ungrouped list -- cheapest-for-your-mix is a cross-vendor question -- while
     # "family" groups deduped models under their vendor (Anthropic/OpenAI/…) and
@@ -323,7 +348,7 @@ class App:
     )
     # Columns whose natural order is ascending (a->z / shallow-first / cheap-first);
     # every other column sorts high->low by default. A header re-click flips it.
-    ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth", "eff"})
+    ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth", "eff", "name"})
     _TREND_TABS_BASE = (
         "Daily",
         "Weekly",
@@ -527,6 +552,12 @@ class App:
         # (Monthly); None = that chart's peak bucket (mirrors cal_cursor).
         self.trend_cursor: str | None = None
         self.trend_row_index = 0  # cursor on the ranked tabs (Models/Providers/Sources)
+        # The ranked tabs' column sort, biggest-spend-first by default (what a trends
+        # ranking is read for). One pair for all four tabs, validated per tab against
+        # _TREND_SORT_COLUMNS -- pick a column with the `s` picker or a header click,
+        # a re-click flips direction. Persisted like the other lists' sorts.
+        self.trend_sort = "cost"
+        self.trend_sort_reverse = False
         # Drilled into a ranked row's sessions: ("model"|"provider"|"source", key).
         self.trend_drill: tuple[str, str] | None = None
         self.trend_drill_index = 0  # cursor within that sessions list
@@ -4438,6 +4469,13 @@ class App:
         # The session view's Subagents tab; its own sort pair, like project lists.
         return self.view == "session" and self.on_subagents_tab
 
+    def in_trend_sort_context(self) -> bool:
+        # A Trends ranked tab (Models/Providers/Harnesses/Machines), rows showing --
+        # not a drilled row's session list, which is its own ranking, and not the
+        # charts, whose x axis is time. Under the P overlay this is dead: prices float
+        # above Trends and own the keyboard (in_prices_sort_context is checked first).
+        return self.trends and self.trend_drill is None and bool(self.trend_sort_options())
+
     def active_session_sort_options(self) -> tuple[str, ...]:
         # "last_activity" is a Months/Years feature, per spec, deliberately not Days:
         # a single Day's Sessions list is read by start time, and an activity can run
@@ -4495,6 +4533,7 @@ class App:
     def can_sort_current_view(self) -> bool:
         return (
             self.in_prices_sort_context()
+            or self.in_trend_sort_context()
             or self.in_project_sort_context()
             or (self.view != "session" and self.on_sessions_tab)
             or self.in_subagent_sort_context()
@@ -4523,6 +4562,8 @@ class App:
         # NOT go through this: each list's *_sort_heading reads its own key.
         if self.in_prices_sort_context():
             return self.prices_sort  # always a column ("eff" by default), so it arrows
+        if self.in_trend_sort_context():
+            return self.trend_sort_key()  # validated for the tab that is drawing
         if self.in_project_sort_context():
             return self.project_sort_key()
         if self.in_subagent_sort_context():
@@ -4543,6 +4584,8 @@ class App:
         # session/subagent lists current_sort_options.
         if self.in_prices_sort_context():
             return self.prices_sort_options
+        if self.in_trend_sort_context():
+            return self.trend_sort_options()
         if self.in_project_sort_context():
             return self.project_sort_options
         return self.current_sort_options()
@@ -4551,11 +4594,11 @@ class App:
         # `s` no longer cycles blindly; it opens a small picker the user can j/k
         # through and Enter to apply (Esc cancels), mirroring the `H` source menu.
         if not self.can_sort_current_view():
-            self.notify("sort: only session, project, or subagent lists", "error")
+            self.notify("sort: only session, project, subagent, or Trends ranking lists", "error")
             return
         options = self.sort_menu_options()
         if not options:
-            self.notify("sort: only session, project, or subagent lists", "error")
+            self.notify("sort: only session, project, subagent, or Trends ranking lists", "error")
             return
         current = self.effective_sort_by()
         self.sort_menu_index = options.index(current) if current in options else 0
@@ -4570,6 +4613,9 @@ class App:
             self.prices_index = 0
             self.prices_scroll = 0
             return
+        if self.in_trend_sort_context():
+            self._resort_trends(value, reverse=False)
+            return
         if self.in_subagent_sort_context():
             self.subagent_sort_by = value
             self.subagent_sort_reverse = False
@@ -4582,6 +4628,22 @@ class App:
             self.sort_reverse = False
             self.workflow_index = 0
         self.scroll = 0
+
+    def _resort_trends(self, key: str, reverse: bool) -> None:
+        # Re-order a Trends ranking, keeping the cursor on the ROW it was on rather
+        # than on its ordinal -- re-sorting is exactly the moment an ordinal stops
+        # meaning what it meant (drill_out's _reanchor rule). The row you were reading
+        # is the row you get, wherever the new order put it.
+        selected = self.selected_trend_key()
+        self.trend_sort = key
+        self.trend_sort_reverse = reverse
+        keys = self.trend_ranked_keys()
+        self.trend_row_index = keys.index(selected) if selected in keys else 0
+
+    def selected_trend_key(self) -> str | None:
+        # The ranked row under the cursor, by value; None off the ranked tabs.
+        keys = self.trend_ranked_keys()
+        return keys[max(0, min(self.trend_row_index, len(keys) - 1))] if keys else None
 
     def apply_header_sort(self, key: str, target: str) -> None:
         # A click on a column header sorts that list by the column; clicking the
@@ -4599,6 +4661,15 @@ class App:
                 self.prices_sort_reverse = False
             self.prices_index = 0
             self.prices_scroll = 0
+            return
+        if target == "trend":
+            if key not in self.trend_sort_options():
+                return
+            # Compared against the EFFECTIVE key, not the stored one: a tab that
+            # withdrew the stored column shows cost's arrow, so clicking Cost there
+            # must flip cost rather than silently re-arm the withdrawn preference.
+            flip = key == self.trend_sort_key()
+            self._resort_trends(key, reverse=not self.trend_sort_reverse if flip else False)
             return
         if target == "subagent":
             if key not in self.subagent_sort_options:
@@ -5789,18 +5860,75 @@ class App:
             reverse=True,
         )
 
+    def active_trend_tab(self) -> str:
+        return self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
+
+    def trend_ranked_rows(self, tab: str | None = None) -> list[tuple]:
+        # One ranked tab's rows, in DISPLAY order -- the single source both the
+        # renderer and trend_ranked_keys read, so the cursor's ordinal can never index
+        # a different ranking than the one on screen (the models-picker rule). `tab`
+        # names the table for callers that draw one without the overlay being open
+        # (the suite does); None means the active tab.
+        tab = tab or self.active_trend_tab()
+        if tab == "Models":
+            rows: list[tuple] = self.trend_model_rows()
+        elif tab == "Providers":
+            rows = self.trend_provider_rows()
+        elif tab == "Harnesses":
+            rows = self.source_rows(self.all_workflows)
+        elif tab == "Machines":
+            rows = self.machine_rows(self.all_workflows)
+        else:
+            return []
+        return self.sort_trend_rows(rows, tab)
+
     def trend_ranked_keys(self) -> list[str]:
         # The active ranked tab's row keys, in display order; empty off those tabs.
-        current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
-        if current == "Models":
-            return [name for name, _cost in self.trend_model_rows()]
-        if current == "Providers":
-            return [p for p, _it in self.trend_provider_rows()]
-        if current == "Harnesses":
-            return [s for s, _it in self.source_rows(self.all_workflows)]
-        if current == "Machines":
-            return [m for m, _it in self.machine_rows(self.all_workflows)]
-        return []
+        return [name for name, _row in self.trend_ranked_rows()]
+
+    def trend_sort_options(self, tab: str | None = None) -> tuple[str, ...]:
+        # The columns this ranked tab can be ordered by; empty off the ranked tabs.
+        return self._TREND_SORT_COLUMNS.get(tab or self.active_trend_tab(), ())
+
+    def trend_sort_labels(self, tab: str | None = None) -> dict[str, str]:
+        # What this tab calls the two shared keys ("name"/"count"), for the `s` picker.
+        return self._TREND_SORT_LABELS.get(tab or self.active_trend_tab(), {})
+
+    def trend_sort_key(self, tab: str | None = None) -> str:
+        # The stored column, validated against the tab that is about to draw: a key the
+        # tab doesn't offer (Models has no Tokens column) falls back to cost, the one
+        # column every ranked tab shares. The preference itself is kept, so tabbing
+        # back to a table that HAS the column restores it.
+        options = self.trend_sort_options(tab)
+        return self.trend_sort if self.trend_sort in options else "cost"
+
+    @staticmethod
+    def _trend_sort_value(key: str, name: str, item) -> float | str:
+        # One ranked row's value for a sort column. The Models tab's rows are
+        # (model, cost) pairs and the other three (name, {cost, tokens, runs|sessions})
+        # dicts, so this is where the two shapes meet -- the count column is "runs" on
+        # the model-derived tabs and "sessions" on the session-derived ones.
+        if key == "name":
+            return str(name).lower()
+        if not isinstance(item, dict):  # the Models tab's bare cost
+            return float(item) if key == "cost" else 0.0
+        if key == "tokens":
+            return float(item.get("tokens", 0))
+        if key == "count":
+            return float(item.get("runs", item.get("sessions", 0)))
+        return float(item.get("cost", 0.0))
+
+    def sort_trend_rows(self, rows: list[tuple], tab: str | None = None) -> list[tuple]:
+        # Order a ranked tab's rows by the active column. Cost stays the tiebreaker
+        # under every other column (a two-pass stable sort, so it does NOT invert with
+        # the primary): rows tied on tokens or session count keep the spend ranking the
+        # tab is otherwise read by, instead of falling into dict order.
+        key = self.trend_sort_key(tab)
+        desc = self.sort_descending(key, self.trend_sort_reverse)
+        if key == "name":  # keys are unique, so there is nothing to tie-break
+            return sorted(rows, key=lambda kv: self._trend_sort_value("name", *kv), reverse=desc)
+        ranked = sorted(rows, key=lambda kv: self._trend_sort_value("cost", *kv), reverse=True)
+        return sorted(ranked, key=lambda kv: self._trend_sort_value(key, *kv), reverse=desc)
 
     def trend_drill_sessions(self) -> list[tuple[Workflow, float, int]]:
         # Sessions behind a Trends ranked row: every root session in the active
@@ -6221,6 +6349,8 @@ class App:
                 return self._handle_price_sessions_key(key, stdscr)
             return self._handle_price_models_key(key, stdscr)
         if self.trends:
+            if self.sort_menu:  # the `s` picker floats over the ranked tables
+                return self.handle_sort_menu_key(key)
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
             if self.trend_drill is not None:
                 return self._trend_drill_key(key, stdscr)
@@ -6255,6 +6385,12 @@ class App:
                 # directly (no pager competes for them), select opens its sessions.
                 if act == "select":
                     self._open_trend_drill()
+                    return True
+                if act == "sort":
+                    # Only here: on a chart tab `s` falls through and is swallowed --
+                    # a time axis has no column to order by, and the sort keys the
+                    # picker would offer belong to a table that isn't on screen.
+                    self.open_sort_menu()
                     return True
                 if act in ("down", "up"):
                     n = len(self.trend_ranked_keys())
@@ -6941,6 +7077,13 @@ class App:
                 if double:
                     self._trend_bar_open(current, key)
                 return True
+        sort = self.renderer.sort_hit(my, mx)
+        if sort is not None and sort[1] == "trend":
+            # A click on a ranked table's column header sorts by it; a re-click flips.
+            # Guarded on the target so a zone left over from the view behind the
+            # overlay could never re-sort a list the click didn't land on.
+            self.apply_header_sort(*sort)
+            return True
         target = self.renderer.hit(my, mx)
         if target and target[0] == "trendrow":
             # A ranked row (Models/Providers/Sources): click selects, double drills.

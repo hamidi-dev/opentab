@@ -253,6 +253,24 @@ def test_web_daily_trend_charts_only_active_days():
     assert "for (let d = 1; d <= last; d++)" in page
 
 
+def test_web_trend_rankings_are_sortable_by_column():
+    page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-07-01 10:00:00")])))
+    # The TUI's ranked-tab sort, mirrored: one shared column pair for all four tables
+    # (so a sort survives a tab flip), header clicks choose and flip it.
+    assert "sort: 'cost', desc: true" in page
+    assert "TREND_SORT_VAL" in page and "TREND_SORT_ASC" in page
+    # The count column is Msgs on the model-derived tabs and Sess on the others -- one
+    # key, read off whichever field the row carries (App._trend_sort_value's rule).
+    assert "count: r => (r.runs != null ? r.runs : r.sessions)" in page
+    assert "{ key: 'count', label: 'Msgs'" in page and "{ key: 'count', label: 'Sess'" in page
+    # Rows arrive cost-ranked, so the stable sort keeps spend as the tiebreak.
+    assert "function trendSorted(rows)" in page and "rows.slice().sort" in page
+    # Only the ranking's own columns are clickable: the bar and Share are not (Share is
+    # Cost as a percentage), so they must not offer a pointer or a sort.
+    assert ".rank th.st{cursor:pointer}" in page and ".rank th.sorted" in page
+    assert "h('th', { class: 'l' }, '')" in page and "h('th', null, 'Share')" in page
+
+
 def test_web_meta_carries_the_baked_theme():
     app = app_with([workflow("w1", "2026-05-01 10:00:00")])
     app.args.theme = "gruvbox"  # --theme sets the browser's initial theme

@@ -695,6 +695,136 @@ def test_trend_models_rows_drill_into_sessions_and_a_session():
     assert app.trends and app.trend_drill is None
 
 
+# --- sorting the ranked tabs ---------------------------------------------------------
+
+
+def _ranked_app():
+    # Spend order (anthropic > openai) is deliberately the reverse of both the token
+    # order (openai's 900 > anthropic's 10) and the alphabetical one, so every column
+    # sort visibly reorders the ranking instead of agreeing with the default.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=5.0, directory="/x"),
+            workflow("b", "2026-06-02 12:00:00", cost=2.0, directory="/y"),
+        ]
+    )
+    app._model_by_root = {
+        "a": [_model_row("anthropic/opus", 5.0, 10, runs=7)],
+        "b": [_model_row("openai/gpt-5", 2.0, 900, runs=2)],
+    }
+    return app
+
+
+def _open_trend_tab(app, name):
+    if not app.trends:  # `T` on an open overlay closes it -- don't toggle it shut
+        app.handle_key(None, ord("T"))
+    while app.trend_tabs[app.trend_tab] != name:
+        app.handle_key(None, ord("l"))
+    return app
+
+
+def test_trend_rankings_sort_by_any_of_their_columns():
+    # The ranking IS the tab, so being hard-wired to cost left "which provider did I
+    # send the most messages to" with no answer. `s` opens the same picker every other
+    # list uses, over the columns this table draws.
+    app = _open_trend_tab(_ranked_app(), "Providers")
+    assert app.trend_ranked_keys() == ["anthropic", "openai"]  # cost, biggest first
+    app.handle_key(None, ord("s"))
+    assert app.sort_menu and app.sort_menu_options() == ("cost", "name", "tokens", "count")
+    # The picker names the COLUMN, not the internal key -- "name"/"count" are shared
+    # across four tables that call them different things.
+    labels = [app.renderer.sort_label(k) for k in app.sort_menu_options()]
+    assert labels == ["Cost", "Provider", "Tokens", "Msgs"]
+    app.sort_menu_index = app.sort_menu_options().index("tokens")
+    app.handle_key(None, 10)
+    assert not app.sort_menu and app.trend_sort == "tokens"
+    assert app.trend_ranked_keys() == ["openai", "anthropic"]
+    # ...and the count column is Msgs here, sessions on the harness tabs.
+    app.handle_key(None, ord("s"))
+    app.sort_menu_index = app.sort_menu_options().index("count")
+    app.handle_key(None, 10)
+    assert app.trend_ranked_keys() == ["anthropic", "openai"]  # 7 msgs vs 2
+    # The active column carries the arrow, and only it.
+    header = box_cells(app.renderer.trend_providers(90, 12))[0]
+    assert "Msgs v" in header and "Cost v" not in header and "Tokens v" not in header
+
+
+def test_trend_sort_keeps_the_cursor_on_the_row_it_was_on():
+    # Re-sorting is exactly the moment an ordinal stops meaning what it meant, so the
+    # cursor is re-anchored by VALUE: the row you were reading is the row you get.
+    app = _open_trend_tab(_ranked_app(), "Providers")
+    app.handle_key(None, ord("j"))  # onto "openai", the cheaper row
+    assert app.selected_trend_key() == "openai" and app.trend_row_index == 1
+    app.apply_header_sort("tokens", "trend")  # which is the token-heavy one -> row 0
+    assert app.selected_trend_key() == "openai" and app.trend_row_index == 0
+
+
+def test_trend_ranking_header_click_sorts_and_a_re_click_flips():
+    app = _open_trend_tab(_ranked_app(), "Harnesses")
+    rnd = app.renderer
+    rnd._line_sort_headers = {}
+    lines = rnd.trend_sources(100, 14)
+    columns, target = rnd._line_sort_headers[rnd.BOX_HEADER_LINE]
+    assert target == "trend"  # not "session"/"project" -- this is the Trends ranking
+    assert ("name", "Harness") in columns and ("count", "Sess") in columns
+    # The zones sit where the box actually painted the labels, gutters included.
+    rnd.sort_regions = []
+    rnd._register_line_sort_header(5, 2, rnd.BOX_HEADER_LINE, lines[rnd.BOX_HEADER_LINE], 96)
+    tokens_zone = next(z for z in rnd.sort_regions if z[3] == "tokens")
+    assert rnd.sort_hit(5, tokens_zone[1]) == ("tokens", "trend")
+    app._mouse_trends(5, tokens_zone[1], False, False, True, False)
+    assert app.trend_sort == "tokens" and not app.trend_sort_reverse
+    app._mouse_trends(5, tokens_zone[1], False, False, True, False)
+    assert app.trend_sort == "tokens" and app.trend_sort_reverse  # re-click flips
+
+
+def test_trend_models_offers_only_the_columns_it_draws():
+    # The Models table trades its Tokens/Msgs cells for name width (a full
+    # claude-opus-4-5-20251101 beats two more columns), so it offers only the two it
+    # shows -- ordering by a column that isn't on screen is a ranking you can't check.
+    app = _open_trend_tab(_ranked_app(), "Providers")
+    app.apply_header_sort("tokens", "trend")
+    app.handle_key(None, ord("h"))  # -> Models, which has no Tokens column
+    assert app.trend_tabs[app.trend_tab] == "Models"
+    assert app.trend_sort_options() == ("cost", "name")
+    assert app.trend_sort_key() == "cost"  # withdrawn -> the column every tab shares
+    assert app.trend_sort == "tokens"  # ...but the preference itself is kept
+    assert "Cost v" in box_cells(app.renderer.trend_models(90, 12))[0]
+    app.handle_key(None, ord("l"))  # back on Providers it is live again
+    assert app.trend_sort_key() == "tokens"
+
+
+def test_trend_sort_leaves_the_per_scope_harness_tables_alone():
+    # source_table/machine_table also serve the per-month/day/project Harnesses tabs,
+    # which have no cursor and no sort of their own -- a Trends ordering must not
+    # silently re-rank a month's breakdown behind the overlay.
+    app = _open_trend_tab(_ranked_app(), "Harnesses")
+    app.apply_header_sort("name", "trend")
+    scoped = app.renderer.source_table(app.all_workflows, 90)
+    assert "Harness ^" not in box_cells(scoped)[0] and "Harness v" not in box_cells(scoped)[0]
+    assert app.source_rows(app.all_workflows) == sorted(
+        app.source_rows(app.all_workflows),
+        key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+        reverse=True,
+    )
+
+
+def test_trend_sort_is_inert_on_the_chart_tabs():
+    # A time axis has no column to order by, so `s` there is swallowed like any other
+    # unbound key -- it must not open a picker offering a table that isn't on screen.
+    app = _ranked_app()
+    app.handle_key(None, ord("T"))
+    assert app.trend_tabs[app.trend_tab] == "Daily"
+    app.handle_key(None, ord("s"))
+    assert not app.sort_menu and app.trends
+    # ...and neither does a drilled row's session list, which is its own ranking.
+    _open_trend_tab(app, "Models")
+    app.handle_key(None, 10)
+    assert app.trend_drill is not None
+    app.handle_key(None, ord("s"))
+    assert not app.sort_menu and app.trends and app.trend_drill is not None
+
+
 def test_trend_drill_list_h_l_switch_tabs_instead_of_closing():
     # The reported trap: drill a model's sessions, jump into a session, Esc back to
     # the drill list, hit l -- the overlay used to close to the main view ("any

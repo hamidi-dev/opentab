@@ -254,6 +254,21 @@ def test_trends_chips_say_what_the_key_will_actually_do():
     assert enter.chip_segments(app) == [("Enter drill", False)]
 
 
+def test_the_trends_sort_chip_only_shows_where_a_ranking_is_on_screen():
+    # `s` orders a ranked tab; on a chart it is swallowed like any other unbound key.
+    # The footer must not offer it there -- a chip naming a key the context eats is the
+    # exact thing this table exists to prevent.
+    app = _keymap_app()
+    app.trends = True
+    sort = next(e for e in ot.keymap.KEYS if e.id == "trends-sort")
+    assert app.trend_tabs[app.trend_tab] == "Daily" and not sort.shown(app)
+    app.trend_tab = app.trend_tabs.index("Harnesses")
+    assert sort.shown(app) and sort.chip_segments(app) == [("s sort", False)]
+    # ...and not inside a drilled row's session list, which is its own ranking.
+    app.trend_drill = ("source", "OpenCode")
+    assert not sort.shown(app)
+
+
 def test_a_composite_chip_falls_back_to_its_plain_label():
     # Tab still cycles the focus in a zoom, where the yr/mo/day segments don't apply --
     # an empty segment list must not silently drop the key from the footer.

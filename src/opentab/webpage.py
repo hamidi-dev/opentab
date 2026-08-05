@@ -363,8 +363,13 @@ tr.expiry-row td{color:var(--bad);font-size:11.5px;padding-top:5px;
 .tr-note{color:var(--mut);font-size:11px;margin-top:4px}
 /* ranked horizontal bars (Models / Providers / Sources) */
 .rank{width:100%;font-size:12.5px;border-collapse:collapse}
-.rank th{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);font-weight:600;text-align:right;padding:3px 8px}
+.rank th{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);font-weight:600;text-align:right;padding:3px 8px;cursor:default}
 .rank th.l{text-align:left}
+/* only the ranking's own columns are clickable -- the bar and Share are not sortable
+   (Share is Cost as a percentage), so they must not offer a pointer. */
+.rank th.st{cursor:pointer}
+.rank th.st:hover{color:var(--ink2)}
+.rank th.sorted{color:var(--accent)}
 .rank td{padding:4px 8px;white-space:nowrap;text-align:right;border-bottom:1px solid var(--line2)}
 .rank td.l{text-align:left;white-space:normal;overflow-wrap:anywhere}
 .rank tr:last-child td{border-bottom:0}
@@ -563,7 +568,11 @@ let TURN_DRILL = null;
 let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null, expiries: [] }; // per-session Turns/Tools/Context (serve)
 // The Trends overlay (T) -- mirrors the TUI's 7-tab Trends over the whole range.
 const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
-let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null };
+// `sort`/`desc` are the ranked tabs' column order (the TUI's App.trend_sort pair):
+// biggest spend first by default -- what a ranking is read for -- with a header click
+// choosing a column and a re-click flipping it. One pair for all four ranked tabs, so
+// ordering Harnesses by session count and tabbing to Providers keeps the count column.
+let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null, sort: 'cost', desc: true };
 // The P prices overlay: the models.dev list-price reference behind $ (app-wide,
 // never range-scoped -- like the TUI). eff sorts cheapest-first; others high→low.
 const PRICE_VIEWS = [['flat', 'flat list'], ['family', 'by vendor'], ['provider', 'by provider'], ['all', 'models.dev']];
@@ -2628,10 +2637,33 @@ function stepTrend(unit, dir) {
   renderTrends();
 }
 /* ranked horizontal bars (Models / Providers / Sources) */
+/* The active column's value per row, mirroring App._trend_sort_value: "count" is the
+   Msgs column on the model-derived tabs and Sess on the session-derived ones. */
+const TREND_SORT_VAL = {
+  name: r => String(r.name).toLowerCase(), cost: r => r.cost, tokens: r => r.tokens,
+  count: r => (r.runs != null ? r.runs : r.sessions),
+};
+const TREND_SORT_ASC = new Set(['name']);  // natural order per column (else high→low)
+/* Rows arrive cost-ranked from the callers, so a STABLE sort on the active column
+   leaves spend as the tiebreak under every other one -- App.sort_trend_rows' two-pass
+   rule. Unlike the TUI every web ranking draws all four columns (its Models table has
+   Tokens/Msgs, where the TUI's trades them for model-name width), so no column has to
+   be withdrawn per tab; the key is still validated, not trusted. */
+function trendSorted(rows) {
+  const key = TREND_SORT_VAL[TRENDS.sort] ? TRENDS.sort : 'cost';
+  const val = TREND_SORT_VAL[key], flip = TRENDS.desc ? -1 : 1;
+  return rows.slice().sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * flip; });
+}
 function rankedBars(rows, cfg) {
   const peak = Math.max(...rows.map(r => r.cost), 0), total = rows.reduce((a, r) => a + r.cost, 0);
-  const head = h('tr', null, h('th', { class: 'l' }, cfg.nameLabel), h('th', { class: 'l' }, ''),
-    h('th', null, 'Cost'), h('th', null, 'Share'), cfg.extra.map(c => h('th', null, c.label)));
+  const key = TREND_SORT_VAL[TRENDS.sort] ? TRENDS.sort : 'cost';
+  const th = (k, label, cls) => h('th', {
+    class: (cls || '') + ' st' + (key === k ? ' sorted' : ''),
+    onclick: () => { TRENDS.desc = key === k ? !TRENDS.desc : !TREND_SORT_ASC.has(k); TRENDS.sort = k; renderTrends(); },
+  }, label, key === k ? (TRENDS.desc ? ' ▾' : ' ▴') : '');
+  rows = trendSorted(rows);
+  const head = h('tr', null, th('name', cfg.nameLabel, 'l'), h('th', { class: 'l' }, ''),
+    th('cost', 'Cost'), h('th', null, 'Share'), cfg.extra.map(c => th(c.key, c.label)));
   const body = rows.map(r => h('tr', cfg.onRow ? { class: 'rowlink', onclick: () => cfg.onRow(r) } : null,
     h('td', { class: 'l' }, cfg.nameFmt ? cfg.nameFmt(r) : r.name),
     h('td', { class: 'bar' }, h('div', { class: 'hb' }, h('i', { style: '--w:' + (peak > 0 ? Math.max(2, Math.round(100 * r.cost / peak)) : 0) + '%' }))),
@@ -2733,7 +2765,7 @@ function trendModels() {
   if (!rows.length) return h('div', { class: 'hint' }, 'No priced model spend in the active range.');
   return rankedBars(rows, { nameLabel: 'Model', nameFmt: r => modelCell(r.name),
     onRow: r => { TRENDS.drill = { kind: 'model', key: r.name }; renderTrends(); },
-    extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Msgs', get: r => String(r.runs), cls: 'mut' }] });
+    extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Msgs', get: r => String(r.runs), cls: 'mut' }] });
 }
 function trendProviders() {
   const rows = providerAgg(W).map(r => ({ name: r.name, cost: MODE === 'api' ? r.api : r.real, runs: r.runs, tokens: r.tokens }))
@@ -2741,7 +2773,7 @@ function trendProviders() {
   if (!rows.length) return h('div', { class: 'hint' }, 'No model usage in the active range.');
   return rankedBars(rows, { nameLabel: 'Provider',
     onRow: r => { TRENDS.drill = { kind: 'provider', key: r.name }; renderTrends(); },
-    extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Msgs', get: r => String(r.runs), cls: 'mut' }] });
+    extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Msgs', get: r => String(r.runs), cls: 'mut' }] });
 }
 function trendSources() {
   const rows = sourceRows(W).map(r => ({ name: r.source, cost: r.cost, sessions: r.sessions, tokens: r.tokens }))
@@ -2749,7 +2781,7 @@ function trendSources() {
   if (!rows.length) return h('div', { class: 'hint' }, 'No sessions in the active range.');
   return rankedBars(rows, { nameLabel: 'Harness',
     onRow: r => { TRENDS.drill = { kind: 'source', key: r.name }; renderTrends(); },
-    extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
+    extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
 }
 function trendMachines() {
   const rows = machineRows(W).map(r => ({ name: r.machine, cost: r.cost, sessions: r.sessions, tokens: r.tokens }))
@@ -2757,7 +2789,7 @@ function trendMachines() {
   if (!rows.length) return h('div', { class: 'hint' }, 'No sessions in the active range.');
   return rankedBars(rows, { nameLabel: 'Machine',
     onRow: r => { TRENDS.drill = { kind: 'machine', key: r.name }; renderTrends(); },
-    extra: [{ label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
+    extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
 }
 function openTrends() { TRENDS.open = true; TRENDS.drill = null; if (!TREND_TABS.includes(TRENDS.tab)) TRENDS.tab = 'Daily'; renderTrends(); }
 function closeTrends() { TRENDS.open = false; TRENDS.drill = null; renderTrends(); }

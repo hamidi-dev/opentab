@@ -39,11 +39,13 @@ def save_state(app: App) -> None:
         "project_sort_by": app.project_sort_by,
         "subagent_sort_by": app.subagent_sort_by,
         "prices_sort": app.prices_sort,
+        "trend_sort": app.trend_sort,
         "prices_view": app.prices_view,
         "sort_reverse": app.sort_reverse,
         "project_sort_reverse": app.project_sort_reverse,
         "subagent_sort_reverse": app.subagent_sort_reverse,
         "prices_sort_reverse": app.prices_sort_reverse,
+        "trend_sort_reverse": app.trend_sort_reverse,
         "browse_mode": app.browse_mode,
         "focus": app.focus,  # which stacked time panel (Years/Months/Days) was active
         "zoom_maximized": app.zoom_maximized,  # + in a zoomed detail: full-screen vs split
@@ -92,6 +94,12 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.subagent_sort_by = state["subagent_sort_by"]
     if state.get("prices_sort") in app.prices_sort_options:
         app.prices_sort = state["prices_sort"]
+    # The Trends ranking column. Validated against the union of the ranked tabs'
+    # vocabularies, not one tab's: the stored key is per-OVERLAY and re-validated per
+    # tab at draw time (trend_sort_key), so a saved "tokens" must survive a launch that
+    # happens to open on Models, which withdraws it.
+    if state.get("trend_sort") in {k for opts in app._TREND_SORT_COLUMNS.values() for k in opts}:
+        app.trend_sort = state["trend_sort"]
     if state.get("prices_view") in {k for k, _label in app.prices_views}:
         app.prices_view = state["prices_view"]
     # Restore a direction flip only when its column key was restored too -- a
@@ -105,6 +113,8 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.subagent_sort_reverse = state["subagent_sort_reverse"]
     if isinstance(state.get("prices_sort_reverse"), bool):
         app.prices_sort_reverse = state["prices_sort_reverse"]
+    if isinstance(state.get("trend_sort_reverse"), bool):
+        app.trend_sort_reverse = state["trend_sort_reverse"]
     mode = state.get("browse_mode")
     if mode in ("time", "projects", "machines"):
         app.browse_mode = mode

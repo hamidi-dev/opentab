@@ -860,7 +860,10 @@ class Renderer:
         rest_bc = bc[len(range_lbl) :] if bc.startswith(range_lbl) else bc
         segs = [(range_lbl, active if range_lbl != "all time" else base), (rest_bc, base)]
         if sort_by:
-            segs.append((f"  ·  sort: {sort_by}", base))
+            # Named as the COLUMN, lowercased -- the Trends rankings share two keys
+            # ("name"/"count") across four tables that call them different things, and
+            # "sort: count" names nothing the screen shows.
+            segs.append((f"  ·  sort: {self.sort_label(sort_by).lower()}", base))
         if self.query and not self.filter_active:
             segs.append((f"  ·  filter: {self.query}", active))
         ignored_count = len(self.ignored_projects) + len(self.ignored_sessions)
@@ -1101,6 +1104,16 @@ class Renderer:
         if self.subagent_sort_key() != key:
             return label
         desc = self.sort_descending(key, self.subagent_sort_reverse)
+        return f"{label} {'v' if desc else '^'}"
+
+    def trend_sort_heading(self, key: str, label: str, tab: str) -> str:
+        # A Trends ranking's column heading. Takes the TAB explicitly rather than
+        # reading the active one: the four tables are also drawn straight (the suite,
+        # and a frame built before the overlay's tab index moves), and a heading that
+        # asked "which tab is selected" would arrow the wrong column there.
+        if self.app.trend_sort_key(tab) != key:
+            return label
+        desc = self.sort_descending(key, self.app.trend_sort_reverse)
         return f"{label} {'v' if desc else '^'}"
 
     def _scope_spans_days(self) -> bool:
@@ -5773,7 +5786,18 @@ class Renderer:
         "output": "Output price",
         "cache_read": "Cache-read price",
         "cache_write": "Cache-write price",
+        "name": "Name",
+        "count": "Count",
     }
+
+    def sort_label(self, key: str) -> str:
+        # What the `s` picker calls a sort key. The Trends rankings share two keys
+        # across four tables ("name"/"count"), so they name them per tab -- the picker
+        # must read as the column you can see ("Harness", "Sessions"), not as the
+        # internal key. Everything else takes the flat table above.
+        if self.app.in_trend_sort_context():
+            return self.app.trend_sort_labels().get(key, self.SORT_LABELS.get(key, key))
+        return self.SORT_LABELS.get(key, key)
 
     def draw_sort_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `s` picker: a small modal list of the sort keys valid for the current
@@ -5788,7 +5812,7 @@ class Renderer:
             marker = "●" if is_current else "○"
             suffix = "  (current)" if is_current else ""
             attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
-            lines.append((f" {marker}  {self.SORT_LABELS.get(key, key)}{suffix}", attr))
+            lines.append((f" {marker}  {self.sort_label(key)}{suffix}", attr))
         self.draw_modal(stdscr, scr_h, scr_w, self._menu_title("Sort by", "menu.sort"), lines)
 
     def draw_launch_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
@@ -5960,6 +5984,12 @@ class Renderer:
                 )
                 continue
             if i in headers:
+                # A ranking's header is also its sort control: the zones are placed at
+                # the y and x this frame actually painted it on, centering offset and
+                # all, so the click lands on the label the user aimed at.
+                self._register_line_sort_header(
+                    y + 3 + i, 2 + graph_off, i, line, inner_w - graph_off
+                )
                 self._paint_box_header(stdscr, y + 3 + i, 2 + graph_off, line, inner_w - graph_off)
                 continue
             if is_title:
@@ -6668,20 +6698,29 @@ class Renderer:
         start = max(0, min(idx - fit // 2, n - fit))
         return idx, start, min(fit, n - start)
 
+    # The Models ranking's sortable columns, in the order their labels appear in the
+    # header -- Share is deliberately absent: it is Cost expressed as a percentage, so
+    # a second zone ordering by it would be the same ranking under another name.
+    _TREND_MODEL_SORT_COLUMNS = (("name", "Model"), ("cost", "Cost"))
+
     def trend_models(self, width: int, height: int) -> list[str]:
-        all_rows = self.trend_model_rows()
+        all_rows = self.trend_ranked_rows("Models")
         if not all_rows:
             return ["# Model spend", "", "No priced model spend in the active range."]
         total = sum(c for _, c in all_rows)
         peak = max(c for _, c in all_rows) or 1.0
         _idx, start, shown = self._trend_cursor_window(len(all_rows), height - 3)
         rows = all_rows[start : start + shown]
+        head_name = self.trend_sort_heading("name", "Model", "Models")
+        head_cost = self.trend_sort_heading("cost", "Cost", "Models")
         # Names get priority so long ids like claude-opus-4-5-20251101 show in
         # full; the bar takes only the leftover (kept modest) instead of eating
-        # the width and forcing names to truncate.
+        # the width and forcing names to truncate. The name column is sized to its own
+        # HEADER too (_group_widths' rule): with every model shorter than "Model v",
+        # the header's field overflowed and shifted Cost/Share right of their numbers.
         tail = 22  # marker gutter + spacing + money (>=11) + percent (5)
         inner = max(1, width - self.BOX_CHROME)
-        namew = min(max(len(n) for n, _ in rows), max(12, inner - tail - 4))
+        namew = min(max([len(n) for n, _ in rows] + [len(head_name)]), max(12, inner - tail - 4))
         barw = max(3, min(24, inner - namew - tail))
         body = []
         for name, cost in rows:
@@ -6698,14 +6737,21 @@ class Renderer:
             totals_row = f"  {pad('TOTAL', namew)}  {'':{barw}} {money(total):>11} {'':>5}"
         lines = self._ruled_box(
             "# Model spend (priced, in range)",
-            f"  {'Model':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5}",
+            f"  {head_name:{namew}}  {'':{barw}} {head_cost:>11} {'Share':>5}",
             body,
             totals_row,
             [],
             width,
         )
+        self._mark_trend_sort_header(self._TREND_MODEL_SORT_COLUMNS)
         self._trend_rows_at = (self._ruled_body_start or 0, len(rows), start)
         return lines
+
+    def _mark_trend_sort_header(self, columns: tuple) -> None:
+        # Make a Trends ranking's column header clickable. Registered against
+        # BOX_HEADER_LINE like every other boxed table's zones; draw_trends turns it
+        # into screen coordinates at the y the header actually lands on.
+        self._line_sort_headers[self.BOX_HEADER_LINE] = (columns, "trend")
 
     def trend_providers(self, width: int, height: int) -> list[str]:
         # The per-model spend rolled up to its provider (the "openai" in
@@ -6714,19 +6760,23 @@ class Renderer:
         # shows once "$" reprices unpriced usage at API list rates -- the cost column
         # and bar react to it live. We still list those providers when "$" is off
         # (tokens are the tell) and nudge toward "$".
-        all_rows = self.trend_provider_rows()
+        all_rows = self.trend_ranked_rows("Providers")
         if not all_rows:
             return ["# Spend by provider", "", "No model usage in the active range."]
         total_cost = sum(float(it["cost"]) for _, it in all_rows)
         peak = max((float(it["cost"]) for _, it in all_rows), default=0.0) or 1.0
         _idx, start, shown = self._trend_cursor_window(len(all_rows), height - 4)
         rows = all_rows[start : start + shown]
+        columns = (("name", "Provider"), ("cost", "Cost"), ("tokens", "Tokens"), ("count", "Msgs"))
+        heads = {k: self.trend_sort_heading(k, label, "Providers") for k, label in columns}
         inner = max(1, width - self.BOX_CHROME)
-        namew = min(max([len(p) for p, _ in rows] + [len("Provider")]), max(10, inner - 44))
+        # The name column is sized to its own (arrowed) header too, or a table of short
+        # provider names shifts every numeric label right of its column.
+        namew = min(max([len(p) for p, _ in rows] + [len(heads["name"])]), max(10, inner - 44))
         barw = max(3, min(20, inner - namew - 40))
         header = (
-            f"  {'Provider':{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} "
-            f"{'Tokens':>9} {'Msgs':>7}"
+            f"  {heads['name']:{namew}}  {'':{barw}} {heads['cost']:>11} {'Share':>5} "
+            f"{heads['tokens']:>9} {heads['count']:>7}"
         )
         body = []
         for provider, it in rows:
@@ -6754,13 +6804,24 @@ class Renderer:
                 "usage at API list rates",
             ]
         lines = self._ruled_box("# Spend by provider", header, body, totals_row, notes, width)
+        self._mark_trend_sort_header(columns)
         self._trend_rows_at = (self._ruled_body_start or 0, len(rows), start)
         return lines
 
     def trend_sources(self, width: int, height: int) -> list[str]:
         # The Trends overlay's headline cut: spend by tool across the whole range.
-        return self.source_table(
-            self.all_workflows, width, limit=max(1, height - 4), selectable=True
+        # Goes straight to _group_table with rows the App already ordered, rather than
+        # through source_table: that one also serves the per-scope Harnesses tabs,
+        # which have no cursor and no sort of their own -- a Trends sort must not
+        # silently re-rank a month's breakdown.
+        return self._group_table(
+            self.trend_ranked_rows("Harnesses"),
+            width,
+            "harness",
+            "Harness",
+            limit=max(1, height - 4),
+            selectable=True,
+            sort_tab="Harnesses",
         )
 
     def source_table(
@@ -6799,6 +6860,12 @@ class Renderer:
     # -- size themselves with it, so a column can't shift on Enter.
     _GROUP_FIXED = 40
 
+    # The name column reserves this much on top of its label, so the sort arrow the
+    # Trends frame appends (" v") has somewhere to go. Reserved in BOTH frames, sorted
+    # or not: the picker and the preview must measure the same pane, or a column shifts
+    # on Enter.
+    _SORT_ARROW_W = 2
+
     @staticmethod
     def _group_widths(rows: list, col: str, width: int) -> tuple[int, int]:
         # Size the name column to its HEADER too, not just the data: with every name
@@ -6806,14 +6873,26 @@ class Renderer:
         # and shifted Cost/Share/Tokens/Sess right of the numbers they label. Short
         # hostnames make that the default in a fleet view. _model_table guards the same way.
         namew = min(
-            max([len(s) for s, _ in rows] + [len(col)]),
+            max([len(s) for s, _ in rows] + [len(col) + Renderer._SORT_ARROW_W]),
             max(10, width - Renderer._GROUP_FIXED - 3),
         )
         return namew, max(3, min(20, width - namew - Renderer._GROUP_FIXED))
 
-    @staticmethod
-    def _group_header(col: str, namew: int, barw: int) -> str:
-        return f"  {col:<{namew}}  {'':{barw}} {'Cost':>11} {'Share':>5} {'Tokens':>9} {'Sess':>7}"
+    # The shared ranked table's sortable columns, in drawn order. Share is absent for
+    # the same reason it is on the Models ranking: it is Cost as a percentage.
+    _GROUP_SORT_COLUMNS = (("cost", "Cost"), ("tokens", "Tokens"), ("count", "Sess"))
+
+    def _group_header(self, col: str, namew: int, barw: int, sort_tab: str | None = None) -> str:
+        # `sort_tab` names the Trends ranking this header belongs to, and is what puts
+        # the sort arrow on the active column; the per-scope tabs pass None and get the
+        # plain header they always had.
+        def head(key: str, label: str) -> str:
+            return self.trend_sort_heading(key, label, sort_tab) if sort_tab else label
+
+        return (
+            f"  {head('name', col):<{namew}}  {'':{barw}} {head('cost', 'Cost'):>11} "
+            f"{'Share':>5} {head('tokens', 'Tokens'):>9} {head('count', 'Sess'):>7}"
+        )
 
     @staticmethod
     def _group_row(
@@ -6834,17 +6913,19 @@ class Renderer:
         col: str,
         limit: int | None = None,
         selectable: bool = False,
+        sort_tab: str | None = None,
     ) -> list[str]:
         # The shared ranked-spend table behind source_table/machine_table: a name column,
         # a cost bar, then Cost/Share/Tokens/Sess, in the same ruled box every other table
         # wears. `noun` is the box title's word, `col` the name-column header. Selectable
         # rows carry the Trends cursor + Enter drill. The rows themselves come from the
-        # builders above, which the zoom picker paints too.
+        # builders above, which the zoom picker paints too. `sort_tab` (the Trends frame
+        # only) arrows the active column and makes the header clickable.
         title = f"# Spend by {noun}"
         if not all_rows:
             namew, barw = self._group_widths([], col, max(1, width - self.BOX_CHROME))
             return self._ruled_box(
-                title, self._group_header(col, namew, barw), [], None, [], width
+                title, self._group_header(col, namew, barw, sort_tab), [], None, [], width
             ) + ["", "No sessions in the active range."]
         if selectable and limit is not None:
             _idx, start, shown = self._trend_cursor_window(len(all_rows), limit)
@@ -6883,16 +6964,26 @@ class Renderer:
                 "usage at API list rates",
             ]
         lines = self._ruled_box(
-            title, self._group_header(col, namew, barw), body, total, notes, width
+            title, self._group_header(col, namew, barw, sort_tab), body, total, notes, width
         )
+        if sort_tab:
+            self._mark_trend_sort_header((("name", col), *self._GROUP_SORT_COLUMNS))
         if selectable and self._ruled_body_start is not None:
             self._trend_rows_at = (self._ruled_body_start, len(rows), start)
         return lines
 
     def trend_machines(self, width: int, height: int) -> list[str]:
         # The Trends overlay's fleet cut: spend by machine across the whole range.
-        return self.machine_table(
-            self.all_workflows, width, limit=max(1, height - 4), selectable=True
+        # Pre-ordered by the App, like trend_sources (machine_table also serves the
+        # per-scope Machines tabs, which carry no sort).
+        return self._group_table(
+            self.trend_ranked_rows("Machines"),
+            width,
+            "machine",
+            "Machine",
+            limit=max(1, height - 4),
+            selectable=True,
+            sort_tab="Machines",
         )
 
     def trend_drill_lines(self, width: int, height: int) -> list[str]:

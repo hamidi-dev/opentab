@@ -276,6 +276,7 @@ REGISTRY: tuple[Context, ...] = (
             Action("newer", ("]",), "page newer (alias)"),
             Action("shades_more", ("+", "="), "more heat shades (Calendar)"),
             Action("shades_less", ("-", "_"), "fewer heat shades (Calendar)"),
+            Action("sort", ("s", "S"), "sort a ranked tab (Models/Providers/…)"),
             Action("back", ("esc",), "leave the focused chart / drill, else close"),
             Action("close", ("q", "T"), "close the overlay"),
             Action("api_prices", ("$",), "re-price the charts at API list rates"),

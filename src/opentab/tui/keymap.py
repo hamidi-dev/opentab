@@ -174,8 +174,10 @@ def trend_tab(app: App) -> str:
 
 
 def _ranked_trend(app: App) -> bool:
-    # The Models / Providers / Harnesses tabs: rows, not bars.
-    return trend_tab(app) in ("Models", "Providers", "Harnesses")
+    # The Models / Providers / Harnesses / Machines tabs: rows, not bars. Asked of the
+    # app's own vocabulary (the tabs that have sortable COLUMNS are exactly the ranked
+    # ones), so a new ranked tab can't be added to one list and forgotten in the other.
+    return bool(app.trend_sort_options())
 
 
 def _trend_pager_alias(app: App) -> str:
@@ -476,6 +478,16 @@ KEYS: tuple[Key, ...] = (
         # Monthly has one chart and nothing to page: down/up does nothing there.
         when=lambda app: in_trends(app) and bool(_trend_jk(app)),
         chip=lambda app: "rows" if _ranked_trend(app) or app.trend_drill else "page",
+    ),
+    Key(
+        id="trends-sort",
+        ctx="trends",
+        actions=("sort",),
+        summary="order the ranking — cost, name, tokens, count",
+        section="here",
+        when=lambda app: in_trends(app) and app.in_trend_sort_context(),
+        chip="sort",
+        active=lambda app: app.sort_menu,
     ),
     Key(
         id="trends-shades",
@@ -825,6 +837,7 @@ FOOTER_ORDER = (
     "trends-tabs",
     "trends-page",
     "trends-enter",
+    "trends-sort",
     "prices-view",
     "prices-pin",
     "prices-enter",

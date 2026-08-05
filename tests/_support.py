@@ -181,10 +181,10 @@ def screen_text(screen):
     return "\n".join(lines)
 
 
-def _model_row(model_name, cost, tokens):
+def _model_row(model_name, cost, tokens, runs=1):
     return {
         "model_name": model_name,
-        "runs": 1,
+        "runs": runs,
         "cost": cost,
         "tokens_total": tokens,
         "cache_read": 0,
