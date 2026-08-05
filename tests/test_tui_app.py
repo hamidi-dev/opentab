@@ -2,6 +2,7 @@
 
 import contextlib
 import os
+from types import SimpleNamespace
 
 import opentab as ot
 
@@ -2043,17 +2044,19 @@ def test_launch_menu_opens_in_tmux_and_copy_only_outside():
     app.view = "zoom"
     app.tab = app.current_tabs().index("Sessions")
     old_tmux = os.environ.get("TMUX")
-    real_launch, real_copy = ot.util.tmux_launch, ot.util.copy_to_clipboard
+    real_launch, real_copy = ot.util.launch_command, ot.util.copy_to_clipboard
     launches, copies = [], []
     try:
-        ot.util.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        ot.util.launch_command = lambda kind, d, c, backend=None: (
+            launches.append((kind, d, c, backend)) or None
+        )
         ot.util.copy_to_clipboard = lambda v: copies.append(v) or True
         os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
         app.handle_key(None, ord("L"))
         assert app.launch_menu is not None and not launches  # menu open, nothing run
         app.handle_key(None, ord("w"))
         assert app.launch_menu is None
-        assert launches == [("window", "/repo/a", "claude --resume ses_1")]
+        assert launches[0][:3] == ("window", "/repo/a", "claude --resume ses_1")
         # Esc cancels without launching
         app.handle_key(None, ord("L"))
         app.handle_key(None, 27)
@@ -2075,12 +2078,40 @@ def test_launch_menu_opens_in_tmux_and_copy_only_outside():
         assert app.launch_menu is None
         assert copies[-1] == "cd /repo/a && claude --resume ses_1"
     finally:
-        ot.util.tmux_launch = real_launch
+        ot.util.launch_command = real_launch
         ot.util.copy_to_clipboard = real_copy
         if old_tmux is None:
             os.environ.pop("TMUX", None)
         else:
             os.environ["TMUX"] = old_tmux
+
+
+def test_tmux_launch_menu_snapshot_ignores_a_hook_added_after_opening():
+    a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
+    a.source = "Claude Code"
+    app = app_with([a])
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    real_backend = ot.util.launch_backend
+    real_hook = ot.util.launcher_hook
+    real_run = ot.util.subprocess.run
+    calls = []
+    try:
+        ot.util.launch_backend = lambda: "tmux"
+        ot.util.launcher_hook = lambda: None
+        app.handle_key(None, ord("L"))
+        assert app.launch_menu_backend == "tmux"
+
+        ot.util.launcher_hook = lambda: "/tmp/launcher"
+        ot.util.subprocess.run = lambda argv, **kwargs: (
+            calls.append(argv) or SimpleNamespace(returncode=0, stderr="")
+        )
+        app.handle_key(None, ord("w"))
+        assert calls == [["tmux", "new-window", "-c", "/repo/a", "claude --resume ses_1"]]
+    finally:
+        ot.util.launch_backend = real_backend
+        ot.util.launcher_hook = real_hook
+        ot.util.subprocess.run = real_run
 
 
 def test_launch_menu_is_navigable_with_jk_and_enter():
@@ -2090,10 +2121,12 @@ def test_launch_menu_is_navigable_with_jk_and_enter():
     app.view = "zoom"
     app.tab = app.current_tabs().index("Sessions")
     old_tmux = os.environ.get("TMUX")
-    real_launch = ot.util.tmux_launch
+    real_launch = ot.util.launch_command
     launches = []
     try:
-        ot.util.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        ot.util.launch_command = lambda kind, d, c, backend=None: (
+            launches.append((kind, d, c, backend)) or None
+        )
         os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
         app.handle_key(None, ord("L"))
         assert app.launch_menu is not None and app.launch_menu_index == 0  # starts at "window"
@@ -2107,13 +2140,95 @@ def test_launch_menu_is_navigable_with_jk_and_enter():
         app.handle_key(None, ord("j"))  # -> hsplit
         app.handle_key(None, 10)  # Enter runs the highlighted target
         assert app.launch_menu is None
-        assert launches == [("hsplit", "/repo/a", "claude --resume ses_1")]
+        assert launches[0][:3] == ("hsplit", "/repo/a", "claude --resume ses_1")
     finally:
-        ot.util.tmux_launch = real_launch
+        ot.util.launch_command = real_launch
         if old_tmux is None:
             os.environ.pop("TMUX", None)
         else:
             os.environ["TMUX"] = old_tmux
+
+
+def test_herdr_launch_menu_uses_tabs_splits_copy_and_one_backend_snapshot():
+    a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
+    a.source = "Claude Code"
+    app = app_with([a])
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    real_backend = ot.util.launch_backend
+    real_launch = ot.util.launch_command
+    real_copy = ot.util.copy_to_clipboard
+    launches, copies = [], []
+    try:
+        ot.util.launch_backend = lambda: "herdr"
+        ot.util.launch_command = lambda kind, d, c, backend=None: (
+            launches.append((kind, d, c, backend)) or None
+        )
+        ot.util.copy_to_clipboard = lambda command: copies.append(command) or True
+        app.handle_key(None, ord("L"))
+        assert app.launch_menu_backend == "herdr"
+        targets = app.launch_targets()
+        assert [kind for _key, kind, _label in targets] == ["window", "hsplit", "vsplit", "copy"]
+        assert targets[0][2] == "new tab"
+
+        screen = FakeScreen(30, 100)
+        real_pair = ot.curses.color_pair
+        ot.curses.color_pair = lambda n: 0
+        try:
+            app.renderer.draw_launch_menu(screen, 30, 100)
+        finally:
+            ot.curses.color_pair = real_pair
+        text = screen_text(screen)
+        assert "open in herdr:" in text and "new tab" in text and "popup" not in text
+
+        # Changing detection while the menu is open must not change its rows or dispatch.
+        ot.util.launch_backend = lambda: "tmux"
+        app.handle_key(None, ord("w"))
+        ot.util.launch_backend = lambda: "herdr"
+        _launch(app, "ses_1", ord("s"))
+        _launch(app, "ses_1", ord("v"))
+        _launch(app, "ses_1", ord("y"))
+        assert [row[0] for row in launches] == ["window", "hsplit", "vsplit"]
+        assert all(row[-1] == "herdr" for row in launches)
+        assert copies == ["cd /repo/a && claude --resume ses_1"]
+    finally:
+        ot.util.launch_backend = real_backend
+        ot.util.launch_command = real_launch
+        ot.util.copy_to_clipboard = real_copy
+
+
+def test_launcher_hook_in_herdr_restores_popup_and_launch_errors_close_menu():
+    a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
+    a.source = "Claude Code"
+    app = app_with([a])
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    real_backend = ot.util.launch_backend
+    real_launch = ot.util.launch_command
+    try:
+        ot.util.launch_backend = lambda: "hook"
+        ot.util.launch_command = lambda kind, d, c, backend=None: "hook rejected popup"
+        app.handle_key(None, ord("L"))
+        assert [kind for _key, kind, _label in app.launch_targets()] == [
+            "window",
+            "hsplit",
+            "vsplit",
+            "popup",
+            "copy",
+        ]
+        screen = FakeScreen(30, 100)
+        real_pair = ot.curses.color_pair
+        ot.curses.color_pair = lambda n: 0
+        try:
+            app.renderer.draw_launch_menu(screen, 30, 100)
+        finally:
+            ot.curses.color_pair = real_pair
+        assert "open in launcher hook:" in screen_text(screen)
+        app.handle_key(None, ord("p"))
+        assert app.launch_menu is None and "launch failed: hook rejected popup" in app.notice
+    finally:
+        ot.util.launch_backend = real_backend
+        ot.util.launch_command = real_launch
 
 
 def _remote_launch_app(targets):
@@ -2138,6 +2253,60 @@ def _launch(app, session_id, key):
     app.handle_key(None, key)
 
 
+def test_launch_menu_uses_the_innermost_nested_multiplexer():
+    a = workflow("ses_1", "2026-06-01 12:00:00", directory="/repo/a")
+    a.source = "Claude Code"
+    app = app_with([a])
+    app.view = "zoom"
+    app.tab = app.current_tabs().index("Sessions")
+    old_env = {key: os.environ.get(key) for key in ("TMUX", "TMUX_PANE", "HERDR_ENV")}
+    real_current = ot.util._current_tty
+    real_tmux = ot.util._tmux_pane_tty
+    try:
+        os.environ["TMUX"] = "tmux"
+        os.environ["TMUX_PANE"] = "%1"
+        os.environ["HERDR_ENV"] = "1"
+        ot.util._current_tty = lambda: "/dev/pts/7"
+        ot.util._tmux_pane_tty = lambda: "/dev/pts/7"
+        app.handle_key(None, ord("L"))
+        assert app.launch_menu_backend == "tmux"
+        app.handle_key(None, 27)
+
+        ot.util._tmux_pane_tty = lambda: "/dev/pts/3"
+        app.handle_key(None, ord("L"))
+        assert app.launch_menu_backend == "herdr"
+        assert "popup" not in [kind for _key, kind, _label in app.launch_targets()]
+        app.handle_key(None, 27)
+    finally:
+        ot.util._current_tty = real_current
+        ot.util._tmux_pane_tty = real_tmux
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def test_remote_herdr_launch_heading_names_host_and_backend():
+    app = _remote_launch_app({"giant": "root@giant"})
+    real_backend = ot.util.launch_backend
+    try:
+        ot.util.launch_backend = lambda: "herdr"
+        app.session_stack = []
+        app.drill_into_session("ses_there")
+        app.handle_key(None, ord("L"))
+        screen = FakeScreen(30, 100)
+        real_pair = ot.curses.color_pair
+        ot.curses.color_pair = lambda n: 0
+        try:
+            app.renderer.draw_launch_menu(screen, 30, 100)
+        finally:
+            ot.curses.color_pair = real_pair
+        assert "open on root@giant (ssh) in herdr:" in screen_text(screen)
+    finally:
+        ot.util.launch_backend = real_backend
+
+
 def test_launch_reopens_a_pulled_session_on_its_own_machine_over_ssh():
     # A session you pulled from another box ran THERE: its id is that box's, and its
     # project path may not even exist here. Spawning it locally would resume the wrong
@@ -2146,14 +2315,16 @@ def test_launch_reopens_a_pulled_session_on_its_own_machine_over_ssh():
     # command anyone can paste.
     app = _remote_launch_app({"giant": "root@giant"})
     old_tmux = os.environ.get("TMUX")
-    real_launch, real_copy = ot.util.tmux_launch, ot.util.copy_to_clipboard
+    real_launch, real_copy = ot.util.launch_command, ot.util.copy_to_clipboard
     launches, copies = [], []
     try:
-        ot.util.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        ot.util.launch_command = lambda kind, d, c, backend=None: (
+            launches.append((kind, d, c, backend)) or None
+        )
         ot.util.copy_to_clipboard = lambda v: copies.append(v) or True
         os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
         _launch(app, "ses_there", ord("w"))
-        kind, directory, command = launches[0]
+        kind, directory, command, _backend = launches[0]
         # -t (the agent CLIs are interactive) and ONE quoted remote argument, so the cd
         # and the resume happen in the same remote shell.
         assert kind == "window"
@@ -2178,11 +2349,11 @@ def test_launch_reopens_a_pulled_session_on_its_own_machine_over_ssh():
         app.handle_key(None, 27)
         # The local box is untouched: same session list, same plain local launch.
         _launch(app, "ses_here", ord("w"))
-        assert launches[-1] == ("window", "/repo/a", "claude --resume ses_here")
+        assert launches[-1][:3] == ("window", "/repo/a", "claude --resume ses_here")
         _launch(app, "ses_here", ord("y"))
         assert copies[-1] == "cd /repo/a && claude --resume ses_here"
     finally:
-        ot.util.tmux_launch, ot.util.copy_to_clipboard = real_launch, real_copy
+        ot.util.launch_command, ot.util.copy_to_clipboard = real_launch, real_copy
         if old_tmux is None:
             os.environ.pop("TMUX", None)
         else:
@@ -2195,10 +2366,12 @@ def test_launch_on_a_machine_with_no_ssh_target_offers_only_the_yank():
     # session id here, and the picker says why.
     app = _remote_launch_app({})
     old_tmux = os.environ.get("TMUX")
-    real_launch = ot.util.tmux_launch
+    real_launch = ot.util.launch_command
     launches = []
     try:
-        ot.util.tmux_launch = lambda kind, d, c: launches.append((kind, d, c)) or None
+        ot.util.launch_command = lambda kind, d, c, backend=None: (
+            launches.append((kind, d, c, backend)) or None
+        )
         os.environ["TMUX"] = "/tmp/tmux-1/default,1,0"
         app.session_stack = []
         app.drill_into_session("ses_there")
@@ -2216,7 +2389,7 @@ def test_launch_on_a_machine_with_no_ssh_target_offers_only_the_yank():
         app.handle_key(None, ord("w"))  # not offered -> ignored, menu stays open
         assert app.launch_menu is not None and not launches
     finally:
-        ot.util.tmux_launch = real_launch
+        ot.util.launch_command = real_launch
         if old_tmux is None:
             os.environ.pop("TMUX", None)
         else:

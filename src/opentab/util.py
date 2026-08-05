@@ -1,6 +1,8 @@
 """Clipboard, launchers, git roots, fuzzy match, date/range parsing, tool labels."""
+
 from __future__ import annotations
 
+import json
 import locale
 import os
 import re
@@ -642,6 +644,154 @@ def in_tmux() -> bool:
     return bool(os.environ.get("TMUX"))
 
 
+def in_herdr() -> bool:
+    """Whether Herdr identifies the current pane through its official marker."""
+    return env_flag("HERDR_ENV") is True
+
+
+def _current_tty() -> str | None:
+    try:
+        return os.ttyname(sys.stdin.fileno())
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _tmux_pane_tty() -> str | None:
+    pane = os.environ.get("TMUX_PANE")
+    if not pane:
+        return None
+    try:
+        proc = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane, "#{pane_tty}"],
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    tty = proc.stdout.strip()
+    return tty or None
+
+
+def launch_backend() -> str | None:
+    """Select the explicit hook or the innermost supported multiplexer."""
+    if launcher_hook() is not None:
+        return "hook"
+    tmux = in_tmux()
+    herdr = in_herdr()
+    if tmux and not herdr:
+        return "tmux"
+    if herdr and not tmux:
+        return "herdr"
+    if not tmux:
+        return None
+
+    current_tty = _current_tty()
+    pane_tty = _tmux_pane_tty()
+    if current_tty and pane_tty:
+        return "tmux" if current_tty == pane_tty else "herdr"
+    term = os.environ.get("TERM", "")
+    return "tmux" if term.startswith(("tmux", "screen")) else "herdr"
+
+
+def herdr_create_argv(kind: str, directory: str) -> list[str]:
+    """Build the focused Herdr tab or split creation command."""
+    configured = os.environ.get("HERDR_BIN_PATH")
+    herdr = (
+        configured
+        if configured and os.path.isfile(configured) and os.access(configured, os.X_OK)
+        else "herdr"
+    )
+    if kind == "window":
+        argv = [herdr, "tab", "create"]
+        workspace = os.environ.get("HERDR_WORKSPACE_ID")
+        if workspace:
+            argv.extend(["--workspace", workspace])
+        return argv + ["--cwd", directory, "--focus"]
+    if kind == "hsplit":
+        return [
+            herdr,
+            "pane",
+            "split",
+            "--current",
+            "--direction",
+            "right",
+            "--cwd",
+            directory,
+            "--focus",
+        ]
+    if kind == "vsplit":
+        return [
+            herdr,
+            "pane",
+            "split",
+            "--current",
+            "--direction",
+            "down",
+            "--cwd",
+            directory,
+            "--focus",
+        ]
+    if kind == "popup":
+        raise ValueError("herdr does not support popups")
+    raise ValueError(f"unknown Herdr launch kind: {kind}")
+
+
+def _herdr_failure(stage: str, proc) -> str:
+    detail = (proc.stderr or proc.stdout).strip()
+    return f"herdr {stage} failed: {detail or f'exit status {proc.returncode}'}"
+
+
+def _herdr_cli_launch(kind: str, directory: str, command: str) -> str | None:
+    """Create a focused Herdr target, then run the complete command inside it."""
+    create_argv = herdr_create_argv(kind, directory)
+    try:
+        created = subprocess.run(create_argv, capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return "herdr create timed out"
+    except OSError as exc:
+        return f"herdr create failed: {exc}"
+    if created.returncode != 0:
+        return _herdr_failure("create", created)
+    try:
+        payload = json.loads(created.stdout)
+    except json.JSONDecodeError:
+        return "herdr create returned invalid JSON"
+
+    key = "root_pane" if kind == "window" else "pane"
+    result = payload.get("result") if isinstance(payload, dict) else None
+    pane = result.get(key) if isinstance(result, dict) else None
+    pane_id = pane.get("pane_id") if isinstance(pane, dict) else None
+    if not isinstance(pane_id, str) or not pane_id:
+        return f"herdr create returned no valid pane ID for {key}"
+
+    try:
+        ran = subprocess.run(
+            [create_argv[0], "pane", "run", pane_id, command],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return f"herdr pane run timed out for pane {pane_id}"
+    except OSError as exc:
+        return f"herdr pane run failed for pane {pane_id}: {exc}"
+    if ran.returncode != 0:
+        return f"{_herdr_failure('pane run', ran)} for pane {pane_id}"
+    return None
+
+
+def herdr_launch(kind: str, directory: str, command: str) -> str | None:
+    """Create a Herdr tab or split through its CLI, then run the command in it."""
+    if kind not in ("window", "hsplit", "vsplit"):
+        if kind == "popup":
+            return "herdr does not support popups"
+        return f"unknown Herdr launch kind: {kind}"
+    return _herdr_cli_launch(kind, directory, command)
+
+
 def launcher_hook() -> str | None:
     # Optional user hook, git-hooks style: an executable that receives every
     # launch-menu action instead of the built-in tmux commands, so launches can
@@ -703,12 +853,7 @@ def tmux_launch_argv(kind: str, directory: str, command: str) -> list[str]:
     return ["tmux", "display-popup", "-E", "-d", directory, "-w", "85%", "-h", "75%", command]
 
 
-def tmux_launch(kind: str, directory: str, command: str) -> str | None:
-    """Run a resume command in a new tmux window/split/popup — or hand the
-    whole action to the user's launcher hook when one is installed. Returns an
-    error message, or None when the launch was issued."""
-    hook = launcher_hook()
-    argv = [hook, kind, directory, command] if hook else tmux_launch_argv(kind, directory, command)
+def _run_tmux_or_hook(kind: str, argv: list[str], label: str) -> str | None:
     try:
         if kind == "popup":
             # display-popup (and popup hooks that wrap it) can block until the
@@ -719,8 +864,38 @@ def tmux_launch(kind: str, directory: str, command: str) -> str | None:
     except (OSError, subprocess.SubprocessError) as exc:
         return str(exc)
     if proc.returncode != 0:
-        return (proc.stderr or ("launcher hook failed" if hook else "tmux failed")).strip()
+        return (proc.stderr or f"{label} failed").strip()
     return None
+
+
+def launch_command(
+    kind: str,
+    directory: str,
+    command: str,
+    backend: str | None = None,
+) -> str | None:
+    """Run a resume command through the configured hook or active backend."""
+    backend = launch_backend() if backend is None else backend
+    if backend == "hook":
+        hook = launcher_hook()
+        if hook is None:
+            return "launcher hook unavailable"
+        return _run_tmux_or_hook(kind, [hook, kind, directory, command], "launcher hook")
+    if backend == "tmux":
+        return _run_tmux_or_hook(kind, tmux_launch_argv(kind, directory, command), "tmux")
+    if backend == "herdr":
+        try:
+            return herdr_launch(kind, directory, command)
+        except ValueError as exc:
+            return str(exc)
+    return "no supported launch backend available"
+
+
+def tmux_launch(kind: str, directory: str, command: str) -> str | None:
+    """Run a resume command through tmux, retaining the legacy hook override."""
+    hook = launcher_hook()
+    argv = [hook, kind, directory, command] if hook else tmux_launch_argv(kind, directory, command)
+    return _run_tmux_or_hook(kind, argv, "launcher hook" if hook else "tmux")
 
 
 def normalize_project_path(directory: str) -> str:

@@ -1,8 +1,10 @@
 """Clipboard/launchers, git-root folding, fuzzy match, range parsing, tool namespaces (util.py)."""
 
 import os
+import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 
 import opentab as ot
 
@@ -266,6 +268,277 @@ def test_tmux_launch_runs_the_hook_and_reports_its_stderr():
                 os.environ.pop("OPENTAB_LAUNCHER", None)
             else:
                 os.environ["OPENTAB_LAUNCHER"] = old_env
+
+
+def test_in_herdr_only_accepts_an_enabled_official_marker():
+    old = os.environ.get("HERDR_ENV")
+    try:
+        for value in (None, "", "0", "false", "no"):
+            if value is None:
+                os.environ.pop("HERDR_ENV", None)
+            else:
+                os.environ["HERDR_ENV"] = value
+            assert not ot.in_herdr()
+        os.environ["HERDR_ENV"] = "1"
+        assert ot.in_herdr()
+        os.environ["HERDR_ENV"] = "true"
+        assert ot.in_herdr()
+    finally:
+        if old is None:
+            os.environ.pop("HERDR_ENV", None)
+        else:
+            os.environ["HERDR_ENV"] = old
+
+
+def test_herdr_create_argv_builds_focused_splits():
+    assert ot.herdr_create_argv("hsplit", "/repo/a") == [
+        "herdr",
+        "pane",
+        "split",
+        "--current",
+        "--direction",
+        "right",
+        "--cwd",
+        "/repo/a",
+        "--focus",
+    ]
+    assert ot.herdr_create_argv("vsplit", "/repo/a") == [
+        "herdr",
+        "pane",
+        "split",
+        "--current",
+        "--direction",
+        "down",
+        "--cwd",
+        "/repo/a",
+        "--focus",
+    ]
+    for kind in ("popup", "unknown"):
+        try:
+            ot.herdr_create_argv(kind, "/repo/a")
+        except ValueError as exc:
+            assert "popup" in str(exc) if kind == "popup" else "unknown" in str(exc)
+        else:
+            raise AssertionError(f"accepted Herdr launch kind {kind}")
+
+    old = os.environ.get("HERDR_BIN_PATH")
+    with tempfile.TemporaryDirectory() as tmp:
+        binary = os.path.join(tmp, "herdr-bin")
+        with open(binary, "w") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(binary, 0o755)
+        try:
+            os.environ["HERDR_BIN_PATH"] = binary
+            assert ot.herdr_create_argv("window", "/repo/a")[0] == binary
+        finally:
+            if old is None:
+                os.environ.pop("HERDR_BIN_PATH", None)
+            else:
+                os.environ["HERDR_BIN_PATH"] = old
+
+
+def test_herdr_tab_create_argv_uses_workspace_when_set():
+    old = os.environ.get("HERDR_WORKSPACE_ID")
+    try:
+        os.environ["HERDR_WORKSPACE_ID"] = "workspace-42"
+        assert ot.herdr_create_argv("window", "/repo/a") == [
+            "herdr",
+            "tab",
+            "create",
+            "--workspace",
+            "workspace-42",
+            "--cwd",
+            "/repo/a",
+            "--focus",
+        ]
+        assert "--workspace" not in ot.herdr_create_argv("hsplit", "/repo/a")
+    finally:
+        if old is None:
+            os.environ.pop("HERDR_WORKSPACE_ID", None)
+        else:
+            os.environ["HERDR_WORKSPACE_ID"] = old
+
+
+def test_herdr_tab_create_argv_omits_workspace_when_unset():
+    old = os.environ.get("HERDR_WORKSPACE_ID")
+    try:
+        os.environ.pop("HERDR_WORKSPACE_ID", None)
+        assert ot.herdr_create_argv("window", "/repo/a") == [
+            "herdr",
+            "tab",
+            "create",
+            "--cwd",
+            "/repo/a",
+            "--focus",
+        ]
+    finally:
+        if old is not None:
+            os.environ["HERDR_WORKSPACE_ID"] = old
+
+
+def test_herdr_launch_reads_both_json_paths_and_keeps_command_one_argument():
+    real_run = ot.util.subprocess.run
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if len(calls) == 1:
+            key = "root_pane" if argv[1:3] == ["tab", "create"] else "pane"
+            return SimpleNamespace(
+                returncode=0, stdout=f'{{"result":{{"{key}":{{"pane_id":"pane-7"}}}}}}', stderr=""
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    try:
+        ot.util.subprocess.run = fake_run
+        command = "ssh -t box 'cd /repo/a && claude --resume abc'"
+        assert ot.herdr_launch("window", "/repo/a", command) is None
+        assert calls[1][0] == ["herdr", "pane", "run", "pane-7", command]
+        calls.clear()
+        assert ot.herdr_launch("hsplit", "/repo/a", command) is None
+        assert calls[1][0][-1] == command and len(calls[1][0]) == 5
+        assert all("current" not in call[0][1:] for call in calls)
+    finally:
+        ot.util.subprocess.run = real_run
+
+
+def test_herdr_launch_stops_on_create_and_json_errors():
+    real_run = ot.util.subprocess.run
+    cases = [
+        (SimpleNamespace(returncode=2, stdout="", stderr="socket gone"), "create failed"),
+        (SimpleNamespace(returncode=0, stdout="not json", stderr=""), "invalid JSON"),
+        (SimpleNamespace(returncode=0, stdout='{"result":{}}', stderr=""), "pane ID"),
+        (
+            SimpleNamespace(returncode=0, stdout='{"result":{"pane":{"pane_id":4}}}', stderr=""),
+            "pane ID",
+        ),
+    ]
+    try:
+        for response, message in cases:
+            calls = []
+
+            def fake_run(argv, response=response, calls=calls, **kwargs):
+                calls.append(argv)
+                return response
+
+            ot.util.subprocess.run = fake_run
+            error = ot.herdr_launch("hsplit", "/repo/a", "claude --resume abc")
+            assert message in error and len(calls) == 1
+            assert not any(call[1:3] == ["pane", "current"] for call in calls)
+    finally:
+        ot.util.subprocess.run = real_run
+
+
+def test_herdr_launch_reports_os_errors_timeouts_and_run_stage():
+    real_run = ot.util.subprocess.run
+    try:
+        for failure, message in (
+            (OSError("missing"), "create failed: missing"),
+            (subprocess.TimeoutExpired(["herdr"], 10), "create timed out"),
+        ):
+
+            def fail_create(argv, failure=failure, **kwargs):
+                raise failure
+
+            ot.util.subprocess.run = fail_create
+            assert message in ot.herdr_launch("window", "/repo/a", "cmd")
+
+        for failure, message in (
+            (
+                SimpleNamespace(returncode=3, stdout="", stderr="rejected"),
+                "pane run failed: rejected",
+            ),
+            (OSError("closed"), "pane run failed for pane pane-9: closed"),
+            (subprocess.TimeoutExpired(["herdr"], 10), "pane run timed out for pane pane-9"),
+        ):
+            calls = 0
+
+            def fail_run(argv, failure=failure, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return SimpleNamespace(
+                        returncode=0,
+                        stdout='{"result":{"root_pane":{"pane_id":"pane-9"}}}',
+                        stderr="",
+                    )
+                if isinstance(failure, BaseException):
+                    raise failure
+                return failure
+
+            ot.util.subprocess.run = fail_run
+            error = ot.herdr_launch("window", "/repo/a", "cmd")
+            assert message in error and "pane-9" in error and calls == 2
+    finally:
+        ot.util.subprocess.run = real_run
+
+
+def test_launch_backend_prefers_hook_and_selects_innermost_multiplexer():
+    keys = ("OPENTAB_LAUNCHER", "TMUX", "TMUX_PANE", "HERDR_ENV", "TERM")
+    old_env = {key: os.environ.get(key) for key in keys}
+    real_current, real_tmux = ot.util._current_tty, ot.util._tmux_pane_tty
+    with tempfile.TemporaryDirectory() as tmp:
+        hook = os.path.join(tmp, "launcher")
+        with open(hook, "w") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(hook, 0o755)
+        try:
+            for key in keys:
+                os.environ.pop(key, None)
+            assert ot.launch_backend() is None
+            os.environ["TMUX"] = "tmux"
+            assert ot.launch_backend() == "tmux"
+            os.environ.pop("TMUX")
+            os.environ["HERDR_ENV"] = "1"
+            assert ot.launch_backend() == "herdr"
+            os.environ["OPENTAB_LAUNCHER"] = hook
+            assert ot.launch_backend() == "hook"
+            os.environ.pop("OPENTAB_LAUNCHER")
+            os.environ["TMUX"] = "tmux"
+            os.environ["TMUX_PANE"] = "%1"
+            ot.util._current_tty = lambda: "/dev/pts/7"
+            ot.util._tmux_pane_tty = lambda: "/dev/pts/7"
+            assert ot.launch_backend() == "tmux"  # tmux inside Herdr
+            ot.util._tmux_pane_tty = lambda: "/dev/pts/3"
+            assert ot.launch_backend() == "herdr"  # Herdr inside tmux
+            ot.util._current_tty = lambda: None
+            os.environ["TERM"] = "screen-256color"
+            assert ot.launch_backend() == "tmux"
+            os.environ["TERM"] = "xterm-256color"
+            assert ot.launch_backend() == "herdr"
+        finally:
+            ot.util._current_tty, ot.util._tmux_pane_tty = real_current, real_tmux
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
+def test_launch_command_dispatches_to_herdr_and_hook_popup_stays_async():
+    real_backend = ot.util.launch_backend
+    real_herdr = ot.util.herdr_launch
+    real_hook = ot.util.launcher_hook
+    real_popen = ot.util.subprocess.Popen
+    calls = []
+    try:
+        ot.util.launch_backend = lambda: "herdr"
+        ot.util.herdr_launch = lambda kind, directory, command: (
+            calls.append((kind, directory, command)) or None
+        )
+        assert ot.launch_command("window", "/repo/a", "cmd") is None
+        assert calls == [("window", "/repo/a", "cmd")]
+
+        ot.util.launch_backend = lambda: "hook"
+        ot.util.launcher_hook = lambda: "/tmp/hook"
+        ot.util.subprocess.Popen = lambda argv, **kwargs: calls.append(argv)
+        assert ot.launch_command("popup", "/repo/a", "cmd") is None
+        assert calls[-1] == ["/tmp/hook", "popup", "/repo/a", "cmd"]
+    finally:
+        ot.util.launch_backend = real_backend
+        ot.util.herdr_launch = real_herdr
+        ot.util.launcher_hook = real_hook
+        ot.util.subprocess.Popen = real_popen
 
 
 def test_fuzzy_score_matches_subsequences():

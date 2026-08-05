@@ -229,7 +229,7 @@ single session — cost split, model mix, subagent tree — and step back out wi
 | `f` | Live fuzzy filter, fzf-style |
 | `H` / `C` / `D` | Switch data harness · colour theme · demo mode — from anywhere, overlays included |
 | `M` | Filter every view to one **machine** (fleet only) — the harness picker's twin, for `--pull`/`--remote` boxes |
-| `L` | Relaunch the session in its own tool — tmux window/split/popup, or [your own launcher](docs/keys.md#custom-launchers); a session pulled from another machine reopens **on that machine**, over SSH |
+| `L` | Relaunch the session in its own tool — tmux window/split/popup, Herdr tab/split, or [your own launcher](docs/keys.md#custom-launchers); a session pulled from another machine reopens **on that machine**, over SSH |
 | `n` | Note ✎ the selected session — why it cost what it did. Searchable, exported, kept in its own file |
 | `e` / `o` | Export the current view to CSV / open the project's directory |
 | `K` | **Remap anything** — opens `~/.config/opentab/keymap.conf` in `$EDITOR` and reloads it the moment you return; every key in every view, picker and prompt is configurable, and the footer/help re-label themselves live ([docs](docs/keys.md#remap-any-key)) |

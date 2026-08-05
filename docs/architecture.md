@@ -138,6 +138,16 @@ by regex at paint time.
 - Subagent costs are recursive: `workflow_nodes` walks the parent chain so a root
   session's cost includes its whole subtree.
 
+### Herdr session launch
+
+Herdr session launch is CLI-only. For a tab, OpenTab runs `herdr tab create`; for a split,
+it runs `herdr pane split`. It parses `result.root_pane.pane_id` (tab) or
+`result.pane.pane_id` (split) from the command's JSON response and then runs
+`herdr pane run` with the session command. OpenTab does not configure or use a Herdr
+socket, and does not call `layout.apply`, `pane.current`, or `pane.send_input`. The visible
+and copyable command remains unchanged, including the single remote-command argument for
+remote SSH launches.
+
 ## The `$` what-if pricing model
 
 Every `Workflow` carries two cost snapshots: real recorded cost, and an

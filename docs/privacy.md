@@ -60,10 +60,15 @@ bundled price snapshot serves everything otherwise. See
 ## External programs
 
 Run only on the key you press: your file opener (`open`/`xdg-open`, or Explorer on
-Windows) for `o`, and for `L` either `tmux`, your own
+Windows) for `o`, and for `L` either `tmux`, `herdr`, your own
 [launcher hook](keys.md#custom-launchers) (`~/.config/opentab/launcher`), or your
 clipboard tool (`pbcopy`/`wl-copy`/`xclip`/`xsel`) for its copy target. All are
 disabled in `--demo`.
+
+When Herdr is selected, OpenTab invokes Herdr's CLI: `herdr tab create` or
+`herdr pane split`, reads `result.root_pane.pane_id` or `result.pane.pane_id` from the
+returned JSON, and then invokes `herdr pane run`. OpenTab has no Herdr socket
+configuration and does not use the deprecated direct socket operations.
 
 ## Demo mode
 
