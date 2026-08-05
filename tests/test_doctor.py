@@ -34,6 +34,7 @@ _ENV_KEYS = (
     "ZELLIJ",
     "DVTM",
     "BYOBU_BACKEND",
+    "TERM",
     "SHELL",
     "POWERSHELL_DISTRIBUTION_CHANNEL",
     "PSModulePath",
@@ -46,6 +47,9 @@ def _clean_env(**over):
     try:
         for key in _ENV_KEYS:
             os.environ.pop(key, None)
+        # Doctor correctly treats an absent TERM as a terminal failure. Give ordinary
+        # report tests the same usable terminal GitHub Actions does not provide.
+        os.environ["TERM"] = "xterm-256color"
         for key, value in over.items():
             os.environ[key] = value
         yield

@@ -1,4 +1,5 @@
 """App: state and the keyboard/mouse state machine."""
+
 from __future__ import annotations
 
 import argparse
@@ -72,8 +73,6 @@ from opentab.tui import bindings
 from opentab.tui.renderer import Renderer
 from opentab.util import (
     fuzzy_score,
-    in_tmux,
-    launcher_hook,
     model_row_1h_write,
     model_row_split,
     month_bounds,
@@ -451,6 +450,7 @@ class App:
         self._filter_before = ""  # the query as it was when `/` opened the mode (Esc restores)
         self.launch_menu: Workflow | None = None  # session awaiting an `L` launch-target key
         self.launch_menu_index = 0  # highlighted row in that picker
+        self.launch_menu_backend: str | None = None
         self.price_prompt = False  # the "unpriced models found" startup prompt
         self._price_prompt_done = False  # offered at most once per run
         self.prices_prompt_dismissed = False  # "don't ask again" pref (persisted in state)
@@ -3862,7 +3862,7 @@ class App:
 
     def resume_parts(self, workflow: Workflow) -> tuple[str, str] | None:
         # (project directory, bare resume command) for the selected session —
-        # the tmux launch paths pass the directory separately (-c/-d flags).
+        # launch backends receive the directory separately from the bare resume command.
         cli = RESUME_COMMANDS.get(workflow.source)
         directory = workflow.directory
         if not cli or not directory or directory == "(unknown)":
@@ -3889,17 +3889,14 @@ class App:
         return targets.get(str(key)) or None
 
     def launch_parts(self, workflow: Workflow) -> tuple[str, str] | None:
-        # (start directory, command) for the spawn targets. Locally that is the project
-        # and the bare resume command; for a session pulled from another box it is the
-        # same command wrapped in ssh, started from HOME -- the remote project path does
-        # not exist here, and tmux's -c would refuse a directory it can't enter.
+        # The command stays in its copyable shell form for every launch backend.
         parts = self.resume_parts(workflow)
         if not parts:
             return None
+        directory, command = parts
         target = self.machine_ssh_target(workflow)
         if not target:
-            return parts
-        directory, command = parts
+            return directory, command
         return os.path.expanduser("~"), util.ssh_command(target, directory, command)
 
     def resume_command(self, workflow: Workflow) -> str | None:
@@ -3916,11 +3913,9 @@ class App:
         return f"cd {shlex.quote(directory)} && {command}"
 
     def launch_available(self) -> bool:
-        # The spawn targets can only land next to opentab from inside tmux (its
-        # window/split/popup commands) or through a user launcher hook (which can
-        # drive zellij/kitty/etc. anywhere). Outside both the `L` menu still opens,
-        # but only offers copying the resume command (see launch_targets).
-        return in_tmux() or launcher_hook() is not None
+        # launch_backend picks the hook or innermost supported multiplexer when the
+        # picker opens; retain that backend snapshot for its rows and dispatch.
+        return self.launch_menu_backend is not None
 
     def unreachable_machine(self) -> str | None:
         # The machine name when the session in the `L` picker was pulled from a box we
@@ -3938,17 +3933,26 @@ class App:
         return None if self.machine_ssh_target(session) else name
 
     def launch_targets(self) -> tuple[tuple[str, str, str], ...]:
-        # The picker rows actually offered here: everything inside tmux (or with a
-        # launcher hook); only the clipboard copy outside — copying needs neither, and
-        # it is also all that is left for a machine with no ssh target.
+        # Herdr can create focused tabs and splits, but its external popups are not controllable.
         if self.launch_available() and not self.unreachable_machine():
-            return self.LAUNCH_TARGETS
+            targets = self.LAUNCH_TARGETS
+            if self.launch_menu_backend == "herdr":
+                targets = tuple(target for target in targets if target[1] != "popup")
+                if util.herdr_pane_id() is None:
+                    targets = tuple(
+                        target for target in targets if target[1] not in ("hsplit", "vsplit")
+                    )
+                targets = tuple(
+                    (key, kind, "new tab" if kind == "window" else label)
+                    for key, kind, label in targets
+                )
+            return targets
         return tuple(t for t in self.LAUNCH_TARGETS if t[1] == "copy")
 
     def launch_current(self) -> None:
         # `L`: open the launch menu (window/split/popup/copy — handled by
-        # handle_launch_key on the next keystroke). Outside tmux/hook the menu
-        # narrows to the copy target instead of disappearing (launch_targets).
+        # handle_launch_key on the next keystroke). Without a supported launch backend
+        # (tmux, Herdr, or a hook), the menu narrows to copying (launch_targets).
         if self.store.demo:
             self.notify("launch disabled in demo mode", "error")
             return
@@ -3961,6 +3965,7 @@ class App:
             return
         self.launch_menu = session
         self.launch_menu_index = 0
+        self.launch_menu_backend = util.launch_backend()
 
     def launch_session(self) -> Workflow | None:
         if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
@@ -3997,6 +4002,7 @@ class App:
             return True
         if act == "cancel":
             self.launch_menu = None
+            self.launch_menu_backend = None
             self.notice = "launch cancelled"
             return True
         # The per-target letters follow the target names (w/s/v/p/y today), so they
@@ -4008,11 +4014,13 @@ class App:
             index = self.launch_menu_index % n
         else:
             return True  # ignore unknown keys, keep the modal open
-        session, self.launch_menu = self.launch_menu, None
-        self._do_launch(session, targets[index][1])
+        session, backend = self.launch_menu, self.launch_menu_backend
+        self.launch_menu = None
+        self.launch_menu_backend = None
+        self._do_launch(session, targets[index][1], backend)
         return True
 
-    def _do_launch(self, session: Workflow, kind: str) -> None:
+    def _do_launch(self, session: Workflow, kind: str, backend: str | None) -> None:
         if kind == "copy":
             self.copy_resume_command(session)
             return
@@ -4021,7 +4029,7 @@ class App:
             self.notice = "launch cancelled"
             return
         directory, command = parts
-        error = util.tmux_launch(kind, directory, command)
+        error = util.launch_command(kind, directory, command, backend)
         if error:
             self.notify(f"launch failed: {error}", "error")
         else:
@@ -6809,6 +6817,7 @@ class App:
         if self.launch_menu is not None:
             if click or double:
                 self.launch_menu = None  # click cancels the launch picker
+                self.launch_menu_backend = None
             return True
         if self.toast_history:
             # The notices scrollback is drawn over the whole body, but it had no mouse
