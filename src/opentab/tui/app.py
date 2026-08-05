@@ -333,6 +333,10 @@ class App:
         "Harnesses": {"name": "Harness", "count": "Sessions"},
         "Machines": {"name": "Machine", "count": "Sessions"},
     }
+    # Every key any ranked tab accepts. What state.json validates a restored column
+    # against -- the stored key is per-OVERLAY and re-validated per tab at draw time, so
+    # a saved "tokens" has to survive a launch that opens on Models, which withdraws it.
+    TREND_SORT_KEYS = frozenset(k for opts in _TREND_SORT_COLUMNS.values() for k in opts)
     # The P overlay's layout modes, cycled by `p`: "flat" (the default) is one
     # ungrouped list -- cheapest-for-your-mix is a cross-vendor question -- while
     # "family" groups deduped models under their vendor (Anthropic/OpenAI/…) and
@@ -4665,11 +4669,12 @@ class App:
         if target == "trend":
             if key not in self.trend_sort_options():
                 return
-            # Compared against the EFFECTIVE key, not the stored one: a tab that
-            # withdrew the stored column shows cost's arrow, so clicking Cost there
-            # must flip cost rather than silently re-arm the withdrawn preference.
+            # Compared against the EFFECTIVE key and direction, not the stored ones: a
+            # tab that withdrew the stored column shows cost's arrow, so clicking Cost
+            # there must flip what is ON SCREEN rather than re-arm the withdrawn
+            # preference or invert against a direction the tab isn't honouring.
             flip = key == self.trend_sort_key()
-            self._resort_trends(key, reverse=not self.trend_sort_reverse if flip else False)
+            self._resort_trends(key, reverse=not self.trend_sort_reverse_for() if flip else False)
             return
         if target == "subagent":
             if key not in self.subagent_sort_options:
@@ -5902,6 +5907,14 @@ class App:
         options = self.trend_sort_options(tab)
         return self.trend_sort if self.trend_sort in options else "cost"
 
+    def trend_sort_reverse_for(self, tab: str | None = None) -> bool:
+        # The direction belongs to the STORED column, so a tab that withdrew that column
+        # must not inherit its flip: flipping Tokens on Providers and tabbing to Models
+        # (which has no Tokens column, so it falls back to cost) would otherwise rank the
+        # money cheapest-first -- an inversion the user asked for on a different column,
+        # on a tab they never touched. The session lists' session_sort_reverse() rule.
+        return self.trend_sort_reverse if self.trend_sort in self.trend_sort_options(tab) else False
+
     @staticmethod
     def _trend_sort_value(key: str, name: str, item) -> float | str:
         # One ranked row's value for a sort column. The Models tab's rows are
@@ -5924,7 +5937,7 @@ class App:
         # the primary): rows tied on tokens or session count keep the spend ranking the
         # tab is otherwise read by, instead of falling into dict order.
         key = self.trend_sort_key(tab)
-        desc = self.sort_descending(key, self.trend_sort_reverse)
+        desc = self.sort_descending(key, self.trend_sort_reverse_for(tab))
         if key == "name":  # keys are unique, so there is nothing to tie-break
             return sorted(rows, key=lambda kv: self._trend_sort_value("name", *kv), reverse=desc)
         ranked = sorted(rows, key=lambda kv: self._trend_sort_value("cost", *kv), reverse=True)

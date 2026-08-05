@@ -97,9 +97,14 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     # The Trends ranking column. Validated against the union of the ranked tabs'
     # vocabularies, not one tab's: the stored key is per-OVERLAY and re-validated per
     # tab at draw time (trend_sort_key), so a saved "tokens" must survive a launch that
-    # happens to open on Models, which withdraws it.
-    if state.get("trend_sort") in {k for opts in app._TREND_SORT_COLUMNS.values() for k in opts}:
-        app.trend_sort = state["trend_sort"]
+    # happens to open on Models, which withdraws it. The isinstance guard is not
+    # decoration: the union is a SET, and `[] in a_set` RAISES (unhashable) where the
+    # tuple-valued checks around it quietly answer False -- so a hand-edited
+    # `"trend_sort": []` would kill the launch before the first frame.
+    saved_trend_sort = state.get("trend_sort")
+    trend_sort_ok = isinstance(saved_trend_sort, str) and saved_trend_sort in app.TREND_SORT_KEYS
+    if trend_sort_ok:
+        app.trend_sort = saved_trend_sort
     if state.get("prices_view") in {k for k, _label in app.prices_views}:
         app.prices_view = state["prices_view"]
     # Restore a direction flip only when its column key was restored too -- a
@@ -113,7 +118,10 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.subagent_sort_reverse = state["subagent_sort_reverse"]
     if isinstance(state.get("prices_sort_reverse"), bool):
         app.prices_sort_reverse = state["prices_sort_reverse"]
-    if isinstance(state.get("trend_sort_reverse"), bool):
+    # Same rule as sort_reverse above, and for the same reason: a direction with no
+    # column behind it would flip the DEFAULT one, so a state file carrying only
+    # `"trend_sort_reverse": true` would open every ranking cheapest-first.
+    if isinstance(state.get("trend_sort_reverse"), bool) and trend_sort_ok:
         app.trend_sort_reverse = state["trend_sort_reverse"]
     mode = state.get("browse_mode")
     if mode in ("time", "projects", "machines"):

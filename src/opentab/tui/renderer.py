@@ -1113,7 +1113,7 @@ class Renderer:
         # asked "which tab is selected" would arrow the wrong column there.
         if self.app.trend_sort_key(tab) != key:
             return label
-        desc = self.sort_descending(key, self.app.trend_sort_reverse)
+        desc = self.sort_descending(key, self.app.trend_sort_reverse_for(tab))
         return f"{label} {'v' if desc else '^'}"
 
     def _scope_spans_days(self) -> bool:

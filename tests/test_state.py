@@ -60,6 +60,31 @@ def test_trend_sort_is_persisted_in_state():
     assert restored.trend_sort_key("Providers") == "tokens"
 
 
+def test_a_broken_trend_sort_never_takes_the_launch_down_with_it():
+    # state.json is a file people hand-edit. The trend column is validated against a
+    # SET (the union of the ranked tabs' vocabularies), and `[] in a_set` RAISES where
+    # the tuple-valued checks around it quietly answer False -- so an unhashable value
+    # would kill the launch before the first frame ever paints.
+    for bad in ([], {}, 42, None, "nonsense"):
+        app = app_with([workflow("a", "2026-06-01 12:00:00")])
+        ot.apply_state(app, app.args, {"trend_sort": bad, "trend_sort_reverse": True})
+        assert app.trend_sort == "cost" and not app.trend_sort_reverse
+
+
+def test_a_trend_direction_is_only_restored_with_its_column():
+    # A direction with no column behind it flips whatever the key fell back to: a state
+    # file carrying only the reverse would open EVERY ranking cheapest-first. Same rule
+    # as sort_reverse, which documents the same trap.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    ot.apply_state(app, app.args, {"trend_sort_reverse": True})
+    assert app.trend_sort == "cost" and not app.trend_sort_reverse
+    # The valid pair still round-trips, and stays scoped to the tabs that have it.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    ot.apply_state(app, app.args, {"trend_sort": "tokens", "trend_sort_reverse": True})
+    assert app.trend_sort_key("Providers") == "tokens" and app.trend_sort_reverse_for("Providers")
+    assert app.trend_sort_key("Models") == "cost" and not app.trend_sort_reverse_for("Models")
+
+
 def test_focused_time_panel_is_persisted_in_state():
     # Quit reading a month and you come back to that month, not to today. This is
     # also what keeps a saved "last_activity" sort alive across a restart: the sort

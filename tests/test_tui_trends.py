@@ -794,6 +794,28 @@ def test_trend_models_offers_only_the_columns_it_draws():
     assert app.trend_sort_key() == "tokens"
 
 
+def test_a_withdrawn_column_does_not_carry_its_direction_flip_onto_cost():
+    # The direction belongs to the STORED column. Flip Tokens on Providers, tab to
+    # Models -- which has no Tokens column and falls back to cost -- and inheriting that
+    # flip would rank the money CHEAPEST-first: an inversion asked for on a different
+    # column, on a tab the user never flipped. (The session lists' own rule, which this
+    # one was missing.)
+    app = _open_trend_tab(_ranked_app(), "Providers")
+    app.apply_header_sort("tokens", "trend")
+    app.apply_header_sort("tokens", "trend")  # re-click -> ascending tokens
+    assert app.trend_sort_reverse
+    app.handle_key(None, ord("h"))  # -> Models
+    assert app.trend_sort_key() == "cost" and not app.trend_sort_reverse_for()
+    assert app.trend_ranked_keys() == ["anthropic/opus", "openai/gpt-5"]  # dearest first
+    assert "Cost v" in box_cells(app.renderer.trend_models(90, 12))[0]
+    # Clicking the shown column flips what is ON SCREEN, not the withdrawn preference.
+    app.apply_header_sort("cost", "trend")
+    assert app.trend_sort == "cost" and app.trend_ranked_keys() == [
+        "openai/gpt-5",
+        "anthropic/opus",
+    ]
+
+
 def test_trend_sort_leaves_the_per_scope_harness_tables_alone():
     # source_table/machine_table also serve the per-month/day/project Harnesses tabs,
     # which have no cursor and no sort of their own -- a Trends ordering must not
