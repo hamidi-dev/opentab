@@ -48,6 +48,7 @@ from opentab.util import (
     context_size,
     model_row_1h_write,
     model_row_split,
+    tool_names,
     tool_namespace,
 )
 from opentab.webpage import render_html
@@ -439,6 +440,20 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     # Shipped rather than derived: the page has the total tokens but not
                     # the cache split, and one number beats shipping three.
                     "cached": None if not curve else cached_share(r),
+                    # The tools this step called, in call order, repeats kept (two Bash
+                    # calls = two entries, as the TUI's cell counts them). Shipped raw
+                    # rather than pre-labelled: the page folds and shortens them for its
+                    # own column widths, exactly as the TUI does with the same rows.
+                    # Backends that record no per-step tool calls ship [] and both
+                    # frontends then drop the column rather than draw it empty.
+                    #
+                    # Through util.tool_names, NOT a bare list(): the page's own gate
+                    # can only reject what still looks wrong on arrival, and `list()`
+                    # turns the bad shapes into plausible ones -- a bare "Bash" becomes
+                    # four one-letter tools that pass every client-side check, a dict
+                    # silently yields its KEYS, and a non-iterable raises inside the
+                    # /api/session handler. Sanitize at the boundary, once.
+                    "tools": tool_names(r.get("tools")),
                     "promptId": r.get("prompt_id") or "",
                     "promptTitle": r.get("prompt_title") or "",
                     "promptFull": r.get("prompt_full") or "",

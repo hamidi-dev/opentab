@@ -113,6 +113,7 @@ def _turn(prompt="do the port", pid="p1"):
         "reasoning": 0,
         "cache_read": 250,
         "cache_write": 0,
+        "tools": ["Bash", "Bash", "Read"],
     }
 
 
@@ -137,12 +138,37 @@ def test_v2_export_round_trips_turns_tools_and_context():
         assert rs.supports_turns("s1") and rs.supports_tools("s1")
         assert rs.supports_context("s1") and rs.supports_context_curve("s1")
         assert rs.message_timeline("s1")[0]["prompt_title"] == "do the port"
+        # The tool names travel too. _clean_turn is a WHITELIST, so a field missing
+        # from it is a column that silently vanishes on every pulled session while the
+        # local machine still draws it -- two views disagreeing about the same feature.
+        assert rs.message_timeline("s1")[0]["tools"] == ["Bash", "Bash", "Read"]
         assert rs.tool_breakdown("s1")[0]["tool"] == "Bash"
         ctx = rs.context_breakdown("s1")[0]
         # detail_context sums count per category -- it must survive the round-trip, not
         # get dropped on load (a KeyError mid-draw the day a remote session's Context tab opens).
         assert ctx["est_tokens"] == 400 and ctx["count"] == 3
         assert not rs.supports_turns("nope")  # a session the export never carried stays hidden
+
+
+def test_remote_turn_tools_survive_a_hostile_payload():
+    # The payload is ANOTHER MACHINE's JSON -- possibly an older opentab, a truncated
+    # pull, or a hand-edited file. Every shape that isn't a list of strings has to
+    # degrade to "no tools", because the alternative is tool_call_label raising in the
+    # middle of a paint, on a session you can only reach from the fleet view.
+    from opentab.stores.remote import _clean_turn
+
+    assert _clean_turn({})["tools"] == []  # an older export with no field at all
+    assert _clean_turn({"tools": None})["tools"] == []
+    # A bare string would iterate into CHARACTERS -- "Bash" becoming four one-letter
+    # tools is the kind of wrong that looks like real data in the fleet view.
+    assert _clean_turn({"tools": "Bash"})["tools"] == []
+    assert _clean_turn({"tools": 7})["tools"] == []
+    assert _clean_turn({"tools": {"a": 1}})["tools"] == []
+    # A mixed list keeps the usable names and drops the rest, rather than all-or-nothing.
+    assert _clean_turn({"tools": ["Bash", None, 3, "", {"x": 1}, "Read"]})["tools"] == [
+        "Bash",
+        "Read",
+    ]
 
 
 class _BatchTurnsStore(_FakeExtrasStore):

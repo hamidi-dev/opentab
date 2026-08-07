@@ -148,6 +148,50 @@ def test_web_session_extras_reports_turns_with_both_costs():
     assert ctx["mixedWindows"] is False and ctx["comp"] == []
 
 
+def test_web_turns_ship_the_tools_each_step_called():
+    # The page names what each step DID in its drilled view, and counts the calls on the
+    # prompt row -- so the raw names travel per turn. Raw, not pre-labelled: folding and
+    # shortening are width questions, and the page answers them at its own widths.
+    class Working(TurnsFakeStore):
+        def message_timeline(self, workflow_id):
+            rows = super().message_timeline(workflow_id)
+            rows[0]["tools"] = ["Read", "Bash", "Bash"]  # repeats kept: two calls, two
+            return rows
+
+    w = workflow("w1", "2026-05-01 10:00:00", cost=0.5)
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(Working([w]), args)
+    first, second = ot.session_extras(app, "w1")["turns"]
+    assert first["tools"] == ["Read", "Bash", "Bash"]
+    # A backend that records none ships [], so both frontends drop the column rather
+    # than draw it empty -- never a missing key the page would have to guard.
+    assert second["tools"] == []
+
+
+def test_web_turn_tools_are_sanitized_at_the_boundary_not_by_the_page():
+    # The page's own gate can only reject what still LOOKS wrong on arrival, and a bare
+    # list() launders the bad shapes into plausible ones: "Bash" becomes four one-letter
+    # tools that pass every client-side check, a dict yields its KEYS, and a
+    # non-iterable raises inside the /api/session handler. So the payload goes through
+    # the same util.tool_names gate the TUI uses.
+    def shipped(value):
+        class S(TurnsFakeStore):
+            def message_timeline(self, workflow_id):
+                rows = super().message_timeline(workflow_id)
+                rows[0]["tools"] = value
+                return rows
+
+        w = workflow("w1", "2026-05-01 10:00:00", cost=0.5)
+        args = type("Args", (), {"since": None, "until": None, "days": None})()
+        return ot.session_extras(ot.App(S([w]), args), "w1")["turns"][0]["tools"]
+
+    assert shipped("Bash") == []  # NOT ["B", "a", "s", "h"]
+    assert shipped({"Bash": 1}) == []  # NOT ["Bash"] off the keys
+    assert shipped(3) == []  # NOT a TypeError out of the endpoint
+    assert shipped([["x"], 3, None, "", "Bash"]) == ["Bash"]
+    assert shipped(("Read", "Bash")) == ["Read", "Bash"]
+
+
 def test_web_turns_carry_the_context_size_and_mark_compactions():
     # The page marks compactions in its Turns table like the TUI's detail_turns, so the
     # per-turn context size has to travel on the turn row (the Context tab's `points` are

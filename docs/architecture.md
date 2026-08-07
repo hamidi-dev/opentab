@@ -71,6 +71,14 @@ Two per-session opt-ins ride on top via `getattr`, each gated by
 `tool_breakdown` (the Tools tab) and `message_timeline` (the Turns tab). Both are
 fetched **lazily on drill-in**, never as startup scans.
 
+A timeline row may also carry a `tools` list — the names that step invoked, in call
+order with repeats kept — which the Turns tab draws per turn and counts per prompt.
+The file backends build it in their parser; OpenCode's live in a separate `part`
+table and are joined on by `Store._timeline_tools`, deliberately as **one grouped
+scan** rather than a per-row subquery (correlated, that costs the whole-corpus export
+300ms → 3.8s). Both frontends gate the column on the **rows**, not on a capability
+flag, so a backend that records no per-step calls simply has no column.
+
 Cost semantics are also part of the contract: a store's `records_cost` says whether
 it records real money. Token-only backends (Claude, Codex, Copilot, VS Code) report
 `cost=0` with tokens in the `unpriced_*` splits, and the normal `$` machinery turns

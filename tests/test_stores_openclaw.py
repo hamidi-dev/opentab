@@ -339,3 +339,70 @@ def test_openclaw_survives_junk_lines_that_are_valid_json_but_not_objects():
         assert len(w) == 1
         assert w[0].total_tokens == 200  # inf -> 0, both records survive
         assert w[0].total_cost == 0.5  # and no inf reaches a total
+
+
+def test_openclaw_turns_name_the_tools_each_step_called():
+    # OpenClaw records every step's toolCall blocks -- 4,106 of them over 6,489
+    # assistant messages on a real corpus -- so the Turns tab can name what each step
+    # DID, and the Tools tab can attribute that step's tokens across them. This was
+    # missing not because the data was absent but because the parser only ever read
+    # user content; the tab was hidden on a backend that could always support it.
+    with tempfile.TemporaryDirectory() as root:
+        _ocl_write(
+            root,
+            "clawd",
+            OCL_SID,
+            [
+                _ocl_user("do the thing", ts="2026-04-27T16:00:00.000Z"),
+                _ocl_msg(
+                    "model-x",
+                    100,
+                    10,
+                    mid="a1",
+                    ts="2026-04-27T16:00:10.000Z",
+                    tools=["bash", "bash", "read"],
+                ),
+                _ocl_msg(
+                    "model-x", 200, 20, mid="a2", ts="2026-04-27T16:00:20.000Z", tools=["edit"]
+                ),
+                _ocl_msg("model-x", 300, 30, mid="a3", ts="2026-04-27T16:00:30.000Z"),
+            ],
+        )
+        st = ot.OpenClawStore(root, _ocl_args())
+        rows = st.message_timeline(OCL_SID)
+        # In call order, duplicates kept: two bash calls are two calls, two shares.
+        assert [r["tools"] for r in rows] == [["bash", "bash", "read"], ["edit"], []]
+        assert st.supports_tools(OCL_SID) is True
+
+        # The step's tokens split evenly across its calls: a1's 110 over three calls
+        # gives bash 2/3 and read 1/3; a3 called nothing and contributes nowhere.
+        tools = {r["tool"]: r for r in st.tool_breakdown(OCL_SID)}
+        assert set(tools) == {"bash", "read", "edit"}
+        assert tools["bash"]["calls"] == 2
+        assert round(tools["bash"]["tokens_total"]) == round(110 * 2 / 3)
+        assert round(tools["read"]["tokens_total"]) == round(110 / 3)
+        assert tools["edit"]["tokens_total"] == 220
+        # "tokens in steps that used this tool" -- so the total is the tool-calling
+        # steps' tokens (110 + 220), never the session's.
+        assert round(sum(r["tokens_total"] for r in tools.values())) == 330
+
+
+def test_openclaw_tool_blocks_survive_a_malformed_name():
+    # The content list is whatever the gateway wrote. A block with no name, a
+    # non-string name, or a content field that isn't a list must degrade to "no
+    # tools" -- a malformed entry reaching a dict key raises mid-paint.
+    with tempfile.TemporaryDirectory() as root:
+        msg = _ocl_msg("model-x", 100, 10, mid="a1")
+        msg["message"]["content"] = [
+            {"type": "toolCall", "id": "c1", "name": "bash"},
+            {"type": "toolCall", "id": "c2"},  # no name
+            {"type": "toolCall", "id": "c3", "name": ["x"]},  # not a string
+            {"type": "toolCall", "id": "c4", "name": ""},  # empty
+            {"type": "text", "text": "hello"},  # not a tool call
+            "not-a-dict",
+        ]
+        bad = _ocl_msg("model-x", 100, 10, mid="a2", ts="2026-04-27T16:02:00.000Z")
+        bad["message"]["content"] = "not-a-list"
+        _ocl_write(root, "clawd", OCL_SID, [_ocl_user("go"), msg, bad])
+        rows = ot.OpenClawStore(root, _ocl_args()).message_timeline(OCL_SID)
+        assert [r["tools"] for r in rows] == [["bash"], []]

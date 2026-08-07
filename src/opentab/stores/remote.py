@@ -35,6 +35,7 @@ from urllib.parse import unquote
 
 from opentab.demo import DEMO_ALL, demo_config, demo_machine, scramble_node, scramble_workflow
 from opentab.models import Workflow
+from opentab.util import tool_names
 
 # The on-disk summary format version. Separate from CachedStore.CACHE_VERSION on
 # purpose: a summary is a portable interface between machines that may run different
@@ -108,6 +109,13 @@ def _clean_turn(row: dict) -> dict:
         "prompt_title": str(row.get("prompt_title") or ""),
         "prompt_full": str(row.get("prompt_full") or row.get("prompt_title") or ""),
         "cost": _coerce_float(row.get("cost")),
+        # The tools this step called. This whitelist is what a pulled machine's Turns
+        # tab gets, so a field missing here is a column that silently disappears on
+        # every remote session while the local one still draws it -- the two-views-
+        # disagreeing failure. Sanitized through the SAME gate the renderer uses, so a
+        # hostile or older payload can't put anything through here that a local
+        # transcript couldn't (util.tool_names documents what it rejects and why).
+        "tools": tool_names(row.get("tools")),
     }
     for field in _TURN_INT_FIELDS:
         turn[field] = _coerce_int(row.get(field))

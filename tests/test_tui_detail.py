@@ -1593,12 +1593,157 @@ class _TurnNavStore(FakeStore):
         return rows
 
 
-def _turns_app():
+class _TurnToolStore(_TurnNavStore):
+    # The same three prompt groups, but each turn names the tools it called -- p1 works
+    # (Read then Bash ×2), p2 answers in prose (no calls at all), p3 drives an MCP
+    # server. Enough to exercise the cell, the "-" for a call-free prompt, and the MCP
+    # shortening in one fixture.
+    _TOOLS = {
+        ("p1", 0): ["Read"],
+        ("p1", 1): ["Bash", "Bash"],
+        ("p3", 0): ["mcp__chrome-devtools__take_screenshot"],
+        ("p3", 1): ["Read"],
+    }
+
+    def message_timeline(self, wid):
+        rows = super().message_timeline(wid)
+        for i, r in enumerate(rows):  # two turns per group, in order
+            r["tools"] = list(self._TOOLS.get((r["prompt_id"], i % 2), []))
+        return rows
+
+
+def _counting_turn_store(n_prompts, calls_per_turn=3):
+    # A store with an arbitrary number of prompt groups, so a test can drive idx_w (the
+    # "#" column, sized from the group count) independently of the tool cells.
+    class _Counting(_TurnNavStore):
+        def message_timeline(self, wid):
+            return [
+                {
+                    "time": f"2026-06-01 12:{i // 60 % 60:02}:{i % 60:02}",
+                    "agent": "-",
+                    "depth": 0,
+                    "model_name": "anthropic/claude-sonnet-5",
+                    "cost": 0.5,
+                    "input": 1000,
+                    "output": 50,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "tokens_total": 1050,
+                    "prompt_id": f"p{i}",
+                    "prompt_title": f"prompt {i}",
+                    "prompt_full": f"full {i}",
+                    "tools": ["Bash"] * calls_per_turn,
+                }
+                for i in range(n_prompts)
+            ]
+
+    return _Counting
+
+
+def _turns_app(store_cls=_TurnNavStore):
     args = type("Args", (), {"since": None, "until": None, "days": None})()
-    app = ot.App(_TurnNavStore([workflow("ses_1", "2026-06-01 12:00:00")]), args)
+    app = ot.App(store_cls([workflow("ses_1", "2026-06-01 12:00:00")]), args)
     app.view = "session"
     app.tab = app.current_tabs().index("Turns")
     return app
+
+
+def test_turns_name_the_tools_each_step_called():
+    # The drilled view is where "what did this turn DO" belongs: one row per LLM step,
+    # so the Tools cell names that step's calls in call order with repeats folded.
+    app = _turns_app(_TurnToolStore)
+    wf = app.current_session()
+    app.open_turn_drill(0)  # p1: Read, then Bash x2
+    drilled = app.renderer.detail_turn_drill(wf, 120)
+    assert "Tools" in box_cells(drilled)[0]
+    body = [ln for ln in drilled if "sonnet" in ln]
+    assert "Read" in body[0] and "Bash ×2" in body[1]
+    # The TOTAL row carries the prompt's whole mix, busiest first.
+    assert "Bash ×2, Read" in "\n".join(drilled)
+
+    # An MCP tool sheds the "mcp__" wrapper but keeps its server.
+    app.open_turn_drill(2)
+    assert "chrome-devtools/take_screenshot" in "\n".join(app.renderer.detail_turn_drill(wf, 120))
+
+    # A prompt that called nothing gets no column at all -- a stripe of dashes is width
+    # the model name should have had.
+    app.open_turn_drill(1)
+    assert "Tools" not in box_cells(app.renderer.detail_turn_drill(wf, 120))[0]
+
+
+def test_turns_table_counts_the_calls_and_drops_the_column_without_them():
+    # The prompt table carries the COUNT, not the names: the names are open-ended and
+    # this row is already the widest on the pane, so they live one keystroke away.
+    app = _turns_app(_TurnToolStore)
+    lines = app.renderer.detail_turns(app.current_session(), 130)
+    header = box_cells(lines)[0]
+    assert "Calls" in header
+    rows = [ln for ln in lines if "prompt p" in ln]
+    assert [ln.split()[6] for ln in rows] == ["2", "2", "2"]  # Turns
+    # p1 made 3 calls, p2 none ("-", never "0"), p3 two.
+    assert [ln.split()[7] for ln in rows] == ["3", "-", "2"]
+    assert "· Calls: tool calls the prompt made" in "\n".join(lines)
+    # The TOTAL row sums them: 6 turns, 3 + 0 + 2 calls.
+    total = next(ln for ln in lines if "TOTAL" in ln).split()
+    assert total[2] == "6" and total[3] == "5"
+
+    # A backend that records no per-step tool calls shows no column and no note. Its
+    # OWN renderer, deliberately: both fixtures name the session "ses_1", so handing
+    # this app's session to the tool-store renderer would just re-read the tool rows.
+    bare = _turns_app()
+    plain = bare.renderer.detail_turns(bare.current_session(), 130)
+    assert "Calls" not in box_cells(plain)[0]
+    assert "· Calls:" not in "\n".join(plain)
+
+
+def test_turns_optional_columns_never_get_clipped_by_the_frame():
+    # The budget's whole purpose: an optional column is DROPPED, never squeezed until
+    # the ruled box truncates it. Written as three independent subtractions it drifts
+    # by one cell per column that forgot its separator, and the symptom is silent --
+    # box_row clips the tail, so "Cumulative" reads "Cumula..." with nothing raising.
+    # Both frontends' widths are swept, since the header is the widest line either
+    # draws. 76/74 are the documented PROMPT_MIN/model floors, below which the prompt
+    # column deliberately wins over the frame (a prompt list is read by its prompts).
+    app = _turns_app(_TurnToolStore)
+    wf = app.current_session()
+    for w in range(77, 220):
+        app.turn_drill = None
+        assert "..." not in box_cells(app.renderer.detail_turns(wf, w))[0], w
+    for w in range(75, 220):
+        app.open_turn_drill(0)
+        assert "..." not in box_cells(app.renderer.detail_turn_drill(wf, w))[0], w
+
+    # ...and across idx_w, the other input to the budget: a session with 1,000 prompts
+    # spends two more cells on the "#" column before any optional cell is weighed, so a
+    # budget that is exact at idx_w=2 can still clip at idx_w=4.
+    for count in (99, 999):
+        many = _turns_app(_counting_turn_store(count))
+        wide = many.current_session()
+        for w in range(77, 220):
+            many.turn_drill = None
+            lines = many.renderer.detail_turns(wide, w)
+            assert "..." not in box_cells(lines)[0], (count, w)
+            assert all(len(ln) <= w for ln in lines), (count, w)
+
+
+def test_turns_calls_column_is_sized_from_the_data_not_the_header():
+    # A fixed-width count field is right until a session exceeds it, and then the cell
+    # overflows and shoves every later column out through the frame. The TOTAL sums the
+    # prompts, so it is what sets the width.
+    class Busy(_TurnToolStore):
+        def message_timeline(self, wid):
+            rows = super().message_timeline(wid)
+            for r in rows:
+                r["tools"] = ["Bash"] * 40_000  # 6-digit total across six turns
+            return rows
+
+    app = _turns_app(Busy)
+    lines = app.renderer.detail_turns(app.current_session(), 130)
+    assert "..." not in box_cells(lines)[0]
+    total = next(ln for ln in lines if "TOTAL" in ln)
+    assert total.split()[3] == "240000"  # printed whole, not clipped to five cells
+    assert all(len(ln) <= 130 for ln in lines)
 
 
 def test_turns_cursor_walks_the_prompt_groups_with_jk_and_gG():

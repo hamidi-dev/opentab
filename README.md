@@ -42,7 +42,8 @@ no accounts — it opens those files **read-only**. Standard-library-only at run
   subagent tree, with a live fuzzy filter (fzf-style) and live date-range scoping.
 - **Trends** — daily / weekly / monthly charts, a calendar spend heatmap, and model /
   provider / harness rankings; every one navigable down to a single session.
-- **Turns and Tools** — per-turn cost over time inside a session, and token attribution
+- **Turns and Tools** — per-turn cost over time inside a session, each prompt carrying
+  the tool calls it made and each turn naming the tools it ran, and token attribution
   per tool call, with a spend treemap above the exact table — area is what a tool cost
   in total, shade is what it costs *per call*.
 - **Context** — a session's context window over time: a heat-shaded growth curve with
@@ -155,7 +156,7 @@ What each tool's records support on top:
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | curve |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | curve |
 | omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | curve |
-| OpenClaw | mixed — metered real, rest estimated | — | ✓ | — | curve |
+| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | curve |
 | zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
 | CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² | curve ⁴ |
 

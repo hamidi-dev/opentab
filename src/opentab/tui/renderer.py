@@ -82,6 +82,9 @@ from opentab.util import (
     context_compactions,
     context_size,
     fuzzy_score,
+    tool_call_label,
+    tool_mix_label,
+    tool_names,
     tool_namespace,
     unicode_screen,
 )
@@ -4428,10 +4431,23 @@ class Renderer:
             max(5, max((len(_turn_agent(rows[i])) for i in g["indices"]), default=5)),
         )
         inner = max(1, width - self.BOX_CHROME - 2)
-        mw = max(12, min(30, inner - (idx_w + agent_w + 14 + 6 + 9 + 9 + 6)))
+        fixed = idx_w + agent_w + 14 + 6 + 9 + 9 + 6
+        mw = max(12, min(30, inner - fixed))
+        # What each step actually DID, beside what it cost -- the one cell that turns a
+        # column of near-identical numbers into a readable trace ("Read, Read, Bash ×3").
+        # It takes whatever the model column left (that one is a fixed vocabulary and
+        # caps at 30; a tool list is open-ended), and is dropped entirely when the pane
+        # can't hold the floor or the prompt called nothing -- a backend that records no
+        # per-step tool calls would otherwise get a blank column charged to the model
+        # name. Gated on the ROWS, not on a backend flag, so it follows the data.
+        TOOLS_MIN = 10
+        labels = {i: tool_call_label(rows[i].get("tools")) for i in g["indices"]}
+        tools_w = inner - fixed - mw - 1
+        tools_w = tools_w if any(labels.values()) and tools_w >= TOOLS_MIN else 0
         header = (
             f"  {'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} {pad('Agent', agent_w)} "
-            f"{'Cached':>6} {'Tokens':>9} {'Cost':>9}"
+            + (f"{pad('Tools', tools_w)} " if tools_w else "")
+            + f"{'Cached':>6} {'Tokens':>9} {'Cost':>9}"
         )
         body = []
         for i in g["indices"]:
@@ -4441,14 +4457,23 @@ class Renderer:
                 f"  {i + 1:>{idx_w}} {(r.get('time') or '--')[5:19]:<14} "
                 f"{pad(shorten(r['model_name'], mw), mw)} "
                 f"{pad(shorten(_turn_agent(r), agent_w), agent_w)} "
-                f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
+                + (f"{pad(shorten(labels[i] or '-', tools_w), tools_w)} " if tools_w else "")
+                + f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
                 f"{human_tokens(r['tokens_total']):>9} {money(costs[i]):>9}"
             )
         totals_row = None
         if len(body) > 1:
             totals_row = (
                 f"  {'':>{idx_w}} {pad('TOTAL', 14)} {pad('', mw)} {pad('', agent_w)} "
-                f"{'':>6} {human_tokens(g['tokens']):>9} {money(g['cost']):>9}"
+                # The prompt's whole tool mix, busiest first -- shortened like every
+                # other cell (pad only fills, it never truncates, so an unshortened
+                # 40-tool mix would walk straight through the box's right rule).
+                + (
+                    f"{pad(shorten(tool_mix_label([rows[i] for i in g['indices']]), tools_w), tools_w)} "
+                    if tools_w
+                    else ""
+                )
+                + f"{'':>6} {human_tokens(g['tokens']):>9} {money(g['cost']):>9}"
             )
         lines += self._ruled_box(f"# Turns of prompt {n}", header, body, totals_row, [], width)
         lines += ["", f"· {self._key('main', 'back')} back to the prompts."]
@@ -4494,6 +4519,8 @@ class Renderer:
                         "tokens": 0,
                         "cost": 0.0,
                         "indices": [],
+                        "calls": 0,  # tool calls this prompt made, across its turns
+                        "_rows": [],  # the group's turn rows, for the tool mix
                         "_first": None,  # the group's first main-thread turn
                     }
                 )
@@ -4502,6 +4529,11 @@ class Renderer:
             g["tokens"] += int(r.get("tokens_total") or 0)
             g["cost"] += cost
             g["indices"].append(i)
+            # Through the same gate the labels use, so the count can never disagree
+            # with the names it summarizes (an unusable entry counted here but dropped
+            # there would read as "3 calls" over a two-tool cell).
+            g["calls"] += len(tool_names(r.get("tools")))
+            g["_rows"].append(r)
             # Subagents run in their OWN context windows, so they neither answer for the
             # main thread's cache nor stand in for it: a prompt whose turns were all
             # subagent work (an interrupt lands like this) reports no share at all rather
@@ -4510,6 +4542,7 @@ class Renderer:
                 g["_first"] = r
         for g in groups:
             g["cached"] = cached_share(g["_first"]) if g["_first"] is not None else None
+            g["tools"] = tool_mix_label(g.pop("_rows"))
         return groups
 
     def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
@@ -4583,15 +4616,45 @@ class Renderer:
         PROMPT_MIN = 20
         inner = max(1, width - self.BOX_CHROME)  # the ruled box's gutters
         base = idx_w + time_w + turns_w + cached_w + tok_w + cost_w + 8
-        cum_w = 14 if inner - base - 14 >= PROMPT_MIN else 0
-        bar_w = 8 if inner - base - cum_w - 8 >= PROMPT_MIN + 12 else 0
-        fixed = base + cum_w + bar_w + (1 if cum_w else 0) + (1 if bar_w else 0)
+        # Each optional cell is tested against what is ALREADY spoken for, its own
+        # SEPARATOR included -- `used`, not a fresh expression per column. Written as
+        # three independent subtractions this drifts by exactly one cell per column
+        # that forgot its space, and the symptom is silent: the prompt floors at
+        # PROMPT_MIN, the row comes out one wider than `inner`, and box_row TRUNCATES
+        # it -- so the last column is clipped rather than dropped, which is the precise
+        # outcome this budgeting exists to prevent. Measured before this rewrite: a
+        # 93-column pane clipped "Cumulative" to "Cumula...", and an 87-column one did
+        # the same without the Calls cell even being drawn.
+        used = base
+        cum_w = 14 if inner - used - 15 >= PROMPT_MIN else 0
+        used += cum_w + (1 if cum_w else 0)
+        # How many tool calls the prompt made -- the count only, since the NAMES are an
+        # open-ended list and this row is already the widest thing on the pane; they
+        # live one keystroke away in the prompt's own view. Beside Turns it separates
+        # "12 turns of thinking" from "12 turns of grepping". Dropped when no group
+        # made a call, so a backend that records no per-step tools shows no column
+        # rather than a stripe of zeros.
+        # Sized from the DATA, like idx_w above, not pinned at the header's width: a
+        # fixed field is only ever right until a session exceeds it, and then the cell
+        # overflows and shoves every column after it out through the frame. Real
+        # corpora sit far under this (389 calls in the busiest prompt measured, 1,735
+        # in a whole session), which is exactly why a fixed 5 would have looked correct
+        # indefinitely. The TOTAL row sums them, so it sets the floor.
+        total_calls = sum(g["calls"] for g in groups)
+        calls_w = max(len("Calls"), len(str(total_calls)))
+        calls_w = calls_w if total_calls and inner - used - calls_w - 1 >= PROMPT_MIN else 0
+        used += calls_w + (1 if calls_w else 0)
+        # The bar restates the Cost cell, so it yields first and keeps a wider cushion.
+        bar_w = 8 if inner - used - 9 >= PROMPT_MIN + 12 else 0
+        used += bar_w + (1 if bar_w else 0)
+        fixed = used
         peak = max((g["cost"] for g in groups), default=0.0)
         pw = max(PROMPT_MIN, inner - fixed)  # the prompt text takes whatever is left
 
         header = (
             f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Prompt':<{pw}} {'Turns':>{turns_w}} "
-            f"{'Cached':>{cached_w}} {'Tokens':>{tok_w}} {'Cost':>{cost_w}}"
+            + (f"{'Calls':>{calls_w}} " if calls_w else "")
+            + f"{'Cached':>{cached_w}} {'Tokens':>{tok_w}} {'Cost':>{cost_w}}"
             + (f" {'':<{bar_w}}" if bar_w else "")
             + (f" {'Cumulative':>{cum_w}}" if cum_w else "")
         )
@@ -4628,7 +4691,12 @@ class Renderer:
             cursor_rows.append(len(body))
             body.append(
                 f"  {n:>{idx_w}} {g['time'][5:16]:<{time_w}} {pad(shorten(title, pw), pw)} "
-                f"{g['turns']:>{turns_w}} {cached:>{cached_w}} "
+                f"{g['turns']:>{turns_w}} "
+                # A prompt that called nothing reads "-", not "0": the tab already uses
+                # a red $0.00 to mean "unpriced", and a column of zeros invites the same
+                # second glance for something that is simply absent.
+                + (f"{(str(g['calls']) if g['calls'] else '-'):>{calls_w}} " if calls_w else "")
+                + f"{cached:>{cached_w}} "
                 f"{human_tokens(g['tokens']):>{tok_w}} {money(g['cost']):>{cost_w}}"
                 + (f" {cost_bar(g['cost'], peak, bar_w)}" if bar_w else "")
                 + (f" {cumlabel:>{cum_w}}" if cum_w else "")
@@ -4641,7 +4709,9 @@ class Renderer:
             # Cached is a per-prompt ratio, not a quantity, so it stays blank.
             totals_row = (
                 f"  {'':>{idx_w}} {pad('TOTAL', time_w)} {'':<{pw}} "
-                f"{sum(g['turns'] for g in groups):>{turns_w}} {'':>{cached_w}} "
+                f"{sum(g['turns'] for g in groups):>{turns_w}} "
+                + (f"{sum(g['calls'] for g in groups):>{calls_w}} " if calls_w else "")
+                + f"{'':>{cached_w}} "
                 f"{human_tokens(sum(g['tokens'] for g in groups)):>{tok_w}} "
                 f"{money(total):>{cost_w}}"
             )
@@ -4659,6 +4729,11 @@ class Renderer:
             "· Cached: how much of the context came from the cache when that prompt STARTED "
             "— near 100% is normal, and anything low re-bought what it was missing.",
         ]
+        if calls_w:
+            notes.append(
+                "· Calls: tool calls the prompt made — which tools, and on which turn, "
+                "are in the prompt's own view."
+            )
         if comps:
             notes.append(
                 "· ▼ the context window was cleared before that turn — the Context tab charts it."

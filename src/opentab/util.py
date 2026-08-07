@@ -329,6 +329,72 @@ def tool_namespace(tool: str) -> str:
     return tool.split("_", 1)[0] if "_" in tool else tool
 
 
+def short_tool_name(tool: str) -> str:
+    # An MCP tool's name for a per-turn cell: "mcp__chrome-devtools__take_screenshot"
+    # -> "chrome-devtools/take_screenshot". The "mcp__" wrapper is noise in a column
+    # this narrow, but the SERVER is not -- two servers can expose the same tool name,
+    # and the Tools tab rolls up by server precisely because that is the distinction
+    # that matters. Everything else stands verbatim: unlike tool_namespace, this does
+    # NOT split on a single "_", which would cut "update_plan" down to "update".
+    if tool.startswith("mcp__"):
+        parts = tool.split("__")
+        if len(parts) > 2 and parts[1]:
+            return parts[1] + "/" + "__".join(parts[2:])
+    return tool
+
+
+def tool_names(value) -> list[str]:
+    """A turn's `tools` field normalized to a list of usable names.
+
+    THE one gate every reader of that field goes through -- the labels, the Calls
+    count, the column gates in both frontends, and the export's sanitizer. It exists
+    because the field crosses a trust boundary: it is built from whatever a harness
+    wrote into its transcript (Claude keeps any truthy `tool_use.name`, whatever its
+    JSON type) or from another machine's export, and two bugs came straight out of
+    not gating it in one place:
+
+    - a NON-STRING entry (`[["x"]]`, from a malformed name field) reached
+      `short_tool_name` and raised AttributeError -- a crash in the middle of a paint;
+    - an EMPTY name made the two frontends disagree, because the TUI gated its column
+      on the rendered label (empty -> column dropped) while the page gated on the raw
+      list length (non-zero -> a column of "-").
+
+    A bare string is rejected rather than wrapped: iterating one yields single
+    CHARACTERS, so "Bash" would become four one-letter tools.
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [t for t in value if isinstance(t, str) and t]
+
+
+def tool_call_label(tools) -> str:
+    # One turn's tool calls as a single cell, in CALL ORDER with repeats folded:
+    # ["Bash"] -> "Bash", ["Bash", "Bash"] -> "Bash ×2", ["Bash", "Read"] ->
+    # "Bash, Read". Order is preserved (dicts keep insertion order) so the cell reads
+    # like the step actually ran, and the counts are kept because "this turn called
+    # Bash eight times" is a different story from "this turn called Bash" -- which is
+    # exactly what the Turns tab is read for.
+    counts: dict[str, int] = {}
+    for tool in tool_names(tools):
+        name = short_tool_name(tool)
+        counts[name] = counts.get(name, 0) + 1
+    return ", ".join(n if c == 1 else f"{n} ×{c}" for n, c in counts.items())
+
+
+def tool_mix_label(turns) -> str:
+    # The same cell for a whole PROMPT: every tool its turns called, folded and ordered
+    # by call count (busiest first) rather than by first use -- a prompt that ran 40
+    # turns is read for what it spent its time doing, and the tail is what a narrow
+    # column drops first. Ties keep call order, so the label is stable frame to frame.
+    counts: dict[str, int] = {}
+    for turn in turns or ():
+        for tool in tool_names(turn.get("tools")):
+            name = short_tool_name(tool)
+            counts[name] = counts.get(name, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: -kv[1])
+    return ", ".join(n if c == 1 else f"{n} ×{c}" for n, c in ordered)
+
+
 def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
     # Aggregate per-turn rows (each carrying the "tools" it invoked that step) into
     # the per-(tool, model) rows the Tools tab expects -- the Store.tool_breakdown
@@ -354,7 +420,14 @@ def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
         "cost",
     )
     for t in turns:
-        tools = t.get("tools") or []
+        # Through the same gate the Turns tab uses -- this is the OTHER reader of the
+        # field, and it was the one that could still be hurt by it. A list-valued name
+        # (Claude keeps any truthy `tool_use.name`, whatever its JSON type) is used as
+        # part of a dict KEY below, so it raised `TypeError: unhashable type: 'list'`
+        # the moment you opened Tools on that session; and an empty name became a real
+        # row that took an even SHARE of the turn's tokens, so one bad entry beside
+        # "Bash" moved half that turn's attribution onto a nameless tool.
+        tools = tool_names(t.get("tools"))
         n = len(tools)
         if not n:
             continue

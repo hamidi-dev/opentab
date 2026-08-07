@@ -1698,6 +1698,41 @@ function turnCompactions(turns) {
   return out;
 }
 
+/* The mirrors of util.short_tool_name / tool_call_label / tool_mix_label. Kept as a
+   reimplementation (like cost_bar) rather than shipped pre-rendered, because the cell
+   width is a client-side question -- the page folds at its own column widths. */
+function toolNames(value) {
+  // The twin of util.tool_names, and for the same reason: EVERY reader of a turn's
+  // `tools` goes through one gate, so the page can't decide a column exists on a rule
+  // the TUI doesn't share. Gating here on raw `.length` while the TUI gated on the
+  // rendered label is what made an empty tool name draw a column of "-" on the page
+  // and no column at all in the terminal.
+  if (!Array.isArray(value)) return [];
+  return value.filter(t => typeof t === 'string' && t);
+}
+
+function shortToolName(tool) {
+  if (tool.indexOf('mcp__') === 0) {
+    const parts = tool.split('__');
+    if (parts.length > 2 && parts[1]) return parts[1] + '/' + parts.slice(2).join('__');
+  }
+  return tool;
+}
+
+function toolLabel(tools, byCount) {
+  // One turn's calls in CALL order, or a prompt's whole mix ordered busiest-first
+  // (byCount) -- the same two orderings the TUI draws, for the same reason: a turn
+  // reads like it ran, a prompt reads by what it spent its time doing.
+  const counts = new Map();
+  toolNames(tools).forEach(t => {
+    const n = shortToolName(t);
+    counts.set(n, (counts.get(n) || 0) + 1);
+  });
+  let entries = [...counts.entries()];
+  if (byCount) entries.sort((a, b) => b[1] - a[1]);
+  return entries.map(([n, c]) => c === 1 ? n : n + ' ×' + c).join(', ');
+}
+
 /* turns stay chronological on purpose: the tab answers *when* the money went. */
 function turnGroupRows(turns) {
   // The mirror of Renderer.turn_group_rows: one entry per RUN of consecutive turns
@@ -1711,10 +1746,14 @@ function turnGroupRows(turns) {
     if (!groups.length || key !== last) {
       last = key;
       groups.push({ id: key, title: t.promptTitle || '', full: t.promptFull || t.promptTitle || '',
-                    time: t.time || '', turns: 0, tokens: 0, cost: 0, indices: [], first: null });
+                    time: t.time || '', turns: 0, tokens: 0, cost: 0, indices: [], calls: 0,
+                    tools: [], first: null });
     }
     const g = groups[groups.length - 1];
     g.turns += 1; g.tokens += t.tokens || 0; g.cost += mCost(t); g.indices.push(i);
+    const names = toolNames(t.tools);  // the same gate the labels use, so they agree
+    g.calls += names.length;
+    if (names.length) g.tools.push(...names);
     // Cached is the FIRST main-thread turn's share, never an average of the group's:
     // every later turn is warm by construction, so averaging buries the one moment that
     // could have missed. Subagents run in their own windows and cannot answer for it.
@@ -1737,6 +1776,12 @@ function turnsTable(turns, expiries) {
     return turnDrillPane(turns, groups, TURN_DRILL);
 
   const pct = (v) => v == null ? '·' : Math.round(v * 100) + '%';
+  // Dropped when nothing in the session called a tool, so a backend that records no
+  // per-step tool calls shows no column rather than a stripe of dashes -- the TUI's
+  // rule, gated on the same rows. The marker rows span the table, so their colspan
+  // has to follow it or the ▼/❄ lines stop short of the right edge.
+  const hasCalls = groups.some(g => g.calls);
+  const span = hasCalls ? 9 : 8;
   const rows = [];
   let cum = 0;
   groups.forEach((g, n) => {
@@ -1745,11 +1790,11 @@ function turnsTable(turns, expiries) {
     // full-width outside the columns because they are events, not prompts.
     g.indices.forEach(i => {
       const c = comps.get(i);
-      if (c) rows.push(h('tr', { class: 'compact-row' }, h('td', { colspan: 8 },
+      if (c) rows.push(h('tr', { class: 'compact-row' }, h('td', { colspan: span },
         '▼ context compacted before turn ' + (i + 1) + ' · ' + turns[i].time.slice(5, 16).replace('T', ' ')
         + ' — ' + hTok(c[0]) + ' → ' + hTok(c[1]) + ' (~' + hTok(c[0] - c[1]) + ' freed)')));
       const x = exp.get(i);
-      if (x) rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: 8 },
+      if (x) rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: span },
         '❄ cache expired — ' + hDur(x.idle) + ' idle, ' + hTok(x.repaid)
         + ' bought again for ' + money(x.cost) + ' (it lived ' + hDur(x.ttl) + ')')));
     });
@@ -1759,6 +1804,11 @@ function turnsTable(turns, expiries) {
       h('td', { class: 'dim' }, (g.time || '').slice(5, 16).replace('T', ' ')),
       h('td', { class: 'grow' }, g.title || '(no preceding prompt)'),
       h('td', { class: 'r dim' }, String(g.turns)),
+      // The count only; the NAMES are an open-ended list and live in the prompt's own
+      // view, one click away. "-" rather than "0": a red $0.00 already means "unpriced"
+      // on this tab, and a column of zeros invites the same second glance for absence.
+      ...(hasCalls ? [h('td', { class: 'r dim', title: toolLabel(g.tools, true) || null },
+        g.calls ? String(g.calls) : '-')] : []),
       h('td', { class: 'r dim' }, pct(g.cached)),
       h('td', { class: 'r' }, hTok(g.tokens)),
       h('td', { class: 'r' }, moneyCell(g.cost)),
@@ -1768,11 +1818,15 @@ function turnsTable(turns, expiries) {
     h('div', { class: 'hint' }, groups.length + ' prompts — click a row to open it with its turns'
       + ' · Cached = how much of the context came from the cache when that prompt STARTED;'
       + ' anything low re-bought what it was missing'
+      + (hasCalls ? ' · Calls = tool calls the prompt made; which tools, and on which turn,'
+        + ' are in the prompt’s own view' : '')
       + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')
       + (exp.size ? ' · ❄ ' + exp.size + ' cache expir' + (exp.size > 1 ? 'ies' : 'y') + ', ' + money(burnt) + ' spent re-buying context' : '')),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
-        h('th', null, 'Prompt'), h('th', { class: 'r' }, 'Turns'), h('th', { class: 'r' }, 'Cached'),
+        h('th', null, 'Prompt'), h('th', { class: 'r' }, 'Turns'),
+        ...(hasCalls ? [h('th', { class: 'r' }, 'Calls')] : []),
+        h('th', { class: 'r' }, 'Cached'),
         h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cost'),
         h('th', { class: 'r' }, 'Cumulative'))),
       h('tbody', null, rows))));
@@ -1784,6 +1838,10 @@ function turnDrillPane(turns, groups, n) {
   // modal, and so does this.
   const g = groups[n];
   const pct = (v) => v == null ? '·' : Math.round(v * 100) + '%';
+  // What each step actually DID, beside what it cost -- the cell that turns a column of
+  // near-identical numbers into a readable trace. Dropped when this prompt called
+  // nothing, so a pure-text answer isn't given a column of dashes.
+  const hasTools = g.indices.some(i => toolNames(turns[i].tools).length);
   let cum = 0;
   const rows = g.indices.map(i => {
     const t = turns[i];
@@ -1793,6 +1851,7 @@ function turnDrillPane(turns, groups, n) {
       h('td', { class: 'dim' }, t.time.slice(5, 19).replace('T', ' ')),
       h('td', { class: 'grow' }, modelCell(t.model)),
       h('td', { class: 'indent' }, t.depth ? '↳ ' + t.agent : t.agent),
+      ...(hasTools ? [h('td', null, toolLabel(t.tools, false) || '-')] : []),
       h('td', { class: 'r dim' }, pct(t.cached)),
       h('td', { class: 'r' }, hTok(t.tokens)),
       h('td', { class: 'r' }, moneyCell(mCost(t))),
@@ -1807,7 +1866,9 @@ function turnDrillPane(turns, groups, n) {
     h('div', { class: 'prompt-full' }, g.full || '(no preceding prompt)'),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
-        h('th', null, 'Model'), h('th', null, 'Agent'), h('th', { class: 'r' }, 'Cached'),
+        h('th', null, 'Model'), h('th', null, 'Agent'),
+        ...(hasTools ? [h('th', null, 'Tools')] : []),
+        h('th', { class: 'r' }, 'Cached'),
         h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cost'),
         h('th', { class: 'r' }, 'Cumulative'))),
       h('tbody', null, rows))));

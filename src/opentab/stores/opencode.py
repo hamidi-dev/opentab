@@ -58,12 +58,15 @@ REQUIRED_SCHEMA = {
 }
 
 
-def _process_timeline(rows: list[dict]) -> list[dict]:
+def _process_timeline(rows: list[dict], tools: dict[str, list[str]] | None = None) -> list[dict]:
     # Turn the time-ordered (user + assistant) rows of ONE session into the Turns tab's
     # assistant-turn rows, each tagged with the prompt that triggered it: the most recent
     # user message owns every assistant turn until the next one. Shared by
     # message_timeline (one session) and message_timeline_all (per group). `rows` must be
     # a single session's messages in chronological order.
+    #
+    # `tools` maps message id -> the tool names that step invoked, joined here rather
+    # than selected inline: see _timeline_tools for why this is a separate scan.
     out: list[dict] = []
     cur_id, cur_title, cur_full = "", "", ""
     for d in rows:
@@ -82,6 +85,11 @@ def _process_timeline(rows: list[dict]) -> list[dict]:
         d["prompt_id"] = cur_id
         d["prompt_title"] = cur_title
         d["prompt_full"] = cur_full
+        # The tools this step called, in call order -- the same `part` rows
+        # tool_breakdown attributes tokens to, carried onto the turn row so the Turns
+        # tab can name them without a second per-session fetch. The file backends build
+        # this list in their parser; OpenCode joins it here.
+        d["tools"] = (tools or {}).get(d["mid"], [])
         for k in ("role", "mid", "summary_title", "prompt_text"):
             del d[k]
         out.append(d)
@@ -665,7 +673,57 @@ class Store:
         where json_extract(m.data, '$.role') in ('user', 'assistant')
         order by {_TL_TS}, m.rowid
         """
-        return _process_timeline([dict(r) for r in self.conn.execute(sql, [workflow_id])])
+        rows = [dict(r) for r in self.conn.execute(sql, [workflow_id])]
+        return _process_timeline(rows, self._timeline_tools(workflow_id))
+
+    def _timeline_tools(self, workflow_id: str | None = None) -> dict[str, list[str]]:
+        """message id -> the tool names that step called, in call order.
+
+        A SEPARATE grouped scan, deliberately, rather than a correlated subquery in
+        _timeline_columns: the columns are shared with message_timeline_all, and a
+        per-row `(select ... from part where p.message_id = m.id)` there costs the
+        whole-corpus export 300ms -> 3,819ms (measured, 46,785 messages / 182,133
+        parts) -- a 12x regression on the exact path message_timeline_all exists to
+        keep fast. One grouped scan grouped in Python is 909ms for the corpus and
+        ~27ms for the largest single session, and is the shape message_timeline_all
+        already uses for the messages themselves.
+
+        `workflow_id` restricts to that session tree (part_session_idx); None scans
+        every tool part for the export.
+        """
+        if not self.supports_tool_breakdown:
+            return {}
+        if workflow_id is None:
+            sql, params = (
+                (
+                    "select message_id, json_extract(data, '$.tool') as tool from part "
+                    "where json_extract(data, '$.type') = 'tool' order by rowid"
+                ),
+                [],
+            )
+        else:
+            sql, params = (
+                (
+                    """
+                with recursive tree(id) as (
+                  select id from session where id = ?
+                  union all
+                  select child.id from session child join tree on child.parent_id = tree.id
+                )
+                select message_id, json_extract(data, '$.tool') as tool
+                from part
+                where session_id in (select id from tree)
+                  and json_extract(data, '$.type') = 'tool'
+                order by rowid
+                """
+                ),
+                [workflow_id],
+            )
+        out: dict[str, list[str]] = {}
+        for mid, tool in self.conn.execute(sql, params):
+            if tool:
+                out.setdefault(mid, []).append(tool)
+        return out
 
     def message_timeline_all(self) -> dict[str, list[dict]]:
         # The whole-corpus Turns for `--export`: every root session's timeline in ONE
@@ -698,7 +756,8 @@ class Store:
         for r in self.conn.execute(sql):
             d = dict(r)
             groups.setdefault(d.pop("root_id"), []).append(d)
-        return {rid: _process_timeline(rows) for rid, rows in groups.items()}
+        tools = self._timeline_tools()  # one scan for the whole corpus, not one per root
+        return {rid: _process_timeline(rows, tools) for rid, rows in groups.items()}
 
     def supports_turns(self, workflow_id: str) -> bool:
         # Per-session gate for the Turns tab. Like supports_tools, a single OpenCode DB

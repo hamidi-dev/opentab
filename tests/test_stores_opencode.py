@@ -131,6 +131,87 @@ def test_message_timeline_orders_by_time_and_marks_subagent_turns():
         assert rows[0]["prompt_id"] == "u1" and rows[2]["prompt_id"] == "u2"
 
 
+def test_turn_rows_carry_the_tools_each_step_called():
+    # The Turns tab names what each step DID, and for OpenCode those names live in the
+    # `part` table rather than on the message -- so the timeline joins them on. In call
+    # order, repeats kept, and every non-tool part ignored (m1's "step-start").
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_tools(db)
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        rows = store.message_timeline("s1")
+        assert [r["tools"] for r in rows] == [["bash", "serena_read_file"], ["bash"]]
+
+        # The whole-corpus batch resolves them from ONE scan of `part`, and must agree
+        # with the per-session path exactly -- they are the same table, and an export
+        # that disagreed with the TUI about which tools a turn called would be worse
+        # than one that shipped none.
+        assert store.message_timeline_all()["s1"] == rows
+
+
+def test_the_tool_join_is_a_separate_scan_not_a_per_row_subquery():
+    # Guards the reason _timeline_tools exists at all: selecting the tools inline in
+    # _timeline_columns costs the whole-corpus export 300ms -> 3,819ms on a real DB
+    # (46,785 messages / 182,133 parts), a 12x regression on the exact path
+    # message_timeline_all was written to keep fast. The shape is the guard -- one
+    # grouped scan of `part` per call, never one per message.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_tools(db)
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        seen = []
+        store.conn.set_trace_callback(lambda sql: seen.append(" ".join(str(sql).split())))
+        store.message_timeline_all()
+        store.conn.set_trace_callback(None)
+        # Exactly one statement reads the tools, and it is a standalone grouped scan.
+        tool_scans = [s for s in seen if "'$.tool'" in s]
+        assert len(tool_scans) == 1, tool_scans
+        assert tool_scans[0].startswith("select message_id"), tool_scans[0]
+        assert "m.id" not in tool_scans[0]  # nothing correlated to the message row
+
+        # ...and the timeline query itself never grew a per-row tools cell. It keeps its
+        # ONE pre-existing `part` subquery, for the raw prompt text -- which is gated on
+        # `role = 'user'`, so it is evaluated for the prompts, not for every turn.
+        (timeline,) = (s for s in seen if "tokens_total" in s)
+        assert "'$.tool'" not in timeline
+        assert timeline.count("from part") == 1
+
+
+def test_turn_rows_carry_no_tools_when_the_schema_has_no_part_table():
+    # supports_tool_breakdown is False on an older schema; the turn rows then carry an
+    # empty list rather than raising, and both frontends drop the column.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            create table session (
+              id text primary key, parent_id text, title text, directory text, agent text,
+              time_created integer
+            );
+            create table message (id text primary key, session_id text, data text);
+            """
+        )
+        conn.execute(
+            "insert into session values (?,?,?,?,?,?)",
+            ("s1", None, "Root", "/work/repo", None, 1760000000000),
+        )
+        conn.execute(
+            "insert into message values (?,?,?)",
+            (
+                "m1",
+                "s1",
+                '{"role":"assistant","providerID":"anthropic","modelID":"claude-haiku-4.5",'
+                '"cost":1.0,"time":{"created":1000},"tokens":{"input":10,"output":1}}',
+            ),
+        )
+        conn.commit()
+        conn.close()
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        assert store.supports_tool_breakdown is False
+        assert [r["tools"] for r in store.message_timeline("s1")] == [[]]
+
+
 def test_message_timeline_all_matches_the_per_session_path():
     # The whole-corpus batch (used by --export to dodge OpenCode's per-session
     # recursive-CTE scan) must return BYTE-IDENTICAL rows to message_timeline, keyed by

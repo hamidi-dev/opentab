@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, worked_seconds
 from opentab.models import Workflow
-from opentab.util import read_files_parallel, safe_float, safe_int
+from opentab.util import read_files_parallel, safe_float, safe_int, tool_rows_from_turns
 
 
 class OpenClawStore:
@@ -508,6 +508,7 @@ class OpenClawStore:
         if not isinstance(raw, str) or not raw:
             raw = "unknown"
         model = self._prefix_model(raw)
+        tools = self._tool_names(msg)
         provider = msg.get("provider") or current_provider
         acc = s["models"].get(model)
         if acc is None:
@@ -544,8 +545,35 @@ class OpenClawStore:
                 "cache_read": cr,
                 "cache_write": cw,
                 "tokens_total": inp + out + cr + cw,
+                "tools": tools,
             }
         )
+
+    @staticmethod
+    def _tool_names(msg: dict) -> list[str]:
+        # The tools this step invoked, in call order with duplicates kept (two `bash`
+        # calls = two calls, two shares), read off the assistant message's `toolCall`
+        # content blocks. Verified against a real corpus: 4,106 such blocks over 6,489
+        # assistant messages, in three key shapes -- {arguments,id,name,partialJson},
+        # {arguments,id,input,name} and {arguments,id,name} -- so `name` is the one
+        # field always present, and the only one read here.
+        #
+        # OpenClaw also writes a parallel TRACE schema in separate files whose records
+        # carry no `type:"message"`; those never reach this method, so a tool cannot be
+        # counted twice. Non-string names are dropped rather than trusted: the whole
+        # `tools` field is gated by util.tool_names downstream, and a malformed entry
+        # reaching a dict key would raise in the middle of a paint.
+        content = msg.get("content")
+        if not isinstance(content, list):
+            return []
+        return [
+            b["name"]
+            for b in content
+            if isinstance(b, dict)
+            and b.get("type") == "toolCall"
+            and isinstance(b.get("name"), str)
+            and b["name"]
+        ]
 
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title_prompt"] or "(untitled)"
@@ -738,4 +766,19 @@ class OpenClawStore:
         return out
 
     def supports_turns(self, workflow_id: str) -> bool:
+        return True
+
+    def tool_breakdown(self, workflow_id: str) -> list[dict]:
+        # Per-(tool, model) token attribution for the Tools tab, off the in-memory turn
+        # rows (the pi/zaly shape): each assistant message is one LLM step whose tokens
+        # -- and, on a metered route, its real cost -- split evenly across the toolCall
+        # blocks it made. A subscription step stays $0 so the "$" view reprices it per
+        # (tool, model), which is what every OpenClaw session is in practice.
+        s = self._parse().get(workflow_id)
+        return tool_rows_from_turns(s["turns"]) if s else []
+
+    def supports_tools(self, workflow_id: str) -> bool:
+        # OpenClaw records every step's toolCall blocks, so the tab applies to every
+        # session; one that never called a tool shows the honest empty message rather
+        # than being hidden -- the pi rule.
         return True

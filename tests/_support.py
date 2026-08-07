@@ -825,12 +825,21 @@ def _ocl_msg(
     api=None,
     mid="a1",
     ts="2026-04-27T16:00:16.401Z",
+    tools=None,
 ):
     usage = {"input": inp, "output": out, "cacheRead": cache_read, "cacheWrite": cache_write}
     usage["totalTokens"] = total if total is not None else inp + out + cache_read + cache_write
     if cost is not None:
         usage["cost"] = {"total": cost}  # OpenClaw records cost as an object; only .total read
     message = {"role": "assistant", "usage": usage}
+    if tools is not None:
+        # The step's toolCall content blocks. Real OpenClaw writes three key shapes
+        # ({arguments,id,name,partialJson} / {arguments,id,input,name} / {arguments,id,name});
+        # `name` is the only field present in all three and the only one read.
+        message["content"] = [
+            {"type": "toolCall", "id": f"call_{i}", "name": t, "arguments": "{}"}
+            for i, t in enumerate(tools)
+        ]
     if model is not None:
         message["model"] = model
     if provider is not None:

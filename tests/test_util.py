@@ -66,6 +66,79 @@ def test_tool_namespace_classification():
     assert ot.tool_namespace("standalone") == "standalone"
 
 
+def test_tool_call_and_mix_labels():
+    # A turn's cell keeps CALL order and folds repeats, because "Bash ×8" and "Bash"
+    # are different stories about the same turn -- which is what the Turns tab is read
+    # for. Unlike tool_namespace this never splits on a single "_".
+    assert ot.tool_call_label(["Bash"]) == "Bash"
+    assert ot.tool_call_label(["Bash", "Bash"]) == "Bash ×2"
+    assert ot.tool_call_label(["Read", "Bash", "Read"]) == "Read ×2, Bash"
+    assert ot.tool_call_label(["update_plan"]) == "update_plan"  # not "update"
+    assert ot.tool_call_label([]) == "" and ot.tool_call_label(None) == ""
+
+    # MCP tools shed the wrapper but keep the SERVER: two servers can expose the same
+    # tool name, which is the whole reason the Tools tab rolls up by server.
+    assert ot.short_tool_name("mcp__chrome-devtools__take_screenshot") == (
+        "chrome-devtools/take_screenshot"
+    )
+    assert ot.short_tool_name("mcp__srv__a__b") == "srv/a__b"  # only the first two split
+    assert ot.short_tool_name("mcp__") == "mcp__"  # malformed: left verbatim
+    assert ot.short_tool_name("Bash") == "Bash"
+
+    # A prompt's mix is ordered BUSIEST-FIRST, not by first use: a 40-turn prompt is
+    # read for where its time went, and the tail is what a narrow column drops.
+    turns = [
+        {"tools": ["Read", "Bash"]},
+        {"tools": ["Bash", "Bash"]},
+        {"tools": []},
+        {},  # a turn with no tools key at all
+    ]
+    assert ot.tool_mix_label(turns) == "Bash ×3, Read"
+    assert ot.tool_mix_label([]) == ""
+
+
+def test_tool_names_is_the_one_gate_on_an_untrusted_field():
+    # `tools` crosses a trust boundary -- it is whatever a harness wrote into its
+    # transcript, or another machine's export. Both label helpers and both frontends'
+    # column gates go through here, so nothing can reach short_tool_name that would
+    # raise, and the two frontends can never gate a column on different rules.
+    assert ot.tool_names(["Bash", "Read"]) == ["Bash", "Read"]
+    assert ot.tool_names(("Bash",)) == ["Bash"]
+    assert ot.tool_names(None) == [] and ot.tool_names({}) == []
+    # A bare string would iterate into CHARACTERS: "Bash" -> four one-letter tools.
+    assert ot.tool_names("Bash") == []
+    # An empty name made the TUI (gating on the rendered label) and the page (gating on
+    # raw length) disagree: no column vs a column of "-".
+    assert ot.tool_names([""]) == []
+    # A non-string entry used to reach short_tool_name and raise AttributeError -- a
+    # crash in the middle of a paint, on real-but-malformed transcript data.
+    assert ot.tool_names([["x"], 3, None, "Bash"]) == ["Bash"]
+    assert ot.tool_call_label([["x"]]) == ""  # no raise
+    assert ot.tool_mix_label([{"tools": [["x"], "Bash"]}]) == "Bash"
+
+    # The Tools tab is the OTHER reader of the field, and it was the one still exposed:
+    # a list-valued name goes into a dict KEY there, so opening Tools on that session
+    # raised "unhashable type: 'list'" -- a crash, where Turns merely mislabelled.
+    from opentab.util import tool_rows_from_turns
+
+    base = dict(
+        model_name="m",
+        tokens_total=10,
+        input=1,
+        output=1,
+        reasoning=0,
+        cache_read=0,
+        cache_write=0,
+        cache_write_1h=0,
+        cost=0.0,
+    )
+    assert tool_rows_from_turns([dict(base, tools=[["x"]])]) == []  # no raise
+    # ...and an empty name used to become a real row taking an even SHARE of the turn,
+    # so one bad entry beside "Bash" moved half that turn's tokens to a nameless tool.
+    (row,) = tool_rows_from_turns([dict(base, tools=["", "Bash"])])
+    assert row["tool"] == "Bash" and row["tokens_total"] == 10
+
+
 def test_parse_range_text():
     # (days, months, since, until)
     assert ot.parse_range_text("all") == (None, None, None, None)
