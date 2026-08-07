@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import glob
+import os
 import re
 import sqlite3
 from datetime import datetime, timezone
 
-from opentab.demo import demo_config, scramble_node, scramble_workflow
+from opentab.demo import demo_config, demo_title, scramble_node, scramble_workflow
 from opentab.formatting import worked_seconds
 from opentab.models import Workflow
-from opentab.util import git_root
+from opentab.util import git_root, safe_float
 
 
 class HermesStore:
@@ -42,8 +44,16 @@ class HermesStore:
     model was just switched...]", "[CONTEXT COMPACTION ...]"), which are stripped
     -- except a voice turn, whose whole prompt lives inside one such block as
     '[The user sent a voice message~ Here's what they said: "..."]'; that quoted
-    transcript is the title. This is the only read of the messages table (its
-    token_count is never populated, so there is still no Turns tab).
+    transcript is the title.
+
+    Turns are assembled from BOTH halves of the install, because neither half holds
+    the whole story: `messages.token_count` exists but is never populated (0 of
+    2,474 rows on a real DB), so per-call usage is read from the agent LOG
+    (~/.hermes/logs/agent.log*, one "API call #N: ... in= out= total= cache=" line
+    per call, carrying the session id it belongs to), while the PROMPT text the tab
+    groups by comes from the messages table, which stores content but no tokens.
+    Because that log rotates, `supports_turns` is genuinely per-session -- a session
+    older than the retained window keeps its rollup and simply offers no tab.
 
     Sessions with a parent_session_id form a subagent tree; HermesStore rolls
     child tokens/cost up into the root's totals. cwd is resolved to the git repo
@@ -98,6 +108,8 @@ class HermesStore:
         # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._sessions: dict[str, dict] | None = None
+        self._turns_by_session: dict[str, list[dict]] | None = None
+        self._turns_stamp: tuple = ()
         self._git_root_cache: dict[str, str] = {}
         self._cols = self._probe_columns()
         self.records_cost = self._probe_records_cost()
@@ -591,10 +603,157 @@ class HermesStore:
         # <db>-wal and the main .db's mtime doesn't move until a checkpoint, so
         # fingerprinting the .db alone would let a reload serve a stale cache. Missing
         # sidecars (a non-WAL DB) are simply skipped by the fingerprint's stat().
+        #
+        # The agent logs are NOT listed. They are the Turns source, and Turns is a lazy
+        # per-session drill-in that CachedStore never intercepts (it wraps only
+        # workflows/model_breakdown) -- so a log that grew since the last parse is
+        # re-read on the next drill anyway, while adding it here would bust the whole
+        # rollup cache on every line the gateway writes.
         return [self.db_path, self.db_path + "-wal", self.db_path + "-shm"]
+
+    # --- Turns, from the agent log ---------------------------------------------
+    # Hermes' `messages` table HAS a `token_count` column and NEVER populates it
+    # (0 of 2,474 rows on a real DB, verified 2026-08-07), which is why this backend
+    # had no Turns tab for so long. The per-call usage does exist, but only in the
+    # agent log, one line per API call:
+    #
+    #   2026-08-02 07:44:55,605 INFO [cron_1aa6af6a8637_20260802_074432]
+    #   agent.conversation_loop: API call #3: model=gpt-5.6-sol provider=openai-codex
+    #   in=34209 out=56 total=34265 latency=3.2s cache=32256/34209 (94%)
+    #
+    # The bracketed id is the session id and joins straight to `sessions.id` (56 of 59
+    # log ids matched on a real machine; the rest are sessions since deleted).
+    #
+    # Two readings of that line are load-bearing, both verified rather than assumed:
+    # `in` INCLUDES the cache read (it is the denominator of the cache=x/y fraction,
+    # and in + out == total exactly), so the uncached input is in - cache_read -- which
+    # is the shape the rest of this store already reports (input uncached, cache_read
+    # separate). Getting that backwards would double-count the cached tokens under "$".
+    _LOG_CALL_RE = re.compile(
+        r"^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[,.]\d+\s+\w+\s+"
+        r"\[(?P<sid>[^\]]+)\]\s+agent\.conversation_loop:\s+API call #(?P<n>\d+):\s+"
+        r"model=(?P<model>\S+)\s+provider=(?P<provider>\S+)\s+"
+        r"in=(?P<in>\d+)\s+out=(?P<out>\d+)\s+total=(?P<total>\d+)"
+        r"(?:.*?\bcache=(?P<cache>\d+)/\d+)?"
+    )
+
+    def _log_dir(self) -> str:
+        # The logs live beside the DB (~/.hermes/state.db -> ~/.hermes/logs).
+        return os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "logs")
+
+    def _log_files(self) -> list[str]:
+        # agent.log plus its rotations. Sorted oldest-last by NAME (agent.log,
+        # agent.log.1, agent.log.2 ...) is the wrong order for reading -- .1 is older
+        # than the live file -- but order does not matter here: every row carries its
+        # own timestamp and message_timeline sorts on it.
+        return sorted(glob.glob(os.path.join(self._log_dir(), "agent.log*")))
+
+    def _log_turns(self) -> dict[str, list[dict]]:
+        """session id -> its per-API-call turn rows, parsed once and memoized.
+
+        Only the retained log window has turns (rotation drops the oldest), so
+        `supports_turns` is genuinely PER SESSION here -- an older session keeps its
+        rollup and simply offers no tab, which is exactly what the per-session gate in
+        the App<->store contract is for.
+        """
+        # Keyed on the LOGS' own fingerprint, not merely memoized: the gateway appends
+        # to agent.log while opentab is open, and relying on workflows() to clear this
+        # is not enough, because CachedStore serves a warm rollup WITHOUT calling
+        # through to workflows() at all. Worse, the case where the log grows but the DB
+        # does not is a real one here -- it is exactly the resume gap that makes log
+        # turns exceed the session counters -- so a DB-fingerprinted cache can miss
+        # calls the log already has. Stat is cheap; the parse behind it is not.
+        stamp = self._log_stamp()
+        if self._turns_by_session is not None and self._turns_stamp == stamp:
+            return self._turns_by_session
+        out: dict[str, list[dict]] = {}
+        for path in self._log_files():
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        # Cheap reject before the regex: these files are megabytes of
+                        # lines that are not API-call records.
+                        if "API call #" not in line:
+                            continue
+                        m = self._LOG_CALL_RE.match(line)
+                        if m:
+                            out.setdefault(m.group("sid"), []).append(self._log_turn_row(m))
+            except OSError:
+                continue  # an unreadable rotation costs its window, never the tab
+        self._turns_by_session = out
+        self._turns_stamp = stamp
+        return out
+
+    def _log_stamp(self) -> tuple:
+        # (path, size, mtime_ns) per log file -- the CachedStore fingerprint shape,
+        # applied in-process. A rotation changes the set, an append changes a size.
+        out = []
+        for path in self._log_files():
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            out.append((path, st.st_size, st.st_mtime_ns))
+        return tuple(out)
+
+    @classmethod
+    def _log_turn_row(cls, m: re.Match) -> dict:
+        total = int(m.group("total"))
+        raw_in, out_t = int(m.group("in")), int(m.group("out"))
+        cache_read = min(int(m.group("cache") or 0), raw_in)  # a subset of `in`
+        inp = max(0, raw_in - cache_read)  # ...so the uncached remainder is what's left
+        return {
+            "ts": m.group("ts"),  # naive UTC; _log_local() converts at read time
+            "depth": 0,  # the tree is sessions, not turns -- a turn is never a subagent
+            "agent": "-",
+            "model_name": cls._prefix_model(m.group("model"), m.group("provider")),
+            # Hermes records cost per SESSION, never per call, and every session on a
+            # real machine is billing_mode='subscription_included' at $0 -- so 0 here is
+            # the recorded truth, and "$" estimates these tokens at list price like any
+            # other subscription backend. A metered session would show its real spend in
+            # the rollups and $0 per turn; that is honest (the split is not recorded)
+            # rather than an invented per-turn attribution.
+            "cost": 0.0,
+            "input": inp,
+            "output": out_t,
+            "reasoning": 0,  # folded into `out` by the provider; never counted twice
+            "cache_read": cache_read,
+            "cache_write": 0,  # the log carries no write figure
+            "tokens_total": total,
+            "tools": [],  # the log names no tools; the DB's are not per-call
+        }
+
+    @staticmethod
+    def _log_local(ts: str) -> str:
+        """A log stamp as opentab's localtime string -- validated, never converted.
+
+        `%(asctime)s` under a plain logging.Formatter is **local** time: the stdlib
+        formatter uses time.localtime and Hermes installs no `converter = gmtime`
+        (checked in its hermes_logging.py). The log is written by the gateway on the
+        same host that opentab reads it from, so its clock IS the reader's clock and
+        the string is already in the target format.
+
+        This shipped as a UTC->local conversion, which is invisible on the box it was
+        developed against (that host runs UTC, so the shift is zero) and wrong by the
+        offset anywhere else: a call logged 07:45 in Berlin became 09:45 and jumped
+        ahead of prompts it actually preceded, mis-grouping the whole tab. Converting
+        also broke monotonicity across a fall-back DST hour, where two different local
+        stamps map to one wall time.
+        """
+        try:
+            datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return ""
+        return ts
 
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload on `r`
+        # ...and the log-derived turns with them. The gateway appends to agent.log while
+        # opentab is open, so a memo held across a reload would keep serving the calls
+        # that existed at launch -- the Turns tab silently frozen while every rollup
+        # around it moved. App clears its own per-session turn cache on reload; this is
+        # the store-side half, and without it that clear just re-fetches the stale map.
+        self._turns_by_session = None
         sessions = self._parse()
         rows = []
         for sid, s in sessions.items():
@@ -740,3 +899,130 @@ class HermesStore:
 
     def _demo_node(self, n: dict) -> dict:
         return scramble_node(n, self.demo_scale, self.demo_cats)
+
+    def _subtree_ids(self, workflow_id: str) -> list[tuple[str, int, str]]:
+        """(session id, depth, agent label) for a root and every session under it.
+
+        A Hermes root's ROLLUP already includes its descendants (parent_session_id
+        forms the subagent tree and workflows() folds children into the root's
+        totals), so its Turns must cover them too or the tab reports less than the
+        header above it -- and a root whose own calls have rotated out of the log
+        while a child's survive would hide the tab on a session that has turns.
+        """
+        try:
+            conn = self._connect()
+        except sqlite3.Error:
+            return [(workflow_id, 0, "-")]
+        try:
+            rows = conn.execute(
+                """
+                WITH RECURSIVE tree(id, depth) AS (
+                  SELECT id, 0 FROM sessions WHERE id = ?
+                  UNION ALL
+                  SELECT c.id, tree.depth + 1 FROM sessions c
+                  JOIN tree ON c.parent_session_id = tree.id
+                )
+                SELECT tree.id, tree.depth, COALESCE(s.title, '') FROM tree
+                JOIN sessions s ON s.id = tree.id
+                """,
+                [workflow_id],
+            ).fetchall()
+        except sqlite3.Error:
+            return [(workflow_id, 0, "-")]  # no parent column on an older schema
+        finally:
+            conn.close()
+        if not rows:
+            return [(workflow_id, 0, "-")]
+        return [(r[0], int(r[1]), (r[2] or "-") if r[1] else "-") for r in rows]
+
+    def supports_turns(self, workflow_id: str) -> bool:
+        # PER SESSION, unlike every other backend's blanket True: the turns come from a
+        # rotating log, so only sessions inside the retained window have any. An older
+        # session keeps its rollup and simply shows no tab -- which beats a tab that
+        # opens empty and looks like a parsing bug. Asked of the whole SUBTREE, since
+        # that is what the tab draws.
+        turns = self._log_turns()
+        return any(turns.get(sid) for sid, _, _ in self._subtree_ids(workflow_id))
+
+    def message_timeline(self, workflow_id: str) -> list[dict]:
+        # One row per API call, chronological, each tagged with the prompt that
+        # triggered it. The usage comes from the log; the PROMPTS come from the DB's
+        # `messages` table (which stores content but no tokens -- the two halves of a
+        # turn live in different places on this backend), joined in the lockstep the
+        # other file backends use: the latest user message at ts <= the call owns it.
+        #
+        # Over the whole SUBTREE, interleaved by time: a Hermes root's rollup folds its
+        # children in, so its Turns must too, each child row tagged depth/agent the way
+        # every hierarchical backend marks a subagent.
+        turns = self._log_turns()
+        rows: list[dict] = []
+        for sid, depth, agent in self._subtree_ids(workflow_id):
+            for r in turns.get(sid, ()):
+                rows.append(dict(r, depth=depth, agent=agent if depth else "-"))
+        if not rows:
+            return []
+        prompts = self._session_prompts(workflow_id)
+        out: list[dict] = []
+        pi, cur_id, cur_title = 0, "", ""
+        # The stamps are local wall clock in a fixed-width format, so they sort
+        # lexicographically in time order -- and against the prompts' _ts_to_local
+        # strings, which are the same clock and the same format.
+        for r in sorted(rows, key=lambda x: x["ts"]):
+            local = self._log_local(r["ts"])
+            while pi < len(prompts) and prompts[pi]["time"] <= local:
+                cur_id, cur_title = prompts[pi]["id"], prompts[pi]["title"]
+                pi += 1
+            row = dict(r)
+            row["time"] = local
+            row.pop("ts", None)
+            row["prompt_id"] = cur_id
+            row["prompt_title"] = cur_title
+            row["prompt_full"] = cur_title
+            out.append(row)
+        if self.demo:
+            out = [self._demo_turn(r) for r in out]
+        return out
+
+    def _demo_turn(self, r: dict) -> dict:
+        # Titles are the only sensitive field on a turn row (magnitudes are scaled by
+        # App._scale_demo_turns, as for every other backend). A real prompt on an
+        # anonymised screen is exactly what demo exists to prevent.
+        r = dict(r)
+        if "titles" in self.demo_cats:
+            r["prompt_title"] = r["prompt_full"] = demo_title(r.get("prompt_id") or "noprompt")
+        return r
+
+    def _session_prompts(self, workflow_id: str) -> list[dict]:
+        """The session's user prompts, oldest first, for the Turns tab's ▸ grouping.
+
+        Read straight from `messages` rather than from _parse()'s rollup: this is a
+        per-session drill-in, so it must not drag the whole corpus parse in behind it.
+        """
+        try:
+            conn = self._connect()
+        except sqlite3.Error:
+            return []
+        try:
+            rows = conn.execute(
+                "select timestamp, content from messages "
+                "where session_id = ? and role = 'user' and content is not null "
+                "order by timestamp",
+                [workflow_id],
+            ).fetchall()
+        except sqlite3.Error:
+            return []  # an older schema without the table/columns simply has no headers
+        finally:
+            conn.close()
+        out = []
+        for i, r in enumerate(rows):
+            title = self._title_from_content(str(r["content"] or ""))
+            if not title:
+                continue
+            out.append(
+                {
+                    "id": f"{workflow_id}:{i}",
+                    "time": self._ts_to_local(safe_float(r["timestamp"])),
+                    "title": title,
+                }
+            )
+        return out

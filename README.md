@@ -148,26 +148,31 @@ What each tool's records support on top:
 
 | Harness | Cost | Subagent tree | Turns | Tools | Context |
 |--------|------|:---:|:---:|:---:|:---:|
-| OpenCode | real recorded | ✓ | ✓ | ✓ | curve |
+| OpenCode | real recorded | ✓ | ✓ | ✓ | ✓ |
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
 | Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | — ³ |
-| Hermes Agent | mixed — metered real, rest estimated | ✓ | — | — | — |
-| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — | curve |
-| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | curve |
-| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | curve |
-| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | curve |
-| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | curve |
+| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ⁵ | — | — |
+| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — | ✓ |
+| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | ✓ |
+| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
+| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ |
+| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
 | zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
-| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² | curve ⁴ |
+| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² | ✓ ⁴ |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
 **Turns** — the per-turn cost timeline inside a session · **Tools** — token attribution
-per tool call and MCP server · **Context** — the context-window growth curve (measured,
-rides on Turns) — "✓" adds the estimated what-filled-it composition tree ·
+per tool call and MCP server · **Context** — the context-window growth curve, measured
+from recorded usage (it rides on Turns); Claude Code and zaly log full message content,
+so they add the estimated breakdown of what filled it ·
 ¹ headerless: the OTEL export captures no prompt text · ² with the optional `tool`
 column · ³ Codex records per-turn deltas of a cumulative total, not per-request
 prompt sizes, so an honest curve isn't derivable · ⁴ only with a real `session_id`
-column — a synthetic per-day session interleaves unrelated conversations.</sub>
+column — a synthetic per-day session interleaves unrelated conversations ·
+⁵ Hermes stores no per-message usage, so its turns are read from the agent log
+(`~/.hermes/logs/agent.log*`) and joined to the session by id; because that log
+rotates, only sessions inside the retained window offer the tab, and a resumed
+session's turns can exceed the total Hermes itself accumulated.</sub>
 
 **[docs/sources.md](docs/sources.md)** has the full detail per harness — where each
 tool's records live, its flags and env vars, how cost is derived, quirks (Copilot's

@@ -71,6 +71,11 @@ Two per-session opt-ins ride on top via `getattr`, each gated by
 `tool_breakdown` (the Tools tab) and `message_timeline` (the Turns tab). Both are
 fetched **lazily on drill-in**, never as startup scans.
 
+`HermesStore` is the one exception to the blanket per-backend gate: it stores no
+per-message usage, so its turns are parsed from the rotating agent log and
+`supports_turns` answers **per session** — which is exactly what the per-session
+signature in the contract is for.
+
 A timeline row may also carry a `tools` list — the names that step invoked, in call
 order with repeats kept — which the Turns tab draws per turn and counts per prompt.
 The file backends build it in their parser; OpenCode's live in a separate `part`

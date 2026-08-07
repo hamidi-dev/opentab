@@ -672,3 +672,206 @@ def test_hermes_joins_the_source_cycle_and_builds_a_resume_command():
         wf = workflow("h1-sess", "2026-06-01 12:00:00", title="t", directory="/tmp/proj")
         wf.source = "Hermes"
         assert app.resume_command(wf) == "cd /tmp/proj && hermes --resume h1-sess"
+
+
+def _hermes_log(root, lines):
+    """Write ~/.hermes/logs/agent.log next to a state.db, in the real line format."""
+    d = os.path.join(root, "logs")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "agent.log"), "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def _call_line(ts, sid, n, model="gpt-5.6-sol", provider="openai-codex", inp=0, out=0, cache=None):
+    total = inp + out
+    line = (
+        f"{ts},605 INFO [{sid}] agent.conversation_loop: API call #{n}: "
+        f"model={model} provider={provider} in={inp} out={out} total={total} latency=3.2s"
+    )
+    if cache is not None:
+        pct = round(cache / inp * 100) if inp else 0
+        line += f" cache={cache}/{inp} ({pct}%)"
+    return line
+
+
+def test_hermes_turns_come_from_the_agent_log():
+    # Hermes' messages table HAS token_count and never populates it (0 of 2,474 rows
+    # on a real DB), so the per-call usage lives only in the agent log. The bracketed
+    # id joins straight to sessions.id.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 100, "out": 10, "cr": 900}])
+        _hermes_log(
+            root,
+            [
+                "2026-08-02 07:44:50,100 INFO [s1] agent.other: not an API call line",
+                _call_line("2026-08-02 07:44:55", "s1", 1, inp=1000, out=10, cache=900),
+                _call_line("2026-08-02 07:45:10", "s1", 2, inp=2000, out=20, cache=1500),
+                _call_line("2026-08-02 07:45:30", "other-session", 1, inp=50, out=5),
+            ],
+        )
+        st = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        assert st.supports_turns("s1") is True
+        rows = st.message_timeline("s1")
+        assert len(rows) == 2
+
+        # `in` INCLUDES the cache read (it is the denominator of cache=x/y, and
+        # in + out == total), so the UNCACHED input is in - cache_read. Getting this
+        # backwards double-counts the cached tokens under "$".
+        assert rows[0]["input"] == 100 and rows[0]["cache_read"] == 900
+        assert rows[0]["output"] == 10 and rows[0]["tokens_total"] == 1010
+        assert rows[1]["input"] == 500 and rows[1]["cache_read"] == 1500
+        # The identity the whole reading rests on.
+        assert all(r["input"] + r["cache_read"] + r["output"] == r["tokens_total"] for r in rows)
+
+        # provider+model are labelled the way model_breakdown labels them, so the
+        # Turns tab and the Models tab name the same model.
+        assert rows[0]["model_name"] == "openai/gpt-5.6-sol"
+        # Every real Hermes session is subscription_included at $0, so a turn records
+        # no cost and "$" estimates it from the tokens, like any subscription backend.
+        assert all(r["cost"] == 0.0 for r in rows)
+        assert all(r["cache_write"] == 0 and r["reasoning"] == 0 for r in rows)
+        assert rows[0]["time"] < rows[1]["time"]  # chronological
+
+
+def test_hermes_turns_are_gated_per_session_by_the_rotating_log():
+    # Unlike every other backend's blanket True, this gate is per session: the log
+    # rotates, so a session older than the retained window has no turns and must show
+    # no tab rather than an empty one that looks like a parsing bug.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "fresh", "inp": 10}, {"id": "aged_out", "inp": 10}])
+        _hermes_log(root, [_call_line("2026-08-02 07:44:55", "fresh", 1, inp=10, out=1)])
+        st = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        assert st.supports_turns("fresh") is True
+        assert st.supports_turns("aged_out") is False
+        assert st.message_timeline("aged_out") == []
+        assert st.supports_turns("never-existed") is False
+
+
+def test_hermes_turns_survive_a_missing_or_unreadable_log():
+    # No logs dir at all (a fresh install, or a DB copied elsewhere) must mean "no
+    # Turns tab", never an exception on drill-in.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10}])
+        st = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        assert st.supports_turns("s1") is False
+        assert st.message_timeline("s1") == []
+
+
+def test_hermes_turn_counter_resets_on_resume_are_all_kept():
+    # A resumed session restarts "API call #1", so the ordinal is NOT unique within a
+    # session -- measured on a real one: 231 log lines over 6 resume segments, with
+    # call #1..#7 appearing twice at different times. Deduping by the ordinal would
+    # silently drop a whole resumed segment's spend.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10}])
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-02 07:00:00", "s1", 1, inp=100, out=1),
+                _call_line("2026-08-02 07:00:10", "s1", 2, inp=100, out=1),
+                _call_line("2026-08-02 08:00:00", "s1", 1, inp=100, out=1),  # resumed
+            ],
+        )
+        rows = ot.HermesStore(db, type("Args", (), {"demo": False})()).message_timeline("s1")
+        assert len(rows) == 3
+        assert sum(r["tokens_total"] for r in rows) == 303
+
+
+def test_hermes_reload_re_reads_the_growing_log():
+    # The gateway appends to agent.log while opentab is open, so `r` (which calls
+    # workflows()) has to drop the turn memo too. Without that the Turns tab keeps
+    # serving the calls that existed at launch while every rollup around it moves --
+    # frozen in a way that looks like the log stopped being written.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10}])
+        _hermes_log(root, [_call_line("2026-08-02 07:00:00", "s1", 1, inp=100, out=1)])
+        st = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        assert len(st.message_timeline("s1")) == 1
+
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-02 07:00:00", "s1", 1, inp=100, out=1),
+                _call_line("2026-08-02 07:05:00", "s1", 2, inp=200, out=2),
+            ],
+        )
+        # Picked up WITHOUT waiting for a reload, because the memo is keyed on the
+        # logs' own (size, mtime) rather than merely held. Clearing it from workflows()
+        # is not enough on its own: CachedStore serves a warm rollup without ever
+        # calling through to it, and "the log grew but the DB did not" is a real state
+        # here -- it is the same resume gap that makes log turns exceed the counters.
+        assert len(st.message_timeline("s1")) == 2
+        st.workflows()  # the `r` path stays correct too
+        assert len(st.message_timeline("s1")) == 2
+
+
+def test_hermes_turn_times_are_local_not_utc():
+    # `%(asctime)s` under a plain logging.Formatter is LOCAL time (the stdlib uses
+    # time.localtime and Hermes installs no gmtime converter), and the gateway writes
+    # that log on the machine opentab reads it from -- so the stamp is already the
+    # reader's clock and must not be converted. Shipping it as a UTC->local conversion
+    # is invisible on a UTC host and wrong by the offset everywhere else: the turn
+    # jumps ahead of prompts it actually followed and the ▸ grouping shifts by one.
+    #
+    # The prompt epoch is built from a LOCAL wall time, so this test asserts the same
+    # thing in every timezone the suite might run in.
+    from datetime import datetime as _dt
+
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10}])
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE messages (session_id TEXT, role TEXT, content TEXT, timestamp REAL)"
+        )
+        prompt_epoch = _dt(2026, 8, 2, 7, 0, 0).timestamp()  # 07:00:00 LOCAL
+        conn.execute("INSERT INTO messages VALUES ('s1','user','ask the thing',?)", [prompt_epoch])
+        conn.commit()
+        conn.close()
+        # ...and the call is logged 30 seconds later on that same local clock.
+        _hermes_log(root, [_call_line("2026-08-02 07:00:30", "s1", 1, inp=100, out=1)])
+        (row,) = ot.HermesStore(db, type("Args", (), {"demo": False})()).message_timeline("s1")
+        assert row["time"] == "2026-08-02 07:00:30"  # verbatim, never shifted
+        assert row["prompt_title"] == "ask the thing"
+        assert row["prompt_id"] == "s1:0"
+
+
+def test_hermes_turns_fold_the_subagent_subtree_under_its_root():
+    # A Hermes root's ROLLUP includes its children (parent_session_id is the subagent
+    # tree and workflows() folds them in), so its Turns must too -- otherwise the tab
+    # totals less than the header above it. And a root whose own calls have rotated out
+    # while a child's survive still HAS turns, so the tab must not hide.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(
+            db,
+            [
+                {"id": "root", "inp": 10, "title": "the root"},
+                {"id": "kid", "parent_id": "root", "inp": 10, "title": "explore"},
+            ],
+        )
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-02 07:00:00", "root", 1, inp=100, out=1),
+                _call_line("2026-08-02 07:00:10", "kid", 1, inp=200, out=2),
+                _call_line("2026-08-02 07:00:20", "root", 2, inp=300, out=3),
+            ],
+        )
+        st = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        rows = st.message_timeline("root")
+        # Interleaved by time, the child tagged depth/agent like any subagent turn.
+        assert [r["depth"] for r in rows] == [0, 1, 0]
+        assert [r["agent"] for r in rows] == ["-", "explore", "-"]
+        assert sum(r["tokens_total"] for r in rows) == 101 + 202 + 303
+
+        # The child alone keeps the tab alive when the root's own calls have rotated out.
+        _hermes_log(root, [_call_line("2026-08-02 07:00:10", "kid", 1, inp=200, out=2)])
+        st2 = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        assert st2.supports_turns("root") is True
+        assert [r["depth"] for r in st2.message_timeline("root")] == [1]
