@@ -40,19 +40,20 @@ trends. What each tool's records support on top:
 | OpenCode | real recorded | ✓ | ✓ | ✓ |
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ |
 | Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ |
-| Hermes Agent | mixed — metered real, rest estimated | ✓ | — | — |
+| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ³ | — |
 | GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ |
 | omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ |
-| OpenClaw | mixed — metered real, rest estimated | — | ✓ | — |
+| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ |
 | zaly | mixed — metered real, rest estimated | — | ✓ | ✓ |
 | CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
 **Turns** — the per-turn cost timeline inside a session · **Tools** — token attribution
 per tool call and MCP server · ¹ headerless: the OTEL export captures no prompt text ·
-² with the optional `tool` column.</sub>
+² with the optional `tool` column · ³ only while the rotating agent log still contains
+the session's API calls.</sub>
 
 Every harness also derives when a session was last active (not just when it started),
 including activity from its subagent subtree where tracked. This timestamp
@@ -113,11 +114,14 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 
 *SQLite database · mixed: metered real, subscription estimated*
 
-- **Reads** `~/.hermes/state.db`, read-only (`--hermes-db`).
+- **Reads** `~/.hermes/state.db`, read-only (`--hermes-db`), plus the rotating
+  `~/.hermes/logs/agent.log*` files for per-call usage.
 - **Cost**: mixed per session — metered routes carry Hermes' real recorded cost;
   subscription routes record `$0` and get the `$` estimate.
 - **Notes**: multi-provider, with Hermes' own normalized token accounting; subagent
-  sessions form a cost tree. No Turns tab (Hermes stores no per-message usage).
+  sessions form a cost tree. Hermes stores no per-message usage in SQLite, so the Turns
+  tab joins API calls from the agent log to prompts in the database. It is available only
+  for sessions still covered by the rotating log.
 
 ## GitHub Copilot CLI
 
@@ -198,6 +202,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   (openai-codex, github-copilot) are estimated under `$`. The split is read from
   `openclaw.json`, read-only.
 - **Notes**: one project per agent; archived sessions are included and deduplicated.
+  Recorded `toolCall` blocks feed both per-turn tool names and the Tools tab.
 
 ## zaly
 

@@ -10,7 +10,7 @@ Your tools' own records, read-only:
 
 - OpenCode's SQLite database
 - the JSONL transcripts of Claude Code / Codex / pi-agent / omp / OpenClaw / zaly
-- Hermes' SQLite database
+- Hermes' SQLite database and rotating agent logs
 - the Copilot CLI's OpenTelemetry export
 - VS Code's Copilot Chat session store
 - a CSV/JSONL of logged API requests (`--csv`/`--jsonl`)
