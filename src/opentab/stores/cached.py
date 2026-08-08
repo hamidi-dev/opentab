@@ -30,7 +30,9 @@ from dataclasses import asdict
 from opentab import paths
 from opentab.models import Workflow
 
-CACHE_VERSION = 6  # bump when the cached payload shape changes (invalidates old files)
+CACHE_VERSION = 7  # bump when the cached payload shape or meaning changes
+# 7: worked_seconds starts a new burst after 30 minutes of silence, and Claude control
+#    records mark additional idle boundaries. Unchanged corpora must discard old spans.
 # 6: ClaudeStore credits a replayed API call to the session that made it, not to the
 #    background session that replayed it (ordering in ClaudeStore._parse). Same shape,
 #    different attribution -- so without a bump an unchanged corpus would keep serving

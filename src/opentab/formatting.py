@@ -115,13 +115,18 @@ def iso_to_epoch(ts: str) -> float | None:
     return dt.timestamp()
 
 
+WORKED_BURST_GAP_SECONDS = 30 * 60
+
+
 def worked_seconds(event_epochs, prompt_epochs) -> float | None:
     # How long the agent actually worked, idle excluded: walk the session's activity
     # timestamps in order and sum each gap EXCEPT the one that lands on a human prompt
     # -- that gap is the user reading/composing the follow-up, not the agent working.
-    # `prompt_epochs` are the epochs of those human turns (a subset of event_epochs);
-    # a backend that can't tell human turns from tool-loop turns passes none, and then
-    # every gap would count, so such a backend must leave worked unknown instead.
+    # `prompt_epochs` are the epochs of those human turns or equivalent user-driven
+    # boundaries (a subset of event_epochs). Some harnesses emit resume metadata before
+    # the next prompt, so an unmarked gap beyond the conventional 30-minute activity
+    # window also starts a fresh burst instead of claiming days of silence as work.
+    # A backend that can't identify any boundaries must still leave worked unknown.
     # Returns None on fewer than two activity points (nothing to measure -> the UI
     # shows blank, never a fake 0s). Equal timestamps contribute a 0 gap, so replayed
     # duplicate records are harmless. Non-finite epochs (a stray inf/nan from a
@@ -133,7 +138,7 @@ def worked_seconds(event_epochs, prompt_epochs) -> float | None:
     prompts = {p for p in prompt_epochs if p is not None and math.isfinite(p)}
     total = 0.0
     for a, b in zip(times, times[1:]):
-        if b in prompts:
+        if b in prompts or b - a > WORKED_BURST_GAP_SECONDS:
             continue  # gap leading into a human prompt = idle wait, not work
         total += b - a
     return total

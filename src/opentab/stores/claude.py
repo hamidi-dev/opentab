@@ -148,6 +148,12 @@ class ClaudeStore:
         ("<command-", "slash commands"),
     )
 
+    # User-driven control records that can be the first transcript event after an idle
+    # pause. They are not real prompts, but the gap leading into them is still waiting
+    # for the user, not agent work. Tool-result `user` records use list content and must
+    # not enter this set.
+    _IDLE_USER_TAGS = ("<local-command", "<command-", "<bash-")
+
     @classmethod
     def _injected_kind(cls, text: str) -> str | None:
         # The injected-context bucket for a wrapper-tagged user text, or None for a
@@ -512,6 +518,7 @@ class ClaudeStore:
                 "turns": [],  # per-message rows for the Turns tab (chronological)
                 "prompts": [],  # {ts,title,id} per real user prompt, for Turns grouping
                 "event_ts": [],  # every record's raw ISO ts, for worked_seconds
+                "idle_ts": [],  # user-driven controls/resume markers that end an idle gap
                 "context": {},  # (category, kind) -> [count, est_tokens], Context tab
                 "pending_tools": {},  # tool_use id -> name, consumed by its tool_result
                 "ctx_seen": set(),  # record uuids already composed (replay dedup)
@@ -533,6 +540,20 @@ class ClaudeStore:
             if o.get("isSidechain") is True:
                 s["side_uuids"].add(uuid)
         typ = o.get("type")
+        if ts and o.get("isSidechain") is not True:
+            msg = o.get("message")
+            content = msg.get("content") if isinstance(msg, dict) else None
+            user_control = (
+                typ == "user"
+                and isinstance(content, str)
+                and content.lstrip().startswith(self._IDLE_USER_TAGS)
+            )
+            if (
+                user_control
+                or typ == "attachment"
+                or (typ == "system" and o.get("subtype") in ("local_command", "away_summary"))
+            ):
+                s["idle_ts"].append(ts)
         if typ == "ai-title":
             s["title_ai"] = o.get("aiTitle") or o.get("title") or s["title_ai"]
         elif typ == "custom-title":
@@ -748,7 +769,7 @@ class ClaudeStore:
         # gaps -- the wait before each is you composing, not the agent working.
         s["worked_seconds"] = worked_seconds(
             [iso_to_epoch(t) for t in s["event_ts"]],
-            [iso_to_epoch(p["ts"]) for p in s["prompts"]],
+            [iso_to_epoch(p["ts"]) for p in s["prompts"]] + [iso_to_epoch(t) for t in s["idle_ts"]],
         )
         rows: list[dict] = []
         for model_name, e in s["models"].items():

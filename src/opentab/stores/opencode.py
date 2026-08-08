@@ -8,7 +8,7 @@ import sqlite3
 from urllib.parse import quote
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt
+from opentab.formatting import WORKED_BURST_GAP_SECONDS, _clean_prompt
 from opentab.models import Workflow
 from opentab.util import normalize_project_path
 
@@ -264,12 +264,12 @@ class Store:
         else:
             ended_expr = "s.time_created"
         # Active working time (idle excluded): walk the tree's user+assistant messages
-        # in time order and sum each gap EXCEPT the one landing on a HUMAN prompt --
-        # that gap is the user composing the follow-up. Only a depth-0 (root) `user`
-        # message is a human turn; a subagent's `user` message is the agent-authored
-        # task, so a gap into it is work. On a timestamp tie, human rows are ordered
-        # first (is_human desc) so the gap-into-a-prompt is the one that drops -- which
-        # keeps this SQL identical to formatting.worked_seconds' epoch-membership rule.
+        # in time order and sum each gap EXCEPT one landing on a HUMAN prompt or beyond
+        # the shared activity window. Only a depth-0 (root) `user` message is a human
+        # turn; a subagent's `user` message is the agent-authored task, so a gap into it
+        # is work. On a timestamp tie, human rows are ordered first (is_human desc) so
+        # the gap-into-a-prompt is the one that drops. Keep this SQL identical to
+        # formatting.worked_seconds.
         # Needs the message table (per-message times); without it, worked stays null.
         if self.supports_message_timeline:
             worked_cte = f"""
@@ -283,7 +283,10 @@ class Store:
             and {_TL_TS} is not null
         ), worked as (
           select root_id,
-                 sum(case when is_human then 0 else t_ms - prev_ms end) as worked_ms
+                 sum(case
+                       when is_human or t_ms - prev_ms > {WORKED_BURST_GAP_SECONDS * 1000}
+                       then 0 else t_ms - prev_ms
+                     end) as worked_ms
           from (
             select root_id, t_ms, is_human,
                    lag(t_ms) over (

@@ -38,6 +38,13 @@ def test_worked_seconds_drops_the_gap_into_each_human_prompt():
     assert worked_seconds(events, prompts) == 135.0
 
 
+def test_worked_seconds_starts_a_fresh_burst_after_30_minutes_of_silence():
+    # Resume metadata can be the first event after a session sat untouched for days.
+    # With no evidence of activity in between, that silence is not worked time. Exactly
+    # 30 minutes remains part of the burst; only a gap beyond the limit is dropped.
+    assert worked_seconds([0, 60, 1_860, 3_661, 3_721], [0]) == 1_920.0
+
+
 def test_worked_seconds_unknown_below_two_points_and_dupe_safe():
     assert worked_seconds([], []) is None
     assert worked_seconds([5], [5]) is None  # a single activity point measures nothing
@@ -121,6 +128,80 @@ def test_claude_worked_excludes_the_wait_for_a_follow_up():
         _write_jsonl(os.path.join(root, "s1.jsonl"), list(reversed(rows)))  # order-proof
         (w,) = ot.ClaudeStore(os.path.join(tmp, "projects"), _args()).workflows()
         assert w.worked_seconds == 130.0  # 40s + 90s, NOT the 850s elapsed span
+
+
+def test_claude_user_controls_and_attachments_start_fresh_work_bursts():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        rows = [
+            _claude_user("s1", "start", uuid="u0", cwd="/tmp/p", ts="2026-06-10T18:00:00Z"),
+            _claude_msg(
+                "s1",
+                "claude-opus-4-8",
+                _usage(100, 50),
+                uuid="a1",
+                cwd="/tmp/p",
+                parent="u0",
+                ts="2026-06-10T18:01:00Z",
+            ),
+            {
+                "type": "user",
+                "sessionId": "s1",
+                "cwd": "/tmp/p",
+                "timestamp": "2026-06-10T18:11:00Z",
+                "uuid": "compact",
+                "message": {"role": "user", "content": "<command-name>/compact</command-name>"},
+            },
+            {
+                "type": "system",
+                "subtype": "local_command",
+                "sessionId": "s1",
+                "cwd": "/tmp/p",
+                "timestamp": "2026-06-10T18:21:00Z",
+                "uuid": "model",
+                "content": "<command-name>/model</command-name>",
+            },
+            {
+                "type": "attachment",
+                "sessionId": "s1",
+                "cwd": "/tmp/p",
+                "timestamp": "2026-06-10T18:31:00Z",
+                "uuid": "image",
+            },
+            {
+                "type": "system",
+                "subtype": "away_summary",
+                "sessionId": "s1",
+                "cwd": "/tmp/p",
+                "timestamp": "2026-06-10T18:41:00Z",
+                "uuid": "away",
+                "content": "Summary after returning",
+            },
+            # A sidechain control is agent-authored activity, not the human returning.
+            {
+                "type": "system",
+                "subtype": "local_command",
+                "sessionId": "s1",
+                "cwd": "/tmp/p",
+                "timestamp": "2026-06-10T18:51:00Z",
+                "uuid": "side-control",
+                "isSidechain": True,
+                "content": "<command-name>/model</command-name>",
+            },
+            _claude_msg(
+                "s1",
+                "claude-opus-4-8",
+                _usage(40, 10),
+                uuid="a2",
+                cwd="/tmp/p",
+                parent="image",
+                ts="2026-06-10T18:52:00Z",
+            ),
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), rows)
+        (w,) = ot.ClaudeStore(os.path.join(tmp, "projects"), _args()).workflows()
+        assert w.worked_seconds == 720.0
 
 
 def _codex_user(text, ts):
@@ -221,6 +302,23 @@ def test_opencode_subagent_task_message_counts_as_work_not_a_wait():
         )
         (w,) = ot.Store(db, _args()).workflows()
         assert w.worked_seconds == 40.0  # the sub-task gap (10->20) is NOT dropped
+
+
+def test_opencode_worked_starts_a_fresh_burst_after_30_minutes_of_silence():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _opencode_db(
+            db,
+            [
+                ("m1", "s1", "user", 0),
+                ("m2", "s1", "assistant", 60_000),
+                ("m3", "s1", "assistant", 1_860_000),
+                ("m4", "s1", "assistant", 3_661_000),
+                ("m5", "s1", "assistant", 3_721_000),
+            ],
+        )
+        (w,) = ot.Store(db, _args()).workflows()
+        assert w.worked_seconds == 1_920.0
 
 
 def test_hermes_worked_from_message_roles_drops_the_wait():
