@@ -87,6 +87,18 @@ class Row(NamedTuple):
     hint: str = ""
 
 
+# A Windows user-profile directory as it is spelled from WSL (`/mnt/c/Users/Alice`) or
+# on Windows itself (`C:\\Users\\Alice`). The shared profiles are NOT people, and folding
+# them would throw away the one informative thing about such a path.
+_WIN_USER_RE = re.compile(r"((?:/mnt/[a-z]|[a-z]:)[/\\][Uu]sers[/\\])([^/\\]+)", re.IGNORECASE)
+_WIN_SHARED_PROFILES = {"public", "default", "default user", "all users"}
+
+
+def _win_user(match: re.Match) -> str:
+    name = match.group(2)
+    return match.group(0) if name.lower() in _WIN_SHARED_PROFILES else match.group(1) + "<user>"
+
+
 def _tilde(text: str, full: bool = False) -> str:
     """Fold $HOME to ~ — EVERY occurrence, not just a leading one.
 
@@ -99,18 +111,29 @@ def _tilde(text: str, full: bool = False) -> str:
     The lookahead is what keeps `/Users/moextra` from becoming `~extra`: a match only
     counts when the next character cannot continue the path segment — a separator, a
     list comma, or end of string.
+
+    A WINDOWS user directory is redacted AFTERWARDS, because $HOME cannot reach it. The
+    whole point of `--vscode-dir` under WSL is to name the Windows-side store, and that
+    path (`/mnt/c/Users/Alice/AppData/…`) carries a username $HOME knows nothing about:
+    there $HOME is `/home/mo`, so the fold above passes it through untouched and prints
+    it in the report written to be pasted publicly. It is redacted rather than folded to
+    `~` because it need not be the reader's own profile — a path naming a *second*
+    account identifies a person just as well, which is what this is for — and it runs
+    after the fold, never before, so on Windows itself the reader's own home still
+    reads `~/.config` rather than the longer `C:\\Users\\<user>\\.config`.
     """
     if not text or full:
         return text or ""
     home = os.path.expanduser("~")
-    if not home or home in (os.sep, "/"):
-        return text  # a $HOME of "/" would fold every absolute path to "~"
-    # Separator- and case-insensitive on Windows, where the SAME directory is spelled
-    # `C:\\Users\\Alice`, `C:/Users/Alice` and `c:\\users\\alice` -- an exact match leaks
-    # the username the fold exists to hide, in the report written to be pasted publicly.
-    pattern = r"[/\\]".join(re.escape(part) for part in re.split(r"[/\\]", home))
-    flags = re.IGNORECASE if os.name == "nt" else 0
-    return re.sub(pattern + r"(?![\w.-])", "~", text, flags=flags)
+    if home and home not in (os.sep, "/"):
+        # Separator- and case-insensitive on Windows, where the SAME directory is spelled
+        # `C:\\Users\\Alice`, `C:/Users/Alice` and `c:\\users\\alice` -- an exact match
+        # leaks the username the fold exists to hide, in the report written to be pasted
+        # publicly. (A $HOME of "/" would fold every absolute path to "~".)
+        pattern = r"[/\\]".join(re.escape(part) for part in re.split(r"[/\\]", home))
+        flags = re.IGNORECASE if os.name == "nt" else 0
+        text = re.sub(pattern + r"(?![\w.-])", "~", text, flags=flags)
+    return _WIN_USER_RE.sub(_win_user, text)
 
 
 def _mtime(path: str) -> float:

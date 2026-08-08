@@ -875,3 +875,165 @@ def test_hermes_turns_fold_the_subagent_subtree_under_its_root():
         st2 = ot.HermesStore(db, type("Args", (), {"demo": False})())
         assert st2.supports_turns("root") is True
         assert [r["depth"] for r in st2.message_timeline("root")] == [1]
+
+
+def _hermes_messages(db, rows):
+    """(session_id, role, content, epoch) rows in the `messages` table the prompts
+    for the Turns tab's ▸ grouping are read from."""
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS messages "
+        "(session_id TEXT, role TEXT, content TEXT, timestamp REAL)"
+    )
+    conn.executemany("INSERT INTO messages VALUES (?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
+
+
+def test_hermes_subtree_turns_exclude_archived_descendants():
+    # The rollup filters `archived = 0` (_select_sql), so the subtree the Turns tab
+    # draws must too: a tab summing past the header above it is unexplainable from the
+    # screen. And an archived session does not just drop out -- the recursion STOPS
+    # there, matching _parse, where a child whose parent is archived fails to resolve
+    # and becomes its own root, taking its descendants with it.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(
+            db,
+            [
+                {"id": "root", "inp": 10, "title": "the root"},
+                {"id": "gone", "parent_id": "root", "inp": 999, "title": "archived kid"},
+                {"id": "grand", "parent_id": "gone", "inp": 999, "title": "its child"},
+                {"id": "live", "parent_id": "root", "inp": 10, "title": "explore"},
+            ],
+        )
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE sessions SET archived = 1 WHERE id = 'gone'")
+        conn.commit()
+        conn.close()
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-02 07:00:00", "root", 1, inp=100, out=1),
+                _call_line("2026-08-02 07:00:10", "gone", 1, inp=1000, out=10),
+                _call_line("2026-08-02 07:00:15", "grand", 1, inp=1000, out=10),
+                _call_line("2026-08-02 07:00:20", "live", 1, inp=200, out=2),
+            ],
+        )
+        st = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        rows = st.message_timeline("root")
+        assert [r["agent"] for r in rows] == ["-", "explore"]
+        assert sum(r["tokens_total"] for r in rows) == 101 + 202  # never the archived 1010s
+        # Neither the archived child nor anything under it is in the root's subtree,
+        # and the tab's gate is asked of that same set.
+        assert [sid for sid, _, _ in st._subtree_ids("root")] == ["root", "live"]
+
+
+def test_hermes_turn_rows_bound_a_hostile_token_count():
+    # The log regex only promises DIGITS. A corrupt line carrying a 400-digit count
+    # parses fine and then raises OverflowError the moment pricing multiplies it by a
+    # float rate -- i.e. "$" on the Turns tab crashes the render of every session in the
+    # window over one bad line. util.safe_int is the one coercion rule for this.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10}])
+        huge = "9" * 400
+        _hermes_log(
+            root,
+            [
+                f"2026-08-02 07:00:00,605 INFO [s1] agent.conversation_loop: API call #1: "
+                f"model=gpt-5.6-sol provider=openai-codex in={huge} out={huge} total={huge}",
+                _call_line("2026-08-02 07:00:10", "s1", 2, inp=100, out=10),
+            ],
+        )
+        rows = ot.HermesStore(db, type("Args", (), {"demo": False})()).message_timeline("s1")
+        assert [r["tokens_total"] for r in rows] == [0, 110]
+        # The point of the bound: every field survives being priced.
+        for r in rows:
+            ot.api_equivalent_cost(
+                r["model_name"],
+                r["input"],
+                r["output"],
+                r["reasoning"],
+                r["cache_read"],
+                r["cache_write"],
+            )
+
+
+def test_hermes_child_turns_group_under_the_childs_own_prompts():
+    # A Hermes subagent is a session in its own right and holds its own user messages
+    # (9 of them on the one real child in the corpus this was checked against). Walking
+    # the whole subtree against the ROOT's prompt list files the child's calls under a
+    # request that never asked for them, and lists the child's own prompts nowhere.
+    from datetime import datetime as _dt
+
+    def local(h, m, s):
+        return _dt(2026, 8, 2, h, m, s).timestamp()
+
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(
+            db,
+            [
+                {"id": "root", "inp": 10, "title": "the root"},
+                {"id": "kid", "parent_id": "root", "inp": 10, "title": "explore"},
+            ],
+        )
+        _hermes_messages(
+            db,
+            [
+                ("root", "user", "ship the release", local(7, 0, 0)),
+                ("kid", "user", "find the callers", local(7, 0, 5)),
+                ("root", "user", "now write it up", local(7, 0, 25)),
+            ],
+        )
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-02 07:00:01", "root", 1, inp=100, out=1),
+                _call_line("2026-08-02 07:00:10", "kid", 1, inp=200, out=2),
+                _call_line("2026-08-02 07:00:30", "root", 2, inp=300, out=3),
+                # ...and a late child call, AFTER a root prompt it never saw.
+                _call_line("2026-08-02 07:00:40", "kid", 2, inp=400, out=4),
+            ],
+        )
+        st = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        rows = st.message_timeline("root")
+        assert [r["prompt_title"] for r in rows] == [
+            "ship the release",
+            "find the callers",
+            "now write it up",
+            "find the callers",  # the child's own prompt still owns its later call
+        ]
+        # Per-session prompt ids, so the ▸ groups never collide across the subtree.
+        assert [r["prompt_id"] for r in rows] == ["root:0", "kid:0", "root:1", "kid:0"]
+
+
+def test_hermes_demo_hides_the_child_session_title_in_the_agent_column():
+    # The Agent cell is a real session TITLE on this backend (not a nickname or a role,
+    # as on Codex/omp) -- user text, on the screen demo exists to make shareable.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(
+            db,
+            [
+                {"id": "root", "inp": 10, "title": "the root"},
+                {"id": "kid", "parent_id": "root", "inp": 10, "title": "SECRET customer audit"},
+            ],
+        )
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-02 07:00:00", "root", 1, inp=100, out=1),
+                _call_line("2026-08-02 07:00:10", "kid", 1, inp=200, out=2),
+            ],
+        )
+        st = ot.HermesStore(db, type("Args", (), {"demo": True})())
+        rows = st.message_timeline("root")
+        agents = [r["agent"] for r in rows]
+        assert "SECRET customer audit" not in agents
+        assert agents[0] == "-" and agents[1] not in ("", "-")
+        # Seeded off the child's id, so the Turns tab and the Subagents tab agree on
+        # the fake name for that node.
+        node = next(n for n in st.workflow_nodes("root") if n["depth"])
+        assert agents[1] == node["title"]

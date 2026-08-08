@@ -405,6 +405,43 @@ class CodexStore:
         # through.
         return safe_int(value)
 
+    # The four cumulative components of `total_token_usage`, in the order `prev` holds
+    # them (input, output, cached input, total).
+    _USAGE_FIELDS = ("input_tokens", "output_tokens", "cached_input_tokens", "total_tokens")
+
+    @classmethod
+    def _cumulative(cls, value) -> int | None:
+        """One cumulative component as a trustworthy count, or None to distrust it.
+
+        `safe_int` cannot answer this on its own: its 0 covers both a field that is
+        genuinely 0 and one that is a word, a nested object, an inf or a 400-digit
+        integer. Everywhere else that conflation is harmless -- here the value becomes a
+        cumulative BASELINE for every later turn, so the two have to be told apart (see
+        _apply_token_count). Hence a whole coercion of its own rather than a "did
+        safe_int give up?" predicate beside it: the predicate had to re-guess what
+        safe_int had done, and guessed wrong three ways -- JSON `false` and `null` both
+        collapsed to a valid 0, and a fractional 1.5 silently truncated to 1.
+
+        Measured against the real corpus (3,408 token_count records over 171 rollouts):
+        every one carries all four components as plain ints, so none of the shapes
+        rejected here is something Codex writes. A MISSING key is the one exception and
+        stays a valid 0 -- absence is how an older schema differs, and rejecting it
+        would drop a whole session's usage over a field that was never there.
+        """
+        if value is None or isinstance(value, bool):
+            return None  # JSON null / true / false are not counts
+        try:
+            num = float(value)  # an int, a float, or a digit string
+        except (TypeError, ValueError, OverflowError):
+            return None  # a nested object, a word, an integer float() cannot hold
+        if not num.is_integer() or num < 0:
+            return None  # NaN and inf (neither is_integer), a fraction, a negative
+        # The bound is applied to the ORIGINAL value, never to `num`: float() is lossy
+        # exactly where the ceiling sits, so 2**53+1 arrives here as 2**53 and would
+        # pass a check its true value fails -- the rounding defeating the guard.
+        bounded = cls._int(value)  # the backend's own coercer: one magnitude rule
+        return bounded if bounded or num == 0 else None
+
     def _apply_token_count(
         self,
         s: dict,
@@ -420,12 +457,18 @@ class CodexStore:
         tt = info.get("total_token_usage")
         if not isinstance(tt, dict):
             return prev
-        cur = (
-            self._int(tt.get("input_tokens", 0) or 0),
-            self._int(tt.get("output_tokens", 0) or 0),
-            self._int(tt.get("cached_input_tokens", 0) or 0),
-            self._int(tt.get("total_tokens", 0) or 0),
-        )
+        # A malformed component must SKIP the record, not coerce to 0 and become the new
+        # baseline. Every figure here is CUMULATIVE, so `prev` is not this record's own
+        # concern -- it is the subtrahend for every turn after it. Coercing junk to 0
+        # reads as a compaction reset (total went down), books a 0-token turn, and then
+        # bills the next real turn its whole running total as one delta: measured on
+        # [100, junk, 400] the last turn came out 400 instead of 300. Skipping keeps the
+        # last trustworthy baseline, so the next valid record's delta spans the gap --
+        # the same "return prev" the duplicate echo takes, and it likewise does not
+        # consume the pending tool calls.
+        cur = tuple(self._cumulative(tt.get(k, 0)) for k in self._USAGE_FIELDS)
+        if any(v is None for v in cur):
+            return prev
         if cur[3] > prev[3]:  # new turn: usage is the growth in the running total
             d_in, d_out, d_cached = cur[0] - prev[0], cur[1] - prev[1], cur[2] - prev[2]
         elif cur[3] < prev[3]:  # context compaction reset: the new total is fresh usage

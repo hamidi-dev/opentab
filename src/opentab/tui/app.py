@@ -4247,6 +4247,17 @@ class App:
         # Called from BOTH App.models_tab_workflows and the renderer's four *_models
         # methods (Renderer.__getattr__ delegates here), so the rows the cursor indexes
         # and the rows on screen cannot drift.
+        #
+        # Machines mode composes NOTHING, the same exception _zoom_picker_scope makes
+        # for the Harnesses/Machines pickers and for the same reason: a box's drills are
+        # mutually exclusive, so picking a model CLEARS the harness/project drill this
+        # would otherwise have ranked through. Composing what the pick discards breaks
+        # the one rule these scopes exist to keep -- a picker must only ever offer rows
+        # its Enter can open -- in the direction that is hardest to spot: the row read
+        # "1 session · $3" and opened two sessions and $5, because the ranking was
+        # narrower than the list it produced.
+        if self.browse_mode == "machines":
+            return rows
         if self.zoom_project and self.browse_mode != "projects":
             rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
         if self.zoom_source:

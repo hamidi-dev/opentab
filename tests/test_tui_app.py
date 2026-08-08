@@ -4323,3 +4323,40 @@ def test_unpriced_tokens_are_restated_at_message_granularity():
     app = ot.App(NodeGranularStore([w]), args)
     app._load_model_cache()
     assert app.loaded[0].unpriced_tokens == 900  # the $0 message's tokens, visible again
+
+
+def test_a_box_ranks_models_over_exactly_the_sessions_its_enter_opens():
+    # A box's drills are mutually exclusive: picking a model CLEARS an armed harness
+    # drill. So the Models ranking must not compose that harness either -- ranking
+    # through a filter the pick discards makes the row read narrower than the list it
+    # produces, which is the one failure a picker scope exists to prevent (measured: a
+    # row saying one session opened two).
+    from tests._support import fleet_app
+
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
+    b.source, c.source = "Claude Code", "OpenCode"
+    app = fleet_app({"server": [b, c]})
+    app._model_by_root = {
+        "b": [_model_row("opus", 9.0, 900)],
+        "c": [_model_row("opus", 0.6, 60)],
+    }
+    app.set_browse_mode("machines")
+    app.drill_in()
+    # Arm the box's Harnesses drill on Claude Code (session b only), then walk to Models.
+    app.tab = app.current_tabs().index("Harnesses")
+    keys = [s for s, _ in app.zoom_source_rows()]
+    app.source_index = keys.index("Claude Code")
+    app.drill_in()
+    assert app.zoom_source == "Claude Code"
+    assert {w.id for w in app.current_sessions()} == {"b"}
+    app.tab = app.current_tabs().index("Models")
+    ranked = {m: int(it["runs"]) for m, it in app.zoom_model_rows()}
+    app.model_pick_index = 0
+    app.drill_in()
+    # Enter cleared the harness drill, so the ranking above must have covered the whole
+    # box -- both sessions, not just Claude Code's one.
+    assert app.zoom_source is None and app.zoom_model == "opus"
+    opened = {w.id for w in app.current_sessions()}
+    assert opened == {"b", "c"}
+    assert ranked["opus"] == len(opened)

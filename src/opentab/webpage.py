@@ -542,6 +542,10 @@ let FOCUS = 'months';       // which sidebar list j/k drives
 let MSUB = null;
 function setMsub(dim, value) { MSUB = { dim, value }; TAB = 'Sessions'; render(false); }
 function clearMsub() { MSUB = null; render(false); }
+// What a change of scope invalidates: the typed filter, the expanded prompt rows and
+// the in-place sub-drill are all chosen WITHIN a scope over the sessions it holds. One
+// function, because navigation and a range change must forget exactly the same things.
+function resetScopeState() { FILTER = ''; EXPANDED.clear(); MSUB = null; }
 function msubFilter(ws) {
   if (!MSUB) return ws;
   // Fall back to META.source exactly like sourceRows() groups -- else a session with an
@@ -1142,6 +1146,12 @@ function applyRange(desc) {
   RANGE = desc;
   W = filterRange(ALL_W);
   closeRange();
+  // Reset the scoped table state HERE rather than leaving it to the hashchange below:
+  // go('', '') only fires that event when the hash actually changes, so applying a
+  // range from the root scope (the most ordinary way to do it) left an armed model
+  // sub-drill and a typed filter over a dataset they were never chosen in -- most
+  // visibly as a Sessions tab that came back empty for no reason on screen.
+  resetScopeState();
   go('', '');       // reset to the all-time overview of the new range
   render(false);    // in case the hash was already '#/'
 }
@@ -3255,7 +3265,7 @@ document.getElementById('themepick').addEventListener('click', closeTheme);
 // Navigation resets the scoped table state, but keeps the active tab when it
 // still exists in the new scope (render() falls back to Overview otherwise) --
 // so month->month on the Sessions tab stays on Sessions.
-window.addEventListener('hashchange', () => { FILTER = ''; EXPANDED.clear(); MSUB = null; render(); });
+window.addEventListener('hashchange', () => { resetScopeState(); render(); });
 // Theme precedence: the viewer's saved choice, else the page's baked-in default
 // (--theme / meta), else tokyo-night. Applied before the first paint so charts pick it up.
 applyTheme((function () { try { return localStorage.getItem('opentab-theme'); } catch (e) { return null; } })() || META.theme || 'tokyo-night');

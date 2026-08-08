@@ -963,3 +963,56 @@ def test_trends_machines_drill_filters_sessions_by_machine():
     app._open_trend_drill()
     assert app.trend_drill == ("machine", "server")
     assert [s[0].id for s in app.trend_drill_sessions()] == ["b"]
+
+
+def _tall_ranked_app(n=12):
+    # A ranking taller than any viewport this test uses, across all four ranked tabs.
+    import dataclasses
+
+    ws = []
+    for i in range(n):
+        w = workflow(
+            f"s{i}", "2026-06-%02d 12:00:00" % (i % 28 + 1), cost=1.0 + i, directory=f"/p{i}"
+        )
+        ws.append(
+            dataclasses.replace(w, source=f"harness{i}", machine=f"box{i}")
+            if hasattr(w, "source")
+            else w
+        )
+    app = app_with(ws)
+    app._model_by_root = {
+        f"s{i}": [_model_row(f"vendor{i}/model{i}", 1.0 + i, 100 * (i + 1))] for i in range(n)
+    }
+    return app
+
+
+def test_every_ranked_trends_table_fits_the_height_it_was_given():
+    # draw_trends CLIPS what a tab returns to the height it passed in, so a builder that
+    # budgets rows without counting its own ruled box loses exactly what the box puts
+    # last: the TOTAL row and the bottom border. The table then reads as if it simply
+    # stopped -- and the row that vanished is the one summing the ranking (measured: a
+    # 20-line viewport produced 23 lines).
+    app = _tall_ranked_app()
+    rnd = app.renderer
+    for height in (8, 10, 14, 20):
+        for name in ("trend_models", "trend_providers", "trend_sources", "trend_machines"):
+            lines = getattr(rnd, name)(100, height)
+            assert len(lines) <= height, (name, height, len(lines))
+            # ...and what survives is a whole box: the TOTAL row and its bottom border.
+            assert lines[-1].startswith(rnd.box_glyphs()["bl"]), (name, height, lines[-1])
+            assert any("TOTAL" in ln for ln in lines), (name, height)
+
+
+def test_a_windowed_harness_ranking_totals_the_whole_ranking():
+    # The window is a viewport onto the ranking, exactly as on the Models tab: a TOTAL
+    # over only the visible rows is a different number on every scroll, and disagrees
+    # with the same Harnesses/Machines rollup everywhere else in the app.
+    app = _tall_ranked_app()
+    rnd = app.renderer
+    full = sum(w.total_cost for w in app.all_workflows)
+    for name in ("trend_sources", "trend_machines"):
+        lines = getattr(rnd, name)(100, 12)
+        total_line = next(ln for ln in lines if "TOTAL" in ln)
+        assert ot.money(full) in total_line, (name, total_line)
+        # The window really is shorter than the ranking, or this proves nothing.
+        assert sum(1 for ln in lines if "box" in ln or "harness" in ln) < 12

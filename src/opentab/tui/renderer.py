@@ -6763,6 +6763,36 @@ class Renderer:
             return HEAT_EMPTY_GLYPH, curses.color_pair(1) | curses.A_DIM
         return heat_glyph(level, levels, self.has256), curses.color_pair(7 + level) | curses.A_BOLD
 
+    def _ranked_row_budget(self, height: int, n: int, notes: int = 0) -> int:
+        """How many BODY rows a scrolling ruled table may draw inside `height` lines.
+
+        draw_trends hands each tab a height and then CLIPS what comes back to it, so a
+        builder that budgets its window without counting its own frame loses whatever
+        the frame pushed past the cut -- and what a ruled box pushes out last is its
+        TOTAL row and its bottom border, i.e. the table reads as though it simply ended
+        (measured: a 20-line viewport produced 23 lines). The chrome is BOX_CHROME (top,
+        header, rule, bottom) plus the rule+TOTAL a multi-row table closes with, plus any
+        notes riding below the box.
+        """
+        return max(1, height - self.BOX_CHROME - (2 if n > 1 else 0) - notes)
+
+    def _unpriced_note(self, all_rows: list) -> list[str]:
+        """The "press $" nudge under a ranked table, when the ranking holds $0 rows.
+
+        Asked of the WHOLE ranking rather than the scrolled window: the note is about
+        the data the table stands for, and one that blinked in and out as you scrolled
+        would also move the row budget under the cursor on every keypress.
+        """
+        if self.show_api_prices or not any(
+            float(it["cost"]) == 0 and int(it["tokens"]) for _, it in all_rows
+        ):
+            return []
+        return [
+            "",
+            f"{self._key('trends', 'api_prices')} prices subscription/credit "
+            "usage at API list rates",
+        ]
+
     def _trend_cursor_window(self, n: int, fit: int) -> tuple[int, int, int]:
         # Clamp the ranked-row cursor (writing the clamp back, so a shrunk list
         # never leaves it dangling), then a stateless window that keeps it visible:
@@ -6784,7 +6814,9 @@ class Renderer:
             return ["# Model spend", "", "No priced model spend in the active range."]
         total = sum(c for _, c in all_rows)
         peak = max(c for _, c in all_rows) or 1.0
-        _idx, start, shown = self._trend_cursor_window(len(all_rows), height - 3)
+        _idx, start, shown = self._trend_cursor_window(
+            len(all_rows), self._ranked_row_budget(height, len(all_rows))
+        )
         rows = all_rows[start : start + shown]
         head_name = self.trend_sort_heading("name", "Model", "Models")
         head_cost = self.trend_sort_heading("cost", "Cost", "Models")
@@ -6840,7 +6872,10 @@ class Renderer:
             return ["# Spend by provider", "", "No model usage in the active range."]
         total_cost = sum(float(it["cost"]) for _, it in all_rows)
         peak = max((float(it["cost"]) for _, it in all_rows), default=0.0) or 1.0
-        _idx, start, shown = self._trend_cursor_window(len(all_rows), height - 4)
+        notes = self._unpriced_note(all_rows)
+        _idx, start, shown = self._trend_cursor_window(
+            len(all_rows), self._ranked_row_budget(height, len(all_rows), len(notes))
+        )
         rows = all_rows[start : start + shown]
         columns = (("name", "Provider"), ("cost", "Cost"), ("tokens", "Tokens"), ("count", "Msgs"))
         heads = {k: self.trend_sort_heading(k, label, "Providers") for k, label in columns}
@@ -6869,15 +6904,6 @@ class Renderer:
                 f"{human_tokens(sum(int(it['tokens']) for _, it in all_rows)):>9} "
                 f"{sum(int(it['runs']) for _, it in all_rows):>7}"
             )
-        notes = []
-        if not self.show_api_prices and any(
-            float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
-        ):
-            notes = [
-                "",
-                f"{self._key('trends', 'api_prices')} prices subscription/credit "
-                "usage at API list rates",
-            ]
         lines = self._ruled_box("# Spend by provider", header, body, totals_row, notes, width)
         self._mark_trend_sort_header(columns)
         self._trend_rows_at = (self._ruled_body_start or 0, len(rows), start)
@@ -6894,9 +6920,9 @@ class Renderer:
             width,
             "harness",
             "Harness",
-            limit=max(1, height - 4),
             selectable=True,
             sort_tab="Harnesses",
+            height=height,
         )
 
     def source_table(
@@ -6989,6 +7015,7 @@ class Renderer:
         limit: int | None = None,
         selectable: bool = False,
         sort_tab: str | None = None,
+        height: int | None = None,
     ) -> list[str]:
         # The shared ranked-spend table behind source_table/machine_table: a name column,
         # a cost bar, then Cost/Share/Tokens/Sess, in the same ruled box every other table
@@ -7002,42 +7029,36 @@ class Renderer:
             return self._ruled_box(
                 title, self._group_header(col, namew, barw, sort_tab), [], None, [], width
             ) + ["", "No sessions in the active range."]
+        notes = self._unpriced_note(all_rows)
+        if height is not None:  # the scrolling Trends frame: budget the box's own lines
+            limit = self._ranked_row_budget(height, len(all_rows), len(notes))
         if selectable and limit is not None:
             _idx, start, shown = self._trend_cursor_window(len(all_rows), limit)
             rows = all_rows[start : start + shown]
-            # Shares/bars stay anchored to the whole list so scrolling the window
-            # never re-scales them under the cursor.
-            total_cost = sum(float(it["cost"]) for _, it in all_rows)
-            peak = max((float(it["cost"]) for _, it in all_rows), default=0.0) or 1.0
         else:
             start = 0
             rows = all_rows if limit is None else all_rows[:limit]
-            total_cost = sum(float(it["cost"]) for _, it in rows)
-            peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
+        # Shares, bars and the TOTAL all measure the WHOLE ranking, never the scrolled
+        # window: the window is a viewport onto it (trend_models' rule), and a total that
+        # changed as you scrolled would be a different number every frame -- one that
+        # disagreed with the Harnesses/Machines rollups everywhere else in the app.
+        scope = all_rows if (selectable and limit is not None) else rows
+        total_cost = sum(float(it["cost"]) for _, it in scope)
+        peak = max((float(it["cost"]) for _, it in scope), default=0.0) or 1.0
         inner = max(1, width - self.BOX_CHROME)
         namew, barw = self._group_widths(rows, col, inner)
         body = [self._group_row(name, it, " ", namew, barw, peak, total_cost) for name, it in rows]
         total = None
-        if len(rows) > 1:
+        if len(scope) > 1:
             # The TOTAL row every multi-row table closes with. Counts and tokens summed;
             # Share stays blank (it is definitionally 100%) and so does the bar, which
             # measures rows against the peak, not against the sum.
-            tcost = sum(float(it["cost"]) for _, it in rows)
-            ttok = sum(int(it["tokens"]) for _, it in rows)
-            tses = sum(int(it["sessions"]) for _, it in rows)
+            ttok = sum(int(it["tokens"]) for _, it in scope)
+            tses = sum(int(it["sessions"]) for _, it in scope)
             total = (
-                f"  {pad('TOTAL', namew)}  {'':{barw}} {money(tcost):>11} {'':>5} "
+                f"  {pad('TOTAL', namew)}  {'':{barw}} {money(total_cost):>11} {'':>5} "
                 f"{human_tokens(ttok):>9} {tses:>7}"
             )
-        notes = []
-        if not self.show_api_prices and any(
-            float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
-        ):
-            notes = [
-                "",
-                f"{self._key('trends', 'api_prices')} prices subscription/credit "
-                "usage at API list rates",
-            ]
         lines = self._ruled_box(
             title, self._group_header(col, namew, barw, sort_tab), body, total, notes, width
         )
@@ -7056,9 +7077,9 @@ class Renderer:
             width,
             "machine",
             "Machine",
-            limit=max(1, height - 4),
             selectable=True,
             sort_tab="Machines",
+            height=height,
         )
 
     def trend_drill_lines(self, width: int, height: int) -> list[str]:
@@ -7075,7 +7096,7 @@ class Renderer:
         header = f"  {'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}"
         idx = max(0, min(self.app.trend_drill_index, len(rows) - 1))
         self.app.trend_drill_index = idx
-        fit = max(1, height - 4 - self.PICKER_CHROME)  # the box's own four lines
+        fit = self._ranked_row_budget(height, len(rows))  # the box's own lines
         start = max(0, min(idx - fit // 2, len(rows) - fit))
         shown = rows[start : start + min(fit, len(rows) - start)]
         body = [

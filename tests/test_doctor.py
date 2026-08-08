@@ -201,8 +201,10 @@ def test_redaction_survives_windows_spellings_of_the_same_home():
         ):
             assert "Alice" not in doctor._tilde(spelling)
             assert "alice" not in doctor._tilde(spelling).lower()
-        # A sibling that merely shares the prefix is still left alone.
-        assert doctor._tilde(r"C:\Users\Alicia\x") == r"C:\Users\Alicia\x"
+        # A sibling that merely shares the prefix is not folded to "~" -- it is a
+        # different directory. It is another account, so it is redacted rather than
+        # printed (see test_redaction_hides_a_windows_username_that_home_cannot_reach).
+        assert doctor._tilde(r"C:\Users\Alicia\x") == r"C:\Users\<user>\x"
     finally:
         doctor.os.name = saved
         os.environ.pop("USERPROFILE", None)
@@ -1014,3 +1016,44 @@ def test_a_db_that_is_not_opencodes_is_reported_as_such_not_as_missing():
         finally:
             os.chmod(db, 0o644)
         assert row.status == doctor.BAD and "cannot be read" in row.detail
+
+
+def test_redaction_hides_a_windows_username_that_home_cannot_reach():
+    # The whole point of --vscode-dir under WSL is to name the WINDOWS-side store, and
+    # $HOME there is /home/<you>: the fold never touches /mnt/c/Users/Alice/..., so the
+    # Windows username went out verbatim in the default "safe to paste" report. Redacted
+    # rather than folded to ~, since it need not be the reader's own profile.
+    assert doctor._tilde("/mnt/c/Users/Alice/AppData/Roaming/Code/User") == (
+        "/mnt/c/Users/<user>/AppData/Roaming/Code/User"
+    )
+    assert doctor._tilde("/mnt/d/users/bob/x") == "/mnt/d/users/<user>/x"
+    assert doctor._tilde(r"C:\Users\Alice\AppData") == r"C:\Users\<user>\AppData"
+    # Shared profiles are not people; folding them would drop the informative half.
+    assert doctor._tilde("/mnt/c/Users/Public/Docs") == "/mnt/c/Users/Public/Docs"
+    # Not a user directory at all, and --full still opts out for local eyes.
+    assert doctor._tilde("/mnt/c/UsersFoo/bar") == "/mnt/c/UsersFoo/bar"
+    assert doctor._tilde("/mnt/c/Users/Alice/x", full=True) == "/mnt/c/Users/Alice/x"
+    # ...and it reaches the rendered report, wherever such a path enters it.
+    with tempfile.TemporaryDirectory() as tmp:
+        with _clean_env(OPENCLAW_DIR="/mnt/c/Users/Alice/.openclaw"):
+            text = "\n".join(doctor.render(doctor.build_report(_args(tmp))))
+        assert "Alice" not in text
+
+
+def test_redaction_keeps_folding_a_windows_home_to_a_tilde():
+    # The Windows-user redaction runs AFTER the $HOME fold, never before: on Windows
+    # itself the reader's own home is still the shorter, more useful "~".
+    saved = os.name
+    home = os.environ.get("HOME")
+    try:
+        os.environ["HOME"] = os.environ["USERPROFILE"] = r"C:\Users\Alice"
+        doctor.os.name = "nt"
+        assert doctor._tilde(r"C:\Users\Alice\.config\opentab") == r"~\.config\opentab"
+        # A DIFFERENT account on the same box is redacted instead -- still no username.
+        assert doctor._tilde(r"C:\Users\Bob\.codex") == r"C:\Users\<user>\.codex"
+    finally:
+        doctor.os.name = saved
+        os.environ.pop("USERPROFILE", None)
+        os.environ.pop("HOME", None)
+        if home is not None:
+            os.environ["HOME"] = home

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from opentab.demo import demo_config, demo_title, scramble_node, scramble_workflow
 from opentab.formatting import worked_seconds
 from opentab.models import Workflow
-from opentab.util import git_root, safe_float
+from opentab.util import git_root, safe_float, safe_int
 
 
 class HermesStore:
@@ -698,9 +698,14 @@ class HermesStore:
 
     @classmethod
     def _log_turn_row(cls, m: re.Match) -> dict:
-        total = int(m.group("total"))
-        raw_in, out_t = int(m.group("in")), int(m.group("out"))
-        cache_read = min(int(m.group("cache") or 0), raw_in)  # a subset of `in`
+        # Through util.safe_int like every other backend's usage fields, not bare int().
+        # The regex only guarantees DIGITS, not a sane magnitude: a corrupt line carrying
+        # a 400-digit count parses fine here and then raises OverflowError a layer away,
+        # the moment pricing multiplies it by a float rate ("$" on the Turns tab) -- one
+        # bad log line taking down the render of every session in the window.
+        total = safe_int(m.group("total"))
+        raw_in, out_t = safe_int(m.group("in")), safe_int(m.group("out"))
+        cache_read = min(safe_int(m.group("cache") or 0), raw_in)  # a subset of `in`
         inp = max(0, raw_in - cache_read)  # ...so the uncached remainder is what's left
         return {
             "ts": m.group("ts"),  # naive UTC; _log_local() converts at read time
@@ -908,19 +913,30 @@ class HermesStore:
         totals), so its Turns must cover them too or the tab reports less than the
         header above it -- and a root whose own calls have rotated out of the log
         while a child's survive would hide the tab on a session that has turns.
+
+        ARCHIVED sessions are excluded at every step, exactly as _select_sql excludes
+        them from the rollup: a subtree wider than the totals above it is the same bug
+        in the other direction, and the more damaging one -- the Turns tab would sum
+        past its own header with no way to see why. Skipping an archived session also
+        stops the recursion there, which is what _parse already does: a child whose
+        parent is archived does not resolve, so it becomes its OWN root (see the roots
+        comment there) and its turns belong to that session's tab, not to this one.
         """
         try:
             conn = self._connect()
         except sqlite3.Error:
             return [(workflow_id, 0, "-")]
+        archived = "archived" in self._cols
+        root_live = " AND archived = 0" if archived else ""
+        child_live = " WHERE c.archived = 0" if archived else ""
         try:
             rows = conn.execute(
-                """
+                f"""
                 WITH RECURSIVE tree(id, depth) AS (
-                  SELECT id, 0 FROM sessions WHERE id = ?
+                  SELECT id, 0 FROM sessions WHERE id = ?{root_live}
                   UNION ALL
                   SELECT c.id, tree.depth + 1 FROM sessions c
-                  JOIN tree ON c.parent_session_id = tree.id
+                  JOIN tree ON c.parent_session_id = tree.id{child_live}
                 )
                 SELECT tree.id, tree.depth, COALESCE(s.title, '') FROM tree
                 JOIN sessions s ON s.id = tree.id
@@ -954,30 +970,53 @@ class HermesStore:
         # Over the whole SUBTREE, interleaved by time: a Hermes root's rollup folds its
         # children in, so its Turns must too, each child row tagged depth/agent the way
         # every hierarchical backend marks a subagent.
+        #
+        # The lockstep runs PER SESSION, not once over the root's prompts. A Hermes
+        # subagent is a session in its own right and holds its own user messages (the
+        # delegated task and its follow-ups -- 9 of them on the one real child in the
+        # corpus this was checked against), so walking every row against the root's
+        # prompt list files the child's calls under whichever root prompt happened to
+        # precede them: work attributed to a request that never asked for it, and the
+        # child's own prompts listed nowhere. A session with no prompts of its own
+        # leaves its rows headerless (the Copilot shape), which is honest -- better an
+        # unlabelled group than a wrong label.
         turns = self._log_turns()
+        subtree = self._subtree_ids(workflow_id)
         rows: list[dict] = []
-        for sid, depth, agent in self._subtree_ids(workflow_id):
+        for sid, depth, agent in subtree:
+            # Demo the AGENT here, where the child's session id is still in hand: the
+            # label is a real session TITLE on this backend (not a nickname or a role,
+            # as on Codex/omp), so it is exactly the kind of text demo mode exists to
+            # keep off the screen -- and seeding it off the child's id gives the same
+            # fake the Subagents tab shows for that node.
+            label = "-"
+            if depth:
+                label = demo_title(sid) if self.demo and "titles" in self.demo_cats else agent
             for r in turns.get(sid, ()):
-                rows.append(dict(r, depth=depth, agent=agent if depth else "-"))
+                rows.append(dict(r, sid=sid, depth=depth, agent=label))
         if not rows:
             return []
-        prompts = self._session_prompts(workflow_id)
+        prompts = self._session_prompts([sid for sid, _, _ in subtree])
+        # (session id -> its cursor into that session's prompts, and the prompt in force)
+        state: dict[str, list] = {sid: [0, "", ""] for sid, _, _ in subtree}
         out: list[dict] = []
-        pi, cur_id, cur_title = 0, "", ""
         # The stamps are local wall clock in a fixed-width format, so they sort
         # lexicographically in time order -- and against the prompts' _ts_to_local
         # strings, which are the same clock and the same format.
         for r in sorted(rows, key=lambda x: x["ts"]):
             local = self._log_local(r["ts"])
-            while pi < len(prompts) and prompts[pi]["time"] <= local:
-                cur_id, cur_title = prompts[pi]["id"], prompts[pi]["title"]
-                pi += 1
             row = dict(r)
+            sid = row.pop("sid", workflow_id)
+            own = prompts.get(sid, ())
+            cur = state.setdefault(sid, [0, "", ""])
+            while cur[0] < len(own) and own[cur[0]]["time"] <= local:
+                cur[1], cur[2] = own[cur[0]]["id"], own[cur[0]]["title"]
+                cur[0] += 1
             row["time"] = local
             row.pop("ts", None)
-            row["prompt_id"] = cur_id
-            row["prompt_title"] = cur_title
-            row["prompt_full"] = cur_title
+            row["prompt_id"] = cur[1]
+            row["prompt_title"] = cur[2]
+            row["prompt_full"] = cur[2]
             out.append(row)
         if self.demo:
             out = [self._demo_turn(r) for r in out]
@@ -992,35 +1031,45 @@ class HermesStore:
             r["prompt_title"] = r["prompt_full"] = demo_title(r.get("prompt_id") or "noprompt")
         return r
 
-    def _session_prompts(self, workflow_id: str) -> list[dict]:
-        """The session's user prompts, oldest first, for the Turns tab's ▸ grouping.
+    def _session_prompts(self, ids: list[str]) -> dict[str, list[dict]]:
+        """Each session's user prompts, oldest first, for the Turns tab's ▸ grouping.
 
         Read straight from `messages` rather than from _parse()'s rollup: this is a
         per-session drill-in, so it must not drag the whole corpus parse in behind it.
+        Takes the whole subtree in ONE query rather than a query per session -- the
+        drill-in is on the paint path, and a root with a dozen subagents would otherwise
+        open the DB a dozen times to build one tab.
         """
+        if not ids:
+            return {}
         try:
             conn = self._connect()
         except sqlite3.Error:
-            return []
+            return {}
         try:
             rows = conn.execute(
-                "select timestamp, content from messages "
-                "where session_id = ? and role = 'user' and content is not null "
-                "order by timestamp",
-                [workflow_id],
+                "select session_id, timestamp, content from messages "
+                f"where session_id in ({','.join('?' * len(ids))}) "
+                "and role = 'user' and content is not null "
+                "order by session_id, timestamp",
+                list(ids),
             ).fetchall()
         except sqlite3.Error:
-            return []  # an older schema without the table/columns simply has no headers
+            return {}  # an older schema without the table/columns simply has no headers
         finally:
             conn.close()
-        out = []
-        for i, r in enumerate(rows):
+        out: dict[str, list[dict]] = {}
+        for r in rows:
+            sid = str(r["session_id"])
             title = self._title_from_content(str(r["content"] or ""))
             if not title:
                 continue
-            out.append(
+            own = out.setdefault(sid, [])
+            own.append(
                 {
-                    "id": f"{workflow_id}:{i}",
+                    # The ordinal is per SESSION, so a child's prompts group under their
+                    # own headers instead of colliding with the root's ids.
+                    "id": f"{sid}:{len(own)}",
                     "time": self._ts_to_local(safe_float(r["timestamp"])),
                     "title": title,
                 }

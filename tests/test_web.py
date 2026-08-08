@@ -1420,3 +1420,22 @@ def test_web_turns_subtotal_each_run_not_each_prompt_id():
     # merged subtotal.
     assert "groups.forEach((g, n) =>" in js
     assert "moneyCell(g.cost)" in js
+
+
+def test_web_a_range_change_forgets_the_scope_state_itself():
+    # applyRange used to leave this to the hashchange listener, via go('', ''). That
+    # event only fires when the hash actually CHANGES, so applying a range from the root
+    # scope -- the most ordinary way to do it -- kept an armed model sub-drill and a
+    # typed filter over a dataset they were never chosen in. On screen that reads as a
+    # Sessions tab that came back empty for no reason.
+    js = _js_source()
+    reset = "function resetScopeState() { FILTER = ''; EXPANDED.clear(); MSUB = null; }"
+    assert reset in js
+    body = js.split("function applyRange(", 1)[1].split("\nfunction ", 1)[0]
+    assert "resetScopeState();" in body
+    # ...and it happens BEFORE the render that paints the new range.
+    assert body.index("resetScopeState();") < body.index("render(false)")
+    # One rule, not two: navigation forgets exactly the same things.
+    listener = next(ln for ln in js.splitlines() if "'hashchange'" in ln)
+    assert "resetScopeState(); render();" in listener
+    assert "MSUB = null" not in listener  # never a second, drifting copy

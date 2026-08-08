@@ -451,7 +451,81 @@ def test_codex_survives_a_token_count_json_parses_as_infinity():
             )
         store = ot.CodexStore(os.path.join(tmp, "sessions"), type("Args", (), {"demo": False})())
         w = store.workflows()
-        # The inf field drops to 0 and the turn is still counted off its other
-        # components -- a token lost beats the backend lost.
-        assert len(w) == 1 and w[0].total_tokens == 50
-        assert store.model_breakdown()[0]["unpriced_output"] == 50
+        # The backend survives, which is the point. The RECORD is skipped whole rather
+        # than counted off its surviving components: every figure in it is cumulative,
+        # so a half-trusted one becomes the baseline every later turn is measured
+        # against (see test_codex_a_malformed_total_does_not_inflate_the_next_turn).
+        # Nothing is really lost by skipping -- the next valid record's delta spans the
+        # gap -- except when the bad record is the session's ONLY one, as here, which
+        # then has no recorded usage at all and drops like any other usage-less session.
+        assert w == [] and store.model_breakdown() == []
+
+
+def test_codex_a_malformed_total_does_not_inflate_the_next_turn():
+    # Codex logs a CUMULATIVE total per turn and opentab takes deltas off it, so a
+    # record that can't be trusted must not become the subtrahend. Coercing its junk to
+    # 0 reads as a compaction reset and then bills the NEXT turn the whole running
+    # total: on [100, junk, 400] the last turn came out 400 instead of 300.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions", "2025", "10", "03")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _codex_rollout(
+            root,
+            CODEX_SID,
+            [
+                _codex_meta(CODEX_SID, cwd),
+                _codex_turn("gpt-5-codex", cwd),
+                _codex_tokens(80, 20, 0, 100, ts="2025-10-03T14:51:20.000Z"),
+                # A component JSON allows and no coercion can honour, mid-stream.
+                _codex_tokens("nonsense", 100, 0, 250, ts="2025-10-03T14:51:30.000Z"),
+                _codex_tokens(300, 100, 0, 400, ts="2025-10-03T14:51:40.000Z"),
+            ],
+        )
+        store = ot.CodexStore(os.path.join(tmp, "sessions"), type("Args", (), {"demo": False})())
+        (w,) = store.workflows()
+        assert w.total_tokens == 400  # the deltas still close on the final total
+        turns = store.message_timeline(w.id)
+        assert [t["tokens_total"] for t in turns] == [100, 300]
+
+
+def test_codex_a_falsy_or_fractional_component_is_distrusted_too():
+    # The three shapes a "did safe_int give up?" predicate could not see, because it had
+    # to re-guess what safe_int had done: JSON `false` and `null` both collapse to a
+    # valid-looking 0, and a fractional 1.5 truncates to 1. Each then becomes the
+    # cumulative baseline and inflates the next turn exactly like a junk string does.
+    # (Measured on the real corpus: 3,408 token_count records, every component a plain
+    # int -- so none of these is a shape Codex actually writes.)
+    for bad in (False, None, 1.5, -5, float("inf"), (1 << 53) + 1, "9007199254740993"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(tmp, "sessions", "2025", "10", "03")
+            os.makedirs(root)
+            cwd = os.path.join(tmp, "repo")
+            os.makedirs(cwd)
+            _codex_rollout(
+                root,
+                CODEX_SID,
+                [
+                    _codex_meta(CODEX_SID, cwd),
+                    _codex_turn("gpt-5-codex", cwd),
+                    _codex_tokens(80, 20, 0, 100, ts="2025-10-03T14:51:20.000Z"),
+                    _codex_tokens(bad, 100, 0, 250, ts="2025-10-03T14:51:30.000Z"),
+                    _codex_tokens(300, 100, 0, 400, ts="2025-10-03T14:51:40.000Z"),
+                ],
+            )
+            store = ot.CodexStore(
+                os.path.join(tmp, "sessions"), type("Args", (), {"demo": False})()
+            )
+            (w,) = store.workflows()
+            turns = store.message_timeline(w.id)
+            assert [t["tokens_total"] for t in turns] == [100, 300], bad
+            assert w.total_tokens == 400, bad
+    # An ABSENT component stays a valid 0 -- absence is how an older schema differs, and
+    # rejecting it would drop a whole session's usage over a field that was never there.
+    assert ot.CodexStore._cumulative(0) == 0 and ot.CodexStore._cumulative("12") == 12
+    # The bound sits exactly where safe_int's does, on BOTH sides of it: float() is lossy
+    # right at the ceiling, so measuring the converted value let 2**53+1 in as 2**53 --
+    # the rounding defeating the very guard it was being fed to.
+    assert ot.CodexStore._cumulative(1 << 53) == 1 << 53
+    assert ot.CodexStore._cumulative((1 << 53) + 1) is None
