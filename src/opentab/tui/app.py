@@ -72,6 +72,7 @@ from opentab.sources import RESUME_COMMANDS, SOURCE_LABELS
 from opentab.tui import bindings
 from opentab.tui.renderer import Renderer
 from opentab.util import (
+    DULL_AGENT_NAMES,
     fuzzy_score,
     model_row_1h_write,
     model_row_split,
@@ -143,8 +144,9 @@ FLAME_CHILD_SLOTS = (1, 2, 3, 4)
 
 # Agent names worth putting on a segment. A segment answers "which AGENT, on which
 # model" -- not "which session", whose title is a sentence that never fits and is one
-# column away in the table below.
-_FLAME_DULL_AGENTS = frozenset({"", "-", "subagent", "unknown", "(untitled)"})
+# column away in the table below. Shared with the Turns tab's Agents cell
+# (util.agent_mix_label), which folds the same non-names into one "subagent ×n".
+_FLAME_DULL_AGENTS = DULL_AGENT_NAMES
 
 # OpenCode records the agent in the `agent` column for only some sessions; for the rest
 # it writes "-" and puts the name in the TITLE, as "Review browse mode (@code-reviewer)"

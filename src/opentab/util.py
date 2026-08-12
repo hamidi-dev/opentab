@@ -395,6 +395,40 @@ def tool_mix_label(turns) -> str:
     return ", ".join(n if c == 1 else f"{n} ×{c}" for n, c in ordered)
 
 
+# Agent names that identify nothing -- what a backend writes when it delegated but did
+# not record to whom (Claude Code names none of its Tasks). Shared by the flamegraph's
+# segment labels and the Turns tab's Agents cell, so the two can't disagree about which
+# names are worth printing.
+DULL_AGENT_NAMES = frozenset({"", "-", "subagent", "unknown", "(untitled)"})
+
+
+def agent_mix_label(turns) -> str:
+    # Which subagents a whole PROMPT delegated to, busiest first -- the tool_mix_label
+    # cell for the Agent column. Only the turns that ran UNDER an agent count (depth),
+    # since a main-thread turn's label names the harness's own agent and would make
+    # every prompt look delegated.
+    #
+    # Unnamed executions fold into one "subagent ×n" rather than repeating a label that
+    # identifies nothing: Claude Code writes the literal "subagent" on every Task, so
+    # keeping them apart would spend the whole cell saying "subagent, subagent, subagent"
+    # on the backend where delegation is most common.
+    counts: dict[str, int] = {}
+    unnamed = 0
+    for turn in turns or ():
+        if not turn.get("depth"):
+            continue
+        name = str(turn.get("agent") or "").strip()
+        if name.lower() in DULL_AGENT_NAMES:
+            unnamed += 1
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    ordered = sorted(counts.items(), key=lambda kv: -kv[1])
+    parts = [n if c == 1 else f"{n} ×{c}" for n, c in ordered]
+    if unnamed:
+        parts.append("subagent" if unnamed == 1 else f"subagent ×{unnamed}")
+    return ", ".join(parts)
+
+
 def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
     # Aggregate per-turn rows (each carrying the "tools" it invoked that step) into
     # the per-(tool, model) rows the Tools tab expects -- the Store.tool_breakdown

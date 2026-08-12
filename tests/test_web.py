@@ -1422,6 +1422,28 @@ def test_web_turns_subtotal_each_run_not_each_prompt_id():
     assert "moneyCell(g.cost)" in js
 
 
+def test_web_prompt_rows_name_the_subagents_that_ran_them():
+    # The page mirrors the TUI's Agents column: which subagents a prompt delegated to,
+    # gated on the rows (a session that delegated nothing draws no column), with the
+    # unnamed executions folded into one "subagent ×n" through the same dull-name set
+    # the flamegraph labels use -- one set, so the two can't disagree about which names
+    # are worth printing.
+    js = _js_source()
+    assert js.count("const DULL_AGENTS = new Set(") == 1  # shared with flameLabel
+    assert "FLAME_DULL" not in js
+    label = js.split("function agentLabel(", 1)[1].split("\nfunction ", 1)[0]
+    assert "if (!t.depth) return;" in label  # main-thread turns are not delegation
+    assert "'subagent ×' + unnamed" in label
+    table = js.split("function turnsTable(", 1)[1].split("\nfunction ", 1)[0]
+    assert "const hasAgents = groups.some(g => g.subturns);" in table
+    assert "h('th', null, 'Agents')" in table
+    assert "'↳ ' + g.agents" in table
+    # The marker rows span the table, so their colspan follows the optional columns --
+    # a fixed one leaves the ▼/❄ lines short of the right edge exactly when a column
+    # appears.
+    assert "const span = 8 + (hasCalls ? 1 : 0) + (hasAgents ? 1 : 0);" in table
+
+
 def test_web_a_range_change_forgets_the_scope_state_itself():
     # applyRange used to leave this to the hashchange listener, via go('', ''). That
     # event only fires when the hash actually CHANGES, so applying a range from the root

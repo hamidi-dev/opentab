@@ -197,6 +197,7 @@ from opentab.util import (
     MONTH_PATTERN,
     OPENCODE_BUILTIN_TOOLS,
     YEAR_PATTERN,
+    agent_mix_label,
     anchored_fuzzy_match,
     cached_share,
     context_add,

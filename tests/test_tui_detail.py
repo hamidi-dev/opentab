@@ -1612,6 +1612,21 @@ class _TurnToolStore(_TurnNavStore):
         return rows
 
 
+class _TurnAgentStore(_TurnNavStore):
+    # p1 delegates to a NAMED agent, p2 runs on the main thread alone, p3 delegates to
+    # two executions the backend never named (Claude Code's every Task) -- the three
+    # cells the Agents column has to draw.
+    _AGENTS = {("p1", 1): "docs", ("p3", 0): "subagent", ("p3", 1): "-"}
+
+    def message_timeline(self, wid):
+        rows = super().message_timeline(wid)
+        for i, r in enumerate(rows):
+            agent = self._AGENTS.get((r["prompt_id"], i % 2))
+            if agent is not None:
+                r["agent"], r["depth"] = agent, 1
+        return rows
+
+
 def _counting_turn_store(n_prompts, calls_per_turn=3):
     # A store with an arbitrary number of prompt groups, so a test can drive idx_w (the
     # "#" column, sized from the group count) independently of the tool cells.
@@ -1705,14 +1720,20 @@ def test_turns_optional_columns_never_get_clipped_by_the_frame():
     # Both frontends' widths are swept, since the header is the widest line either
     # draws. 76/74 are the documented PROMPT_MIN/model floors, below which the prompt
     # column deliberately wins over the frame (a prompt list is read by its prompts).
-    app = _turns_app(_TurnToolStore)
-    wf = app.current_session()
-    for w in range(77, 220):
-        app.turn_drill = None
-        assert "..." not in box_cells(app.renderer.detail_turns(wf, w))[0], w
-    for w in range(75, 220):
-        app.open_turn_drill(0)
-        assert "..." not in box_cells(app.renderer.detail_turn_drill(wf, w))[0], w
+    # Both fixtures, because the optional cells differ: one session calls tools (Calls),
+    # the other delegates (Agents), and a budget is only ever exact for the columns it
+    # was measured with.
+    for store in (_TurnToolStore, _TurnAgentStore):
+        app = _turns_app(store)
+        wf = app.current_session()
+        for w in range(77, 220):
+            app.turn_drill = None
+            lines = app.renderer.detail_turns(wf, w)
+            assert "..." not in box_cells(lines)[0], (store.__name__, w)
+            assert all(len(ln) <= w for ln in lines), (store.__name__, w)
+        for w in range(75, 220):
+            app.open_turn_drill(0)
+            assert "..." not in box_cells(app.renderer.detail_turn_drill(wf, w))[0], w
 
     # ...and across idx_w, the other input to the budget: a session with 1,000 prompts
     # spends two more cells on the "#" column before any optional cell is weighed, so a
@@ -1725,6 +1746,30 @@ def test_turns_optional_columns_never_get_clipped_by_the_frame():
             lines = many.renderer.detail_turns(wide, w)
             assert "..." not in box_cells(lines)[0], (count, w)
             assert all(len(ln) <= w for ln in lines), (count, w)
+
+
+def test_turns_prompt_rows_show_which_subagents_ran_them():
+    # Delegation was invisible on the table you scan: the per-turn Agent column with its
+    # "↳" lives in the drill, so a prompt that farmed its work out read exactly like one
+    # the main thread ran alone. Named agents are named; the unnamed ones a backend
+    # writes as the literal "subagent" fold into one count rather than repeating a label
+    # that identifies nothing.
+    app = _turns_app(_TurnAgentStore)
+    lines = app.renderer.detail_turns(app.current_session(), 140)
+    assert "Agents" in box_cells(lines)[0]
+    body = [ln for ln in lines if "prompt p" in ln]
+    assert "↳ docs" in body[0]
+    assert "-" in body[1].split("prompt p2")[1] and "↳" not in body[1]  # ran it itself
+    assert "↳ subagent ×2" in body[2]  # two unnamed executions, one cell
+    # The TOTAL carries the session's whole mix, and a footnote explains the glyph.
+    total = next(ln for ln in lines if "TOTAL" in ln)
+    assert "↳" in total
+    assert any("subagents the prompt delegated to" in ln for ln in lines)
+
+    # A session that delegated nothing shows no column at all -- gated on the ROWS, like
+    # Calls, never on a backend flag (a stripe of dashes is worse than no column).
+    plain = _turns_app(_TurnNavStore)
+    assert "Agents" not in box_cells(plain.renderer.detail_turns(plain.current_session(), 140))[0]
 
 
 def test_turns_calls_column_is_sized_from_the_data_not_the_header():

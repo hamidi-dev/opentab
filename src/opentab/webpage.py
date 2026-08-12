@@ -1434,7 +1434,10 @@ const FLAME_SELF_SLOT = 0, FLAME_CHILD_SLOTS = [1, 2, 3, 4];
 // layout before it lays out, so it thresholds on the share instead and leans on
 // overflow:hidden to keep a long name inside its own slice either way.
 const NAMED = 0.06;
-const FLAME_DULL = new Set(['', '-', 'subagent', 'unknown', '(untitled)']);
+// Agent names that identify nothing -- what a backend writes when it delegated but did
+// not record to whom. The flamegraph's segment labels and the Turns tab's Agents cell
+// (agentLabel) share the one set, mirroring util.DULL_AGENT_NAMES.
+const DULL_AGENTS = new Set(['', '-', 'subagent', 'unknown', '(untitled)']);
 // A share of one session's spend, BOTH ends guarded (Renderer._flame_pct's rule): an
 // icicle prints the parts beside the whole, so "root kept 100%" above five visible
 // subagent segments contradicts itself, and a sub-half-percent segment that exists must
@@ -1463,7 +1466,7 @@ const flameModel = m => String(m || '').split('/').pop()
 // sentence that never fits, and it is one column away in the table below.
 function flameLabel(n) {
   const agent = (n.agent || '').trim();
-  let name = FLAME_DULL.has(agent.toLowerCase()) ? '' : agent;
+  let name = DULL_AGENTS.has(agent.toLowerCase()) ? '' : agent;
   if (!name) {
     const tag = FLAME_AGENT_TAG.exec(n.title || '');
     name = tag ? tag[1] : 'subagent';
@@ -1743,6 +1746,26 @@ function toolLabel(tools, byCount) {
   return entries.map(([n, c]) => c === 1 ? n : n + ' ×' + c).join(', ');
 }
 
+function agentLabel(turns) {
+  // The twin of util.agent_mix_label: which subagents a PROMPT delegated to, busiest
+  // first, with unnamed executions folded into one "subagent ×n" (Claude Code names
+  // none of its Tasks, so keeping them apart spends the cell saying nothing). Only
+  // turns that ran UNDER an agent count -- a main-thread turn's label names the
+  // harness's own agent and would make every prompt look delegated.
+  const counts = new Map();
+  let unnamed = 0;
+  (turns || []).forEach(t => {
+    if (!t.depth) return;
+    const name = String(t.agent || '').trim();
+    if (DULL_AGENTS.has(name.toLowerCase())) { unnamed += 1; return; }
+    counts.set(name, (counts.get(name) || 0) + 1);
+  });
+  const parts = [...counts.entries()].sort((a, b) => b[1] - a[1])
+    .map(([n, c]) => c === 1 ? n : n + ' ×' + c);
+  if (unnamed) parts.push(unnamed === 1 ? 'subagent' : 'subagent ×' + unnamed);
+  return parts.join(', ');
+}
+
 /* turns stay chronological on purpose: the tab answers *when* the money went. */
 function turnGroupRows(turns) {
   // The mirror of Renderer.turn_group_rows: one entry per RUN of consecutive turns
@@ -1757,19 +1780,21 @@ function turnGroupRows(turns) {
       last = key;
       groups.push({ id: key, title: t.promptTitle || '', full: t.promptFull || t.promptTitle || '',
                     time: t.time || '', turns: 0, tokens: 0, cost: 0, indices: [], calls: 0,
-                    tools: [], first: null });
+                    tools: [], rows: [], subturns: 0, first: null });
     }
     const g = groups[groups.length - 1];
     g.turns += 1; g.tokens += t.tokens || 0; g.cost += mCost(t); g.indices.push(i);
     const names = toolNames(t.tools);  // the same gate the labels use, so they agree
     g.calls += names.length;
     if (names.length) g.tools.push(...names);
+    g.rows.push(t);
+    if (t.depth) g.subturns += 1;
     // Cached is the FIRST main-thread turn's share, never an average of the group's:
     // every later turn is warm by construction, so averaging buries the one moment that
     // could have missed. Subagents run in their own windows and cannot answer for it.
     if (!t.depth && g.first === null) g.first = t;
   });
-  groups.forEach(g => { g.cached = g.first ? g.first.cached : null; });
+  groups.forEach(g => { g.cached = g.first ? g.first.cached : null; g.agents = agentLabel(g.rows); });
   return groups;
 }
 
@@ -1791,7 +1816,12 @@ function turnsTable(turns, expiries) {
   // rule, gated on the same rows. The marker rows span the table, so their colspan
   // has to follow it or the ▼/❄ lines stop short of the right edge.
   const hasCalls = groups.some(g => g.calls);
-  const span = hasCalls ? 9 : 8;
+  // WHO ran the prompt's turns. The per-turn Agent column is a click away in the drill,
+  // so the table you scan gave no sign which prompts had farmed their work out -- and a
+  // prompt that spawned five subagents reads nothing like one the main thread ran alone.
+  // Gated on the rows like Calls, and on the same rule the TUI uses.
+  const hasAgents = groups.some(g => g.subturns);
+  const span = 8 + (hasCalls ? 1 : 0) + (hasAgents ? 1 : 0);
   const rows = [];
   let cum = 0;
   groups.forEach((g, n) => {
@@ -1819,6 +1849,10 @@ function turnsTable(turns, expiries) {
       // on this tab, and a column of zeros invites the same second glance for absence.
       ...(hasCalls ? [h('td', { class: 'r dim', title: toolLabel(g.tools, true) || null },
         g.calls ? String(g.calls) : '-')] : []),
+      // "↳" marks the cell as delegation, the glyph the per-turn Agent column and the
+      // flamegraph already use; a prompt the main thread ran itself reads "-".
+      ...(hasAgents ? [h('td', { class: 'dim', title: g.agents || null },
+        g.agents ? '↳ ' + g.agents : '-')] : []),
       h('td', { class: 'r dim' }, pct(g.cached)),
       h('td', { class: 'r' }, hTok(g.tokens)),
       h('td', { class: 'r' }, moneyCell(g.cost)),
@@ -1830,12 +1864,15 @@ function turnsTable(turns, expiries) {
       + ' anything low re-bought what it was missing'
       + (hasCalls ? ' · Calls = tool calls the prompt made; which tools, and on which turn,'
         + ' are in the prompt’s own view' : '')
+      + (hasAgents ? ' · ↳ Agents = subagents the prompt delegated to; which turn ran under'
+        + ' which is in the prompt’s own view' : '')
       + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')
       + (exp.size ? ' · ❄ ' + exp.size + ' cache expir' + (exp.size > 1 ? 'ies' : 'y') + ', ' + money(burnt) + ' spent re-buying context' : '')),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
         h('th', null, 'Prompt'), h('th', { class: 'r' }, 'Turns'),
         ...(hasCalls ? [h('th', { class: 'r' }, 'Calls')] : []),
+        ...(hasAgents ? [h('th', null, 'Agents')] : []),
         h('th', { class: 'r' }, 'Cached'),
         h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cost'),
         h('th', { class: 'r' }, 'Cumulative'))),

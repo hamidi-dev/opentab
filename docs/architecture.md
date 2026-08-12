@@ -84,6 +84,11 @@ scan** rather than a per-row subquery (correlated, that costs the whole-corpus e
 300ms → 3.8s). Both frontends gate the column on the **rows**, not on a capability
 flag, so a backend that records no per-step calls simply has no column.
 
+A row's `depth`/`agent` pair says whether that turn ran under a **subagent**, and the
+prompt table draws it as an `Agents` cell (`util.agent_mix_label` — busiest first,
+unnamed executions folded into one `subagent ×n` via `util.DULL_AGENT_NAMES`, the
+same set the flamegraph's segment labels use). Gated on the rows like `tools`.
+
 Cost semantics are also part of the contract: a store's `records_cost` says whether
 it records real money. Token-only backends (Claude, Codex, Copilot, VS Code) report
 `cost=0` with tokens in the `unpriced_*` splits, and the normal `$` machinery turns

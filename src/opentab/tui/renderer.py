@@ -78,6 +78,7 @@ from opentab.pricing import (
 from opentab.util import (
     CONTEXT_COMPACT_FLOOR,
     CONTEXT_COMPACT_RATIO,
+    agent_mix_label,
     cached_share,
     context_compactions,
     context_size,
@@ -4520,7 +4521,8 @@ class Renderer:
                         "cost": 0.0,
                         "indices": [],
                         "calls": 0,  # tool calls this prompt made, across its turns
-                        "_rows": [],  # the group's turn rows, for the tool mix
+                        "subturns": 0,  # how many of its turns ran under a subagent
+                        "_rows": [],  # the group's turn rows, for the tool/agent mixes
                         "_first": None,  # the group's first main-thread turn
                     }
                 )
@@ -4533,6 +4535,7 @@ class Renderer:
             # with the names it summarizes (an unusable entry counted here but dropped
             # there would read as "3 calls" over a two-tool cell).
             g["calls"] += len(tool_names(r.get("tools")))
+            g["subturns"] += 1 if r.get("depth") else 0
             g["_rows"].append(r)
             # Subagents run in their OWN context windows, so they neither answer for the
             # main thread's cache nor stand in for it: a prompt whose turns were all
@@ -4542,7 +4545,8 @@ class Renderer:
                 g["_first"] = r
         for g in groups:
             g["cached"] = cached_share(g["_first"]) if g["_first"] is not None else None
-            g["tools"] = tool_mix_label(g.pop("_rows"))
+            g["tools"] = tool_mix_label(g["_rows"])
+            g["agents"] = agent_mix_label(g.pop("_rows"))
         return groups
 
     def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
@@ -4644,6 +4648,27 @@ class Renderer:
         calls_w = max(len("Calls"), len(str(total_calls)))
         calls_w = calls_w if total_calls and inner - used - calls_w - 1 >= PROMPT_MIN else 0
         used += calls_w + (1 if calls_w else 0)
+        # WHO ran the prompt's turns. Delegation was invisible on this table: the Agent
+        # column with its "↳" lives in the per-prompt drill, so the only view that listed
+        # the prompts gave no sign which of them had farmed their work out -- and a prompt
+        # that spawned five subagents is read completely differently from one that didn't.
+        # Names rather than a count, because "which agent" is the question a Cost column
+        # next to it can't answer; unnamed executions fold to "subagent ×n"
+        # (util.agent_mix_label). Gated on the ROWS like Calls, so a session that
+        # delegated nothing shows no column instead of a stripe of dashes.
+        AGENTS_MIN, AGENTS_MAX = 12, 22
+        # Sized from the RENDERED cells, "↳ " included -- measuring the bare label leaves
+        # every cell two cells short, which shows up as a shortened tail on the very
+        # names the column exists to print ("↳ subagen..." for a mix that fit).
+        agent_cells = {
+            n: ("↳ " + g["agents"] if g["agents"] else "-") for n, g in enumerate(groups)
+        }
+        agents_w = 0
+        if any(g["subturns"] for g in groups):
+            agents_w = min(AGENTS_MAX, max(AGENTS_MIN, max(map(len, agent_cells.values()))))
+            if inner - used - agents_w - 1 < PROMPT_MIN:
+                agents_w = 0
+        used += agents_w + (1 if agents_w else 0)
         # The bar restates the Cost cell, so it yields first and keeps a wider cushion.
         bar_w = 8 if inner - used - 9 >= PROMPT_MIN + 12 else 0
         used += bar_w + (1 if bar_w else 0)
@@ -4654,6 +4679,7 @@ class Renderer:
         header = (
             f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Prompt':<{pw}} {'Turns':>{turns_w}} "
             + (f"{'Calls':>{calls_w}} " if calls_w else "")
+            + (f"{pad('Agents', agents_w)} " if agents_w else "")
             + f"{'Cached':>{cached_w}} {'Tokens':>{tok_w}} {'Cost':>{cost_w}}"
             + (f" {'':<{bar_w}}" if bar_w else "")
             + (f" {'Cumulative':>{cum_w}}" if cum_w else "")
@@ -4696,6 +4722,10 @@ class Renderer:
                 # a red $0.00 to mean "unpriced", and a column of zeros invites the same
                 # second glance for something that is simply absent.
                 + (f"{(str(g['calls']) if g['calls'] else '-'):>{calls_w}} " if calls_w else "")
+                # "↳" marks the cell as delegation, the same glyph the per-turn Agent
+                # column and the flamegraph use; a prompt the main thread ran itself
+                # reads "-" (absence), never an empty cell that looks like a clip.
+                + (f"{pad(shorten(agent_cells[n - 1], agents_w), agents_w)} " if agents_w else "")
                 + f"{cached:>{cached_w}} "
                 f"{human_tokens(g['tokens']):>{tok_w}} {money(g['cost']):>{cost_w}}"
                 + (f" {cost_bar(g['cost'], peak, bar_w)}" if bar_w else "")
@@ -4711,6 +4741,14 @@ class Renderer:
                 f"  {'':>{idx_w}} {pad('TOTAL', time_w)} {'':<{pw}} "
                 f"{sum(g['turns'] for g in groups):>{turns_w}} "
                 + (f"{sum(g['calls'] for g in groups):>{calls_w}} " if calls_w else "")
+                # The session's whole agent mix, busiest first -- the tool-mix TOTAL's
+                # rule, and shortened for the same reason (pad only fills, so an
+                # unshortened eight-agent mix would walk through the box's right rule).
+                + (
+                    f"{pad(shorten('↳ ' + agent_mix_label(rows), agents_w), agents_w)} "
+                    if agents_w
+                    else ""
+                )
                 + f"{'':>{cached_w}} "
                 f"{human_tokens(sum(g['tokens'] for g in groups)):>{tok_w}} "
                 f"{money(total):>{cost_w}}"
@@ -4733,6 +4771,11 @@ class Renderer:
             notes.append(
                 "· Calls: tool calls the prompt made — which tools, and on which turn, "
                 "are in the prompt's own view."
+            )
+        if agents_w:
+            notes.append(
+                "· ↳ Agents: subagents the prompt delegated to — which turn ran under which "
+                "is in the prompt's own view. A prompt the main thread ran alone reads '-'."
             )
         if comps:
             notes.append(
