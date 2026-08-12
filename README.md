@@ -81,7 +81,7 @@ is safe. It reads your tools' own records, so it needs at least one AI coding to
 history on disk. Drop `--demo` to see the real numbers. Scramble only some of it with a
 comma list — `--demo titles,spend` shows real prompt bodies but fake names and hidden
 costs (categories: `titles`, `turns`, `spend`) — or press `D` in the TUI for a
-multi-check picker of the same.
+multi-check picker of the same (`D` again switches demo straight back off).
 
 Then install for real:
 

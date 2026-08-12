@@ -387,6 +387,37 @@ def test_demo_turns_anonymize_the_full_prompt_too():
     assert rows[0]["prompt_full"] == rows[0]["prompt_title"]  # the fake, twice
 
 
+def test_lit_demo_key_leaves_in_one_press_and_remembers_the_categories():
+    # Leaving demo used to mean D, uncheck every row, Enter -- three keys to undo a
+    # thing nobody picks parts of. Lit, D is now the off switch the other lit keys
+    # ($ T P) are, and the categories survive it so coming back is D-Enter.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.source_key = "opencode"
+    real = app.store
+    partial = FakeStore([workflow("a", "2026-06-01 12:00:00")])
+    partial.demo = True
+    partial.demo_cats = frozenset({"titles"})
+    real_make_store = ot.sources.make_store
+    try:
+        ot.sources.make_store = lambda a, key: ((partial, "") if a.demo else (real, ""))
+        app.open_demo_menu()
+        app.handle_key(None, ord("j"))  # titles -> turns
+        app.handle_key(None, ord(" "))  # uncheck turns
+        app.handle_key(None, ord("j"))  # turns -> spend
+        app.handle_key(None, ord(" "))  # uncheck spend
+        app.handle_key(None, 10)  # Enter: demo on, titles only
+        assert app.store is partial and app.notice == "demo: titles"
+
+        app.handle_key(None, ord("D"))  # one press out
+        assert not app.demo_menu and not getattr(app.store, "demo", False)
+        assert app.notice == "real data"
+
+        app.handle_key(None, ord("D"))  # back in: the picker re-offers what you had
+        assert app.demo_menu and app.demo_menu_sel == {"titles"}
+    finally:
+        ot.sources.make_store = real_make_store
+
+
 def test_capital_d_opens_the_picker_that_toggles_real_and_demo():
     real = FakeStore(
         [
@@ -430,11 +461,9 @@ def test_capital_d_opens_the_picker_that_toggles_real_and_demo():
         app.workflow_index = 1
         assert app.current_session().id == "ses_1"
 
-        # D again seeds the picker from the live cats; `a` clears all, Enter = real again.
+        # D again, with demo lit, is a plain off switch -- one press, no picker.
         app.handle_key(None, ord("D"))
-        app.handle_key(None, ord("a"))  # all -> none
-        app.handle_key(None, 10)
-        assert app.store is real
+        assert not app.demo_menu and app.store is real
         assert app.view == "zoom" and app.current_tabs()[app.tab] == "Sessions"
         assert app.current_session().id == "ses_1"
         assert {w.title for w in app.loaded} == {"real one", "real two"}

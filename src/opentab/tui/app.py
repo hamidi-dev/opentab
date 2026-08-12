@@ -496,6 +496,9 @@ class App:
         self.demo_menu = False  # the `D` demo-category multi-check picker overlay
         self.demo_menu_index = 0  # highlighted category row in that picker
         self.demo_menu_sel: set = set()  # categories checked while the picker is open
+        # The categories the last demo was armed with, so switching demo off and back
+        # on re-offers them rather than resetting to "everything" (see demo_action).
+        self.demo_last_sel: frozenset | None = None
         # Active colour theme (shared source with the web browser). Seeded from
         # --theme; a valid saved theme (apply_state) or the `Y` picker takes over.
         self.theme_id = getattr(args, "theme", None) or themes.DEFAULT_THEME
@@ -3091,11 +3094,28 @@ class App:
         "spend": "Spend   — dollars and token magnitudes",
     }
 
+    def demo_action(self) -> None:
+        # What `D` does, and it is deliberately asymmetric: ON is a choice (which parts
+        # do I want scrambled for this screenshot), OFF never is. Going through the
+        # picker to leave demo meant D, uncheck three rows, Enter -- and the app's own
+        # idiom everywhere else ($ T P w) is that a LIT footer key turns its thing off
+        # when pressed again, so a lit `demo·on` that instead popped a form was the odd
+        # one out. Off is now that one press; the categories are remembered so coming
+        # back re-offers them (with Enter re-arming exactly what you had).
+        if getattr(self.store, "demo", False):
+            self.demo_last_sel = self._store_state_key(self.store) or DEMO_ALL
+            self._apply_demo_state(None)
+            return
+        self.open_demo_menu()
+
     def open_demo_menu(self) -> None:
-        # `D` opens a multi-check picker of what to anonymize. Seeded from the current
-        # state -- the live categories when already in demo, or all (a ready-to-apply
-        # full demo) when on real data, so D then Enter is the quick "anonymize it all".
-        self.demo_menu_sel = set(self._store_state_key(self.store) or DEMO_ALL)
+        # The multi-check picker of what to anonymize. Seeded from the current state --
+        # the live categories when already in demo, else the last ones armed this session
+        # (all, the ready-to-apply full demo, on the first open), so D then Enter is the
+        # quick "anonymize it all" and D-D-Enter restores the mix you were just using.
+        self.demo_menu_sel = set(
+            self._store_state_key(self.store) or self.demo_last_sel or DEMO_ALL
+        )
         self.demo_menu_index = 0
         self.demo_menu = True
 
@@ -6504,7 +6524,7 @@ class App:
             self.open_theme_menu()
             return True
         if act == "demo":
-            self.open_demo_menu()  # pick what to anonymize (Enter applies; unchecked = real)
+            self.demo_action()  # off in one press when lit; else pick what to anonymize
             return True
         if act == "edit_keymap":
             self.edit_keymap(stdscr)  # $EDITOR on keymap.conf, reloaded on return

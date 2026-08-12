@@ -713,7 +713,13 @@ KEYS: tuple[Key, ...] = (
         id="demo",
         ctx="main",
         actions=("demo",),
-        summary="anonymize for a screenshot — pick titles / turns / spend",
+        # Lit, the key is a plain off switch (the $/T/P idiom), so say that rather than
+        # keep advertising the picker you already came through.
+        summary=lambda app: (
+            "back to real data"
+            if getattr(app.store, "demo", False)
+            else "anonymize for a screenshot — pick titles / turns / spend"
+        ),
         section="pickers",
         when=lambda app: bool(app.source_key),
         chip=lambda app: "demo·on" if app.store.demo else "demo",
