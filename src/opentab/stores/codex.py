@@ -326,6 +326,7 @@ class CodexStore:
         sid = self._id_from_name(path)
         s = sessions.setdefault(sid, self._new_session()) if sid else None
         cur_model: str | None = None
+        cur_effort = ""  # the reasoning effort turn_context last put in force
         prev = (0, 0, 0, 0)  # cumulative (input, output, cached, total) seen so far
         pending_tools: list[str] = []  # tool calls since the last accepted turn delta
         for line in lines:
@@ -370,6 +371,10 @@ class CodexStore:
             if typ == "turn_context":
                 if p.get("model"):
                     cur_model = p["model"]
+                # Codex writes a turn_context per turn, so effort is a genuinely running
+                # value: measured on 138 rollouts, one of them switched mid-session.
+                if isinstance(p.get("effort"), str):
+                    cur_effort = p["effort"]
                 if p.get("cwd") and not s["cwd"]:
                     s["cwd"] = p["cwd"]
             elif typ == "response_item" and p.get("type") in (
@@ -395,7 +400,9 @@ class CodexStore:
                     # tab's ▸ grouping; the record timestamp doubles as its id.
                     s["prompts"].append({"ts": ts or "", "id": ts or txt, "title": txt.strip()})
             elif typ == "event_msg" and p.get("type") == "token_count":
-                prev = self._apply_token_count(s, p.get("info"), cur_model, prev, ts, pending_tools)
+                prev = self._apply_token_count(
+                    s, p.get("info"), cur_model, prev, ts, pending_tools, cur_effort
+                )
 
     @staticmethod
     def _int(value) -> int:
@@ -450,6 +457,7 @@ class CodexStore:
         prev: tuple,
         ts=None,
         pending_tools: list[str] | None = None,
+        cur_effort: str = "",
     ) -> tuple:
         # Returns the new cumulative tuple; folds one turn's delta into the session.
         if not isinstance(info, dict):
@@ -502,6 +510,7 @@ class CodexStore:
                 "ts": ts or "",
                 "depth": 0,  # Codex has no subagent tree
                 "agent": "-",
+                "effort": cur_effort,  # reasoning level in force for this turn
                 "model_name": model_name,
                 "cost": 0.0,
                 "input": uncached,

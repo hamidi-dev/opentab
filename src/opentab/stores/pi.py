@@ -472,6 +472,12 @@ class PiStore:
                 "ts": ts or "",
                 "depth": 0,  # pi has no subagent tree
                 "agent": "-",
+                # The reasoning effort in force for this call. pi records none, so this
+                # stays "" and the column simply doesn't appear; omp writes
+                # `thinking_level_change` records and keeps this current from
+                # _extra_record, which is why the field is read off the session rather
+                # than the message.
+                "effort": s.get("effort") or "",
                 "model_name": model,
                 "cost": round(cost, 6) if metered else 0.0,
                 "input": inp,

@@ -193,6 +193,51 @@ def test_zaly_store_reasoning_stays_inside_output():
         assert row["tokens_total"] == 15363  # 15144 + 219; the 49 never added on top
 
 
+def test_zaly_turns_carry_the_reasoning_level_the_settings_node_put_in_force():
+    # zaly snapshots the level on session-settings, and resume/fork append a FRESH
+    # settings node to the same file -- so it is a running value, not a session-wide
+    # constant, and every turn keeps the level it actually ran at.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "zaly")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _zaly_settings(ZALY_SID, cwd, model="openai-codex/gpt-5.6-sol", reasoning="medium"),
+            _zaly_user("hi there", mid="u1", ts=1783696388555),
+            _zaly_assistant("openai-codex/gpt-5.6-sol", 100, 20, mid="a1", ts=1783696390000),
+            _zaly_settings(
+                ZALY_SID,
+                cwd,
+                model="openai-codex/gpt-5.6-sol",
+                reasoning="high",
+                ts=1783696400000,
+                uuid="n-settings-2",
+            ),
+            _zaly_user("think harder", mid="u2", ts=1783696405836),
+            _zaly_assistant("openai-codex/gpt-5.6-sol", 200, 40, mid="a2", ts=1783696414305),
+        ]
+        _zaly_write(root, "+tmp+repo", ZALY_SID, rows)
+        store = _zaly_store(root)
+        assert [t["effort"] for t in store.message_timeline(ZALY_SID)] == ["medium", "high"]
+
+    # A settings node with no reasoning key ships "" and the column drops.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "zaly")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _zaly_write(
+            root,
+            "+tmp+repo",
+            ZALY_SID,
+            [
+                _zaly_settings(ZALY_SID, cwd, model="openai-codex/gpt-5.6-sol"),
+                _zaly_user("hi there"),
+                _zaly_assistant("openai-codex/gpt-5.6-sol", 100, 20, mid="a1"),
+            ],
+        )
+        assert [t["effort"] for t in _zaly_store(root).message_timeline(ZALY_SID)] == [""]
+
+
 def test_zaly_turns_timeline_groups_by_prompt_and_feeds_tools():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "zaly")

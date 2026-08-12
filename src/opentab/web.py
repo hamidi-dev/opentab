@@ -427,6 +427,9 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     "agent": r.get("agent") or "-",
                     "depth": int(r.get("depth") or 0),
                     "model": r.get("model_name") or "",
+                    # The reasoning level this call ran at, "" on the backends that
+                    # record none -- both frontends then drop the column.
+                    "effort": str(r.get("effort") or ""),
                     "real": _money6(real),
                     "api": _money6(api),
                     "tokens": int(r.get("tokens_total") or 0),
@@ -464,15 +467,20 @@ def session_extras(app: App, workflow_id: str) -> dict:
     # what-if (armed at view time) or the compaction markers (three lines off the `ctx`
     # each turn already ships), this needs list rates and the TTL rules, and nothing about
     # it changes with the `$` toggle, the range or a picker. A JS twin could only drift.
-    # Only the "waited" ones travel -- the sole cause the reader can act on, and the same
-    # filter the TUI's detail_turns draws (see cache_misses for the others).
+    # Only the two causes the reader DID travel -- "waited" (the follow-up came too
+    # late) and "reasoning" (the effort switch that changed the thinking config and
+    # dropped the prefix with it) -- the same filter the TUI's detail_turns draws (see
+    # cache_misses for the others). The cause rides along so the page can tell the ❄
+    # line from the ⚙ one; `detail` names what changed, when the cause can.
     expiries = []
     if turns and curve:
         for m in cache_misses(app.session_turn_rows(workflow_id)):
-            if m.cause == "waited":
+            if m.cause in ("waited", "reasoning"):
                 expiries.append(
                     {
                         "i": m.index,
+                        "cause": m.cause,
+                        "detail": m.detail,
                         "idle": int(m.idle),
                         "ttl": int(m.ttl),
                         "repaid": int(m.repaid),

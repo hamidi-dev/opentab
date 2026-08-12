@@ -248,6 +248,50 @@ def test_codex_turns_timeline_from_cumulative_deltas():
         assert t[0]["model_name"] == "openai/gpt-5-codex"
 
 
+def test_codex_turns_carry_the_reasoning_effort_in_force_at_each_turn():
+    # Codex writes a turn_context per turn, so effort is a RUNNING value: a /reasoning
+    # switch mid-session applies from that turn on, and every earlier turn keeps the
+    # level it actually ran at. Measured on 138 real rollouts, one switched.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _codex_meta(CODEX_SID, cwd),
+            _codex_user("write the parser", ts="2025-10-03T14:51:05.000Z"),
+            _codex_turn("gpt-5-codex", cwd, ts="2025-10-03T14:51:10.000Z", effort="high"),
+            _codex_tokens(1000, 200, 100, 1200, ts="2025-10-03T14:51:20.000Z"),
+            _codex_user("now add tests", ts="2025-10-03T14:52:00.000Z"),
+            _codex_turn("gpt-5-codex", cwd, ts="2025-10-03T14:52:10.000Z", effort="low"),
+            _codex_tokens(2500, 500, 600, 3000, ts="2025-10-03T14:52:30.000Z"),
+        ]
+        _codex_rollout(root, CODEX_SID, rows)
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        store.workflows()
+        assert [r["effort"] for r in store.message_timeline(CODEX_SID)] == ["high", "low"]
+
+    # A rollout whose turn_context records no effort (an older Codex) ships "", which is
+    # what drops the column rather than drawing a stripe of dashes.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _codex_rollout(
+            root,
+            CODEX_SID,
+            [
+                _codex_meta(CODEX_SID, cwd),
+                _codex_turn("gpt-5-codex", cwd),
+                _codex_tokens(1000, 200, 100, 1200),
+            ],
+        )
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        store.workflows()
+        assert [r["effort"] for r in store.message_timeline(CODEX_SID)] == [""]
+
+
 def test_codex_tool_breakdown_attributes_turn_deltas_to_pending_calls():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")

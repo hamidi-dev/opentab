@@ -11,6 +11,7 @@ from tests._support import (
     _omp_args,
     _omp_assistant,
     _omp_session,
+    _omp_thinking_level,
     _omp_title_record,
     _omp_user,
     _omp_write,
@@ -511,6 +512,48 @@ def test_omp_turns_and_tools_tag_subagent_rows_with_depth_and_agent_name():
         tools = {r["tool"]: r for r in store.tool_breakdown(OMP_SID)}
         assert set(tools) == {"task", "grep"}
         assert tools["grep"]["tokens_total"] == 530  # the subagent's own step
+
+
+def test_omp_turns_carry_the_thinking_level_in_force_at_each_message():
+    # omp writes the level as its own `thinking_level_change` record rather than on each
+    # message, so it is a RUNNING value the turn rows read off the session -- the seam
+    # pi.py leaves for exactly this (PiStore records no level at all and ships "").
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _omp_write(
+            root,
+            "--proj--",
+            OMP_SID,
+            [
+                _omp_session(OMP_SID, cwd),
+                _omp_thinking_level("medium"),
+                _omp_user("go", ts="2026-07-27T19:11:55.000Z"),
+                _omp_assistant(
+                    "gpt-5.6-sol",
+                    100,
+                    50,
+                    provider="openai-codex",
+                    cost=0.01,
+                    mid="a1",
+                    ts="2026-07-27T19:11:58.000Z",
+                ),
+                _omp_thinking_level("high", ts="2026-07-27T19:12:00.000Z", mid="tl2"),
+                _omp_assistant(
+                    "gpt-5.6-sol",
+                    200,
+                    60,
+                    provider="openai-codex",
+                    cost=0.02,
+                    mid="a2",
+                    ts="2026-07-27T19:12:10.000Z",
+                ),
+            ],
+        )
+        store = ot.OmpStore(root, _omp_args())
+        store.workflows()
+        assert [t["effort"] for t in store.message_timeline(OMP_SID)] == ["medium", "high"]
 
 
 def test_omp_dedupes_assistant_messages_by_id():

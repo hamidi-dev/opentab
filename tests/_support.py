@@ -442,6 +442,7 @@ def _claude_msg(
     req=None,
     ts=None,
     tools=None,
+    effort=None,
 ):
     message = {
         "id": mid or (uuid + "-id"),
@@ -453,7 +454,7 @@ def _claude_msg(
         message["content"] = [
             {"type": "tool_use", "id": f"{uuid}-t{i}", "name": t} for i, t in enumerate(tools)
         ]
-    return {
+    record = {
         "type": "assistant",
         "sessionId": session,
         "cwd": cwd,
@@ -464,6 +465,9 @@ def _claude_msg(
         "requestId": req or (uuid + "-req"),
         "message": message,
     }
+    if effort is not None:  # the reasoning level, recorded per assistant record
+        record["effort"] = effort
+    return record
 
 
 def _usage(inp=0, out=0, cr=0, cw=0, cw1h=None):
@@ -498,8 +502,11 @@ def _codex_meta(sid, cwd, ts="2025-10-03T14:51:03.966Z", source=None):
     return {"timestamp": ts, "type": "session_meta", "payload": payload}
 
 
-def _codex_turn(model, cwd, ts="2025-10-03T14:51:10.000Z"):
-    return {"timestamp": ts, "type": "turn_context", "payload": {"cwd": cwd, "model": model}}
+def _codex_turn(model, cwd, ts="2025-10-03T14:51:10.000Z", effort=None):
+    payload = {"cwd": cwd, "model": model}
+    if effort is not None:  # the reasoning level in force from this turn on
+        payload["effort"] = effort
+    return {"timestamp": ts, "type": "turn_context", "payload": payload}
 
 
 def _codex_tokens(inp, out, cached, total, ts="2025-10-03T14:51:20.000Z"):
@@ -706,6 +713,12 @@ def _omp_title_record(title, ts="2026-07-27T19:11:53.000Z", changed=False):
     }
 
 
+def _omp_thinking_level(level, ts="2026-07-27T19:11:54.000Z", mid="tl1"):
+    # omp records the reasoning level as its own record rather than on each message, so
+    # it applies to every assistant message after it.
+    return {"type": "thinking_level_change", "id": mid, "timestamp": ts, "thinkingLevel": level}
+
+
 def _omp_user(text, mid="u1", ts="2026-07-27T19:11:55.000Z"):
     return {
         "type": "message",
@@ -873,18 +886,23 @@ def _zaly_store(root, state_dir=None):
             os.environ["ZALY_STATE"] = old
 
 
-def _zaly_settings(sid, workspace, model="anthropic/claude-opus-4-6", ts=1783696388553):
+def _zaly_settings(
+    sid, workspace, model="anthropic/claude-opus-4-6", ts=1783696388553, reasoning=None, uuid=None
+):
+    settings = {
+        "version": 2,
+        "sessionId": sid,
+        "cwd": workspace,
+        "workspace": workspace,
+        "modelId": model,
+    }
+    if reasoning is not None:  # the reasoning level in force from this node on
+        settings["reasoning"] = reasoning
     return {
         "type": "session-settings",
-        "uuid": "n-settings",
+        "uuid": uuid or "n-settings",
         "ts": ts,
-        "settings": {
-            "version": 2,
-            "sessionId": sid,
-            "cwd": workspace,
-            "workspace": workspace,
-            "modelId": model,
-        },
+        "settings": settings,
     }
 
 

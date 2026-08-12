@@ -152,8 +152,17 @@ class OmpStore(PiStore):
             return model
         return "unknown"
 
-    # --- title precedence (session.title / title / title_change) -------------
+    # --- title precedence (session.title / title / title_change) + effort ----
     def _extra_record(self, typ: str, o: dict, s: dict) -> None:
+        # omp records the reasoning effort as its own `thinking_level_change` record
+        # rather than on each message, so it is a RUNNING value the turn rows read off
+        # the session (PiStore._apply_usage). Measured on a real corpus: 4 sessions
+        # carried one, and one of them switched level mid-session.
+        if typ == "thinking_level_change":
+            level = o.get("thinkingLevel")
+            if isinstance(level, str) and level.strip():
+                s["effort"] = level.strip()
+            return
         if typ not in ("session", "title", "title_change"):
             return
         title = o.get("title")

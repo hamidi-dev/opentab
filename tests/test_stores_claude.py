@@ -85,6 +85,41 @@ def test_claude_message_timeline_orders_by_time_and_marks_sidechain():
         assert rows[0]["time"] < rows[1]["time"]  # "HH:MM:SS" display, in order
 
 
+def test_claude_turns_carry_the_reasoning_effort_the_call_ran_at():
+    # Claude Code records the level on every assistant record (109 of 120 real
+    # transcripts carry one; the rest predate the field and ship "", which is what drops
+    # the Eff column rather than drawing a stripe of dashes).
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        _write_jsonl(
+            os.path.join(root, "s1.jsonl"),
+            [
+                _claude_msg(
+                    "s1",
+                    "claude-opus-4-8",
+                    _usage(100, 50, 0, 0),
+                    uuid="u0",
+                    cwd=cwd,
+                    ts="2026-06-10T18:46:00.000Z",
+                    effort="xhigh",
+                ),
+                _claude_msg(
+                    "s1",
+                    "claude-opus-4-8",
+                    _usage(40, 10, 0, 0),
+                    uuid="u1",
+                    cwd=cwd,
+                    ts="2026-06-10T18:46:10.000Z",
+                ),
+            ],
+        )
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        store.workflows()
+        assert [r["effort"] for r in store.message_timeline("s1")] == ["xhigh", ""]
+
+
 def test_claude_message_timeline_groups_turns_by_owning_user_prompt():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")

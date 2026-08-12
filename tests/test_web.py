@@ -1422,6 +1422,31 @@ def test_web_turns_subtotal_each_run_not_each_prompt_id():
     assert "moneyCell(g.cost)" in js
 
 
+def test_web_ships_the_reasoning_level_and_names_the_switch_that_dropped_the_cache():
+    # The Eff column and the ⚙ marker, mirrored. The cause travels with each expiry so
+    # the page can tell an idle gap from an effort switch -- one "cache expired" line
+    # covering both would tell someone who never went idle that they did.
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(ExpiryFakeStore([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
+    rows = app.session_turn_rows("w1")
+    assert all("effort" in t for t in ot.session_extras(app, "w1")["turns"])
+    rows[0]["effort"], rows[1]["effort"] = "high", "low"
+    rows[1]["time"] = "2026-06-10 10:00:30"  # inside the TTL: the switch is the cause
+    app._turns_by_session["w1"] = rows
+    x = ot.session_extras(app, "w1")
+    assert [t["effort"] for t in x["turns"]][:2] == ["high", "low"]
+    (miss,) = x["expiries"]
+    assert miss["cause"] == "reasoning" and miss["detail"] == "high → low"
+
+    js = _js_source()
+    drill = js.split("function turnDrillPane(", 1)[1].split("\nfunction ", 1)[0]
+    assert "const hasEffort = g.indices.some(i => turns[i].effort);" in drill
+    assert "h('th', null, 'Eff')" in drill
+    table = js.split("function turnsTable(", 1)[1].split("\nfunction ", 1)[0]
+    assert "e.cause === 'reasoning'" in table  # split out of the ❄ set
+    assert "'⚙ reasoning effort '" in table
+
+
 def test_web_prompt_rows_name_the_subagents_that_ran_them():
     # The page mirrors the TUI's Agents column: which subagents a prompt delegated to,
     # gated on the rows (a session that delegated nothing draws no column), with the

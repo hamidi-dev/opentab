@@ -105,6 +105,10 @@ def _clean_turn(row: dict) -> dict:
         "time": str(row.get("time") or ""),
         "model_name": str(row.get("model_name") or "unknown"),
         "agent": str(row.get("agent") or "-"),
+        # The reasoning level this call ran at. In the whitelist for the reason the
+        # whole whitelist exists: leave it out and a pulled machine loses both the Eff
+        # column and its ⚙ cache markers while the local one draws them.
+        "effort": str(row.get("effort") or ""),
         "prompt_id": str(row.get("prompt_id") or ""),
         "prompt_title": str(row.get("prompt_title") or ""),
         "prompt_full": str(row.get("prompt_full") or row.get("prompt_title") or ""),

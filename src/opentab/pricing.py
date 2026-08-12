@@ -700,13 +700,17 @@ class CacheMiss:
     ttl: int  # the lifetime it was bought with (0 when the provider publishes none)
     repaid: int  # tokens bought a second time
     cost: float  # dollars those tokens cost ABOVE what a cache hit would have
+    # What changed, when the cause can name it ("high → low" for "reasoning"). Kept
+    # generic rather than a pair of effort fields: a later cause that can point at its
+    # own trigger writes the same slot instead of growing the dataclass again.
+    detail: str = ""
 
 
-# Ordered by how much the reader can do about it. Only "waited" is the user's own
-# doing, and separating it is the whole point: a marker that blames you for a build
-# that ran long, or for a tool change that invalidated the prefix, teaches you to
+# Ordered by how much the reader can do about it. Only "waited" and "reasoning" are the
+# user's own doing, and separating them is the whole point: a marker that blames you for
+# a build that ran long, or for a tool change that invalidated the prefix, teaches you to
 # ignore the marker.
-CACHE_MISS_CAUSES = ("waited", "agent", "invalidated", "compacted", "switched")
+CACHE_MISS_CAUSES = ("waited", "reasoning", "agent", "invalidated", "compacted", "switched")
 
 
 def cache_misses(rows) -> list[CacheMiss]:
@@ -749,17 +753,24 @@ def cache_misses(rows) -> list[CacheMiss]:
         )
         a, b = _row_epoch(prev), _row_epoch(cur)
         idle = (b - a) if (a is not None and b is not None) else 0.0
+        cause = _miss_cause(prev, cur, prefix, repaid, idle, ttl, busy, a, b)
         out.append(
             CacheMiss(
                 index=ci,
-                cause=_miss_cause(prev, cur, prefix, repaid, idle, ttl, busy, a, b),
+                cause=cause,
                 idle=idle,
                 ttl=ttl or 0,
                 repaid=repaid,
                 cost=_repay_cost(model, repaid, write, _int(cur.get("cache_write_1h"))),
+                detail=(f"{_effort(prev)} → {_effort(cur)}" if cause == "reasoning" else ""),
             )
         )
     return out
+
+
+def _effort(row) -> str:
+    # The reasoning level a turn ran at, "" when its backend records none.
+    return str(row.get("effort") or "").strip()
 
 
 def _miss_cause(prev, cur, prefix, repaid, idle, ttl, busy, a, b) -> str:
@@ -770,7 +781,15 @@ def _miss_cause(prev, cur, prefix, repaid, idle, ttl, busy, a, b) -> str:
     if ttl is None or idle <= ttl:
         # Alive by the clock, so something changed the prefix instead. Anthropic lists
         # the causes: edited tool definitions, an image added or removed, a changed
-        # tool_choice or thinking config. None of them are the reader's timing.
+        # tool_choice or thinking config. Of those, the thinking config is the one the
+        # transcript actually records (Claude's per-record `effort`, Codex's
+        # turn_context, omp's thinking_level_change, zaly's session-settings), so when
+        # the level moved across this pair the prefix has a NAMED cause instead of the
+        # catch-all -- and unlike the rest of that list it is a choice the reader made
+        # and can price. Both sides must be recorded: an absent level on one side is a
+        # backend that stopped writing the field, not a switch.
+        if _effort(cur) and _effort(prev) and _effort(cur) != _effort(prev):
+            return "reasoning"
         return "invalidated"
     if a is not None and b is not None and any(a < t < b for t in busy):
         return "agent"  # a subagent was working through the gap

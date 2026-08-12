@@ -650,6 +650,10 @@ class ClaudeStore:
                 "ts": o.get("timestamp") or "",
                 "depth": 1 if side else 0,
                 "agent": "subagent" if side else "-",
+                # The reasoning effort this call ran at, recorded per assistant record
+                # (present on 109 of 120 transcripts measured -- older ones predate the
+                # field, and "" simply drops the column).
+                "effort": str(o.get("effort") or ""),
                 "model_name": model_name,
                 "cost": 0.0,
                 "input": i,

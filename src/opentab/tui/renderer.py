@@ -1455,11 +1455,12 @@ class Renderer:
             # A Turns-tab compaction marker: the same amber the Context tab's ▼ rows get
             # from _CTX_MARK, so one event reads as one thing on both tabs.
             return curses.color_pair(2) | curses.A_BOLD
-        if line.startswith("❄ "):
-            # A Turns-tab cache expiry. Red rather than the ▼ amber, and this is the one
-            # place in the panes that earns it: every other number opentab shows is money
-            # already spent on work you got, while this is money spent buying a context
-            # you had already bought -- the only line in the app that reports waste.
+        if line.startswith("❄ ") or line.startswith("⚙ "):
+            # A Turns-tab cache expiry, or the effort switch that dropped the prefix.
+            # Red rather than the ▼ amber, and this is the one place in the panes that
+            # earns it: every other number opentab shows is money already spent on work
+            # you got, while this is money spent buying a context you had already
+            # bought -- the only lines in the app that report waste.
             return curses.color_pair(4) | curses.A_BOLD
         if line.startswith("· "):
             return curses.color_pair(1)
@@ -1483,10 +1484,11 @@ class Renderer:
             return curses.A_NORMAL
         if first in ("│", "|"):
             content = line[2:].lstrip()
-            # A Turns-tab marker row inside the box: the ▼/❄ events sit between the prompt
-            # rows they happened between, so the glyph tests above have to reach past the
-            # gutter to keep them amber/red rather than flattening them into table rows.
-            if content[:1] in ("▼", "❄"):
+            # A Turns-tab marker row inside the box: the ▼/❄/⚙ events sit between the
+            # prompt rows they happened between, so the glyph tests above have to reach
+            # past the gutter to keep them amber/red rather than flattening them into
+            # table rows.
+            if content[:1] in ("▼", "❄", "⚙"):
                 return self.line_attr(content)
             # The Money card's armed what-if rows are marked with a leading ★ and painted
             # in the orange accent (pair 6 -- the same state-emphasis colour as the Turns
@@ -4432,7 +4434,15 @@ class Renderer:
             max(5, max((len(_turn_agent(rows[i])) for i in g["indices"]), default=5)),
         )
         inner = max(1, width - self.BOX_CHROME - 2)
-        fixed = idx_w + agent_w + 14 + 6 + 9 + 9 + 6
+        # The reasoning level each call ran at, beside the model that ran it -- the two
+        # halves of "what answered this", and a switch is worth real money in both
+        # directions (a level change also drops the prompt cache, which the ⚙ marker on
+        # the prompt table prices). Only four backends record it (Claude, Codex, omp,
+        # zaly), so it is gated on the ROWS like Tools and simply absent elsewhere.
+        efforts = {i: str(rows[i].get("effort") or "") for i in g["indices"]}
+        eff_w = max((len(e) for e in efforts.values()), default=0)
+        eff_w = min(7, max(len("Eff"), eff_w)) if any(efforts.values()) else 0
+        fixed = idx_w + agent_w + 14 + 6 + 9 + 9 + 6 + (eff_w + 1 if eff_w else 0)
         mw = max(12, min(30, inner - fixed))
         # What each step actually DID, beside what it cost -- the one cell that turns a
         # column of near-identical numbers into a readable trace ("Read, Read, Bash ×3").
@@ -4446,7 +4456,9 @@ class Renderer:
         tools_w = inner - fixed - mw - 1
         tools_w = tools_w if any(labels.values()) and tools_w >= TOOLS_MIN else 0
         header = (
-            f"  {'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} {pad('Agent', agent_w)} "
+            f"  {'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} "
+            + (f"{pad('Eff', eff_w)} " if eff_w else "")
+            + f"{pad('Agent', agent_w)} "
             + (f"{pad('Tools', tools_w)} " if tools_w else "")
             + f"{'Cached':>6} {'Tokens':>9} {'Cost':>9}"
         )
@@ -4457,7 +4469,8 @@ class Renderer:
             body.append(
                 f"  {i + 1:>{idx_w}} {(r.get('time') or '--')[5:19]:<14} "
                 f"{pad(shorten(r['model_name'], mw), mw)} "
-                f"{pad(shorten(_turn_agent(r), agent_w), agent_w)} "
+                + (f"{pad(shorten(efforts[i] or '-', eff_w), eff_w)} " if eff_w else "")
+                + f"{pad(shorten(_turn_agent(r), agent_w), agent_w)} "
                 + (f"{pad(shorten(labels[i] or '-', tools_w), tools_w)} " if tools_w else "")
                 + f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
                 f"{human_tokens(r['tokens_total']):>9} {money(costs[i]):>9}"
@@ -4465,7 +4478,9 @@ class Renderer:
         totals_row = None
         if len(body) > 1:
             totals_row = (
-                f"  {'':>{idx_w}} {pad('TOTAL', 14)} {pad('', mw)} {pad('', agent_w)} "
+                f"  {'':>{idx_w}} {pad('TOTAL', 14)} {pad('', mw)} "
+                + (f"{pad('', eff_w)} " if eff_w else "")
+                + f"{pad('', agent_w)} "
                 # The prompt's whole tool mix, busiest first -- shortened like every
                 # other cell (pad only fills, it never truncates, so an unshortened
                 # 40-tool mix would walk straight through the box's right rule).
@@ -4586,13 +4601,17 @@ class Renderer:
         # backend (Codex) and the synthetic CSV/JSONL sessions cannot support, and two
         # tabs disagreeing about one session is what that shared gate exists to prevent.
         #
-        # Of the expiry causes only "waited" is drawn: it is the one the reader can do
-        # something about, while "invalidated" (a changed tool set, an added image) is
-        # both the most common and the least actionable, and a marker on every one of
-        # those would be noise that teaches you to skip the marker you wanted.
+        # Of the expiry causes only the two the reader DID are drawn: "waited" (the
+        # follow-up came too late) and "reasoning" (you moved the effort level, which
+        # changes the thinking config and drops the prefix with it). The rest stay
+        # silent -- "invalidated" (a changed tool set, an added image) is both the most
+        # common and the least actionable, and a marker on every one of those would be
+        # noise that teaches you to skip the marker you wanted.
         curve = self.session_supports_context_curve(workflow.id)
         comps = context_compactions(rows) if curve else {}
-        late = {m.index: m for m in cache_misses(rows) if m.cause == "waited"} if curve else {}
+        misses = cache_misses(rows) if curve else []
+        late = {m.index: m for m in misses if m.cause == "waited"}
+        switched = {m.index: m for m in misses if m.cause == "reasoning"}
         head = f"# Turns — {len(groups)} prompts · {len(rows)} turns · {money(total)}"
         if comps:
             freed = sum(before - after for before, after in comps.values())
@@ -4603,6 +4622,10 @@ class Renderer:
             head += (
                 f" · ❄ {len(late)} cache expir{'y' if len(late) == 1 else 'ies'}, {money(burnt)}"
             )
+        if switched:
+            spent = sum(m.cost for m in switched.values())
+            head += f" · ⚙ {len(switched)} effort switch{'' if len(switched) == 1 else 'es'}"
+            head += f", {money(spent)}"
         # ONE ROW PER PROMPT -- the thing you actually sent. Every row carries its own
         # numbers and the header is always drawn, because the columns are the point of
         # the tab; the per-turn rows live in the popup (Enter / a click), where a prompt
@@ -4710,6 +4733,15 @@ class Renderer:
                         f"{human_tokens(miss.repaid)} bought again for {money(miss.cost)} "
                         f"(it lived {human_duration(miss.ttl)})"
                     )
+                eff = switched.get(i)
+                if eff:
+                    # The switch is why the next turn came back cold: changing the
+                    # thinking config changes the prefix, so the whole cached context is
+                    # bought again. The price of the decision, on the turn it was made.
+                    body.append(
+                        f"⚙ reasoning effort {eff.detail} — the cache went with it, "
+                        f"{human_tokens(eff.repaid)} bought again for {money(eff.cost)}"
+                    )
             share = g["cached"]
             cached = "-" if share is None else f"{share * 100:.0f}%"
             title = " ".join((g["title"] or "").split()) or "(no preceding prompt)"
@@ -4785,6 +4817,12 @@ class Renderer:
             notes.append(
                 "· ❄ the prompt cache expired while the session sat idle, so that prompt paid "
                 "again for context it already had — a faster follow-up would have cost less."
+            )
+        if switched:
+            notes.append(
+                "· ⚙ the reasoning effort changed, which changes the request's thinking config "
+                "and so drops the cached prefix with it — the next turn re-bought its whole "
+                "context. Worth doing, worth doing early."
             )
         # WRAPPED, unlike every earlier version of this tab: these run past 140 characters
         # and the paint clips rather than wraps, so on a real pane they ended mid-sentence

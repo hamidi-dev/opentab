@@ -1804,8 +1804,15 @@ function turnsTable(turns, expiries) {
   const groups = turnGroupRows(turns);
   const comps = turnCompactions(turns);
   const freed = [...comps.values()].reduce((a, [b, af]) => a + b - af, 0);
-  const exp = new Map((expiries || []).map(e => [e.i, e]));
-  const burnt = (expiries || []).reduce((a, e) => a + e.cost, 0);
+  // The server ships the two causes the reader DID (see web.session_extras): an idle
+  // gap that outlived the cache, and an effort switch that changed the thinking config
+  // and dropped the prefix with it. Split here so each gets its own line and its own
+  // sentence in the hint -- one "cache expired" total covering both would tell someone
+  // who never went idle that they did.
+  const exp = new Map((expiries || []).filter(e => e.cause !== 'reasoning').map(e => [e.i, e]));
+  const effSw = new Map((expiries || []).filter(e => e.cause === 'reasoning').map(e => [e.i, e]));
+  const burnt = [...exp.values()].reduce((a, e) => a + e.cost, 0);
+  const effBurnt = [...effSw.values()].reduce((a, e) => a + e.cost, 0);
 
   if (TURN_DRILL != null && TURN_DRILL >= 0 && TURN_DRILL < groups.length)
     return turnDrillPane(turns, groups, TURN_DRILL);
@@ -1837,6 +1844,10 @@ function turnsTable(turns, expiries) {
       if (x) rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: span },
         '❄ cache expired — ' + hDur(x.idle) + ' idle, ' + hTok(x.repaid)
         + ' bought again for ' + money(x.cost) + ' (it lived ' + hDur(x.ttl) + ')')));
+      const e = effSw.get(i);
+      if (e) rows.push(h('tr', { class: 'expiry-row' }, h('td', { colspan: span },
+        '⚙ reasoning effort ' + e.detail + ' — the cache went with it, ' + hTok(e.repaid)
+        + ' bought again for ' + money(e.cost))));
     });
     rows.push(h('tr', { class: 'prompt-row rowlink', title: g.full || null,
         onclick: () => { TURN_DRILL = n; render(false); } },
@@ -1867,7 +1878,10 @@ function turnsTable(turns, expiries) {
       + (hasAgents ? ' · ↳ Agents = subagents the prompt delegated to; which turn ran under'
         + ' which is in the prompt’s own view' : '')
       + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')
-      + (exp.size ? ' · ❄ ' + exp.size + ' cache expir' + (exp.size > 1 ? 'ies' : 'y') + ', ' + money(burnt) + ' spent re-buying context' : '')),
+      + (exp.size ? ' · ❄ ' + exp.size + ' cache expir' + (exp.size > 1 ? 'ies' : 'y') + ', ' + money(burnt) + ' spent re-buying context' : '')
+      + (effSw.size ? ' · ⚙ ' + effSw.size + ' reasoning-effort switch' + (effSw.size > 1 ? 'es' : '')
+        + ' — changing the level changes the thinking config, which drops the cached prefix with it, '
+        + money(effBurnt) + ' spent buying it back' : '')),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
         h('th', null, 'Prompt'), h('th', { class: 'r' }, 'Turns'),
@@ -1889,6 +1903,10 @@ function turnDrillPane(turns, groups, n) {
   // near-identical numbers into a readable trace. Dropped when this prompt called
   // nothing, so a pure-text answer isn't given a column of dashes.
   const hasTools = g.indices.some(i => toolNames(turns[i].tools).length);
+  // The reasoning level each call ran at, beside the model that ran it -- the two halves
+  // of "what answered this". Only four backends record it, so it is gated on the rows
+  // like Tools and simply absent elsewhere. The TUI's Eff column, mirrored.
+  const hasEffort = g.indices.some(i => turns[i].effort);
   let cum = 0;
   const rows = g.indices.map(i => {
     const t = turns[i];
@@ -1897,6 +1915,7 @@ function turnDrillPane(turns, groups, n) {
       h('td', { class: 'r dim' }, String(i + 1)),
       h('td', { class: 'dim' }, t.time.slice(5, 19).replace('T', ' ')),
       h('td', { class: 'grow' }, modelCell(t.model)),
+      ...(hasEffort ? [h('td', { class: 'dim' }, t.effort || '-')] : []),
       h('td', { class: 'indent' }, t.depth ? '↳ ' + t.agent : t.agent),
       ...(hasTools ? [h('td', null, toolLabel(t.tools, false) || '-')] : []),
       h('td', { class: 'r dim' }, pct(t.cached)),
@@ -1913,7 +1932,9 @@ function turnDrillPane(turns, groups, n) {
     h('div', { class: 'prompt-full' }, g.full || '(no preceding prompt)'),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
-        h('th', null, 'Model'), h('th', null, 'Agent'),
+        h('th', null, 'Model'),
+        ...(hasEffort ? [h('th', null, 'Eff')] : []),
+        h('th', null, 'Agent'),
         ...(hasTools ? [h('th', null, 'Tools')] : []),
         h('th', { class: 'r' }, 'Cached'),
         h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Cost'),

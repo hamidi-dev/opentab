@@ -725,7 +725,15 @@ def test_pricing_bills_long_ttl_cache_writes_at_the_long_ttl_rate():
 
 
 def _turn(
-    time, model="anthropic/claude-opus-4-8", read=0, write=0, write_1h=0, inp=0, prompt="p", depth=0
+    time,
+    model="anthropic/claude-opus-4-8",
+    read=0,
+    write=0,
+    write_1h=0,
+    inp=0,
+    prompt="p",
+    depth=0,
+    effort="",
 ):
     return {
         "time": time,
@@ -736,6 +744,7 @@ def _turn(
         "input": inp,
         "prompt_id": prompt,
         "depth": depth,
+        "effort": effort,
     }
 
 
@@ -814,6 +823,55 @@ def test_cache_miss_separates_causes_it_must_not_blame_on_waiting():
     # A prefix too small to have been cacheable at all is never reported as lost.
     tiny = _turn("2026-06-10 10:00:00", read=1000, write=500)
     assert ot.cache_misses([tiny, _turn("2026-06-10 12:00:00", write=1500, prompt="b")]) == []
+
+
+def test_cache_miss_names_a_reasoning_switch_instead_of_the_catch_all():
+    # "invalidated" lists four Anthropic causes (edited tools, an image, tool_choice,
+    # the thinking config) and can name none of them -- but the thinking config is the
+    # one a transcript actually records, so when the effort moved across the pair the
+    # miss gets a cause the reader can act on: it was a decision, not a mystery.
+    hi = _turn("2026-06-10 10:00:00", read=200000, write=100000, effort="high", prompt="a")
+    lo = _turn("2026-06-10 10:00:30", write=300000, effort="low", prompt="b")
+    (miss,) = ot.cache_misses([hi, lo])
+    assert miss.cause == "reasoning" and miss.detail == "high → low"
+    assert miss.repaid == 300000 and miss.cost > 0  # priced like any other re-buy
+
+    # Same level on both sides is not a switch -- it stays the honest catch-all.
+    same = ot.cache_misses(
+        [hi, _turn("2026-06-10 10:00:30", write=300000, effort="high", prompt="b")]
+    )
+    assert same[0].cause == "invalidated" and same[0].detail == ""
+
+    # A level recorded on one side only is a backend that stopped writing the field
+    # (or started), never a switch -- both directions.
+    for pair in (
+        [hi, _turn("2026-06-10 10:00:30", write=300000, prompt="b")],
+        [_turn("2026-06-10 10:00:00", read=200000, write=100000, prompt="a"), lo],
+    ):
+        assert ot.cache_misses(pair)[0].cause == "invalidated"
+
+    # The stronger explanations still win: a model swap and a compaction both outrank
+    # it, and so does an entry that was dead by the clock anyway.
+    swap = ot.cache_misses(
+        [
+            hi,
+            _turn(
+                "2026-06-10 10:00:30",
+                model="anthropic/claude-haiku-4-5",
+                write=300000,
+                effort="low",
+            ),
+        ]
+    )
+    assert swap[0].cause == "switched"
+    shrunk = ot.cache_misses(
+        [hi, _turn("2026-06-10 10:00:30", write=20000, effort="low", prompt="b")]
+    )
+    assert shrunk[0].cause == "compacted"
+    stale = ot.cache_misses(
+        [hi, _turn("2026-06-10 12:00:00", write=300000, effort="low", prompt="b")]
+    )
+    assert stale[0].cause == "waited"  # two hours dead: the switch is not what killed it
 
 
 def test_cache_miss_prices_a_provider_that_bills_no_cache_write():

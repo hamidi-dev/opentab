@@ -2058,6 +2058,64 @@ def test_detail_turns_marks_the_prompt_that_arrived_after_the_cache_expired():
     assert boxed[2:].lstrip().startswith("❄ ")
 
 
+def test_detail_turns_prices_an_effort_switch_that_took_the_cache_with_it():
+    # Changing the reasoning level changes the request's thinking config, which changes
+    # the prefix -- so the next turn re-buys the whole cached context. That used to land
+    # in the silent "invalidated" bucket, i.e. a real cost with no marker and no cause;
+    # it now gets its own ⚙ line, because unlike an edited tool set it is a decision the
+    # reader made and can see the price of.
+    app = _cache_miss_app()
+    rows = app._turns_by_session["s1"]
+    rows[0]["effort"], rows[1]["effort"] = "high", "low"
+    rows[1]["time"] = "2026-06-10 10:00:30"  # inside the TTL: the switch is the cause
+    lines = ot.Renderer(app).detail_turns(app.loaded[0], 96)
+    assert "⚙ 1 effort switch, $" in box_title(lines)
+    cells = box_cells(lines)
+    mark = next(i for i, c in enumerate(cells) if c.startswith("⚙ "))
+    assert "high → low" in cells[mark] and "300.0k bought again" in cells[mark]
+    assert "the late follow-up" in cells[mark + 1]  # above the prompt it happened before
+    assert not any(c.startswith("❄ ") for c in cells)  # not an expiry: nothing sat idle
+    # Painted off its leading glyph like ▼/❄, and reachable past the box's gutter.
+    boxed = next(ln for ln in lines if "reasoning effort" in ln)
+    assert boxed[2:].lstrip().startswith("⚙ ")
+    orig = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n
+    try:
+        # The ❄ red, not the ▼ amber: both lines report the same thing -- money spent
+        # buying a context you had already bought.
+        assert ot.Renderer(app).line_attr(boxed) == (4 | ot.curses.A_BOLD)
+    finally:
+        ot.curses.color_pair = orig
+    # ...and a footnote says WHY a level change costs anything (the notes wrap, so the
+    # sentence is read off the joined text).
+    assert "drops the cached prefix" in " ".join(ln.strip() for ln in lines)
+
+    # Same level on both sides: no marker at all, and the catch-all stays silent.
+    rows[1]["effort"] = "high"
+    quiet = ot.Renderer(app).detail_turns(app.loaded[0], 96)
+    assert "⚙" not in "\n".join(quiet)
+
+
+def test_detail_turn_drill_shows_the_reasoning_level_each_call_ran_at():
+    # Beside the model that ran it -- the two halves of "what answered this". Gated on
+    # the ROWS: only four backends record a level, and the rest must show no column
+    # rather than a stripe of dashes.
+    app = _turns_app(_TurnNavStore)
+    wf = app.current_session()
+    app.open_turn_drill(0)
+    assert "Eff" not in box_cells(ot.Renderer(app).detail_turn_drill(wf, 130))[0]
+
+    rows = app.session_turn_rows(wf.id)
+    for r in rows:
+        r["effort"] = "xhigh"
+    drilled = ot.Renderer(app).detail_turn_drill(wf, 130)
+    assert "Eff" in box_cells(drilled)[0]
+    assert all("xhigh" in ln for ln in drilled if "sonnet" in ln)
+    # ...and the column never pushes the table through its own frame.
+    for w in range(77, 220):
+        assert "..." not in box_cells(ot.Renderer(app).detail_turn_drill(wf, w))[0], w
+
+
 def test_detail_turns_stays_silent_when_the_backend_cannot_support_the_reading():
     # Same rows, but a backend whose turn rows are cumulative deltas (Codex) or synthetic
     # (the CSV/JSONL logs): reading a row's cache split as one request's prompt is exactly

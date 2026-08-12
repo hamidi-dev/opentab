@@ -271,6 +271,7 @@ class ZalyStore:
             "sid": sid,  # dir-name id; settings.sessionId overrides when present
             "cwd": None,  # settings workspace (or cwd) -> git root
             "model_setting": None,  # latest session-settings modelId (per-message fallback)
+            "effort": "",  # latest session-settings reasoning level, for the turn rows
             "ts_min": None,  # earliest record (epoch seconds)
             "ts_max": None,  # latest record (epoch seconds)
             "title_prompt": None,
@@ -474,6 +475,11 @@ class ZalyStore:
                     m = settings.get("modelId")
                     if isinstance(m, str) and m:
                         s["model_setting"] = m
+                    # The reasoning effort in force from here on. A resume or a /reasoning
+                    # switch appends a fresh settings node to the same file, so this is
+                    # genuinely a running value, not a session-wide constant.
+                    eff = settings.get("reasoning")
+                    s["effort"] = eff.strip() if isinstance(eff, str) and eff.strip() else ""
                 continue
             if typ != "message":
                 continue
@@ -564,6 +570,7 @@ class ZalyStore:
                 "ts": ts or 0.0,  # epoch seconds; sorts numerically
                 "depth": 0,  # zaly's subagent transcripts live in tmpdir, not the tree
                 "agent": "-",
+                "effort": s["effort"],  # reasoning level in force for this call
                 "model_name": model,
                 "cost": round(cost, 6) if metered else 0.0,
                 "input": inp,
