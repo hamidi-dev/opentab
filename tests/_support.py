@@ -324,9 +324,13 @@ def _write_opencode_db_with_turns(db):
         ],
     )
 
-    def msg(model, cost, created, inp):
+    def msg(model, cost, created, inp, variant=None):
+        # `variant` is OpenCode's name for the reasoning level -- written per assistant
+        # message, and absent on the providers that expose none (every Anthropic row in
+        # a real corpus), which is exactly what drops the Eff column.
+        extra = f'"variant":"{variant}",' if variant else ""
         return (
-            f'{{"role":"assistant","providerID":"anthropic","modelID":"{model}",'
+            f'{{"role":"assistant","providerID":"anthropic","modelID":"{model}",{extra}'
             f'"cost":{cost},"time":{{"created":{created}}},"tokens":{{"input":{inp},"output":0}}}}'
         )
 
@@ -337,8 +341,8 @@ def _write_opencode_db_with_turns(db):
         "insert into message values (?,?,?)",
         [
             # inserted last-first to prove the query orders by time, not rowid
-            ("m2", "s1", msg("claude-sonnet-4-5", 3.0, 2000, 500000)),  # priced, t=2000
-            ("m1", "s1", msg("claude-haiku-4.5", 0, 1000, 1000000)),  # $0, t=1000
+            ("m2", "s1", msg("claude-sonnet-4-5", 3.0, 2000, 500000, "medium")),  # priced, t=2000
+            ("m1", "s1", msg("claude-haiku-4.5", 0, 1000, 1000000, "high")),  # $0, t=1000
             ("m3", "s2", msg("claude-haiku-4.5", 0, 1500, 2000000)),  # subagent $0, t=1500
             # two user prompts: u1 owns m1+m3 (t<=1500), u2 owns m2 (t=2000)
             ("u1", "s1", user(500, "Add feature X")),

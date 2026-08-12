@@ -634,6 +634,21 @@ class Store:
           datetime({_TL_TS} / 1000, 'unixepoch', 'localtime') as time,
           tree.depth as depth,
           {agent_expr} as agent,
+          -- The reasoning level this call ran at. OpenCode calls it the model VARIANT
+          -- ("high"/"medium"/"xhigh"/"low"/"none"), written per assistant message, so it
+          -- follows a mid-session switch exactly like Codex's turn_context does. Recorded
+          -- only where the provider exposes one: measured on a 41,857-message corpus it
+          -- is present on 11,965 (every openai/gpt-5.x row) and absent on every Anthropic
+          -- row, which is what leaves the column off a Claude-only session.
+          --
+          -- The MESSAGE's variant, deliberately, though `session.model` carries one too
+          -- ({"id","providerID","variant"}). That one is the session's CURRENT setting,
+          -- so back-filling a message that recorded none would invent a level for 200
+          -- messages on this corpus -- 131 of them Claude rows, which have no variant
+          -- concept at all, plus local ollama/mlx models. A fabricated level is worse
+          -- than an absent one here: it feeds the cache-miss verdict, so an invented
+          -- switch would print a ⚙ marker blaming a decision nobody made.
+          coalesce(json_extract(m.data, '$.variant'), '') as effort,
           {MSG_MODEL_EXPR} as model_name,
           coalesce(json_extract(m.data, '$.cost'), 0) as cost,
           coalesce(json_extract(m.data, '$.tokens.input'), 0) as input,

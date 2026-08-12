@@ -131,6 +131,31 @@ def test_message_timeline_orders_by_time_and_marks_subagent_turns():
         assert rows[0]["prompt_id"] == "u1" and rows[2]["prompt_id"] == "u2"
 
 
+def test_turn_rows_carry_the_reasoning_variant_opencode_records():
+    # OpenCode DOES record the reasoning level -- it calls it the model VARIANT, written
+    # per assistant message, so it follows a mid-session switch. It is the richest source
+    # of them: measured on a real 41,857-message corpus, 11,965 rows carry one and 21
+    # sessions switched level mid-run, which is more than every other backend combined
+    # (16 of them re-bought $7.55 of context for it). A message whose provider exposes
+    # no variant reports "" -- every Anthropic row in that corpus -- and that is what
+    # leaves the column off rather than drawing a stripe of dashes.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_turns(db)
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        rows = store.message_timeline("s1")
+        # Per MESSAGE, so a mid-session switch shows up as one: m1 ran high, m2 medium.
+        # The variant-less subagent turn reports "" and is NOT back-filled from the
+        # session's current model setting -- that would invent a level for 200 messages
+        # on a real corpus (131 of them Claude rows, which have no variant at all), and
+        # an invented level feeds the cache-miss verdict, printing a ⚙ marker that
+        # blames a decision nobody made.
+        assert [r["effort"] for r in rows] == ["high", "", "medium"]
+        # The whole-corpus batch shares _timeline_columns, so an export cannot ship a
+        # different set of columns than the TUI reads.
+        assert store.message_timeline_all()["s1"] == rows
+
+
 def test_turn_rows_carry_the_tools_each_step_called():
     # The Turns tab names what each step DID, and for OpenCode those names live in the
     # `part` table rather than on the message -- so the timeline joins them on. In call

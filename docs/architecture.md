@@ -89,11 +89,16 @@ prompt table draws it as an `Agents` cell (`util.agent_mix_label` — busiest fi
 unnamed executions folded into one `subagent ×n` via `util.DULL_AGENT_NAMES`, the
 same set the flamegraph's segment labels use). Gated on the rows like `tools`.
 
-A row may also carry the **reasoning effort** it ran at (`effort`), which four backends
-record and the rest leave `""`: Claude Code writes it on every assistant record, Codex
-on each `turn_context`, omp as its own `thinking_level_change` record, and zaly on
-`session-settings` — the last two are *running* values the parser keeps current, since
-a switch applies from that record on. The per-turn drill draws it as an `Eff` column
+A row may also carry the **reasoning effort** it ran at (`effort`), which five backends
+record and the rest leave `""`: OpenCode as the message's **`variant`**, Claude Code on
+every assistant record, Codex on each `turn_context`, omp as its own
+`thinking_level_change` record, and zaly on `session-settings` — the last two are
+*running* values the parser keeps current, since a switch applies from that record on.
+OpenCode is the one worth naming: it is the richest source of mid-session switches
+(measured on a real corpus, 21 sessions changed level mid-run, against zero on every
+other backend), and it records the field only where the provider exposes one — every
+`openai/gpt-5.x` row carries a variant, every Anthropic row carries none.
+The per-turn drill draws it as an `Eff` column
 beside the model (gated on the rows), and `pricing.cache_misses` reads it to name a
 **`reasoning`** cause: changing the level changes the request's thinking config, which
 changes the prefix, so the next turn re-buys its whole cached context. That was
