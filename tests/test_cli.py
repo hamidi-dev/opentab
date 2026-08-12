@@ -1052,6 +1052,35 @@ def test_remote_entry_parses_hosts_urls_and_named_specs():
     assert name == "100.64.0.5" and entry == {"url": "http://100.64.0.5:8321"}
 
 
+def test_pull_ssh_fails_fast_without_interactive_prompts():
+    calls = []
+    real_run = ot.cli.subprocess.run
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return ot.cli.subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+
+    try:
+        ot.cli.subprocess.run = fake_run
+        assert ot.cli._fetch_summary("box", {"ssh": "mo@box"}) == "{}"
+    finally:
+        ot.cli.subprocess.run = real_run
+
+    argv, kwargs = calls[0]
+    assert argv == [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=8",
+        "-o",
+        "ConnectionAttempts=1",
+        "mo@box",
+        "opentab --export -",
+    ]
+    assert kwargs["timeout"] == 60.0
+
+
 def test_remotes_config_round_trips():
     with tempfile.TemporaryDirectory() as d:
         cfg = os.path.join(d, "remotes.json")

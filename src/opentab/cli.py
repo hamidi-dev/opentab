@@ -1578,7 +1578,17 @@ def _fetch_summary(name: str, entry: dict, timeout: float = 60.0) -> str:
         raise RuntimeError("machine has neither an 'ssh' target nor a 'url'")
     cmd = entry.get("cmd") or "opentab --export -"
     proc = subprocess.run(
-        ["ssh", target, cmd],
+        [
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "ConnectTimeout=8",
+            "-o",
+            "ConnectionAttempts=1",
+            target,
+            cmd,
+        ],
         capture_output=True,
         text=True,
         timeout=timeout,
