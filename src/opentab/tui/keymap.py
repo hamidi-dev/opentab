@@ -697,7 +697,12 @@ KEYS: tuple[Key, ...] = (
         actions=("whatif",),
         summary="what-if — reprice a session at one model",
         section="pickers",
-        when=in_main,
+        # What-if is SESSION-scoped: an armed target only ever moves numbers on the open
+        # session's Overview and Subagents tab, so advertising it from the Months sidebar
+        # offered a key that would visibly do nothing. It stays shown while a target is
+        # armed, wherever you have wandered to -- the lit chip is both the honest "a
+        # target is armed" and the way to press w again and clear it.
+        when=lambda app: in_session(app) or (in_main(app) and bool(app.whatif_model)),
         chip="model",
         active=lambda app: bool(app.whatif_model),
     ),

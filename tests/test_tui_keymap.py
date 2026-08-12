@@ -269,6 +269,23 @@ def test_the_trends_sort_chip_only_shows_where_a_ranking_is_on_screen():
     assert not sort.shown(app)
 
 
+def test_the_whatif_chip_only_shows_where_a_target_would_change_something():
+    # `w` is session-scoped: an armed target only moves numbers on the open session's
+    # Overview and Subagents tab. Offered from the Months sidebar it was a permanent
+    # footer chip for a key that would visibly do nothing there.
+    app = _keymap_app()
+    whatif = next(e for e in ot.keymap.KEYS if e.id == "whatif")
+    assert app.view == "browse" and not whatif.shown(app)
+    app.view = "zoom"
+    assert not whatif.shown(app)
+    app.view = "session"
+    assert whatif.shown(app) and whatif.chip_segments(app) == [("w model", False)]
+    # Armed, it stays reachable wherever you wander -- the lit chip is how you clear it.
+    app.view = "browse"
+    app.whatif_model = "anthropic/claude-opus-4-5"
+    assert whatif.shown(app) and whatif.chip_segments(app) == [("w model", True)]
+
+
 def test_a_composite_chip_falls_back_to_its_plain_label():
     # Tab still cycles the focus in a zoom, where the yr/mo/day segments don't apply --
     # an empty segment list must not silently drop the key from the footer.
