@@ -513,22 +513,24 @@ def _codex_turn(model, cwd, ts="2025-10-03T14:51:10.000Z", effort=None):
     return {"timestamp": ts, "type": "turn_context", "payload": payload}
 
 
-def _codex_tokens(inp, out, cached, total, ts="2025-10-03T14:51:20.000Z"):
+def _codex_tokens(inp, out, cached, total, ts="2025-10-03T14:51:20.000Z", cache_write=None):
     # A token_count event carrying the *cumulative* running total (Codex's shape).
+    usage: dict[str, object] = {
+        "input_tokens": inp,
+        "output_tokens": out,
+        "cached_input_tokens": cached,
+        "reasoning_output_tokens": 0,
+        "total_tokens": total,
+    }
+    # Codex <0.145 omitted this key; newer versions serialize it even when zero.
+    if cache_write is not None:
+        usage["cache_write_input_tokens"] = cache_write
     return {
         "timestamp": ts,
         "type": "event_msg",
         "payload": {
             "type": "token_count",
-            "info": {
-                "total_token_usage": {
-                    "input_tokens": inp,
-                    "output_tokens": out,
-                    "cached_input_tokens": cached,
-                    "reasoning_output_tokens": 0,
-                    "total_tokens": total,
-                }
-            },
+            "info": {"total_token_usage": usage},
         },
     }
 

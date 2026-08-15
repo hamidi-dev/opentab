@@ -6,6 +6,7 @@ import glob
 import json
 import os
 import re
+from typing import cast
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
@@ -38,11 +39,12 @@ class CodexStore:
         and a smaller total is a context-compaction reset (the new total is fresh
         usage). The accepted deltas sum back to the final authoritative total, and each
         is attributed to the model active at that turn (the latest turn_context.model).
-      * OpenAI's input_tokens *includes* the cached_input_tokens and there is no
-        cache-write concept, so we split input into uncached (priced at the input rate)
-        + cache_read (the cached discount rate); cache_write stays 0. reasoning_output
-        is already counted inside output_tokens, so -- as in ClaudeStore -- it is folded
-        into output and never priced twice.
+      * OpenAI's input_tokens includes both cached_input_tokens and (since GPT-5.6)
+        cache_write_input_tokens, so we split it into uncached input + cache reads +
+        cache writes. Both cache categories are subsets of input, never extra tokens.
+        reasoning_output is already counted inside output_tokens, so -- as in
+        ClaudeStore -- it is folded into output and never priced twice. Rollouts from
+        Codex before 0.145 omit cache_write_input_tokens; absence remains 0.
 
     Codex's collab / multi-agent mode writes each spawned thread as its own rollout
     file whose session_meta.source carries the parent thread id (_spawn_source), so
@@ -76,11 +78,11 @@ class CodexStore:
     def _new_acc() -> dict[str, int]:
         return {
             "runs": 0,
-            "input": 0,  # uncached input (OpenAI's input_tokens minus cached)
+            "input": 0,  # uncached input (OpenAI input minus cache reads/writes)
             "output": 0,
             "reasoning": 0,  # folded into output; kept 0 so it is never priced twice
             "cache_read": 0,
-            "cache_write": 0,  # OpenAI has no separate cache-write bill
+            "cache_write": 0,
             "tokens_total": 0,
         }
 
@@ -327,7 +329,8 @@ class CodexStore:
         s = sessions.setdefault(sid, self._new_session()) if sid else None
         cur_model: str | None = None
         cur_effort = ""  # the reasoning effort turn_context last put in force
-        prev = (0, 0, 0, 0)  # cumulative (input, output, cached, total) seen so far
+        # cumulative (input, output, cache read, total, cache write) seen so far
+        prev = (0, 0, 0, 0, 0)
         pending_tools: list[str] = []  # tool calls since the last accepted turn delta
         for line in lines:
             line = line.strip()
@@ -412,9 +415,15 @@ class CodexStore:
         # through.
         return safe_int(value)
 
-    # The four cumulative components of `total_token_usage`, in the order `prev` holds
-    # them (input, output, cached input, total).
-    _USAGE_FIELDS = ("input_tokens", "output_tokens", "cached_input_tokens", "total_tokens")
+    # The cumulative components of `total_token_usage`, in the order `prev` holds them.
+    # Keep total at index 3: it drives the established growth/reset/echo state machine.
+    _USAGE_FIELDS = (
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "total_tokens",
+        "cache_write_input_tokens",
+    )
 
     @classmethod
     def _cumulative(cls, value) -> int | None:
@@ -474,13 +483,25 @@ class CodexStore:
         # last trustworthy baseline, so the next valid record's delta spans the gap --
         # the same "return prev" the duplicate echo takes, and it likewise does not
         # consume the pending tool calls.
-        cur = tuple(self._cumulative(tt.get(k, 0)) for k in self._USAGE_FIELDS)
-        if any(v is None for v in cur):
+        raw_cur = tuple(self._cumulative(tt.get(k, 0)) for k in self._USAGE_FIELDS)
+        if any(v is None for v in raw_cur):
             return prev
+        cur = cast(tuple[int, ...], raw_cur)
+        # An old/downgraded writer can append a keyless record after this file already
+        # established a write baseline. During ordinary cumulative growth, absence
+        # means "no newly observable writes", not "the cumulative counter reset to 0".
+        # A shrinking total is a real compaction reset and intentionally keeps the 0.
+        if "cache_write_input_tokens" not in tt and cur[3] >= prev[3] and prev[4]:
+            cur = cur[:4] + (prev[4],)
         if cur[3] > prev[3]:  # new turn: usage is the growth in the running total
-            d_in, d_out, d_cached = cur[0] - prev[0], cur[1] - prev[1], cur[2] - prev[2]
+            d_in, d_out, d_cached, d_write = (
+                cur[0] - prev[0],
+                cur[1] - prev[1],
+                cur[2] - prev[2],
+                cur[4] - prev[4],
+            )
         elif cur[3] < prev[3]:  # context compaction reset: the new total is fresh usage
-            d_in, d_out, d_cached = cur[0], cur[1], cur[2]
+            d_in, d_out, d_cached, d_write = cur[0], cur[1], cur[2], cur[4]
         else:  # equal total == the duplicate echo Codex writes after each turn_context
             return prev
         model = cur_model or "unknown"
@@ -490,12 +511,18 @@ class CodexStore:
         acc = s["models"].get(model_name)
         if acc is None:
             acc = s["models"][model_name] = self._new_acc()
-        uncached = max(0, d_in - d_cached)
+        input_tokens = max(0, d_in)
+        # Reads and writes partition inclusive input. Cap a malformed/schema-transition
+        # delta to that budget so the categories can never exceed tokens_total.
+        cache_read = min(max(0, d_cached), input_tokens)
+        cache_write = min(max(0, d_write), input_tokens - cache_read)
+        uncached = input_tokens - cache_read - cache_write
         acc["runs"] += 1
-        acc["input"] += uncached  # input_tokens includes the cached read
-        acc["cache_read"] += max(0, d_cached)
+        acc["input"] += uncached  # input_tokens includes both cache categories
+        acc["cache_read"] += cache_read
+        acc["cache_write"] += cache_write
         acc["output"] += max(0, d_out)
-        acc["tokens_total"] += max(0, d_in) + max(0, d_out)
+        acc["tokens_total"] += input_tokens + max(0, d_out)
         # One Turns row per accepted delta -- the per-turn slice of the cumulative
         # total the block above just attributed. Cost stays $0 (Codex records none);
         # the Turns tab's "$" view reprices each row from its token columns.
@@ -516,9 +543,9 @@ class CodexStore:
                 "input": uncached,
                 "output": max(0, d_out),
                 "reasoning": 0,
-                "cache_read": max(0, d_cached),
-                "cache_write": 0,
-                "tokens_total": max(0, d_in) + max(0, d_out),
+                "cache_read": cache_read,
+                "cache_write": cache_write,
+                "tokens_total": input_tokens + max(0, d_out),
                 "tools": tools,
             }
         )

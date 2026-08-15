@@ -120,6 +120,9 @@ def test_api_price_helpers():
     assert ot.model_price("github-copilot/claude-haiku-4.5")[0] > 0
     # a reasoning-effort variant suffix falls back to its family price
     assert ot.model_price("openai/gpt-5.2-xhigh")[:2] == (1.75, 14.0)
+    # A future Codex spelling must retain GPT-5.6's separately billed write rate rather
+    # than falling through to generic GPT-5, where the fourth component is zero.
+    assert ot.model_price("openai/gpt-5.6-codex") == (5.0, 30.0, 0.5, 6.25)
     assert ot.model_price("unknown/future-model") == ot.FALLBACK_PRICE
     # 1M input + 1M output-equivalent: reasoning tokens bill as output.
     ir, orr, _cr, _cw = ot.model_price("x/claude-haiku-4.5")

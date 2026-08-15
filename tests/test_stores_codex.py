@@ -118,6 +118,71 @@ def test_codex_store_dedupes_echo_attributes_models_and_rolls_up_to_git_root():
         assert nodes[0]["cost"] == 0.0
 
 
+def test_codex_splits_cumulative_cache_writes_without_inflating_token_totals():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _codex_meta(CODEX_SID, cwd),
+            _codex_turn("gpt-5.6-sol", cwd),
+            _codex_call("old_schema"),
+            # Codex <0.145 omitted cache_write_input_tokens. Its existing accounting
+            # remains unchanged: input splits only into fresh + cache read.
+            _codex_tokens(100, 10, 40, 110),
+            _codex_call("new_schema"),
+            # Cumulative growth: input +200, read +60, write +60, output +20.
+            _codex_tokens(300, 30, 100, 330, cache_write=60),
+            _codex_tokens(300, 30, 100, 330, cache_write=60),  # duplicate echo
+            _codex_call("after_compaction"),
+            # A shrinking total is a reset, so this whole block is fresh usage.
+            _codex_tokens(100, 10, 20, 110, cache_write=30),
+        ]
+        _codex_rollout(root, CODEX_SID, rows)
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+
+        (w,) = store.workflows()
+        assert w.total_tokens == 110 + 220 + 110
+        (model,) = store.model_breakdown()
+        assert model["model_name"] == "openai/gpt-5.6-sol"
+        assert model["runs"] == 3  # the explicit-zero/old row counts; the echo does not
+        assert model["unpriced_input"] == 60 + 80 + 50
+        assert model["unpriced_cache_read"] == 40 + 60 + 20
+        assert model["unpriced_cache_write"] == 0 + 60 + 30
+        assert model["unpriced_output"] == 10 + 20 + 10
+        # The four disjoint token categories still close on the authoritative total.
+        assert (
+            sum(
+                model[k]
+                for k in (
+                    "unpriced_input",
+                    "unpriced_cache_read",
+                    "unpriced_cache_write",
+                    "unpriced_output",
+                )
+            )
+            == w.total_tokens
+        )
+
+        turns = store.message_timeline(CODEX_SID)
+        assert [t["tokens_total"] for t in turns] == [110, 220, 110]
+        assert [t["input"] for t in turns] == [60, 80, 50]
+        assert [t["cache_write"] for t in turns] == [0, 60, 30]
+        node = store.workflow_nodes(CODEX_SID)[0]
+        assert node["tokens_cache_write"] == 90
+
+        tools = {r["tool"]: r for r in store.tool_breakdown(CODEX_SID)}
+        assert tools["old_schema"]["cache_write"] == 0
+        assert tools["new_schema"]["cache_write"] == 60
+        assert tools["after_compaction"]["cache_write"] == 30
+
+        # GPT-5.6 bills writes at their own rate; moving them out of fresh input changes
+        # dollars but never tokens. The bundled OpenAI rate is $5/$30/$0.50/$6.25 per M.
+        estimated = ot.api_equivalent_cost("openai/gpt-5.6-sol", 190, 40, 0, 120, 90)
+        assert abs(estimated - 0.0027725) < 1e-12
+
+
 def test_codex_title_takes_any_user_message_kind_and_collapses_newlines():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
@@ -532,6 +597,73 @@ def test_codex_a_malformed_total_does_not_inflate_the_next_turn():
         assert w.total_tokens == 400  # the deltas still close on the final total
         turns = store.message_timeline(w.id)
         assert [t["tokens_total"] for t in turns] == [100, 300]
+
+
+def test_codex_a_malformed_cache_write_does_not_become_the_next_baseline():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _codex_rollout(
+            root,
+            CODEX_SID,
+            [
+                _codex_meta(CODEX_SID, cwd),
+                _codex_turn("gpt-5.6-sol", cwd),
+                _codex_tokens(100, 20, 30, 120, cache_write=10),
+                _codex_tokens(200, 40, 60, 240, cache_write="nonsense"),
+                _codex_tokens(300, 60, 90, 360, cache_write=30),
+            ],
+        )
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        (w,) = store.workflows()
+        turns = store.message_timeline(w.id)
+        # The bad middle row is skipped whole; the final delta spans it from the last
+        # trustworthy baseline rather than treating the bad write as a zero/reset.
+        assert [t["tokens_total"] for t in turns] == [120, 240]
+        assert [t["cache_write"] for t in turns] == [10, 20]
+        assert w.total_tokens == 360
+
+
+def test_codex_a_missing_write_after_a_present_one_preserves_the_cumulative_baseline():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _codex_rollout(
+            root,
+            CODEX_SID,
+            [
+                _codex_meta(CODEX_SID, cwd),
+                _codex_turn("gpt-5.6-sol", cwd),
+                _codex_tokens(100, 10, 20, 110, cache_write=30),
+                _codex_tokens(200, 20, 40, 220),  # downgraded/keyless writer
+                _codex_tokens(300, 30, 60, 330, cache_write=60),
+            ],
+        )
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        (w,) = store.workflows()
+        (model,) = store.model_breakdown()
+
+        # The missing middle key contributes no known writes but must not reset the
+        # cumulative write baseline. When the field returns, only 60 - 30 is new.
+        assert [t["cache_write"] for t in store.message_timeline(w.id)] == [30, 0, 30]
+        assert model["unpriced_cache_write"] == 60
+        assert (
+            sum(
+                model[k]
+                for k in (
+                    "unpriced_input",
+                    "unpriced_cache_read",
+                    "unpriced_cache_write",
+                    "unpriced_output",
+                )
+            )
+            == w.total_tokens
+            == 330
+        )
 
 
 def test_codex_a_falsy_or_fractional_component_is_distrusted_too():

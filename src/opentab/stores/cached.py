@@ -30,7 +30,9 @@ from dataclasses import asdict
 from opentab import paths
 from opentab.models import Workflow
 
-CACHE_VERSION = 7  # bump when the cached payload shape or meaning changes
+CACHE_VERSION = 8  # bump when the cached payload shape or meaning changes
+# 8: Codex model rows split GPT-5.6 cache-write tokens out of inclusive input. An
+#    unchanged rollout corpus must discard the old all-input/zero-write rollups.
 # 7: worked_seconds starts a new burst after 30 minutes of silence, and Claude control
 #    records mark additional idle boundaries. Unchanged corpora must discard old spans.
 # 6: ClaudeStore credits a replayed API call to the session that made it, not to the
