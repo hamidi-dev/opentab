@@ -1220,7 +1220,7 @@ def test_web_payload_names_the_local_models_so_the_page_can_exclude_them():
 
 def test_web_names_stay_reachable_from_a_cold_package_import():
     # opentab/__init__.py re-exports every module eagerly EXCEPT this one: reaching
-    # opentab.web pulls http.server (~13ms) that no TUI start and no `opentab status`
+    # opentab.web pulls http.server (~13ms) that no TUI start and no `opentab cost`
     # poll should pay, so the five web names and the two modules resolve on demand
     # (PEP 562). This test lives here because the deferred set is exactly the web
     # frontend's surface -- if the registry ever generalizes, it moves.

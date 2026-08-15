@@ -225,7 +225,7 @@ def test_status_batch_prints_a_table_keyed_by_the_target_asked_for():
                 ("ses_b", None, "/work/beta", 1760000200000, 1760000300000, 2.0, 10),
             ],
         )
-        args = ot.cli.parse_args(["status", "--batch", "-"])
+        args = ot.cli.parse_args(["cost", "--batch", "-"])
         args.db, args.demo = db, False
         args.status_targets = ["ses_b", "ses_gone", "ses_a"]
         out = io.StringIO()
@@ -306,7 +306,7 @@ def test_status_batch_reports_an_incomplete_table_with_a_nonzero_exit():
         def workflow_nodes(self, wid):
             return [{"cost": 1.0, "tokens_total": 0, "model_name": "m"}]
 
-    args = ot.cli.parse_args(["status", "--batch", "-"])
+    args = ot.cli.parse_args(["cost", "--batch", "-"])
     real = ot.cli._status_stores
     ot.cli._status_stores = lambda a: [_Boom()]
     try:
@@ -334,7 +334,7 @@ def test_status_batch_reads_stdin_but_refuses_a_terminal():
         assert ot.cli._batch_targets(["-"]) == ["ses_a", "ses_b"]
 
         sys.stdin = type("T", (io.StringIO,), {"isatty": lambda self: True})("")
-        args = ot.cli.parse_args(["status", "--batch", "-"])
+        args = ot.cli.parse_args(["cost", "--batch", "-"])
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             assert ot.cli.status_command(args) == 2
@@ -343,26 +343,38 @@ def test_status_batch_reads_stdin_but_refuses_a_terminal():
         sys.stdin = stdin
 
 
-def test_status_subcommand_shape_follows_arity_and_keeps_the_legacy_flag():
+def test_cost_subcommand_shape_follows_arity_and_keeps_the_legacy_flag():
     # One target keeps the bare line every existing status-bar hook already parses;
     # several switch to the table; --batch forces the table so a script's parsing
     # doesn't change with the number of targets it happened to collect. The old
     # --status flag stays single-target -- it's the deprecated alias, not the surface
-    # new callers should reach for.
-    one = ot.cli.parse_args(["status", "ses_a"])
+    # new callers should reach for. `cost` replaced the `status` VERB outright (it was
+    # never advertised), so the old spelling must now be rejected, not quietly accepted.
+    one = ot.cli.parse_args(["cost", "ses_a"])
     assert (one.status, one.status_targets, one.status_batch) == ("ses_a", ["ses_a"], False)
 
-    two = ot.cli.parse_args(["status", "ses_a", "ses_b"])
+    two = ot.cli.parse_args(["cost", "ses_a", "ses_b"])
     assert (two.status_targets, two.status_batch) == (["ses_a", "ses_b"], True)
 
-    forced = ot.cli.parse_args(["status", "--batch", "ses_a"])
+    forced = ot.cli.parse_args(["cost", "--batch", "ses_a"])
     assert (forced.status_targets, forced.status_batch) == (["ses_a"], True)
 
-    bare = ot.cli.parse_args(["status"])
+    bare = ot.cli.parse_args(["cost"])
     assert (bare.status, bare.status_targets, bare.status_batch) == ("", [], False)
 
     legacy = ot.cli.parse_args(["--status", "ses_a"])
     assert (legacy.status, legacy.status_batch) == ("ses_a", False)
+
+    # The retired verb is now just an unknown first word: it falls through to the
+    # implicit `tui` command, whose single PATH positional can't hold both words, so
+    # the old spelling fails loudly instead of quietly pricing nothing.
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            ot.cli.parse_args(["status", "ses_a"])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("the retired `status` verb still parses")
 
 
 def test_status_line_prices_codex_sessions_and_folds_spawned_threads():

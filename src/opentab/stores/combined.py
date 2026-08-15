@@ -20,7 +20,7 @@ def _gather(calls: list) -> list:
         return [c() for c in calls]
     # Local import (as util.read_files_parallel): concurrent.futures costs ~6ms of
     # imports, and sources.py reaches this module for every command -- including the
-    # one-shot `opentab status`, which never merges backends at all.
+    # one-shot `opentab cost`, which never merges backends at all.
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="opentab-store") as ex:

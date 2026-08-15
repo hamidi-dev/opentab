@@ -818,7 +818,7 @@ def test_omp_orphaned_subagent_is_its_own_root_consistently_across_workflows_and
     """A spawned transcript whose parent file is gone (deleted, rotated, or simply not
     in this batch) still holds real usage. workflows() surfaces it under its own id, so
     root_of/status_nodes MUST agree -- answering with the absent parent's uuid would
-    make `opentab status` price $0 for a session the browser happily lists."""
+    make `opentab cost` price $0 for a session the browser happily lists."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -1008,7 +1008,7 @@ def test_omp_cache_fingerprint_covers_the_wal_but_stays_stable_across_reads():
 
 def test_omp_status_prices_the_subtree_of_a_root_that_only_delegated():
     """A root that recorded no usage of its own but spawned a child that did must
-    still price its subtree for `opentab status`. The target has to survive the
+    still price its subtree for `opentab cost`. The target has to survive the
     usage-less splice ITSELF -- re-adding it afterwards leaves its children already
     promoted past it, so the tree renders as one bogus empty node and the child's
     tokens vanish from the status line."""

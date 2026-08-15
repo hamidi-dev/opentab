@@ -250,7 +250,7 @@ def read_files_parallel(paths, max_workers: int | None = None):
                 yield path, text
         return
     # Imported here, not at module scope: concurrent.futures drags in logging +
-    # traceback + subprocess (~10ms), which every one-shot `opentab status` would
+    # traceback + subprocess (~10ms), which every one-shot `opentab cost` would
     # otherwise pay to reach money() -- and the serial path above never needs it.
     from concurrent.futures import ThreadPoolExecutor
 

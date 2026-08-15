@@ -246,8 +246,8 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
     # The pre-subcommand verb flags. They stay on the implicit `tui` command as
     # deprecated-but-working aliases, so old invocations and tmux bindings never break --
     # the same courtesy --source got when it became --harness. New spellings are
-    # subcommands: `opentab web` today (== --web/--serve/--html), and
-    # status/goto/export/pull/... as they are ported.
+    # subcommands: `opentab web` today (== --web/--serve/--html), `opentab cost`
+    # (== --status), and goto/export/pull/... as they are ported.
     parser.add_argument(
         "--status",
         nargs="?",
@@ -260,8 +260,9 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         "sessions of that project count, with a session id (ses_... or a UUID -- the "
         "id is matched to its own backend) exactly that session is priced, and "
         "--harness pins one backend. Made for a tmux status line: set -g "
-        "status-right '#(opentab --status \"#{pane_current_path}\")'. A leading ~ "
-        "marks a list-price estimate for usage recorded at $0 (subscription models)",
+        "status-right '#(opentab cost \"#{pane_current_path}\")'. A leading ~ "
+        "marks a list-price estimate for usage recorded at $0 (subscription models). "
+        "Deprecated alias for `opentab cost`",
     )
     parser.add_argument(
         "--goto",
@@ -272,7 +273,7 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         help="open the TUI drilled straight into a session: a session id opens "
         "exactly that session (a subagent id resolves to its root), a DIR (default: "
         "the current directory) opens the project's most recently active session -- "
-        "resolved across every present harness backend like --status. Made for a "
+        "resolved across every present harness backend like `cost`. Made for a "
         "tmux binding: bind t run 'tmux popup -E \"opentab --goto "
         "#{pane_current_path}\"'",
     )
@@ -378,7 +379,7 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
 
 # The verbs that carry their own subparser. Everything else -- a bare `opentab`, a
 # `opentab requests.csv`, any legacy flag -- is the implicit `tui` command.
-_SUBCOMMANDS = ("tui", "web", "status", "doctor", "pull", "remote", "export", "forget")
+_SUBCOMMANDS = ("tui", "web", "cost", "doctor", "pull", "remote", "export", "forget")
 
 
 def _focus_help(subparser: argparse.ArgumentParser, common_dests: set, keep: set) -> None:
@@ -471,8 +472,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "data-refresh button are served",
     )
     _focus_help(web, gdests, {"source", "demo", "theme", "port", "bind"})
+    # `cost`, not `status`: the verb names what it prints (money), where the old
+    # spelling named where the output happened to go (a tmux status line). That was
+    # fine for a --status FLAG; as a verb it collides with the other thing a session
+    # has -- workmux's working/waiting/done status, which reads this command's table.
+    # Renamed outright rather than aliased: the verb was never advertised, so this is
+    # the last moment it costs nothing. The --status FLAG is untouched.
     status = subs.add_parser(
-        "status",
+        "cost",
         help="print one line of cost for a session or project (for a status bar)",
         description="Print the cost of an agent session (subagent subtree included) and "
         "exit -- the one-shot made for a tmux status line. With no TARGET the current "
@@ -637,10 +644,11 @@ def _apply_subcommand(args: argparse.Namespace) -> None:
         args.pull = list(args.hosts)
     elif command == "remote":
         args.remote = True  # open the already-pulled fleet, no fetch (== --remote)
-    elif command == "status":
-        # `opentab status [TARGET]` == `--status [TARGET]`, so main() dispatches both
-        # through status_command. status is set to "" (not None) even with no target,
-        # because None is what "the user didn't ask for status at all" means there.
+    elif command == "cost":
+        # `opentab cost [TARGET]` == `--status [TARGET]`, so main() dispatches both
+        # through status_command (named for the flag, which still exists). status is
+        # set to "" (not None) even with no target, because None is what "the user
+        # didn't ask for a cost at all" means there.
         args.status = args.targets[0] if args.targets else ""
         args.status_targets = list(args.targets)
         # Arity decides the shape unless --batch forces the table: one target keeps the

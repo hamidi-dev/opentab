@@ -238,7 +238,7 @@ from opentab.util import (
 )
 
 # The web frontend is the one part of the package NOT re-exported eagerly. Its
-# http.server import costs ~13ms, which every `opentab status` poll and every TUI
+# http.server import costs ~13ms, which every `opentab cost` poll and every TUI
 # start paid just to have these five names on the package -- cli.web_command has
 # always imported opentab.web lazily for the same reason, so this closes the last
 # eager path to it. PEP 562: the attribute materializes on first access, so
