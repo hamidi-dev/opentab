@@ -70,7 +70,19 @@ def _process_timeline(rows: list[dict], tools: dict[str, list[str]] | None = Non
     out: list[dict] = []
     cur_id, cur_title, cur_full = "", "", ""
     for d in rows:
-        if d["role"] == "user":  # opens/owns the following assistant turns
+        if d["role"] == "user":
+            # Only a depth-0 (root) user message opens a prompt -- the SAME rule the
+            # worked-time CTE already applies as `is_human`, and the one this loop was
+            # missing. A subagent's `user` message is the agent-authored task it was
+            # handed, so treating it as a prompt fabricated a row nobody typed, and
+            # then kept it: measured on a real session, all 15 human prompts read "1
+            # turn" while their work -- 62 subagent turns AND the main thread's own
+            # turns after the hand-off -- sat under 8 invented prompts titled "Mo wants
+            # to understand why...". The new Agents column made it visible (every real
+            # prompt showed "-"), but it was already mis-attributing cost, cached share
+            # and the cumulative curve.
+            if d["depth"]:
+                continue
             cur_id = d["mid"] or ""
             cur_title = _clean_prompt(d["summary_title"] or d["prompt_text"])
             # The expandable full text is the raw prompt itself (uncapped, line breaks

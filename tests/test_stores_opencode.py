@@ -251,6 +251,46 @@ def test_message_timeline_all_matches_the_per_session_path():
         assert [r["depth"] for r in batch["s1"]] == [0, 1, 0]
 
 
+def test_a_subagents_task_message_does_not_open_a_prompt_of_its_own():
+    # A subagent's `user` message is the task the AGENT handed it, not something you
+    # typed -- the rule the worked-time CTE already applies as `is_human` (depth 0), and
+    # the one the Turns grouping was missing. Treating it as a prompt fabricated a row
+    # nobody wrote AND kept it: every following main-thread turn landed there too, so on
+    # a real session all 15 human prompts read "1 turn" while their work sat under 8
+    # invented prompts titled "Mo wants to understand why...". The Agents column made it
+    # visible (every real prompt showed "-"), but the cost, cached share and cumulative
+    # curve were already attributed to the wrong row.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_turns(db)
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "insert into message values (?,?,?)",
+            (
+                "u3",
+                "s2",  # the SUBAGENT session: agent-authored, and it precedes m3
+                '{"role":"user","time":{"created":1200},'
+                '"summary":{"title":"Search the auth files"}}',
+            ),
+        )
+        conn.commit()
+        conn.close()
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        rows = store.message_timeline("s1")
+        # The subagent turn still belongs to the human prompt that spawned it, and the
+        # later main-thread turn still belongs to the prompt that follows -- the task
+        # text never becomes a group of its own.
+        assert [r["prompt_title"] for r in rows] == [
+            "Add feature X",
+            "Add feature X",
+            "Fix the bug",
+        ]
+        assert "Search the auth files" not in [r["prompt_title"] for r in rows]
+        assert [r["prompt_id"] for r in rows] == ["u1", "u1", "u2"]
+        # and the batch export path, which shares _process_timeline, agrees exactly
+        assert store.message_timeline_all()["s1"] == rows
+
+
 def _write_opencode_db_with_long_prompt(path, long_prompt):
     conn = sqlite3.connect(path)
     conn.executescript(
