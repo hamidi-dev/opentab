@@ -666,6 +666,68 @@ def test_codex_a_missing_write_after_a_present_one_preserves_the_cumulative_base
         )
 
 
+def test_codex_a_write_that_outgrows_its_own_turns_input_is_clamped_not_negative():
+    # The residual cost of the carry-forward above, pinned deliberately. A keyless
+    # record in the MIDDLE of a keyed file hides that turn's writes, so when the field
+    # returns its delta can exceed the input the returning turn actually reports (here:
+    # +50 input carrying a +60 write). Reads and writes are subsets of the inclusive
+    # input, so the split is clamped to that budget and the 20-token excess -- which
+    # belonged to the hidden turn and cannot be booked retroactively -- stays in
+    # uncached input. That is the deliberate trade: the per-turn identity
+    # input == uncached + read + write (and tokens_total == input + output) is what
+    # every token column, total and export is built on, while a "correct" cumulative
+    # write would have to book a NEGATIVE uncached for the turn. The excess is billed
+    # at the input rate instead of the 1.25x cache-write one, so it under-states.
+    #
+    # Unreachable in practice, and that is why it is only pinned: it needs an old
+    # writer to append to a file a newer one started. Measured over 177 real rollouts /
+    # 3,465 usage records -- zero files mix the two shapes, and every recorded
+    # cache_write is 0.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _codex_rollout(
+            root,
+            CODEX_SID,
+            [
+                _codex_meta(CODEX_SID, cwd),
+                _codex_turn("gpt-5.6-sol", cwd),
+                _codex_tokens(300, 30, 100, 330, cache_write=60),
+                _codex_tokens(400, 40, 150, 440),  # keyless: hides this turn's writes
+                _codex_tokens(450, 50, 160, 500, cache_write=120),
+            ],
+        )
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+        (w,) = store.workflows()
+        (model,) = store.model_breakdown()
+        turns = store.message_timeline(w.id)
+        # turn 3 reports +50 input and +60 write; the write is clamped to what is left
+        # after its +10 cache read, and uncached never goes negative.
+        assert [t["cache_write"] for t in turns] == [60, 0, 40]
+        assert [t["input"] for t in turns] == [140, 50, 0]
+        assert all(t["input"] >= 0 for t in turns)
+        for t in turns:
+            assert (
+                t["input"] + t["cache_read"] + t["cache_write"] + t["output"] == t["tokens_total"]
+            )
+        assert model["unpriced_cache_write"] == 100  # the 120 the file ends on, less 20
+        assert (
+            sum(
+                model[k]
+                for k in (
+                    "unpriced_input",
+                    "unpriced_cache_read",
+                    "unpriced_cache_write",
+                    "unpriced_output",
+                )
+            )
+            == w.total_tokens
+            == 500  # the authoritative cumulative total is still exact
+        )
+
+
 def test_codex_a_falsy_or_fractional_component_is_distrusted_too():
     # The three shapes a "did safe_int give up?" predicate could not see, because it had
     # to re-guess what safe_int had done: JSON `false` and `null` both collapse to a

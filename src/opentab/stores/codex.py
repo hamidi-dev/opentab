@@ -514,6 +514,18 @@ class CodexStore:
         input_tokens = max(0, d_in)
         # Reads and writes partition inclusive input. Cap a malformed/schema-transition
         # delta to that budget so the categories can never exceed tokens_total.
+        #
+        # The cap has a known residual, and it is the deliberate side of the trade: a
+        # keyless record in the MIDDLE of a keyed file hides its own writes, so the
+        # delta that arrives when the field returns can outgrow the returning turn's
+        # input, and the excess -- which belonged to the hidden turn and cannot be
+        # booked retroactively -- stays in uncached input (billed at the input rate,
+        # not the 1.25x write one, so it under-states). Booking it as a write instead
+        # would mean a NEGATIVE uncached for that turn, breaking the per-turn identity
+        # input == uncached + read + write that every token column, total and export is
+        # built on. Needs an old writer to append to a file a newer one started:
+        # measured over 177 real rollouts / 3,465 usage records, zero files mix the two
+        # shapes. Pinned by test_codex_a_write_that_outgrows_its_own_turns_input_....
         cache_read = min(max(0, d_cached), input_tokens)
         cache_write = min(max(0, d_write), input_tokens - cache_read)
         uncached = input_tokens - cache_read - cache_write
