@@ -35,25 +35,33 @@ deprecated alias.)
 Every harness feeds the same browser — months, days, projects, sessions, models,
 trends. What each tool's records support on top:
 
-| Harness | Cost | Subagent tree | Turns | Tools |
-|--------|------|:---:|:---:|:---:|
-| OpenCode | real recorded | ✓ | ✓ | ✓ |
-| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ |
-| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ |
-| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ³ | — |
-| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — |
-| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — |
-| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ |
-| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ |
-| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ |
-| zaly | mixed — metered real, rest estimated | — | ✓ | ✓ |
-| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² |
+| Harness | Cost | Subagent tree | Turns | Tools | Context |
+|--------|------|:---:|:---:|:---:|:---:|
+| OpenCode | real recorded | ✓ | ✓ | ✓ | ✓ |
+| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
+| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | — ³ |
+| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ⁵ | — | — |
+| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — | ✓ |
+| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | ✓ |
+| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
+| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ |
+| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
+| zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
+| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² | ✓ ⁴ |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
 **Turns** — the per-turn cost timeline inside a session · **Tools** — token attribution
-per tool call and MCP server · ¹ headerless: the OTEL export captures no prompt text ·
-² with the optional `tool` column · ³ only while the rotating agent log still contains
-the session's API calls.</sub>
+per tool call and MCP server · **Context** — the context-window growth curve, measured
+from recorded usage (it rides on Turns); Claude Code and zaly log full message content,
+so they add the estimated breakdown of what filled it ·
+¹ headerless: the OTEL export captures no prompt text · ² with the optional `tool`
+column · ³ Codex records per-turn deltas of a cumulative total, not per-request prompt
+sizes, so an honest curve isn't derivable · ⁴ only with a real `session_id` column — a
+synthetic per-day session interleaves unrelated conversations · ⁵ Hermes stores no
+per-message usage, so its turns are read from the agent log (`~/.hermes/logs/agent.log*`)
+and joined to the session by id; because that log rotates, only sessions inside the
+retained window offer the tab, and a resumed session's turns can exceed the total Hermes
+itself accumulated.</sub>
 
 Every harness also derives when a session was last active (not just when it started),
 including activity from its subagent subtree where tracked. This timestamp
@@ -75,7 +83,7 @@ tools (Claude Code, Codex, and Copilot, CLI and VS Code alike):
 
 See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 
-## OpenCode
+## [OpenCode](https://opencode.ai)
 
 *SQLite database · records real cost*
 
@@ -86,7 +94,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 - **Extras**: the recursive subagent cost tree, and the Tools tab's token attribution
   per tool call and MCP server.
 
-## Claude Code
+## [Claude Code](https://claude.com/claude-code)
 
 *JSONL transcripts · tokens only, `$` estimates*
 
@@ -98,7 +106,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   git root. Session titles come from Claude Code's own title when set, else the first
   real user prompt (injected command wrappers are skipped).
 
-## Codex CLI
+## [Codex CLI](https://developers.openai.com/codex)
 
 *Rollout JSONL · tokens only, `$` estimates*
 
@@ -110,7 +118,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   collab/multi-agent mode fold into a subagent cost tree under the session that
   spawned them, labeled with each agent's nickname.
 
-## Hermes Agent
+## [Hermes Agent](https://hermes-agent.nousresearch.com/)
 
 *SQLite database · mixed: metered real, subscription estimated*
 
@@ -123,7 +131,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   tab joins API calls from the agent log to prompts in the database. It is available only
   for sessions still covered by the rotating log.
 
-## GitHub Copilot CLI
+## [GitHub Copilot CLI](https://github.com/github/copilot-cli)
 
 *OpenTelemetry export · opt-in · tokens only, `$` estimates*
 
@@ -143,7 +151,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   from the CLI's own session store. Turns are headerless (the export captures no
   prompt text by default).
 
-## Copilot Chat in VS Code
+## [Copilot Chat in VS Code](https://code.visualstudio.com/docs/copilot/chat/copilot-chat)
 
 *VS Code's chat-session store · nothing to enable · tokens only*
 
@@ -159,7 +167,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   "(no workspace)". Sessions the panel merely opened (no tokens) are ignored — merely
   installing VS Code never surfaces the harness.
 
-## pi-agent
+## [pi-agent](https://pi.dev)
 
 *Session JSONL · mixed: metered real, subscription estimated*
 
@@ -169,7 +177,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   routes stay `$0` and are estimated under `$`. The split is read from pi's
   `auth.json`, read-only.
 
-## omp
+## [omp](https://omp.sh)
 
 *Session JSONL · a pi-agent fork · mixed: metered real, subscription estimated*
 
@@ -191,7 +199,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   group correctly under Trends' Providers tab. Session titles come from omp's own title
   records when set, else the first real user prompt.
 
-## OpenClaw
+## [OpenClaw](https://github.com/openclaw/openclaw)
 
 *Gateway session JSONL · mixed: metered real, plan routes estimated*
 
@@ -204,7 +212,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 - **Notes**: one project per agent; archived sessions are included and deduplicated.
   Recorded `toolCall` blocks feed both per-turn tool names and the Tools tab.
 
-## zaly
+## [zaly](https://github.com/folke/zaly)
 
 *Session JSONL · mixed: metered real, plan routes estimated*
 

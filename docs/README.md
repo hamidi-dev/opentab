@@ -11,6 +11,7 @@ These pages hold the full detail:
 | [The web browser](web.md) | `--html`, `--serve`, and `--web` — the self-contained page, the live server, deep links, and security notes |
 | [Windows & WSL](windows.md) | Running natively on Windows, and reading Windows-side data from WSL |
 | [Privacy — what it touches](privacy.md) | Everything OpenTab reads, writes, and runs; network policy; demo mode |
+| [Troubleshooting](troubleshooting.md) | `opentab doctor`, colours that won't change, garbled frames, a harness that won't show up |
 | [Architecture](architecture.md) | For contributors — the package layout, the store contract, data flow, and the pricing model internals |
 
 Everything is also discoverable in-app: press **`?`** for the full keymap with every
