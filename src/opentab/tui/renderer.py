@@ -491,8 +491,12 @@ class Renderer:
 
     @staticmethod
     def machine_badge(machine: MachineSummary) -> str:
-        # ● the live box you're on (full drill-in), ○ a pulled snapshot. Same decorative
-        # Unicode register as the ★/✎ session marks, so it rides the same capable terminal.
+        # ● the live box you're on (full drill-in), ○ a pulled snapshot, ∑ the synthetic
+        # fleet row (neither -- it is the sum of both kinds, and the web spells it the
+        # same way). Same decorative Unicode register as the ★/✎ session marks, so it
+        # rides the same capable terminal.
+        if machine.fleet:
+            return "∑"
         return "●" if machine.live else "○"
 
     def machine_row_text(self, machine: MachineSummary, marker: str, width: int) -> str:
@@ -510,7 +514,10 @@ class Renderer:
 
     def machines_left_width(self, width: int) -> int:
         longest = max((display_width(m.name) for m in self.machines), default=8)
-        natural = max(longest, len("Machine")) + 32  # badge + marker + Cost/Tokens/Ses
+        # +34: the marker and the Cost/Tokens/Ses cells (32), plus the badge and the space
+        # after it -- which rides INSIDE the name field, so a name that fits the panel
+        # still lost its last two characters ("● workstation" -> "● worksta...").
+        natural = max(longest, len("Machine")) + 34
         return max(24, min(natural, width // 2, max(24, width - 44)))
 
     def browse_left_width(self, width: int) -> int:
@@ -932,6 +939,14 @@ class Renderer:
         self.write(stdscr, y, x, clipped, attr)
         return x + display_width(clipped)
 
+    @staticmethod
+    def machine_crumb(machine: MachineSummary) -> str:
+        # How a Machines-mode scope names itself in the breadcrumb. The fleet row takes
+        # its sidebar spelling rather than its bare name, so it stays distinguishable
+        # from a box a user labelled "all machines" -- in the full-screen session view
+        # the crumb is the ONLY locator, with no sidebar or pane title beside it.
+        return f"∑ {machine.name}" if machine.fleet else machine.name
+
     def breadcrumb(self) -> str:
         # Always-visible "you are here" path: scope › month › day › session › tab.
         # It is the only locator once a zoom hides the sidebar.
@@ -945,7 +960,7 @@ class Renderer:
             machine = self.selected_machine_summary
             segs.append("machines")
             if machine:
-                segs.append(machine.name)
+                segs.append(self.machine_crumb(machine))
             segs.append(tab_name)
             return sep.join(s for s in segs if s)
         if self.browse_mode == "projects" and self.view != "session":
@@ -960,7 +975,7 @@ class Renderer:
             if self.browse_mode == "machines":
                 machine = self.selected_machine_summary
                 if machine:
-                    segs.append(machine.name)
+                    segs.append(self.machine_crumb(machine))
             elif self.browse_mode == "projects":
                 project = self.selected_project_summary
                 if project:
@@ -2077,7 +2092,13 @@ class Renderer:
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
     ) -> None:
         machine = self.selected_machine_summary
-        title = "Machine" if machine is None else f"Machine {shorten(machine.name, max(8, w - 12))}"
+        title = (
+            "Machine"
+            if machine is None
+            else "All machines"
+            if machine.fleet
+            else f"Machine {shorten(machine.name, max(8, w - 12))}"
+        )
         self.box(stdscr, y, x, h, w, self.panel_title(0, title), active=active)
         if machine is None:
             self.write(stdscr, y + 2, x + 2, "No machine selected.", curses.color_pair(1))
@@ -2115,7 +2136,9 @@ class Renderer:
         # The Machines-mode main view -- the niceties the plain rollup can't give: live vs
         # pulled, when it was last pulled and by which opentab, plus this box's model mix
         # and its top projects (the "different machines had different stories" cut).
-        workflows = self.workflows_for_machine(machine.name)
+        workflows = self.machine_scope(machine)
+        if machine.fleet:
+            return self._fleet_overview(machine, workflows, width)
         rows = [
             f"Machine:      {machine.name}",
             f"Status:       {'● live — full drill-in' if machine.live else '○ pulled summary'}",
@@ -2163,24 +2186,57 @@ class Renderer:
         lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
         return lines
 
-    def machine_models(self, machine: MachineSummary, width: int) -> list[str]:
-        agg = self.aggregate_models(
-            self.compose_zoom_drills(self.workflows_for_machine(machine.name))
+    def _fleet_overview(
+        self, machine: MachineSummary, workflows: list[Workflow], width: int
+    ) -> list[str]:
+        # The synthetic "all machines" row: the whole fleet as one scope. It carries none
+        # of the per-box niceties -- no live/pulled status (it is the sum of both kinds)
+        # and no re-pull line (a refresh here re-pulls every box, not one) -- and in
+        # their place comes the cut a single box can't show: spend BY box, the headline
+        # breakdown you drill into next, exactly where year_overview puts Top Months.
+        lines = self._stat_card(
+            "# Fleet",
+            [
+                # The fleet row itself sits in self.machines and is not one of the boxes.
+                f"Machines:     {sum(1 for m in self.machines if not m.fleet)}",
+                f"Cost:         {money(machine.cost)}",
+                f"Tokens:       {tokens(machine.tokens)}",
+                f"Sessions:     {machine.workflows}",
+                f"Subagents:    {machine.subagents}",
+                f"Last active:  {machine.last_active[:16]}",
+            ],
+            width,
         )
-        return self._models_tab(self._agg_rows(agg), "# Machine Model Spend", width)
+        lines.append("")
+        lines.extend(self.machine_table(workflows, width))
+        # Unconditional, unlike a single box's (which hides it for a pulled summary):
+        # this is a cross-machine scope, and every other one -- year, month, day, project
+        # -- decomposes the mix it can price and leaves the rest out, rather than
+        # dropping the box because part of the fleet didn't export model rows.
+        lines.append("")
+        lines.extend(self._token_economics_box(workflows, width))
+        if self.projects_for_workflows(workflows):
+            lines.append("")
+            lines.extend(self._top_projects_box(workflows, machine.cost, width))
+        lines.append("")
+        agg = self.aggregate_models(workflows)
+        lines.extend(self._model_table(self._agg_rows(agg), "# Top Models", width))
+        return lines
+
+    def machine_models(self, machine: MachineSummary, width: int) -> list[str]:
+        agg = self.aggregate_models(self.compose_zoom_drills(self.machine_scope(machine)))
+        # The fleet row's table spans every box, so it must not be titled "Machine".
+        title = "# Fleet Model Spend" if machine.fleet else "# Machine Model Spend"
+        return self._models_tab(self._agg_rows(agg), title, width)
 
     def machine_sources(self, machine: MachineSummary, width: int) -> list[str]:
-        return self.source_table(
-            self.scoped_sessions(self.workflows_for_machine(machine.name)), width
-        )
+        return self.source_table(self.scoped_sessions(self.machine_scope(machine)), width)
 
     def machine_projects(self, machine: MachineSummary, width: int) -> list[str]:
-        return self.project_table(
-            self.projects_for_workflows(self.workflows_for_machine(machine.name)), width
-        )
+        return self.project_table(self.projects_for_workflows(self.machine_scope(machine)), width)
 
     def machine_workflows(self, machine: MachineSummary, width: int) -> list[str]:
-        return self.session_table(self.workflows_for_machine(machine.name), width)
+        return self.session_table(self.machine_scope(machine), width)
 
     def draw_year_detail(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True

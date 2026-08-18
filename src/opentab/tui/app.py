@@ -41,6 +41,7 @@ from opentab.heatmap import (
     week_key,
 )
 from opentab.models import (
+    ALL_MACHINES,
     ALL_YEARS,
     DaySummary,
     MachineSummary,
@@ -1068,6 +1069,31 @@ class App:
             for name, wfs in grouped.items()
         ]
         rows.sort(key=lambda m: (m.live, m.cost, m.tokens), reverse=True)
+        # An "all machines" row on top unscopes the whole detail pane to the fleet -- the
+        # Years panel's "All years" row, and the web's `∑ all machines`, which this view
+        # was the last frontend to lack. Only worth showing with >1 box (with one it just
+        # mirrors it, the ALL_YEARS gate's reasoning); it carries no live/exported meta,
+        # because a fleet is neither live nor pulled as a whole. `fleet=True` -- not its
+        # name -- is what every consumer tests: see models.ALL_MACHINES.
+        if len(rows) > 1:
+            # Summed over all_workflows in ITS order, deliberately not re-added off the
+            # per-box subtotals: float addition isn't associative, so the reassociated
+            # sum can land the other side of a rounding boundary and print a headline a
+            # cent away from range_cost_total() -- which walks exactly this sequence.
+            allw = self.all_workflows
+            rows.insert(
+                0,
+                MachineSummary(
+                    name=ALL_MACHINES,
+                    fleet=True,
+                    workflows=len(allw),
+                    cost=sum(w.total_cost for w in allw),
+                    tokens=sum(w.total_tokens for w in allw),
+                    subagents=sum(w.subagents for w in allw),
+                    unpriced_tokens=sum(w.unpriced_tokens for w in allw),
+                    last_active=max((w.created_at for w in allw), default=""),
+                ),
+            )
         # Deliberately NOT filtered by the `f`/`/` query: a fleet has a handful of boxes
         # (no list to narrow), and a hostname isn't one of workflow_fuzzy_score's fields,
         # so filtering the LIST by name would then empty the selected box's Sessions (the
@@ -1085,6 +1111,16 @@ class App:
 
     def workflows_for_machine(self, name: str) -> list[Workflow]:
         return [w for w in self.all_workflows if self.machine_of(w) == name]
+
+    def machine_scope(self, machine: MachineSummary) -> list[Workflow]:
+        # The sessions a SIDEBAR ROW covers -- one box's, or the whole fleet on the
+        # synthetic row. Every consumer of the Machines-mode scope (the detail tabs, the
+        # pickers, the `e` export) goes through this one branch rather than each learning
+        # about the fleet row, and it keys on the FLAG: `name` is free text, so a box a
+        # user labelled "all machines" must stay its own box (see models.ALL_MACHINES).
+        if machine.fleet:
+            return list(self.all_workflows)
+        return self.workflows_for_machine(machine.name)
 
     # --- The `M` global machine filter (fleet view) --------------------------
     def machine_filter_options(self) -> list[tuple[str, str, bool]]:
@@ -1599,6 +1635,10 @@ class App:
         project = self.selected_project_summary
         # The machine by NAME, so a refresh that reorders the boxes (a re-pull changed
         # their spend) re-selects the same box rather than whatever now sits at its index.
+        # The synthetic fleet row anchors as "" instead: a name is free text, so a box
+        # labelled "all machines" would otherwise restore onto the fleet row -- while ""
+        # is a name machine_of() structurally cannot produce (it falls back to this
+        # host's name), and restore re-finds that row by its flag.
         machine = self.selected_machine_summary if self.browse_mode == "machines" else None
         session = self.current_session()
         return (
@@ -1606,7 +1646,7 @@ class App:
             month,
             day,
             project.directory if project else None,
-            machine.name if machine else None,
+            None if machine is None else ("" if machine.fleet else machine.name),
             session.id if session else None,
         )
 
@@ -1657,10 +1697,24 @@ class App:
         # Before current_sessions(): in machines mode that list is scoped by the selected
         # box, so the machine index must be re-anchored first.
         machine_rows = self.machines
-        if machine_name and machine_rows:
-            self.machine_index = next(
-                (i for i, row in enumerate(machine_rows) if row.name == machine_name),
-                min(self.machine_index, len(machine_rows) - 1),
+        if machine_name is not None and machine_rows:
+            # "" is the fleet row (see selection_anchor), found by its flag; a name only
+            # ever matches a real box, so the two can't be confused even when a box is
+            # labelled "all machines".
+            found = next(
+                (
+                    i
+                    for i, row in enumerate(machine_rows)
+                    if (
+                        row.fleet
+                        if machine_name == ""
+                        else (not row.fleet and row.name == machine_name)
+                    )
+                ),
+                None,
+            )
+            self.machine_index = (
+                found if found is not None else min(self.machine_index, len(machine_rows) - 1)
             )
         else:
             self.machine_index = min(self.machine_index, max(0, len(machine_rows) - 1))
@@ -2828,8 +2882,9 @@ class App:
         # Which box `R` acts on: the selected one in Machines mode, else every pulled box.
         if self.browse_mode == "machines":
             machine = self.selected_machine_summary
-            return machine.name if machine else None
-        return None  # anywhere else in the fleet view: refresh all pulled boxes
+            if machine and not machine.fleet:
+                return machine.name
+        return None  # the fleet row, or anywhere else: refresh all pulled boxes
 
     def _refresh_keys(self, names: list[str] | None) -> list[str]:
         # remotes.json keys for the requested boxes (None = every pulled box). The live
@@ -3310,9 +3365,22 @@ class App:
 
     @staticmethod
     def _machines_dataset(machines: list[MachineSummary]) -> tuple[str, list[str], list[list]]:
-        header = ["machine", "live", "cost", "tokens", "sessions", "subagents", "exported_at"]
+        # `fleet` marks the synthetic all-machines row, which `e` exports like every
+        # other row on screen (the years export ships its "all" row too). Without the
+        # column a reader has only the NAME to go on -- and a real box can be labelled
+        # "all machines", so summing the machine column would double-count it.
+        header = [
+            "machine",
+            "live",
+            "cost",
+            "tokens",
+            "sessions",
+            "subagents",
+            "exported_at",
+            "fleet",
+        ]
         rows = [
-            [m.name, m.live, m.cost, m.tokens, m.workflows, m.subagents, m.exported_at]
+            [m.name, m.live, m.cost, m.tokens, m.workflows, m.subagents, m.exported_at, m.fleet]
             for m in machines
         ]
         return "machines", header, rows
@@ -3678,7 +3746,7 @@ class App:
         # The sessions the active zoom detail summarises (for a Models/Sources export).
         if self.browse_mode == "machines":
             machine = self.selected_machine_summary
-            return self.workflows_for_machine(machine.name) if machine else []
+            return self.machine_scope(machine) if machine else []
         if self.browse_mode == "projects":
             project = self.selected_project_summary
             return (
@@ -4175,7 +4243,7 @@ class App:
         # zoomed year/month/day.
         if self.browse_mode == "machines":
             item = self.selected_machine_summary
-            base = self.workflows_for_machine(item.name) if item else []
+            base = self.machine_scope(item) if item else []
         else:
             base = self.zoom_scope_workflows(include_ignored=self.show_ignored_projects)
         return self.projects_for_workflows(base, include_ignored=self.show_ignored_projects)
@@ -4200,7 +4268,7 @@ class App:
             # The Harnesses picker of a zoomed BOX: rank the harnesses within this machine
             # (the sidebar selection scopes it, not zoom_machine, which stays None here).
             item = self.selected_machine_summary
-            rows = self.workflows_for_machine(item.name) if item else []
+            rows = self.machine_scope(item) if item else []
         elif self.browse_mode == "projects":
             item = self.selected_project_summary
             rows = (
@@ -4243,7 +4311,7 @@ class App:
         # you focused it.
         if self.browse_mode == "machines":
             item = self.selected_machine_summary
-            return self.workflows_for_machine(item.name) if item else []
+            return self.machine_scope(item) if item else []
         if self.browse_mode == "projects":
             item = self.selected_project_summary
             return (
@@ -4327,7 +4395,7 @@ class App:
     def current_sessions(self) -> list[Workflow]:
         if self.browse_mode == "machines":
             item = self.selected_machine_summary
-            rows = self.workflows_for_machine(item.name) if item else []
+            rows = self.machine_scope(item) if item else []
             if self.zoom_source:  # a Harnesses-tab drill narrows this box to one harness
                 rows = self._drilled(rows, self._match_source, self._clear_source_drill)
             if self.zoom_project:  # a Projects-tab drill narrows this box to one project

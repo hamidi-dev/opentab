@@ -100,6 +100,7 @@ from opentab.heatmap import (
     week_key,
 )
 from opentab.models import (
+    ALL_MACHINES,
     ALL_YEARS,
     DaySummary,
     MachineSummary,

@@ -1901,15 +1901,65 @@ def test_machine_overview_shows_live_pulled_and_freshness_niceties():
         }
     )
     app.set_browse_mode("machines")
-    # laptop (live) is first: full drill-in, no export stamp.
-    live = "\n".join(app.renderer.machine_overview(app.machines[0], 100))
+    # laptop (live) is the first BOX, one row under the synthetic fleet row: full
+    # drill-in, no export stamp.
+    live = "\n".join(app.renderer.machine_overview(app.machines[1], 100))
     assert "● live" in live and "Summary only" not in live
     # server (pulled): the pulled-summary niceties + the re-pull hint.
-    pulled = "\n".join(app.renderer.machine_overview(app.machines[1], 100))
+    pulled = "\n".join(app.renderer.machine_overview(app.machines[2], 100))
     assert "○ pulled" in pulled
     assert "opentab:      1.6.0" in pulled
     assert "Pulled:" in pulled
     assert "Summary only" in pulled and "F to re-pull" in pulled
+
+
+def test_the_fleet_row_overview_ranks_the_boxes_instead_of_a_live_pulled_status():
+    # The synthetic "all machines" row is neither live nor pulled and re-pulls every box,
+    # so its Overview drops both niceties; in their place comes the cut a single box can't
+    # show -- spend BY box, the headline breakdown you drill into next.
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00", cost=3.0)],
+            "server": [workflow("b", "2026-05-02 10:00:00", cost=9.0)],
+        }
+    )
+    app.set_browse_mode("machines")
+    lines = app.renderer.machine_overview(app.machines[0], 100)
+    fleet = "\n".join(lines)
+    assert box_title(lines) == "Fleet" and "Machines:     2" in fleet
+    assert "live" not in fleet and "Summary only" not in fleet
+    assert "Spend by machine" in fleet and "laptop" in fleet and "server" in fleet
+    assert "$12.00" in fleet  # the fleet total, not one box's
+    # Its Models tab spans every box, so it isn't titled "Machine" either.
+    models = app.renderer.machine_models(app.machines[0], 100)
+    assert box_title(models) == "Fleet Model Spend"
+
+
+def test_the_fleet_row_renders_with_a_sum_badge_and_its_own_panel_title():
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-05-01 10:00:00", cost=3.0)],
+            "server": [workflow("b", "2026-05-02 10:00:00", cost=9.0)],
+        }
+    )
+    app.set_browse_mode("machines")
+    r = app.renderer
+    assert r.machine_row_text(app.machines[0], ">", 60).startswith("> ∑ all machines")
+    assert r.machine_row_text(app.machines[1], " ", 60).startswith("  ● laptop")
+    # The detail pane titles itself "All machines", not "Machine all machines".
+    titles: list[str] = []
+    r.box = lambda s, y, x, h, w, title, active=False: titles.append(title)
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair, ot.curses.init_pair = (lambda n: 0), (lambda *a: None)
+    try:
+        r.draw_machine_detail(FakeScreen(20, 100), 0, 0, 20, 100)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    assert any("All machines" in t for t in titles)
 
 
 def test_machine_detail_dispatches_its_tabs():
@@ -1922,7 +1972,7 @@ def test_machine_detail_dispatches_its_tabs():
         }
     )
     app.set_browse_mode("machines")
-    app.machine_index = 1  # server
+    app.machine_index = 2  # server
     r = app.renderer
     machine = app.selected_machine_summary
     assert r.machine_workflows(machine, 100)  # its sessions table

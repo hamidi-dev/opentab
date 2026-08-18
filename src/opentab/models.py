@@ -111,6 +111,14 @@ class ProjectSummary:
     ignored: bool = False
 
 
+# The DISPLAY NAME of the synthetic fleet row the Machines sidebar opens with (the
+# ALL_YEARS twin: selecting it unscopes the whole detail pane to every box). Unlike
+# ALL_YEARS this is deliberately NOT the row's identity -- `MachineSummary.fleet` is.
+# A machine label is free text (`opentab --label "all machines" --export`), not a
+# hostname, so a name-based sentinel would hand a real box the whole fleet's sessions.
+ALL_MACHINES = "all machines"
+
+
 @dataclass
 class MachineSummary:
     # One box in the fleet view (--source remote / --pull). `name` is the machine label
@@ -128,3 +136,7 @@ class MachineSummary:
     live: bool = False  # this machine's own live data (not a pulled summary)
     exported_at: str = ""  # ISO time the summary was exported (blank for the live box)
     opentab_version: str = ""  # opentab that wrote the summary (blank for the live box)
+    # The synthetic "every box" row App.machines opens the sidebar with -- a scope, not a
+    # machine. It is a FLAG rather than a reserved name because `name` is free text: see
+    # ALL_MACHINES, which is only what this row is called on screen.
+    fleet: bool = False

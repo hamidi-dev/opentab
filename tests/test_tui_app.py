@@ -2787,23 +2787,91 @@ def _fleet():
 
 
 def test_machines_property_floats_the_live_box_first():
-    # The live box (laptop) anchors the top even though server outspends it: it's "you are
-    # here" and the only box with full drill-in. Then by spend.
+    # The synthetic fleet row opens the list (the Years panel's "All years"), then the live
+    # box (laptop) even though server outspends it: it's "you are here" and the only box
+    # with full drill-in. Then by spend.
     app = _fleet()
     rows = app.machines
-    assert rows[0].name == "laptop" and rows[0].live is True
-    assert rows[1].name == "server" and rows[1].live is False
-    assert rows[1].exported_at == "2026-07-18T09:00:00+00:00" and rows[1].opentab_version == "1.6.0"
-    assert rows[1].workflows == 2 and rows[1].cost == 10.0
+    assert rows[0].name == ot.ALL_MACHINES and rows[0].live is False
+    assert rows[1].name == "laptop" and rows[1].live is True
+    assert rows[2].name == "server" and rows[2].live is False
+    assert rows[2].exported_at == "2026-07-18T09:00:00+00:00" and rows[2].opentab_version == "1.6.0"
+    assert rows[2].workflows == 2 and rows[2].cost == 10.0
+
+
+def test_the_fleet_row_sums_every_box_and_stays_off_a_lone_machine():
+    # It carries the whole fleet's totals (and no live/exported meta -- a fleet is neither
+    # live nor pulled), and it is gated like the "All years" row: with one box it would
+    # only mirror it, so the sidebar stays a single row.
+    app = _fleet()
+    fleet = app.machines[0]
+    assert fleet.cost == 13.0 and fleet.workflows == 3
+    # Bit-identical to the app-wide total: summed over all_workflows in its own order,
+    # never re-added off the per-box subtotals (float addition isn't associative, so the
+    # reassociated sum can print a cent away from the same figure elsewhere).
+    assert fleet.cost == app.range_cost_total()
+    assert fleet.exported_at == "" and fleet.opentab_version == ""
+    assert {w.id for w in app.machine_scope(fleet)} == {"a", "b", "c"}
+    lone = app_with([workflow("a", "2026-05-01 10:00:00")])
+    assert [m.name for m in lone.machines] == [lone.local_machine_name]
+
+
+def test_a_box_actually_LABELLED_all_machines_stays_its_own_box():
+    # Codex finding: a machine label is free text (`opentab --label "all machines"
+    # --export`), not a hostname, so a name-based sentinel would hand that real box the
+    # whole fleet -- its own $3 headline over the fleet's $12 of sessions, an ∑ badge and
+    # a re-pull of every box. The identity is `MachineSummary.fleet`, so the collision is
+    # a duplicate NAME and nothing more.
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "all machines": [workflow("a", "2026-05-01 10:00:00", cost=3.0)],
+            "server": [workflow("b", "2026-05-02 10:00:00", cost=9.0)],
+        }
+    )
+    app.set_browse_mode("machines")
+    fleet, impostor = app.machines[0], next(m for m in app.machines[1:] if m.name == "all machines")
+    assert fleet.fleet is True and impostor.fleet is False
+    assert {w.id for w in app.machine_scope(impostor)} == {"a"}  # its own sessions only
+    assert {w.id for w in app.machine_scope(fleet)} == {"a", "b"}
+    assert app.renderer.machine_badge(impostor) != "∑"
+    # The breadcrumb is the ONLY locator in a full-screen session, so it must tell the
+    # two apart there too (round-3 Codex finding).
+    assert app.renderer.machine_crumb(impostor) == "all machines"
+    assert app.renderer.machine_crumb(fleet) == "∑ all machines"
+    app.machine_index = app.machines.index(impostor)
+    assert app.refresh_target() == "all machines"  # re-pulls that box, not every box
+    assert "Status:" in "\n".join(app.renderer.machine_overview(impostor, 100))
+
+
+def test_the_fleet_row_is_what_the_machines_sidebar_opens_on():
+    # Selecting it scopes the detail to every box -- the default, like the web's
+    # `∑ all machines` -- so entering the mode answers "the fleet" before you pick a box.
+    app = _fleet()
+    app.set_browse_mode("machines")
+    assert app.selected_machine_summary.name == ot.ALL_MACHINES
+    assert {w.id for w in app.current_sessions()} == {"a", "b", "c"}
+
+
+def test_refresh_on_the_fleet_row_repulls_every_box():
+    # The refresh key acts on the SELECTED box in Machines mode; on the fleet row there is
+    # no one box, so it falls back to the everywhere-else meaning -- all of them (None).
+    app = _fleet()
+    app.set_browse_mode("machines")
+    assert app.refresh_target() is None
+    app.machine_index = 2
+    assert app.refresh_target() == "server"
 
 
 def test_machines_mode_scopes_sessions_to_the_selected_box():
     app = _fleet()
     app.set_browse_mode("machines")
     assert app.browse_mode == "machines"
-    # laptop is selected (index 0); its sessions only.
+    # The fleet row is selected (index 0); one row down is laptop, with its sessions only.
+    app.machine_index = 1  # laptop
     assert [w.id for w in app.current_sessions()] == ["a"]
-    app.machine_index = 1  # server
+    app.machine_index = 2  # server
     assert {w.id for w in app.current_sessions()} == {"b", "c"}
     # Its detail tabs: Harnesses injected after Overview (fleet is combined), Sessions drills.
     assert app.current_tabs() == ("Overview", "Harnesses", "Sessions", "Models", "Projects")
@@ -2823,7 +2891,7 @@ def test_machines_mode_harness_tab_drills_into_a_harness_on_the_box():
     c.source = "OpenCode"
     app = fleet_app({"laptop": [a], "server": [b, c]})
     app.set_browse_mode("machines")
-    app.machine_index = 1  # server: b (Claude Code) + c (OpenCode)
+    app.machine_index = 2  # server: b (Claude Code) + c (OpenCode)
     app.drill_in()  # into the box
     assert app.view == "zoom"
     app.tab = app.current_tabs().index("Harnesses")
@@ -2847,7 +2915,7 @@ def test_machines_mode_harness_row_double_click_drills():
     c.source = "OpenCode"
     app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
     app.set_browse_mode("machines")
-    app.machine_index = 1
+    app.machine_index = 2  # server
     app.drill_in()
     app.tab = app.current_tabs().index("Harnesses")
     idx = [s for s, _ in app.zoom_source_rows()].index("OpenCode")
@@ -2867,13 +2935,13 @@ def test_machines_mode_switching_box_clears_an_armed_harness():
     c.source = "OpenCode"
     app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
     app.set_browse_mode("machines")
-    app.machine_index = 1
+    app.machine_index = 2  # server
     app.drill_in()
     app.tab = app.current_tabs().index("Harnesses")
     app.source_index = [s for s, _ in app.zoom_source_rows()].index("Claude Code")
     app.drill_in()  # harness armed on server
     assert app.zoom_source == "Claude Code"
-    app._apply_click(("machine", 0), drill=False)  # click laptop in the sidebar
+    app._apply_click(("machine", 1), drill=False)  # click laptop in the sidebar
     assert app.zoom_source is None  # the old box's harness drill is dropped
     assert {w.id for w in app.current_sessions()} == {"a"}  # laptop's sessions, unfiltered
 
@@ -2889,7 +2957,7 @@ def test_machines_mode_wheel_over_the_sidebar_also_clears_an_armed_harness():
     c.source = "OpenCode"
     app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
     app.set_browse_mode("machines")
-    app.machine_index = 1
+    app.machine_index = 2  # server
     app.drill_in()
     app.tab = app.current_tabs().index("Harnesses")
     app.source_index = [s for s, _ in app.zoom_source_rows()].index("Claude Code")
@@ -2897,7 +2965,7 @@ def test_machines_mode_wheel_over_the_sidebar_also_clears_an_armed_harness():
     assert app.zoom_source == "Claude Code"
     app.renderer.hit = lambda _y, _x: ("machine", 0)  # cursor over the machine sidebar
     app._wheel(0, 0, -1)  # wheel up to laptop
-    assert app.machine_index == 0 and app.zoom_source is None
+    assert app.machine_index == 1 and app.zoom_source is None
     assert {w.id for w in app.current_sessions()} == {"a"}
 
 
@@ -2910,7 +2978,7 @@ def test_machines_mode_projects_tab_drills_into_a_project_on_the_box():
     c = workflow("c", "2026-05-03 10:00:00", cost=1.0, directory="/work/beta")
     app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
     app.set_browse_mode("machines")
-    app.machine_index = 1  # server: b (/work/alpha), c (/work/beta)
+    app.machine_index = 2  # server: b (/work/alpha), c (/work/beta)
     app.drill_in()
     app.tab = app.current_tabs().index("Projects")
     projects = app.zoom_projects()  # the box's two projects, cost-sorted (alpha $9 first)
@@ -2936,7 +3004,7 @@ def test_machines_mode_models_tab_drills_into_sessions_using_a_model():
         "c": [_model_row("opus", 0.6, 60), _model_row("haiku", 0.4, 40)],
     }
     app.set_browse_mode("machines")
-    app.machine_index = 1  # server: b (opus), c (opus + haiku)
+    app.machine_index = 2  # server: b (opus), c (opus + haiku)
     app.drill_in()
     app.tab = app.current_tabs().index("Models")
     keys = [m for m, _ in app.zoom_model_rows()]
@@ -3461,7 +3529,7 @@ def test_machines_mode_drills_are_mutually_exclusive():
     b.source = "Claude Code"
     app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b]})
     app.set_browse_mode("machines")
-    app.machine_index = 1
+    app.machine_index = 2  # server
     app.drill_in()
     app.tab = app.current_tabs().index("Harnesses")
     app.source_index = 0
@@ -3503,11 +3571,11 @@ def test_machines_mode_switching_to_a_smaller_box_resets_the_picker_cursor():
         w.source = f"Src{i}"
     app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": big})
     app.set_browse_mode("machines")
-    app.machine_index = 1  # the big box
+    app.machine_index = 2  # the big box
     app.drill_in()
     app.tab = app.current_tabs().index("Harnesses")
     app.source_index = 3  # cursor deep in the big box's picker
-    app._apply_click(("machine", 0), drill=False)  # click over to the one-session laptop
+    app._apply_click(("machine", 1), drill=False)  # click over to the one-session laptop
     assert app.source_index == 0  # cursor re-anchored for the smaller box's picker
 
 
@@ -3520,7 +3588,7 @@ def test_machines_mode_refresh_drops_a_project_drill_like_source_and_model():
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
     app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b]})
     app.set_browse_mode("machines")
-    app.machine_index = 1
+    app.machine_index = 2  # server
     app.drill_in()
     app.tab = app.current_tabs().index("Projects")
     app.project_index = 0
@@ -3625,7 +3693,7 @@ def test_returning_to_a_browse_mode_restores_the_session_and_tab():
     # tab (a session's Context graph, say) -- not a fresh browse reset to the top.
     app = _fleet()
     app.set_browse_mode("machines")
-    app.machine_index = 1  # server
+    app.machine_index = 2  # server
     app.drill_in()  # into the box
     app.tab = app.current_tabs().index("Sessions")
     app.drill_in()  # into a session
@@ -3673,7 +3741,7 @@ def test_returning_after_a_sort_reorder_reopens_the_same_session():
     c = workflow("c", "2026-05-03 10:00:00", cost=1.0)
     app = fleet_app({"laptop": [workflow("a", "2026-05-01 10:00:00")], "server": [b, c]})
     app.set_browse_mode("machines")
-    app.machine_index = 1  # server: cost-sorted [b ($9), c ($1)]
+    app.machine_index = 2  # server: cost-sorted [b ($9), c ($1)]
     app.drill_in()
     app.tab = app.current_tabs().index("Sessions")
     assert [w.id for w in app.current_sessions()] == ["b", "c"]
@@ -3706,7 +3774,7 @@ def test_trends_date_drill_remembers_the_mode_it_left():
     # Projects/Machines session you were on is restored when you return via m/p.
     app = _fleet()
     app.set_browse_mode("machines")
-    app.machine_index = 1  # server
+    app.machine_index = 2  # server
     app.drill_in()
     app.tab = app.current_tabs().index("Sessions")
     app.drill_in()  # into a session
@@ -3725,7 +3793,12 @@ def test_export_dataset_in_machines_mode():
     kind, header, rows = app._export_dataset()
     assert kind == "machines"
     assert header[0] == "machine" and "live" in header
-    assert {r[0] for r in rows} == {"laptop", "server"}
+    # The fleet row is exported too: `e` saves exactly the table on screen (the years
+    # export ships its "all" row for the same reason) -- and a `fleet` column marks it,
+    # since the NAME can't: a real box can be labelled "all machines".
+    assert {r[0] for r in rows} == {ot.ALL_MACHINES, "laptop", "server"}
+    fleet_col = header.index("fleet")
+    assert [r[0] for r in rows if r[fleet_col]] == [ot.ALL_MACHINES]
 
 
 def test_machines_mode_query_still_shows_the_selected_box_sessions():
@@ -3734,10 +3807,10 @@ def test_machines_mode_query_still_shows_the_selected_box_sessions():
     # word in its titles still lists those sessions.
     app = _fleet()
     app.set_browse_mode("machines")
-    app.machine_index = 1  # server (its sessions are "b", "c")
+    app.machine_index = 2  # server (its sessions are "b", "c")
     assert {w.id for w in app.current_sessions()} == {"b", "c"}
     app.query = "server"  # the hostname: matches no session title/path -> the OLD bug emptied it
-    assert len(app.machines) == 2  # the machine LIST stays full (not filtered by the query)
+    assert len(app.machines) == 3  # the machine LIST stays full (not filtered by the query)
     # The box's sessions filter by CONTENT, so "server" (absent from titles) narrows to none --
     # but selecting the box by clicking it still works; a title word would keep its sessions.
     app.query = "b"
@@ -3749,13 +3822,42 @@ def test_refresh_reanchors_the_selected_machine_by_name():
     # not keep the stale positional index.
     app = _fleet()
     app.set_browse_mode("machines")
-    app.machine_index = 1  # server
+    app.machine_index = 2  # server
     anchor = app.selection_anchor()
     assert anchor[4] == "server"  # the machine name rides in the anchor
     # Simulate a rebuild that reordered machines: force index off, then restore by name.
     app.machine_index = 0
     app.restore_selection(anchor)
     assert app.selected_machine_summary.name == "server"
+
+
+def test_the_anchor_tells_the_fleet_row_apart_from_a_box_of_the_same_name():
+    # Round-2 Codex finding: the anchor named the machine, and restore took the FIRST row
+    # with that name -- always the fleet row at index 0. A box labelled "all machines"
+    # therefore jumped back to the whole fleet on every reload/range/refresh. The fleet
+    # row anchors as "" (a name machine_of cannot produce) and is re-found by its flag.
+    from tests._support import fleet_app
+
+    app = fleet_app(
+        {
+            "all machines": [workflow("a", "2026-05-01 10:00:00", cost=3.0)],
+            "server": [workflow("b", "2026-05-02 10:00:00", cost=9.0)],
+        }
+    )
+    app.set_browse_mode("machines")
+    impostor = next(
+        i for i, m in enumerate(app.machines) if m.name == "all machines" and not m.fleet
+    )
+    app.machine_index = impostor
+    anchor = app.selection_anchor()
+    assert anchor[4] == "all machines"
+    app.machine_index = 0
+    app.restore_selection(anchor)
+    assert app.machine_index == impostor  # the box, not the fleet row above it
+    # ...and the fleet row round-trips too, on its flag rather than its name.
+    app.machine_index = 0
+    app.restore_selection(app.selection_anchor())
+    assert app.selected_machine_summary.fleet is True
 
 
 def test_request_machine_refresh_paths():
@@ -3901,8 +4003,8 @@ def test_machine_sessions_show_full_dates_not_a_bare_clock():
     app.set_browse_mode("machines")
     r = app.renderer
     assert r.session_date_label() == "Started"
-    w = app.machines[0]  # any box; its first session
-    sess = app.workflows_for_machine(w.name)[0]
+    w = app.machines[1]  # any box (0 is the fleet row); its first session
+    sess = app.machine_scope(w)[0]
     assert r.session_started(sess) == sess.created_at[:10]  # the date, not created_at[11:16]
 
 
