@@ -276,7 +276,61 @@ class PriceEntry(NamedTuple):
     pinned: bool = False  # row is pinned (App.pinned_models, "route/canon" keys); floats first
 
 
+class BrowseMode(NamedTuple):
+    """One top-level browse mode: what the SIDEBAR partitions the corpus by.
+
+    The strip, the footer chips, the help overlay's "Here" line, the saved-preference
+    whitelist and the flat-vs-hierarchical tests all read this one tuple. Before it,
+    the same set was spelled four different ways -- `!= "time"`, `in ("projects",
+    "machines")`, an if/elif/else chain, and a literal list in state.py -- each of
+    which a mode added later has to be *remembered* at. A missed one does not raise:
+    it renders the new mode as Time. (Machines mode shipped with exactly that hole in
+    keymap.context_label, which read "browse - Days" while you sat in Machines.)
+
+    It is deliberately NOT a full behaviour descriptor: the sidebar rows, the scope,
+    the tab tuple and the drawers stay ordinary per-mode code, because Time's stacked
+    Years/Months/Days panels are genuinely a different geometry and pretending
+    otherwise costs more than it saves. This names the SET; `mode_scope_workflows`
+    is the one dispatch that was worth folding.
+    """
+
+    key: str  # what App.browse_mode holds, and what state.json persists
+    label: str  # the strip's chip, and the word the breadcrumb/"Here" line use
+    action: str  # the `main` keymap action that jumps straight to it
+    hierarchical: bool  # a stack of sidebar panels (Time), not one flat list
+
+
+class SelectionAnchor(NamedTuple):
+    """Where the selection is, by VALUE, so it can be re-found after the rows change.
+
+    A NamedTuple rather than a bare tuple because it is read positionally a long way
+    from where it is built -- `_restore_mode_memory` wanted the session id and reached
+    for `anchor[5]`. A field inserted ahead of that hands every later reader its
+    neighbour's value, and the failure is silent and plausible: a real session id from
+    the wrong slot restores onto the wrong session rather than raising. Indexing still
+    works, so nothing that already unpacks it had to change.
+    """
+
+    year: str | None
+    month: str | None
+    day: str | None
+    project: str | None
+    machine: str | None  # "" is the synthetic fleet row -- see App.selection_anchor
+    session: str | None
+
+
 class App:
+    # The top-level browse modes, in strip order. Everything that enumerates them reads
+    # THIS -- mode_tab_list, the footer chips, context_label, state.py's whitelist -- so
+    # a mode is added here and nowhere else. See BrowseMode for what that buys.
+    BROWSE_MODES = (
+        BrowseMode("time", "Time", "mode_time", True),
+        BrowseMode("projects", "Projects", "mode_projects", False),
+        BrowseMode("machines", "Machines", "mode_machines", False),
+    )
+    # The keys state.json is allowed to restore. Derived, never re-typed: a whitelist
+    # that has to be kept in step by hand is one that silently stops accepting a mode.
+    BROWSE_MODE_KEYS = tuple(m.key for m in BROWSE_MODES)
     workflow_tabs = ("Overview", "Subagents")  # a session's model mix lives in the Overview
     day_tabs = ("Overview", "Projects", "Sessions")  # day models stay folded into Overview
     month_tabs = ("Overview", "Models", "Projects", "Sessions")
@@ -1301,12 +1355,31 @@ class App:
         else:
             self.open_source_menu()
 
+    @property
+    def browse_mode_spec(self) -> BrowseMode:
+        # The active mode's descriptor. An unknown key falls back to the first mode
+        # rather than raising: browse_mode is restored from state.json, and a
+        # hand-edited value must not kill the launch before the first frame (the
+        # trend_sort guard's rule).
+        for mode in self.BROWSE_MODES:
+            if mode.key == self.browse_mode:
+                return mode
+        return self.BROWSE_MODES[0]
+
+    @property
+    def flat_browse_mode(self) -> bool:
+        # One flat sidebar list (Projects / Machines) rather than Time's stacked
+        # Years/Months/Days. What Tab-cycling and the numbered panel jumps key on --
+        # asked of the mode table, so a fourth flat mode is flat without editing them.
+        return not self.browse_mode_spec.hierarchical
+
     def mode_tab_list(self) -> list[tuple[str, str]]:
-        # (label, mode) for the top-level browse-mode tab strip. All three, always: off a
-        # fleet the Machines mode is a one-row view of the box you're sitting at (its own
-        # spend, model mix and top projects), which is a real answer -- and the only place
-        # the consolidated view announces itself to someone who has never run `--pull`.
-        return [("Time", "time"), ("Projects", "projects"), ("Machines", "machines")]
+        # (label, mode) for the top-level browse-mode tab strip. Every mode, always: off
+        # a fleet the Machines mode is a one-row view of the box you're sitting at (its
+        # own spend, model mix and top projects), which is a real answer -- and the only
+        # place the consolidated view announces itself to someone who has never run
+        # `--pull`.
+        return [(mode.label, mode.key) for mode in self.BROWSE_MODES]
 
     def switch_browse_mode(self, mode: str) -> None:
         # The mouse/tab entry point. set_browse_mode now works from a drilled-in session
@@ -1632,9 +1705,7 @@ class App:
             else "showing all sessions"
         )
 
-    def selection_anchor(
-        self,
-    ) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None]:
+    def selection_anchor(self) -> SelectionAnchor:
         # Capture the selected row's value (not focused_year, which is None for the
         # "All years" row) so an "All years" selection survives a reload/source switch.
         sel_year = self.selected_year_summary
@@ -1650,20 +1721,18 @@ class App:
         # host's name), and restore re-finds that row by its flag.
         machine = self.selected_machine_summary if self.browse_mode == "machines" else None
         session = self.current_session()
-        return (
-            year,
-            month,
-            day,
-            project.directory if project else None,
-            None if machine is None else ("" if machine.fleet else machine.name),
-            session.id if session else None,
+        return SelectionAnchor(
+            year=year,
+            month=month,
+            day=day,
+            project=project.directory if project else None,
+            machine=None if machine is None else ("" if machine.fleet else machine.name),
+            session=session.id if session else None,
         )
 
-    def restore_selection(
-        self,
-        anchor: tuple[str | None, str | None, str | None, str | None, str | None, str | None],
-    ) -> None:
-        year, month, day, project_dir, machine_name, session_id = anchor
+    def restore_selection(self, anchor: SelectionAnchor) -> None:
+        year, month, day = anchor.year, anchor.month, anchor.day
+        project_dir, machine_name, session_id = anchor.project, anchor.machine, anchor.session
 
         # Restore the year first: months/days are scoped to the focused year, so the
         # month lookup below only sees the right slice once year_index is set.
@@ -3310,7 +3379,7 @@ class App:
                 # session at all" guard never fired and the detail pane silently became
                 # someone else's numbers. Compare identity, as _restore_mode_memory does.
                 current = self.current_session()
-                saved_session_id = restore["anchor"][5]
+                saved_session_id = restore["anchor"].session
                 if current is None or (saved_session_id and current.id != saved_session_id):
                     self.view = "zoom"
             self.scroll = max(0, int(restore["scroll"]))
@@ -4264,6 +4333,38 @@ class App:
         self.project_index = max(0, min(self.project_index, len(rows) - 1))
         return rows[self.project_index]
 
+    def mode_scope_workflows(self) -> list[Workflow]:
+        """The sessions the SIDEBAR's current selection covers, in whatever mode we're in.
+
+        The one answer to "what is the scope" -- `current_sessions` and
+        `_zoom_picker_scope` both re-derived it, in the same three branches, with the
+        same three `if item else []` guards. That duplication is what a mode added later
+        has to be remembered at twice, and the two are exactly the pair that must never
+        disagree: the picker ranks a scope, Enter opens it, and a row reading "1 session
+        · $3" that opens two sessions and $5 is the whole reason `_zoom_picker_scope`
+        exists.
+
+        The drills stay with their callers, because they are NOT shared: a box's are
+        mutually exclusive and applied in their own order, everything else composes.
+        And `zoom_projects` deliberately still does its own thing -- it widens by
+        `show_ignored_projects` (the `I` toggle for the projects LIST) rather than
+        `_showing_ignored_workflows()`, which is a different question about sessions.
+        """
+        if self.browse_mode == "machines":
+            item = self.selected_machine_summary
+            return self.machine_scope(item) if item else []
+        if self.browse_mode == "projects":
+            item = self.selected_project_summary
+            if item is None:
+                return []
+            return self.workflows_for_project(
+                item.directory, include_ignored=self.include_ignored_for_project(item)
+            )
+        # Time: the focused panel (year / month / day) is the scope. Passing the widened
+        # source through zoom_scope_workflows is the same query current_sessions used to
+        # spell inline -- workflows_for_* default to all_workflows when handed None.
+        return self.zoom_scope_workflows(include_ignored=self._showing_ignored_workflows())
+
     def _zoom_picker_scope(self, exclude: str) -> list[Workflow]:
         # The sessions a zoom's Harnesses/Machines picker ranks -- exactly the ones Enter
         # then opens (current_sessions), so it takes the same widenings: `i` (ignored rows
@@ -4273,25 +4374,14 @@ class App:
         # (h/l can leave a machine/source narrowed while you move to the sibling picker) --
         # everything except the dimension being picked (`exclude`), which the pick SETS. So
         # the Harnesses picker shows sources within an armed box, and vice-versa.
-        if self.browse_mode == "machines":
-            # The Harnesses picker of a zoomed BOX: rank the harnesses within this machine
-            # (the sidebar selection scopes it, not zoom_machine, which stays None here).
-            item = self.selected_machine_summary
-            rows = self.machine_scope(item) if item else []
-        elif self.browse_mode == "projects":
-            item = self.selected_project_summary
-            rows = (
-                self.workflows_for_project(
-                    item.directory,
-                    include_ignored=self.include_ignored_for_project(item),
-                )
-                if item
-                else []
-            )
-        else:
-            rows = self.zoom_scope_workflows(include_ignored=self._showing_ignored_workflows())
-            if self.zoom_project:
-                rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
+        # The sidebar's scope (a zoomed BOX scopes the Harnesses picker by the sidebar
+        # selection, not by zoom_machine, which stays None there).
+        rows = self.mode_scope_workflows()
+        if self.browse_mode not in ("machines", "projects") and self.zoom_project:
+            # Time mode only: in Machines the drills are mutually exclusive so there is
+            # nothing to compose, and in Projects the sidebar IS the project -- there is
+            # no second one to narrow to.
+            rows = [w for w in rows if self.project_root(w.directory) == self.zoom_project]
         if self.browse_mode != "machines":
             # The fleet's per-scope pickers COMPOSE (h/l can leave a box/source armed while
             # you pick the sibling). Machines mode does not: its Harnesses/Projects/Models
@@ -4402,9 +4492,8 @@ class App:
         return rows[self.machine_pick_index][0]
 
     def current_sessions(self) -> list[Workflow]:
+        rows = self.mode_scope_workflows()
         if self.browse_mode == "machines":
-            item = self.selected_machine_summary
-            rows = self.machine_scope(item) if item else []
             if self.zoom_source:  # a Harnesses-tab drill narrows this box to one harness
                 rows = self._drilled(rows, self._match_source, self._clear_source_drill)
             if self.zoom_project:  # a Projects-tab drill narrows this box to one project
@@ -4412,28 +4501,6 @@ class App:
             if self.zoom_model:  # a Models-tab drill narrows to sessions that used it
                 rows = self._drilled(rows, self._match_model, self._clear_model_drill)
             return self.filtered_sessions(rows)
-        if self.browse_mode == "projects":
-            item = self.selected_project_summary
-            rows = (
-                self.workflows_for_project(
-                    item.directory,
-                    include_ignored=self.include_ignored_for_project(item),
-                )
-                if item
-                else []
-            )
-        elif self.focus == "years":
-            item = self.selected_year_summary
-            source = self.ranged_workflows if self._showing_ignored_workflows() else None
-            rows = self.workflows_for_year(item.year, source) if item else []
-        elif self.focus == "months":
-            item = self.selected_month_summary
-            source = self.ranged_workflows if self._showing_ignored_workflows() else None
-            rows = self.workflows_for_month(item.month, source) if item else []
-        else:
-            item = self.selected_day_summary
-            source = self.ranged_workflows if self._showing_ignored_workflows() else None
-            rows = self.workflows_for_day(item.day, source) if item else []
         if self.zoom_project and self.browse_mode != "projects":
             rows = self._drilled(rows, self._match_project, self._clear_project_drill)
         if self.zoom_source:
@@ -4871,7 +4938,7 @@ class App:
         # Tab walks the three stacked time panels (Years -> Months -> Days); Shift-Tab
         # walks back. No-op in session view and projects/machines mode (one left list,
         # nothing to cycle focus across).
-        if self.view == "session" or self.browse_mode != "time":
+        if self.view == "session" or self.flat_browse_mode:
             return
         i = self.FOCUS_CYCLE.index(self.focus) if self.focus in self.FOCUS_CYCLE else 1
         self.set_focus(self.FOCUS_CYCLE[(i + step) % len(self.FOCUS_CYCLE)])
@@ -4896,7 +4963,7 @@ class App:
         # re-map runs even when the target panel is the one already focused -- that is
         # exactly the jump-out-of-a-session case, where the stale index is wrong.
         active_tab = self.active_tab_name()
-        if self.browse_mode in ("projects", "machines"):
+        if self.flat_browse_mode:
             # One left panel here (Projects / Machines); only 1 names it. 2/3 have
             # nothing to focus -- leave the view alone rather than half-obeying.
             if name != "years":
@@ -5033,7 +5100,7 @@ class App:
         # A session view is only honoured if THAT session is still present: a range/filter
         # change may have removed it, and restore_selection would then clamp onto a
         # neighbour -- silently opening the wrong session. Demote to the zoom scope instead.
-        saved_session_id = saved["anchor"][5]
+        saved_session_id = saved["anchor"].session
         if self.view == "session":
             current = self.current_session()
             if current is None or current.id != saved_session_id:

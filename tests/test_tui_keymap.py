@@ -371,3 +371,29 @@ def test_footer_highlights_the_focused_time_panel():
         assert scr.attrs[(23, i + 4)] == accent and scr.attrs[(23, i)] == 4  # machines: m lit
     finally:
         ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+
+
+def test_the_here_label_names_every_flat_mode_not_just_projects():
+    # It read "browse · Days" in Machines mode -- Time's focused panel, named in a mode
+    # that has no panels -- because the label was spelled per-mode and a second flat
+    # mode was added to the strip without being added here.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    for mode in app.BROWSE_MODES:
+        app.set_browse_mode(mode.key)
+        label = ot.tui.keymap.context_label(app)
+        if mode.hierarchical:
+            assert label.startswith("browse · ")  # Time names its focused PANEL
+        else:
+            assert label == f"browse · {mode.label}"
+
+
+def test_the_footer_mode_chips_are_built_from_the_mode_table():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    segs = ot.tui.keymap._mode_segments(app)
+    labels = [text for text, _lit in segs]
+    for mode in app.BROWSE_MODES:
+        assert app.keymap.label("main", mode.action) in labels
+    # Exactly one chip is lit, and it is the active mode's.
+    app.set_browse_mode("machines")
+    lit = [text for text, on in ot.tui.keymap._mode_segments(app) if on]
+    assert lit == [app.keymap.label("main", "mode_machines")]

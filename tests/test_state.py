@@ -385,3 +385,19 @@ def test_subagent_sort_is_persisted_in_state():
                 os.environ["XDG_STATE_HOME"] = old_xdg
     assert restored.subagent_sort_by == "agent"
     assert restored.subagent_sort_reverse is True
+
+
+def test_the_restored_browse_mode_whitelist_follows_the_mode_table():
+    # The accepted keys are derived from App.BROWSE_MODES, so a mode added there is
+    # restorable immediately -- a hand-kept whitelist is one that silently stops
+    # accepting a mode, which reads as "opentab forgot my preference".
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    assert app.BROWSE_MODE_KEYS == tuple(m.key for m in app.BROWSE_MODES)
+    for mode in app.BROWSE_MODES:
+        fresh = app_with([workflow("a", "2026-06-01 12:00:00")])
+        ot.apply_state(fresh, fresh.args, {"browse_mode": mode.key})
+        assert fresh.browse_mode == mode.key
+    # Anything else leaves __init__'s default standing rather than being adopted.
+    fresh = app_with([workflow("a", "2026-06-01 12:00:00")])
+    ot.apply_state(fresh, fresh.args, {"browse_mode": "harnesses"})
+    assert fresh.browse_mode == "time"

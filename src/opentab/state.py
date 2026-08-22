@@ -124,7 +124,7 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     if isinstance(state.get("trend_sort_reverse"), bool) and trend_sort_ok:
         app.trend_sort_reverse = state["trend_sort_reverse"]
     mode = state.get("browse_mode")
-    if mode in ("time", "projects", "machines"):
+    if mode in app.BROWSE_MODE_KEYS:  # derived from App.BROWSE_MODES, never re-typed
         app.browse_mode = mode
     # The focused sidebar panel is a pref like the browse mode above it: quit reading
     # a month and you come back to that month, not to today. Assigned directly rather

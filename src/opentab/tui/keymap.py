@@ -164,8 +164,11 @@ def context_label(app: App) -> str:
         return f"session · {tab}"
     if app.view == "zoom":
         return f"zoom · {tab}"
-    if app.browse_mode == "projects":
-        return "browse · Projects"
+    if app.flat_browse_mode:
+        # One flat list, and its name IS the place. Spelled per-mode once, this read
+        # "browse · Days" in Machines mode -- Time's focused panel, in a mode that has
+        # no panels -- because a second flat mode was added to the strip and not here.
+        return f"browse · {app.browse_mode_spec.label}"
     return f"browse · {app.focus.capitalize()}"
 
 
@@ -284,22 +287,21 @@ def _panel_summary(app: App) -> str:
 
 
 def _mode_keys(app: App) -> str:
-    tokens = ("mode_time", "mode_projects", "mode_machines")
+    tokens = tuple(mode.action for mode in app.BROWSE_MODES)
     return _keys_text(app, "main", tokens, between="  ", within="  ")
 
 
 def _mode_segments(app: App) -> list:
-    t = app.keymap.label("main", "mode_time")
-    p = app.keymap.label("main", "mode_projects")
-    m = app.keymap.label("main", "mode_machines")
-    return [
-        (t, app.browse_mode == "time"),
-        ("/", False),
-        (p, app.browse_mode == "projects"),
-        ("/", False),
-        (m, app.browse_mode == "machines"),
-        (" mode", False),
-    ]
+    # "t/p/m mode", the active one lit. Walks App.BROWSE_MODES rather than naming the
+    # three actions, so a mode joins the footer with the rest of the app instead of
+    # being the one chip nobody remembered to add.
+    segs: list = []
+    for i, mode in enumerate(app.BROWSE_MODES):
+        if i:
+            segs.append(("/", False))
+        segs.append((app.keymap.label("main", mode.action), app.browse_mode == mode.key))
+    segs.append((" mode", False))
+    return segs
 
 
 def _tab_focus_segments(app: App) -> list:

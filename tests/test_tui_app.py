@@ -4462,3 +4462,74 @@ def test_a_box_ranks_models_over_exactly_the_sessions_its_enter_opens():
     opened = {w.id for w in app.current_sessions()}
     assert opened == {"b", "c"}
     assert ranked["opus"] == len(opened)
+
+
+def test_the_browse_mode_table_is_the_only_place_modes_are_enumerated():
+    # Every list of modes in the app is DERIVED from App.BROWSE_MODES. Before it the
+    # same set was spelled four ways, and a mode added to one and missed in another does
+    # not raise -- it renders as Time. This is the test that makes the omission loud.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    modes = app.BROWSE_MODES
+    assert [m.key for m in modes] == ["time", "projects", "machines"]
+    assert app.BROWSE_MODE_KEYS == tuple(m.key for m in modes)
+    assert app.mode_tab_list() == [(m.label, m.key) for m in modes]
+    # Each mode's keymap action really exists in the `main` context, so the footer and
+    # the help overlay can label it -- a typo here would silently print an empty chip.
+    main = next(c for c in ot.tui.bindings.REGISTRY if c.name == "main")
+    names = {a.name for a in main.actions}
+    assert {m.action for m in modes} <= names
+    # Exactly one hierarchical mode (Time's stacked Years/Months/Days); the rest are one
+    # flat list, which is what the Tab cycle and the numbered panel jumps key on.
+    assert [m.key for m in modes if m.hierarchical] == ["time"]
+    for mode in modes:
+        app.set_browse_mode(mode.key)
+        assert app.browse_mode_spec is mode
+        assert app.flat_browse_mode is not mode.hierarchical
+
+
+def test_an_unknown_saved_browse_mode_falls_back_instead_of_raising():
+    # browse_mode is restored from state.json, so a hand-edited value reaches this
+    # before the first frame. The trend_sort guard's rule: fall back, never raise.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.browse_mode = "harnesses"  # a mode from a future version, or a typo
+    assert app.browse_mode_spec is app.BROWSE_MODES[0]
+    assert app.flat_browse_mode is False
+
+
+def test_the_selection_anchor_is_read_by_name_and_still_indexes():
+    # It is built in one place and read in another (_restore_mode_memory wanted the
+    # session id and reached for anchor[5]), so a field inserted mid-tuple used to hand
+    # every later reader its neighbour -- silently, and with a plausible value.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    anchor = app.selection_anchor()
+    assert anchor.session == "a"
+    assert anchor.project == "/x"
+    assert anchor.month == "2026-06"
+    # Still a tuple: everything that already unpacked or indexed it is unaffected.
+    assert tuple(anchor)[5] == anchor.session
+    assert len(anchor) == 6
+    year, month, day, project, machine, session = anchor
+    assert (month, project, session) == ("2026-06", "/x", "a")
+
+
+def test_both_session_lists_scope_from_the_one_mode_scope():
+    # The picker RANKS a scope and Enter OPENS it, so the two must never disagree -- a
+    # row reading "1 session · $3" that opens two sessions and $5 is the bug
+    # _zoom_picker_scope exists to prevent. They now derive the scope from one method
+    # instead of re-spelling the same three branches.
+    app = fleet_app(
+        {
+            "laptop": [workflow("a", "2026-06-01 12:00:00", cost=5.0, directory="/x")],
+            "server": [workflow("b", "2026-06-02 12:00:00", cost=3.0, directory="/y")],
+        }
+    )
+    for mode in app.BROWSE_MODES:
+        app.set_browse_mode(mode.key)
+        scope = {w.id for w in app.mode_scope_workflows()}
+        assert scope, mode.key  # every mode's sidebar lands on something
+        assert {w.id for w in app.current_sessions()} <= scope, mode.key
+        assert {w.id for w in app._zoom_picker_scope("source")} <= scope, mode.key
+    # In a flat mode the scope IS the selected row, so it must not be the whole corpus.
+    app.set_browse_mode("machines")
+    app.machine_index = 1  # past the synthetic "all machines" row, onto a real box
+    assert len(app.mode_scope_workflows()) == 1
