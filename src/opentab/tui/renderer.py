@@ -6161,6 +6161,8 @@ class Renderer:
             lines = self.trend_monthly(inner_w, content_h)
         elif current == "Providers":
             lines = self.trend_providers(inner_w, content_h)
+        elif current == "Projects":
+            lines = self.trend_projects(inner_w, content_h)
         elif current == "Harnesses":
             lines = self.trend_sources(inner_w, content_h)
         elif current == "Machines":
@@ -7046,6 +7048,24 @@ class Renderer:
         self._trend_rows_at = (self._ruled_body_start or 0, len(rows), start)
         return lines
 
+    def trend_projects(self, width: int, height: int) -> list[str]:
+        # The Trends overlay's project ranking: spend by directory over the whole range.
+        # Names go through short_path rather than shorten, because a project row IS a
+        # path: clipping the tail of ~/SoftwareProjects/opentab leaves every row reading
+        # the same identical prefix with the only distinguishing part cut off. Same
+        # $HOME fold and interior elision the Projects sidebar uses, so one project reads
+        # the same in both places.
+        return self._group_table(
+            self.trend_ranked_rows("Projects"),
+            width,
+            "project",
+            "Project",
+            selectable=True,
+            sort_tab="Projects",
+            height=height,
+            display=short_path,
+        )
+
     def trend_sources(self, width: int, height: int) -> list[str]:
         # The Trends overlay's headline cut: spend by tool across the whole range.
         # Goes straight to _group_table with rows the App already ordered, rather than
@@ -7105,14 +7125,24 @@ class Renderer:
     _SORT_ARROW_W = 2
 
     @staticmethod
-    def _group_widths(rows: list, col: str, width: int) -> tuple[int, int]:
+    def _group_widths(rows: list, col: str, width: int, display=shorten) -> tuple[int, int]:
         # Size the name column to its HEADER too, not just the data: with every name
         # shorter than the label ("Harness", "Machine"), the header's own field overflowed
         # and shifted Cost/Share/Tokens/Sess right of the numbers they label. Short
         # hostnames make that the default in a fleet view. _model_table guards the same way.
+        #
+        # Measured on the name as DISPLAYED, not as stored: the Projects ranking shortens
+        # paths with short_path, which folds $HOME first -- so a 34-column row measured
+        # raw claims the whole cap, starves the bar to its 3-cell floor and leaves the
+        # ranking with nothing to rank by. The cap is what display is asked to fit into,
+        # so this can't recurse.
+        cap = max(10, width - Renderer._GROUP_FIXED - 3)
         namew = min(
-            max([len(s) for s, _ in rows] + [len(col) + Renderer._SORT_ARROW_W]),
-            max(10, width - Renderer._GROUP_FIXED - 3),
+            max(
+                [display_width(display(s, cap)) for s, _ in rows]
+                + [len(col) + Renderer._SORT_ARROW_W]
+            ),
+            cap,
         )
         return namew, max(3, min(20, width - namew - Renderer._GROUP_FIXED))
 
@@ -7134,11 +7164,18 @@ class Renderer:
 
     @staticmethod
     def _group_row(
-        name: str, it, marker: str, namew: int, barw: int, peak: float, total: float
+        name: str,
+        it,
+        marker: str,
+        namew: int,
+        barw: int,
+        peak: float,
+        total: float,
+        display=shorten,
     ) -> str:
         bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
         return (
-            f"{marker} {shorten(name, namew):{namew}}  {bar:<{barw}} "
+            f"{marker} {display(name, namew):{namew}}  {bar:<{barw}} "
             f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total):>5} "
             f"{human_tokens(int(it['tokens'])):>9} {int(it['sessions']):>7}"
         )
@@ -7153,16 +7190,19 @@ class Renderer:
         selectable: bool = False,
         sort_tab: str | None = None,
         height: int | None = None,
+        display=shorten,
     ) -> list[str]:
         # The shared ranked-spend table behind source_table/machine_table: a name column,
         # a cost bar, then Cost/Share/Tokens/Sess, in the same ruled box every other table
         # wears. `noun` is the box title's word, `col` the name-column header. Selectable
         # rows carry the Trends cursor + Enter drill. The rows themselves come from the
         # builders above, which the zoom picker paints too. `sort_tab` (the Trends frame
-        # only) arrows the active column and makes the header clickable.
+        # only) arrows the active column and makes the header clickable. `display` is how
+        # a name is fitted into the column -- shorten for the flat names, short_path for
+        # the Projects ranking, whose rows are directories.
         title = f"# Spend by {noun}"
         if not all_rows:
-            namew, barw = self._group_widths([], col, max(1, width - self.BOX_CHROME))
+            namew, barw = self._group_widths([], col, max(1, width - self.BOX_CHROME), display)
             return self._ruled_box(
                 title, self._group_header(col, namew, barw, sort_tab), [], None, [], width
             ) + ["", "No sessions in the active range."]
@@ -7183,8 +7223,11 @@ class Renderer:
         total_cost = sum(float(it["cost"]) for _, it in scope)
         peak = max((float(it["cost"]) for _, it in scope), default=0.0) or 1.0
         inner = max(1, width - self.BOX_CHROME)
-        namew, barw = self._group_widths(rows, col, inner)
-        body = [self._group_row(name, it, " ", namew, barw, peak, total_cost) for name, it in rows]
+        namew, barw = self._group_widths(rows, col, inner, display)
+        body = [
+            self._group_row(name, it, " ", namew, barw, peak, total_cost, display)
+            for name, it in rows
+        ]
         total = None
         if len(scope) > 1:
             # The TOTAL row every multi-row table closes with. Counts and tokens summed;
@@ -7225,9 +7268,13 @@ class Renderer:
         # within the session, windowed around the cursor.
         kind, key = self.trend_drill
         rows = self.trend_drill_sessions()
-        title = f"# Sessions · {key}"
+        # A project key is a full path (the drill matches on it), so it is folded for
+        # display like every other path on screen -- raw, it pushes the session count
+        # and "most spend first" off the end of the box title that carries them.
+        label = short_path(key, 44) if kind == "project" else key
+        title = f"# Sessions · {label}"
         if not rows:
-            return [title, "", f"No sessions used {key} in the active range."]
+            return [title, "", f"No sessions used {label} in the active range."]
         subtotal = sum(cost for _w, cost, _t in rows)
         inner = max(1, width - self.BOX_CHROME)
         header = f"  {'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}"

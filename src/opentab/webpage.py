@@ -571,7 +571,7 @@ const VIEW = { calYear: null };
 let TURN_DRILL = null;
 let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null, expiries: [] }; // per-session Turns/Tools/Context (serve)
 // The Trends overlay (T) -- mirrors the TUI's 7-tab Trends over the whole range.
-const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
+const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Projects', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
 // `sort`/`desc` are the ranked tabs' column order (the TUI's App.trend_sort pair):
 // biggest spend first by default -- what a ranking is read for -- with a header click
 // choosing a column and a re-click flipping it. One pair for all four ranked tabs, so
@@ -2807,8 +2807,11 @@ function trendDrillRows() {
   const { kind, key } = TRENDS.drill, out = [];
   for (const w of W) {
     let c = 0, tok = 0;
-    if (kind === 'source' || kind === 'machine') {
-      const v = kind === 'machine' ? (w.machine || 'unknown') : (w.source || META.source);
+    if (kind === 'source' || kind === 'machine' || kind === 'project') {
+      // Each names a whole-session property, so one equality test -- against the same
+      // field the ranking grouped by (w.project is already the git root, App-side).
+      const v = kind === 'machine' ? (w.machine || 'unknown')
+        : kind === 'project' ? (w.project || 'unknown') : (w.source || META.source);
       if (v !== key) continue;
       c = cost(w); tok = w.tokens;
     } else {
@@ -2822,17 +2825,20 @@ function trendDrillRows() {
   return out.sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
 }
 function trendDrill() {
-  const { key } = TRENDS.drill;
+  const { kind, key } = TRENDS.drill;
+  // The drill matches on the raw key, but a project key is a full path -- label it the
+  // way every other path on the page is labelled.
+  const label = kind === 'project' ? shortPath(key) : key;
   const rows = trendDrillRows();
   const back = h('button', { class: 'hbtn', onclick: () => { TRENDS.drill = null; renderTrends(); } }, '← back');
-  if (!rows.length) return h('div', null, h('div', { class: 'tr-nav' }, back), h('div', { class: 'hint' }, 'No sessions used ' + key + ' in the active range.'));
+  if (!rows.length) return h('div', null, h('div', { class: 'tr-nav' }, back), h('div', { class: 'hint' }, 'No sessions used ' + label + ' in the active range.'));
   const total = rows.reduce((a, r) => a + r.cost, 0);
   const head = h('tr', null, h('th', { class: 'l' }, 'Started'), h('th', null, 'Cost'), h('th', null, 'Tokens'), h('th', { class: 'l' }, 'Title'));
   const body = rows.map(r => h('tr', { class: 'rowlink', onclick: () => { closeTrends(); go('s', r.id); } },
     h('td', { class: 'l mut' }, r.date.slice(0, 10)), h('td', null, moneyCell(r.cost)),
     h('td', { class: 'mut' }, hTok(r.tokens)), h('td', { class: 'l' }, r.title)));
   return h('div', null,
-    h('div', { class: 'tr-nav' }, back, h('span', { class: 'lbl' }, 'Sessions · ' + key),
+    h('div', { class: 'tr-nav' }, back, h('span', { class: 'lbl' }, 'Sessions · ' + label),
       h('span', { class: 'mut' }, rows.length + ' session(s) · ' + money(total) + ' · most spend first')),
     h('table', { class: 'rank' }, h('thead', null, head), h('tbody', null, body)));
 }
@@ -2904,6 +2910,18 @@ function trendProviders() {
     onRow: r => { TRENDS.drill = { kind: 'provider', key: r.name }; renderTrends(); },
     extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Msgs', get: r => String(r.runs), cls: 'mut' }] });
 }
+function trendProjects() {
+  const rows = projectRows(W).map(r => ({ name: r.project, cost: r.cost, sessions: r.sessions, tokens: r.tokens }))
+    .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
+  if (!rows.length) return h('div', { class: 'hint' }, 'No sessions in the active range.');
+  return rankedBars(rows, { nameLabel: 'Project',
+    // Basename first, the $HOME-folded path dim beside it -- the Projects tab's own
+    // cell. A column of full paths shares a long prefix, so plain truncation would cut
+    // off exactly the part that tells two rows apart.
+    nameFmt: r => [projName(r.name), ' ', h('span', { class: 'mut' }, shortPath(r.name))],
+    onRow: r => { TRENDS.drill = { kind: 'project', key: r.name }; renderTrends(); },
+    extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
+}
 function trendSources() {
   const rows = sourceRows(W).map(r => ({ name: r.source, cost: r.cost, sessions: r.sessions, tokens: r.tokens }))
     .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
@@ -2929,7 +2947,8 @@ function renderTrends() {
   const tab = TRENDS.tab;
   const body = TRENDS.drill ? trendDrill()
     : ({ Daily: trendDaily, Weekly: trendWeekly, Monthly: trendMonthly, Calendar: trendCalendar,
-        Models: trendModels, Providers: trendProviders, Harnesses: trendSources, Machines: trendMachines }[tab])();
+        Models: trendModels, Providers: trendProviders, Projects: trendProjects,
+        Harnesses: trendSources, Machines: trendMachines }[tab])();
   const footer = h('div', { class: 'tr-nav', style: 'margin-top:14px' });
   if (META.demo) footer.append(h('span', { class: 'tr-note' }, 'h/l tabs · j/k page · esc close'));
   else if (MODE === 'api') footer.append(h('span', { class: 'badge est' }, 'estimated · list prices'));

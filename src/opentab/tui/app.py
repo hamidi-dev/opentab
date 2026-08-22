@@ -323,6 +323,7 @@ class App:
     _TREND_SORT_COLUMNS = {
         "Models": ("cost", "name"),
         "Providers": ("cost", "name", "tokens", "count"),
+        "Projects": ("cost", "name", "tokens", "count"),
         "Harnesses": ("cost", "name", "tokens", "count"),
         "Machines": ("cost", "name", "tokens", "count"),
     }
@@ -333,6 +334,7 @@ class App:
     _TREND_SORT_LABELS = {
         "Models": {"name": "Model"},
         "Providers": {"name": "Provider", "count": "Msgs"},
+        "Projects": {"name": "Project", "count": "Sessions"},
         "Harnesses": {"name": "Harness", "count": "Sessions"},
         "Machines": {"name": "Machine", "count": "Sessions"},
     }
@@ -356,6 +358,12 @@ class App:
     # Columns whose natural order is ascending (a->z / shallow-first / cheap-first);
     # every other column sorts high->low by default. A header re-click flips it.
     ascending_sort_keys = frozenset({"title", "project", "model", "agent", "depth", "eff", "name"})
+    # Charts first, then the Calendar, then the rankings -- model-derived (Models,
+    # Providers) before session-derived (Projects, Harnesses, and the fleet's Machines,
+    # appended by `trend_tabs`). Projects belongs here for the same reason the other two
+    # do: Trends is the range-wide leaderboard, and the Projects browse MODE is
+    # navigation, not a ranking -- it answers "open this project", never "which project
+    # cost the most this quarter", which had no path at all.
     _TREND_TABS_BASE = (
         "Daily",
         "Weekly",
@@ -363,6 +371,7 @@ class App:
         "Calendar",
         "Models",
         "Providers",
+        "Projects",
         "Harnesses",
     )
     # The `L` launch picker's targets: (shortcut key, kind, label). "copy" hands the
@@ -5208,6 +5217,7 @@ class App:
             ranked = {
                 "model": "Models",
                 "provider": "Providers",
+                "project": "Projects",
                 "source": "Harnesses",
                 "machine": "Machines",
             }[kind]
@@ -5949,6 +5959,29 @@ class App:
         # is a filter, not a partition like source/project/machine).
         return any(row["model_name"] == model for row in self.model_mix(session_id))
 
+    def project_rows(self, workflows: list[Workflow]) -> list[tuple[str, dict[str, float | int]]]:
+        # Spend grouped by the project it ran in -- the Trends "Projects" ranking, the
+        # source_rows/machine_rows twin. Deliberately NOT built off projects_for_workflows,
+        # which returns ProjectSummary: the ranked tabs all share one row shape
+        # ((name, {cost, tokens, sessions})) so _group_table draws them, sort_trend_rows
+        # orders them and trend_ranked_keys indexes them with no per-tab special case.
+        # Worktrees fold to their git root (project_root), exactly as the sidebar groups
+        # them, so one project is one row in both places; ignored projects are already
+        # out of all_workflows, which is what every ranked tab is fed.
+        by_project: dict[str, dict[str, float | int]] = defaultdict(
+            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
+        )
+        for w in workflows:
+            item = by_project[self.project_root(w.directory) or "unknown"]
+            item["cost"] = float(item["cost"]) + w.total_cost
+            item["tokens"] = int(item["tokens"]) + w.total_tokens
+            item["sessions"] = int(item["sessions"]) + 1
+        return sorted(
+            by_project.items(),
+            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
+            reverse=True,
+        )
+
     def source_rows(self, workflows: list[Workflow]) -> list[tuple[str, dict[str, float | int]]]:
         # Spend grouped by the tool it came from, cost-sorted -- the Sources tab's
         # rows and the per-scope Sources detail tables.
@@ -5980,6 +6013,8 @@ class App:
             rows: list[tuple] = self.trend_model_rows()
         elif tab == "Providers":
             rows = self.trend_provider_rows()
+        elif tab == "Projects":
+            rows = self.project_rows(self.all_workflows)
         elif tab == "Harnesses":
             rows = self.source_rows(self.all_workflows)
         elif tab == "Machines":
@@ -6053,11 +6088,17 @@ class App:
         if self.trend_drill is None:
             return []
         kind, key = self.trend_drill
-        if kind in ("source", "machine"):
-            # The machine key comes from machine_rows, which labels an untagged session
-            # with THIS box -- so match by the same rule, or the drill silently opens on
-            # an empty list for a row the tab just showed.
-            field = self.machine_of if kind == "machine" else (lambda w: w.source or "unknown")
+        if kind in ("source", "machine", "project"):
+            # Each of these rows names a whole-session property, so the drill is one
+            # equality test -- but it must be the SAME rule the ranking grouped by, or
+            # the drill silently opens an empty list for a row the tab just showed. The
+            # machine key comes from machine_rows, which labels an untagged session with
+            # THIS box; the project key is the git root, not the raw cwd of a worktree.
+            field = {
+                "machine": self.machine_of,
+                "project": lambda w: self.project_root(w.directory) or "unknown",
+                "source": lambda w: w.source or "unknown",
+            }[kind]
             rows = [
                 (w, w.total_cost, w.total_tokens) for w in self.all_workflows if field(w) == key
             ]
@@ -6269,6 +6310,7 @@ class App:
         kind = {
             "Models": "model",
             "Providers": "provider",
+            "Projects": "project",
             "Harnesses": "source",
             "Machines": "machine",
         }[current]

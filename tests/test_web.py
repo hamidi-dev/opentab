@@ -315,6 +315,26 @@ def test_web_trend_rankings_are_sortable_by_column():
     assert "h('th', { class: 'l' }, '')" in page and "h('th', null, 'Share')" in page
 
 
+def test_web_mirrors_the_projects_ranking_and_its_drill():
+    page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-07-01 10:00:00")])))
+    # The tab sits with the other session-derived rankings, after the model-derived ones.
+    assert "'Providers', 'Projects', 'Harnesses'" in page
+    assert "function trendProjects()" in page and "Projects: trendProjects" in page
+    # It ranks the same field the payload folded to a git root, and its rows drill like
+    # every other ranking -- one equality test on the session's own project.
+    assert "projectRows(W).map(r => ({ name: r.project" in page
+    assert "TRENDS.drill = { kind: 'project', key: r.name }" in page
+    assert "kind === 'project' ? (w.project || 'unknown')" in page
+    # A project cell is a path: basename first, the $HOME-folded path beside it, so a
+    # column of siblings under one tree stays readable (the TUI's short_path rule).
+    assert (
+        "nameFmt: r => [projName(r.name), ' ', h('span', { class: 'mut' }, shortPath(r.name))]"
+        in page
+    )
+    # ...and the drill's own header labels that path rather than printing it raw.
+    assert "const label = kind === 'project' ? shortPath(key) : key;" in page
+
+
 def test_web_meta_carries_the_baked_theme():
     app = app_with([workflow("w1", "2026-05-01 10:00:00")])
     app.args.theme = "gruvbox"  # --theme sets the browser's initial theme

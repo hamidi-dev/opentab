@@ -1,5 +1,7 @@
 """The Trends overlay and the calendar heatmap."""
 
+import os
+
 import opentab as ot
 
 from tests._support import (
@@ -995,7 +997,13 @@ def test_every_ranked_trends_table_fits_the_height_it_was_given():
     app = _tall_ranked_app()
     rnd = app.renderer
     for height in (8, 10, 14, 20):
-        for name in ("trend_models", "trend_providers", "trend_sources", "trend_machines"):
+        for name in (
+            "trend_models",
+            "trend_providers",
+            "trend_projects",
+            "trend_sources",
+            "trend_machines",
+        ):
             lines = getattr(rnd, name)(100, height)
             assert len(lines) <= height, (name, height, len(lines))
             # ...and what survives is a whole box: the TOTAL row and its bottom border.
@@ -1010,9 +1018,119 @@ def test_a_windowed_harness_ranking_totals_the_whole_ranking():
     app = _tall_ranked_app()
     rnd = app.renderer
     full = sum(w.total_cost for w in app.all_workflows)
-    for name in ("trend_sources", "trend_machines"):
+    for name in ("trend_sources", "trend_machines", "trend_projects"):
         lines = getattr(rnd, name)(100, 12)
         total_line = next(ln for ln in lines if "TOTAL" in ln)
         assert ot.money(full) in total_line, (name, total_line)
         # The window really is shorter than the ranking, or this proves nothing.
-        assert sum(1 for ln in lines if "box" in ln or "harness" in ln) < 12
+        assert sum(1 for ln in lines if "box" in ln or "harness" in ln or "/p" in ln) < 12
+
+
+def _projects_app():
+    # Three projects, one of them reached through a worktree (the sidebar folds a
+    # worktree onto its git root, and the ranking has to group the same way).
+    ws = [
+        workflow("a", "2026-06-01 10:00:00", cost=5.0, tokens=500, directory="/repos/alpha"),
+        workflow("b", "2026-06-02 10:00:00", cost=3.0, tokens=300, directory="/repos/beta"),
+        workflow("c", "2026-06-03 10:00:00", cost=2.0, tokens=200, directory="/repos/alpha-wt"),
+        workflow("d", "2026-06-04 10:00:00", cost=1.0, tokens=100, directory="/repos/gamma"),
+    ]
+    app = app_with(ws)
+    app._root_by_dir = {"/repos/alpha-wt": "/repos/alpha"}
+    app._invalidate_workflow_cache()
+    return app
+
+
+def test_trends_projects_ranks_by_git_root_and_drills_to_its_sessions():
+    # The tab Trends was missing: Models/Providers/Harnesses/Machines all ranked the
+    # range, and the one dimension people actually budget by had no leaderboard at all
+    # -- only the Projects browse MODE, which is navigation ("open this project"), not
+    # a ranking ("which project cost the most this quarter").
+    app = _projects_app()
+    assert "Projects" in app.trend_tabs
+    app.trend_tab = app.trend_tabs.index("Projects")
+    # Worktree folded into its root, so alpha leads with 5 + 2 rather than trailing beta.
+    assert app.trend_ranked_keys() == ["/repos/alpha", "/repos/beta", "/repos/gamma"]
+    rows = dict(app.trend_ranked_rows())
+    assert rows["/repos/alpha"] == {"cost": 7.0, "tokens": 700, "sessions": 2}
+    app.trend_row_index = 0
+    app._open_trend_drill()
+    assert app.trend_drill == ("project", "/repos/alpha")
+    # The drill must match by the SAME rule the ranking grouped by, or the worktree
+    # session silently drops out of the list its own row counted.
+    assert sorted(s[0].id for s in app.trend_drill_sessions()) == ["a", "c"]
+
+
+def test_trends_projects_tab_is_reachable_and_paints_in_the_overlay():
+    # The tab vocabulary and the overlay's own dispatch are two lists; a tab added to
+    # one and missed in the other renders as the Models table under a "Projects" title.
+    app = _projects_app()
+    app.handle_key(None, ord("T"))
+    while app.trend_tabs[app.trend_tab] != "Projects":
+        app.handle_key(None, ord("l"))
+    screen = FakeScreen(40, 120)
+    # color_pair()/init_pair() need a live initscr(); stub them so it runs headless.
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        app.renderer.draw_trends(screen, 0, 39, 120)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    text = screen_text(screen)
+    assert "Spend by project" in text
+    assert "/repos/alpha" in text and "Project" in text
+
+
+def test_trends_projects_sorts_by_its_own_columns_and_keeps_cost_as_the_tiebreak():
+    app = _projects_app()
+    app.trend_tab = app.trend_tabs.index("Projects")
+    assert set(app.trend_sort_options()) == {"cost", "name", "tokens", "count"}
+    # The shared "count"/"name" keys are labelled for the column actually on screen.
+    assert app.trend_sort_labels()["count"] == "Sessions"
+    assert app.trend_sort_labels()["name"] == "Project"
+    app.trend_sort = "count"
+    # alpha has 2 sessions; beta/gamma have 1 each and keep the SPEND order under the
+    # tie, rather than falling into dict order (sort_trend_rows' two-pass rule).
+    assert app.trend_ranked_keys() == ["/repos/alpha", "/repos/beta", "/repos/gamma"]
+    app.trend_sort_reverse = True  # a flip is measured from the column's natural order
+    assert app.trend_ranked_keys() == ["/repos/beta", "/repos/gamma", "/repos/alpha"]
+
+
+def test_trends_projects_fold_paths_instead_of_clipping_their_tails():
+    # A project row IS a path, and every path in one tree shares a long prefix -- so the
+    # generic tail-clip renders a column of identical "/Users/you/Softwar…" rows and cuts
+    # off the only part that tells them apart. Sizing on the RAW name is the other half:
+    # it claims the whole name column and starves the cost bar to its 3-cell floor, which
+    # leaves a "ranking" with nothing to rank by.
+    home = os.path.expanduser("~")
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 10:00:00", cost=5.0, directory=f"{home}/Projects/alpha"),
+            workflow("b", "2026-06-02 10:00:00", cost=1.0, directory=f"{home}/Projects/beta"),
+        ]
+    )
+    lines = app.renderer.trend_projects(100, 14)
+    body = [ln for ln in lines if "alpha" in ln or "beta" in ln]
+    assert len(body) == 2
+    # $HOME folds to ~ (so no row leaks the username), and the column is then narrow
+    # enough that the costliest row still draws a real bar.
+    assert all(home not in ln for ln in body)
+    assert all("~/Projects/" in ln for ln in body)
+    assert "\u2588" in body[0]
+    # And where a path genuinely outgrows the column, the elision takes the MIDDLE: the
+    # tail is what distinguishes two sibling projects.
+    narrow = [ln for ln in app.renderer.trend_projects(50, 14) if "alpha" in ln or "beta" in ln]
+    assert len(narrow) == 2
+    assert all("..." in ln for ln in narrow)  # elided, and elided at the HEAD:
+    assert "alpha" in narrow[0] and "beta" in narrow[1]
+
+
+def test_trends_projects_drill_labels_its_path_instead_of_printing_it_raw():
+    app = _projects_app()
+    app.trend_tab = app.trend_tabs.index("Projects")
+    app.trend_row_index = 0
+    app._open_trend_drill()
+    lines = app.renderer.trend_drill_lines(80, 14)
+    title = next(ln for ln in lines if "Sessions" in ln)
+    assert "alpha" in title and "session(s), most spend first" in title
