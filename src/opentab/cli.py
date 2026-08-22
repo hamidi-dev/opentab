@@ -768,7 +768,8 @@ def timings_command(args: argparse.Namespace) -> int:
     # We keep the rolled-up workflows too (row[5]) -- they're already in memory, and the
     # fleet breakdown below re-aggregates them per machine and per harness rather than
     # re-parsing anything.
-    backends: list[list] = []  # [label, files, ms, cached, sub, workflows, model_rows]
+    # [label, files, ms, cached, sub, workflows, model_rows, incremental]
+    backends: list[list] = []
     for sub in getattr(store, "stores", None) or [store]:
         label = getattr(sub, "source_name", type(sub).__name__)
         files = None
@@ -784,13 +785,20 @@ def timings_command(args: argparse.Namespace) -> int:
         # Keep the per-model rows: the fleet's list-price ("$") estimate reprices each
         # row's unpriced tokens (below), and they're already parsed -- discarding them
         # would mean a second model_breakdown scan.
-        backends.append([label, files, wf_ms + mb_ms, cached, sub, wf, mb])
+        # A splice re-read only the files that changed instead of the whole corpus --
+        # neither "cached" nor "parsed", and worth its own word here, since the whole
+        # point of this profiler is to say WHY a launch cost what it cost.
+        inc = bool(getattr(sub, "served_incrementally", False))
+        backends.append([label, files, wf_ms + mb_ms, cached, sub, wf, mb, inc])
     total_ms = (time.perf_counter() - t_start) * 1000.0
     backends.sort(key=lambda b: b[2], reverse=True)  # slowest backend first
 
     flags = [b[3] for b in backends if b[3] is not None]
+    warm = [b[3] or b[7] for b in backends if b[3] is not None]  # cached OR spliced
     if flags and all(flags):
         warmth = "warm start · all cached"
+    elif warm and all(warm):
+        warmth = "warm start · incremental"
     elif flags and any(flags):
         warmth = "partial cache"
     else:
@@ -810,9 +818,9 @@ def timings_command(args: argparse.Namespace) -> int:
     print(f"  build store     {fmt_ms(build_ms)}")
     print()
     print(f"  {'backend'.ljust(lbl)}  {'files':>5}  {'time':>10}")
-    for label, files, ms, cached, _sub, _wf, _mb in backends:
+    for label, files, ms, cached, _sub, _wf, _mb, inc in backends:
         fcell = str(files) if files is not None else "—"
-        status = {True: "cached", False: "parsed"}.get(cached, "")
+        status = {True: "cached", False: "incremental" if inc else "parsed"}.get(cached, "")
         bar = cost_bar(ms, peak, 12)
         print(f"  {label.ljust(lbl)}  {fcell:>5}  {fmt_ms(ms)}  {bar} {status}".rstrip())
     print()

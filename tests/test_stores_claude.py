@@ -992,3 +992,289 @@ def test_claude_does_not_accumulate_a_buffer_over_a_file_of_unterminated_garbage
         store = ot.ClaudeStore(os.path.join(tmp, "projects"), _claude_args())
         w = store.workflows()
         assert len(w) == 1 and w[0].total_tokens == 15
+
+
+def _incremental_corpus(tmp):
+    # Two ordinary sessions plus a subagent sidecar, which is the case that makes
+    # provenance non-trivial: the sidecar's records carry the PARENT's sessionId, so one
+    # session is fed by two files whose names share nothing.
+    root = os.path.join(tmp, "projects", "slug")
+    os.makedirs(os.path.join(root, "s1", "subagents"))
+    cwd = os.path.join(tmp, "repo")
+    _write_jsonl(
+        os.path.join(root, "s1.jsonl"),
+        [_claude_msg("s1", "claude-opus-4-8", _usage(100, 50, 0, 0), uuid="a0", cwd=cwd)],
+    )
+    _write_jsonl(
+        os.path.join(root, "s1", "subagents", "agent-x.jsonl"),
+        [
+            _claude_msg(
+                "s1",
+                "claude-opus-4-8",
+                _usage(40, 10, 0, 0),
+                uuid="a1",
+                cwd=cwd,
+                parent="a0",
+                side=True,
+            )
+        ],
+    )
+    _write_jsonl(
+        os.path.join(root, "s2.jsonl"),
+        [_claude_msg("s2", "claude-opus-4-8", _usage(7, 3, 0, 0), uuid="b0", cwd=cwd)],
+    )
+    return os.path.join(tmp, "projects")
+
+
+def test_claude_cache_provenance_names_every_file_a_session_was_built_from():
+    # The map CachedStore splices on. A session fed by a sidecar must list BOTH files, or
+    # an incremental re-parse would rebuild it from half its records and undercount the
+    # subagent subtree -- silently, since the rollup still looks like a plausible number.
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ot.ClaudeStore(_incremental_corpus(tmp), type("A", (), {"demo": False})())
+        assert store.cache_provenance() == {}  # nothing parsed yet: nothing to claim
+        store.workflows()
+        prov = store.cache_provenance()
+        assert set(prov) == {"s1", "s2"}
+        assert [os.path.basename(p) for p in prov["s1"]] == ["s1.jsonl", "agent-x.jsonl"]
+        assert [os.path.basename(p) for p in prov["s2"]] == ["s2.jsonl"]
+
+
+def test_claude_parse_subset_matches_a_full_parse_for_the_files_it_read():
+    with tempfile.TemporaryDirectory() as tmp:
+        args = type("A", (), {"demo": False})()
+        store = ot.ClaudeStore(_incremental_corpus(tmp), args)
+        full = {w.id: w for w in store.workflows()}
+        full_models = {r["root_id"]: r for r in store.model_breakdown()}
+
+        sliced = ot.ClaudeStore(store.root_dir, args)
+        rows, models, prov = sliced.parse_subset(sorted(store.cache_provenance()["s1"]))
+        assert [w.id for w in rows] == ["s1"]  # only the sessions living in those files
+        assert rows[0] == full["s1"]  # ... and byte-identical to the corpus parse
+        assert models[0] == full_models["s1"]
+        assert set(prov) == {"s1"}
+        # A slice must NOT claim to be the corpus: _session would then read a map holding
+        # one session as the whole tree and report every other session as missing.
+        assert sliced._sessions is None
+
+
+def test_claude_parse_subset_refuses_a_replay_capable_transcript():
+    # The one thing that makes the parse order-dependent: a resumed/forked transcript
+    # replays its parent's records, and only a whole-corpus parse (which reads it LAST)
+    # can tell whose they are. Read alone it would claim all of them.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        rec = _claude_msg("s9", "claude-opus-4-8", _usage(10, 5, 0, 0), uuid="c0", cwd=cwd)
+        rec["sessionKind"] = "background"  # the tail marker _replays_history looks for
+        _write_jsonl(os.path.join(root, "s9.jsonl"), [rec])
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        assert store.parse_subset([os.path.join(root, "s9.jsonl")]) is None
+
+
+def test_claude_workflow_order_breaks_ties_deterministically():
+    # Every Claude row costs $0, so the order rides entirely on total_tokens -- and the
+    # rows tied on it must not depend on which ones a splice happened to rebuild. Two
+    # sessions with identical usage, fed to the sorter in both orders.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        for sid in ("zzz", "aaa"):
+            _write_jsonl(
+                os.path.join(root, sid + ".jsonl"),
+                [_claude_msg(sid, "claude-opus-4-8", _usage(5, 5, 0, 0), uuid=sid, cwd=cwd)],
+            )
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        rows = store.workflows()
+        assert [w.id for w in rows] == ["aaa", "zzz"]
+        assert [w.id for w in store.sort_workflows(list(reversed(rows)))] == ["aaa", "zzz"]
+
+
+def test_claude_parse_subset_drops_the_single_transcript_memo():
+    # Reload (r) used to reset this by way of workflows(); a splice never calls it. A
+    # stale memo would leave an open session's Turns/Tools/Context tabs painting the
+    # parse from before the edit while the rollup beside them shows the new one.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        path = os.path.join(root, "s1.jsonl")
+        _write_jsonl(
+            path, [_claude_msg("s1", "claude-opus-4-8", _usage(10, 5, 0, 0), uuid="a0", cwd=cwd)]
+        )
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        assert len(store.message_timeline("s1")) == 1  # drill in: memoized
+        assert store._one is not None
+        _write_jsonl(
+            path,
+            [
+                _claude_msg("s1", "claude-opus-4-8", _usage(10, 5, 0, 0), uuid="a0", cwd=cwd),
+                _claude_msg("s1", "claude-opus-4-8", _usage(20, 5, 0, 0), uuid="a1", cwd=cwd),
+            ],
+        )
+        store.parse_subset([path])
+        assert store._one is None
+        assert len(store.message_timeline("s1")) == 2  # re-read, not served stale
+
+
+def test_claude_parse_subset_refuses_the_slice_that_would_double_count():
+    # The failure the replay guard exists to prevent, end to end: a transcript that
+    # replays another session's records claims the SAME (message.id, requestId) keys.
+    # Read alone it credits them to itself while the cache still holds them under the
+    # session that made them -- the same API calls counted twice, in the rollup rather
+    # than in one session's detail view.
+    #
+    # Measured on a 257-file corpus: 96 of 17,944 usage keys appear in more than one
+    # file, all of them one pair, and that pair IS the replay-flagged transcript. Zero
+    # collisions between two unflagged files -- which is the assumption ClaudeStore
+    # already makes elsewhere (_session reads a single transcript alone behind this very
+    # guard), so the splice adds no new trust, only a wider blast radius if it were ever
+    # wrong. Hence: pin the guard.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        made = _claude_msg(
+            "parent", "claude-opus-4-8", _usage(100, 50, 0, 0), uuid="p0", cwd=cwd, mid="m1"
+        )
+        _write_jsonl(os.path.join(root, "parent.jsonl"), [made])
+        replayed = dict(made, sessionId="child", sessionKind="background")
+        _write_jsonl(os.path.join(root, "child.jsonl"), [replayed])
+
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        full = {w.id: w.total_tokens for w in store.workflows()}
+        assert full["parent"] == 150  # the maker claims the call ...
+        assert full.get("child", 0) == 0  # ... and the replayer gets nothing
+
+        # A slice over the replaying transcript would report those same 150 tokens again.
+        assert store.parse_subset([os.path.join(root, "child.jsonl")]) is None
+        # Its parent alone is fine: a first claimer never depends on who replays it.
+        rows, _models, _prov = store.parse_subset([os.path.join(root, "parent.jsonl")])
+        assert [(w.id, w.total_tokens) for w in rows] == [("parent", 150)]
+
+
+def test_claude_parse_subset_reads_files_in_the_order_a_full_parse_would():
+    # Two fields are decided by the order a session's files are read -- `cwd` (hence the
+    # project) takes the FIRST seen, an ai-/custom-title the LAST -- so a slice that
+    # sorted its paths gave a multi-file session a different title AND a different
+    # project than the full parse of the same bytes. Both answers look plausible; only
+    # one matches the rows cached beside it.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        for name, cwd, title, ts in (
+            ("z.jsonl", os.path.join(tmp, "zrepo"), "from-z", "2026-01-01T00:00:00.000Z"),
+            ("a.jsonl", os.path.join(tmp, "arepo"), "from-a", "2026-01-02T00:00:00.000Z"),
+        ):
+            _write_jsonl(
+                os.path.join(root, name),
+                [
+                    _claude_msg("s1", "claude-opus-4-8", _usage(10, 5, 0, 0), uuid=name, cwd=cwd),
+                    {
+                        "type": "custom-title",
+                        "sessionId": "s1",
+                        "cwd": cwd,
+                        "timestamp": ts,
+                        "title": title,
+                    },
+                ],
+            )
+        # _files() order is pinned by hand rather than taken from the filesystem: APFS
+        # hands back directory entries already sorted, so on macOS glob order and
+        # sorted() coincide and this bug is INVISIBLE -- it only shows on a filesystem
+        # whose readdir is hash-ordered (ext4). A test that read the real order would
+        # pass here and let the regression through on Linux.
+        args = type("A", (), {"demo": False})()
+        order = [os.path.join(root, "z.jsonl"), os.path.join(root, "a.jsonl")]
+
+        def store():
+            st = ot.ClaudeStore(os.path.join(tmp, "projects"), args)
+            st._files = lambda: list(order)
+            return st
+
+        full = store().workflows()[0]
+        rows, _models, _prov = store().parse_subset(list(reversed(order)))
+        assert (rows[0].title, rows[0].directory) == (full.title, full.directory)
+        assert rows[0] == full
+
+
+def test_claude_parse_subset_drops_the_corpus_memo_so_a_reload_shows_the_edit():
+    # After a cold start _sessions holds the WHOLE corpus, and _session prefers it over
+    # everything. A splice never reaches workflows(), which is what used to reset it, so
+    # every open session's Turns/Tools/Context tabs would keep painting the pre-edit
+    # parse while the rollup beside them showed the new one.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        path = os.path.join(root, "s1.jsonl")
+        rows = [_claude_msg("s1", "claude-opus-4-8", _usage(10, 5, 0, 0), uuid="a0", cwd=cwd)]
+        _write_jsonl(path, rows)
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        store.workflows()  # cold start: the corpus memo is populated
+        assert store._sessions is not None
+        assert len(store.message_timeline("s1")) == 1
+
+        rows.append(_claude_msg("s1", "claude-opus-4-8", _usage(20, 5, 0, 0), uuid="a1", cwd=cwd))
+        _write_jsonl(path, rows)
+        store.parse_subset([path])  # what reload (r) now does instead of workflows()
+        assert store._sessions is None and store._one is None
+        assert len(store.message_timeline("s1")) == 2
+
+
+def test_claude_parse_subset_refuses_when_a_requested_file_vanished():
+    # The caller sized its splice around every file it asked for (they all stat()ed fine
+    # a moment ago). If one was deleted in between, reading the rest is not the slice
+    # that was ordered -- and the sessions it would have fed keep their cached rows.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        kept = os.path.join(root, "s1.jsonl")
+        _write_jsonl(
+            kept, [_claude_msg("s1", "claude-opus-4-8", _usage(10, 5, 0, 0), uuid="a0", cwd=cwd)]
+        )
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        assert store.parse_subset([kept]) is not None
+        assert store.parse_subset([kept, os.path.join(root, "gone.jsonl")]) is None
+
+
+def test_claude_parse_subset_refuses_when_a_file_vanishes_mid_read():
+    # read_files_parallel SKIPS a file that disappears (or turns unreadable) after the
+    # glob. A full parse merely under-reports for that run; a splice would write the
+    # partial rows to the cache under the pre-existing fingerprint, so restoring the file
+    # without changing its size or mtime -- a rename away and back -- would leave every
+    # later exact hit serving a rollup missing a transcript.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(os.path.join(root, "s1", "subagents"))
+        cwd = os.path.join(tmp, "repo")
+        main = os.path.join(root, "s1.jsonl")
+        side = os.path.join(root, "s1", "subagents", "agent-x.jsonl")
+        _write_jsonl(
+            main, [_claude_msg("s1", "claude-opus-4-8", _usage(100, 50, 0, 0), uuid="a0", cwd=cwd)]
+        )
+        _write_jsonl(
+            side,
+            [
+                _claude_msg(
+                    "s1",
+                    "claude-opus-4-8",
+                    _usage(40, 10, 0, 0),
+                    uuid="a1",
+                    cwd=cwd,
+                    parent="a0",
+                    side=True,
+                )
+            ],
+        )
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        assert store.parse_subset([main, side]) is not None
+
+        # The glob lists both, but the sidecar is gone by the time it is read.
+        real_files = store._files()
+        os.remove(side)
+        store._files = lambda: list(real_files)
+        assert store.parse_subset([main, side]) is None

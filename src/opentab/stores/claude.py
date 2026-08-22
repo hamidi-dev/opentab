@@ -288,7 +288,7 @@ class ClaudeStore:
         # session they are counted under. A stable sort, so files keep glob order
         # within each group, and ~10ms of tail reads over a 370-file corpus.
         files = sorted(self._files(), key=self._replays_history)
-        self._sessions = self._parse_texts(text for _path, text in read_files_parallel(files))
+        self._sessions = self._parse_texts(read_files_parallel(files))
         return self._sessions
 
     def _parse_one(self, workflow_id: str, paths: list[str] | None = None) -> dict | None:
@@ -300,9 +300,7 @@ class ClaudeStore:
             paths = self._transcripts(workflow_id)
         if not paths:
             return None
-        return self._parse_texts(text for _path, text in read_files_parallel(paths)).get(
-            workflow_id
-        )
+        return self._parse_texts(read_files_parallel(paths)).get(workflow_id)
 
     def _session(self, workflow_id: str, fallback: bool = True) -> dict | None:
         # One session's parsed state for the per-session extras (subagent tree, Turns,
@@ -488,17 +486,21 @@ class ClaudeStore:
                 # by the plain parser anyway, so refusing to rejoin it loses nothing.
                 pending, size = [raw], len(raw)
 
-    def _parse_texts(self, texts) -> dict[str, dict]:
+    def _parse_texts(self, items) -> dict[str, dict]:
+        # items is read_files_parallel's (path, text) stream. The path is carried
+        # through only to record which files produced each session ("files"), which is
+        # what lets CachedStore re-parse a changed file's sessions instead of the whole
+        # corpus -- see cache_provenance/parse_subset.
         sessions: dict[str, dict] = {}
         seen: set = set()  # dedupe resumed/forked overlap on (message.id, requestId)
-        for text in texts:
+        for path, text in items:
             for obj in self._records(text):
-                self._ingest(obj, sessions, seen)
+                self._ingest(obj, sessions, seen, path)
         for sid, s in sessions.items():
             self._finalize(sid, s)
         return sessions
 
-    def _ingest(self, o: dict, sessions: dict[str, dict], seen: set) -> None:
+    def _ingest(self, o: dict, sessions: dict[str, dict], seen: set, path: str = "") -> None:
         sid = o.get("sessionId")
         if not sid:
             return
@@ -523,7 +525,14 @@ class ClaudeStore:
                 "pending_tools": {},  # tool_use id -> name, consumed by its tool_result
                 "ctx_seen": set(),  # record uuids already composed (replay dedup)
                 "turn_by_key": {},  # (message.id, requestId) -> index into turns
+                "files": set(),  # transcripts that fed this session (cache provenance)
             }
+        if path:
+            # Provenance is deliberately a SUPERSET: a file marks the session even when
+            # every record it holds is later deduped away. Over-claiming costs one extra
+            # file in an incremental re-parse; under-claiming would leave a session's
+            # rollup half-computed, which is the failure that must not happen.
+            s["files"].add(path)
         cwd = o.get("cwd")
         if cwd and not s["cwd"]:
             s["cwd"] = cwd
@@ -896,7 +905,29 @@ class ClaudeStore:
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         self._one = None  # ... and so must the single-transcript memo behind _session
-        sessions = self._parse()
+        return self._workflow_rows(self._parse())
+
+    @staticmethod
+    def sort_workflows(rows: list[Workflow]) -> list[Workflow]:
+        # The one copy of this backend's row order. CachedStore's incremental splice
+        # re-orders the merged set through it, so a spliced launch and a full parse
+        # cannot disagree about the order they hand App.
+        #
+        # Ties are broken by id, which is what makes that promise keepable. Every Claude
+        # row costs $0, so the whole ordering rides on total_tokens -- and a stable sort
+        # leaves rows tied on it (the empty and near-empty sessions) in the order they
+        # were built, i.e. glob order. That is arbitrary but it USED to be at least
+        # repeatable; a splice rebuilds only some of them, so the tied rows would
+        # reshuffle between launches for no reason the reader can see. Two passes: id
+        # ascending first, then the real key descending over it (the sort_trend_rows
+        # pattern), because reverse=True would invert the tiebreak along with the key.
+        rows = sorted(rows, key=lambda w: w.id)
+        rows.sort(key=lambda w: (w.total_cost, w.total_tokens), reverse=True)
+        return rows
+
+    def _workflow_rows(self, sessions: dict[str, dict]) -> list[Workflow]:
+        # Rows for an arbitrary parsed session map -- the whole corpus (workflows) or
+        # just the files an incremental cache miss had to re-read (parse_subset).
         rows = []
         for sid, s in sessions.items():
             model_rows = s["model_rows"]
@@ -919,8 +950,7 @@ class ClaudeStore:
             )
         if self.demo:
             rows = [self._demo_workflow(w) for w in rows]
-        rows.sort(key=lambda w: (w.total_cost, w.total_tokens), reverse=True)
-        return rows
+        return self.sort_workflows(rows)
 
     def _demo_workflow(self, w: Workflow) -> Workflow:
         # Mirror Store._demo_workflow: anonymize, backfill a synthetic price for the
@@ -938,10 +968,100 @@ class ClaudeStore:
         }
 
     def model_breakdown(self) -> list[dict]:
+        return self._model_rows(self._parse())
+
+    @staticmethod
+    def _model_rows(sessions: dict[str, dict]) -> list[dict]:
         out: list[dict] = []
-        for s in self._parse().values():
+        for s in sessions.values():
             out.extend(s["model_rows"])
         return out
+
+    # --- incremental warm-start cache (CachedStore opt-ins) ------------------
+    def cache_provenance(self) -> dict[str, list[str]]:
+        """session id -> the transcripts that produced its rows, for the last parse.
+
+        The corpus grows forever while a launch changes one file -- the transcript of
+        the session you launched FROM, which is why `--goto` from inside a live agent
+        session never hit the warm-start cache: +4KB threw away the rollup for 531MB
+        (measured, 257 files / 1823ms). With this map CachedStore can re-read just the
+        sessions a changed file touches. Empty until workflows() has parsed, and empty
+        after a cache HIT (nothing parsed, so nothing new to say -- the cache keeps the
+        provenance it already stored).
+        """
+        if not self._sessions:
+            return {}
+        return {sid: sorted(s["files"]) for sid, s in self._sessions.items()}
+
+    def parse_subset(self, paths: list[str]) -> tuple[list[Workflow], list[dict], dict] | None:
+        """(workflows, model rows, provenance) for exactly the sessions in `paths`, or
+        None when the slice cannot be trusted and the caller must parse everything.
+
+        The one thing that makes this parse order-dependent is the resumed/forked
+        overlap dedup: `_parse` sorts replay-capable transcripts LAST so the session
+        that actually made an API call claims it before the session that merely
+        replayed it. A replay transcript read WITHOUT its parent claims the parent's
+        whole history, so any slice holding one is refused outright -- measured on a
+        real corpus, that is 1 file of 257 (3MB of 531MB), so refusing it costs
+        essentially nothing. Ordinary transcripts are safe alone in both directions: a
+        first claimer's rows never depend on who replays it later.
+
+        Deliberately does NOT populate self._sessions: only a whole-corpus parse may
+        claim that, or the per-session extras (_session) would read a map holding a
+        handful of sessions as if it were the corpus and report the rest as missing.
+        """
+        # Read them in the order _parse() would, which is _files()' -- NOT sorted(). Two
+        # fields are decided by the order a session's files are read: `cwd` (and so the
+        # project directory) takes the FIRST one seen, while an ai-/custom-title takes
+        # the LAST. So a session fed by more than one file (a sidecar, or a resumed copy
+        # under a second project slug) would otherwise get a different title and a
+        # different project from a slice than from a full parse of the same bytes --
+        # rows that are individually plausible and disagree with the cache beside them.
+        wanted = set(paths)
+        if any(self._replays_history(p) for p in wanted):
+            return None
+        files = [p for p in self._files() if p in wanted]
+        if len(files) != len(wanted):
+            # A file the caller asked for is no longer there -- deleted between the
+            # cache's stat() and now. Reading the slice without it is not the slice that
+            # was asked for, and the caller sized its splice around every one of these
+            # files, so answer "parse everything" rather than a subset it did not order.
+            return None
+        # A splice means files changed on disk, which is exactly what workflows() used to
+        # announce by resetting BOTH of these. Reload (r) no longer reaches workflows()
+        # when the cache can splice instead, so without this the memos behind _session
+        # survive a reload and the Turns/Tools/Context tabs of an open session keep
+        # painting the parse from before the edit -- while the rollup beside them shows
+        # the new one. _sessions matters even more than _one here: after a cold start it
+        # holds the WHOLE corpus, and _session prefers it over everything, so every
+        # session's detail tabs would go stale, not just the last one drilled into. The
+        # cost of dropping it is a lazy ~5ms _parse_one on the next drill-in -- exactly
+        # what a warm start already pays.
+        self._one = None
+        self._sessions = None
+        # Count what was actually READ, not just what was listed: read_files_parallel
+        # skips a file that vanished or turned unreadable after the glob, and a full
+        # parse merely under-reports for that run while a splice would WRITE the partial
+        # rows to the cache under the pre-existing fingerprint -- so restoring the file
+        # without changing its size or mtime (a rename away and back) leaves every later
+        # exact hit serving a rollup missing a transcript. Tallied through a wrapper
+        # rather than by materializing the list, so read_files_parallel keeps streaming
+        # and its memory bound survives.
+        read: list = []
+
+        def tally(stream):
+            for path, text in stream:
+                read.append(path)
+                yield path, text
+
+        sessions = self._parse_texts(tally(read_files_parallel(files)))
+        if len(read) != len(files):
+            return None
+        return (
+            self._workflow_rows(sessions),
+            self._model_rows(sessions),
+            {sid: sorted(s["files"]) for sid, s in sessions.items()},
+        )
 
     # How much of a transcript head to scan for its "cwd" -- every Claude Code
     # record carries one, so the first complete line normally answers; the budget

@@ -325,3 +325,407 @@ def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
                 os.environ.pop("XDG_CACHE_HOME", None)
             else:
                 os.environ["XDG_CACHE_HOME"] = old_xdg
+
+
+class _SpliceBackend:
+    """A backend that implements the two incremental opt-ins over a toy file->session
+    map, and counts what it was asked to read."""
+
+    combined = False
+    records_cost = False
+    demo = False
+    source_name = "Fake"
+
+    def __init__(self, layout):
+        self.layout = layout  # {path: {sid: tokens}}
+        self.full_parses = 0
+        self.subset_calls = []
+        self.refuse = set()  # paths parse_subset must refuse (a replay transcript)
+
+    def cache_inputs(self):
+        return sorted(self.layout)
+
+    def _sessions(self, paths):
+        out = {}
+        for path in paths:
+            for sid, tokens in self.layout.get(path, {}).items():
+                out[sid] = out.get(sid, 0) + tokens
+        return out
+
+    @staticmethod
+    def sort_workflows(rows):
+        rows = sorted(rows, key=lambda w: w.id)
+        rows.sort(key=lambda w: (w.total_cost, w.total_tokens), reverse=True)
+        return rows
+
+    def _rows(self, sessions):
+        rows = [
+            workflow(sid, "2026-06-01 12:00:00", cost=0.0, tokens=tokens)
+            for sid, tokens in sessions.items()
+        ]
+        models = [
+            {"root_id": sid, "model_name": "anthropic/x", "runs": 1, "tokens_total": tokens}
+            for sid, tokens in sessions.items()
+        ]
+        return self.sort_workflows(rows), models
+
+    def workflows(self):
+        self.full_parses += 1
+        self._last = self._sessions(self.cache_inputs())
+        return self._rows(self._last)[0]
+
+    def model_breakdown(self):
+        return self._rows(self._sessions(self.cache_inputs()))[1]
+
+    def cache_provenance(self):
+        prov = {}
+        for path, sessions in self.layout.items():
+            for sid in sessions:
+                prov.setdefault(sid, []).append(path)
+        return {sid: sorted(paths) for sid, paths in prov.items()}
+
+    def parse_subset(self, paths):
+        self.subset_calls.append(sorted(paths))
+        if self.refuse.intersection(paths):
+            return None
+        sessions = self._sessions(paths)
+        rows, models = self._rows(sessions)
+        prov = {}
+        for path in paths:
+            for sid in self.layout.get(path, {}):
+                prov.setdefault(sid, []).append(path)
+        return rows, models, {sid: sorted(p) for sid, p in prov.items()}
+
+
+def _splice_env(tmp, layout):
+    os.environ["XDG_CACHE_HOME"] = os.path.join(tmp, "cfg")
+    paths = {}
+    for name, sessions in layout.items():
+        path = os.path.join(tmp, name)
+        with open(path, "w") as fh:
+            fh.write(name + "\n")
+        paths[path] = sessions
+    return paths
+
+
+def _touch(path, text):
+    with open(path, "a") as fh:
+        fh.write(text + "\n")
+    st = os.stat(path)
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000))
+
+
+def test_cached_store_splices_only_the_sessions_a_changed_file_touches():
+    # The whole point: a corpus-wide fingerprint made ONE appended transcript throw away
+    # the rollup for every other file (measured: 4KB of growth cost a 531MB re-parse on
+    # every launch from inside a live session).
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            files = _splice_env(tmp, {"a.jsonl": {"s1": 100}, "b.jsonl": {"s2": 200}})
+            args = type("Args", (), {"demo": False, "no_cache": False})()
+            cid = "fake|splice"
+            a = next(p for p in files if p.endswith("a.jsonl"))
+
+            back = _SpliceBackend(files)
+            cold = ot.CachedStore(back, cid, args)
+            truth = [(w.id, w.total_tokens) for w in cold.workflows()]
+            truth_mb = cold.model_breakdown()
+            assert back.full_parses == 1
+
+            files[a] = {"s1": 150}  # the live session grew
+            _touch(a, "more")
+            back2 = _SpliceBackend(files)
+            warm = ot.CachedStore(back2, cid, args)
+            rows = warm.workflows()
+            assert back2.full_parses == 0  # never re-read the corpus
+            assert back2.subset_calls == [[a]]  # ... only the file that changed
+            assert warm.served_incrementally is True and warm.served_from_cache is False
+            assert [(w.id, w.total_tokens) for w in rows] == [("s2", 200), ("s1", 150)]
+            # The breakdown rides on the same splice: asking the backend would parse
+            # everything, which is exactly the cost just avoided.
+            assert sorted(r["tokens_total"] for r in warm.model_breakdown()) == [150, 200]
+
+            # ... and the splice is what gets cached, so the NEXT launch is a plain hit
+            # serving rows identical to a full parse of the same corpus.
+            back3 = _SpliceBackend(files)
+            again = ot.CachedStore(back3, cid, args)
+            assert [(w.id, w.total_tokens) for w in again.workflows()] == [
+                ("s2", 200),
+                ("s1", 150),
+            ]
+            assert again.served_from_cache is True and back3.full_parses == 0
+            assert truth == [("s2", 200), ("s1", 100)] and len(truth_mb) == 2
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
+
+
+def test_cached_store_splice_reparses_a_whole_session_not_just_the_changed_file():
+    # One file can hold several sessions (a subagent sidecar carries its PARENT's id), so
+    # re-reading only the changed file would rebuild a co-tenant session from half its
+    # records -- a plausible-looking undercount. The closure runs over the file<->session
+    # graph, so a changed sidecar drags in its parent's transcript AND the other sessions
+    # that transcript feeds.
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            files = _splice_env(
+                tmp,
+                {
+                    "main.jsonl": {"s1": 100, "s2": 10},  # a resumed transcript: two ids
+                    "side.jsonl": {"s1": 40},  # s1's subagent sidecar
+                    "other.jsonl": {"s3": 7},  # untouched, must stay cached
+                },
+            )
+            args = type("Args", (), {"demo": False, "no_cache": False})()
+            cid = "fake|closure"
+            side = next(p for p in files if p.endswith("side.jsonl"))
+            main = next(p for p in files if p.endswith("main.jsonl"))
+
+            seed = ot.CachedStore(_SpliceBackend(files), cid, args)
+            seed.workflows()
+            seed.model_breakdown()  # same wrapper: the pair is what gets written
+
+            _touch(side, "more")
+            back = _SpliceBackend(files)
+            warm = ot.CachedStore(back, cid, args)
+            rows = warm.workflows()
+            assert warm.served_incrementally is True
+            assert back.subset_calls == [[main, side]]  # NOT [side] alone
+            assert {w.id for w in rows} == {"s1", "s2", "s3"}
+            assert {w.id: w.total_tokens for w in rows}["s1"] == 140
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
+
+
+def test_cached_store_falls_back_to_a_full_parse_when_the_splice_cannot_be_trusted():
+    # Each of these would otherwise serve a number no parse would ever produce, so each
+    # one costs the full parse it was trying to avoid. Cheap: measured on a real corpus,
+    # a replay-capable transcript is 1 file of 257.
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            args = type("Args", (), {"demo": False, "no_cache": False})()
+
+            def seed(name, layout):
+                files = _splice_env(os.path.join(tmp, name), layout)
+                cid = "fake|" + name
+                cold = ot.CachedStore(_SpliceBackend(files), cid, args)
+                cold.workflows()
+                cold.model_breakdown()  # same wrapper: the pair is what gets written
+                return files, cid
+
+            for name in ("refuse", "removed", "newfile", "noprov"):
+                os.makedirs(os.path.join(tmp, name))
+
+            # 1. the backend refuses the slice (for Claude: a replay-capable transcript)
+            files, cid = seed("refuse", {"a.jsonl": {"s1": 1}, "b.jsonl": {"s2": 2}})
+            a = next(p for p in files if p.endswith("a.jsonl"))
+            _touch(a, "x")
+            back = _SpliceBackend(files)
+            back.refuse = {a}
+            c = ot.CachedStore(back, cid, args)
+            c.workflows()
+            assert back.full_parses == 1 and c.served_incrementally is False
+
+            # 2. a file disappeared: its records may have been the first claim on keys a
+            #    resumed transcript also holds, which no per-session slice can see.
+            files, cid = seed("removed", {"a.jsonl": {"s1": 1}, "b.jsonl": {"s2": 2}})
+            gone = next(p for p in files if p.endswith("b.jsonl"))
+            os.remove(gone)
+            del files[gone]
+            back = _SpliceBackend(files)
+            ot.CachedStore(back, cid, args).workflows()
+            assert back.full_parses == 1
+
+            # 3. a NEW file turns out to feed a session the cache already has rows for.
+            #    Its provenance could not be known before parsing it, so the closure
+            #    missed that session's other files and the slice is incomplete.
+            files, cid = seed("newfile", {"a.jsonl": {"s1": 1}, "b.jsonl": {"s2": 2}})
+            extra = os.path.join(tmp, "newfile", "c.jsonl")
+            with open(extra, "w") as fh:
+                fh.write("c\n")
+            files[extra] = {"s1": 5}
+            back = _SpliceBackend(files)
+            ot.CachedStore(back, cid, args).workflows()
+            assert back.full_parses == 1
+            assert back.subset_calls == [[extra]]  # it tried, then bailed
+
+            # 4. a cache written before provenance existed: nothing to splice on.
+            files, cid = seed("noprov", {"a.jsonl": {"s1": 1}})
+            from opentab.stores.cached import cache_dir
+
+            for fname in os.listdir(cache_dir()):
+                fpath = os.path.join(cache_dir(), fname)
+                blob = json.load(open(fpath))
+                if blob.get("source") == "fake":
+                    blob["provenance"] = {}
+                    json.dump(blob, open(fpath, "w"))
+            _touch(next(iter(files)), "x")
+            back = _SpliceBackend(files)
+            ot.CachedStore(back, cid, args).workflows()
+            assert back.full_parses == 1
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
+
+
+def test_cached_store_splice_refuses_a_file_that_shrank():
+    # A transcript that shrank was rewritten, not appended to, and a record that vanished
+    # may have been the first claim on a dedup key another session also holds -- which
+    # would hand that call to the other session. Rows this splice keeps cannot see that.
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            files = _splice_env(tmp, {"a.jsonl": {"s1": 100}, "b.jsonl": {"s2": 200}})
+            args = type("Args", (), {"demo": False, "no_cache": False})()
+            cid = "fake|shrink"
+            cold = ot.CachedStore(_SpliceBackend(files), cid, args)
+            cold.workflows()
+            cold.model_breakdown()
+
+            a = next(p for p in files if p.endswith("a.jsonl"))
+            with open(a, "w") as fh:  # rewrite, shorter than before
+                fh.write("")
+            st = os.stat(a)
+            os.utime(a, ns=(st.st_atime_ns, st.st_mtime_ns + 10_000_000))
+            back = _SpliceBackend(files)
+            c = ot.CachedStore(back, cid, args)
+            c.workflows()
+            assert back.full_parses == 1 and c.served_incrementally is False
+            assert back.subset_calls == []  # refused before the backend was asked
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
+
+
+def test_cached_store_splice_survives_a_corrupt_cache_payload():
+    # These paths only run on a MISS, where the old code simply reparsed -- so a cache
+    # file someone hand-edited (or a half-migrated one) must fall back to a full parse,
+    # never raise out of a launch.
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            args = type("Args", (), {"demo": False, "no_cache": False})()
+            for i, damage in enumerate(
+                (
+                    {"fingerprint": [1]},
+                    {"workflows": [1]},
+                    {"model_breakdown": [1]},
+                    {"provenance": {"s1": "not-a-list"}},
+                    {"fingerprint": [["a.jsonl", "not-a-size", None]]},
+                )
+            ):
+                sub = os.path.join(tmp, f"c{i}")
+                os.makedirs(sub)
+                files = _splice_env(sub, {"a.jsonl": {"s1": 1}, "b.jsonl": {"s2": 2}})
+                cid = f"fake|corrupt{i}"
+                cold = ot.CachedStore(_SpliceBackend(files), cid, args)
+                cold.workflows()
+                cold.model_breakdown()
+
+                from opentab.stores.cached import cache_dir
+
+                for fname in os.listdir(cache_dir()):
+                    fpath = os.path.join(cache_dir(), fname)
+                    blob = json.load(open(fpath))
+                    if blob.get("source") == "fake" and blob.get("fingerprint"):
+                        if any(r[0].startswith(sub) for r in blob["fingerprint"]):
+                            blob.update(damage)
+                            json.dump(blob, open(fpath, "w"))
+                _touch(next(iter(files)), "x")
+                back = _SpliceBackend(files)
+                c = ot.CachedStore(back, cid, args)
+                rows = c.workflows()  # must not raise
+                assert {w.id for w in rows} == {"s1", "s2"}
+                assert back.full_parses == 1, damage
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
+
+
+def test_cached_store_rejects_a_cache_whose_rows_are_the_wrong_shape():
+    # Row shapes are checked at LOAD, not at each use: the rows are read on the hit path
+    # too (Workflow(**row) / dict(row)), so checking only the splice left a hand-edited
+    # model_breakdown raising TypeError out of a launch whose fingerprint matched exactly.
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            args = type("Args", (), {"demo": False, "no_cache": False})()
+            for i, damage in enumerate(({"workflows": [1]}, {"model_breakdown": [1]})):
+                sub = os.path.join(tmp, f"h{i}")
+                os.makedirs(sub)
+                files = _splice_env(sub, {"a.jsonl": {"s1": 1}})
+                cid = f"fake|hit{i}"
+                cold = ot.CachedStore(_SpliceBackend(files), cid, args)
+                cold.workflows()
+                cold.model_breakdown()
+
+                from opentab.stores.cached import cache_dir
+
+                for fname in os.listdir(cache_dir()):
+                    fpath = os.path.join(cache_dir(), fname)
+                    blob = json.load(open(fpath))
+                    if blob.get("fingerprint") and any(
+                        r[0].startswith(sub) for r in blob["fingerprint"]
+                    ):
+                        blob.update(damage)
+                        json.dump(blob, open(fpath, "w"))
+
+                # The fingerprint still matches exactly -- this is the HIT path.
+                back = _SpliceBackend(files)
+                c = ot.CachedStore(back, cid, args)
+                assert {w.id for w in c.workflows()} == {"s1"}
+                assert [r["root_id"] for r in c.model_breakdown()] == ["s1"]  # no raise
+                assert back.full_parses == 1, damage
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
+
+
+def test_cached_store_incremental_flag_is_per_call_not_sticky():
+    # --timings reads this. One wrapper answers workflows() more than once (reload, and
+    # --remote builds the local store then profiles it), so a splice followed by a full
+    # parse must not still report "incremental" -- a profiler that is confidently wrong
+    # about why a launch was slow is worse than one that says nothing.
+    with tempfile.TemporaryDirectory() as tmp:
+        old_xdg = os.environ.get("XDG_CACHE_HOME")
+        try:
+            files = _splice_env(tmp, {"a.jsonl": {"s1": 1}, "b.jsonl": {"s2": 2}})
+            args = type("Args", (), {"demo": False, "no_cache": False})()
+            cid = "fake|sticky"
+            cold = ot.CachedStore(_SpliceBackend(files), cid, args)
+            cold.workflows()
+            cold.model_breakdown()
+
+            a = next(p for p in files if p.endswith("a.jsonl"))
+            _touch(a, "x")
+            back = _SpliceBackend(files)
+            c = ot.CachedStore(back, cid, args)
+            c.workflows()
+            assert c.served_incrementally is True
+
+            # Same wrapper, second call: now the backend refuses, so it is a full parse.
+            back.refuse = {a}
+            _touch(a, "y")
+            c.workflows()
+            assert c.served_incrementally is False and back.full_parses == 1
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = old_xdg
