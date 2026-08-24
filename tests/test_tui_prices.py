@@ -505,8 +505,9 @@ def test_prices_overlay_close_only_on_esc_q_or_P():
     assert app.help and app.show_prices
     app.handle_key(None, ord("?"))  # ...and closing it lands back on the table
     assert not app.help and app.show_prices
+    was_api = app.show_api_prices
     app.handle_key(None, ord("$"))  # $ re-prices in place, the table stays
-    assert app.show_api_prices and app.show_prices
+    assert app.show_api_prices is not was_api and app.show_prices
     app.handle_key(None, ord("P"))  # P again closes (a toggle)
     assert not app.show_prices
     app.handle_key(None, ord("P"))
@@ -545,29 +546,27 @@ def test_price_refresh_while_api_view_applied_does_not_compound_estimate():
     # while _apply_price_mode has already swapped the estimate into the live cost
     # fields ($ starts on for cost-less backends). The recompute must build from
     # the real snapshots, not add a fresh estimate on top of the previous one.
-    app = ot.App.__new__(ot.App)
-
-    class _Store:
-        demo = False
-
-    app.store = _Store()
+    # A REAL App, not an App.__new__ stub: a reprice re-anchors every cost-ranked
+    # cursor by value, so it reads view state an uninitialised App does not have.
+    app = app_with(
+        [
+            ot.Workflow(
+                id="r",
+                title="t",
+                directory="d",
+                created_at="2026-01-01",
+                root_cost=10.0,
+                total_cost=10.0,
+                subagents=0,
+                model_count=2,
+                total_tokens=0,
+                unpriced_tokens=0,
+            )
+        ]
+    )
     app.show_api_prices = False
+    app._apply_price_mode()
     app._models_loaded = True
-    app.loaded = [
-        ot.Workflow(
-            id="r",
-            title="t",
-            directory="d",
-            created_at="2026-01-01",
-            root_cost=10.0,
-            total_cost=10.0,
-            subagents=0,
-            model_count=2,
-            total_tokens=0,
-            unpriced_tokens=0,
-        )
-    ]
-    app._snapshot_real_costs()
 
     def row(name, cost, inp):
         return {
@@ -609,20 +608,15 @@ def test_price_refresh_while_api_view_applied_does_not_compound_estimate():
     ] == 0.0
 
 
-def test_no_recorded_cost_defaults_to_estimate_view():
-    # A backend that records no dollars (Claude Code) would paint a wall of
-    # $0.00 in normal mode, so the $ estimate view starts on by default...
-    class SubscriptionStore(FakeStore):
-        records_cost = False
-
+def test_estimate_view_is_the_default():
+    # Most sessions bill nothing per call (a subscription/OAuth route), so the real
+    # view would open most installs on a wall of $0.00: the $ estimate starts on...
     args = type("Args", (), {"since": None, "until": None, "days": None})()
-    app = ot.App(SubscriptionStore([workflow("a", "2026-06-01 12:00:00")]), args)
-    assert app.show_api_prices
-    # ...but an explicit saved preference (user toggled $ off and quit) wins...
+    app = ot.App(FakeStore([workflow("a", "2026-06-01 12:00:00")]), args)
+    assert app.show_api_prices  # even here, where the store DOES record dollars
+    # ...but an explicit saved preference (user toggled $ off and quit) wins.
     ot.apply_state(app, args, {"show_api_prices": False})
     assert not app.show_api_prices
-    # ...and cost-recording stores keep the real-cost default.
-    assert not app_with([workflow("a", "2026-06-01 12:00:00")]).show_api_prices
 
 
 def test_unpriced_hint_matches_price_mode():

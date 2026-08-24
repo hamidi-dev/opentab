@@ -159,8 +159,8 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     # Restore the what-if ($) view. Only the flag is set here; the actual reprice
     # rides on the deferred model scan in run() (via _load_model_cache ->
     # _apply_price_mode), so the first paint still comes up off the fast rollup.
-    # An explicit saved value (True or False) overrides the records_cost-based
-    # default from App.__init__; absent (first run), that default stands.
+    # An explicit saved value (True or False) overrides App.__init__'s estimate-view
+    # default; absent (first run, or --no-state), that default stands.
     saved_api = state.get("show_api_prices")
     if saved_api is not None and not app.store.demo:
         app.show_api_prices = bool(saved_api)

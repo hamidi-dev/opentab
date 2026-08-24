@@ -101,7 +101,7 @@ def test_web_payload_carries_both_cost_snapshots():
     assert meta["version"] == ot.__version__
     assert meta["recordsCost"] is True
     assert meta["range"] == "all time"
-    assert meta["startApi"] is False
+    assert meta["startApi"] is True  # the estimate view is the default
     assert meta["serve"] is False
     by_id = {w["id"]: w for w in payload["workflows"]}
     assert set(by_id) == {"w1", "w2"}
@@ -1121,7 +1121,7 @@ def test_web_flamegraph_divides_the_same_node_costs_as_the_tui():
     # to tokens rather than drawing a hierarchy of zeros.
     with tempfile.TemporaryDirectory() as tmp:
         sub = _whatif_db(tmp, costs=(0, 0))
-        assert not sub.show_api_prices
+        sub.toggle_api_prices()  # to the real view; the estimate is the default
         assert sum(n["real"] for n in ot.build_payload(sub)["nodes"]["root"]) == 0
         assert sub.session_flame(sub.loaded[0]).unit == "tokens"
 

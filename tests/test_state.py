@@ -270,14 +270,14 @@ def test_bookmarks_are_persisted_in_state():
 
 def test_what_if_price_view_is_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
-    app.show_api_prices = True
+    app.show_api_prices = False  # the non-default: the estimate view is the cold start
     old_xdg = os.environ.get("XDG_STATE_HOME")
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["XDG_STATE_HOME"] = tmp
         try:
             ot.save_state(app)
             restored = app_with([workflow("a", "2026-06-01 12:00:00")])
-            assert not restored.show_api_prices
+            assert restored.show_api_prices  # the default, until the saved pref lands
             ot.apply_state(restored, restored.args, ot.load_state())
         finally:
             if old_xdg is None:
@@ -285,7 +285,7 @@ def test_what_if_price_view_is_persisted_in_state():
             else:
                 os.environ["XDG_STATE_HOME"] = old_xdg
 
-    assert restored.show_api_prices
+    assert not restored.show_api_prices
 
 
 def test_calendar_granularity_is_persisted_in_state():

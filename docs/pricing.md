@@ -10,9 +10,9 @@ That money isn't missing, it's billed elsewhere — by your subscription or acco
 credits — so OpenTab surfaces it as "unpriced tokens" rather than guessing.
 
 Two formatting rules keep this honest: sub-cent costs render as `<$0.01`, while a red
-`$0.00` specifically means *unpriced*. And in the harnesses that record no cost at all
-(Claude Code, Codex, Copilot), the `$` view starts on by default with an `ESTIMATED`
-header tag — see [Data harnesses](sources.md#token-only-harnesses).
+`$0.00` specifically means *unpriced*. And the `$` view **starts on by default** —
+most sessions bill nothing per call, so the recorded view would be a wall of `$0.00`;
+press `$` for the recorded numbers, and your choice is remembered.
 
 ## The `$` what-if view
 

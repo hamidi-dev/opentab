@@ -490,11 +490,11 @@ class App:
             {(source_key, self._store_state_key(store)): store} if source_key else {}
         )
         self.loaded = store.workflows()  # every root session, all time
-        # "$" toggles real cost <-> API-equivalent. When no active backend records
-        # dollars (Claude Code alone, or "all" with Claude in the mix) the real view
-        # is a wall of $0.00, so start in the estimate view; an explicit saved pref
-        # (apply_state) or the $ key takes over from there.
-        self.show_api_prices = not getattr(store, "records_cost", True) and not store.demo
+        # "$" toggles real cost <-> API-equivalent, and the estimate is the default:
+        # most sessions bill nothing per call (a subscription/OAuth route), so the real
+        # view opens most installs on a wall of $0.00. A saved pref (apply_state) or
+        # the $ key wins from here. Never in demo -- "$" early-returns there.
+        self.show_api_prices = not store.demo
         # The `w` what-if target: one model, armed to answer a SESSION-scoped question
         # ("I ran the main agent on the expensive model and delegated the grunt work --
         # what if that model had done all of it?"). Its only effect is the session tree
@@ -2822,13 +2822,71 @@ class App:
             self.whatif_menu_index = 0
         return True
 
+    def _reprice_in_place(self) -> None:
+        # Apply a new price mode (or new rates) while keeping every cursor on the ROW it
+        # was on, rather than on its ordinal -- _resort_trends' rule, and for exactly the
+        # same reason: almost every list in the app is cost-ranked by default (the
+        # sessions list, the Projects sidebar, all four Trends rankings, a Trends drill),
+        # so re-pricing IS a re-sort and an ordinal stops meaning what it meant.
+        #
+        # Measured on a real 1181-session corpus, pressing "$" moved 106 of 117 Projects
+        # rows and changed row 0 on three of the four ranked tabs -- so the cursor landed
+        # on a different row essentially always, and Enter then drilled a project the
+        # reader had never selected. Cheap to miss, because nothing on screen says the
+        # selection moved: the highlight simply sits on a plausible neighbour.
+        anchor = self.selection_anchor()  # sessions list, sidebar, the open session
+        trend_key = self.selected_trend_key()  # the ranked Trends row, by value
+        drill_id = self.selected_trend_drill_id()  # ...and the session inside its drill
+        # The zoom tabs' pickers are cost-ranked too, and each is a plain ordinal into a
+        # list this reprice is about to re-order. They are NOT covered by the anchor
+        # above: restore_selection speaks for the sidebar and the sessions list only --
+        # and in time/machines mode it actively clobbers project_index, which means the
+        # zoom Projects picker there rather than a sidebar row (the _clear_project_drill
+        # trap). So capture all four by value and restore them after it has run.
+        picked = [
+            (self.zoom_selected_source(), "source_index", self.zoom_source_rows),
+            (self.zoom_selected_model(), "model_pick_index", self.zoom_model_rows),
+            (self.zoom_selected_machine(), "machine_pick_index", self.zoom_machine_rows),
+        ]
+        zoom_project = (
+            None if self.browse_mode == "projects" else self.zoom_selected_project()
+        )  # in projects mode project_index IS the sidebar, and the anchor owns it
+        scroll = self.scroll  # restore_selection zeroes the DETAIL pane's scroll, and
+        self._apply_price_mode()  # every other caller of it is a real navigation --
+        self.restore_selection(anchor)  # "$" is a reprice in place, so the pane stays put
+        self.scroll = scroll
+        if trend_key is not None:
+            keys = self.trend_ranked_keys()
+            self.trend_row_index = keys.index(trend_key) if trend_key in keys else 0
+        if drill_id is not None:
+            ids = [w.id for w, _cost, _tokens in self.trend_drill_sessions()]
+            self.trend_drill_index = ids.index(drill_id) if drill_id in ids else 0
+        for value, attr, rows_of in picked:
+            if value is None:
+                continue
+            names = [name for name, _row in rows_of()]
+            setattr(self, attr, names.index(value) if value in names else 0)
+        if zoom_project is not None:
+            dirs = [p.directory for p in self.zoom_projects()]
+            self.project_index = (
+                dirs.index(zoom_project.directory) if zoom_project.directory in dirs else 0
+            )
+
+    def selected_trend_drill_id(self) -> str | None:
+        # The session under the cursor in a Trends drill list, by value; None when no
+        # drill is open. The trend_drill_sessions twin of selected_trend_key.
+        rows = self.trend_drill_sessions()
+        if not rows:
+            return None
+        return rows[max(0, min(self.trend_drill_index, len(rows) - 1))][0].id
+
     def toggle_api_prices(self) -> None:
         if self.store.demo:
             self.notify("API-price view is for real data, not the demo", "error")
             return
         self._ensure_models()  # needs the per-model token breakdown
         self.show_api_prices = not self.show_api_prices
-        self._apply_price_mode()
+        self._reprice_in_place()
         self.notice = (
             "what-if prices (what unpriced usage would cost at API list prices)"
             if self.show_api_prices
@@ -2848,7 +2906,7 @@ class App:
         self._whatif_catalog_rows = None  # the `w` picker's catalog tier reads those rates
         self._ensure_models()
         self._compute_api_costs()
-        self._apply_price_mode()
+        self._reprice_in_place()  # new rates re-rank the same lists "$" does
         # A refresh can drop a model from the catalog (a rename, a removed provider), so an
         # armed target may have just lost its list rate. _ensure_models is a no-op here
         # (models already loaded), so its usual revalidation never runs -- do it by hand,

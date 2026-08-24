@@ -610,6 +610,7 @@ def test_detail_tools_reprices_unpriced_under_dollar():
         db = os.path.join(tmp, "opencode.db")
         _write_opencode_db_with_tools(db)
         app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
+        app.toggle_api_prices()  # to the real view; the estimate is the default
         rnd = ot.Renderer(app)
         wf = app.loaded[0]
         normal = rnd.detail_tools(wf, 92)
@@ -695,7 +696,9 @@ def test_tool_treemap_shades_by_per_call_rate_not_by_its_own_area():
 
 
 def test_tool_treemap_uses_token_fallback_geometry_and_theme_fill_pairs():
-    rnd = app_with([]).renderer
+    app = app_with([])
+    app.show_api_prices = False  # the real view; the estimate is the default
+    rnd = app.renderer
     bucket = {
         "Bash": {"cost": 0.0, "tokens": 6000},
         "Edit": {"cost": 0.0, "tokens": 3000},
@@ -765,6 +768,7 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         db = os.path.join(tmp, "opencode.db")
         _write_opencode_db_with_turns(db)
         app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
+        app.toggle_api_prices()  # to the real view; the estimate is the default
         rnd = ot.Renderer(app)
         wf = app.loaded[0]
         # One row per prompt, columns always drawn -- the numbers ARE the tab, so they
@@ -959,6 +963,7 @@ def test_subagents_tab_reprices_unpriced_node_in_api_mode():
         expected = ot.api_equivalent_cost("github-copilot/claude-opus-4.5", 1_000_000, 0, 0, 0, 0)
         assert expected > 0  # guard: model must resolve to a real list price
 
+        app.toggle_api_prices()  # to the real view; the estimate is the default
         # Real mode: the unpriced subagent reads as $0.00.
         real = app._priced_nodes([r for r in store.workflow_nodes("root") if r["depth"] > 0])
         assert real[0]["cost"] == 0.0

@@ -650,6 +650,7 @@ def test_trend_providers_rolls_models_up_to_provider():
 
 def test_trend_providers_lists_unpriced_provider_and_hints_at_dollar():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app.show_api_prices = False  # the real view; the estimate is the default
     app._model_by_root = {"a": [_model_row("github-copilot/gpt-5", 0.0, 5_000)]}
     lines = app.renderer.trend_providers(80, 12)
     # A subscription/credit provider records $0 but still shows its token volume...
@@ -1134,3 +1135,67 @@ def test_trends_projects_drill_labels_its_path_instead_of_printing_it_raw():
     lines = app.renderer.trend_drill_lines(80, 14)
     title = next(ln for ln in lines if "Sessions" in ln)
     assert "alpha" in title and "session(s), most spend first" in title
+
+
+def _reprice_app():
+    # Real-cost order (alpha $5 > bravo $0) is deliberately the REVERSE of the
+    # API-estimate order (bravo's unpriced tokens > alpha's $5), so "$" visibly
+    # reorders every cost-ranked list instead of agreeing with the default.
+    app = app_with(
+        [
+            workflow("a", "2026-06-01 12:00:00", cost=5.0, directory="/alpha"),
+            workflow("b", "2026-06-02 12:00:00", cost=0.0, directory="/bravo"),
+        ]
+    )
+    app._model_by_root = {
+        "a": [dict(_model_row("anthropic/claude-opus-4-5", 5.0, 10), input=0)],
+        # $0 recorded with real tokens behind it: exactly what a subscription route
+        # looks like, and what the "$" estimate exists to price.
+        "b": [dict(_model_row("anthropic/claude-opus-4-5", 0.0, 20_000_000), input=20_000_000)],
+    }
+    app._models_loaded = True
+    app._compute_api_costs()
+    app._apply_price_mode()
+    return app
+
+
+def test_dollar_keeps_the_trends_cursor_on_the_row_it_was_on():
+    # "$" re-prices, and almost every list in the app is cost-ranked -- so a re-price IS
+    # a re-sort, and the ordinal stops meaning what it meant (_resort_trends' rule).
+    # Measured on a real 1181-session corpus, "$" moved 106 of 117 Projects rows and
+    # changed row 0 on three of the four ranked tabs, so Enter drilled a project the
+    # reader had never selected -- and nothing on screen said the selection had moved.
+    app = _open_trend_tab(_reprice_app(), "Projects")
+    assert app.show_api_prices  # the estimate view is the cold start
+    assert [name for name, _ in app.trend_ranked_rows()] == ["/bravo", "/alpha"]
+    assert app.selected_trend_key() == "/bravo" and app.trend_row_index == 0
+
+    app.handle_key(None, ord("$"))  # to the recorded view, which reverses the ranking
+    assert [name for name, _ in app.trend_ranked_rows()] == ["/alpha", "/bravo"]
+    assert app.selected_trend_key() == "/bravo" and app.trend_row_index == 1
+
+
+def test_dollar_keeps_the_trends_drill_on_the_session_it_was_on():
+    # The same for the sessions list inside a ranked row's drill: it is cost-ordered
+    # too, so the row under the cursor moves when the prices do.
+    app = _open_trend_tab(_reprice_app(), "Harnesses")
+    app._open_trend_drill()
+    assert app.trend_drill is not None
+    ids = [w.id for w, _c, _t in app.trend_drill_sessions()]
+    assert ids == ["b", "a"]  # bravo's estimate outranks alpha's recorded $5
+    assert app.selected_trend_drill_id() == "b"
+
+    app.handle_key(None, ord("$"))
+    assert [w.id for w, _c, _t in app.trend_drill_sessions()] == ["a", "b"]
+    assert app.selected_trend_drill_id() == "b" and app.trend_drill_index == 1
+
+
+def test_dollar_is_a_reprice_in_place_not_a_navigation():
+    # restore_selection zeroes the detail pane's scroll -- right for its other callers
+    # (a range change, a filter, a source swap) and wrong here: "$" must not scroll the
+    # tab you are reading back to the top just to re-anchor a cursor.
+    app = _open_trend_tab(_reprice_app(), "Projects")
+    app.trends = False
+    app.scroll = 7
+    app.handle_key(None, ord("$"))
+    assert app.scroll == 7

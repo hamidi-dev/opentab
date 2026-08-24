@@ -164,6 +164,7 @@ def test_whatif_baseline_prices_a_partially_recorded_session_in_full():
         assert actual > 0.01
         # The root node records that one cent, and it stays its Cost -- which is exactly
         # why the TOTAL line says the Cost column does not add up to the comparison.
+        app.toggle_api_prices()  # to the real view; the estimate is the default
         root_node = next(n for n in app.session_node_rows("root") if n["depth"] == 0)
         assert round(root_node["cost"], 6) == 0.01
         note = next(ln for ln in app.renderer.detail_subagents(wf, 200) if ln.startswith("!"))
@@ -428,6 +429,7 @@ def test_dollar_toggle_still_works_while_a_whatif_target_is_armed():
         opus_in = ot.model_price("anthropic/claude-opus-4.5")[0]
         haiku_in = ot.model_price("anthropic/claude-haiku-4.5")[0]
         estimate = opus_in + 2 * haiku_in  # each row at its OWN model's list rates
+        app.toggle_api_prices()  # to the real view; the estimate is the default
         assert round(wf.total_cost, 6) == 0.0  # nothing recorded, "$" off
 
         app.select_whatif_model("anthropic/claude-opus-4.5")
@@ -476,6 +478,7 @@ def test_whatif_target_is_not_tagged_into_the_header():
     # titles and caveats itself; the footer chip is the honest "a target is armed".
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
+        app.toggle_api_prices()  # to the real view, where only the target could tag it
 
         class _Scr(FakeScreen):
             # The header/footer also draw rules; FakeScreen only records addstr text.

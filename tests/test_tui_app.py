@@ -4533,3 +4533,59 @@ def test_both_session_lists_scope_from_the_one_mode_scope():
     app.set_browse_mode("machines")
     app.machine_index = 1  # past the synthetic "all machines" row, onto a real box
     assert len(app.mode_scope_workflows()) == 1
+
+
+def _zoom_reprice_app():
+    # Harness/model B is $0 recorded with a big unpriced block; A is $5 recorded with
+    # none. So the estimate view ranks B first and the recorded view ranks A first --
+    # every cost-ranked zoom picker visibly reorders under "$".
+    a = workflow("a", "2026-06-01 12:00:00", cost=5.0, directory="/alpha")
+    b = workflow("b", "2026-06-01 13:00:00", cost=0.0, directory="/bravo")
+    a.source, b.source = "A", "B"
+
+    class _Merged(FakeStore):
+        combined = True
+        source_name = "all"
+
+    app = ot.App(_Merged([a, b]), type("Ar", (), {"since": None, "until": None, "days": None})())
+    app._model_by_root = {
+        "a": [dict(_model_row("anthropic/claude-opus-4-5", 5.0, 10), input=0)],
+        "b": [dict(_model_row("openai/gpt-5", 0.0, 20_000_000), input=20_000_000)],
+    }
+    app._models_loaded = True
+    app._compute_api_costs()
+    app._apply_price_mode()
+    app.view = "zoom"
+    app.focus = "days"
+    return app
+
+
+def test_dollar_keeps_every_zoom_picker_on_the_row_it_was_on():
+    # The zoom tabs' pickers are cost-ranked ordinals into a list "$" re-orders, and
+    # selection_anchor does not speak for them -- it covers the sidebar and the sessions
+    # list. Left un-anchored, the Harnesses picker sat on B, "$" reordered to [A, B], and
+    # Enter drilled A: a pick the reader never made, with nothing on screen to say so.
+    app = _zoom_reprice_app()
+    assert app.show_api_prices
+    assert [n for n, _ in app.zoom_source_rows()] == ["B", "A"]
+    assert app.zoom_selected_source() == "B"
+    assert [n for n, _ in app.zoom_model_rows()][0] == "openai/gpt-5"
+    assert app.zoom_selected_model() == "openai/gpt-5"
+
+    app.toggle_api_prices()  # to the recorded view, which reverses both rankings
+    assert [n for n, _ in app.zoom_source_rows()] == ["A", "B"]
+    assert app.zoom_selected_source() == "B" and app.source_index == 1
+    assert app.zoom_selected_model() == "openai/gpt-5" and app.model_pick_index == 1
+
+
+def test_dollar_leaves_the_projects_sidebar_selection_to_the_anchor():
+    # project_index means the zoom Projects PICKER in time/machines mode but the SIDEBAR
+    # row in projects mode, where selection_anchor already restores it by directory.
+    # Re-anchoring it as a picker there would fight the anchor for the same field.
+    app = _zoom_reprice_app()
+    app.set_browse_mode("projects")
+    before = app.selected_project_summary
+    app.toggle_api_prices()
+    after = app.selected_project_summary
+    assert before is not None and after is not None
+    assert after.directory == before.directory

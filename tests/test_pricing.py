@@ -141,30 +141,36 @@ def test_local_providers_are_not_priced():
     assert ot.api_equivalent_cost("anthropic/claude-haiku-4.5", 1e6, 0, 0, 0, 0) > 0
 
 
-def test_api_price_toggle_prices_unpriced_usage():
-    app = ot.App.__new__(ot.App)
+def _priced_workflow(wid, root_cost=10.0, total_cost=10.0, subagents=0, model_count=2):
+    # The one row the $-arithmetic tests below price. Its costs are the RECORDED ones;
+    # each test then supplies the per-model split _compute_api_costs estimates from.
+    return ot.Workflow(
+        id=wid,
+        title="t",
+        directory="d",
+        created_at="2026-01-01",
+        root_cost=root_cost,
+        total_cost=total_cost,
+        subagents=subagents,
+        model_count=model_count,
+        total_tokens=0,
+        unpriced_tokens=0,
+    )
 
-    class _Store:
-        demo = False
 
-    app.store = _Store()
+def _priced_app(**kw):
+    # A REAL App parked in the recorded-cost view. Deliberately not an App.__new__ stub:
+    # "$" re-anchors every cost-ranked cursor by value, so the action reads the view
+    # state (years, the sessions list, the sidebar) that an uninitialised App lacks.
+    app = app_with([_priced_workflow("r", **kw)])
     app.show_api_prices = False
+    app._apply_price_mode()
     app._models_loaded = True  # skip the deferred scan in toggle_api_prices
-    app.loaded = [
-        ot.Workflow(
-            id="r",
-            title="t",
-            directory="d",
-            created_at="2026-01-01",
-            root_cost=10.0,
-            total_cost=10.0,  # one model really billed $10
-            subagents=0,
-            model_count=2,
-            total_tokens=0,
-            unpriced_tokens=0,
-        )
-    ]
-    app._snapshot_real_costs()
+    return app
+
+
+def test_api_price_toggle_prices_unpriced_usage():
+    app = _priced_app()
 
     def row(name, cost, inp):
         return {
@@ -208,29 +214,7 @@ def test_api_price_toggle_prices_unpriced_usage():
 
 
 def test_api_price_toggle_prices_unpriced_part_of_mixed_model_row():
-    app = ot.App.__new__(ot.App)
-
-    class _Store:
-        demo = False
-
-    app.store = _Store()
-    app.show_api_prices = False
-    app._models_loaded = True
-    app.loaded = [
-        ot.Workflow(
-            id="r",
-            title="t",
-            directory="d",
-            created_at="2026-01-01",
-            root_cost=10.0,
-            total_cost=10.0,
-            subagents=0,
-            model_count=1,
-            total_tokens=0,
-            unpriced_tokens=0,
-        )
-    ]
-    app._snapshot_real_costs()
+    app = _priced_app(model_count=1)
     app._model_by_root = {
         "r": [
             {
@@ -260,29 +244,8 @@ def test_api_price_toggle_prices_unpriced_part_of_mixed_model_row():
 
 
 def test_api_price_toggle_splits_root_and_subagent_unpriced_usage():
-    app = ot.App.__new__(ot.App)
-
-    class _Store:
-        demo = False
-
-    app.store = _Store()
-    app.show_api_prices = False
-    app._models_loaded = True
-    app.loaded = [
-        ot.Workflow(
-            id="r",
-            title="t",
-            directory="d",
-            created_at="2026-01-01",
-            root_cost=0.0,
-            total_cost=0.5,  # real spend happened only in a child session
-            subagents=1,
-            model_count=2,
-            total_tokens=0,
-            unpriced_tokens=0,
-        )
-    ]
-    app._snapshot_real_costs()
+    # real spend happened only in a child session
+    app = _priced_app(root_cost=0.0, total_cost=0.5, subagents=1)
     app._model_by_root = {
         "r": [
             {
@@ -387,8 +350,7 @@ def test_api_price_split_uses_store_root_unpriced_columns_for_same_model():
 
         store = ot.Store(db, type("Args", (), {"demo": False})())
         app = ot.App(store, type("Args", (), {"since": None, "until": None, "days": None})())
-        app._ensure_models()
-        app.toggle_api_prices()
+        app._ensure_models()  # the estimate view is the default
 
         assert round(app.loaded[0].total_cost, 2) == 1.5
         assert round(app.loaded[0].root_cost, 2) == 1.0

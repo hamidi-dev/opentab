@@ -75,9 +75,9 @@ The whole TUI works the same everywhere — with two differences for the token-o
 tools (Claude Code, Codex, and Copilot, CLI and VS Code alike):
 
 - Their sessions work like OpenCode subscription sessions: **$0 in normal mode** and an
-  **estimate** (tokens × API list price) under the **`$`** view. Since that view would
-  otherwise be a wall of `$0.00`, the estimate **starts on by default** there (header
-  tag: `ESTIMATED`); press `$` for the recorded numbers, and your choice is remembered.
+  **estimate** (tokens × API list price) under the **`$`** view, which starts on by
+  default (header tag: `ESTIMATED`, rather than the `WHAT-IF` a backend with recorded
+  spend gets); press `$` for the recorded numbers, and your choice is remembered.
 - Projects roll up to their **git root**, so sessions started in subdirectories group
   under the repo instead of bare folder names.
 
