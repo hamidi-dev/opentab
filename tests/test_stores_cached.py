@@ -10,6 +10,24 @@ import opentab as ot
 from tests._support import workflow
 
 
+def _fixture_model_row(root_id, tokens, model="anthropic/x"):
+    # A model row shaped like a real backend's: CachedStore._read rejects a cached
+    # payload whose rows lack any key the app INDEXES rather than .get()s
+    # (cached.MODEL_ROW_KEYS -- Renderer._mix_rows reads every one of these), because
+    # a launch served that row off the HIT path raises KeyError with nothing left to
+    # re-parse. Every shipped backend emits all of them; a fixture must too.
+    return {
+        "root_id": root_id,
+        "model_name": model,
+        "runs": 1,
+        "cost": 0.0,
+        "tokens_total": tokens,
+        "cache_read": 0,
+        "cache_write": 0,
+        "output": 0,
+    }
+
+
 def test_cached_store_warm_start_and_invalidation():
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
@@ -37,9 +55,7 @@ def test_cached_store_warm_start_and_invalidation():
 
             def model_breakdown(self):
                 self.breakdown_calls += 1
-                return [
-                    {"root_id": "s1", "model_name": "anthropic/x", "runs": 1, "tokens_total": 100}
-                ]
+                return [_fixture_model_row("s1", 100)]
 
         args = type("Args", (), {"demo": False, "no_cache": False})()
         cid = "fake|" + data
@@ -110,9 +126,7 @@ def test_cached_store_serves_records_cost_and_survives_field_drift():
                 return [workflow("s1", "2026-06-01 12:00:00", cost=2.0, tokens=100)]
 
             def model_breakdown(self):
-                return [
-                    {"root_id": "s1", "model_name": "anthropic/x", "runs": 1, "tokens_total": 100}
-                ]
+                return [_fixture_model_row("s1", 100)]
 
         args = type("Args", (), {"demo": False, "no_cache": False})()
         cid = "fake|" + data
@@ -363,10 +377,7 @@ class _SpliceBackend:
             workflow(sid, "2026-06-01 12:00:00", cost=0.0, tokens=tokens)
             for sid, tokens in sessions.items()
         ]
-        models = [
-            {"root_id": sid, "model_name": "anthropic/x", "runs": 1, "tokens_total": tokens}
-            for sid, tokens in sessions.items()
-        ]
+        models = [_fixture_model_row(sid, tokens) for sid, tokens in sessions.items()]
         return self.sort_workflows(rows), models
 
     def workflows(self):
@@ -664,7 +675,21 @@ def test_cached_store_rejects_a_cache_whose_rows_are_the_wrong_shape():
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         try:
             args = type("Args", (), {"demo": False, "no_cache": False})()
-            for i, damage in enumerate(({"workflows": [1]}, {"model_breakdown": [1]})):
+            damages = (
+                {"workflows": [1]},
+                {"model_breakdown": [1]},
+                # A model row that IS a dict but carries no root_id passed the
+                # is-it-a-dict check and then raised KeyError out of the launch:
+                # App._load_model_cache indexes row["root_id"] rather than .get()ing
+                # it. On the HIT path, where the fingerprint matched exactly, nothing
+                # would ever re-parse to recover -- so the payload has to be rejected
+                # here, which is what "one bad row rejects the whole payload" means.
+                {"model_breakdown": [{"model_name": "anthropic/x"}]},
+                # ...and an unhashable one raises on the dict access instead
+                # (RemoteStore refuses a non-string root_id for the same reason).
+                {"model_breakdown": [{"root_id": [], "model_name": "anthropic/x"}]},
+            )
+            for i, damage in enumerate(damages):
                 sub = os.path.join(tmp, f"h{i}")
                 os.makedirs(sub)
                 files = _splice_env(sub, {"a.jsonl": {"s1": 1}})

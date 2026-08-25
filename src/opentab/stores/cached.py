@@ -62,6 +62,17 @@ CACHE_VERSION = 9  # bump when the cached payload shape or meaning changes
 #    silently not apply to exactly the machines that had been running opentab longest.
 
 
+# The keys a cached model row is INDEXED by rather than .get()-ed, so a payload missing
+# one raises KeyError out of a launch instead of degrading. Kept here beside the guard
+# that enforces it: App._load_model_cache indexes root_id, App._compute_api_costs cost
+# and model_name (note `m.get("real_cost", m["cost"])` evaluates m["cost"] eagerly), and
+# Renderer._mix_rows the rest. A backend that stops emitting one of these has changed the
+# payload's shape, which is what CACHE_VERSION is for.
+MODEL_ROW_KEYS = frozenset(
+    {"root_id", "model_name", "runs", "cost", "tokens_total", "cache_read", "cache_write", "output"}
+)
+
+
 def cache_dir() -> str:
     # The warm-start rollups get their own subdir of the XDG cache dir, kept apart from
     # the sibling prices.json / remotes/ so a CACHE_VERSION wipe touches only these.
@@ -137,7 +148,21 @@ class CachedStore:
         # session's tokens, which is worse than reparsing.
         if not all(isinstance(row, dict) for row in data["workflows"]):
             return None
-        if not all(isinstance(row, dict) for row in data["model_breakdown"]):
+        # A model row must also CARRY every key its readers index rather than .get()
+        # (MODEL_ROW_KEYS): a row that is a dict but is missing one passes "is it a dict"
+        # and then raises KeyError out of the launch -- on the HIT path, where the
+        # fingerprint matched exactly and nothing will ever re-parse to recover. The
+        # splice is safe either way (it reads row.get), so this is the hit path's guard,
+        # which is precisely the one with nowhere to fall back to.
+        if not all(
+            isinstance(row, dict) and MODEL_ROW_KEYS <= row.keys()
+            for row in data["model_breakdown"]
+        ):
+            return None
+        # ...and root_id must be a STRING for the same reason RemoteStore insists on one:
+        # it is used as a dict key, so an unhashable value (a crafted `[]`) raises on the
+        # access rather than on the membership test.
+        if not all(isinstance(row["root_id"], str) for row in data["model_breakdown"]):
             return None
         if not isinstance(data.get("provenance"), dict):
             data["provenance"] = {}  # readable, just not spliceable: full parse on a miss
