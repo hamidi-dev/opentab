@@ -2911,7 +2911,14 @@ function trendProviders() {
     extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Msgs', get: r => String(r.runs), cls: 'mut' }] });
 }
 function trendProjects() {
-  const rows = projectRows(W).map(r => ({ name: r.project, cost: r.cost, sessions: r.sessions, tokens: r.tokens }))
+  // Grouped on the NORMALIZED key -- App.project_rows' rule, and the one trendDrillRows
+  // matches. A session with no project was otherwise ranked under "" and drilled as
+  // "unknown", so its row showed a session count and opened an empty list. Normalizing
+  // after projectRows grouped raw keys would only move the seam: a project literally
+  // named "unknown" would then rank as a SECOND "unknown" row, and either row's drill
+  // would open both. So group by the key the drill uses, exactly as the TUI does.
+  const rows = [...groupBy(W, w => w.project || 'unknown')].map(([name, g]) =>
+    ({ name, cost: sum(g, cost), sessions: g.length, tokens: sum(g, w => w.tokens) }))
     .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
   if (!rows.length) return h('div', { class: 'hint' }, 'No sessions in the active range.');
   return rankedBars(rows, { nameLabel: 'Project',

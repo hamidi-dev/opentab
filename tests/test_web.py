@@ -322,9 +322,14 @@ def test_web_mirrors_the_projects_ranking_and_its_drill():
     assert "function trendProjects()" in page and "Projects: trendProjects" in page
     # It ranks the same field the payload folded to a git root, and its rows drill like
     # every other ranking -- one equality test on the session's own project.
-    assert "projectRows(W).map(r => ({ name: r.project" in page
     assert "TRENDS.drill = { kind: 'project', key: r.name }" in page
     assert "kind === 'project' ? (w.project || 'unknown')" in page
+    # The ranking GROUPS on the normalized key -- the same one the drill matches, and
+    # App.project_rows' own rule. Grouped raw, a session with no project ranked under ""
+    # and drilled as "unknown": the row showed a session count and opened an empty list.
+    # Normalizing after grouping would only move the seam, since a project literally
+    # named "unknown" would then rank as a second "unknown" row whose drill opened both.
+    assert "groupBy(W, w => w.project || 'unknown')" in page
     # A project cell is a path: basename first, the $HOME-folded path beside it, so a
     # column of siblings under one tree stays readable (the TUI's short_path rule).
     assert (
