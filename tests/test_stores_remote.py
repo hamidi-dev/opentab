@@ -1,5 +1,3 @@
-"""RemoteStore + build_export: consolidating other machines' exported summaries."""
-
 import contextlib
 import io
 import json
@@ -118,8 +116,6 @@ def _turn(prompt="do the port", pid="p1"):
 
 
 def test_v2_export_round_trips_turns_tools_and_context():
-    # The v2 addition: the lazy per-session extras travel too, so a pulled session's
-    # Turns/Tools/Context tabs are real rather than hidden.
     wfs = [workflow("s1", "2026-07-15 10:00:00", title="port", cost=6.5, tokens=1000)]
     turns = {"s1": [_turn()]}
     tools = {
@@ -151,10 +147,6 @@ def test_v2_export_round_trips_turns_tools_and_context():
 
 
 def test_remote_turn_tools_survive_a_hostile_payload():
-    # The payload is ANOTHER MACHINE's JSON -- possibly an older opentab, a truncated
-    # pull, or a hand-edited file. Every shape that isn't a list of strings has to
-    # degrade to "no tools", because the alternative is tool_call_label raising in the
-    # middle of a paint, on a session you can only reach from the fleet view.
     from opentab.stores.remote import _clean_turn
 
     assert _clean_turn({})["tools"] == []  # an older export with no field at all
@@ -190,10 +182,6 @@ class _BatchTurnsStore(_FakeExtrasStore):
 
 
 def test_build_export_prefers_the_turns_batch_and_skips_covered_sessions():
-    # The export uses a backend's whole-corpus Turns batch (OpenCode's
-    # message_timeline_all, ~100x cheaper than its per-session recursive-CTE scan) and
-    # must NOT re-run the slow per-session query for any session the batch owns -- even an
-    # all-aborted one the batch yields no rows for (else it re-pays the very cost it dodged).
     wfs = [
         workflow("s1", "2026-07-15 10:00:00", cost=1.0),
         workflow("s2", "2026-07-15 11:00:00", cost=0.0),  # aborted: not in the batch result
@@ -222,9 +210,6 @@ def test_build_export_falls_back_to_per_session_when_the_batch_raises():
 
 
 def test_machine_stats_scrambles_labels_under_demo():
-    # --timings joins per-box bytes to a machine by LABEL; under --demo the workflow rows
-    # carry demo-scrambled machine names, so machine_stats must scramble to match (else a
-    # pulled box shows 0 B). The label agrees with what workflows() stamps.
     wfs = [workflow("a", "2026-07-15 10:00:00", cost=1.0)]
     with tempfile.TemporaryDirectory() as d:
         _write(d, "box.json", _summary("realbox", wfs))
@@ -235,9 +220,6 @@ def test_machine_stats_scrambles_labels_under_demo():
 
 
 def test_malformed_extras_rows_normalize_instead_of_crashing():
-    # Codex: a hostile/partial summary -- {"turns": {"s1": [{}]}} -- makes supports_turns
-    # true, so drill-in must render zeros, not KeyError. Every extras row is cleaned on load
-    # (the _clean_node treatment), so the renderers' bracket-accessed fields always exist.
     wfs = [workflow("s1", "2026-07-15 10:00:00", cost=1.0)]
     payload = _summary("box", wfs)
     payload["opentab_export"] = 2
@@ -274,8 +256,6 @@ def test_malformed_extras_rows_normalize_instead_of_crashing():
 
 
 def test_machine_stats_reports_per_machine_sessions_and_bytes():
-    # Feeds --timings' per-machine breakdown: sessions kept (deduped) + summary file size on
-    # disk, read off the loaded state with no re-parse. Bytes are where the v2 extras show up.
     big = [workflow("a", "2026-07-15 10:00:00", cost=2.0), workflow("b", "2026-07-16 10:00:00")]
     with tempfile.TemporaryDirectory() as d:
         _write(d, "big.json", _summary("big", big))
@@ -288,7 +268,6 @@ def test_machine_stats_reports_per_machine_sessions_and_bytes():
 
 
 def test_v1_summary_still_loads_without_the_extras():
-    # A v1 summary (no turns/tools/context) loads fine; those tabs just stay hidden.
     wfs = [workflow("s1", "2026-07-15 10:00:00", cost=1.0)]
     with tempfile.TemporaryDirectory() as d:
         _write(d, "old.json", _summary("old-box", wfs))  # _summary emits v1
@@ -299,9 +278,6 @@ def test_v1_summary_still_loads_without_the_extras():
 
 
 def test_remote_store_leaves_extras_raw_for_the_app_to_demo():
-    # RemoteStore returns raw Turns rows even in demo mode -- the App re-anonymises them
-    # lazily (App._scale_demo_turns), so demoing here too would double-scale / it's the
-    # App's job. The raw prompt survives the store; the App is what hides it.
     wfs = [workflow("s1", "2026-07-15 10:00:00", cost=1.0)]
     store = _FakeExtrasStore(wfs, [], turns={"s1": [_turn(prompt="secret plan")]}, curve={"s1"})
     payload = ot.build_export(store, "laptop")
@@ -313,8 +289,6 @@ def test_remote_store_leaves_extras_raw_for_the_app_to_demo():
 
 
 def test_build_export_round_trips_through_remote_store():
-    # build_export serializes a machine's rollup; RemoteStore reads it back with the
-    # same sessions, model rows, and records_cost -- it is the cache payload reversed.
     wfs = [
         workflow("s1", "2026-07-15 10:00:00", title="rust port", cost=6.5, tokens=1000),
         workflow("s2", "2026-07-16 09:00:00", title="sidebar", cost=0.0, tokens=500),
@@ -337,8 +311,6 @@ def test_build_export_round_trips_through_remote_store():
 
 
 def test_remote_store_stamps_the_machine_label():
-    # Every loaded session is tagged with the exporting machine, from the payload's
-    # `label`; a payload with no label falls back to the file's basename.
     tagged = workflow("a", "2026-07-15 10:00:00")
     tagged.source = "Codex"  # the backend tag rides on each row, orthogonal to machine
     with tempfile.TemporaryDirectory() as d:
@@ -370,8 +342,6 @@ def test_remote_store_merges_multiple_machines_sorted_by_cost():
 
 
 def test_remote_store_dedups_a_session_seen_on_two_machines():
-    # A synced/rotated session can appear in two summaries; keep it once and do NOT
-    # double-count its model rows (they follow the workflow that was kept).
     row = {"root_id": "dup", "model_name": "m", "cost": 2.0, "tokens_total": 100}
     with tempfile.TemporaryDirectory() as d:
         _write(
@@ -386,8 +356,6 @@ def test_remote_store_dedups_a_session_seen_on_two_machines():
 
 
 def test_remote_store_skips_broken_or_shapeless_summaries():
-    # A file it can't parse (or that isn't a summary) is skipped, never fatal -- the
-    # good machines still load. Same forgiveness as notes.json.
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "corrupt.json"), "w", encoding="utf-8") as fh:
             fh.write("{ not json")
@@ -398,7 +366,6 @@ def test_remote_store_skips_broken_or_shapeless_summaries():
 
 
 def test_remote_store_is_forward_compatible_with_unknown_fields():
-    # A summary written by a newer opentab (extra Workflow fields) must load, not crash.
     payload = _summary("new", [workflow("z", "2026-07-15 10:00:00")])
     payload["workflows"][0]["future_field"] = {"whatever": 1}
     with tempfile.TemporaryDirectory() as d:
@@ -408,8 +375,6 @@ def test_remote_store_is_forward_compatible_with_unknown_fields():
 
 
 def test_remote_store_records_cost_is_and_across_machines():
-    # One metered machine + one subscription machine -> the merged view reports no
-    # recorded cost (drives the "$"/ESTIMATED nudges), like CombinedStore.
     with tempfile.TemporaryDirectory() as d:
         _write(
             d,
@@ -423,8 +388,6 @@ def test_remote_store_records_cost_is_and_across_machines():
 
 
 def test_remote_store_hides_the_drill_in_tabs():
-    # Summaries carry no transcripts, so the per-session extras are empty and their
-    # supports_* gates hide the Turns/Tools/Context tabs for remote sessions.
     with tempfile.TemporaryDirectory() as d:
         _write(d, "z.json", _summary("z", [workflow("a", "2026-07-15 10:00:00")]))
         store = ot.RemoteStore(d, _parse([]))
@@ -454,8 +417,6 @@ def test_remote_store_empty_directory_loads_nothing():
 
 
 def test_build_export_ships_the_subagent_tree_only_for_delegating_sessions():
-    # The tree rides along, but ONLY for sessions that delegated (w.subagents) -- a solo
-    # session exports no nodes, keeping the summary small.
     deleg = workflow("root", "2026-07-15 10:00:00", cost=12.0)
     deleg.subagents = 2
     solo = workflow("solo", "2026-07-16 10:00:00", cost=1.0)
@@ -470,8 +431,6 @@ def test_build_export_ships_the_subagent_tree_only_for_delegating_sessions():
 
 
 def test_remote_store_serves_the_exported_subagent_tree():
-    # A remote session's Subagents tab is real, not empty: workflow_nodes returns the
-    # exported tree (and a session that shipped none still returns []).
     payload = _summary("laptop", [workflow("root", "2026-07-15 10:00:00", cost=12.0)])
     payload["nodes"] = {
         "root": [
@@ -489,8 +448,6 @@ def test_remote_store_serves_the_exported_subagent_tree():
 
 
 def test_remote_store_demo_anonymizes_the_exported_nodes():
-    # Under demo the node titles/models are scrambled and tokens scaled, like the leaf
-    # stores' _demo_node -- so a fleet Subagents tab leaks nothing on a shared screen.
     payload = _summary("laptop", [workflow("root", "2026-07-15 10:00:00", cost=12.0)])
     payload["nodes"] = {
         "root": [_node(1, "docs", "write docs", "anthropic/claude-opus-4.6", 5.0, 800)]
@@ -504,7 +461,6 @@ def test_remote_store_demo_anonymizes_the_exported_nodes():
 
 
 def test_remote_store_survives_a_malformed_nodes_block():
-    # A non-dict `nodes`, or node lists with junk, must load (empty tree), never crash.
     payload = _summary("laptop", [workflow("root", "2026-07-15 10:00:00")])
     payload["nodes"] = {"root": ["not a dict", 7], "ghost": [_node(1, "x", "y", "m", 0.0, 1)]}
     with tempfile.TemporaryDirectory() as d:
@@ -515,9 +471,6 @@ def test_remote_store_survives_a_malformed_nodes_block():
 
 
 def test_remote_store_normalizes_partial_or_garbage_nodes():
-    # A partial/garbage node dict (a crafted `{}`, a string where a count belongs) is
-    # NORMALIZED to the fields the Subagents tab reads, with defaults + coerced types --
-    # so it renders (and demo-scales) instead of crashing with KeyError/TypeError.
     payload = _summary("laptop", [workflow("root", "2026-07-15 10:00:00")])
     payload["nodes"] = {"root": [{}, {"depth": "x", "cost": "nan", "tokens_total": None}]}
     with tempfile.TemporaryDirectory() as d:
@@ -535,9 +488,6 @@ def test_remote_store_normalizes_partial_or_garbage_nodes():
 
 
 def test_remote_store_machine_meta_carries_pulled_niceties_and_the_refresh_key():
-    # machine_meta feeds the Machines mode: each pulled box is live=False, keeps its
-    # export time/version, and carries the remotes key (the summary FILENAME decoded)
-    # so an in-TUI refresh re-pulls exactly it.
     payload = _summary("workstation", [workflow("a", "2026-07-15 10:00:00")])
     payload["exported_at"] = "2026-07-18T09:00:00+00:00"
     payload["opentab_version"] = "1.6.0"
@@ -552,8 +502,6 @@ def test_remote_store_machine_meta_carries_pulled_niceties_and_the_refresh_key()
 
 
 def test_remote_store_machine_meta_key_survives_a_percent_encoded_filename():
-    # _summary_filename percent-encodes the remotes key; machine_meta must decode the
-    # filename back to the exact key so a refresh finds the entry in remotes.json.
     from opentab.cli import _summary_filename
 
     with tempfile.TemporaryDirectory() as d:
@@ -566,9 +514,6 @@ def test_remote_store_machine_meta_key_survives_a_percent_encoded_filename():
 
 
 def test_remote_store_demo_scrambles_the_machine_name_and_meta_stays_aligned():
-    # D must hide the box name too. The scrambled label on the workflows and the
-    # machine_meta keys go through the same deterministic demo_machine, so they agree
-    # (else the Machines Overview couldn't look up a scrambled box's freshness).
     with tempfile.TemporaryDirectory() as d:
         _write(d, "server.json", _summary("workstation", [workflow("a", "2026-07-15 10:00:00")]))
         _write(d, "gi.json", _summary("desktop", [workflow("b", "2026-07-15 11:00:00")]))
@@ -674,8 +619,6 @@ def test_export_command_writes_a_file_and_defaults_the_label_to_the_host():
 
 
 def test_export_command_emits_an_empty_summary_when_no_sources_present():
-    # A machine with no agent data yet must still export a valid (empty) summary, so
-    # `opentab --pull` shows it as "0 sessions" rather than erroring on that host.
     orig = ot.sources.available_sources
     ot.sources.available_sources = lambda a: []
     try:
@@ -692,8 +635,6 @@ def test_export_command_emits_an_empty_summary_when_no_sources_present():
 
 
 def test_remote_store_survives_a_malformed_model_breakdown():
-    # A summary whose model_breakdown isn't a list (corruption/bad producer) must load
-    # its workflows, not crash the whole store on a TypeError.
     payload = _summary("bad", [workflow("s1", "2026-07-15 10:00:00")])
     payload["model_breakdown"] = 1  # not a list
     with tempfile.TemporaryDirectory() as d:
@@ -704,8 +645,6 @@ def test_remote_store_survives_a_malformed_model_breakdown():
 
 
 def test_remote_store_drops_model_rows_without_a_root_id():
-    # The App indexes model rows by row["root_id"]; a row missing it would crash the
-    # model scan, so RemoteStore drops any unattributable row.
     payload = _summary("m", [workflow("s1", "2026-07-15 10:00:00")])
     payload["model_breakdown"] = [
         {"root_id": "s1", "model_name": "openai/m", "cost": 1.0, "tokens_total": 100},
@@ -718,8 +657,6 @@ def test_remote_store_drops_model_rows_without_a_root_id():
 
 
 def test_remote_store_demo_leaves_model_rows_unscaled():
-    # The App's _load_model_cache scales the per-model breakdown for every store, so
-    # RemoteStore must NOT pre-scale it -- else Overview and the Models tab disagree.
     import opentab.demo as demo_mod
 
     payload = _summary("z", [workflow("s1", "2026-07-15 10:00:00", cost=10.0)])
@@ -739,8 +676,6 @@ def test_remote_store_demo_leaves_model_rows_unscaled():
 
 
 def test_remote_store_survives_unhashable_or_missing_root_id():
-    # A crafted/corrupt model row (root_id an unhashable list, or absent) must be
-    # dropped, not crash RemoteStore construction on the `in kept` set test.
     payload = _summary("bad", [workflow("s1", "2026-07-15 10:00:00")])
     payload["model_breakdown"] = [
         {"root_id": [], "model_name": "unhashable", "cost": 1.0},
@@ -754,8 +689,6 @@ def test_remote_store_survives_unhashable_or_missing_root_id():
 
 
 def test_remote_store_drops_a_workflow_with_no_valid_id():
-    # A session with no usable id can't be keyed/deduped/attributed -- drop it rather
-    # than seed the dedup set with None (which then poisons the model-row filter).
     payload = _summary("m", [workflow("good", "2026-07-15 10:00:00")])
     bad = dict(payload["workflows"][0])
     bad["id"] = None
@@ -767,9 +700,6 @@ def test_remote_store_drops_a_workflow_with_no_valid_id():
 
 
 def test_remote_store_workflows_returns_fresh_objects_each_call():
-    # reload (r) re-snapshots total_cost as the real cost, and the App mutates it in
-    # place under the "$" view -- so RemoteStore must hand back fresh copies or the
-    # list-price estimate compounds on every reload (prices visibly climb).
     with tempfile.TemporaryDirectory() as d:
         _write(d, "z.json", _summary("z", [workflow("s1", "2026-07-15 10:00:00", cost=5.0)]))
         store = ot.RemoteStore(d, _parse([]))
@@ -778,9 +708,6 @@ def test_remote_store_workflows_returns_fresh_objects_each_call():
 
 
 def test_remote_store_round_trips_ended_at():
-    # ended_at is a plain Workflow field like any other -- asdict()/Workflow(**clean)
-    # already carry it through generically, with no remote.py-specific plumbing needed.
-    # An older export simply omits the key, and Workflow's default ("") applies.
     with tempfile.TemporaryDirectory() as d:
         _write(
             d,
@@ -796,8 +723,6 @@ def test_remote_store_round_trips_ended_at():
 
 
 def test_remote_store_excludes_given_ids():
-    # The fleet passes live-local ids so a pulled summary that re-states one is dropped
-    # (no double count), model rows and all -- the live local copy wins.
     payload = _summary(
         "m",
         [workflow("local1", "2026-07-15 10:00:00"), workflow("remote-only", "2026-07-16 10:00:00")],
@@ -814,9 +739,6 @@ def test_remote_store_excludes_given_ids():
 
 
 def test_remote_store_applies_demo_with_the_current_scale():
-    # Demo is applied lazily in workflows() (not baked in at construction), so a shared
-    # demo_scale assigned AFTER construction -- the fleet's CombinedStore -- takes effect
-    # and local/remote proportions stay truthful.
     with tempfile.TemporaryDirectory() as d:
         _write(d, "z.json", _summary("z", [workflow("s1", "2026-07-15 10:00:00", cost=10.0)]))
         store = ot.RemoteStore(d, _parse(["--demo"]))
@@ -827,8 +749,6 @@ def test_remote_store_applies_demo_with_the_current_scale():
 
 
 def test_remote_store_registers_a_zero_session_machine():
-    # A valid but empty export still registers its machine, so the fleet's presence
-    # check (remote.machines) doesn't discard it as "no summaries".
     with tempfile.TemporaryDirectory() as d:
         _write(d, "empty.json", _summary("freshbox", []))
         store = ot.RemoteStore(d, _parse([]))

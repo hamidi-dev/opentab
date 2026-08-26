@@ -1,6 +1,3 @@
-"""The one keymap table behind the help overlay and the footer (tui/keymap.py)."""
-
-
 import opentab as ot
 
 from tests._support import AttrScreen, app_with, workflow
@@ -20,28 +17,26 @@ def test_jk_scrolls_the_help_overlay():
     assert app.help_scroll == 0
     app.handle_key(None, ord("x"))
     assert app.help  # an unbound key is swallowed -- you read this WHILE choosing a key
-    app.handle_key(None, 27)  # closing is explicit: Esc / q / ?
+    app.handle_key(None, 27)
     assert not app.help
 
 
 def test_mouse_wheel_scrolls_the_help_overlay():
-    # The wheel over the open help pages it (like the P overlay) instead of
-    # closing it; a plain click still closes.
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.handle_key(None, ord("?"))
     assert app.help and app.help_scroll == 0
     app._wheel_down = getattr(ot.curses, "BUTTON5_PRESSED", 0) or ot.curses.REPORT_MOUSE_POSITION
     orig = ot.curses.getmouse
     try:
-        ot.curses.getmouse = lambda: (0, 0, 0, 0, app._wheel_down)  # wheel down
+        ot.curses.getmouse = lambda: (0, 0, 0, 0, app._wheel_down)
         app.handle_mouse()
         assert app.help and app.help_scroll == 3
-        ot.curses.getmouse = lambda: (0, 0, 0, 0, ot.curses.BUTTON4_PRESSED)  # wheel up
+        ot.curses.getmouse = lambda: (0, 0, 0, 0, ot.curses.BUTTON4_PRESSED)
         app.handle_mouse()
         assert app.help and app.help_scroll == 0
-        app.handle_mouse()  # floored at the top, still open
+        app.handle_mouse()
         assert app.help and app.help_scroll == 0
-        ot.curses.getmouse = lambda: (0, 0, 0, 0, ot.curses.BUTTON1_CLICKED)  # click closes
+        ot.curses.getmouse = lambda: (0, 0, 0, 0, ot.curses.BUTTON1_CLICKED)
         app.handle_mouse()
         assert not app.help
     finally:
@@ -55,8 +50,6 @@ def _keymap_app(workflows=None):
 
 
 def test_help_lists_the_keys_that_work_where_you_are():
-    # The `?` overlay is context-first, lazygit-style: what works HERE, then how to
-    # move, then the globals. "Here" is computed from the view/tab/overlay you are in.
     app = _keymap_app()
     app.focus = "months"
     titles = [t for t, _ in app.renderer.help_sections()]
@@ -67,10 +60,8 @@ def test_help_lists_the_keys_that_work_where_you_are():
             e.id for t, rows in a.renderer.help_sections() if t.startswith("Here") for e in rows
         }
 
-    # Browse: nothing is selected in a session sense, so no bookmark/note/launch keys.
     assert "enter" in here(app) and "bookmark" not in here(app)
 
-    # Zoom on the Sessions tab: the session actions arrive, because a session is selected.
     app.view = "zoom"
     app.tab = app.month_tabs.index("Sessions")
     ids = here(app)
@@ -87,13 +78,13 @@ def test_help_lists_the_keys_that_work_where_you_are():
     assert not {"bookmark", "note", "max", "sort", "filter", "range", "whatif", "quit"} & ids
     # j/k is the one Trends key whose job changes per tab -- say which one it is doing.
     jk = next(e for e in ot.keymap.KEYS if e.id == "trends-page")
-    assert "month" in jk.text(app)  # Daily
+    assert "month" in jk.text(app)
     app.trend_tab = app.trend_tabs.index("Models")
-    assert "row" in jk.text(app) and jk.shown(app)  # a ranked tab: rows, not bars
+    assert "row" in jk.text(app) and jk.shown(app)
     app.trend_tab = app.trend_tabs.index("Monthly")
-    assert not jk.shown(app)  # one chart, nothing to page -- j/k does nothing here
+    assert not jk.shown(app)
     shades = next(e for e in ot.keymap.KEYS if e.id == "trends-shades")
-    assert not shades.shown(app)  # +/- only shade the Calendar
+    assert not shades.shown(app)
     app.trend_tab = app.trend_tabs.index("Calendar")
     assert shades.shown(app)
     app.trends = False
@@ -134,9 +125,6 @@ def test_help_lists_the_keys_that_work_where_you_are():
 
 
 def test_every_registry_action_is_discoverable():
-    # The bindings registry is what the App dispatches on; the display table is what
-    # the user can find. An action in a help-listed context that no entry surfaces is
-    # a key nobody can discover -- the modern form of the old undocumented-ord() bug.
     from opentab.tui import bindings
 
     surfaced = set()
@@ -193,9 +181,6 @@ def test_every_registry_action_is_discoverable():
 
 
 def test_footer_and_help_cannot_disagree():
-    # Both render the same table, so every chip the footer offers is a key the help
-    # explains in the very same context -- the invariant the two hand-kept lists broke
-    # (the footer used to offer `b mark` and `s sort` inside Trends, which swallows them).
     app = _keymap_app()
     for setup in (
         lambda: None,
@@ -213,8 +198,6 @@ def test_footer_and_help_cannot_disagree():
 
 
 def test_the_price_drill_and_trends_drill_offer_their_own_keys():
-    # Sub-contexts inside an overlay are contexts too: a model's session list inside P
-    # swallows p/space/Enter/r/s/f, and only backs out or closes.
     app = _keymap_app()
     app.show_prices = True
     app.prices_model = "anthropic/claude-opus-4-8"
@@ -223,7 +206,7 @@ def test_the_price_drill_and_trends_drill_offer_their_own_keys():
         for e in ot.keymap.KEYS
         if e.id in ot.keymap.FOOTER_ORDER and e.shown(app) and e.chip_segments(app)
     }
-    assert {"price-drill-back", "price-drill-close"} <= chips  # and they reach the footer
+    assert {"price-drill-back", "price-drill-close"} <= chips
     assert not {"prices-view", "prices-pin", "prices-enter", "prices-refresh"} & chips
 
     # PgDn/PgUp do work inside a Trends ranked-row drill, so they must be listed there.
@@ -231,33 +214,27 @@ def test_the_price_drill_and_trends_drill_offer_their_own_keys():
     app.prices_model = None
     app.trends = True
     page = next(e for e in ot.keymap.KEYS if e.id == "page")
-    assert not page.shown(app)  # ...but not on a Trends chart, which never pages
+    assert not page.shown(app)
     app.trend_drill = ("model", "anthropic/claude-opus-4-8")
     assert page.shown(app)
 
 
 def test_trends_chips_say_what_the_key_will_actually_do():
-    # The first Enter on a chart FOCUSES it; only the second drills. Esc backs out of a
-    # focused chart (or a drill) before it closes anything. The footer has to say so --
-    # the help summary already did, and a chip that disagrees with it is the old bug.
     app = _keymap_app()
     app.trends = True
     enter = next(e for e in ot.keymap.KEYS if e.id == "trends-enter")
     close = next(e for e in ot.keymap.KEYS if e.id == "trends-close")
-    assert enter.chip_segments(app) == [("Enter focus", False)]  # Daily, unfocused
+    assert enter.chip_segments(app) == [("Enter focus", False)]
     assert close.chip_segments(app) == [("Esc close", False)]
     app.trend_focus = True
     assert enter.chip_segments(app) == [("Enter drill", False)]
-    assert close.chip_segments(app) == [("Esc back", False)]  # ...unfocuses, not closes
+    assert close.chip_segments(app) == [("Esc back", False)]
     app.trend_focus = False
-    app.trend_tab = app.trend_tabs.index("Models")  # a ranked tab: Enter opens a row
+    app.trend_tab = app.trend_tabs.index("Models")
     assert enter.chip_segments(app) == [("Enter drill", False)]
 
 
 def test_the_trends_sort_chip_only_shows_where_a_ranking_is_on_screen():
-    # `s` orders a ranked tab; on a chart it is swallowed like any other unbound key.
-    # The footer must not offer it there -- a chip naming a key the context eats is the
-    # exact thing this table exists to prevent.
     app = _keymap_app()
     app.trends = True
     sort = next(e for e in ot.keymap.KEYS if e.id == "trends-sort")
@@ -270,9 +247,6 @@ def test_the_trends_sort_chip_only_shows_where_a_ranking_is_on_screen():
 
 
 def test_the_whatif_chip_only_shows_where_a_target_would_change_something():
-    # `w` is session-scoped: an armed target only moves numbers on the open session's
-    # Overview and Subagents tab. Offered from the Months sidebar it was a permanent
-    # footer chip for a key that would visibly do nothing there.
     app = _keymap_app()
     whatif = next(e for e in ot.keymap.KEYS if e.id == "whatif")
     assert app.view == "browse" and not whatif.shown(app)
@@ -287,8 +261,6 @@ def test_the_whatif_chip_only_shows_where_a_target_would_change_something():
 
 
 def test_a_composite_chip_falls_back_to_its_plain_label():
-    # Tab still cycles the focus in a zoom, where the yr/mo/day segments don't apply --
-    # an empty segment list must not silently drop the key from the footer.
     app = _keymap_app()
     tab = next(e for e in ot.keymap.KEYS if e.id == "tab-focus")
     app.focus = "months"
@@ -298,8 +270,6 @@ def test_a_composite_chip_falls_back_to_its_plain_label():
 
 
 def test_help_swallows_a_mistyped_key_and_closes_explicitly():
-    # It lists the keys that work here, so it is read WHILE deciding what to press: a
-    # mistyped key must not tear it down (the Trends / P convention).
     app = _keymap_app()
     app.handle_key(None, ord("?"))
     assert app.help
@@ -313,8 +283,6 @@ def test_help_swallows_a_mistyped_key_and_closes_explicitly():
 
 
 def test_footer_highlights_the_focused_time_panel():
-    # The "Tab yr/mo/day" footer hint doubles as a position indicator: the token of
-    # the focused sidebar panel lights up in the accent as Tab moves between them.
     app = app_with(
         [
             workflow("a", "2026-06-01 12:00:00"),
@@ -374,9 +342,6 @@ def test_footer_highlights_the_focused_time_panel():
 
 
 def test_the_here_label_names_every_flat_mode_not_just_projects():
-    # It read "browse · Days" in Machines mode -- Time's focused panel, named in a mode
-    # that has no panels -- because the label was spelled per-mode and a second flat
-    # mode was added to the strip without being added here.
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     for mode in app.BROWSE_MODES:
         app.set_browse_mode(mode.key)

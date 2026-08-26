@@ -1,5 +1,3 @@
-"""Clipboard/launchers, git-root folding, fuzzy match, range parsing, tool namespaces (util.py)."""
-
 import os
 import subprocess
 import sys
@@ -51,7 +49,6 @@ def test_normalize_project_path_canonicalizes_windows_drive_paths():
     # "(unknown)" sentinel are NOT drive paths -- returned untouched.
     for p in ("/home/mo/proj", "~/code/opentab", "/weird/na\\me", "finance-os", "(unknown)"):
         assert n(p) == p
-    # idempotent
     assert n(n("C:/DEV/app")) == n("C:/DEV/app")
 
 
@@ -699,15 +696,13 @@ def test_launch_command_dispatches_to_herdr_and_hook_popup_stays_async():
 
 
 def test_fuzzy_score_matches_subsequences():
-    assert ot.fuzzy_score("", "anything") == 0  # empty query matches everything
-    assert ot.fuzzy_score("otb", "opentab") is not None  # subsequence, not substring
+    assert ot.fuzzy_score("", "anything") == 0
+    assert ot.fuzzy_score("otb", "opentab") is not None
     assert ot.fuzzy_score("xyz", "opentab") is None
-    assert ot.fuzzy_score("TREND", "Trend view") is not None  # case-insensitive
-    # tight matches outrank scattered ones
+    assert ot.fuzzy_score("TREND", "Trend view") is not None
     assert ot.fuzzy_score("trend", "fix trend view") > ot.fuzzy_score(
         "trend", "travel reimbursement node"
     )
-    # word starts outrank mid-word hits
     assert ot.fuzzy_score("tv", "trend view") > ot.fuzzy_score("tv", "octave")
 
 

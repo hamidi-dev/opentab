@@ -1,4 +1,3 @@
-"""Argument parsing and the main entry point."""
 from __future__ import annotations
 
 import argparse
@@ -56,20 +55,13 @@ from opentab.util import (
     unicode_screen,
 )
 
-# --- argument groups ----------------------------------------------------------------
-# The parser is split so subcommands can share it. GLOBAL modifiers (source
-# selection, per-harness paths, range, demo, theme, the serve address) attach to
-# every subcommand via parents=[...]. The old VERB flags (--status/--export/--web/...)
-# live only on the implicit `tui` command, kept working as deprecated aliases the same
-# way --source still works after becoming --harness. Each new verb (`web`, and more as
-# they land) owns its own options. --version is the top-level parser's alone.
+# Global options are copied onto each subcommand. Legacy verb flags remain on the
+# implicit `tui` command; new verbs own their options.
 
 
 def _add_global_args(parser: argparse.ArgumentParser) -> None:
-    # --version rides on the shared parent, not just the top-level parser, so it stays
-    # order-independent through the implicit `tui` prepend: `opentab --source x --version`
-    # and `opentab PATH --version` must still print and exit, as the flat parser did. A
-    # fixed string (not %(prog)s) keeps it "opentab X.Y.Z" and never "opentab tui X.Y.Z".
+    # Keep --version order-independent after the implicit `tui` prepend, while
+    # preserving the old "opentab X.Y.Z" output.
     parser.add_argument("--version", action="version", version=f"opentab {__version__}")
     parser.add_argument(
         "--harness",
@@ -217,7 +209,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         "--theme",
         choices=themes.THEME_IDS,
         default=themes.DEFAULT_THEME,
-        metavar="THEME",  # collapse the 30-name choices wall in --help; still validated
+        metavar="THEME",  # Hide the 30-name choices wall; argparse still validates it.
         help="colour theme for the TUI and the web browser (opentab, "
         "catppuccin-mocha/latte, tokyo-night/-day, gruvbox, nord, dracula, rose-pine); "
         "switch live in the TUI with C or the browser's theme button, and your choice is "
@@ -243,11 +235,8 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
-    # The pre-subcommand verb flags. They stay on the implicit `tui` command as
-    # deprecated-but-working aliases, so old invocations and tmux bindings never break --
-    # the same courtesy --source got when it became --harness. New spellings are
-    # subcommands: `opentab web` today (== --web/--serve/--html), `opentab cost`
-    # (== --status), and goto/export/pull/... as they are ported.
+    # Deprecated aliases stay functional so existing scripts and tmux bindings survive
+    # the move to subcommands.
     parser.add_argument(
         "--status",
         nargs="?",
@@ -377,27 +366,21 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
-# The verbs that carry their own subparser. Everything else -- a bare `opentab`, a
-# `opentab requests.csv`, any legacy flag -- is the implicit `tui` command.
+# Everything not named here is routed through the implicit `tui` command.
 _SUBCOMMANDS = ("tui", "web", "cost", "doctor", "pull", "remote", "export", "forget")
 
 
 def _focus_help(subparser: argparse.ArgumentParser, common_dests: set, keep: set) -> None:
-    # A verb inherits every global (parents=[common]) so its namespace is complete and
-    # `main()`/_route_path_arg never miss an attribute -- but `opentab pull -h` should not
-    # then recite every backend path, the theme list and the serve address. Hide the
-    # globals a verb doesn't care about from its --help (they still PARSE, just aren't
-    # advertised -- `opentab tui -h` remains the full reference). Zen over completeness.
+    # Every verb accepts globals for a complete namespace, but advertises only relevant
+    # ones. `opentab tui -h` remains the full reference.
     for action in subparser._actions:
         if action.dest in common_dests and action.dest not in keep:
             action.help = argparse.SUPPRESS
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    # `common` is a PROBE, not a shared parent: argparse's parents=[...] re-adds the SAME
-    # action objects to every child, so mutating action.help in _focus_help would leak
-    # across verbs. Instead each subparser gets its OWN globals via _add_global_args(sub),
-    # and this throwaway just enumerates which dests count as "global" for _focus_help.
+    # A shared argparse parent would reuse Action objects, so hiding help on one verb
+    # would affect the others. This probe only identifies global destinations.
     probe = argparse.ArgumentParser(add_help=False)
     _add_global_args(probe)
     gdests = {a.dest for a in probe._actions if a.dest not in ("help", "version")}
@@ -405,11 +388,7 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="opentab", description="OpenTab — browse your AI-coding spend"
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    # Seed every legacy verb field on the namespace so a subcommand that has none of them
-    # (web, pull, ...) still carries them for main()'s dispatch and App/apply_state to read
-    # without an AttributeError -- the tui subparser and _apply_subcommand override what
-    # they own. path is here too: _route_path_arg reads it (and applies the --csv/--jsonl
-    # default paths) for every command, though only tui takes a positional.
+    # Keep one complete namespace for legacy dispatch, App/state, and path routing.
     parser.set_defaults(
         path=None,
         status=None,
@@ -436,7 +415,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "command, so a bare `opentab` and `opentab <file>` run it without naming it, "
         "and the old top-level flags (--web, --status, --pull, ...) still work here.",
     )
-    _add_global_args(tui)  # tui is the full reference: every global, not focused
+    _add_global_args(tui)
     tui.add_argument(
         "path",
         nargs="?",
@@ -472,12 +451,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "data-refresh button are served",
     )
     _focus_help(web, gdests, {"source", "demo", "theme", "port", "bind"})
-    # `cost`, not `status`: the verb names what it prints (money), where the old
-    # spelling named where the output happened to go (a tmux status line). That was
-    # fine for a --status FLAG; as a verb it collides with the other thing a session
-    # has -- workmux's working/waiting/done status, which reads this command's table.
-    # Renamed outright rather than aliased: the verb was never advertised, so this is
-    # the last moment it costs nothing. The --status FLAG is untouched.
+    # The verb is `cost` to avoid colliding with agent working/waiting status;
+    # the established `--status` flag remains compatible.
     status = subs.add_parser(
         "cost",
         help="print one line of cost for a session or project (for a status bar)",
@@ -525,9 +500,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="don't redact: print absolute paths and the names of pulled machines. For "
         "reading yourself, not for pasting into a public issue",
     )
-    # Every harness path override stays advertised here -- "why doesn't opentab see the
-    # store at THIS path" is the question the verb exists to answer, so pointing it
-    # somewhere has to be discoverable from its own --help.
+    # Doctor must advertise every path override it can diagnose.
     _focus_help(
         doctor,
         gdests,
@@ -548,10 +521,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "remotes",
         },
     )
-    # --- the fleet: getting other machines' spend (the --pull/--remote/--export/--forget
-    # verbs as subcommands). pull/remote open the merged fleet view; export/forget are
-    # one-shot. All map onto the legacy fields in _apply_subcommand, so main() dispatches
-    # them through the exact same code path.
+    # Fleet subcommands map to legacy fields so both interfaces share one dispatch path.
     pull = subs.add_parser(
         "pull",
         help="fetch other machines' spend over SSH and open them merged",
@@ -614,24 +584,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _normalize_argv(argv: list[str]) -> list[str]:
-    # Insert the implicit `tui` command unless the first token already names a
-    # subcommand or asks for top-level --help/--version -- so `opentab`,
-    # `opentab requests.csv`, `opentab --demo`, and every legacy flag keep working
-    # unchanged. (A file literally named like a subcommand must be opened as
-    # `opentab tui web` -- the one cost of the bare-path shortcut.)
+    # Preserve bare invocation, positional paths, and legacy flags by inserting `tui`.
+    # A file named like a subcommand must be opened as `opentab tui <name>`.
     if argv and (argv[0] in _SUBCOMMANDS or argv[0] in ("-h", "--help", "--version")):
         return argv
     return ["tui", *argv]
 
 
 def _apply_subcommand(args: argparse.Namespace) -> None:
-    # Map a new subcommand's own options onto the legacy args.* fields main() already
-    # dispatches on, so there stays exactly ONE dispatch path. `tui` needs nothing --
-    # its flags already ARE those fields.
+    # Map subcommands onto the legacy namespace so there is one dispatch path.
     command = getattr(args, "command", None)
     if command == "web":
-        # web: --html writes the static file, --headless serves without opening, the
-        # bare command serves AND opens -- the three legacy flags, one friendly verb.
         if args.html is not None:
             args.serve = args.web = False
         elif args.headless:
@@ -639,35 +602,24 @@ def _apply_subcommand(args: argparse.Namespace) -> None:
         else:
             args.serve, args.web = False, True
     elif command == "pull":
-        # `opentab pull [HOST...]` == `--pull [HOST...]`: fetch, then main() flows into the
-        # merged fleet view (TUI). An empty list is bare --pull (refresh the saved machines).
         args.pull = list(args.hosts)
     elif command == "remote":
-        args.remote = True  # open the already-pulled fleet, no fetch (== --remote)
+        args.remote = True
     elif command == "cost":
-        # `opentab cost [TARGET]` == `--status [TARGET]`, so main() dispatches both
-        # through status_command (named for the flag, which still exists). status is
-        # set to "" (not None) even with no target, because None is what "the user
-        # didn't ask for a cost at all" means there.
+        # Empty string means "cost the current directory"; None means no cost request.
         args.status = args.targets[0] if args.targets else ""
         args.status_targets = list(args.targets)
-        # Arity decides the shape unless --batch forces the table: one target keeps the
-        # bare line every existing status-bar hook already parses.
+        # Preserve the bare single-target output consumed by status-bar hooks.
         args.status_batch = bool(args.batch) or len(args.targets) > 1
     elif command == "export":
-        args.export = args.file  # "-" (stdout) by default (== --export)
+        args.export = args.file
     elif command == "forget":
-        args.forget = list(args.names)  # >=1 by nargs="+" (== --forget)
+        args.forget = list(args.names)
 
 
 def _validate_demo_cats(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    # --demo takes an OPTIONAL value, so argparse happily eats the next positional:
-    # `opentab --demo requests.csv` bound the path to --demo, and `opentab export --demo
-    # out.json` sent the summary to stdout while out.json was never written. Nothing
-    # complained, because parse_demo_cats deliberately drops names it doesn't know (an
-    # empty result falls back to everything), which is right for a set arriving from
-    # saved state but hides a typo -- or a swallowed filename -- on the command line.
-    # Reject it here instead, where a value is unambiguously something the user typed.
+    # Because --demo has an optional value, argparse can swallow a following filename.
+    # Reject unknown CLI categories here; saved-state parsing remains permissive.
     spec = getattr(args, "demo", None)
     if not isinstance(spec, str) or spec == "all":
         return
@@ -688,8 +640,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(_normalize_argv(raw))
     _validate_demo_cats(parser, args)
     _apply_subcommand(args)
-    # Positional-path routing (tui only -- path is None for other subcommands) plus the
-    # --csv/--jsonl default paths, which every command needs.
     _route_path_arg(parser, args)
     return args
 
@@ -698,15 +648,9 @@ MIN_PYTHON = (3, 9)
 
 
 def enable_unicode_locale() -> None:
-    # ncurses renders the Unicode bars/blocks (█ ▁▂▃, the ─ rules) only when the C
-    # library is in a UTF-8 locale; otherwise it drops those multibyte bytes and only
-    # the (locale-independent) ACS box frame survives. CPython applies the env locale
-    # to LC_CTYPE at startup, so this already works wherever $LANG is a UTF-8 locale
-    # (macOS, most servers). WSL typically ships with $LANG unset or "C" -- so apply
-    # the env locale first, then, if that didn't land on UTF-8, force a UTF-8 locale
-    # so the chart renders regardless of how the shell is configured. opentab does no
-    # locale-aware formatting (explicit f-strings, code-point sorts), so forcing one
-    # is side-effect-free. Must run before curses initscr().
+    # Curses needs a UTF-8 C locale before initscr() to render multibyte bars and rules.
+    # WSL often starts in C; opentab performs no locale-aware formatting, so trying a
+    # UTF-8 fallback does not alter its number or sort semantics.
     try:
         locale.setlocale(locale.LC_ALL, "")
     except locale.Error:
@@ -715,7 +659,7 @@ def enable_unicode_locale() -> None:
         if "utf" in locale.nl_langinfo(locale.CODESET).lower():
             return
     except (AttributeError, ValueError):
-        return  # nl_langinfo/CODESET unavailable -- leave the locale as-is
+        return  # No portable codeset probe; leave the locale unchanged.
     for name in ("C.UTF-8", "C.utf8", "en_US.UTF-8"):
         try:
             locale.setlocale(locale.LC_ALL, name)
@@ -736,44 +680,32 @@ def refresh_models_command() -> int:
 
 
 def timings_command(args: argparse.Namespace) -> int:
-    # Startup profiler: walk the same load path the TUI takes (detect sources, build
-    # the store, roll up each backend, run the model scan) with a stopwatch on every
-    # phase, print a table, and exit. Curses-free, so it also runs on native Windows
-    # -- the platform where the file-heavy backends hurt most. State is skipped so the
-    # numbers reflect a cold, reproducible run rather than a restored source.
+    # Profile the TUI load path without restored state. It stays curses-free for native
+    # Windows, where file-heavy backends are often slowest.
     def timed(fn):
         t0 = time.perf_counter()
         result = fn()
         return result, (time.perf_counter() - t0) * 1000.0
 
-    # --remote/--pull select the fleet, but their wiring in main() runs AFTER this command
-    # returns -- so honour them here too, else `opentab --remote --timings` would profile
-    # the local "all" merge and never touch the RemoteStore the user asked to measure.
+    # main() applies fleet selection after this early command, so mirror it here.
     if getattr(args, "remote", False) or getattr(args, "pull", None) is not None:
         args.source = "remote"
         args.remotes = getattr(args, "remotes", None) or default_remotes_dir()
-        # --pull means "refresh from the machines first". main()'s pull step runs AFTER
-        # this command returns and so never fires under --timings -- without this the
-        # summaries stay stale and the fleet ages read "Nh ago" despite the --pull. Fetch
-        # here (progress on stderr) so the timings profile a freshly pulled fleet.
         if getattr(args, "pull", None) is not None:
             pull_command(args)
 
     t_start = time.perf_counter()
     present, detect_ms = timed(lambda: sources.available_sources(args))
-    source_key = resolve_source(args, {})  # no saved state -> measure a clean start
+    source_key = resolve_source(args, {})
     (store, _loading), build_ms = timed(lambda: sources.make_store(args, source_key))
 
-    # One row per backend: its whole parse+scan cost and whether it came from the cache.
-    # We keep the rolled-up workflows too (row[5]) -- they're already in memory, and the
-    # fleet breakdown below re-aggregates them per machine and per harness rather than
-    # re-parsing anything.
+    # Retain parsed rows for the fleet breakdown rather than scanning again.
     # [label, files, ms, cached, sub, workflows, model_rows, incremental]
     backends: list[list] = []
     for sub in getattr(store, "stores", None) or [store]:
         label = getattr(sub, "source_name", type(sub).__name__)
         files = None
-        files_fn = getattr(sub, "_files", None)  # only the file-based backends have it
+        files_fn = getattr(sub, "_files", None)
         if callable(files_fn):
             try:
                 files = len(files_fn())
@@ -782,19 +714,14 @@ def timings_command(args: argparse.Namespace) -> int:
         wf, wf_ms = timed(sub.workflows)
         mb, mb_ms = timed(sub.model_breakdown)
         cached = getattr(sub, "served_from_cache", None)
-        # Keep the per-model rows: the fleet's list-price ("$") estimate reprices each
-        # row's unpriced tokens (below), and they're already parsed -- discarding them
-        # would mean a second model_breakdown scan.
-        # A splice re-read only the files that changed instead of the whole corpus --
-        # neither "cached" nor "parsed", and worth its own word here, since the whole
-        # point of this profiler is to say WHY a launch cost what it cost.
+        # Incremental splices are distinct from cache hits and full parses.
         inc = bool(getattr(sub, "served_incrementally", False))
         backends.append([label, files, wf_ms + mb_ms, cached, sub, wf, mb, inc])
     total_ms = (time.perf_counter() - t_start) * 1000.0
-    backends.sort(key=lambda b: b[2], reverse=True)  # slowest backend first
+    backends.sort(key=lambda b: b[2], reverse=True)
 
     flags = [b[3] for b in backends if b[3] is not None]
-    warm = [b[3] or b[7] for b in backends if b[3] is not None]  # cached OR spliced
+    warm = [b[3] or b[7] for b in backends if b[3] is not None]
     if flags and all(flags):
         warmth = "warm start · all cached"
     elif warm and all(warm):
@@ -826,10 +753,7 @@ def timings_command(args: argparse.Namespace) -> int:
     print()
     print(f"  {'total'.ljust(lbl)}  {'':>5}  {fmt_ms(total_ms)}")
 
-    # The fleet breakdown: the same rolled-up sessions re-aggregated per machine and per
-    # harness (sessions / tokens / cost), the machine x harness grid, and where the load
-    # time went. Only meaningful once there's more than one box or more than one tool in
-    # the mix -- a single-source local run prints nothing extra.
+    # Re-aggregate loaded rows; a single-machine, single-harness run needs no breakdown.
     for line in _fleet_timing_tables(store, backends):
         print(line)
     return 0
@@ -839,9 +763,7 @@ def _fmt_ms(ms: float) -> str:
     return f"{ms:.1f} ms"
 
 
-# Light box-drawing for the --timings tables, with the ASCII set the frame falls back
-# to where the locale can't encode the glyphs (util.unicode_screen -- the same gate the
-# TUI's panels use). Multibyte, so these only ever go to a UTF-8 stdout.
+# Match the TUI's UTF-8 gate for timing-table box drawing.
 _BOX_GLYPHS = {
     True: dict(
         tl="┌", tm="┬", tr="┐", ml="├", mm="┼", mr="┤", bl="└", bm="┴", br="┘", h="─", v="│"
@@ -861,10 +783,6 @@ def _box_table(
     rule_before_last: bool = False,
     uni: bool = True,
 ) -> list[str]:
-    # A ruled box-drawing table for the --timings fleet breakdown, matching the TUI's
-    # ruled panels: a bordered grid with the title set into the top rule, every column
-    # padded to its widest value and l/r-aligned per `aligns`, and an inner rule above the
-    # final (TOTAL) row. `uni` picks light box drawing vs the ASCII +-| fallback.
     g = _BOX_GLYPHS[uni]
     cols = len(headers)
     widths = [len(headers[i]) for i in range(cols)]
@@ -883,7 +801,7 @@ def _box_table(
         return indent + g["v"] + g["v"].join(parts) + g["v"]
 
     top = rule(g["tl"], g["tm"], g["tr"])
-    if title:  # set the caption into the top rule, just past the corner
+    if title:
         cap = f"{g['h']} {title} "
         pos = len(indent) + 1
         if pos + len(cap) < len(top) - 1:
@@ -898,15 +816,9 @@ def _box_table(
 
 
 def _fleet_estimated_costs(backends: list) -> dict[str, float]:
-    # Per-root list-price ESTIMATE delta: what each session's $0/subscription tokens WOULD
-    # cost at API rates -- the `$` view's number, mirroring App._compute_api_costs exactly
-    # (same unpriced_* split, same api_equivalent_cost). Summed per root_id across every
-    # backend's already-parsed model rows (row[6]); a backend without model rows (older test
-    # fixtures) contributes nothing, so the estimate falls back to the real cost.
-    # input, output, reasoning, cache_read, cache_write -- api_equivalent_cost's arg order.
-    # Both tuples end with the 1h-TTL cache-write subset, which api_equivalent_cost takes
-    # as its trailing argument -- a machine whose export predates the field contributes 0
-    # and prices exactly as it did before.
+    # Mirror App's `$` estimate from already-parsed per-model rows. The tuples follow
+    # api_equivalent_cost's argument order and end with the 1h-write subset; older exports
+    # omit it and therefore retain their previous pricing.
     unpriced = ("unpriced_input", "unpriced_output", "unpriced_reasoning",
                 "unpriced_cache_read", "unpriced_cache_write",
                 "unpriced_cache_write_1h")  # fmt: skip
@@ -919,8 +831,7 @@ def _fleet_estimated_costs(backends: list) -> dict[str, float]:
             if not rid:
                 continue
             real = m.get("cost", 0) or 0
-            # A pure-$0 row without an unpriced_* split still prices from its aggregate
-            # tokens (the App's all_unpriced case); otherwise only the $0 messages count.
+            # Old pure-$0 rows lack the unpriced split, so their whole token row is unpriced.
             keys = whole if (real == 0 and "unpriced_input" not in m) else unpriced
             delta[rid] = delta.get(rid, 0.0) + api_equivalent_cost(
                 m["model_name"], *(m.get(k, 0) for k in keys)
@@ -929,12 +840,7 @@ def _fleet_estimated_costs(backends: list) -> dict[str, float]:
 
 
 def _fleet_aggregate(workflows: list, est_by_id: dict | None = None) -> tuple[dict, dict, dict]:
-    # Roll the fleet's sessions up two ways and cross-tabbed, from the already-parsed
-    # Workflow rows (each carries .machine, .source, .total_cost, .total_tokens): per
-    # machine, per harness, and machine -> harness -> [sessions, tokens, cost, est]. `est`
-    # is the list-price figure (real spend + the session's unpriced tokens at list rates,
-    # from _fleet_estimated_costs) -- equal to `cost` when there's nothing to estimate.
-    # Pure over the rows so it's testable without a store.
+    # Return per-machine, per-harness, and cross-tabbed [sessions, tokens, cost, estimate].
     est_by_id = est_by_id or {}
     by_machine: dict[str, list] = {}
     by_harness: dict[str, list] = {}
@@ -958,18 +864,15 @@ def _fleet_aggregate(workflows: list, est_by_id: dict | None = None) -> tuple[di
 
 
 def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list[str]:
-    # Build the fleet breakdown printed after the per-backend load table: By machine, By
-    # harness, and the machine x harness session grid, each as a ruled box-drawing table.
-    # Returns the lines to print (empty when there's nothing worth breaking down -- one
-    # box AND one tool). `uni` overrides the UTF-8 gate (for tests); production reads it
-    # from the locale, so a non-UTF-8 terminal gets the ASCII glyph set throughout.
+    # Build the fleet tables, or nothing for a single-machine, single-harness run.
+    # `uni` is injectable for tests; production uses the same locale gate as the TUI.
     if uni is None:
         uni = unicode_screen()
     live_mark, pull_mark = ("● ", "○ ") if uni else ("* ", "- ")
-    dot = "·" if uni else "."  # an empty grid cell
-    sig = "Σ" if uni else "sum"  # the totals row/column label
+    dot = "·" if uni else "."
+    sig = "Σ" if uni else "sum"
     times = "×" if uni else "x"
-    dash = "—" if uni else "-"  # a not-applicable cell (live box has no summary file)
+    dash = "—" if uni else "-"
 
     all_wf = [w for row in backends for w in (row[5] or [])]
     est_by_id = _fleet_estimated_costs(backends)
@@ -978,16 +881,15 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
     meta = getattr(store, "machine_meta", {}) or {}
     live_label = next((n for n, m in meta.items() if m.get("live")), None)
 
-    # Where the load time went: the RemoteStore row is the pulled read (per box via its
-    # byte share); every other backend row is a harness parsed on THIS machine.
+    # Apportion RemoteStore load by summary bytes; other load belongs to this machine.
     byte_by_machine: dict[str, int] = {}
     remote_ms = 0.0
     live_load_ms = 0.0
     harness_time: dict[str, float] = {}
-    for row in backends:  # index, not unpack -- a row may or may not carry model rows (row[6])
+    for row in backends:
         ms, sub, wf = row[2], row[4], row[5]
         stats_fn = getattr(sub, "machine_stats", None)
-        if callable(stats_fn):  # the RemoteStore -- pulled summaries, one file per box
+        if callable(stats_fn):
             remote_ms += ms
             for s in stats_fn():
                 byte_by_machine[s["label"]] = s["bytes"]
@@ -997,11 +899,7 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
                 harness_time[wf[0].source] = harness_time.get(wf[0].source, 0.0) + ms
     total_bytes = sum(byte_by_machine.values())
 
-    # A box in the fleet with zero KEPT sessions (a valid empty export, or one whose every
-    # session the live box already has) never appears in the workflow rollup -- seed it
-    # from machine_meta / machine_stats so it still shows as an idle member (and doesn't
-    # drop the machine count below the "it's a fleet" threshold). Labels here already agree
-    # with w.machine: both machine_meta and machine_stats scramble under demo.
+    # Seed valid empty/deduplicated exports so idle machines remain fleet members.
     for name in list(meta) + list(byte_by_machine):
         by_machine.setdefault(name, [0, 0, 0.0, 0.0])
 
@@ -1010,8 +908,7 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
     if not (multi_machine or multi_harness):
         return []
 
-    # Show the list-price ("$") estimate column only when it says something the real cost
-    # doesn't -- i.e. there are unpriced/subscription tokens. A fully metered fleet skips it.
+    # Fully metered fleets do not need a duplicate estimate column.
     total_cost = sum(v[2] for v in by_machine.values())
     total_est = sum(v[3] for v in by_machine.values())
     show_est = abs(total_est - total_cost) > 0.005
@@ -1019,7 +916,7 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
     def machine_load(name: str) -> float:
         if name == live_label:
             return live_load_ms
-        if total_bytes:  # pulled: byte-proportional share of the (tiny) summary read
+        if total_bytes:
             return remote_ms * byte_by_machine.get(name, 0) / total_bytes
         return 0.0
 
@@ -1034,7 +931,6 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
         ]
 
     if multi_machine:
-        # live box first, then heaviest spend, then most sessions
         order = sorted(
             by_machine,
             key=lambda n: (n != live_label, -by_machine[n][2], -by_machine[n][0]),
@@ -1083,7 +979,7 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
             row = [SOURCE_LABELS.get(key, key), f"{sess:,}", human_tokens(toks), money(cost)]
             if show_est:
                 row.append(money(est))
-            if multi_machine:  # a "boxes" count is only informative once there's a fleet
+            if multi_machine:
                 row.append(str(sum(1 for m in cell if key in cell[m])))
             row.append(_fmt_ms(t) if t is not None else dash)
             rows.append(row)
@@ -1111,10 +1007,10 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
                 uni=uni,
             )
         )
-        if multi_machine:  # a footnote, since load means something different per box
+        if multi_machine:
             out.append("  load = this machine's parse; pulled boxes arrive pre-rolled")
 
-    if show_est:  # the est column can ride on either flat table -- footnote it once
+    if show_est:
         out.append("  est $ = list-price estimate for $0 / subscription tokens (the $ view)")
 
     if multi_machine and multi_harness:
@@ -1145,7 +1041,7 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
         )
         width = max((len(line) for line in table), default=0)
         out.append("")
-        if width <= 118:  # a grid too wide to read is worse than none -- the flat tables have it
+        if width <= 118:  # The flat tables remain useful when the grid is too wide.
             out.extend(table)
         else:
             out.append(
@@ -1156,33 +1052,23 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
 
 
 def _project_key(directory: str) -> str:
-    # Fold a session's recorded cwd (or the pane path tmux hands us) onto the
-    # project it belongs to, the same way the TUI groups projects: up to the git
-    # root, then worktrees onto their main repo.
+    # Match the TUI's git-root and worktree project grouping.
     return os.path.normpath(resolve_project_root(git_root(os.path.expanduser(directory))))
 
 
-# The backends a --status target can price: the interactive harnesses, each with
-# a live session a tmux pane can point at. The request-log sources (csv/jsonl)
-# have synthetic per-(date, project) sessions with no live identity, and the
-# Copilot/VS Code stores record no terminal session to follow.
+# Only interactive harnesses expose live session identity for cost/goto targets.
 _STATUS_SOURCES = ("opencode", "claude", "codex", "hermes", "pi", "omp", "openclaw", "zaly")
 
 
 def _is_session_target(target: str) -> bool:
-    # A --status target is a directory or a session id. An id never contains a
-    # path separator and doesn't exist on disk; anything else scopes by project.
-    # Which backend an id belongs to is NOT decided here -- ids are probed via
-    # each store's root_of (UUID shapes collide across Claude/Codex/pi/omp/Zaly), and
-    # an id nobody claims yields an empty segment rather than being reinterpreted
-    # as a directory, so a stale id can never price the shell's own project.
+    # Backend cannot be inferred from ID shape because several use UUIDs. Unclaimed IDs
+    # must stay IDs, never fall through to pricing the current project.
     if os.sep in target or (os.altsep and os.altsep in target):
         return False
     return not os.path.exists(os.path.expanduser(target))
 
 
 def _status_candidate(store, project: str | None) -> tuple[str, int] | None:
-    # The newest root (id, last-active ms) -- scoped to `project` when given.
     for row in store.recent_roots():
         if project is None or _project_key(row["directory"]) == project:
             return row["id"], row["last_active"]
@@ -1190,11 +1076,8 @@ def _status_candidate(store, project: str | None) -> tuple[str, int] | None:
 
 
 def _price_root(store, workflow_id: str) -> str:
-    # Recorded cost of the workflow's whole subtree, plus a list-price estimate for
-    # any $0 (subscription) node -- prefixed "~" so a real dollar amount is never
-    # conflated with an estimate (the one-shot sibling of the TUI's $ view /
-    # _priced_nodes). status_nodes is the backend's cheap single-session opt-in
-    # (ClaudeStore parses just that transcript); workflow_nodes otherwise.
+    # Prefix list-price estimates for $0 nodes with `~`; never present them as spend.
+    # status_nodes is the cheap single-session path where a backend provides one.
     total = estimated = 0.0
     nodes_of = getattr(store, "status_nodes", store.workflow_nodes)
     for node in nodes_of(workflow_id):
@@ -1213,22 +1096,13 @@ def _price_root(store, workflow_id: str) -> str:
     return "~" + text if estimated > 0 else text
 
 
-# Moved to util (beside env_flag/palette_writes_ignored, its only inputs) so `opentab
-# doctor` can report which colour path the renderer will take without a second copy of
-# the rule. Kept under the old name here: it is what main() reads and what the test that
-# pins the both-directions override asks for.
+# Compatibility alias; doctor and the renderer share util's single decision rule.
 _resolve_init_color = init_color_allowed
 
 
 def status_line(store, target: str | None = None) -> str:
-    # The figure for the tmux segment: recorded cost of the most recently active
-    # session's whole subtree. Empty when nothing matches, so the segment simply
-    # disappears.
-    #
-    # `target` is a directory (price that project's most recent session) or a
-    # session id (price exactly that session -- the disambiguator when several
-    # sessions run in one project, e.g. stamped per-pane by a tmux plugin); a
-    # subagent id resolves to its root.
+    # Empty output deliberately makes an unmatched tmux segment disappear. A directory
+    # selects its newest session; a session or subagent ID selects its exact root.
     workflow_id = None
     if target and _is_session_target(target):
         workflow_id = store.root_of(target)
@@ -1242,10 +1116,8 @@ def status_line(store, target: str | None = None) -> str:
 
 
 def _status_stores(args: argparse.Namespace) -> list:
-    # Every present status-capable backend, built raw (no cache wrap -- the
-    # status trio answers from file names/heads or SQL, never a corpus parse).
-    # An explicit --source narrows to that one backend; auto/all consult them
-    # all, deliberately ignoring the TUI's saved source preference.
+    # Build raw stores: status lookup uses filenames/heads or SQL, never corpus caches.
+    # auto/all intentionally ignore the TUI's saved single-source preference.
     keys = [k for k in sources.available_sources(args) if k in _STATUS_SOURCES]
     source = getattr(args, "source", "auto")
     if source not in ("auto", "all"):
@@ -1254,15 +1126,10 @@ def _status_stores(args: argparse.Namespace) -> list:
 
 
 class _StatusPricer:
-    """Prices --status targets against one shared set of backends.
+    """Share root scans and node pricing across a batch.
 
-    A per-target `opentab --status` fan-out repeats three costs N times: the
-    interpreter+import start (~90ms, the shell's to avoid -- hence `status
-    --batch`), each backend's recent_roots scan, and the node parse of every
-    root it prices. This holds the latter two for the life of one process, so a
-    batch of panes sharing a session -- a split, or a subagent id that walks up
-    to the same root -- parses it once. Single-target callers get the same
-    behaviour as before: nothing is precomputed, every memo fills on demand.
+    Interpreter startup dominates a single target; within one process, memoizing roots
+    and prices also prevents split panes or subagent IDs from parsing one root twice.
     """
 
     def __init__(self, stores: list):
@@ -1271,11 +1138,8 @@ class _StatusPricer:
         self._prices: dict[tuple[int, str], str] = {}
 
     def _roots(self, index: int) -> list:
-        # recent_roots() is already a list in every backend, and its rows resolve
-        # "directory" lazily on first read (util.LazyStatusRoot), so caching the
-        # list keeps the "a project scan stops paying at the row that matches"
-        # property while letting the next target reuse the head reads this one
-        # paid for -- the rows memoize their own resolved fields.
+        # Lazy rows preserve early-stop scans while sharing fields already resolved by
+        # previous targets.
         if index not in self._recent:
             self._recent[index] = list(self._stores[index].recent_roots())
         return self._recent[index]
@@ -1293,19 +1157,13 @@ class _StatusPricer:
         return self._prices[key]
 
     def line(self, target: str | None) -> str:
-        """The status figure for one target -- '' when nothing matches."""
         if target and _is_session_target(target):
-            # The id itself names its backend: every store's root_of answers from
-            # a cheap filename/dir/SQL lookup (never a parse), so probe each and
-            # let the first claimant price it -- ids are UUIDs or ses_-prefixed,
-            # so a cross-backend collision is not a realistic concern.
+            # root_of is a cheap filename/directory/SQL probe, not a parse.
             for index, store in enumerate(self._stores):
                 root = store.root_of(target)
                 if root:
                     return self._price(index, root)
             return ""
-        # Directory (or nothing): the most recently active root across the backends
-        # wins, so whichever tool you drove last is the one priced.
         project = _project_key(target) if target else None
         best: tuple[int, str, int] | None = None
         for index in range(len(self._stores)):
@@ -1322,17 +1180,12 @@ def _status_line_all(args: argparse.Namespace, target: str | None) -> str:
 
 
 def _goto_target(args: argparse.Namespace) -> tuple[str, str] | None:
-    # Resolve --goto's target to (source key, root session id) with the --status
-    # machinery: a session id is probed via each backend's root_of (a subagent id
-    # walks up to its root), a directory takes the project's most recently active
-    # root across the backends. Returns None when nothing matches.
+    # Reuse cost-target semantics so IDs, subagents, and project recency cannot drift.
     target = args.goto or os.getcwd()
     keys = [k for k in sources.available_sources(args) if k in _STATUS_SOURCES]
     source = getattr(args, "source", "auto")
-    # "auto"/"all" span every backend; "remote" is the fleet view whose live box IS the
-    # local backends (available_sources never yields "remote"), so it must probe them
-    # too -- pinning to =="remote" would empty the key list and never find the session.
-    if source not in ("auto", "all", "remote"):  # an explicit --source pins one backend
+    # The remote fleet includes local backends, although available_sources never yields it.
+    if source not in ("auto", "all", "remote"):
         keys = [k for k in keys if k == source]
     stores = [(k, sources._build_store(args, k)[0]) for k in keys]
     if _is_session_target(target):
@@ -1351,39 +1204,22 @@ def _goto_target(args: argparse.Namespace) -> tuple[str, str] | None:
 
 
 def _goto_hint(target: str) -> str:
-    # The toast shown when --goto resolves to nothing -- typically a project whose
-    # agent was just launched and hasn't recorded a turn yet. The flag was made
-    # for a tmux popup binding, where exiting would flash the error and close, so
-    # main opens the ordinary TUI and this says why it didn't jump.
+    # Keep a tmux popup open when its new agent has not recorded a turn yet.
     if _is_session_target(target):
         return f"--goto: session {target} not found in any source"
     return f"--goto: no session yet in {short_path(target, 40)}"
 
 
 def _read_batch_stdin() -> list[str]:
-    # `-` among the targets means "the rest come from stdin, one per line" (the
-    # `export -` convention). A tty would just hang waiting for EOF, which from a
-    # status-bar hook looks like opentab freezing, so refuse it outright.
+    # Refuse a tty: waiting for EOF would look like a frozen status-bar hook.
     if sys.stdin is None or sys.stdin.isatty():
         raise ValueError("status --batch -: stdin is a terminal (pipe the targets in)")
     return sys.stdin.read().splitlines()
 
 
 def _batch_targets(targets: list[str]) -> list[str]:
-    # The batch target list, cleaned but NOT canonicalized: order and cardinality
-    # are the caller's, because the output is keyed by the exact string asked for
-    # and a caller may legitimately ask twice (pricing it twice is free -- the
-    # pricer memoizes the root). Only three things are dropped:
-    #
-    #  * blank lines, so a trailing newline in a piped list isn't a target;
-    #  * one trailing \r, so a list produced by a Windows-side tool doesn't key
-    #    rows nothing matches -- but NOT a general .strip(), because leading and
-    #    trailing spaces are legal in a Unix path and stripping them would price
-    #    the wrong directory;
-    #  * a target containing a tab or NUL, which a TSV keyed by it cannot
-    #    represent. (An id never contains one; a path could.) A target containing
-    #    a newline is likewise unrepresentable, and the line protocol has already
-    #    split it -- documented in the subcommand's help rather than detected.
+    # Preserve exact target order, duplicates, and legal path spaces. Drop blank lines,
+    # one CR from Windows input, and tab/NUL values the TSV protocol cannot represent.
     if targets.count("-") and targets != ["-"]:
         raise ValueError(
             "status --batch: `-` reads every target from stdin; don't mix it with others"
@@ -1399,11 +1235,7 @@ def _batch_targets(targets: list[str]) -> list[str]:
 
 
 def _status_batch(args: argparse.Namespace, targets: list[str]) -> int:
-    # Price many targets in ONE process: `<target>\t<price>` per line, in the
-    # order asked, unpriceable targets omitted (--status's own contract -- an
-    # empty segment rather than an error). Keyed output is what lets the caller
-    # read the table straight into a map without tracking which reply was whose;
-    # the tmux picker's sweep used numbered temp files for exactly that.
+    # Keyed, ordered TSV lets callers build a map; unmatched targets remain omitted.
     pricer = _StatusPricer(_status_stores(args))
     failed = False
     try:
@@ -1411,32 +1243,23 @@ def _status_batch(args: argparse.Namespace, targets: list[str]) -> int:
             try:
                 line = pricer.line(target)
             except (sqlite3.Error, OSError, ValueError):
-                failed = True  # one unreadable backend must not cost the other targets
+                failed = True
                 continue
             if line:
                 print(f"{target}\t{line}")
     except BrokenPipeError:
-        # The reader stopped (`| head -1`): its choice, not our failure. Point stdout
-        # at the void so the interpreter's exit-time flush can't print a traceback
-        # over whatever the caller is doing.
+        # Avoid an exit-time flush traceback after a downstream reader closes early.
         with contextlib.suppress(OSError):
             os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
-    # A read error means this table is missing rows it should have had. Legacy
-    # --status deliberately swallows that (an empty status segment beats a broken
-    # status bar), but a batch caller is building a table it will PUBLISH: the
-    # tmux collector replaces its cached prices only on a zero exit, so saying
-    # "incomplete" here is what keeps the previous complete table in place.
+    # Batch consumers publish or cache the table, so incomplete output must fail. The
+    # legacy single status segment still swallows read errors to protect the status bar.
     return 1 if failed else 0
 
 
 def status_command(args: argparse.Namespace) -> int:
-    # One-shot, curses-free sibling of --refresh-models, polled from a tmux status
-    # line -- so every failure mode prints nothing (an empty segment) instead of
-    # erroring the whole status bar.
+    # Single-target failures become an empty segment rather than breaking a status bar.
     if getattr(args, "status_batch", False):
-        # A usage mistake here IS worth shouting about: batch is called by a
-        # script the author is writing, not polled by a status bar mid-session.
         try:
             targets = _batch_targets(getattr(args, "status_targets", []) or [])
         except ValueError as exc:
@@ -1453,31 +1276,20 @@ def status_command(args: argparse.Namespace) -> int:
 
 
 def export_command(args: argparse.Namespace) -> int:
-    # --export: write this machine's spend summary (the warm-start rollup -- totals +
-    # per-model breakdown, no transcripts) as portable JSON and exit. Curses-free like
-    # --status/--html. Defaults to the whole machine (every present harness, merged);
-    # --harness pins one. Made for `ssh box opentab --export - > box.json`, then browse
-    # the gathered files with `opentab --source remote`.
     import socket
 
     from opentab.stores.remote import EXPORT_VERSION, build_export
 
     key = args.source if args.source not in ("auto", "remote") else "all"
     label = args.label or socket.gethostname() or "machine"
-    # --demo pairs with --export for a shareable summary, and under it every title, path,
-    # model and dollar figure in the payload is scrambled -- but the label is a real
-    # hostname (a work box, a personal handle), so leaving it raw put the one piece of
-    # genuine identity into the artefact you hand to someone. RemoteStore already
-    # scrambles it at display time behind the same `titles` gate; do it here too, so the
-    # file on disk matches what a demo shows. demo_machine is deterministic, so a
-    # summary exported under demo still joins to its scrambled w.machine.
+    # A demo export must also anonymize its real hostname. Deterministic scrambling keeps
+    # the exported label joinable to demo workflow.machine values.
     demo_on, _scale, demo_cats = demo_config(args)
     if demo_on and "titles" in demo_cats:
         label = demo_machine(label)
     exported_at = datetime.now().astimezone().isoformat(timespec="seconds")
     if key == "all" and not sources.available_sources(args):
-        # A machine with no agent data yet still exports a valid, empty summary, so
-        # `opentab --pull` reports "0 sessions" for it instead of failing outright.
+        # Empty machines remain valid fleet members.
         payload = {
             "opentab_export": EXPORT_VERSION,
             "label": label,
@@ -1510,9 +1322,7 @@ REMOTES_VERSION = 1
 
 
 def remotes_config_path() -> str:
-    # The learned machine list for --pull/--remote (an ssh target or url per machine).
-    # Real config -> the XDG config dir; the summaries it fetches are a cache elsewhere
-    # (sources.default_remotes_dir, under the XDG cache dir).
+    # Connection config is durable; fetched summaries live in the cache directory.
     return os.path.join(paths.config_dir(), "remotes.json")
 
 
@@ -1525,14 +1335,12 @@ def _load_remotes() -> dict:
     machines = data.get("machines") if isinstance(data, dict) else None
     if not isinstance(machines, dict):
         return {}
-    # Drop malformed entries (a hand-edited `"box": null`) so a fetch never trips over
-    # a non-dict value -- see _fetch_summary / _pull_one.
+    # remotes.json is user-edited input; malformed entries must not reach workers.
     return {k: v for k, v in machines.items() if isinstance(k, str) and isinstance(v, dict)}
 
 
 def _save_remotes(machines: dict) -> None:
-    # Atomic (temp + replace) and best-effort, like the notes/cache writers: a config
-    # we can't write must never break a launch.
+    # Best-effort and atomic: an unwritable config must not break a launch.
     path = remotes_config_path()
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1547,10 +1355,6 @@ def _save_remotes(machines: dict) -> None:
 
 
 def _remote_entry(spec: str) -> tuple[str, dict]:
-    # Parse a --pull token into (machine name, entry):
-    #   host / user@host        -> {"ssh": ...}, name = the host part
-    #   http(s)://addr[:port]   -> {"url": ...}, name = the host
-    #   name=<any of the above> -> that target, under the explicit name
     name, sep, rest = spec.partition("=")
     if not sep:
         rest, name = spec, ""
@@ -1566,22 +1370,17 @@ def _remote_entry(spec: str) -> tuple[str, dict]:
 
 
 def _summary_filename(name: str) -> str:
-    # The name is a label, not a path -- percent-encode it so distinct names never
-    # collide (`a/b` vs `a_b`) and no separator can escape the remotes directory.
+    # Percent-encode untrusted labels without collisions or directory traversal.
     from urllib.parse import quote
 
     safe = quote(name, safe="")
     if safe.startswith("."):
-        # RemoteStore reads the remotes dir with glob("*.json"), which skips dotfiles --
-        # so a name like ".box" must not produce a hidden summary the view can't see.
+        # glob("*.json") skips dotfiles, so encode a leading dot too.
         safe = "%2E" + safe[1:]
     return safe + ".json"
 
 
 def _fetch_summary(name: str, entry: dict, timeout: float = 60.0) -> str:
-    # Fetch one machine's summary. SSH (the default) runs the exporter on the remote
-    # over the user's existing ssh config -- nothing has to be listening there. A `url`
-    # entry GETs it instead (an `opentab --serve` box on a trusted/VPN interface).
     if not isinstance(entry, dict):
         raise RuntimeError("invalid machine entry (expected an object with 'ssh' or 'url')")
     if entry.get("url"):
@@ -1617,9 +1416,7 @@ def _fetch_summary(name: str, entry: dict, timeout: float = 60.0) -> str:
 
 
 def _pull_one(name: str, entry: dict, remotes_dir: str) -> tuple[int, str]:
-    # Fetch, validate, and save one machine's summary. Returns (session_count, "") on
-    # success or (0, error). Never raises -- so one unreachable machine can't sink the
-    # whole parallel pull; its slot just reports the failure.
+    # Worker failures are returned per machine; none may abort the parallel pull.
     try:
         text = _fetch_summary(name, entry)
         payload = json.loads(text)
@@ -1630,9 +1427,7 @@ def _pull_one(name: str, entry: dict, remotes_dir: str) -> tuple[int, str]:
     except FileNotFoundError:
         return 0, "ssh not found on this machine"
     except (OSError, ValueError, RuntimeError, AttributeError, TypeError) as exc:
-        # Broad on purpose: this runs in a worker thread, and any escape would abort the
-        # whole parallel pull at fut.result(). A malformed entry becomes this machine's
-        # failure line, never everyone's.
+        # Any worker escape would surface at fut.result() and abort every machine.
         return 0, str(exc) or exc.__class__.__name__
     try:
         with open(os.path.join(remotes_dir, _summary_filename(name)), "w", encoding="utf-8") as fh:
@@ -1643,25 +1438,19 @@ def _pull_one(name: str, entry: dict, remotes_dir: str) -> tuple[int, str]:
 
 
 def pull_command(args: argparse.Namespace) -> None:
-    # --pull: fetch machine summaries over SSH/HTTP in parallel, showing each machine's
-    # progress as it lands, and learn the targets into remotes.json. Not a terminal
-    # command -- main() then opens the merged view (--source remote).
     machines = _load_remotes()
     tokens = args.pull or []
-    if tokens:  # explicit hosts: add/refresh (learn) them
+    if tokens:
         targets: dict = {}
         for spec in tokens:
             name, entry = _remote_entry(spec)
             saved = machines.get(name)
             if spec == name and isinstance(saved, dict) and (saved.get("ssh") or saved.get("url")):
-                targets[name] = saved  # bare name of a known, usable machine: reuse it
+                targets[name] = saved
             else:
-                # Learn a new machine, or repair a saved entry that has no reachable
-                # target (a hand-edited cmd-only entry) by folding in the derived ssh.
+                # Preserve orthogonal fields while repairing or replacing the target.
                 merged = {**(saved or {}), **entry}
-                # ssh and url are mutually exclusive target types -- a re-learn that
-                # switches type must drop the old one (else _fetch_summary keeps using
-                # the stale url); orthogonal fields like a custom `cmd` are preserved.
+                # SSH and URL are mutually exclusive; a stale URL otherwise wins.
                 if "ssh" in entry:
                     merged.pop("url", None)
                 elif "url" in entry:
@@ -1669,7 +1458,7 @@ def pull_command(args: argparse.Namespace) -> None:
                 machines[name] = merged
                 targets[name] = merged
         _save_remotes(machines)
-    else:  # no hosts named: refresh every saved machine
+    else:
         targets = dict(machines)
     if not targets:
         sys.stderr.write(
@@ -1686,9 +1475,7 @@ def pull_command(args: argparse.Namespace) -> None:
     sys.stderr.write(
         f"Pulling {len(targets)} machine(s) in parallel: {', '.join(sorted(targets))}\n"
     )
-    # Local, like util.read_files_parallel's: concurrent.futures costs ~10ms of
-    # imports that only the SSH fan-out needs, and the one-shot commands (--status
-    # polled from a status bar) paid it on every single invocation.
+    # Keep concurrent.futures' measured ~10ms import cost off one-shot status calls.
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     ok = 0
@@ -1696,7 +1483,7 @@ def pull_command(args: argparse.Namespace) -> None:
         max_workers=min(len(targets), 8), thread_name_prefix="opentab-pull"
     ) as ex:
         futures = {ex.submit(_pull_one, n, e, remotes_dir): n for n, e in targets.items()}
-        for fut in as_completed(futures):  # report each machine the moment it finishes
+        for fut in as_completed(futures):
             name = futures[fut]
             count, error = fut.result()
             if error:
@@ -1708,11 +1495,7 @@ def pull_command(args: argparse.Namespace) -> None:
 
 
 def _make_refresh_fn(args: argparse.Namespace):
-    # A closure the TUI/web App calls to re-pull specific machines from inside opentab
-    # (the `F` key / the web refresh button). Takes remotes.json keys, returns
-    # [(name, session_count, error)] -- the same _pull_one workers as `--pull`, in
-    # parallel. Bound to the run's --remotes dir so an in-app refresh writes where the
-    # fleet reads.
+    # Bind in-app refreshes to this run's remotes directory and the same pull workers.
     remotes_dir = args.remotes or default_remotes_dir()
 
     def refresh(keys: list) -> list:
@@ -1741,12 +1524,8 @@ def _make_refresh_fn(args: argparse.Namespace):
 
 
 def _make_ssh_targets_fn():
-    # A closure the TUI's `L` menu calls to turn a machine's remotes.json key into its
-    # ssh target, so a session pulled from another box reopens on that box. Re-reads the
-    # file per call (it is tiny, and this runs on a keystroke) so a machine learned by a
-    # `--pull` in another terminal is launchable without restarting. `url` machines have
-    # no ssh target and are deliberately absent: opentab fetches summaries over HTTP, but
-    # it will not invent a shell on a box that only offered it a JSON endpoint.
+    # Re-read tiny remotes.json on each launch so newly learned machines work immediately.
+    # HTTP-only machines deliberately provide no invented shell target.
     def targets() -> dict:
         return {
             name: str(entry["ssh"])
@@ -1758,7 +1537,6 @@ def _make_ssh_targets_fn():
 
 
 def forget_command(args: argparse.Namespace) -> int:
-    # --forget: drop machines from remotes.json and delete their cached summaries.
     machines = _load_remotes()
     remotes_dir = args.remotes or default_remotes_dir()
     for name in args.forget:
@@ -1773,10 +1551,7 @@ def forget_command(args: argparse.Namespace) -> int:
 
 
 def web_command(args: argparse.Namespace) -> int:
-    # --html / --serve: the web frontend, one-shot and curses-free. Builds the same
-    # headless App the TUI drives -- rollups, worktree folding, saved prefs (ignored
-    # projects, the restored range/$ view), and the real/API cost snapshots -- and
-    # hands it to opentab.web. Import deferred so TUI startup doesn't pay for it.
+    # Build the same headless App state as the TUI. Defer the web import from TUI startup.
     from opentab import web
 
     use_state = not args.demo and not args.no_state
@@ -1788,13 +1563,13 @@ def web_command(args: argparse.Namespace) -> int:
     app = App(store, args, source_key=source_key)
     app.allow_price_prompt = False
     if source_key == "remote":
-        app._refresh_backend = _make_refresh_fn(args)  # the web /api/refresh endpoint
+        app._refresh_backend = _make_refresh_fn(args)
     if use_state:
         apply_state(app, args, state)
-    app._ensure_models()  # the $ what-if snapshots ride on the per-model breakdown
+    app._ensure_models()
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()
-    if args.serve or args.web:  # --web serves too, then pops the browser
+    if args.serve or args.web:
         return web.serve_command(app, args)
     return web.html_command(app, args)
 
@@ -1806,46 +1581,33 @@ def main() -> int:
             f"(found {sys.version_info[0]}.{sys.version_info[1]})."
         )
     enable_unicode_locale()
-    args = parse_args()  # handles --help first, so it works even without curses
+    args = parse_args()
     if getattr(args, "command", None) == "doctor":
-        # The first verb with no legacy flag twin, deliberately: a --doctor alias would
-        # be new deprecated surface on the day it shipped, so this dispatches on the
-        # subcommand itself rather than through a namespace field.
-        #
-        # It goes FIRST -- above even the legacy-cache migration below. Doctor's contract
-        # is that it reports and never repairs, and a report is worth having precisely on
-        # the machine where something is wrong; running the upgrade tidy first would make
-        # it describe the state it had just created rather than the one that produced the
-        # bug (and would move the files its own "legacy" row exists to point out).
-        # Imported lazily so a one-shot verb stays off `status`'s import floor.
+        # Doctor must run before migration: it reports the state that caused the problem
+        # and promises no side effects. Keep its import off the status command's hot path.
         from opentab import doctor as doctor_module
 
         return doctor_module.doctor_command(args)
     if not getattr(args, "demo", False):
-        # One-time upgrade tidy: relocate the pre-split caches (cache/, prices.json,
-        # remotes/) out of ~/.config into the XDG cache dir. Not in a path getter — those
-        # feed --help; here it runs once and is a no-op forever after. --demo touches no
-        # real files, so it's skipped there.
+        # Migrate here, not in path getters used by help/doctor; demo touches no files.
         paths.migrate_legacy_caches()
     if getattr(args, "refresh_models", False):
-        return refresh_models_command()  # fetch prices and exit; no curses needed
+        return refresh_models_command()
     if getattr(args, "keymap", False):
-        # Print (and first-run install) the keymap config path; no curses needed.
         print(bindings.ensure_user_keymap())
         return 0
     if getattr(args, "status", None) is not None:
-        return status_command(args)  # one-shot for the tmux status line; no curses
+        return status_command(args)
     if getattr(args, "timings", False):
-        return timings_command(args)  # startup profiler; no curses
+        return timings_command(args)
     if getattr(args, "export", None) is not None:
-        return export_command(args)  # portable machine summary; no curses
+        return export_command(args)
     if getattr(args, "forget", None):
-        return forget_command(args)  # edit remotes.json and exit; no curses
+        return forget_command(args)
     if getattr(args, "pull", None) is not None:
-        pull_command(args)  # fetch machine summaries over ssh/http in parallel; no curses
+        pull_command(args)
     if getattr(args, "pull", None) is not None or getattr(args, "remote", False):
-        # --pull/--remote view the consolidated machines; both the TUI and the
-        # --html/--serve paths below read args.source, so set it before either.
+        # Set fleet selection before either frontend reads args.source.
         args.source = "remote"
         args.remotes = args.remotes or default_remotes_dir()
     if (
@@ -1853,76 +1615,56 @@ def main() -> int:
         or getattr(args, "serve", False)
         or getattr(args, "web", False)
     ):
-        return web_command(args)  # HTML browser / local browser server; no curses
+        return web_command(args)
     if curses is None:
         raise SystemExit(
             "OpenTab needs Python's curses module, which native Windows Python doesn't bundle.\n"
             "  - Native Windows: pip install windows-curses, then rerun opentab.\n"
             "  - Or run opentab under WSL (where OpenCode's database usually lives anyway)."
         )
-    # Load saved prefs first so the start source can be restored (resolve_source uses
-    # it) and the store is built once for the right backend -- the model scan stays
-    # deferred. Disabled by --demo / --no-state.
+    # Restore the source before building its store; keep the model scan deferred.
     use_state = not args.demo and not args.no_state
     state = load_state() if use_state else {}
     source_key = resolve_source(args, state)
     goto = None
     goto_hint = None
     if getattr(args, "tab", None) and getattr(args, "goto", None) is None:
-        # --tab is meaningless without a session to open, so it stands in for a bare
-        # --goto of the current directory: `opentab --tab context` == jump to the
-        # cwd's live session, landing on its Context tab.
+        # --tab implies --goto of the current directory.
         args.goto = ""
     if getattr(args, "goto", None) is not None:
-        # Resolve before the store is built: the target's backend must be in view,
-        # so a saved single-source preference can't hide the session it names.
+        # Resolve first so saved source state cannot hide the target's backend.
         goto = _goto_target(args)
         if goto is None:
-            # Nothing to land in. Don't exit -- that just flash-closes the tmux
-            # popup this flag was made for; open the plain TUI with a hint.
+            # Keep the tmux popup open as a plain TUI when nothing matches yet.
             goto_hint = _goto_hint(args.goto or os.getcwd())
         elif source_key not in ("all", "remote", goto[0]):
-            # "all"/"remote" already compose goto[0]'s backend (remote's live box is the
-            # local sources), so the target is in view -- don't collapse the merged/fleet
-            # view down to a single source. Only a pinned single source needs overriding.
+            # Merged and fleet views already contain the backend; only override a pinned one.
             source_key = goto[0]
     store, loading = sources.make_store(args, source_key)
-    # The first load runs the recursive roll-up over the whole DB / parses every
-    # transcript, which can take a beat at scale. Show a hint, then clear it before
-    # curses starts.
     sys.stderr.write(loading)
     sys.stderr.flush()
-    # The user's key bindings: install the commented default file on first run, then
-    # load it (typos become toasts, never a refusal to start). Tests and the web path
-    # construct App without one and get the pristine defaults.
+    # Invalid custom bindings degrade to defaults and notices, never block startup.
     bindings.ensure_user_keymap()
     app = App(store, args, source_key=source_key, keymap=bindings.load_user_keymap())
     if source_key == "remote":
-        # Let `F` in the TUI re-pull a machine over ssh (fleet view only), and `L`
-        # reopen a pulled session on the box it actually ran on.
         app._refresh_backend = _make_refresh_fn(args)
         app._ssh_targets = _make_ssh_targets_fn()
-    app.allow_price_prompt = use_state  # no startup prompt under --no-state/--demo
+    app.allow_price_prompt = use_state
     app.allow_init_color = _resolve_init_color()
-    # Session notes are authored data, so they live in their own file and carry their own
-    # gate: --no-state turns them off for the run, while demo is re-checked live (`D`
-    # toggles it) inside App.allow_notes. refresh_notes applies both.
+    # Notes are authored state: --no-state disables them, while App rechecks live demo mode.
     app.notes_enabled = not args.no_state
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()
     if use_state:
         apply_state(app, args, state)
-    # After apply_state, which ends by clearing the notice -- and so would wipe the
-    # "your notes.json is unreadable" warning this can raise.
+    # Refresh after apply_state, which clears notices and would erase a notes warning.
     notes_ok = app.refresh_notes()
-    app.announce_keymap_warnings()  # a broken keymap.conf line greets, not breaks
+    app.announce_keymap_warnings()
     if goto is not None:
-        # After apply_state (a restored range could hide the target; goto_session
-        # clears it when needed), before curses -- the jump is state-only.
+        # goto_session clears a restored range that hides the target; no screen is needed.
         app.goto_session(goto[1], tab=getattr(args, "tab", None))
     elif goto_hint and notes_ok:
-        # a broken notes.json outranks the miss hint: no frame paints between the
-        # two notify calls, so this one would collapse onto and bury the warning
+        # Notes loss risk outranks a goto miss when only one notice can paint.
         app.notify(goto_hint, "error")
     curses.wrapper(app.run)
     if use_state and not app.store.demo:

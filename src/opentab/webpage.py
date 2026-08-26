@@ -1,23 +1,9 @@
-"""The self-contained browser page: inline CSS + JS around one embedded JSON payload.
+"""Render the self-contained HTML frontend from a web payload.
 
-`render_html(payload)` is a pure function from the `opentab.web.build_payload()`
-shape to a single HTML string -- no template engine, no network, no external
-assets, so the file works from disk, from GitHub Pages (`--demo --html`), or from
-`--serve` unchanged. The page deliberately mirrors the TUI: a lazygit-style
-sidebar (Months / Days, or Projects -- with the same eighth-block cost bars) next
-to a tabbed detail pane whose tabs are the TUI's own per-scope tab tuples, TUI
-box borders, and the TUI keymap (`j`/`k`, `Tab`, `h`/`l`, `Esc`, `$`, `w`, `p`/`t`).
-Selection is hash-routed (deep-linkable, browser back = step out); the active
-tab is transient UI state. The $ what-if toggle swaps which of the two embedded
-cost fields every view reads -- the exact analogue of App._apply_price_mode().
-`w` arms a what-if *model*: a session-scoped rate substitution (its Subagents tree
-and its Overview, nothing else) computed client-side off the per-model token splits --
-so it, unlike $, is a reprice, and one the payload can only ship the ingredients for.
-
-Assembly uses token replacement (never str.format: the CSS/JS are full of braces).
-__PAYLOAD__ is substituted last so user-controlled strings (session titles) can
-never collide with the other tokens, and "</" is escaped in the JSON blob so a
-title containing "</script>" cannot break out of the data block.
+Navigation is hash-routed while tabs and overlays remain transient. The page
+mirrors the TUI's dual-cost and session-scoped what-if invariants. Payload
+replacement runs last and escapes ``</`` so user text cannot collide with
+template tokens or close the data script.
 """
 
 from __future__ import annotations
@@ -72,9 +58,7 @@ _SHELL = """<!DOCTYPE html>
 """
 
 _CSS = r"""
-/* Role tokens (not hues): a theme fills these slots. The values here are the
-   default "tokyo-night" theme so the page renders before the theme JS runs; applyTheme
-   overrides them on :root at load. See the THEMES map in the script. */
+/* Defaults prevent an unthemed first paint; JS replaces these semantic roles. */
 :root{
   --bg:#1a1b26; --bg-glow:#24283b; --panel:#1f2335; --panel2:#292e42;
   --line:#414868; --line2:#2a2e42; --axis:#545c7e;
@@ -95,7 +79,6 @@ body::after{content:"";position:fixed;inset:0;pointer-events:none;z-index:99;
 a{color:var(--accent);text-decoration:none}
 a:hover{color:var(--accent-bright);text-decoration:underline}
 
-/* header */
 #hdr{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:4px 0 14px}
 .brand{font-size:19px;font-weight:700;letter-spacing:.5px;white-space:nowrap}
 .brand a{color:var(--ink)}
@@ -116,7 +99,6 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
 .hbtn{font:inherit;font-size:11px;padding:3px 10px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--ink2);cursor:pointer}
 .hbtn:hover{color:var(--accent);border-color:var(--accent)}
 
-/* app layout: lazygit-style sidebar + detail pane */
 #app{display:grid;grid-template-columns:302px minmax(0,1fr);gap:16px;align-items:start}
 #side{position:sticky;top:12px;max-height:calc(100vh - 24px);overflow-y:auto;
   scrollbar-width:thin;padding:2px 2px 2px 0}
@@ -126,7 +108,6 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
   #side{position:static;max-height:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:0 12px}
 }
 
-/* TUI box: border with the title sitting in the border line */
 .pane{position:relative;border:1px solid var(--line);border-radius:6px;background:var(--panel);
   padding:14px 14px 10px;margin:10px 0 16px}
 .pane>h3{position:absolute;top:-9px;left:10px;background:var(--bg);padding:0 7px;
@@ -136,7 +117,6 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
 .pane.focus>h3{color:var(--accent)}
 .hint{color:var(--mut);font-size:12px}
 
-/* sidebar lists */
 .rows{margin:0 -6px}
 .row{display:flex;align-items:baseline;gap:8px;padding:2px 8px;border-radius:3px;cursor:pointer;
   font-size:12.5px;white-space:nowrap}
@@ -148,8 +128,6 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
 .row .cost{color:var(--good)}
 .row .cost.zero{color:var(--mut)}
 .row .tb{color:var(--accent);opacity:.9;white-space:pre;font-size:11px}
-/* top-level mode switch (Time · Projects · Machines): a segmented control, the active
-   segment filled with the accent so it reads as a real tab, not just tinted text */
 .mode{display:flex;gap:0;margin:0 0 12px;border:1px solid var(--line);border-radius:6px;
   overflow:hidden;background:var(--panel)}
 .mode button{flex:1;font:inherit;font-size:11px;padding:5px 0;border:0;
@@ -159,9 +137,6 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
 .mode button:not(.on):hover{background:var(--panel2);color:var(--ink)}
 .mode button.on{background:var(--accent);color:var(--bg);font-weight:700}
 
-/* detail tab bar -- the TUI's Overview │ Models │ Projects │ Sessions. Centered pill
-   tabs: every tab is a visible raised chip (so an inactive tab reads as a clickable tab,
-   not grey text), the active one filled with the accent and lifted by a soft glow. */
 #tabbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;justify-content:center;
   padding:2px;margin:12px 0 14px}
 #tabbar button{font:inherit;font-size:12px;padding:5px 16px;border:1px solid var(--line);
@@ -174,7 +149,6 @@ a:hover{color:var(--accent-bright);text-decoration:underline}
 #tabbar button.ld{opacity:.5;font-style:italic;animation:tabpulse 1.2s ease-in-out infinite}
 @keyframes tabpulse{50%{opacity:.85}}
 
-/* breadcrumbs / footer */
 #crumbs{padding:0 2px 10px;color:var(--mut);min-height:16px;font-size:12px}
 #crumbs .sep{margin:0 7px;color:var(--line)}
 #crumbs .here{color:var(--ink)}
@@ -188,18 +162,12 @@ button.showall{display:block;width:100%;font:inherit;font-size:11px;margin-top:6
   color:var(--mut);cursor:pointer}
 button.showall:hover{color:var(--accent);border-color:var(--accent)}
 
-/* stat tiles */
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin:10px 0 16px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:10px 14px}
 .tile .k{font-size:10px;text-transform:uppercase;letter-spacing:.14em;color:var(--mut)}
 .tile .v{font-size:22px;font-weight:700;margin-top:2px;color:var(--ink)}
 .tile .v.money{color:var(--good)}
 .tile .n{font-size:11px;color:var(--mut)}
-/* Token economics: two 100%-stacked bars, the same five token types measured twice
-   (volume, then spend). The 2px gap between segments is the spacer that keeps adjacent
-   fills apart without a border; the outer radius is on the track so only the two ends
-   round. Segment labels ride INSIDE their segment, in the page background colour rather
-   than a fixed near-black, so they stay legible on a light theme's lighter steps. */
 .sbar{margin:2px 0 14px}
 .sbar .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--mut);margin-bottom:5px}
 .sbar .track{display:flex;gap:2px;height:32px;border-radius:4px;overflow:hidden}
@@ -208,18 +176,10 @@ button.showall:hover{color:var(--accent);border-color:var(--accent)}
 .tk-legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:11.5px;color:var(--ink2)}
 .tk-legend span{display:flex;align-items:center;gap:6px}
 .tk-legend i{width:10px;height:10px;border-radius:2px;flex:none}
-/* the swatch in the detail table's Type cell -- the table repeats the bars' colour key
-   so a row can be matched to its segment without counting across the legend */
 .lgd{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:7px;vertical-align:-1px}
-/* Session flamegraph: one band partitioning the session, with the names positioned in
-   rows beneath it rather than written into the fill -- text punched through a colour
-   fights it, and only ever fits the segments that least needed a label. */
 .flame{margin:2px 0 12px}
 .flame .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--mut);margin-bottom:5px}
 .flame .track{display:flex;gap:1px;height:38px;border-radius:4px;overflow:hidden}
-/* The label rows share the band's flex ratios, so every name sits under its own slice by
-   construction. overflow:hidden keeps a long one inside its slice instead of shoving the
-   next along; the share threshold (NAMED) is what stops a sliver showing one letter. */
 .flame .names{display:flex;gap:1px;margin-top:3px}
 .flame .names > div{min-width:0;overflow:hidden;white-space:nowrap;font-size:11px;
   font-weight:600;padding-right:4px}
@@ -227,8 +187,6 @@ button.showall:hover{color:var(--accent);border-color:var(--accent)}
   white-space:nowrap;font-size:11px;font-weight:700;padding:0 2px}
 .flame-head{font-size:12.5px;color:var(--ink2);margin:0 0 10px}
 .flame-head b{color:var(--ink)}
-/* the session Overview money card (mirrors the TUI's Money card: donut + stats, with the
-   armed what-if as accent-highlighted rows below a rule) */
 .money{display:flex;flex-wrap:wrap;gap:14px 28px;align-items:center;margin:8px 0 2px}
 .money-legend{display:flex;gap:14px;font-size:11px;color:var(--mut);margin-bottom:8px}
 .money-legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
@@ -244,7 +202,6 @@ button.showall:hover{color:var(--accent);border-color:var(--accent)}
 .wi-rows .wi-v{text-align:right;font-variant-numeric:tabular-nums;color:var(--accent);font-weight:700}
 .wi-rows .wi-v.wi-up{color:var(--bad)} .wi-rows .wi-v.wi-down{color:var(--good)}
 
-/* tables */
 .scroll{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 th{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);font-weight:600;
@@ -274,7 +231,6 @@ input.filter:focus{outline:none;border-color:var(--accent)}
   border-radius:4px;background:var(--panel);color:var(--ink2);cursor:pointer}
 .ychips button.on{border-color:var(--accent);color:var(--accent)}
 
-/* charts */
 .chart{width:100%;height:auto;display:block}
 .chart text{font-family:var(--mono)}
 .bargroup{cursor:pointer}
@@ -284,9 +240,6 @@ input.filter:focus{outline:none;border-color:var(--accent)}
 .cal-legend{display:flex;align-items:center;gap:4px;color:var(--mut);font-size:11px;margin-top:8px}
 .cal-legend span{width:11px;height:11px;border-radius:2px;display:inline-block}
 
-/* tools: a passive treemap above the exact table. Area and shade encode the same
-   visible measure on purpose -- the first is proportion, the second preserves the
-   hierarchy when adjacent tiles have similar geometry. */
 .tool-map-wrap{margin:2px 0 18px}
 .tool-map-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline;
   margin:0 2px 6px;color:var(--ink2);font-size:12px}
@@ -305,30 +258,22 @@ input.filter:focus{outline:none;border-color:var(--accent)}
 .tool-table{margin-top:2px}
 @media (max-width:600px){.tool-map{height:170px}.tool-map-head{align-items:flex-start;flex-direction:column;gap:1px}}
 
-/* turns */
 tr.prompt-row td{color:var(--accent);padding-top:9px;font-weight:600}
 tr.prompt-row td:first-child{white-space:normal;overflow-wrap:anywhere}
 tr.prompt-row.rowlink{cursor:pointer}
-/* the unfolded whole prompt (header click): its own line breaks kept */
 tr.prompt-full-row td{padding:2px 10px 8px 22px}
 .prompt-full{white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink2);
   font-size:11.5px;border-left:2px solid var(--line);padding-left:10px}
 td.indent{color:var(--ink2)}
-/* a compaction between two turns: amber like the Context tab's ▼, and never folded away */
 tr.compact-row td{color:var(--accent);font-size:11.5px;padding-top:5px;
   border-top:1px dashed color-mix(in srgb, var(--accent) 45%, transparent)}
-/* an expired prompt cache before a turn. Red, not the ▼ amber, and the one place on the
-   page that earns it: every other number is money spent on work you got, while this is
-   money spent buying a context you had already bought. Never folded away either. */
 tr.expiry-row td{color:var(--bad);font-size:11.5px;padding-top:5px;
   border-top:1px dashed color-mix(in srgb, var(--bad) 45%, transparent)}
 
-/* tooltip */
 #tip{position:fixed;z-index:100;pointer-events:none;background:var(--panel2);border:1px solid var(--line);
   border-radius:4px;padding:5px 10px;font-size:11.5px;color:var(--ink);white-space:pre-line;
   box-shadow:0 4px 16px rgba(0,0,0,.5);max-width:320px}
 
-/* Trends overlay (T) -- the TUI's full-screen Trends, as a modal */
 #trends{position:fixed;inset:0;z-index:200;background:var(--scrim);
   display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
 #trends[hidden]{display:none}
@@ -361,12 +306,9 @@ tr.expiry-row td{color:var(--bad);font-size:11.5px;padding-top:5px;
 .tr-summary{display:flex;gap:22px;flex-wrap:wrap;color:var(--ink2);font-size:12px;margin-top:6px}
 .tr-summary b{color:var(--ink)}
 .tr-note{color:var(--mut);font-size:11px;margin-top:4px}
-/* ranked horizontal bars (Models / Providers / Sources) */
 .rank{width:100%;font-size:12.5px;border-collapse:collapse}
 .rank th{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--mut);font-weight:600;text-align:right;padding:3px 8px;cursor:default}
 .rank th.l{text-align:left}
-/* only the ranking's own columns are clickable -- the bar and Share are not sortable
-   (Share is Cost as a percentage), so they must not offer a pointer. */
 .rank th.st{cursor:pointer}
 .rank th.st:hover{color:var(--ink2)}
 .rank th.sorted{color:var(--accent)}
@@ -377,7 +319,6 @@ tr.expiry-row td{color:var(--bad);font-size:11.5px;padding-top:5px;
 .rank .hb i{position:absolute;inset:0;right:auto;width:var(--w);background:var(--accent);border-radius:2px}
 .rank td.bar{width:38%}
 
-/* Prices overlay (P) -- the models.dev list-price reference behind $ */
 #prices,#rangepick{position:fixed;inset:0;z-index:200;background:var(--scrim);
   display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
 #prices[hidden],#rangepick[hidden]{display:none}
@@ -406,9 +347,8 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .pr-use{display:inline-flex;align-items:center;gap:6px;justify-content:flex-end}
 .pr-use .hb{position:relative;width:64px;height:8px;background:var(--line2);border-radius:2px;overflow:hidden;display:inline-block}
 .pr-use .hb i{position:absolute;inset:0;right:auto;width:var(--w);background:var(--accent);border-radius:2px}
-/* range picker */
 .rp-panel{max-width:520px}
-.wi-panel{max-width:760px}  /* wider than the range/price panels: catalog model ids are long */
+.wi-panel{max-width:760px}
 .rp-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin:6px 0 14px}
 .rp-grid button{font:inherit;font-size:12px;padding:7px 6px;border:1px solid var(--line);border-radius:5px;background:var(--panel2);color:var(--ink);cursor:pointer}
 .rp-grid button.on{border-color:var(--accent);color:var(--accent)}
@@ -419,7 +359,6 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .rp-custom button{font:inherit;font-size:12px;padding:4px 12px;border:1px solid var(--accent);border-radius:4px;background:var(--accent);color:#141009;font-weight:700;cursor:pointer}
 .chip.click{cursor:pointer}
 .chip.click:hover{border-color:var(--accent);color:var(--ink)}
-/* what-if model picker (w) -- one model armed as a SESSION-scoped comparison target */
 #whatifpick{position:fixed;inset:0;z-index:200;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
 #whatifpick[hidden]{display:none}
 .wi-list{display:grid;gap:4px;margin-top:6px;max-height:54vh;overflow-y:auto}
@@ -435,15 +374,12 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 #wi-filter{font:inherit;font-size:12px;background:var(--bg);color:var(--ink);border:1px solid var(--line);
   border-radius:6px;padding:5px 10px;width:170px;outline:none;margin-left:auto}
 #wi-filter:focus{border-color:var(--accent)}
-/* an armed target: the chip is the page's twin of the TUI's lit `w model` footer key --
-   "a target is set", never a claim that the numbers on screen are counterfactual */
 .chip.wi{color:var(--accent);border-color:var(--accent);cursor:pointer}
-.wi-up{color:var(--bad)}    /* the target would have cost more than your models did */
-.wi-down{color:var(--good)} /* ...and less: what running it all on the target would save */
+.wi-up{color:var(--bad)}
+.wi-down{color:var(--good)}
 .wi-total{margin-top:10px;font-size:13px;color:var(--ink)}
 .wi-total b{color:var(--accent)}
 
-/* theme picker */
 #themepick{position:fixed;inset:0;z-index:200;background:var(--scrim);display:flex;align-items:flex-start;justify-content:center;padding:26px 20px;overflow-y:auto}
 #themepick[hidden]{display:none}
 .th-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
@@ -456,7 +392,6 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .th-name{flex:1;overflow:hidden;text-overflow:ellipsis}
 .th-mode{color:var(--mut);font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;flex:none}
 
-/* session meta */
 .meta{display:grid;grid-template-columns:auto 1fr;gap:2px 16px;font-size:12px;margin-bottom:2px}
 .meta dt{color:var(--mut);text-transform:uppercase;font-size:10px;letter-spacing:.1em;padding-top:2px}
 .meta dd{color:var(--ink2);overflow-wrap:anywhere}
@@ -468,38 +403,26 @@ _JS = r"""
 'use strict';
 const DATA = JSON.parse(document.getElementById('opentab-data').textContent);
 const META = DATA.meta;
-const ALL_W = DATA.workflows;      // every embedded session
-let W = ALL_W;                     // the active, range-filtered set (R rescopes it)
-let RANGE = { kind: 'all', label: META.range };  // client-side date scope
+// Range filtering must not hide a directly linked session.
+const ALL_W = DATA.workflows;
+let W = ALL_W;
+let RANGE = { kind: 'all', label: META.range };
 let MODE = META.startApi ? 'api' : 'real';
 
-/* ---------- themes ---------- */
-// The palettes are the single source of truth in opentab/themes.py, injected here
-// as JSON (so the web browser and the curses TUI never drift). Each entry: `css`
-// fills the :root role slots (applyTheme writes them live, so all HTML re-themes
-// via CSS vars), `heat`/`priceHeat` are the ramps the SVG charts read through TH,
-// and `dark` drives the scanline/scrim/color-scheme.
+// Injected from themes.py so CSS roles and chart ramps share the TUI palette.
 const THEMES = __THEMES__;
-let TH = THEMES['tokyo-night'];      // the active theme object (charts read it)
-const thc = k => TH.css[k];          // theme color for an SVG chart slot
-// The one CATEGORICAL ramp on the page -- five slots for the five token types. Not a
-// theme field: a theme supplies chrome plus two SEQUENTIAL ramps (heat, priceHeat), and
-// pressing a sequential ramp into categorical duty would say "more" where it means
-// "different". Two steppings of the same five hues instead, picked for the light and the
-// dark chart surface and validated as a set (lightness band, chroma floor, adjacent-pair
-// separation under simulated colour-vision deficiency, contrast against the pane). Order
-// is the safety mechanism, not decoration -- do not reorder without re-validating.
+let TH = THEMES['tokyo-night'];
+const thc = k => TH.css[k];
+// Token types need a categorical palette, not the themes' sequential heat ramps.
+// Order is semantic and shared by both bars; do not reorder without re-validating.
 const TOK_SERIES_DARK = ['#3987e5', '#d95926', '#199e70', '#c98500', '#d55181'];
 const TOK_SERIES_LIGHT = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'];
 const tokSeries = () => TH.dark ? TOK_SERIES_DARK : TOK_SERIES_LIGHT;
-// Ink for a label sitting ON a fill: picked per SEGMENT from that fill's luminance, not
-// from the theme. One theme-wide choice fails on the ramp's own spread -- the light
-// theme's near-white ink is unreadable on the yellow slot while it is fine on the blue.
+// Contrast is selected per fill because one theme-wide ink cannot cover the ramp.
 function inkOn(hex) {
   const v = i => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16) / 255;
   const lin = c => c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
   const L = 0.2126 * lin(v(0)) + 0.7152 * lin(v(1)) + 0.0722 * lin(v(2));
-  // WCAG contrast against black is (L+0.05)/0.05, against white 1.05/(L+0.05).
   return (L + 0.05) / 0.05 > 1.05 / (L + 0.05) ? '#101014' : '#ffffff';
 }
 const CUR = { theme: 'tokyo-night' };
@@ -512,7 +435,7 @@ function applyTheme(id) {
   st.setProperty('--scrim', TH.dark ? 'rgba(6,7,9,.72)' : 'rgba(60,62,74,.4)');
   st.colorScheme = TH.dark ? 'dark' : 'light';
   r.setAttribute('data-theme', t);
-  try { localStorage.setItem('opentab-theme', t); } catch (e) { /* file:// may block storage */ }
+  try { localStorage.setItem('opentab-theme', t); } catch (e) { /* file:// may deny storage */ }
 }
 let THEMEPICK = false;
 function openTheme() { THEMEPICK = true; renderTheme(); }
@@ -532,77 +455,44 @@ function renderTheme() {
   host.appendChild(panel);
 }
 
-let TAB = 'Overview';       // active detail tab (transient, resets on scope change)
-let BROWSE = 'time';        // sidebar mode: 'time' (Months/Days) | 'projects' | 'machines', like the TUI
-let FOCUS = 'months';       // which sidebar list j/k drives
-// The Machines-scope sub-drill (the TUI's zoom_source/zoom_project/zoom_model): clicking a
-// row on the box's Harnesses/Projects/Models tab narrows its Sessions to that one dimension
-// without leaving the machine axis. Transient like TAB (cleared on any scope change), and
-// mutually exclusive -- only one dimension at a time -- so nothing composes. {dim, value}.
+let TAB = 'Overview';
+let BROWSE = 'time';
+let FOCUS = 'months';
+// In-place drills mirror TUI zoom drills. The single slot is transient and exclusive.
 let MSUB = null;
 function setMsub(dim, value) { MSUB = { dim, value }; TAB = 'Sessions'; render(false); }
 function clearMsub() { MSUB = null; render(false); }
-// What a change of scope invalidates: the typed filter, the expanded prompt rows and
-// the in-place sub-drill are all chosen WITHIN a scope over the sessions it holds. One
-// function, because navigation and a range change must forget exactly the same things.
+// Navigation and range changes invalidate all state selected within the old scope.
 function resetScopeState() { FILTER = ''; EXPANDED.clear(); MSUB = null; }
 function msubFilter(ws) {
   if (!MSUB) return ws;
-  // Fall back to META.source exactly like sourceRows() groups -- else a session with an
-  // empty source shows under "remote" in the Harnesses table but the drill (which set
-  // MSUB.value from that row) filters against "unknown" and opens an empty Sessions list.
+  // Filter against the same normalized key that sourceRows groups by.
   if (MSUB.dim === 'source') return ws.filter(w => (w.source || META.source) === MSUB.value);
   if (MSUB.dim === 'project') return ws.filter(w => w.project === MSUB.value);
   if (MSUB.dim === 'model') return ws.filter(w => (DATA.models[w.id] || []).some(x => x.model === MSUB.value));
   return ws;
 }
-// Per-machine niceties for the Machines mode (live vs pulled, export time/version);
-// off a fleet, just this live box. Keyed by machine name (== w.machine, which the payload
-// always fills -- an untagged session carries this box's hostname, demo-scrambled under demo).
 const MMETA = DATA.machineMeta || {};
 let FILTER = '';
 const SORT = {};
-const EXPANDED = new Set(); // table ids whose "show all" is open (reset per view)
+const EXPANDED = new Set();
 const VIEW = { calYear: null };
-// The Turns tab's drilled prompt, as an ORDINAL into turnGroupRows' list (a prompt id is
-// not unique, so it cannot name a run). Transient like the active tab -- not hash-routed,
-// not stored -- and cleared whenever the extras it indexes into are refetched, which is
-// every session change.
+// Prompt ids may repeat, so a drill is an ordinal valid only for the loaded session.
 let TURN_DRILL = null;
-let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null, expiries: [] }; // per-session Turns/Tools/Context (serve)
-// The Trends overlay (T) -- mirrors the TUI's 7-tab Trends over the whole range.
+let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null, expiries: [] };
 const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Projects', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
-// `sort`/`desc` are the ranked tabs' column order (the TUI's App.trend_sort pair):
-// biggest spend first by default -- what a ranking is read for -- with a header click
-// choosing a column and a re-click flipping it. One pair for all four ranked tabs, so
-// ordering Harnesses by session count and tabbing to Providers keeps the count column.
 let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null, sort: 'cost', desc: true };
-// The P prices overlay: the models.dev list-price reference behind $ (app-wide,
-// never range-scoped -- like the TUI). eff sorts cheapest-first; others high→low.
 const PRICE_VIEWS = [['flat', 'flat list'], ['family', 'by vendor'], ['provider', 'by provider'], ['all', 'models.dev']];
 let PRICES = { open: false, view: 'flat', sort: 'eff', desc: false, q: '' };
-// The `w` what-if model: ONE model armed as a comparison target -- "what if the
-// expensive model had done the subagents' work too?". SESSION-scoped, exactly like the
-// TUI: its only effects are the selected session's Subagents tree and its Overview
-// summary. The sidebar, the rollups, Trends, Prices and the $ toggle are all untouched
-// by an armed target (an app-wide reprice would leave $ nothing to toggle). Deliberately
-// TRANSIENT: never localStorage, never the hash -- unlike the theme and the price pins,
-// which do persist. A remembered target would silently re-frame every later visit.
+// `w` affects only a session's Overview/tree and must remain independent of `$`.
+// It is deliberately transient: never localStorage and never the URL hash.
 let WHATIF = { model: null, open: false, q: '', i: 0, cat: false };
-const WI_MODELS = (DATA.whatif && DATA.whatif.models) || [];   // armable targets, most-used first
-// List rates ($/M) for EVERY model you used -- not just the armable ones: the baseline
-// prices each model's own tokens at its own rates, and a session can well contain a model
-// you cannot arm (an unpriced id has no real rate card to substitute in, but its tokens
-// still have to be counted, or the baseline would quietly drop them).
+const WI_MODELS = (DATA.whatif && DATA.whatif.models) || [];
+// Baselines require rates for every used model, including models that cannot be targets.
 const WI_PRICE = new Map(Object.entries((DATA.whatif && DATA.whatif.rates) || {}));
 const WI_UNPRICED = new Set((DATA.whatif && DATA.whatif.unpriced) || []);
-// Models with no API rate at all (ollama, lmstudio, ...). The what-if never arms them,
-// and tokenEconomics drops them from BOTH its rows -- App.token_economics' rule.
 const WI_LOCAL = new Set((DATA.whatif && DATA.whatif.local) || []);
-// The picker's second tier (Tab): the whole models.dev catalog, in the TUI's own rows and
-// order (cheapest-for-your-mix first) so both frontends arm identical names at identical
-// rates. The rates merge into WI_PRICE up front -- whatifTotals prices a catalog-armed
-// target through the same map as a used one. eff/~ expand lazily like catalogRows().
+// The catalog's canonical TUI order and rates prevent frontend-specific target pricing.
 ((DATA.whatif && DATA.whatif.catalog) || []).forEach(c => { if (!WI_PRICE.has(c.m)) WI_PRICE.set(c.m, c.p); });
 let WI_CATALOG = null;
 function whatifCatalog() {
@@ -618,19 +508,16 @@ function whatifCatalog() {
   return WI_CATALOG;
 }
 
-/* ---------- formatting (mirrors opentab.formatting) ---------- */
 const money = v => (v > 0 && v < 0.005) ? '<$0.01'
   : '$' + v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
 const moneyLabel = v => v <= 0 ? '' : v < 0.005 ? '<$.01' : v < 10 ? '$' + v.toFixed(2)
   : v < 1000 ? '$' + Math.round(v) : v < 10000 ? '$' + (v / 1000).toFixed(1) + 'k'
   : '$' + Math.round(v / 1000) + 'k';
-// Unit switches just before the boundary, mirroring formatting.human_tokens: rounding
-// first would print "1000.0k" for 999,950 and the two frontends would disagree.
+// Switch units before rounding to match formatting.human_tokens at boundaries.
 const hTok = v => v >= 999.95e9 ? (v / 1e12).toFixed(1) + 'T' : v >= 999.95e6 ? (v / 1e9).toFixed(1) + 'B'
   : v >= 999.95e3 ? (v / 1e6).toFixed(1) + 'M' : v >= 1e3 ? (v / 1e3).toFixed(1) + 'k' : String(v);
 const pct = (p, w) => w <= 0 ? '-' : (p > 0 && 100 * p / w < 1) ? '<1%' : Math.round(100 * p / w) + '%';
-// Mirrors formatting.human_duration exactly (s -> m -> "Hh Mm" -> "Dd Hh", zero
-// remainders dropped) so the TUI and the web can never disagree about a span.
+// Keep duration units and zero-remainder handling aligned with the TUI.
 const hDur = s => { s = Math.max(0, Math.floor(s)); if (s < 60) return s + 's';
   const m = Math.floor(s / 60); if (m < 60) return m + 'm';
   const hh = Math.floor(m / 60), mm = m % 60;
@@ -645,7 +532,6 @@ const projName = p => { const parts = shortPath(p).split('/').filter(Boolean);
 const MN = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const monthLabel = m => MN[+m.slice(5, 7) - 1] + ' ’' + m.slice(2, 4);
 const dt = s => (s || '').slice(0, 16).replace('T', ' ');
-// "2h ago" for a machine summary's export time -- the twin of formatting.relative_age.
 function relAge(iso) {
   if (!iso) return '';
   const t = Date.parse(iso); if (isNaN(t)) return '';
@@ -655,18 +541,16 @@ function relAge(iso) {
   if (s < 86400) return Math.floor(s / 3600) + 'h ago';
   return Math.floor(s / 86400) + 'd ago';
 }
-// Re-pull one machine over ssh (serve only), then reload the page with the fresh data.
 function refreshMachine(name) {
   fetch('/api/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ machine: name }) }).then(() => location.reload());
 }
-// The Monday ('YYYY-MM-DD') of the ISO week a date falls in -- matches heatmap.week_key
-// so the Weekly trend buckets the same way the TUI does; '' for an undated row.
+// Match heatmap.week_key so both frontends use the same weekly buckets.
 function weekMonday(dateStr) {
   const iso = (dateStr || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '';
   const d = new Date(iso + 'T00:00:00');
-  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // back to Monday (Mon=0)
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 function addDays(iso, n) {
@@ -674,7 +558,6 @@ function addDays(iso, n) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
 function daysInMonth(m) { return new Date(+m.slice(0, 4), +m.slice(5, 7), 0).getDate(); }
-/* the TUI's eighth-block cost bar (formatting.cost_bar), verbatim in the sidebar */
 const EIGHTHS = ' ▏▎▍▌▋▊▉';
 function tbar(v, peak, cells = 7) {
   if (peak <= 0 || v <= 0) return ' '.repeat(cells);
@@ -684,7 +567,7 @@ function tbar(v, peak, cells = 7) {
   return ('█'.repeat(full) + EIGHTHS[rem]).padEnd(cells);
 }
 
-/* ---------- DOM helpers (children become text nodes: XSS-safe by default) ---------- */
+// Children become text nodes by default; callers must opt into attributes explicitly.
 function h(tag, attrs, ...kids) {
   const el = document.createElement(tag);
   if (attrs) for (const [k, v] of Object.entries(attrs)) {
@@ -712,7 +595,6 @@ function s(tag, attrs, ...kids) {
   return el;
 }
 
-/* ---------- tooltip ---------- */
 const TIP = document.getElementById('tip');
 function bindTip(el, text) {
   el.addEventListener('mouseenter', () => { TIP.textContent = typeof text === 'function' ? text() : text; TIP.hidden = false; });
@@ -724,7 +606,6 @@ function bindTip(el, text) {
   el.addEventListener('mouseleave', () => { TIP.hidden = true; });
 }
 
-/* ---------- aggregation ---------- */
 const sum = (rows, f) => rows.reduce((a, r) => a + f(r), 0);
 function groupBy(rows, keyFn) {
   const m = new Map();
@@ -736,8 +617,7 @@ function scopeStats(ws) {
     days: new Set(ws.map(w => w.date.slice(0, 10)).filter(d => /^\d/.test(d))).size,
     subagents: sum(ws, w => w.subagents) };
 }
-/* A rare session may carry no timestamp: it stays in totals and tables but is
-   left out of time-keyed groupings (same slice-based keys the TUI groups by). */
+// Undated sessions remain in totals but cannot enter time-keyed groups.
 function monthRows(ws) {
   return [...groupBy(ws, w => w.date.slice(0, 7))].filter(([m]) => /^\d{4}-\d{2}$/.test(m))
     .map(([month, g]) =>
@@ -776,40 +656,17 @@ function modelAgg(ws) {
   return [...m.values()];
 }
 
-/* ---------- model matching (mirrors pricing.model_matches) ---------- */
-// The ONE rule behind every model-list filter -- the P overlay's `f` and the `w`
-// picker's, which ask the same question of the same rows and must not answer it
-// differently. Matched PER FIELD, with a different rule per field because the fields
-// are typed differently:
-//   * the model id by word-anchored fuzzy match (the mirror of
-//     util.anchored_fuzzy_match): a substring, or a subsequence that may scatter
-//     inside a word but only enters a word at its first character -- "opus48" ->
-//     claude-opus-4-8, "snt45" -> claude-sonnet-4-5, dots==dashes so "opus4.5" finds
-//     "opus-4-5"; a BARE subsequence let "opus" walk qwen3-cOder-PlUS, and with rows
-//     kept in column order (below) instead of fzf's match-ranking, that junk sorted
-//     to the top of the 5k-row catalog instead of out of sight;
-//   * the route and the vendor label by plain SUBSTRING -- a short fixed vocabulary you
-//     type in full ("openai", "copilot"); nobody abbreviates them, and the bare
-//     subsequence over them was the same machine: "gpt" walked "github-copilot"
-//     (g-ithub-co-p-ilo-t) and dragged every Claude model sold through Copilot into a
-//     search for GPT.
-// Callers keep their own row order: a filtered list still answers "which of these do I
-// lean on", so rows are never re-ranked by match quality.
+// Shared with pricing.model_matches: model ids use word-anchored fuzzy matching;
+// routes/vendors use substrings. Filtering never changes the caller's ranking.
 const dashDots = t => String(t).toLowerCase().replace(/(\d)\.(?=\d)/g, '$1-');
-// The anchored walk, the line-for-line mirror of util.anchored_fuzzy_match: one pass
-// over the text tracking every viable alignment at once (NOT a backtracking regex --
-// a near-miss over a repeated-letter id made one enumerate alignments for seconds).
-// done[i] = q[:i] fully matched before this point; inWord[i] = ...with its last char
-// inside the CURRENT word, so q[i] may scatter onto any later char of that word; a
-// new word admits q[i] only as its first char (start + done). A plain-subsequence
-// pre-scan rejects most rows before the walk runs.
+// One-pass mirror of util.anchored_fuzzy_match; avoid backtracking regexes here.
 const anchoredFuzzy = (q, t) => {
   if (!q || t.includes(q)) return true;
   let pos = 0;
   for (const ch of q) { pos = t.indexOf(ch, pos) + 1; if (!pos) return false; }
   const qa = Array.from(q), n = qa.length;
   const prefixAt = new Map();
-  for (let i = n; i >= 1; i--) {  // descending, so one text char never chains two query chars
+  for (let i = n; i >= 1; i--) {
     if (!prefixAt.has(qa[i - 1])) prefixAt.set(qa[i - 1], []);
     prefixAt.get(qa[i - 1]).push(i);
   }
@@ -819,11 +676,7 @@ const anchoredFuzzy = (q, t) => {
   for (const c of t) {
     const boundary = ' -_/.'.includes(c);
     for (const i of (prefixAt.get(c) || [])) {
-      // A boundary char typed in the query ("opus4-5", "-48") matches any later
-      // text boundary: a separator is not a word, so it carries no anchoring of
-      // its own -- order (done) is the whole requirement -- and done-without-inWord
-      // is exactly "the next query char may enter the following word at its head".
-      // Letters keep the anchored rule.
+      // Query separators match later separators without creating a word anchor.
       const ok = boundary ? done[i - 1] : (inWord[i - 1] || (start && done[i - 1]));
       if (ok) {
         if (i === n) return true;
@@ -845,66 +698,34 @@ function modelMatches(q, model, routes, familyLabel) {
   return fields.some(f => f.includes(qq));
 }
 
-/* ---------- the `w` what-if model (mirrors pricing.api_equivalent_cost) ---------- */
-// One node's tokens at a target model's list rates: tok = [input, output, reasoning,
-// cacheRead, cacheWrite] (the payload's split), rates = [in, out, cacheR, cacheW] in
-// $/M. Reasoning bills as output; cache reads/writes at their own rates. NO
-// missing-cache-read fallback -- api_equivalent_cost doesn't do one either (that's the
-// eff $/M blend's rule, and applying it here would quietly inflate a target whose
-// cache-read rate models.dev doesn't carry). A pure rate substitution: same tokens,
-// one price list, not a simulated rerun.
+// Mirror api_equivalent_cost exactly; the effective-price cache fallback does not apply.
 function whatifCost(tok, rates) {
   if (!tok || !rates) return 0;
   const [inp, out, reason, cr, cw, cw1h] = tok, [ir, orr, crr, cwr, cwr1h] = rates;
-  // cw1h is the 1h-TTL SUBSET of cw, which Anthropic bills at 2.00x input instead of the
-  // 5m tier's 1.25x that the single catalog cache-write rate encodes. Replacement, not
-  // addition: those tokens leave the 5m bucket and enter the 1h one, they are not extra
-  // volume. Both default to 0/absent, which is exactly the old arithmetic.
+  // cw1h replaces a subset of cw at the long-TTL rate; it is never extra volume.
   const long = Math.min(Math.max(cw1h || 0, 0), cw || 0);
   const write = (cw - long) * cwr + long * (cwr1h || cwr);
   return (inp * ir + (out + reason) * orr + cr * crr + write) / 1e6;
 }
-/* ---------- token economics (the mirror of App.token_economics) ---------- */
-// The five token types, in the payload's `tok` order -- pricing.TOKEN_TYPES.
 const TOK_TYPES = ['Uncached input', 'Output', 'Reasoning', 'Cache read', 'Cache write'];
-// Where a scope's tokens went, and where its money went: the same five types measured
-// twice, because a type's share of VOLUME and its share of SPEND differ by up to two
-// orders of magnitude (an output token costs 50x a cache-read token). Computed here
-// rather than shipped precomputed for the same reason the rollups are: the scope is
-// whatever the page is showing after drill-in, sorting and the ignored filters, and only
-// the client knows that.
-//
-// Always LIST rates, whatever the $ toggle says -- no backend attributes recorded spend
-// per token type, so there is nothing else to decompose (same basis as the what-if
-// baseline). The arithmetic is whatifCost's, kept in pieces instead of summed, so the
-// five parts add up to the API-equivalent figure shown elsewhere.
+// Token economics always uses list rates: recorded spend has no per-token-type split.
 function tokenEconomics(ws) {
   const tokens = [0, 0, 0, 0, 0], cost = [0, 0, 0, 0, 0];
   let local = 0, est = false, missingCache = false;
   ws.forEach(w => (DATA.models[w.id] || []).forEach(r => {
-    // Only the first FIVE entries are token TYPES; a sixth, when present, is the 1h-TTL
-    // subset of Cache write -- a pricing refinement, not extra volume, so it must never
-    // be summed into a total or it double-counts every long write.
+    // The sixth slot refines cache-write pricing and must not enter token totals.
     const tok = (r.tok || [0, 0, 0, 0, 0]).slice(0, 5);
     const long1h = Math.min(Math.max((r.tok || [])[5] || 0, 0), tok[4] || 0);
     if (WI_LOCAL.has(r.model)) { local += tok.reduce((a, b) => a + b, 0); return; }
-    // Unreachable by construction -- `rates` is built from the same per-model rows this
-    // reduces over, so every model here has an entry. Guarded anyway: skipping one row
-    // beats throwing and blanking the whole pane.
     const p = WI_PRICE.get(r.model);
     if (!p) return;
     const [ir, orr, crr, cwr, cwr1h] = p;
     tok.forEach((v, i) => { tokens[i] += v; });
     cost[0] += tok[0] * ir / 1e6;
     cost[1] += tok[1] * orr / 1e6;
-    cost[2] += tok[2] * orr / 1e6;      // reasoning bills at the output rate
+    cost[2] += tok[2] * orr / 1e6;
     cost[3] += tok[3] * crr / 1e6;
-    // Cache write, split by TTL like whatifCost: the long-TTL subset at its own rate,
-    // the rest at the 5m one. The Cache write ROW stays one row -- the tier changes what
-    // those tokens cost, not what kind of token they are.
     cost[4] += ((tok[4] - long1h) * cwr + long1h * (cwr1h || cwr)) / 1e6;
-    // A missing (zero) cache-read rate is not free reads: those tokens price at $0 in
-    // the Cache read row, which therefore understates -- the table says so beneath it.
     if (crr <= 0 && tok[3] > 0 && ir > 0) missingCache = true;
     if (r.tokens > 0 && WI_UNPRICED.has(r.model)) est = true;
   }));
@@ -914,30 +735,14 @@ function tokenEconomics(ws) {
     totalTokens, totalCost: cost.reduce((a, b) => a + b, 0) };
 }
 
-// The ONE place a session's two what-if figures come from -- the Subagents tree's TOTAL
-// and the Overview summary both read it, so they cannot drift (the TUI's
-// App.whatif_session_totals, mirrored). Null when no target is armed, or the session has
-// no per-model rows to price.
-//
-// Both sides are computed from the session's PER-MODEL rows (DATA.models[id]), the only
-// place its tokens are split per model, and both at LIST rates:
-//   * actual = each model's own tokens at its own list rates -- every token, exactly;
-//   * whatif = the session's summed token split at the target's list rates.
-// Apples-to-apples on purpose, and independent of the $ toggle: recorded cost is $0 on a
-// subscription route and a few cents on a partially-metered one, so a recorded baseline
-// would report savings that never happened. It also means arming a model a single-model
-// session already used lands on exactly $0 change -- same tokens, same rates.
-//
-// NOT the node rows: workflow_nodes labels a node with its single dominant model, so
-// pricing a node's whole split at that one label is wrong for any session that switched
-// model mid-flight, and no per-node baseline is computable from what the stores expose.
+// Both sides use per-model rows at list rates. Node rows expose only a dominant model,
+// so they cannot produce an exact baseline after model switches. Overview and tree must
+// both read this function, independent of the `$` mode.
 function whatifTotals(id) {
   if (!WHATIF.model) return null;
   const rows = DATA.models[id];
   if (!rows || !rows.length) return null;
-  // Six slots, not five: the trailing one is the 1h-TTL cache-write subset, and BOTH
-  // sides of the comparison have to carry it -- that is what keeps arming a model a
-  // single-model session already used an exactly $0 change.
+  // Carry the 1h subset on both sides so same-model substitution is exactly zero.
   const tot = [0, 0, 0, 0, 0, 0];
   let actual = 0;
   rows.forEach(r => {
@@ -945,19 +750,12 @@ function whatifTotals(id) {
     r.tok.forEach((v, i) => { tot[i] += v; });
   });
   const whatif = whatifCost(tot, WI_PRICE.get(WHATIF.model));
-  // `est`: one of this session's models has no real list rate, so its tokens are priced
-  // at a generic guess and the baseline stops being a list price. Mirrors
-  // App.whatif_baseline_is_estimated -- both frontends mark it `~` rather than quote it.
-  // Zero-token rows don't count (an aborted turn names a model but contributes nothing,
-  // so it cannot turn an exact baseline into an estimate) -- same rule as the Python.
+  // Zero-token fallback-priced rows do not make the baseline approximate.
   const est = rows.some(r => r.tokens > 0 && WI_UNPRICED.has(r.model));
   return { target: WHATIF.model, actual, whatif, delta: whatif - actual, est };
 }
 
-/* ---------- cells ---------- */
 const moneyCell = v => h('span', { class: v === 0 ? 'm-zero' : 'm' }, money(v));
-/* provider prefix dimmed, with a clean break opportunity at the "/" so a long id
-   wraps between route and model instead of mid-token */
 function modelCell(model) {
   const i = model.lastIndexOf('/');
   if (i < 0) return model;
@@ -968,9 +766,6 @@ function barCell(v, peak) {
   return [moneyCell(v), h('span', { class: 'bar' }, h('i', { style: '--w:' + w + '%' }))];
 }
 
-/* ---------- sortable table ---------- */
-/* opts.collapse: show only the top N rows (post-sort) with a "show all" toggle,
-   so a tab stays scannable instead of a 900-row dump. */
 function table(id, cols, rows, opts = {}) {
   const st = SORT[id] || opts.defaultSort;
   let sorted = rows.slice();
@@ -1000,9 +795,7 @@ function table(id, cols, rows, opts = {}) {
     ? h('button', { class: 'showall', onclick: () => { open ? EXPANDED.delete(id) : EXPANDED.add(id); render(false); } },
         open ? '▴ show top ' + collapse : '▾ show all ' + sorted.length)
     : null;
-  /* opts.totals (key -> cell content) closes a multi-row table with a TOTAL row.
-     It sums ALL rows, not the collapsed slice, and sits outside tbody so sorting
-     and row clicks never touch it; a one-row table is its own total. */
+  // Totals cover all rows, never only the collapsed slice.
   const foot = opts.totals && rows.length > 1
     ? h('tfoot', null, h('tr', null,
         cols.map(c => h('td', { class: [c.align === 'r' ? 'r' : '', c.cls || ''].join(' ').trim() || null },
@@ -1013,7 +806,6 @@ function table(id, cols, rows, opts = {}) {
     toggle);
 }
 
-/* ---------- charts ---------- */
 function roundTop(x, y, w, hgt, r) {
   r = Math.max(0, Math.min(r, w / 2, hgt));
   return 'M' + x + ',' + (y + hgt) + 'v' + -(hgt - r) + 'q0,' + -r + ' ' + r + ',' + -r
@@ -1026,8 +818,6 @@ function barChart(rows) {
   const gap = 2;
   const bw = Math.max(3, Math.min(46, (VW - 2 * padX) / n - gap));
   const step = bw + gap;
-  // A value on top of every bar when they're wide enough to fit the label without
-  // colliding; when too narrow (many months) fall back to labelling just the tallest.
   const valueEach = step >= 34;
   const x0 = (VW - (n * step - gap)) / 2;
   const plotH = VH - padT - padB;
@@ -1036,8 +826,6 @@ function barChart(rows) {
   for (const f of [0.5, 1]) {
     const y = padT + (1 - f) * plotH;
     svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: thc('line'), 'stroke-width': 1 }));
-    // The midline gets an axis label only when the bars aren't individually labelled;
-    // with per-bar values it's redundant and collides with the rightmost bar's label.
     if (f !== 1 && !valueEach) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: moneyLabel(peak * f) }));
   }
   svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
@@ -1073,7 +861,7 @@ function calendar(year, byDate, onDay) {
   const today = new Date();
   const last = +year === today.getFullYear() ? today : new Date(+year, 11, 31);
   const start = new Date(first);
-  start.setDate(start.getDate() - ((first.getDay() + 6) % 7)); // back to Monday
+  start.setDate(start.getDate() - ((first.getDay() + 6) % 7));
   const vals = [...byDate.values()].map(d => d.cost).filter(v => v > 0).sort((a, b) => a - b);
   const q = f => vals.length ? vals[Math.min(vals.length - 1, Math.floor(f * vals.length))] : 0;
   const thresholds = [q(0.25), q(0.5), q(0.75), q(0.93)];
@@ -1105,32 +893,29 @@ function calendar(year, byDate, onDay) {
   return h('div', null, h('div', { class: 'cal-wrap' }, svg), legend);
 }
 
-/* ---------- routing: #/ · #/y/2026 · #/m/2026-06 · #/d/2026-06-15 · #/p/<enc> · #/s/<id> ---------- */
 function go(kind, arg) {
   location.hash = kind ? '#/' + kind + '/' + encodeURIComponent(arg) : '#/';
 }
 function curScope() {
-  // Firefox returns location.hash pre-decoded, so treat everything after the
-  // kind segment as the argument instead of splitting on every slash.
+  // Firefox may pre-decode the hash; split only once so path-like args survive.
   const raw = location.hash.replace(/^#\/?/, '');
   const slash = raw.indexOf('/');
   const kind = slash < 0 ? raw : raw.slice(0, slash);
   let arg = slash < 0 ? '' : raw.slice(slash + 1);
-  try { arg = decodeURIComponent(arg); } catch (e) { /* leave undecodable args as-is */ }
+  try { arg = decodeURIComponent(arg); } catch (e) { /* Keep undecodable deep links navigable. */ }
   if (kind === 'y' && arg) return { kind: 'y', year: arg };
   if (kind === 'm' && arg) return { kind: 'm', month: arg, year: arg.slice(0, 4) };
   if (kind === 'd' && arg) return { kind: 'd', day: arg, month: arg.slice(0, 7), year: arg.slice(0, 4) };
   if (kind === 'p' && arg) return { kind: 'p', project: arg };
   if (kind === 'M' && arg) return { kind: 'M', machine: arg };
   if (kind === 's' && arg) {
-    const w = ALL_W.find(x => x.id === arg);  // any session, even outside the active range
+    const w = ALL_W.find(x => x.id === arg);
     return { kind: 's', id: arg, session: w, month: w ? w.date.slice(0, 7) : null,
       day: w ? w.date.slice(0, 10) : null, year: w ? w.date.slice(0, 4) : null };
   }
   return { kind: 'all' };
 }
 
-/* ---------- range scoping (R): filter the active set client-side ---------- */
 function isoToday() { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function isoDaysAgo(n) { const d = new Date(); d.setDate(d.getDate() - n); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
 function isoMonthsAgo(n) { const d = new Date(); d.setMonth(d.getMonth() - n, 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-01'; }
@@ -1140,20 +925,16 @@ function filterRange(rows) {
   if (r.kind === 'months') { const cut = isoMonthsAgo(r.n); return rows.filter(w => d(w) >= cut); }
   if (r.kind === 'ytd') { const y = isoToday().slice(0, 4); return rows.filter(w => w.date.slice(0, 4) === y); }
   if (r.kind === 'since') return rows.filter(w => (!r.since || d(w) >= r.since) && (!r.until || d(w) <= r.until));
-  return rows;  // 'all'
+  return rows;
 }
 function applyRange(desc) {
   RANGE = desc;
   W = filterRange(ALL_W);
   closeRange();
-  // Reset the scoped table state HERE rather than leaving it to the hashchange below:
-  // go('', '') only fires that event when the hash actually changes, so applying a
-  // range from the root scope (the most ordinary way to do it) left an armed model
-  // sub-drill and a typed filter over a dataset they were never chosen in -- most
-  // visibly as a Sessions tab that came back empty for no reason on screen.
+  // Reset before navigation because an unchanged root hash emits no hashchange event.
   resetScopeState();
-  go('', '');       // reset to the all-time overview of the new range
-  render(false);    // in case the hash was already '#/'
+  go('', '');
+  render(false);
 }
 function rangeLabel() {
   const r = RANGE;
@@ -1165,12 +946,8 @@ function rangeLabel() {
 }
 const distinctYears = ws => [...new Set(ws.map(w => w.date.slice(0, 4)))]
   .filter(y => /^\d{4}$/.test(y)).sort().reverse();
-// The year a scope belongs to (null == "all years"), so the sidebar's Years/Months
-// panels can stay in sync however you got here (a deep link, a bar click, j/k).
 const scopeYear = sc => sc.year || null;
-// Switch the sidebar mode. When the current scope is incompatible with the new
-// mode we reset to the all-time root (fires render via hashchange); otherwise we
-// render in place, because go('','') on an unchanged hash would be a silent no-op.
+// Render directly when mode changes do not change the hash.
 function setBrowse(mode) {
   BROWSE = mode;
   FOCUS = mode === 'projects' ? 'projects' : mode === 'machines' ? 'machines' : 'months';
@@ -1189,13 +966,12 @@ function scopeWorkflows(sc) {
   if (sc.kind === 's') return sc.session ? [sc.session] : [];
   return W;
 }
-/* the TUI's per-scope tab tuples (App.year_tabs/month_tabs/day_tabs/project_tabs/
-   workflow_tabs), with Sources injected after Overview in the merged view */
+// Keep per-scope tab order aligned with the TUI.
 function tabsFor(sc) {
   if (sc.kind === 's') {
-    const t = ['Overview', 'Subagents'];   // a session's model mix lives in its Overview
+    const t = ['Overview', 'Subagents'];
     const mine = EXTRAS.id === sc.id;
-    if (mine && EXTRAS.loading) t.push('Turns', 'Tools', 'Context'); // placeholders while the fetch runs
+    if (mine && EXTRAS.loading) t.push('Turns', 'Tools', 'Context');
     else {
       if (mine && EXTRAS.turns.length) t.push('Turns');
       if (mine && EXTRAS.tools.length) t.push('Tools');
@@ -1210,8 +986,7 @@ function tabsFor(sc) {
     p: ['Overview', 'Models', 'Sessions'],
     M: ['Overview', 'Sessions', 'Models', 'Projects'] }[sc.kind].slice();
   if (META.combined) base.splice(1, 0, 'Harnesses');
-  // The fleet's per-scope Machines breakdown, after Harnesses -- but not in the Machines
-  // scope itself (sc.kind 'M'), which is already one box.
+  // A machine scope is already one box and needs no machine breakdown tab.
   if (META.machines && sc.kind !== 'M') {
     const cut = base.indexOf('Harnesses');
     base.splice(cut >= 0 ? cut + 1 : 1, 0, 'Machines');
@@ -1219,7 +994,6 @@ function tabsFor(sc) {
   return base;
 }
 
-/* ---------- sidebar (the lazygit panels) ---------- */
 function sideRow(sel, onclick, lab, n, costV, peak) {
   return h('div', { class: 'row' + (sel ? ' sel' : ''), onclick },
     h('span', { class: 'lab' }, lab),
@@ -1234,14 +1008,11 @@ function sidePane(title, focusKey, rows) {
 function renderSidebar(sc) {
   const side = document.getElementById('side');
   side.textContent = '';
-  // The top-level browse-mode tabs (the TUI's t/p/m strip): all three, always -- off a
-  // fleet the Machines mode is a one-row view of the box you're on, like the TUI's.
   side.appendChild(h('div', { class: 'mode' },
     h('button', { class: BROWSE === 'time' ? 'on' : null, onclick: () => setBrowse('time') }, 'time'),
     h('button', { class: BROWSE === 'projects' ? 'on' : null, onclick: () => setBrowse('projects') }, 'projects'),
     h('button', { class: BROWSE === 'machines' ? 'on' : null, onclick: () => setBrowse('machines') }, 'machines')));
   if (BROWSE === 'machines') {
-    // The live box floats first (● / ○), like App.machines.
     const rows = machineRows(W).sort((a, b) =>
       ((MMETA[b.machine] || {}).live ? 1 : 0) - ((MMETA[a.machine] || {}).live ? 1 : 0) || b.cost - a.cost);
     const peak = Math.max(...rows.map(r => r.cost), 0);
@@ -1260,8 +1031,6 @@ function renderSidebar(sc) {
         () => go('p', r.project), projName(r.project), String(r.sessions), r.cost, peak))]));
     return;
   }
-  // Years panel -- only worth showing with >1 year (App.years does the same); its
-  // "∑ all years" row unscopes the Months panel to the whole history.
   const years = distinctYears(W);
   const selYear = scopeYear(sc);
   if (years.length > 1) {
@@ -1273,13 +1042,11 @@ function renderSidebar(sc) {
       yr.map(r => sideRow(selYear === r.year, () => go('y', r.year),
         r.year, String(r.sessions), r.cost, yPeak))]));
   }
-  // Months panel: scoped to the selected year (all months when "all years").
   const monthSrc = selYear ? W.filter(w => w.date.startsWith(selYear)) : W;
-  const months = monthRows(monthSrc).slice().reverse(); // newest first, like the TUI
+  const months = monthRows(monthSrc).slice().reverse();
   const mPeak = Math.max(...months.map(r => r.cost), 0);
   const monthRowsUi = [];
-  // With no Years panel there's no other way back to the all-time overview, so keep
-  // the "∑ all time" row; with a Years panel that lives up there instead.
+  // Keep an all-time route when the Years panel is absent.
   if (years.length <= 1)
     monthRowsUi.push(sideRow(sc.kind === 'all', () => go('', ''), '∑ all time', '', sum(W, cost), sum(W, cost)));
   months.forEach(r => monthRowsUi.push(sideRow(sc.month === r.month, () => go('m', r.month),
@@ -1295,7 +1062,6 @@ function renderSidebar(sc) {
   }
 }
 
-/* ---------- detail pane pieces ---------- */
 const pane = (title, ...kids) => h('section', { class: 'pane' }, title ? h('h3', null, title) : null, ...kids);
 function tiles(items) {
   return h('div', { class: 'tiles' }, items.map(([k, v, note, moneyish]) =>
@@ -1314,12 +1080,7 @@ function statTiles(ws) {
 }
 function modelsTable(id, rows, collapse, onRow) {
   const totalCost = sum(rows, mCost), totalTok = sum(rows, r => r.tokens);
-  // Share is a share OF COST. With nothing priced -- a subscription backend with `$`
-  // off, i.e. the default view for Claude Code / Codex / Copilot -- it used to fall back
-  // to a TOKEN share, so a column headed Share showed confident percentages next to a
-  // Cost column reading $0.00 everywhere, meaning something else entirely. The TUI's
-  // pct() prints "-" for a zero denominator; do the same rather than answer a different
-  // question under the same heading.
+  // Share always means cost share; a zero-cost table has no denominator.
   const share = r => totalCost > 0 ? mCost(r) / totalCost : null;
   return table(id, [
     { key: 'model', label: 'Model', asc: true, cls: 'grow', fmt: r => modelCell(r.model) },
@@ -1335,9 +1096,7 @@ function modelsTable(id, rows, collapse, onRow) {
       tokens: hTok(totalTok), cacheRead: hTok(sum(rows, r => r.cacheRead)),
       cacheWrite: hTok(sum(rows, r => r.cacheWrite)), output: hTok(sum(rows, r => r.output)) } });
 }
-// NOT the shared pct(): it renders anything under 1% as "<1%", and here the sub-percent
-// rows are the punchline -- output is half a percent of the tokens and a sixth of the
-// bill, which "<1%" cannot say. Never rounds a present-but-tiny row down to "0.00%".
+// Token economics needs more precision than the shared display percentage.
 function tokShare(v, tot) {
   const s = tot > 0 ? 100 * v / tot : 0;
   if (s >= 10 || s === 0) return s.toFixed(0) + '%';
@@ -1345,28 +1104,12 @@ function tokShare(v, tot) {
   return s >= 0.005 ? s.toFixed(2) + '%' : '<0.01%';
 }
 
-/* The Token economics pane. Two 100%-stacked bars over the SAME five token types --
-   what you sent, then what you paid -- because the reading is the gap between them: a
-   type's block is huge in one bar and a sliver in the other. Reading either bar alone
-   gives the opposite answer, so they have to sit one above the other, sharing a scale
-   and a colour per type.
-
-   The table below is the same five rows with the numbers behind the bars; it is the
-   accessibility path as much as the detail one (identity never rests on colour alone).
-   Its order is FIXED by cost -- the ordering is part of what the bars say, so it does
-   not go through the sortable `table()`, whose headers would silently re-rank it and
-   keep that ranking across every later scope.
-
-   (The TUI's box makes the opposite trade for a real constraint: an 8-colour terminal
-   cannot promise five distinguishable fills, so it pairs a bar per measure on each row
-   instead. Same numbers, same order, same notes.) */
+// Keep one token-type colour across both bars and the non-sortable detail table.
 function tokenEconomicsPane(ws, label) {
   const e = tokenEconomics(ws);
   if (!e) return null;
   const approx = e.est ? '~' : '';
   const SER = tokSeries();
-  // Rows keep their TOKEN-TYPE index as `i` so a type owns one colour in both bars and
-  // in the table, whatever the cost ordering does to their positions.
   const rows = TOK_TYPES.map((t, i) => ({ t, i, tok: e.tokens[i], cost: e.cost[i] }))
     .filter(r => r.tok > 0 || r.cost > 0)
     .sort((a, b) => b.cost - a.cost || b.tok - a.tok);
@@ -1378,8 +1121,6 @@ function tokenEconomicsPane(ws, label) {
         class: 'seg',
         style: 'flex:' + share + ' 0 0;background:' + SER[r.i] + ';color:' + inkOn(SER[r.i]),
         title: r.t + ' · ' + fmt(v) + ' · ' + tokShare(v, total),
-      // A label only where the segment can hold one; the legend and the table carry
-      // the rest, so a 0.4% sliver never gets an unreadable smear of text.
       }, share > 0.075 ? tokShare(v, total) : null);
     })));
   const grid = h('div', { class: 'scroll' }, h('table', null,
@@ -1416,33 +1157,13 @@ function tokenEconomicsPane(ws, label) {
     notes.map(n => h('div', { class: 'hint' }, n)));
 }
 
-/* ---------- the session flamegraph (the mirror of App.session_flame) ---------- */
-// A session's spend as a hierarchy: the whole session on top, partitioned below into the
-// root's own work and each subagent. Width is money, which is what the tree TABLE below
-// cannot say -- a table ranks the nodes, an icicle shows the proportion, and "the root
-// kept 42% and five subagents split the rest" is one glance instead of six subtractions.
-//
-// The Python side's docstrings are canonical for the two decisions that matter: widths
-// are the Cost column's own meaning (so chart and table can never disagree about a node),
-// and depth is one band because workflow_nodes records a node's depth but not its PARENT
-// -- a nested execution joins the band as a marked sibling rather than being drawn under
-// a parent the stores never named. Computed here, not shipped precomputed, because the
-// widths follow the live $ toggle.
+// Width follows the live Cost column. Nodes expose depth but not parentage, so all
+// subagents share one band and nested executions are marked rather than invented.
 const FLAME_SELF_SLOT = 0, FLAME_CHILD_SLOTS = [1, 2, 3, 4];
-// Below this share a segment is a few pixels wide and carries no text of any length.
-// The TUI can measure its cells exactly; the page cannot measure a proportional
-// layout before it lays out, so it thresholds on the share instead and leans on
-// overflow:hidden to keep a long name inside its own slice either way.
 const NAMED = 0.06;
-// Agent names that identify nothing -- what a backend writes when it delegated but did
-// not record to whom. The flamegraph's segment labels and the Turns tab's Agents cell
-// (agentLabel) share the one set, mirroring util.DULL_AGENT_NAMES.
+// Shared with util.DULL_AGENT_NAMES for TUI/web label parity.
 const DULL_AGENTS = new Set(['', '-', 'subagent', 'unknown', '(untitled)']);
-// A share of one session's spend, BOTH ends guarded (Renderer._flame_pct's rule): an
-// icicle prints the parts beside the whole, so "root kept 100%" above five visible
-// subagent segments contradicts itself, and a sub-half-percent segment that exists must
-// not read "0%". Math.round is half-up and Python's round() is half-to-even, so the
-// Python floors (share + 0.5) to keep an exact 12.5% reading the same in both.
+// Match Renderer._flame_pct at both display boundaries.
 function fPct(frac) {
   if (frac >= 1) return '100%';
   if (frac <= 0) return '0%';
@@ -1451,19 +1172,10 @@ function fPct(frac) {
   if (share < 0.5) return '<1%';
   return Math.round(share) + '%';
 }
-// OpenCode records the agent in its own column for only some sessions; for the rest it
-// writes "-" and leaves the name in the TITLE, as "(@code-reviewer)". Mining it back out
-// is not a guess about a title's wording, it is reading a field the backend stored in the
-// wrong place -- on real data it lifts the share of subagent nodes that can name their
-// agent from 15% to 85%. (App._FLAME_AGENT_TAG.)
+// Some OpenCode rows encode a missing agent field as an "(@agent)" title tag.
 const FLAME_AGENT_TAG = /\(@([\w.-]+)/;
-// The model's short display spelling: route prefix dropped, release-date and
-// reasoning-effort suffixes stripped -- pricing.display_model, transcribed, because a
-// segment has tens of pixels of text and not eighty characters.
 const flameModel = m => String(m || '').split('/').pop()
   .replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, '').replace(/-(?:minimal|low|medium|high|xhigh)$/, '');
-// A segment names the AGENT that ran it, never the session's title: the title is a
-// sentence that never fits, and it is one column away in the table below.
 function flameLabel(n) {
   const agent = (n.agent || '').trim();
   let name = DULL_AGENTS.has(agent.toLowerCase()) ? '' : agent;
@@ -1473,17 +1185,8 @@ function flameLabel(n) {
   }
   return (n.depth > 1 ? '↳ ' : '') + name;
 }
-// Unique names: most backends don't name their subagents (Claude Code writes "subagent"
-// for every Task), and a key of six identical entries identifies nothing. Fall back to
-// the start time -- distinct AND findable in the table's Started column -- at minute then
-// second precision, and to a cost rank when a batch shares one timestamp exactly.
 function flameLabels(rows) {
-  // A Map, not a plain object: these keys are session titles, and a title of exactly
-  // "constructor", "toString" or "__proto__" reads its value straight off
-  // Object.prototype -- `(n[l] || 0) + 1` then yields NaN (or silently fails to store),
-  // `n[l] > 1` is false, and two identically-named executions are never detected as
-  // repeated. Python counts with list.count() and has no such hole, so this is exactly
-  // the kind of one-sided hazard that makes the two frontends disagree.
+  // User-controlled labels require Map, not prototype-bearing object keys.
   const base = rows.map(flameLabel), n = new Map();
   base.forEach(l => n.set(l, (n.get(l) || 0) + 1));
   const many = l => n.get(l) > 1;
@@ -1492,10 +1195,6 @@ function flameLabels(rows) {
     const stamped = base.map((l, i) => many(l) ? (l + ' ' + (rows[i].date || '').slice(11, end)).trim() : l);
     if (new Set(stamped).size === stamped.length) return stamped;
   }
-  // Last rung: the cost rank -- which is still not a guarantee on its own (a node
-  // genuinely titled "foo #1" beside two titled "foo" collides with a rank), so whatever
-  // is left tied is separated here. Uniqueness is the contract; a ladder that ALMOST
-  // reaches it just relocates the indistinguishable pair.
   const seen = new Set();
   return base.map((l, i) => {
     let name = many(l) ? l + ' #' + (i + 1) : l;
@@ -1507,13 +1206,7 @@ function flameLabels(rows) {
 function sessionFlame(nodes) {
   if (!nodes || !nodes.length) return null;
   const paid = nodes.reduce((a, n) => a + mCost(n), 0);
-  // Dollars unless there are none: a subscription backend with $ off records $0
-  // everywhere, and a hierarchy of zeros is a blank frame. Tokens still answer "where
-  // did the work go", which is the same question one price list away. (Costs arrive
-  // rounded to 6dp by web._money6, so a whole session under a millionth of a dollar
-  // reads as tokens here while the TUI still divides its raw floats. Both readings say
-  // "this cost nothing"; the rounding is the payload's, shared with every other figure
-  // on the page, and is not worth a second cost field.)
+  // A zero-cost hierarchy falls back to token width instead of rendering blank.
   const unit = paid > 0 ? 'cost' : 'tokens';
   const val = n => unit === 'cost' ? mCost(n) : n.tokens;
   const total = unit === 'cost' ? paid : nodes.reduce((a, n) => a + n.tokens, 0);
@@ -1521,19 +1214,10 @@ function sessionFlame(nodes) {
   const segments = [];
   const own = nodes.filter(n => !n.depth).reduce((a, n) => a + val(n), 0);
   const rootNode = nodes.find(n => !n.depth);
-  // Two names per execution: the bare `agent` (position identifies a slice under the
-  // band, so five slices reading "code-reviewer" is the truth there) and `label`, which
-  // carries whatever flameLabels had to add to tell them apart in the key.
   if (own > 0) segments.push({ label: 'root (self)', agent: 'root (self)',
     model: flameModel(rootNode && rootNode.model), value: own, share: own / total,
     slot: FLAME_SELF_SLOT, depth: 0 });
-  // Cost-descending, tokens then title breaking ties. The title breaks it DESCENDING and
-  // by CODE POINT, because the Python sorts the whole (value, tokens, title) tuple with
-  // reverse=True. Neither shortcut is that: localeCompare's collation disagrees on case
-  // and accents ("Z" vs "a"), and a bare `<` compares UTF-16 code UNITS, which ranks an
-  // astral character below a high BMP one (an emoji title sorts under "�" in JS and
-  // over it in Python). A tie ordered differently between the frontends hands the same
-  // two segments different colours in the TUI and on the page.
+  // Python orders title ties by Unicode code point; JS string comparison uses UTF-16.
   const byTitle = (a, b) => {
     const x = Array.from(String(a.title)), y = Array.from(String(b.title));
     for (let i = 0; i < Math.min(x.length, y.length); i++) {
@@ -1548,14 +1232,7 @@ function sessionFlame(nodes) {
   drawn.forEach((n, i) => segments.push({ label: labels[i], agent: flameLabel(n),
     model: flameModel(n.model), value: val(n), share: val(n) / total,
     slot: FLAME_CHILD_SLOTS[i % FLAME_CHILD_SLOTS.length], depth: n.depth }));
-  // `est` marks a WIDTH ON SCREEN as an estimate, which needs two guards beyond the $
-  // mode (App.session_flame's rule -- both frontends must mark the same figures
-  // approximate): the unit, since token widths were never priced at all, and val(n) > 0,
-  // since an aborted $0/0-token child contributes no segment and must not put a "~" on a
-  // chart whose every drawn width was recorded.
-  // The model every drawn segment ran on, or '' when they differ: 85 of 135 real
-  // delegating sessions are single-model end to end, and there the model belongs in the
-  // caption once instead of under every segment. (SessionFlame.one_model.)
+  // Approximation applies only to visible cost widths; token widths were never priced.
   const models = new Set(segments.map(s => s.model).filter(Boolean));
   return { segments, total, unit,
     est: unit === 'cost' && MODE === 'api' && nodes.some(n => !n.real && val(n) > 0),
@@ -1568,25 +1245,16 @@ function flamePane(nodes) {
   const SER = tokSeries(), fmt = f.unit === 'cost' ? money : hTok, approx = f.est ? '~' : '';
   const kids = f.segments.filter(s => s.depth > 0);
   const own = f.total - kids.reduce((a, s) => a + s.value, 0);
-  // The headline is the chart's finding as a sentence -- the part that survives being
-  // read on a phone, where the thinner segments are a few pixels each.
   const parts = kids.length
     ? ['root kept ', h('b', null, fPct(f.selfShare)), ' (' + fmt(own) + ') · ',
        kids.length + ' subagent' + (kids.length === 1 ? '' : 's') + ' split ' + fmt(kids.reduce((a, s) => a + s.value, 0))]
     : ['root kept all ' + approx + fmt(f.total) + ' — no subagent recorded a share'];
-  // The bare agent in the sentence: it points at one segment, so the handle that tells
-  // five "code-reviewer" runs apart would be noise there.
   if (kids.length > 1) parts.push(' · biggest ' + kids[0].agent + ' ' + fPct(kids[0].share));
   const band = h('div', { class: 'track' }, f.segments.map(s => h('div', {
     class: 'seg',
     style: 'flex:' + s.share + ' 0 0;background:' + SER[s.slot] + ';color:' + inkOn(SER[s.slot]),
     title: s.label + (s.model ? ' · ' + s.model : '') + ' · ' + fmt(s.value) + ' · ' + fPct(s.share),
-  // Only the share rides in the fill now; the names sit under the band, where they do
-  // not have to fight the colour they were punched through. A sliver keeps neither.
   }, s.share > NAMED ? fPct(s.share) : null)));
-  // The label rows: one flex cell per segment, sharing the band's own flex ratios, so a
-  // name is under its slice by construction rather than by arithmetic. Below NAMED a
-  // segment is too narrow for text of any length, and the key picks it up instead.
   const labelRow = textOf => h('div', { class: 'names' }, f.segments.map(s =>
     h('div', { style: 'flex:' + s.share + ' 0 0;color:' + SER[s.slot] },
       s.share > NAMED ? textOf(s) : null)));
@@ -1596,9 +1264,6 @@ function flamePane(nodes) {
   if (f.deep) notes.push(f.deep + ' execution' + (f.deep === 1 ? '' : 's') + ' ran under another subagent (↳) — shown alongside, since the tree records depth but not parents');
   if (f.silent) notes.push(f.silent + ' subagent' + (f.silent === 1 ? '' : 's') + ' recorded no '
     + (f.unit === 'cost' ? 'spend' : 'tokens') + ' — no width to draw, still in the table below');
-  // The key carries only what position could not -- the segments too thin to be named
-  // under the band -- and picks up their model too, since it has a whole wrapping line
-  // to spend where they had a few pixels. Name every segment and it disappears entirely.
   const rest = f.segments.filter(s => !(s.share > NAMED));
   const caption = 'session · width = ' + (f.unit === 'cost' ? 'dollars' : 'tokens')
     + (f.oneModel ? ' · all on ' + f.oneModel : '');
@@ -1607,8 +1272,6 @@ function flamePane(nodes) {
     h('div', { class: 'flame' },
       h('div', { class: 'lbl' }, h('span', null, caption), h('span', null, approx + fmt(f.total))),
       band, labelRow(s => s.agent),
-      // A second positioned row for the models, and only when the segments disagree
-      // about them: a uniform tree said it once in the caption already.
       f.oneModel ? null : labelRow(s => s.model)),
     rest.length ? h('div', { class: 'tk-legend' }, rest.map(s =>
       h('span', { title: fmt(s.value) + ' · ' + fPct(s.share) }, h('i', { style: 'background:' + SER[s.slot] }),
@@ -1619,9 +1282,7 @@ function flamePane(nodes) {
 function projectsTable(id, ws, collapse, onRow) {
   const rows = projectRows(ws);
   const peak = Math.max(...rows.map(r => r.cost), 0);
-  // onRow: undefined -> the default project-scope drill (go); null -> a read-only
-  // breakdown; a function -> a custom drill (the Machines scope narrows in place via
-  // MSUB instead of jumping out of the machine axis to the project scope).
+  // undefined drills to project scope; null is read-only; a function drills in place.
   return table(id, [
     { key: 'project', label: 'Project', asc: true, sortVal: r => projName(r.project).toLowerCase(),
       fmt: r => [projName(r.project), ' ', h('span', { class: 'mut' }, shortPath(r.project))], cls: 'grow' },
@@ -1662,8 +1323,6 @@ function sessionsTable(id, ws) {
     table(id, sessionCols(), rows, { defaultSort: { key: 'cost', desc: true }, collapse: 25,
       onRow: r => { go('s', r.id); } }));
 }
-/* the Overview's Top-sessions pane: the sessions table without the filter box,
-   collapsed to the biggest few (the TUI's "# Top Sessions" section) */
 function topSessionsTable(id, ws, n) {
   return table(id, sessionCols(), ws, { defaultSort: { key: 'cost', desc: true }, collapse: n,
     onRow: r => { go('s', r.id); } });
@@ -1679,8 +1338,6 @@ function sourcesTable(id, ws, onRow) {
   ], rows, { defaultSort: { key: 'cost', desc: true }, onRow: onRow || null });
 }
 function machinesTable(id, ws) {
-  // The per-scope Machines breakdown (fleet view), the sourcesTable twin: read-only, like
-  // the web's Harnesses tab. The Machines MODE (#/M/<box>) is where a box drills in.
   const rows = machineRows(ws);
   const peak = Math.max(...rows.map(r => r.cost), 0);
   return table(id, [
@@ -1691,14 +1348,8 @@ function machinesTable(id, ws) {
   ], rows, { defaultSort: { key: 'cost', desc: true }, onRow: r => { go('M', r.machine); } });
 }
 
-/* One rule, four views (util.CONTEXT_COMPACT_*): a >40% drop from OVER 50k of context is a
-   clear, not just a smaller prompt. The Turns markers and the Context curve's ▼ both
-   read it here, as their TUI twins read it from util -- two tabs on one page disagreeing
-   about whether the window was cleared would be worse than not marking it at all. */
+// Shared by Turns and Context; thresholds mirror util.CONTEXT_COMPACT_*.
 const isCompaction = (before, after) => before > 50000 && after < before * 0.6;
-// {index into turns: [before, after]} for every main-thread turn whose context collapsed.
-// Subagents run in their own windows (server ships their ctx as 0), so they neither
-// trigger a marker nor break the main thread's chain.
 function turnCompactions(turns) {
   const out = new Map();
   let prev = 0;
@@ -1711,15 +1362,8 @@ function turnCompactions(turns) {
   return out;
 }
 
-/* The mirrors of util.short_tool_name / tool_call_label / tool_mix_label. Kept as a
-   reimplementation (like cost_bar) rather than shipped pre-rendered, because the cell
-   width is a client-side question -- the page folds at its own column widths. */
 function toolNames(value) {
-  // The twin of util.tool_names, and for the same reason: EVERY reader of a turn's
-  // `tools` goes through one gate, so the page can't decide a column exists on a rule
-  // the TUI doesn't share. Gating here on raw `.length` while the TUI gated on the
-  // rendered label is what made an empty tool name draw a column of "-" on the page
-  // and no column at all in the terminal.
+  // Every tool reader shares the same shape gate as util.tool_names.
   if (!Array.isArray(value)) return [];
   return value.filter(t => typeof t === 'string' && t);
 }
@@ -1733,9 +1377,6 @@ function shortToolName(tool) {
 }
 
 function toolLabel(tools, byCount) {
-  // One turn's calls in CALL order, or a prompt's whole mix ordered busiest-first
-  // (byCount) -- the same two orderings the TUI draws, for the same reason: a turn
-  // reads like it ran, a prompt reads by what it spent its time doing.
   const counts = new Map();
   toolNames(tools).forEach(t => {
     const n = shortToolName(t);
@@ -1747,11 +1388,7 @@ function toolLabel(tools, byCount) {
 }
 
 function agentLabel(turns) {
-  // The twin of util.agent_mix_label: which subagents a PROMPT delegated to, busiest
-  // first, with unnamed executions folded into one "subagent ×n" (Claude Code names
-  // none of its Tasks, so keeping them apart spends the cell saying nothing). Only
-  // turns that ran UNDER an agent count -- a main-thread turn's label names the
-  // harness's own agent and would make every prompt look delegated.
+  // Count only delegated turns; main-thread agent labels would mark every prompt.
   const counts = new Map();
   let unnamed = 0;
   (turns || []).forEach(t => {
@@ -1766,12 +1403,8 @@ function agentLabel(turns) {
   return parts.join(', ');
 }
 
-/* turns stay chronological on purpose: the tab answers *when* the money went. */
 function turnGroupRows(turns) {
-  // The mirror of Renderer.turn_group_rows: one entry per RUN of consecutive turns
-  // sharing a prompt id, in order. A LIST, addressed by ordinal, because a prompt id is
-  // not unique -- a backend without explicit ids groups by the prompt TEXT, so asking the
-  // same thing twice gives A, B, A and an id cannot name which run.
+  // Group consecutive runs and address them by ordinal because prompt ids may repeat.
   const groups = [];
   let last = null;
   turns.forEach((t, i) => {
@@ -1784,14 +1417,12 @@ function turnGroupRows(turns) {
     }
     const g = groups[groups.length - 1];
     g.turns += 1; g.tokens += t.tokens || 0; g.cost += mCost(t); g.indices.push(i);
-    const names = toolNames(t.tools);  // the same gate the labels use, so they agree
+    const names = toolNames(t.tools);
     g.calls += names.length;
     if (names.length) g.tools.push(...names);
     g.rows.push(t);
     if (t.depth) g.subturns += 1;
-    // Cached is the FIRST main-thread turn's share, never an average of the group's:
-    // every later turn is warm by construction, so averaging buries the one moment that
-    // could have missed. Subagents run in their own windows and cannot answer for it.
+    // Cache share belongs to the first main-thread turn, before later turns are warm.
     if (!t.depth && g.first === null) g.first = t;
   });
   groups.forEach(g => { g.cached = g.first ? g.first.cached : null; g.agents = agentLabel(g.rows); });
@@ -1799,16 +1430,9 @@ function turnGroupRows(turns) {
 }
 
 function turnsTable(turns, expiries) {
-  // ONE ROW PER PROMPT -- the thing you actually sent -- with every column on the rows you
-  // scan, and the turns behind a row one click away. The TUI's Turns tab, mirrored.
   const groups = turnGroupRows(turns);
   const comps = turnCompactions(turns);
   const freed = [...comps.values()].reduce((a, [b, af]) => a + b - af, 0);
-  // The server ships the two causes the reader DID (see web.session_extras): an idle
-  // gap that outlived the cache, and an effort switch that changed the thinking config
-  // and dropped the prefix with it. Split here so each gets its own line and its own
-  // sentence in the hint -- one "cache expired" total covering both would tell someone
-  // who never went idle that they did.
   const exp = new Map((expiries || []).filter(e => e.cause !== 'reasoning').map(e => [e.i, e]));
   const effSw = new Map((expiries || []).filter(e => e.cause === 'reasoning').map(e => [e.i, e]));
   const burnt = [...exp.values()].reduce((a, e) => a + e.cost, 0);
@@ -1818,23 +1442,14 @@ function turnsTable(turns, expiries) {
     return turnDrillPane(turns, groups, TURN_DRILL);
 
   const pct = (v) => v == null ? '·' : Math.round(v * 100) + '%';
-  // Dropped when nothing in the session called a tool, so a backend that records no
-  // per-step tool calls shows no column rather than a stripe of dashes -- the TUI's
-  // rule, gated on the same rows. The marker rows span the table, so their colspan
-  // has to follow it or the ▼/❄ lines stop short of the right edge.
+  // Optional columns and marker colspan derive from the same rows.
   const hasCalls = groups.some(g => g.calls);
-  // WHO ran the prompt's turns. The per-turn Agent column is a click away in the drill,
-  // so the table you scan gave no sign which prompts had farmed their work out -- and a
-  // prompt that spawned five subagents reads nothing like one the main thread ran alone.
-  // Gated on the rows like Calls, and on the same rule the TUI uses.
   const hasAgents = groups.some(g => g.subturns);
   const span = 8 + (hasCalls ? 1 : 0) + (hasAgents ? 1 : 0);
   const rows = [];
   let cum = 0;
   groups.forEach((g, n) => {
     cum += g.cost;
-    // Markers first: they describe what happened BEFORE this prompt ran, and ride
-    // full-width outside the columns because they are events, not prompts.
     g.indices.forEach(i => {
       const c = comps.get(i);
       if (c) rows.push(h('tr', { class: 'compact-row' }, h('td', { colspan: span },
@@ -1855,13 +1470,8 @@ function turnsTable(turns, expiries) {
       h('td', { class: 'dim' }, (g.time || '').slice(5, 16).replace('T', ' ')),
       h('td', { class: 'grow' }, g.title || '(no preceding prompt)'),
       h('td', { class: 'r dim' }, String(g.turns)),
-      // The count only; the NAMES are an open-ended list and live in the prompt's own
-      // view, one click away. "-" rather than "0": a red $0.00 already means "unpriced"
-      // on this tab, and a column of zeros invites the same second glance for absence.
       ...(hasCalls ? [h('td', { class: 'r dim', title: toolLabel(g.tools, true) || null },
         g.calls ? String(g.calls) : '-')] : []),
-      // "↳" marks the cell as delegation, the glyph the per-turn Agent column and the
-      // flamegraph already use; a prompt the main thread ran itself reads "-".
       ...(hasAgents ? [h('td', { class: 'dim', title: g.agents || null },
         g.agents ? '↳ ' + g.agents : '-')] : []),
       h('td', { class: 'r dim' }, pct(g.cached)),
@@ -1894,18 +1504,9 @@ function turnsTable(turns, expiries) {
 }
 
 function turnDrillPane(turns, groups, n) {
-  // One prompt, opened: its full text, its totals, and its own turns with their seconds.
-  // Esc or the back link returns to the table -- the TUI drills here rather than popping a
-  // modal, and so does this.
   const g = groups[n];
   const pct = (v) => v == null ? '·' : Math.round(v * 100) + '%';
-  // What each step actually DID, beside what it cost -- the cell that turns a column of
-  // near-identical numbers into a readable trace. Dropped when this prompt called
-  // nothing, so a pure-text answer isn't given a column of dashes.
   const hasTools = g.indices.some(i => toolNames(turns[i].tools).length);
-  // The reasoning level each call ran at, beside the model that ran it -- the two halves
-  // of "what answered this". Only four backends record it, so it is gated on the rows
-  // like Tools and simply absent elsewhere. The TUI's Eff column, mirrored.
   const hasEffort = g.indices.some(i => turns[i].effort);
   let cum = 0;
   const rows = g.indices.map(i => {
@@ -1954,8 +1555,6 @@ function toolsTable(toolRows) {
   const grid = table('t-s-tools', [
     { key: 'tool', label: 'Tool', asc: true, cls: 'grow' },
     { key: 'ns', label: 'Server', asc: true, fmt: r => h('span', { class: 'dim' }, r.ns) },
-    // The treemap shades by $/call, so the exact reading below it has to be able to
-    // state that figure too -- the TUI's Tools table has carried Calls all along.
     { key: 'calls', label: 'Calls', align: 'r' },
     { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => barCell(mCost(r), peak) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
@@ -1967,9 +1566,6 @@ function toolsTable(toolRows) {
       + 'a multi-tool turn is split evenly'));
 }
 
-// Balanced binary treemap. It recursively halves the sorted weight along the current
-// rectangle's long edge: enough structure for a convincing map without pulling a chart
-// library into the self-contained page.
 function binaryTreemap(items, x, y, w, h, out) {
   if (!items.length || w <= 0 || h <= 0) return out;
   if (items.length === 1) { out.push({ ...items[0], x, y, w, h }); return out; }
@@ -2001,36 +1597,22 @@ function toolTreemap(rows) {
     .sort(sortItems);
   if (!all.length) return null;
   const total = sum(all, r => r.value), peak = all[0].value;
-  // A tile too narrow to hold a name is a stripe, not a tile, and a row of those at the
-  // right edge is most of what made this chart read as big and empty. The tail folds into
-  // "Other" until every drawn tile can carry its own label -- measured against the REAL
-  // container in draw(), since a percentage cannot know whether that is 40px or 240px.
-  // (Renderer._TOOL_TILE_MIN, in pixels.) The long tail is read in the table below.
+  // Fold only the tail that cannot meet the pixel label floor in the live container.
   const TILE_MIN = 70;
   const fold = keep => {
     const head = all.slice(0, keep), rest = all.slice(keep);
     if (!rest.length) return head;
     const out = head.concat([{ tool: 'Other', calls: sum(rest, r => r.calls),
       value: sum(rest, r => r.value) }]);
-    out.sort(sortItems); // the folded tail can itself be the largest tile
+    out.sort(sortItems);
     return out;
   };
-  // Shade is the PER-CALL rate, not the area's own measure (Renderer._tool_treemap_box
-  // is canonical): area already says what a tool cost in total, so colouring by the same
-  // number spends the second channel saying it twice. $/call splits the two findings a
-  // Cost column cannot tell apart -- "expensive because it ran 200 times" (big, cool)
-  // from "expensive every single time" (small, hot).
-  //
-  // The SCALE comes off the FULL ranking, not the drawn tiles: whether per-call rates
-  // exist and vary is a property of the data, so a tool keeps its colour when a resize
-  // folds a neighbour away, and the caption below can be written before we measure. A
-  // folded "Other" blends the rates it swallowed, which lands inside the range anyway.
+  // Area is total; shade is per-call rate. Scale against all rows so resize folding does
+  // not change a surviving tool's colour.
   const byRate = all.every(r => r.calls > 0)
     && new Set(all.map(r => r.value / r.calls)).size > 1;
   const rates = all.map(r => r.value / r.calls);
   const rLo = byRate ? Math.min(...rates) : 0, rHi = byRate ? Math.max(...rates) : 0;
-  // Log position, like Renderer._heat_position: per-call rates span orders of magnitude
-  // and a linear ramp would flatten every tool but the priciest into one band.
   const level = r => {
     const n = TH.heat.length - 1;
     if (!byRate) return Math.max(0, Math.min(n, Math.round(Math.sqrt(r.value / peak) * n)));
@@ -2038,25 +1620,16 @@ function toolTreemap(rows) {
     if (!(rHi > rLo && rLo > 0) || v <= rLo) return 0;
     return Math.max(0, Math.min(n, Math.round((Math.log(v) - Math.log(rLo)) / (Math.log(rHi) - Math.log(rLo)) * n)));
   };
-  // money() floors at the cent, but a per-call rate usually lives below one and the whole
-  // point of the figure is telling $0.0004 from $0.006 -- "<$0.01" for both erases it.
   const rateText = r => !r.calls ? '' : !dollars ? hTok(Math.round(r.value / r.calls)) + '/call'
     : (r.value / r.calls) >= 0.01 ? money(r.value / r.calls) + '/call'
     : (r.value / r.calls) < 0.0001 ? '<$0.0001/call'
     : '$' + (r.value / r.calls).toFixed(4).replace(/0+$/, '') + '/call';
   const map = h('div', { class: 'tool-map', 'aria-hidden': 'true' });
-  // Measure after insertion: choosing split axes against a fake square makes wide panes
-  // produce flat strips, and percentage thresholds cannot know whether a label has 40px
-  // or 240px. ResizeObserver reflows this chart alone -- a global render on mobile-keyboard
-  // resize would destroy expanded prompt rows and focused filters elsewhere on the page.
+  // Reflow only this chart; a global resize render would discard transient UI state.
   let frame = 0;
   const draw = () => {
     if (!map.isConnected) return;
     const box = map.getBoundingClientRect();
-    // Only the TAIL folds -- the tiles that individually cannot hold a label. Asking
-    // instead that every tile in the folded set clear the floor lets one small tool drag
-    // away everything ranked below it: measured on real data (18 tools, an 884px map)
-    // that rule left three tiles, which is a bar chart with extra steps.
     let keep = 0;
     while (keep < Math.min(8, all.length)
       && all[keep].value / total * box.width >= TILE_MIN) keep++;
@@ -2065,8 +1638,6 @@ function toolTreemap(rows) {
     const tiles_ = rects.map(r => {
       const fill = TH.heat[level(r)], roomy = r.w >= 66 && r.h >= 30;
       const amount = (dollars ? money(r.value) : hTok(r.value)) + ' · ' + fPct(r.value / total);
-      // Each line has its own pixel gate and drops on its own, so a tile too short for
-      // the rate still names itself -- the TUI's per-row degradation, in pixels.
       const details = (r.w >= 110 && r.h >= 46) ? h('span', { class: 'tv' }, amount) : null;
       const rate = rateText(r);
       const rateEl = (rate && r.w >= 110 && r.h >= 64)
@@ -2095,11 +1666,6 @@ function toolTreemap(rows) {
   const area = dollars ? 'visible cost' : 'tokens · no recorded cost';
   const unit = byRate ? 'area = ' + area + ' · shade = ' + (dollars ? '$' : 'tokens') + '/call'
     : 'area + shade = ' + area;
-  // The finding as a sentence -- the flamegraph's headline, for the same reason: it is
-  // what survives a phone-width map, and what a passive chart otherwise makes the reader
-  // derive. It reads the FULL ranking, so it can still name the tool the fold swallowed
-  // into "Other" -- which matters most when that tool is the hot one, since pricey-per-
-  // call tools are usually small by total and fold first. (Renderer's headline.)
   const top = all[0], ofWhat = dollars ? 'the spend' : 'the tokens';
   const line = [top.tool + ' is ' + fPct(top.value / total) + ' of ' + ofWhat
     + (top.calls ? ', over ' + top.calls + ' calls' : '')];
@@ -2115,10 +1681,6 @@ function toolTreemap(rows) {
     map);
 }
 
-/* ---------- the Context tab (the TUI's detail_context, in SVG) ---------- */
-// The server ships measured per-turn prompt sizes (points) + the model's window
-// + the estimated composition rows; peak/final/compactions derive here, through the
-// same isCompaction() the Turns table marks with.
 function ctxHeatColor(v, window) {
   const lvl = Math.max(0, Math.min(4, Math.floor((window > 0 ? v / window : 0) * 5)));
   return TH.priceHeat[lvl];
@@ -2130,8 +1692,7 @@ function ctxChart(ctx, vs, comps) {
   const x = i => padL + (n > 1 ? i * iw / (n - 1) : iw / 2);
   const y = v => padT + (1 - v / ymax) * ih;
   const svg = s('svg', { viewBox: '0 0 ' + VW + ' ' + VH, class: 'chart', preserveAspectRatio: 'none', style: 'width:100%;height:210px' });
-  // Fullness gradient, banded like the TUI's heat rows: hard stops wherever a
-  // window-fifth boundary crosses the chart's y range.
+  // Use hard fifth-window stops to match the TUI heat levels.
   const defs = s('defs', null);
   const grad = s('linearGradient', { id: 'ctxheat', x1: 0, y1: 1, x2: 0, y2: 0 });
   let prev = 0;
@@ -2145,18 +1706,15 @@ function ctxChart(ctx, vs, comps) {
   if (prev < 1) { grad.appendChild(s('stop', { offset: prev, 'stop-color': TH.priceHeat[4] })); grad.appendChild(s('stop', { offset: 1, 'stop-color': TH.priceHeat[4] })); }
   defs.appendChild(grad);
   svg.appendChild(defs);
-  // gridlines + y labels at max and half
   [1, 0.5].forEach(f => {
     const gy = y(ymax * f);
     svg.appendChild(s('line', { x1: padL, y1: gy, x2: VW - padR, y2: gy, stroke: thc('line'), 'stroke-width': 1 }));
     svg.appendChild(s('text', { x: padL - 6, y: gy + 3, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: hTok(Math.round(ymax * f)) }));
   });
   svg.appendChild(s('line', { x1: padL, y1: VH - padB, x2: VW - padR, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
-  // the measured area, filled with the fullness gradient
   const pts = vs.map((v, i) => x(i) + ',' + y(v)).join(' ');
   svg.appendChild(s('polygon', { points: padL + ',' + (VH - padB) + ' ' + pts + ' ' + x(n - 1) + ',' + (VH - padB), fill: 'url(#ctxheat)', 'fill-opacity': 0.55 }));
   svg.appendChild(s('polyline', { points: pts, fill: 'none', stroke: 'url(#ctxheat)', 'stroke-width': 2 }));
-  // ▼ compaction markers ride above their drop point
   comps.forEach(i => svg.appendChild(s('text', { x: x(i), y: padT - 6, 'text-anchor': 'middle', 'font-size': 11, fill: thc('accent'), text: '▼' })));
   svg.appendChild(s('text', { x: padL, y: VH - 8, 'font-size': 10, fill: thc('mut'), text: 'turn 1' }));
   svg.appendChild(s('text', { x: VW - padR, y: VH - 8, 'text-anchor': 'end', 'font-size': 10, fill: thc('mut'), text: String(n) }));
@@ -2171,10 +1729,7 @@ function contextPane(ctx) {
   const comps = [];
   for (let i = 1; i < vs.length; i++) if (isCompaction(vs[i - 1], vs[i])) comps.push(i);
   const freed = comps.reduce((a, i) => a + vs[i - 1] - vs[i], 0);
-  // end is measured against the live (last) model's window, peak against the window the
-  // PEAK TURN actually ran in -- the TUI's split (renderer.detail_context). Measuring
-  // both against ctx.window printed an impossible 120% when a session peaked on a big
-  // model and ended on a smaller one.
+  // End uses the last model's window; peak uses that point's own model window.
   const pctOf = (v, w) => Math.round(100 * v / (w || ctx.window)) + '%';
   const peakWindow = (ctx.points[vs.indexOf(peak)] || {}).w;
   const wrap = h('div', null);
@@ -2194,7 +1749,6 @@ function contextPane(ctx) {
   return wrap;
 }
 function contextCompTable(comp) {
-  // Category rows with their kinds nested beneath, biggest first (the TUI tree).
   const byCat = new Map();
   for (const r of comp) {
     let c = byCat.get(r.cat);
@@ -2224,26 +1778,14 @@ function contextCompTable(comp) {
   return wrap;
 }
 
-/* ---------- the `w` what-if views: a session's tree + its Overview summary ---------- */
-// A share with its direction glued on -- except when there is no share to sign: pct()
-// answers '-' for a zero denominator (undefined), and '+-' is not a percentage.
+// An undefined percentage has no sign.
 const signedPct = (part, whole, sign) => { const s = pct(Math.abs(part), whole); return s === '-' ? s : sign + s; };
-// The payoff table (the Subagents pane with a target armed): the WHOLE tree -- root row
-// included, because the question is about the whole session and the root is the model the
-// delegation was made from -- each node's cost beside what its tokens would have cost had
-// the target produced them.
-//
-// Two columns, not three. The per-node What-if is exact (one model, one rate card, that
-// node's own tokens); a per-node BASELINE is not (a node's label is its dominant model
-// only), so there is no per-node Δ -- nothing honest to subtract from. The exact
-// comparison lives at session level, in the TOTAL line (whatifTotals, per-model rows,
-// both sides at list rates). The Cost column keeps its ordinary meaning everywhere --
-// recorded spend, $-estimated where nothing was recorded -- which is exactly why it does
-// not add up to the TOTAL, and says so.
+// Per-node target cost is exact, but a dominant-model node cannot provide an exact
+// baseline. Keep the comparison and delta at session level over per-model rows.
 function whatifTree(nodes, t) {
   const rates = WI_PRICE.get(t.target);
   const rows = nodes.map(n => Object.assign({}, n, { wi: whatifCost(n.tok, rates) }));
-  const saved = t.actual - t.whatif;   // signed from the target's side: what it would save
+  const saved = t.actual - t.whatif;
   const tbl = table('t-s-whatif', [
     { key: 'title', label: 'Title', asc: true, cls: 'grow', fmt: r => [r.depth ? h('span', { class: 'mut' }, '└ '.padStart(r.depth * 2 + 2, ' ')) : null, r.title] },
     { key: 'date', label: 'Started', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },
@@ -2253,12 +1795,7 @@ function whatifTree(nodes, t) {
     { key: 'wi', label: 'What-if', align: 'r', fmt: r => h('span', { class: 'm' }, money(r.wi)) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
   ], rows, { defaultSort: { key: 'date', desc: false } });
-  // The What-if column normally sums to the counterfactual (same tokens, same rate). It
-  // won't when a session's node rollup disagrees with its message-level totals -- rare,
-  // and not this feature's doing, but an unexplained mismatch reads as a bug, so it is
-  // named only on the sessions where it is actually true. (The TUI does the same.)
-  // Which way it drifts is not fixed -- a node rollup can overshoot the message totals as
-  // easily as undershoot them -- so say the direction, don't assume it.
+  // Node rollups can disagree with message totals; the per-model TOTAL remains canonical.
   const wiColumn = rows.reduce((a, r) => a + r.wi, 0);
   const drift = Math.abs(wiColumn - t.whatif) > 0.01 ? (wiColumn > t.whatif ? 'more' : 'less') : '';
   return h('div', null, tbl,
@@ -2271,14 +1808,6 @@ function whatifTree(nodes, t) {
     t.est ? h('div', { class: 'hint' }, '~ your models include one with no known list rate — its tokens are priced at a generic estimate, so the baseline is not a real list price.') : null,
     drift ? h('div', { class: 'hint' }, 'this session’s node totals disagree with its message totals, so the What-if column adds up to slightly ' + drift + ' than the TOTAL. The TOTAL is the exact one.') : null);
 }
-// The armed target's effect on THIS session, in three figures, on the Overview -- where
-// it exists because the Subagents pane cannot answer for a session that delegated
-// nothing: a solo session has no tree to table, and `w` would otherwise silently do
-// nothing on it. The wording stays neutral (change, never "routing saved"): with no
-// delegation there is no routing decision to credit. Same whatifTotals as the tree, so
-// the two can't disagree.
-// A two-arc donut: root cost (accent) vs subagents (good), the root share in the middle.
-// The TUI's proportion bar as an SVG; only drawn when there is a real split to show.
 function donut(root, sub) {
   const R = 30, SW = 11, SZ = 84, c = SZ / 2, C = 2 * Math.PI * R;
   const t = root + sub, rf = t > 0 ? root / t : 1;
@@ -2296,10 +1825,6 @@ function donut(root, sub) {
     s('text', { x: c, y: c + 13, 'text-anchor': 'middle', 'font-size': 9, fill: 'var(--mut)', text: 'root' }));
 }
 
-// The Overview Money card (the TUI's Money card): the cost split + shape stats, a root-vs-
-// subagents donut, and -- when a `w` target is armed -- the what-if comparison as accent
-// rows below a rule. Both what-if sides are list rates (whatifTotals), so the recorded
-// rows above and the comparison below never quote the same number for different things.
 function moneyCard(w, wi) {
   const total = cost(w), root = rootCost(w), sub = Math.max(0, total - root);
   const rangeTotal = W.reduce((a, x) => a + cost(x), 0);
@@ -2330,12 +1855,6 @@ function moneyCard(w, wi) {
   return pane('Money card' + (wi ? ' · what-if ' + wi.target : ''), ...kids);
 }
 
-/* ---------- the `w` target picker (the TUI's draw_whatif_menu) ---------- */
-// The picker's rows: the active tier -- the models you have actually used, most-used
-// first, or (after Tab) the whole models.dev catalog, cheapest-for-your-mix first --
-// narrowed by the live filter through the one shared rule (modelMatches -- id by
-// word-anchored fuzzy match, route by substring). The P overlay's filter is the same
-// call: two model lists asking the same question must not answer it differently.
 function whatifRows() {
   return (WHATIF.cat ? whatifCatalog() : WI_MODELS).filter(m => {
     const i = m.model.lastIndexOf('/');
@@ -2343,26 +1862,22 @@ function whatifRows() {
     return modelMatches(WHATIF.q, bare, route ? [route] : [], '');
   });
 }
-// The DOM cap, like the P catalog's: the full catalog would mean thousands of buttons
-// per keystroke. Everything keys and clicks act on is the same capped list, so the
-// cursor can never land on an unrendered row -- the filter is the navigation.
+// Keyboard navigation and rendering must use the same capped catalog slice.
 const WI_CAP = 400;
 function whatifShown() { const r = whatifRows(); return r.length > WI_CAP ? r.slice(0, WI_CAP) : r; }
-function whatifFlip() {   // Tab: your models <-> the whole catalog; the query survives
-  if (WHATIF.cat ? !WI_MODELS.length : !whatifCatalog().length) return;   // no empty tier
+function whatifFlip() {
+  if (WHATIF.cat ? !WI_MODELS.length : !whatifCatalog().length) return;
   WHATIF.cat = !WHATIF.cat; WHATIF.i = 0; renderWhatif();
 }
-function toggleWhatif() {   // `w`: with a target armed, disarm it; otherwise open the picker
+function toggleWhatif() {
   if (WHATIF.model) { WHATIF.model = null; render(false); return; }
   openWhatif();
 }
 function armWhatif(model) { WHATIF.model = model; WHATIF.open = false; WHATIF.q = ''; render(false); }
 function openWhatif() {
-  if (!WI_MODELS.length && !whatifCatalog().length) return;   // nothing anywhere to arm
-  WHATIF.open = true; WHATIF.q = '';   // each open starts from the full list...
-  // ...on your own models -- unless there are none (straight to the catalog: having used
-  // few models is exactly when you need more to compare against), or the armed target
-  // lives only there (reopen on the armed row, whichever tier holds it).
+  if (!WI_MODELS.length && !whatifCatalog().length) return;
+  WHATIF.open = true; WHATIF.q = '';
+  // Reopen the tier containing the armed target; otherwise prefer used models.
   WHATIF.cat = !WI_MODELS.length ||
     (!!WHATIF.model && !WI_MODELS.some(m => m.model === WHATIF.model) &&
      whatifCatalog().some(m => m.model === WHATIF.model));
@@ -2370,7 +1885,7 @@ function openWhatif() {
   WHATIF.i = i < 0 ? 0 : i;
   renderWhatif();
 }
-function closeWhatif() { WHATIF.open = false; renderWhatif(); }   // cancel: pricing unchanged
+function closeWhatif() { WHATIF.open = false; renderWhatif(); }
 function renderWhatif() {
   const host = document.getElementById('whatifpick');
   if (!WHATIF.open) { host.hidden = true; host.textContent = ''; return; }
@@ -2385,21 +1900,17 @@ function renderWhatif() {
        : hTok(m.tokens))));
   if (all.length > rows.length)
     list.push(h('div', { class: 'hint' }, '… ' + (all.length - rows.length) + ' more — filter to narrow'));
-  // Not autofocused: j/k/Enter drive the list straight away (the TUI's picker), `f` (or a
-  // click) starts the filter. Typing re-renders, so the caret is restored afterwards.
   const filter = h('input', { id: 'wi-filter', type: 'search', placeholder: 'f filter…', value: WHATIF.q,
     oninput: e => { WHATIF.q = e.target.value; WHATIF.i = 0; renderWhatif();
       const el = document.getElementById('wi-filter');
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } });
-  filter.addEventListener('keydown', e => {   // the picker owns its keys while the input has focus
+  filter.addEventListener('keydown', e => {
     if (e.key === 'Escape') { WHATIF.q = ''; WHATIF.i = 0; renderWhatif(); e.preventDefault(); }
     else if (e.key === 'Enter') { const r = whatifShown(); if (r.length) armWhatif(r[WHATIF.i % r.length].model); e.preventDefault(); }
     else if (e.key === 'Tab') { whatifFlip(); const el = document.getElementById('wi-filter'); if (el) el.focus(); e.preventDefault(); }
     else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { stepWhatif(e.key === 'ArrowDown' ? 1 : -1); e.preventDefault(); }
     e.stopPropagation();
   });
-  // The tier switch: the two lists the picker can show, Tab (or a click) flips --
-  // rendered as the P overlay's segmented view switcher (.pr-views), same look.
   const tier = h('div', { class: 'wi-tier' },
     h('div', { class: 'pr-views' },
       h('button', { class: WHATIF.cat ? null : 'on', onclick: () => { if (WHATIF.cat) whatifFlip(); } }, 'your models'),
@@ -2428,7 +1939,6 @@ function stepWhatif(dir) {
   if (cur) cur.scrollIntoView({ block: 'nearest' });
 }
 
-/* ---------- the detail pane ---------- */
 function scopeLabel(sc) {
   if (sc.kind === 'y') return sc.year;
   if (sc.kind === 'm') return monthLabel(sc.month);
@@ -2439,8 +1949,6 @@ function scopeLabel(sc) {
   return 'all time';
 }
 function sessionLabel(sc) {
-  // The session's title, like the TUI's box border -- the raw id stays on the
-  // Overview dl (and in the hash) for copy/paste.
   const t = ((sc.session && sc.session.title) || '').trim() || sc.id;
   return t.length > 60 ? t.slice(0, 59) + '…' : t;
 }
@@ -2469,8 +1977,6 @@ function renderOverview(root, sc, ws) {
     if (months.length > 1) root.appendChild(pane('Spend by month', barChart(months)));
   }
   if (sc.kind === 'M') {
-    // The niceties the plain rollup can't give: live vs pulled, when it was pulled and by
-    // which opentab, plus a re-pull button under --serve (the TUI's F key).
     const meta = MMETA[sc.machine] || {};
     const dl = h('dl', { class: 'meta' },
       h('dt', null, 'status'), h('dd', null, meta.live ? '● live — full drill-in' : '○ pulled summary'));
@@ -2480,31 +1986,21 @@ function renderOverview(root, sc, ws) {
     }
     if (!meta.live && meta.version) dl.append(h('dt', null, 'opentab'), h('dd', null, meta.version));
     const card = h('section', { class: 'pane' }, h('h3', null, 'Machine · ' + sc.machine), dl);
-    // No re-pull under demo: demo must make no network side effects (the server refuses
-    // it too), so the button never appears on a shareable demo page.
+    // Demo mode must not expose network side effects.
     if (META.serve && meta.refreshable && !META.demo)
       card.appendChild(h('button', { class: 'hbtn', title: 're-pull this machine over ssh',
         onclick: () => refreshMachine(sc.machine) }, '↻ re-pull'));
     else if (!meta.live)
       card.appendChild(h('div', { class: 'hint' }, 'summary only — Turns/Tools/Context aren\'t exported (opentab --serve to re-pull)'));
     else if (!META.machines)
-      // The one-box case (the TUI's machine_overview says the same): this view is
-      // complete, and it is also where the machine axis announces itself.
       card.appendChild(h('div', { class: 'hint' }, 'only this machine — `opentab --pull HOST` fetches another box\'s spend over SSH and merges it here'));
     root.appendChild(card);
   }
-  // Scoped to `ws`, so it answers for whatever the page is showing -- the drilled
-  // year/month/day/project/machine, ignored projects already filtered out.
   const econ = tokenEconomicsPane(ws, scopeLabel(sc));
   if (econ) root.appendChild(econ);
   if (sc.kind !== 'p')
     root.appendChild(pane('Top projects', projectsTable('t-ov-projects', ws, 8, sc.kind === 'M' ? null : undefined)));
   root.appendChild(pane('Top sessions', topSessionsTable('t-ov-sessions', ws, 8)));
-  // The models table CLOSES the Overview here as it does in the TUI (see _model_table):
-  // it is the widest table on the page and the least likely answer to "where did the
-  // money go", so the blocks that fit in a glance go above it. A day touches few models,
-  // so its Overview carries the full mix -- the day scope has no Models tab (the TUI's
-  // day_overview trade-off).
   root.appendChild(pane(sc.kind === 'd' ? 'Model mix' : 'Top models', modelsTable('t-ov-models', modelAgg(ws), 8)));
 }
 function renderSessionOverview(root, sc) {
@@ -2518,12 +2014,7 @@ function renderSessionOverview(root, sc) {
     META.combined && w.source ? [h('dt', null, 'harness'), h('dd', null, w.source)] : null,
     META.machines && w.machine ? [h('dt', null, 'machine'), h('dd', null, w.machine)] : null,
     h('dt', null, 'id'), h('dd', null, w.id)));
-  // The Money card mirrors the TUI's: cost split + shape + a root/subagents
-  // donut, and an armed `w` target answers for THIS session right here (a solo session
-  // has no subagent tree for the Subagents tab, so its what-if lives here too).
   root.appendChild(moneyCard(w, whatifTotals(sc.id)));
-  // Same pane as the scope Overviews, over this one session: the Money card says how
-  // much and to which agent, this says which KIND of token the money went to.
   const econ = tokenEconomicsPane([w], 'this session');
   if (econ) root.appendChild(econ);
   if (EXTRAS.id === sc.id && EXTRAS.loading)
@@ -2535,13 +2026,8 @@ function renderDetail(sc, ws) {
   const root = document.getElementById('view');
   root.querySelectorAll('.tool-map').forEach(el => el._resizeObserver?.disconnect());
   root.textContent = '';
-  // Drilling IN PLACE (MSUB) rather than jumping to another scope -- the web twin of the
-  // TUI's zoom_source/zoom_project/zoom_model. Harnesses and Projects do it only in the
-  // Machines scope (elsewhere they navigate to their own scope, which a box has no axis
-  // for). MODELS does it everywhere, because there is no model scope to navigate to:
-  // "which sessions here ran opus" is otherwise unanswerable per-scope, exactly as in the
-  // TUI -- and being the only armable dimension outside a box, the single MSUB slot is
-  // never contested there.
+  // Model drills stay in place everywhere; project/harness drills do so only inside a
+  // machine scope, matching the TUI's partition axes.
   const box = sc.kind === 'M';
   if (TAB === 'Overview') renderOverview(root, sc, ws);
   else if (TAB === 'Models') {
@@ -2556,17 +2042,10 @@ function renderDetail(sc, ws) {
     sourcesTable('t-tab-sources', ws, box ? (r => setMsub('source', r.source)) : null)));
   else if (TAB === 'Machines') root.appendChild(pane('Machines · ' + scopeLabel(sc), machinesTable('t-tab-machines', ws)));
   else if (TAB === 'Subagents') {
-    // Nodes ride along only for a session that delegated. A solo session says "no
-    // subagents" even with a target armed -- it has no tree to table, which is exactly
-    // why its what-if lives on the Overview instead (the TUI makes the same split). A
-    // session with no per-model rows has no computable baseline (whatifTotals is null),
-    // so it keeps the ordinary tree rather than quoting half a comparison.
+    // Solo sessions expose what-if only in Overview; missing model rows suppress partial comparisons.
     const nodes = DATA.nodes[sc.id];
     const tree = nodes && nodes.some(n => n.depth > 0);
     const wi = tree ? whatifTotals(sc.id) : null;
-    // The flamegraph rides ABOVE the tree on both variants: it answers "what share" where
-    // the table answers "which node, how much", and it reads recorded/estimated spend
-    // either way, so an armed target leaves it alone (the TUI splits it the same way).
     if (tree) { const fl = flamePane(nodes); if (fl) root.appendChild(fl); }
     if (!tree) root.appendChild(pane('Session tree', h('div', { class: 'hint' }, 'no subagents in this session')));
     else if (wi) root.appendChild(pane('Session tree · what-if ' + wi.target, whatifTree(nodes, wi)));
@@ -2593,19 +2072,16 @@ function renderDetail(sc, ws) {
   }
 }
 
-/* ---------- chrome ---------- */
 function renderTabs(sc, tabs) {
   const bar = document.getElementById('tabbar');
   bar.textContent = '';
   const loading = sc.kind === 's' && EXTRAS.id === sc.id && EXTRAS.loading;
   tabs.forEach(t => {
-    const ld = loading && (t === 'Turns' || t === 'Tools' || t === 'Context'); // placeholder while fetching
+    const ld = loading && (t === 'Turns' || t === 'Tools' || t === 'Context');
     const cls = (t === TAB ? 'on ' : '') + (ld ? 'ld' : '');
     bar.appendChild(h('button', { class: cls.trim() || null,
       onclick: () => { TAB = t; render(false); } }, t + (ld ? ' ⋯' : '')));
   });
-  // No trailing scope label here: it lives in the breadcrumb, and keeping it would pull
-  // the centered tab row off-center. Loading is already shown by the pulsing ⋯ tabs.
 }
 function renderCrumbs(sc) {
   const el = document.getElementById('crumbs');
@@ -2613,7 +2089,6 @@ function renderCrumbs(sc) {
   const items = [['all time', sc.kind === 'all' ? null : '#/']];
   if (sc.kind === 'p') items.push([projName(sc.project), null]);
   if (sc.kind === 'M') items.push(['machines', '#/'], [sc.machine, null]);
-  // year hop in the chain only when there's more than one year (else it's noise)
   if (sc.year && distinctYears(W).length > 1) items.push([sc.year, sc.kind === 'y' ? null : '#/y/' + sc.year]);
   if (sc.month && sc.kind !== 'm') items.push([monthLabel(sc.month), '#/m/' + sc.month]);
   else if (sc.kind === 'm') items.push([monthLabel(sc.month), null]);
@@ -2624,9 +2099,7 @@ function renderCrumbs(sc) {
     if (i) el.appendChild(h('span', { class: 'sep' }, '/'));
     el.appendChild(href ? h('a', { href }, label) : h('span', { class: 'here' }, label));
   });
-  // The in-place sub-drill (MSUB): a clearable chip, visible from any tab. It is the
-  // page's only way back out of one -- the TUI pops it with Esc, but here Esc steps out
-  // of the whole scope, so an armed model drill with no chip would be a dead end.
+  // The chip is the browser's explicit exit from an in-place drill; Esc leaves the scope.
   if (MSUB) {
     const lab = { source: 'harness', project: 'project', model: 'model' }[MSUB.dim];
     const val = MSUB.dim === 'project' ? projName(MSUB.value) : MSUB.value;
@@ -2642,10 +2115,6 @@ function chrome() {
   chips.appendChild(h('span', { class: 'chip click', title: 'Set range (R)', onclick: openRange }, 'range ', h('b', null, rangeLabel())));
   chips.appendChild(h('span', { class: 'chip' }, META.serve ? 'live · ' + META.generated : META.generated));
   if (META.demo) chips.appendChild(h('span', { class: 'chip demo' }, 'demo data'));
-  // An armed what-if target gets a chip, not a header badge: the header's numbers aren't
-  // counterfactual anywhere (the target only reprices a session's Subagents tab and its
-  // Overview), so tagging them would call recorded money a what-if. This is the page's
-  // twin of the TUI's lit `w model` footer key -- an honest "a target is set".
   if (WHATIF.model) chips.appendChild(h('span', { class: 'chip wi click', title: 'what-if target (w changes it, w again clears it)',
     onclick: openWhatif }, 'what-if ', h('b', null, WHATIF.model)));
   const right = document.getElementById('hright');
@@ -2655,7 +2124,7 @@ function chrome() {
       h('button', { class: MODE === 'real' ? 'on' : null, onclick: () => { MODE = 'real'; render(false); } }, 'actual $'),
       h('button', { class: MODE === 'api' ? 'on' : null, onclick: () => { MODE = 'api'; render(false); } }, 'what-if $')));
   }
-  if (META.demo) { /* demo costs are synthetic: neither badge is true */ }
+  if (META.demo) { }
   else if (MODE === 'api') right.appendChild(h('span', { class: 'badge est' }, 'estimated · list prices'));
   else if (!META.recordsCost) right.appendChild(h('span', { class: 'badge sub' }, '$0 recorded · subscription'));
   right.appendChild(h('button', { class: 'hbtn', title: 'Trends (T)', onclick: openTrends }, '▚ trends'));
@@ -2673,10 +2142,9 @@ function chrome() {
     + (META.demo ? ' · demo data (anonymized, rescaled)' : '');
 }
 
-/* ---------- session extras (the --serve drill-in fetch) ---------- */
 function ensureExtras(sc) {
   if (sc.kind !== 's' || !META.serve || EXTRAS.id === sc.id) return;
-  TURN_DRILL = null;  // an ordinal is only meaningful inside ONE session's prompts
+  TURN_DRILL = null;
   EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], context: null, expiries: [] };
   fetch('/api/session/' + encodeURIComponent(sc.id)).then(r => r.json()).then(x => {
     EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], context: x.context || null, expiries: x.expiries || [] };
@@ -2688,7 +2156,6 @@ function ensureExtras(sc) {
   });
 }
 
-/* ---------- Trends overlay (T): the TUI's 7-tab Trends, over the whole range ---------- */
 const trendMonths = () => [...new Set(W.map(w => w.date.slice(0, 7)))].filter(m => /^\d{4}-\d{2}$/.test(m)).sort().reverse();
 const trendWeeks = () => [...new Set(W.map(w => weekMonday(w.date)).filter(Boolean))].sort().reverse();
 const trendYears = () => distinctYears(W);
@@ -2709,7 +2176,6 @@ function providerAgg(ws) {
   }
   return [...m.values()];
 }
-/* vertical bar chart (Daily/Weekly/Monthly) -- pairs: [{label,value,tip?,nav?}] */
 function trendChart(pairs, opts = {}) {
   const VW = 1040, VH = 300, padT = 30, padB = 42, padX = 12;
   const vals = pairs.map(p => p.value);
@@ -2717,17 +2183,11 @@ function trendChart(pairs, opts = {}) {
   const gap = n > 40 ? 1.5 : 3;
   const bw = Math.max(2, Math.min(52, (VW - 2 * padX) / n - gap));
   const step = bw + gap, x0 = (VW - (n * step - gap)) / 2, plotH = VH - padT - padB;
-  // Label every bar with its own value when the bars are wide enough to fit the text
-  // without colliding; when too narrow (a fully packed month, like Weekly over many
-  // weeks) fall back to labelling just the tallest. Daily keeps bars wide by charting
-  // only its active days (trendDaily), so the common case labels every bar.
   const valueEach = step >= 38;
   const svg = s('svg', { viewBox: '0 0 ' + VW + ' ' + VH, class: 'tr-chart', role: 'img', 'aria-label': opts.aria || 'trend chart' });
   for (const f of [0.5, 1]) {
     const y = padT + (1 - f) * plotH;
     svg.appendChild(s('line', { x1: x0, y1: y, x2: VW - x0, y2: y, stroke: thc('line'), 'stroke-width': 1 }));
-    // The midline gets an axis label only when the bars aren't individually labelled;
-    // with per-bar values it's redundant and collides with the rightmost bar's label.
     if (f !== 1 && !valueEach) svg.appendChild(s('text', { x: VW - x0, y: y - 4, 'text-anchor': 'end', 'font-size': 11, fill: thc('mut'), text: moneyLabel(peak * f) }));
   }
   svg.appendChild(s('line', { x1: x0, y1: VH - padB, x2: VW - x0, y2: VH - padB, stroke: thc('axis'), 'stroke-width': 1 }));
@@ -2751,7 +2211,6 @@ function trendChart(pairs, opts = {}) {
   else summary.append(h('span', { class: 'mut' }, 'no spend in view'));
   return h('div', null, svg, summary);
 }
-/* the ◀ ▶ pager shared by Daily(month)/Weekly(week)/Calendar(year) */
 function trendNav(label, idx, count, unit) {
   if (count <= 1) return h('div', { class: 'tr-nav' }, h('span', { class: 'lbl' }, label));
   return h('div', { class: 'tr-nav' },
@@ -2765,19 +2224,13 @@ function stepTrend(unit, dir) {
   TRENDS[key] = Math.max(0, Math.min(trendCount(unit) - 1, TRENDS[key] + dir));
   renderTrends();
 }
-/* ranked horizontal bars (Models / Providers / Sources) */
-/* The active column's value per row, mirroring App._trend_sort_value: "count" is the
-   Msgs column on the model-derived tabs and Sess on the session-derived ones. */
+// `count` maps to messages or sessions according to the active ranking.
 const TREND_SORT_VAL = {
   name: r => String(r.name).toLowerCase(), cost: r => r.cost, tokens: r => r.tokens,
   count: r => (r.runs != null ? r.runs : r.sessions),
 };
-const TREND_SORT_ASC = new Set(['name']);  // natural order per column (else high→low)
-/* Rows arrive cost-ranked from the callers, so a STABLE sort on the active column
-   leaves spend as the tiebreak under every other one -- App.sort_trend_rows' two-pass
-   rule. Unlike the TUI every web ranking draws all four columns (its Models table has
-   Tokens/Msgs, where the TUI's trades them for model-name width), so no column has to
-   be withdrawn per tab; the key is still validated, not trusted. */
+const TREND_SORT_ASC = new Set(['name']);
+// Stable sorting preserves caller cost order as the secondary ranking.
 function trendSorted(rows) {
   const key = TREND_SORT_VAL[TRENDS.sort] ? TRENDS.sort : 'cost';
   const val = TREND_SORT_VAL[key], flip = TRENDS.desc ? -1 : 1;
@@ -2800,16 +2253,11 @@ function rankedBars(rows, cfg) {
     cfg.extra.map(c => h('td', { class: c.cls || null }, c.get(r)))));
   return h('table', { class: 'rank' }, h('thead', null, head), h('tbody', null, body));
 }
-/* a ranked row's sessions (the TUI's Trends drill): every session in the active
-   range that used the model / provider / source, most spend first, each row a
-   deep link into the session itself */
 function trendDrillRows() {
   const { kind, key } = TRENDS.drill, out = [];
   for (const w of W) {
     let c = 0, tok = 0;
     if (kind === 'source' || kind === 'machine' || kind === 'project') {
-      // Each names a whole-session property, so one equality test -- against the same
-      // field the ranking grouped by (w.project is already the git root, App-side).
       const v = kind === 'machine' ? (w.machine || 'unknown')
         : kind === 'project' ? (w.project || 'unknown') : (w.source || META.source);
       if (v !== key) continue;
@@ -2826,8 +2274,6 @@ function trendDrillRows() {
 }
 function trendDrill() {
   const { kind, key } = TRENDS.drill;
-  // The drill matches on the raw key, but a project key is a full path -- label it the
-  // way every other path on the page is labelled.
   const label = kind === 'project' ? shortPath(key) : key;
   const rows = trendDrillRows();
   const back = h('button', { class: 'hbtn', onclick: () => { TRENDS.drill = null; renderTrends(); } }, '← back');
@@ -2848,10 +2294,7 @@ function trendDaily() {
   const idx = Math.max(0, Math.min(TRENDS.monthIdx, months.length - 1)), month = months[idx];
   const byDay = new Map();
   W.filter(w => w.date.startsWith(month)).forEach(w => { const d = +w.date.slice(8, 10); byDay.set(d, (byDay.get(d) || 0) + cost(w)); });
-  // Chart only up to the last day that has spend, not the whole calendar month: an
-  // in-progress month (e.g. the current one) shouldn't reserve its empty trailing days,
-  // which squeeze the bars narrow. Trimming keeps them as wide as Weekly/Monthly so each
-  // bar carries its own label instead of colliding.
+  // Omit future empty days so an in-progress month does not compress its bars.
   let last = 0;
   for (let d = 1; d <= daysInMonth(month); d++) if ((byDay.get(d) || 0) > 0) last = d;
   const pairs = [];
@@ -2911,20 +2354,12 @@ function trendProviders() {
     extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Msgs', get: r => String(r.runs), cls: 'mut' }] });
 }
 function trendProjects() {
-  // Grouped on the NORMALIZED key -- App.project_rows' rule, and the one trendDrillRows
-  // matches. A session with no project was otherwise ranked under "" and drilled as
-  // "unknown", so its row showed a session count and opened an empty list. Normalizing
-  // after projectRows grouped raw keys would only move the seam: a project literally
-  // named "unknown" would then rank as a SECOND "unknown" row, and either row's drill
-  // would open both. So group by the key the drill uses, exactly as the TUI does.
+  // Ranking and drill must share the same normalized project key.
   const rows = [...groupBy(W, w => w.project || 'unknown')].map(([name, g]) =>
     ({ name, cost: sum(g, cost), sessions: g.length, tokens: sum(g, w => w.tokens) }))
     .sort((a, b) => b.cost - a.cost || b.tokens - a.tokens);
   if (!rows.length) return h('div', { class: 'hint' }, 'No sessions in the active range.');
   return rankedBars(rows, { nameLabel: 'Project',
-    // Basename first, the $HOME-folded path dim beside it -- the Projects tab's own
-    // cell. A column of full paths shares a long prefix, so plain truncation would cut
-    // off exactly the part that tells two rows apart.
     nameFmt: r => [projName(r.name), ' ', h('span', { class: 'mut' }, shortPath(r.name))],
     onRow: r => { TRENDS.drill = { kind: 'project', key: r.name }; renderTrends(); },
     extra: [{ key: 'tokens', label: 'Tokens', get: r => hTok(r.tokens), cls: 'mut' }, { key: 'count', label: 'Sess', get: r => String(r.sessions), cls: 'mut' }] });
@@ -2972,8 +2407,6 @@ function renderTrends() {
   host.appendChild(panel);
 }
 
-/* ---------- Prices overlay (P): models.dev list prices behind $ ---------- */
-// log position of a value in a column's [lo,hi] of positive rates -> heat level (matches _price_heat_level)
 function priceHeatColor(v, rng) {
   if (!rng || v <= 0) return null;
   const [lo, hi] = rng;
@@ -2981,27 +2414,19 @@ function priceHeatColor(v, rng) {
   const frac = (Math.log(v) - Math.log(lo)) / (Math.log(hi) - Math.log(lo));
   return TH.priceHeat[Math.max(0, Math.min(4, Math.round(frac * 4)))];
 }
-// (min,max) of positive values per heat column: eff + the 4 raw price rates; null == degenerate
 function priceRanges(rows) {
   const cols = [rows.map(r => r.eff).filter(v => v > 0), [], [], [], []];
   rows.forEach(r => r.price.forEach((v, i) => { if (v > 0) cols[i + 1].push(v); }));
   return cols.map(vals => { if (!vals.length) return null; const lo = Math.min(...vals), hi = Math.max(...vals); return hi > lo ? [lo, hi] : null; });
 }
-// Canonical model id, mirroring pricing.canonical_model: date/effort suffixes
-// stripped, version dots == dashes. Pins key by it, so one pin covers every
-// spelling and every route that resells the model.
+// Pin identity mirrors pricing.canonical_model but remains route-scoped.
 const canonId = m => m.toLowerCase().replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, '')
   .replace(/-(minimal|low|medium|high|xhigh)$/, '').replace(/(\d)\.(?=\d)/g, '$1-');
-// Pinned models: the browser keeps its own set in localStorage, seeded from the
-// TUI's state.json pins the first time (DATA.prices.pinned). Pins are ROW-scoped
-// "route/canon" keys -- pinning one gateway's catalog row must not light up the
-// 20 other resellers of the same model; an aggregated flat/vendor row pins the
-// routes it covers (the ones you actually use).
 let PIN_SET = null;
 function pins() {
   if (!PIN_SET) {
     let saved = null;
-    try { saved = JSON.parse(localStorage.getItem('opentab-pins') || 'null'); } catch (e) { /* file:// may block storage */ }
+    try { saved = JSON.parse(localStorage.getItem('opentab-pins') || 'null'); } catch (e) { /* file:// may deny storage */ }
     PIN_SET = new Set(Array.isArray(saved) ? saved : (DATA.prices.pinned || []));
   }
   return PIN_SET;
@@ -3010,10 +2435,8 @@ const pinKeys = r => (r.routes.length ? r.routes : ['']).map(rt => rt ? rt + '/'
 function togglePin(r) {
   const p = pins(), ks = pinKeys(r);
   if (ks.every(k => p.has(k))) ks.forEach(k => p.delete(k)); else ks.forEach(k => p.add(k));
-  try { localStorage.setItem('opentab-pins', JSON.stringify([...p])); } catch (e) { /* ditto */ }
+  try { localStorage.setItem('opentab-pins', JSON.stringify([...p])); } catch (e) { /* file:// may deny storage */ }
 }
-// The models.dev catalog travels slim ({m, r, p, u?, s?}); eff and the ~ approx flag
-// are pure functions of price + your mix, so they expand client-side, once, lazily.
 function catalogRows() {
   if (!DATA.prices.catalogRows) {
     const mix = DATA.prices.mix || [1, 0, 0, 0];
@@ -3042,22 +2465,15 @@ function renderPrices() {
   if (!PRICES.open) { host.hidden = true; host.textContent = ''; return; }
   host.hidden = false; host.textContent = '';
   let rows = priceRows().slice();
-  // The one shared rule (modelMatches, the mirror of pricing.model_matches): the model id
-  // by word-anchored fuzzy match ("opus8" narrows to the claude-opus-4-8 rows,
-  // dots==dashes), the route and the vendor label by substring. The `w` picker's filter
-  // is the same call. Bare-subsequencing either field -- what this filter used to do --
-  // made "gpt" match every Claude model sold through github-copilot, and "opus" match
-  // half the catalog (qwen3-cOder-PlUS).
   if (PRICES.q) rows = rows.filter(r => modelMatches(PRICES.q, r.model, r.routes, r.familyLabel));
-  const ASC = new Set(['model', 'eff']);  // natural order per column (else high→low)
+  const ASC = new Set(['model', 'eff']);
   const key = PRICES.sort;
   const val = { model: r => r.model.toLowerCase(), eff: r => r.eff, use: r => r.share,
     input: r => r.price[0], output: r => r.price[1], cache_read: r => r.price[2], cache_write: r => r.price[3] }[key];
   const flip = PRICES.desc ? -1 : 1;
-  if (PRICES.view === 'flat' || PRICES.view === 'all') {  // the catalog is a flat leaderboard too
+  if (PRICES.view === 'flat' || PRICES.view === 'all') {
     rows.sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * flip; });
   } else {
-    // grouped: order groups by total spend (empty/Other last), sort within each group
     const gkey = r => PRICES.view === 'family' ? (r.familyLabel || 'Other') : (r.routes[0] || '(direct)');
     const spend = new Map();
     rows.forEach(r => spend.set(gkey(r), (spend.get(gkey(r)) || 0) + r.spend));
@@ -3077,10 +2493,7 @@ function renderPrices() {
   const heatTd = (v, rng, text) => { const c = priceHeatColor(v, rng); return h('td', { style: c ? 'color:' + c + ';font-weight:600' : null }, text); };
   const body = [];
   let lastGrp = null;
-  // The catalog view holds ~4.6k rows; rendering them all would lag every filter
-  // keystroke, so cap the DOM and say what was cut (never a silent truncation).
-  // Pinned models float first in every view (the ★ shortlist stays in sight
-  // above the ~5k-row catalog), keeping the active sort within each block.
+  // Cap the catalog DOM explicitly; pinned rows remain visible above the cut.
   const isPinned = r => pinKeys(r).some(k => pins().has(k));
   rows = rows.filter(isPinned).concat(rows.filter(r => !isPinned(r)));
   const CAP = 500;
@@ -3132,7 +2545,6 @@ function renderPrices() {
 function openPrices() { PRICES.open = true; renderPrices(); }
 function closePrices() { PRICES.open = false; renderPrices(); }
 
-/* ---------- Range picker (R): scope the active set by date, client-side ---------- */
 function renderRange() {
   const host = document.getElementById('rangepick');
   if (!RANGE.pick) { host.hidden = true; host.textContent = ''; return; }
@@ -3158,8 +2570,6 @@ function renderRange() {
 function openRange() { RANGE.pick = true; renderRange(); }
 function closeRange() { RANGE.pick = false; renderRange(); }
 
-/* ---------- keyboard: the TUI keymap ---------- */
-// Which sidebar panels Tab cycles through, in order, given the data.
 function focusOrder() {
   if (BROWSE === 'projects') return ['projects'];
   if (BROWSE === 'machines') return ['machines'];
@@ -3187,16 +2597,13 @@ function sidebarList(sc) {
     const month = sc.month || (monthRows(W).length ? monthRows(W)[monthRows(W).length - 1].month : null);
     if (!month) return null;
     const days = dayRows(W.filter(w => w.date.startsWith(month))).sort((a, b) => b.day < a.day ? -1 : 1);
-    // -1 when no day is selected yet (viewing the month), so the first j/k lands
-    // on the first day instead of skipping it.
     return { rows: days.map(r => ({ go: () => go('d', r.day) })),
       index: days.findIndex(r => r.day === sc.day) };
   }
-  // Months, scoped to the selected year like the sidebar (App.months does the same).
   const selYear = scopeYear(sc);
   const src = selYear ? W.filter(w => w.date.startsWith(selYear)) : W;
   const months = monthRows(src).slice().reverse();
-  const hasAll = distinctYears(W).length <= 1;  // the "∑ all time" row is only shown then
+  const hasAll = distinctYears(W).length <= 1;
   const monthGo = months.map(r => ({ go: () => go('m', r.month) }));
   const rows = hasAll ? [{ go: () => go('', '') }, ...monthGo] : monthGo;
   const mi = months.findIndex(r => r.month === sc.month);
@@ -3210,21 +2617,15 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  // Overlay stacking order = DOM order (theme picker above the w picker above prices
-  // above trends), so the keyboard checks run top-down: whatever floats highest owns the
-  // keys. Mirrors the TUI, where handle_key checks theme_menu, then whatif_menu, then the
-  // overlay branches.
+  // Keyboard dispatch must follow visual overlay stacking order.
   if (THEMEPICK) { if (e.key === 'Escape' || e.key === 'C') closeTheme(); e.preventDefault(); return; }
-  // The `w` target picker: j/k move, Enter arms, `f` starts the filter, Tab flips to
-  // the models.dev catalog and back, Esc/q cancels (pricing unchanged). `w` advances
-  // the highlight like j, exactly as in the TUI.
   if (WHATIF.open) {
     const rows = whatifShown();
     if (e.key === 'Escape' || e.key === 'q') closeWhatif();
     else if (e.key === 'j' || e.key === 'ArrowDown' || e.key === 'w') stepWhatif(1);
     else if (e.key === 'k' || e.key === 'ArrowUp') stepWhatif(-1);
     else if (e.key === 'Tab' || e.key === 'h' || e.key === 'l' ||
-             e.key === 'ArrowLeft' || e.key === 'ArrowRight') whatifFlip();  // tabs: h/l, like everywhere
+             e.key === 'ArrowLeft' || e.key === 'ArrowRight') whatifFlip();
     else if (e.key === 'Enter') { if (rows.length) armWhatif(rows[WHATIF.i % rows.length].model); }
     else if (e.key === 'f' || e.key === '/') { const el = document.getElementById('wi-filter'); if (el) el.focus(); }
     else if (e.key === 'C') openTheme();
@@ -3238,10 +2639,8 @@ document.addEventListener('keydown', e => {
     else if (e.key === '$' && !META.demo) { MODE = MODE === 'api' ? 'real' : 'api'; render(false); }
     e.preventDefault(); return;
   }
-  // While the Trends overlay is open it owns the keyboard (its own tab/page keys).
   if (TRENDS.open) {
-    // Esc first backs out of a ranked row's sessions drill, then closes; h/l
-    // switch tabs even from inside a drill (leaving it) -- mirrors the TUI.
+    // Escape leaves an inner trend drill before closing the overlay.
     if (e.key === 'Escape') { if (TRENDS.drill) { TRENDS.drill = null; renderTrends(); } else closeTrends(); e.preventDefault(); }
     else if (e.key === 'T') { closeTrends(); e.preventDefault(); }
     else if (e.key === 'h' || e.key === 'ArrowLeft' || e.key === 'l' || e.key === 'ArrowRight') {
@@ -3287,10 +2686,7 @@ document.addEventListener('keydown', e => {
     TAB = tabs[(i + step + tabs.length) % tabs.length];
     render(false);
   } else if (e.key === 'Escape') {
-    // A drilled prompt is the innermost scope on the Turns tab, so Esc leaves it before
-    // it starts popping the scope stack -- the TUI's rule, and TRENDS.drill's above.
-    // Gated on the tab actually showing, or Esc would tear down an invisible drill from
-    // another tab and appear to do nothing.
+    // Escape leaves a visible prompt drill before popping the route scope.
     if (TURN_DRILL != null && TAB === 'Turns') { TURN_DRILL = null; render(false); e.preventDefault(); return; }
     const multiYear = distinctYears(W).length > 1;
     if (sc.kind === 's') sc.day ? go('d', sc.day) : go('', '');
@@ -3301,10 +2697,7 @@ document.addEventListener('keydown', e => {
     MODE = MODE === 'api' ? 'real' : 'api';
     render(false);
   } else if (e.key === 'w') {
-    // Arm a target model, or clear the armed one. Allowed in demo (unlike $): demo
-    // already scales every token by a hidden per-process factor, so list rates on scaled
-    // tokens recover no real dollars, while the ratio the feature exists to show stays
-    // real.
+    // Demo scaling hides absolute values but preserves the comparison ratio.
     toggleWhatif();
   } else if (e.key === 'p' && BROWSE !== 'projects') {
     setBrowse('projects');
@@ -3315,14 +2708,12 @@ document.addEventListener('keydown', e => {
   }
 });
 
-/* ---------- render ---------- */
 function render(scrollTop = true) {
   const sc = curScope();
   if (sc.kind === 'p') BROWSE = 'projects';
   else if (sc.kind === 'M') BROWSE = 'machines';
   else if (sc.kind === 'y' || sc.kind === 'm' || sc.kind === 'd') BROWSE = 'time';
-  // Keep FOCUS valid for the current mode/data (e.g. 'years' with only one year,
-  // or a stale 'projects'/'days' after a mode switch) so Tab/j/k never wedge.
+  // Revalidate transient focus after mode or dataset changes.
   const order = focusOrder();
   if (!order.includes(FOCUS)) FOCUS = order[0];
   ensureExtras(sc);
@@ -3334,31 +2725,27 @@ function render(scrollTop = true) {
   renderTabs(sc, tabs);
   renderCrumbs(sc);
   renderDetail(sc, ws);
-  renderTrends();  // keep the overlays in sync with a live $/range/theme/data change
+  renderTrends();
   renderPrices();
   renderRange();
   renderWhatif();
   renderTheme();
   if (scrollTop) window.scrollTo(0, 0);
 }
-document.getElementById('trends').addEventListener('click', closeTrends);  // click the backdrop to close
+document.getElementById('trends').addEventListener('click', closeTrends);
 document.getElementById('prices').addEventListener('click', closePrices);
 document.getElementById('rangepick').addEventListener('click', closeRange);
 document.getElementById('whatifpick').addEventListener('click', closeWhatif);
 document.getElementById('themepick').addEventListener('click', closeTheme);
-// Navigation resets the scoped table state, but keeps the active tab when it
-// still exists in the new scope (render() falls back to Overview otherwise) --
-// so month->month on the Sessions tab stays on Sessions.
+// Route changes clear scope-local state; render preserves only tabs valid in the new scope.
 window.addEventListener('hashchange', () => { resetScopeState(); render(); });
-// Theme precedence: the viewer's saved choice, else the page's baked-in default
-// (--theme / meta), else tokyo-night. Applied before the first paint so charts pick it up.
+// Apply persisted or payload theme before charts render.
 applyTheme((function () { try { return localStorage.getItem('opentab-theme'); } catch (e) { return null; } })() || META.theme || 'tokyo-night');
 render();
 """
 
 
 def render_html(payload: dict) -> str:
-    """Wrap a build_payload() dict in the complete self-contained page."""
     meta = payload.get("meta", {})
     title = "OpenTab — AI spend browser" + (" (demo)" if meta.get("demo") else "")
     blob = json.dumps(payload, separators=(",", ":")).replace("</", "<\\/")
@@ -3367,6 +2754,5 @@ def render_html(payload: dict) -> str:
     page = page.replace("__FAVICON__", _FAVICON)
     page = page.replace("__CSS__", _CSS)
     page = page.replace("__JS__", js)
-    # Payload last: session titles are user text and could contain any of the
-    # tokens above; nothing is substituted after this.
+    # User text may contain template tokens, so payload replacement must remain last.
     return page.replace("__PAYLOAD__", blob)

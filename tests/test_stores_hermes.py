@@ -1,5 +1,3 @@
-"""The Hermes Agent SQLite backend: mixed subscription/metered cost (stores/hermes.py)."""
-
 import os
 import sqlite3
 import tempfile
@@ -122,10 +120,6 @@ def test_hermes_store_loads_tokens_and_rolls_up_to_git_root():
 
 
 def test_hermes_untitled_sessions_fall_back_to_first_user_prompt():
-    # Hermes never titles api_server/voice sessions; the first real user prompt
-    # becomes the title. Injected "[ ... ]" note blocks are stripped, a voice
-    # turn's quoted transcript is mined out of its block, and a note-only first
-    # message falls through to the next user message.
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "state.db")
         _hermes_db(
@@ -175,7 +169,6 @@ def test_hermes_untitled_sessions_fall_back_to_first_user_prompt():
 
 
 def test_hermes_untitled_without_messages_table_stays_untitled():
-    # An old/partial state.db without a messages table must not crash the parse.
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "state.db")
         _hermes_db(db, [{"id": "s1", "title": "", "inp": 10, "out": 5}])
@@ -256,8 +249,6 @@ def test_hermes_store_rolls_child_session_into_parent_subtotal():
 
 
 def test_hermes_ended_at_reflects_latest_message_in_subtree():
-    # ended_at tracks the newest message anywhere in the subtree (root or
-    # subagent alike), not just the root's own started_at.
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "state.db")
         cwd = os.path.join(tmp, "project")
@@ -311,10 +302,6 @@ def test_hermes_ended_at_reflects_latest_message_in_subtree():
 
 
 def test_hermes_ended_at_is_blank_without_messages_table():
-    # An old/partial state.db without a messages table has no evidence of activity
-    # beyond the start -- ended_at goes blank (not a same-as-created_at value), so
-    # the "last_activity" sort's own empty-string check is what falls it back to
-    # created_at, not a value HermesStore fabricates here.
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "state.db")
         _hermes_db(db, [{"id": "s1", "started_at": 1750000000.0, "inp": 10, "out": 5}])
@@ -325,7 +312,6 @@ def test_hermes_ended_at_is_blank_without_messages_table():
 
 
 def test_hermes_store_rolls_grandchild_session_into_subtotal():
-    """Depth-2+ sessions must be included in aggregate totals and node list."""
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "state.db")
         cwd = os.path.join(tmp, "project")
@@ -371,7 +357,6 @@ def test_hermes_store_rolls_grandchild_session_into_subtotal():
 
 
 def test_hermes_store_splits_model_rows_by_child_model():
-    """Tokens from a child using a different model must appear in a separate model_row."""
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "state.db")
         cwd = os.path.join(tmp, "project")
@@ -559,7 +544,6 @@ def test_hermes_mixed_subscription_and_metered():
 
 
 def test_hermes_subtree_prices_each_session_independently():
-    """A metered root with a $0 subscription child: only the child stays unpriced."""
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "state.db")
         cwd = os.path.join(tmp, "proj")
@@ -607,7 +591,6 @@ def test_hermes_subtree_prices_each_session_independently():
 
 
 def test_hermes_tolerates_minimal_schema():
-    """A Hermes version missing optional columns must not crash (schema-adaptive)."""
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "state.db")
         conn = sqlite3.connect(db)
@@ -695,9 +678,7 @@ def _call_line(ts, sid, n, model="gpt-5.6-sol", provider="openai-codex", inp=0, 
 
 
 def test_hermes_turns_come_from_the_agent_log():
-    # Hermes' messages table HAS token_count and never populates it (0 of 2,474 rows
-    # on a real DB), so the per-call usage lives only in the agent log. The bracketed
-    # id joins straight to sessions.id.
+    # Hermes leaves messages.token_count empty; per-call usage comes from the agent log.
     with tempfile.TemporaryDirectory() as root:
         db = os.path.join(root, "state.db")
         _hermes_db_full(db, [{"id": "s1", "inp": 100, "out": 10, "cr": 900}])
@@ -735,9 +716,6 @@ def test_hermes_turns_come_from_the_agent_log():
 
 
 def test_hermes_turns_are_gated_per_session_by_the_rotating_log():
-    # Unlike every other backend's blanket True, this gate is per session: the log
-    # rotates, so a session older than the retained window has no turns and must show
-    # no tab rather than an empty one that looks like a parsing bug.
     with tempfile.TemporaryDirectory() as root:
         db = os.path.join(root, "state.db")
         _hermes_db_full(db, [{"id": "fresh", "inp": 10}, {"id": "aged_out", "inp": 10}])
@@ -750,8 +728,6 @@ def test_hermes_turns_are_gated_per_session_by_the_rotating_log():
 
 
 def test_hermes_turns_survive_a_missing_or_unreadable_log():
-    # No logs dir at all (a fresh install, or a DB copied elsewhere) must mean "no
-    # Turns tab", never an exception on drill-in.
     with tempfile.TemporaryDirectory() as root:
         db = os.path.join(root, "state.db")
         _hermes_db_full(db, [{"id": "s1", "inp": 10}])
@@ -761,10 +737,6 @@ def test_hermes_turns_survive_a_missing_or_unreadable_log():
 
 
 def test_hermes_turn_counter_resets_on_resume_are_all_kept():
-    # A resumed session restarts "API call #1", so the ordinal is NOT unique within a
-    # session -- measured on a real one: 231 log lines over 6 resume segments, with
-    # call #1..#7 appearing twice at different times. Deduping by the ordinal would
-    # silently drop a whole resumed segment's spend.
     with tempfile.TemporaryDirectory() as root:
         db = os.path.join(root, "state.db")
         _hermes_db_full(db, [{"id": "s1", "inp": 10}])
@@ -782,10 +754,6 @@ def test_hermes_turn_counter_resets_on_resume_are_all_kept():
 
 
 def test_hermes_reload_re_reads_the_growing_log():
-    # The gateway appends to agent.log while opentab is open, so `r` (which calls
-    # workflows()) has to drop the turn memo too. Without that the Turns tab keeps
-    # serving the calls that existed at launch while every rollup around it moves --
-    # frozen in a way that looks like the log stopped being written.
     with tempfile.TemporaryDirectory() as root:
         db = os.path.join(root, "state.db")
         _hermes_db_full(db, [{"id": "s1", "inp": 10}])
@@ -811,15 +779,7 @@ def test_hermes_reload_re_reads_the_growing_log():
 
 
 def test_hermes_turn_times_are_local_not_utc():
-    # `%(asctime)s` under a plain logging.Formatter is LOCAL time (the stdlib uses
-    # time.localtime and Hermes installs no gmtime converter), and the gateway writes
-    # that log on the machine opentab reads it from -- so the stamp is already the
-    # reader's clock and must not be converted. Shipping it as a UTC->local conversion
-    # is invisible on a UTC host and wrong by the offset everywhere else: the turn
-    # jumps ahead of prompts it actually followed and the ▸ grouping shifts by one.
-    #
-    # The prompt epoch is built from a LOCAL wall time, so this test asserts the same
-    # thing in every timezone the suite might run in.
+    # Hermes logging.Formatter timestamps are local wall time, not UTC.
     from datetime import datetime as _dt
 
     with tempfile.TemporaryDirectory() as root:
@@ -842,10 +802,6 @@ def test_hermes_turn_times_are_local_not_utc():
 
 
 def test_hermes_turns_fold_the_subagent_subtree_under_its_root():
-    # A Hermes root's ROLLUP includes its children (parent_session_id is the subagent
-    # tree and workflows() folds them in), so its Turns must too -- otherwise the tab
-    # totals less than the header above it. And a root whose own calls have rotated out
-    # while a child's survive still HAS turns, so the tab must not hide.
     with tempfile.TemporaryDirectory() as root:
         db = os.path.join(root, "state.db")
         _hermes_db_full(
@@ -891,11 +847,6 @@ def _hermes_messages(db, rows):
 
 
 def test_hermes_subtree_turns_exclude_archived_descendants():
-    # The rollup filters `archived = 0` (_select_sql), so the subtree the Turns tab
-    # draws must too: a tab summing past the header above it is unexplainable from the
-    # screen. And an archived session does not just drop out -- the recursion STOPS
-    # there, matching _parse, where a child whose parent is archived fails to resolve
-    # and becomes its own root, taking its descendants with it.
     with tempfile.TemporaryDirectory() as root:
         db = os.path.join(root, "state.db")
         _hermes_db_full(
@@ -930,10 +881,6 @@ def test_hermes_subtree_turns_exclude_archived_descendants():
 
 
 def test_hermes_turn_rows_bound_a_hostile_token_count():
-    # The log regex only promises DIGITS. A corrupt line carrying a 400-digit count
-    # parses fine and then raises OverflowError the moment pricing multiplies it by a
-    # float rate -- i.e. "$" on the Turns tab crashes the render of every session in the
-    # window over one bad line. util.safe_int is the one coercion rule for this.
     with tempfile.TemporaryDirectory() as root:
         db = os.path.join(root, "state.db")
         _hermes_db_full(db, [{"id": "s1", "inp": 10}])
@@ -961,10 +908,6 @@ def test_hermes_turn_rows_bound_a_hostile_token_count():
 
 
 def test_hermes_child_turns_group_under_the_childs_own_prompts():
-    # A Hermes subagent is a session in its own right and holds its own user messages
-    # (9 of them on the one real child in the corpus this was checked against). Walking
-    # the whole subtree against the ROOT's prompt list files the child's calls under a
-    # request that never asked for them, and lists the child's own prompts nowhere.
     from datetime import datetime as _dt
 
     def local(h, m, s):
@@ -1010,8 +953,6 @@ def test_hermes_child_turns_group_under_the_childs_own_prompts():
 
 
 def test_hermes_demo_hides_the_child_session_title_in_the_agent_column():
-    # The Agent cell is a real session TITLE on this backend (not a nickname or a role,
-    # as on Codex/omp) -- user text, on the screen demo exists to make shareable.
     with tempfile.TemporaryDirectory() as root:
         db = os.path.join(root, "state.db")
         _hermes_db_full(

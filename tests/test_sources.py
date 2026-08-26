@@ -1,5 +1,3 @@
-"""Source resolution and the path-argument routing (sources.py)."""
-
 import os
 import sqlite3
 import tempfile

@@ -13,96 +13,28 @@ from opentab.util import LazyStatusRoot, read_files_parallel, tool_rows_from_tur
 
 
 class OmpStore(PiStore):
-    """Read omp (`@oh-my-pi/pi-coding-agent`, `~/.omp/agent/sessions`, or the dir named
-    by $OMP_AGENT_DIR / --omp-dir) sessions. omp is a fork/rename of pi-agent and writes
-    the *identical* JSONL record schema (verified against the real corpus), so this is a
-    `PiStore` subclass, not a new parser -- everything not listed below (token
-    accounting, dedup by assistant `id`, the metered/subscription cost split itself, the
-    Turns/Tools opt-ins) is inherited unchanged. Four things differ:
+    """Read omp sessions using PiStore's record parser.
 
-    1. **Data directory** -- `~/.omp/agent/sessions`; resolved by the caller (like pi's
-       own `--pi-dir`), not by this class.
-    2. **Subscription detection reads SQLite, not `auth.json`.** omp has no `auth.json`;
-       login state lives in `~/.omp/agent/agent.db`'s `auth_credentials` table
-       (`provider`, `credential_type`, plus a `data` column holding LIVE OAuth
-       access/refresh tokens). `_load_oauth_providers` opens it **read-only** and
-       selects **only** `provider, credential_type` -- never `data`, never logged --
-       degrading to the inherited `_SUBSCRIPTION_MARKERS` heuristic on any error
-       (missing file, locked WAL, corrupt schema).
-    3. **Model labels are BARE, not provider-qualified.** pi records
-       `model: "moonshotai/kimi-k2.6"`; omp records `provider: "openai-codex"` and
-       `model: "gpt-5.6-sol"` as separate fields. `_model_label` (the seam pi.py
-       exposes for exactly this) joins them to `"openai-codex/gpt-5.6-sol"` -- matching
-       how `ZalyStore` spells the same model -- so the Providers rollup (which splits on
-       the `/` prefix) and the models.dev price lookup (which keys on the bare last
-       segment either way) both see a normal qualified id.
-    4. **omp has a real subagent tree; pi has none.** A session that delegates to the
-       `task` tool writes each child as its own full transcript (own `session` record,
-       own uuid, own usage) in a **directory named exactly like the spawning
-       transcript minus `.jsonl`** -- e.g. `<ts>_<uuid>.jsonl` spawns children under
-       `<ts>_<uuid>/<AgentName>.jsonl`. That transcript's own filename carries no uuid
-       at all (`PiStore._id_from_name` returns None for it), so a naive port would
-       silently drop it via the same code path pi drops a stub session -- measured on
-       the real corpus, that undercounts one session by 3.5x (255,528 recorded vs.
-       906,397 actual subtree tokens).
-
-       **Parentage is derived from the PATH, not from a uuid** (`_parent_path`), because
-       the nesting is **recursive**: omp builds a child's file as
-       `resolve(<spawning transcript minus ".jsonl">, "<child>.jsonl")` at every level
-       and walks up to 8 levels to find a root, so a *grandchild* lives at
-       `<ts>_<uuid>/Agent/Grandchild.jsonl` -- whose immediate directory is an agent
-       nickname carrying no uuid. Reading the parent off the path instead handles every
-       depth with one rule, makes a parent cycle structurally impossible (`dirname()`
-       strictly shortens), and answers the orphan case for free: a transcript whose
-       parent file is absent (deleted, rotated, or outside the batch) is simply its own
-       root, consistently in `workflows()` *and* in the `root_of`/`status_nodes` pair.
-
-       Otherwise the fold mirrors
-       `CodexStore._link_subagents`/`_fold_tree_rows`/`_descendants`: a child's own id
-       comes from its own `session` record (its filename is instead the **agent
-       label**), and folded sessions keep pi's root-vs-total split per model
-       (`cost`/`unpriced_*` cover the whole subtree, `root_cost`/`root_unpriced_*` the
-       root's own share) rather than Codex's cost-is-always-0 shape, since omp -- like
-       pi -- mixes metered and subscription routes.
-
-    Also: **title precedence.** pi has no title records and falls back to the first
-    user prompt. omp writes a `session.title` plus dedicated `title` and `title_change`
-    records; the seam `_extra_record` (a no-op in pi.py) captures all three so
-    `_finalize` can prefer, in order, the latest `title_change` > a `title` record >
-    `session.title` > the first user prompt > "(untitled)".
-
-    `reasoning` stays 0 like pi's, and this is verified, not a carried-over
-    approximation: omp's `usage.reasoningTokens` is OpenAI's `reasoning_tokens` detail,
-    a SUBSET of `output` -- proven by `input + output + cacheRead + cacheWrite ==
-    totalTokens` closing exactly *without* adding it in. Counting it again would
-    double-bill under "$", the same reasoning `CodexStore`/`ZalyStore` already document.
+    omp stores auth type in ``agent.db`` (opened read-only), records provider and model
+    separately, and persists recursively nested subagent transcripts. Parentage comes
+    from the path: a child's parent is its containing directory plus ``.jsonl``. Missing
+    parents make orphans roots. Subtree totals retain pi's metered/unpriced split, while
+    root fields retain only the root's usage. Reasoning tokens are already in output.
     """
 
     combined = False
     source_name = "Omp"
 
-    # How deep a spawn chain may nest. omp's own root-walk gives up after 8 hops, so
-    # matching it keeps a corrupted/looping layout bounded here too.
+    # Match omp's bounded root walk.
     _MAX_SPAWN_DEPTH = 8
 
     @staticmethod
     def _parent_path(path: str) -> str:
-        # **omp's own rule**, read off its source: a spawned child's transcript is
-        # `resolve(<parent session file minus ".jsonl">, "<child>.jsonl")`. Inverted,
-        # a transcript's parent is its containing directory + ".jsonl" -- and because
-        # that applies at *every* level, a grandchild sits at
-        # `<ts>_<uuid>/Agent/Grandchild.jsonl` under its delegating `Agent.jsonl`.
-        # Deriving the parent from the path (rather than hunting a uuid in the
-        # immediate dirname, which only ever matches depth 1) is what makes nesting
-        # work: at depth 2+ the dirname is an agent nickname carrying no uuid, so the
-        # uuid rule dropped the whole transcript. It also makes a cycle structurally
-        # impossible -- dirname() strictly shortens the path -- and answers the orphan
-        # case for free: no parent file on disk means this transcript IS a root.
+        # Invert omp's spawn path: resolve(parent_without_suffix, child_name).
+        # This works recursively; immediate directory names need not contain a UUID.
         return os.path.dirname(path) + ".jsonl"
 
     def _root_path(self, path: str) -> str:
-        # Walk up the spawn chain to the transcript nothing spawned -- omp's own
-        # `for (let f = 0; f < 8; f++)` root-walk, same bound.
         for _ in range(self._MAX_SPAWN_DEPTH):
             parent = self._parent_path(path)
             if not os.path.isfile(parent):
@@ -110,19 +42,12 @@ class OmpStore(PiStore):
             path = parent
         return path
 
-    # --- divergence 2: SQLite-backed oauth detection --------------------------
     def _auth_db_path(self) -> str:
-        # agent.db sits beside the sessions dir, the same relative move pi makes
-        # for auth.json.
         return os.path.join(os.path.dirname(os.path.normpath(self.root_dir)), "agent.db")
 
     def _load_oauth_providers(self) -> set[str]:
-        # omp has no auth.json; the same "which providers are a plan login, not a
-        # metered key" signal lives in agent.db's auth_credentials table. The `data`
-        # column carries LIVE OAuth tokens -- SELECT only the two columns that answer
-        # the question, and never touch it. Read-only URI open, per the repo's
-        # read-only hard constraint; any failure (missing/locked/corrupt db) degrades
-        # to the inherited marker heuristic rather than crashing.
+        # Select only auth type and provider; the adjacent data column contains secrets.
+        # Read failures degrade to the inherited marker heuristic.
         path = self._auth_db_path()
         out: set[str] = set()
         try:
@@ -140,7 +65,6 @@ class OmpStore(PiStore):
             con.close()
         return out
 
-    # --- divergence 3: provider-qualified model label -------------------------
     def _model_label(self, msg: dict) -> str:
         model = msg.get("model")
         model = model if isinstance(model, str) and model else None
@@ -152,7 +76,6 @@ class OmpStore(PiStore):
             return model
         return "unknown"
 
-    # --- title precedence (session.title / title / title_change) + effort ----
     def _extra_record(self, typ: str, o: dict, s: dict) -> None:
         # omp records the reasoning effort as its own `thinking_level_change` record
         # rather than on each message, so it is a RUNNING value the turn rows read off
@@ -170,7 +93,6 @@ class OmpStore(PiStore):
             return
         s.setdefault("title_hints", {})[typ] = title.strip()
 
-    # --- new session shape (parent/agent/children, for the subagent fold) ----
     @staticmethod
     def _new_session() -> dict:
         s = PiStore._new_session()
@@ -182,7 +104,6 @@ class OmpStore(PiStore):
         s["is_child"] = False
         return s
 
-    # --- parsing: subagent transcripts don't key by filename ------------------
     def _parse_file(self, path: str, lines: list[str], sessions: dict[str, dict]) -> None:
         # A transcript's id comes from its filename when it has one (a top-level
         # session), else from its own `session` record (a spawned child is named by
@@ -293,7 +214,6 @@ class OmpStore(PiStore):
             s["parent_id"] = parent if parent in kept else None
         return kept
 
-    # --- the subagent fold (CodexStore._link_subagents's shape, pi's cost split) --
     def _link_subagents(self, sessions: dict[str, dict]) -> None:
         for s in sessions.values():
             s["children"] = []
@@ -382,7 +302,6 @@ class OmpStore(PiStore):
             for row in rows
         )
 
-    # --- Store interface, subagent-aware ---------------------------------------
     def _auth_paths(self) -> list[str]:
         # What pi fingerprints as auth.json is agent.db here (PiStore.cache_inputs adds
         # these to the transcripts, and says why the login state has to be in there at
@@ -498,7 +417,6 @@ class OmpStore(PiStore):
             nodes = [self._demo_node(n) for n in nodes]
         return nodes
 
-    # --- the one-shot --status trio, subagent-aware ---------------------------
     def recent_roots(self) -> list[dict]:
         # Same freshness signal as PiStore (file mtime, no parse), but a subagent
         # transcript's filename carries no uuid (it's named by agent nickname), so
@@ -633,7 +551,6 @@ class OmpStore(PiStore):
             return []
         return self._tree_nodes(sessions, workflow_id)
 
-    # --- Turns/Tools, subtree-aware --------------------------------------------
     def _subtree_turns(self, workflow_id: str) -> list[dict]:
         # The root's own turn rows plus every descendant's, the child rows tagged
         # with their depth/agent -- the Turns tab's Claude/Codex sidechain pattern.

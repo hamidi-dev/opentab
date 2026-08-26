@@ -1,5 +1,3 @@
-"""The Codex CLI rollout backend: cumulative-delta tokens, spawned threads (stores/codex.py)."""
-
 import json
 import os
 import tempfile
@@ -314,9 +312,6 @@ def test_codex_turns_timeline_from_cumulative_deltas():
 
 
 def test_codex_turns_carry_the_reasoning_effort_in_force_at_each_turn():
-    # Codex writes a turn_context per turn, so effort is a RUNNING value: a /reasoning
-    # switch mid-session applies from that turn on, and every earlier turn keeps the
-    # level it actually ran at. Measured on 138 real rollouts, one switched.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         os.makedirs(root)
@@ -388,10 +383,6 @@ def test_codex_tool_breakdown_attributes_turn_deltas_to_pending_calls():
 
 
 def test_codex_spawned_threads_fold_into_a_subagent_tree():
-    # Codex's collab mode writes a spawned thread as its own rollout whose
-    # session_meta.source carries the parent thread id; it must fold under the
-    # parent (out of the workflows list, into its totals/nodes/Turns/Tools)
-    # instead of showing as an unrelated session.
     parent_sid = "11111111-1111-1111-1111-111111111111"
     child_sid = "22222222-2222-2222-2222-222222222222"
     spawn = {
@@ -450,9 +441,6 @@ def test_codex_spawned_threads_fold_into_a_subagent_tree():
 
 
 def test_codex_ended_at_reflects_the_latest_activity_in_a_spawned_thread():
-    # A spawned collab thread logging activity after the parent's own last record
-    # must bump the parent's ended_at -- the subtree-wide rollup, same as
-    # ClaudeStore's sidechain-inclusive ts_max.
     parent_sid = "11111111-1111-1111-1111-111111111111"
     child_sid = "22222222-2222-2222-2222-222222222222"
     spawn = {
@@ -515,9 +503,6 @@ def test_codex_ended_at_falls_back_to_created_at_when_nothing_later():
 
 
 def test_codex_survives_a_valid_json_line_that_is_not_an_object():
-    # `[]`, `"hello"` and `0` are all valid JSON: they pass the `except ValueError` and
-    # then raise AttributeError out of .get() -- taking down the WHOLE backend, not the
-    # one rollout. The sibling JSONL backends all guard with an isinstance check.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions", "2025", "10", "03")
         os.makedirs(root)
@@ -540,9 +525,6 @@ def test_codex_survives_a_valid_json_line_that_is_not_an_object():
 
 
 def test_codex_survives_a_token_count_json_parses_as_infinity():
-    # A cumulative total is whatever the rollout says. `1e400` is valid JSON that json
-    # maps to inf, and a bare int(inf) raises OverflowError -- an ArithmeticError, so it
-    # isn't caught as a ValueError and the whole backend dies at workflows().
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions", "2025", "10", "03")
         os.makedirs(root)
@@ -571,10 +553,7 @@ def test_codex_survives_a_token_count_json_parses_as_infinity():
 
 
 def test_codex_a_malformed_total_does_not_inflate_the_next_turn():
-    # Codex logs a CUMULATIVE total per turn and opentab takes deltas off it, so a
-    # record that can't be trusted must not become the subtrahend. Coercing its junk to
-    # 0 reads as a compaction reset and then bills the NEXT turn the whole running
-    # total: on [100, junk, 400] the last turn came out 400 instead of 300.
+    # The malformed cumulative total must not become the next delta's baseline.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions", "2025", "10", "03")
         os.makedirs(root)
@@ -667,22 +646,7 @@ def test_codex_a_missing_write_after_a_present_one_preserves_the_cumulative_base
 
 
 def test_codex_a_write_that_outgrows_its_own_turns_input_is_clamped_not_negative():
-    # The residual cost of the carry-forward above, pinned deliberately. A keyless
-    # record in the MIDDLE of a keyed file hides that turn's writes, so when the field
-    # returns its delta can exceed the input the returning turn actually reports (here:
-    # +50 input carrying a +60 write). Reads and writes are subsets of the inclusive
-    # input, so the split is clamped to that budget and the 20-token excess -- which
-    # belonged to the hidden turn and cannot be booked retroactively -- stays in
-    # uncached input. That is the deliberate trade: the per-turn identity
-    # input == uncached + read + write (and tokens_total == input + output) is what
-    # every token column, total and export is built on, while a "correct" cumulative
-    # write would have to book a NEGATIVE uncached for the turn. The excess is billed
-    # at the input rate instead of the 1.25x cache-write one, so it under-states.
-    #
-    # Unreachable in practice, and that is why it is only pinned: it needs an old
-    # writer to append to a file a newer one started. Measured over 177 real rollouts /
-    # 3,465 usage records -- zero files mix the two shapes, and every recorded
-    # cache_write is 0.
+    # A keyless middle record hides writes, so the returning delta can exceed its input.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         os.makedirs(root)
@@ -729,12 +693,6 @@ def test_codex_a_write_that_outgrows_its_own_turns_input_is_clamped_not_negative
 
 
 def test_codex_a_falsy_or_fractional_component_is_distrusted_too():
-    # The three shapes a "did safe_int give up?" predicate could not see, because it had
-    # to re-guess what safe_int had done: JSON `false` and `null` both collapse to a
-    # valid-looking 0, and a fractional 1.5 truncates to 1. Each then becomes the
-    # cumulative baseline and inflates the next turn exactly like a junk string does.
-    # (Measured on the real corpus: 3,408 token_count records, every component a plain
-    # int -- so none of these is a shape Codex actually writes.)
     for bad in (False, None, 1.5, -5, float("inf"), (1 << 53) + 1, "9007199254740993"):
         with tempfile.TemporaryDirectory() as tmp:
             root = os.path.join(tmp, "sessions", "2025", "10", "03")

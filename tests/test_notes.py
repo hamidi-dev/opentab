@@ -1,5 +1,3 @@
-"""Per-session notes: their own file, locked read-modify-write, never clobbered (notes.py)."""
-
 import json
 import os
 
@@ -21,13 +19,11 @@ def test_note_saves_to_its_own_file_and_survives_a_restart():
     session = app.current_session()
     app.set_note(session, "  ran the migration twice — my fault, not the model's  ")
 
-    # Stripped, in memory, and on disk under its session id.
     assert app.note_for("b") == "ran the migration twice — my fault, not the model's"
     assert "note saved" in app.notice
     assert ot.load_notes() == {"b": "ran the migration twice — my fault, not the model's"}
     assert os.path.basename(ot.notes_path()) == "notes.json"
 
-    # A second edit updates rather than duplicates; an empty note clears it.
     app.set_note(session, "worth it")
     assert ot.load_notes() == {"b": "worth it"}
     assert "note updated" in app.notice

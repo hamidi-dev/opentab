@@ -1,42 +1,24 @@
-"""The keymap display table: one table, two renderings.
+"""Shared key metadata for the footer and help overlay.
 
-The footer strip and the `?` overlay answer the same question -- "what can I do from
-here?" -- so they read one table, never two hand-kept lists. Each `Key` carries the
-predicate that decides whether it does anything in the current context (`when`), the
-one line the help prints, and, when it earns a place down there, its footer chip. A key
-that stops applying disappears from both at once. (The alternative -- a footer that
-computes and a help text that recites -- drifts: the footer used to offer `b mark` and
-`s sort` while the Trends overlay was open and swallowing them.)
-
-**One short line per key.** This is a cheat sheet, not a manual: you open it to find a
-key, not to read about it. The long form -- what `$` estimates, what `w` compares --
-lives in docs/keys.md, where there is room to say it properly. Anything here that needs
-a paragraph is a key that needs a better name.
-
-**The key labels are computed, never quoted.** An entry names its binding context and
-action(s) (`ctx="main"`, `actions=("sort",)`) and the label is read off the App's live
-`Keymap` -- so when keymap.conf rebinds sort to `o`, the footer chip says `o sort` and
-the help lists `o`, without either being told. A token `"action*"` prints every key
-bound to the action ("f  /"); a bare `"action"` prints the primary. The handful of
-labels that aren't bindings at all (the mouse row, the panel digits) keep a literal
-`keys` override. The same goes for summaries that mention keys: they are callables
-that ask the keymap, so the help can never advertise a key that isn't bound.
+Availability predicates keep both renderings synchronized. Labels come from the live
+binding map: bare action tokens show the primary key and ``action*`` shows every key;
+literal overrides are reserved for non-bindings such as mouse and panel labels. Keep
+summaries short; detailed behavior belongs in the key documentation.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable, NamedTuple, Union
 
-if TYPE_CHECKING:  # annotation-only: the keymap is a leaf, it must not import the App
+if TYPE_CHECKING:  # Avoid a runtime App import cycle.
     from opentab.tui.app import App
 
 Text = Union[str, Callable[["App"], str]]
-Ctx = Union[str, Callable[["App"], str]]  # a fixed context, or one the app state picks
+Ctx = Union[str, Callable[["App"], str]]
 
 
 def _keys_text(app: App, ctx: str, tokens: tuple[str, ...], between: str, within: str) -> str:
-    # Render label tokens against the live bindings: "action" -> its primary key,
-    # "action*" -> every key it answers to. An action the user unbound vanishes.
+    # Unbound actions vanish rather than advertising unusable keys.
     parts = []
     for token in tokens:
         every = token.endswith("*")
@@ -49,16 +31,16 @@ def _keys_text(app: App, ctx: str, tokens: tuple[str, ...], between: str, within
 
 class Key(NamedTuple):
     id: str
-    section: str = "global"  # "here" (context) | "nav" | "pickers" | "global"
-    ctx: Ctx = "main"  # the binding context read for labels
-    actions: tuple[str, ...] = ()  # label tokens ("sort", "filter*"); () = literal keys
-    keys: Text | None = None  # literal/callable override (mouse, panel digits)
-    summary: Text = ""  # ONE short line; a callable when it depends on where you are
-    when: Callable[[App], bool] | None = None  # None = always available
-    chip: Text | None = None  # the footer chip's WORD ("sort"); None = help-only
-    chip_actions: tuple[str, ...] | None = None  # chip key tokens; None = `actions`
-    active: Callable[[App], bool] | None = None  # footer chip lights up
-    segments: Callable[[App], list] | None = None  # composite chip (Tab yr/mo/day)
+    section: str = "global"
+    ctx: Ctx = "main"
+    actions: tuple[str, ...] = ()
+    keys: Text | None = None
+    summary: Text = ""
+    when: Callable[[App], bool] | None = None
+    chip: Text | None = None
+    chip_actions: tuple[str, ...] | None = None
+    active: Callable[[App], bool] | None = None
+    segments: Callable[[App], list] | None = None
 
     def context(self, app: App) -> str:
         return self.ctx(app) if callable(self.ctx) else self.ctx
@@ -70,22 +52,16 @@ class Key(NamedTuple):
         return self.summary(app) if callable(self.summary) else self.summary
 
     def label(self, app: App) -> str:
-        # The help overlay's key column, computed from the live bindings (or the
-        # literal override where the "keys" aren't bindings: mouse, panel digits).
         if self.keys is not None:
             return self.keys(app) if callable(self.keys) else self.keys
         return _keys_text(app, self.context(app), self.actions, between="  ", within="  ")
 
     def chip_keys(self, app: App) -> str:
-        # The chip's key part, compact: primaries joined with "/" ("h/l", "t/p/m"),
-        # a *-token's keys with "," ("f,/").
         return _keys_text(
             app, self.context(app), self.chip_actions or self.actions, between="/", within=","
         )
 
     def chip_segments(self, app: App) -> list[tuple[str, bool]]:
-        # What draw_footer paints: one segment, or several so a single token inside a
-        # hint can light up on its own ("Tab yr/mo/day").
         if self.segments is not None:
             segs = self.segments(app)
             if segs:
@@ -95,35 +71,23 @@ class Key(NamedTuple):
         word = self.chip(app) if callable(self.chip) else self.chip
         keys = self.chip_keys(app)
         if not keys and (self.chip_actions or self.actions):
-            # The action was unbound: a chip with no key is an offer nobody can take.
-            # The help overlay drops the entry the same way, so the two agree.
+            # Never offer a footer action the user explicitly unbound.
             return []
         label = f"{keys} {word}" if keys else str(word)
         return [(label, bool(self.active(app)) if self.active else False)]
 
 
-# --- where are we? ------------------------------------------------------------------
-# The overlays own the keyboard while they are open (their handlers swallow everything
-# they don't bind), so they are contexts in their own right -- not decorations on top
-# of the view underneath. `help` is not one: it is what asks the question.
-
-
-# Precedence is handle_key's, not the screen's: P opens the price table from INSIDE
-# Trends (both flags stay true) and the prices branch is checked first, so it owns the
-# keyboard. A context that claimed otherwise would advertise Trends' keys to a table
-# that swallows them.
+# Context follows handle_key precedence, not visible stacked flags. Prices can open over
+# Trends and then own the keyboard; advertising the covered overlay's keys would be wrong.
 def in_prices(app: App) -> bool:
     return bool(app.show_prices)
 
 
 def in_price_list(app: App) -> bool:
-    # The model table itself -- view/pin/select/refresh/sort/filter/export live here...
     return in_prices(app) and app.prices_model is None
 
 
 def in_price_drill(app: App) -> bool:
-    # ...and none of them do in a model's session list, which only scrolls and steps
-    # back out.
     return in_prices(app) and app.prices_model is not None
 
 
@@ -132,7 +96,6 @@ def in_trends(app: App) -> bool:
 
 
 def in_main(app: App) -> bool:
-    # The browse -> zoom -> session stack, i.e. no overlay is eating the keys.
     return not app.trends and not app.show_prices
 
 
@@ -145,14 +108,10 @@ def in_session(app: App) -> bool:
 
 
 def _sort_ctx(app: App) -> str:
-    # sort/filter/export act on the price table when it's up -- their labels must
-    # then read the [prices] bindings, not [main]'s.
     return "prices" if in_prices(app) else "main"
 
 
 def context_label(app: App) -> str:
-    # Names the "Here" section -- the same words the breadcrumb and the tabs use, so the
-    # section title reads as the place you are looking at.
     if in_price_drill(app):
         return "Prices · sessions"
     if app.show_prices:
@@ -165,9 +124,7 @@ def context_label(app: App) -> str:
     if app.view == "zoom":
         return f"zoom · {tab}"
     if app.flat_browse_mode:
-        # One flat list, and its name IS the place. Spelled per-mode once, this read
-        # "browse · Days" in Machines mode -- Time's focused panel, in a mode that has
-        # no panels -- because a second flat mode was added to the strip and not here.
+        # Flat modes have no focused sidebar panel; use the mode table's label.
         return f"browse · {app.browse_mode_spec.label}"
     return f"browse · {app.focus.capitalize()}"
 
@@ -177,20 +134,15 @@ def trend_tab(app: App) -> str:
 
 
 def _ranked_trend(app: App) -> bool:
-    # The Models / Providers / Harnesses / Machines tabs: rows, not bars. Asked of the
-    # app's own vocabulary (the tabs that have sortable COLUMNS are exactly the ranked
-    # ones), so a new ranked tab can't be added to one list and forgotten in the other.
+    # Sortable-column vocabulary is the single source for which tabs are ranked rows.
     return bool(app.trend_sort_options())
 
 
 def _trend_pager_alias(app: App) -> str:
-    # The bracket aliases for the pager, as bound ("[ ]") -- "" when unbound.
     return _keys_text(app, "trends", ("older", "newer"), between=" ", within=" ")
 
 
 def _trend_jk(app: App) -> str:
-    # down/up is the one Trends pair whose job changes per tab -- say which one it is
-    # doing (and name the aliases as they are actually bound).
     if app.trend_drill is not None:
         return "move in the list"
     if _ranked_trend(app):
@@ -205,7 +157,6 @@ def _trend_jk(app: App) -> str:
 
 
 def _chart_arrows(app: App) -> str:
-    # The focused-chart cursor keys, as bound ("← ↑ ↓ →" by default).
     return _keys_text(
         app,
         "trends.chart",
@@ -238,15 +189,13 @@ def _on_turns(app: App) -> bool:
 
 
 def _enter_opens_something(app: App) -> bool:
-    # select is the one key whose meaning IS the context: it drills from browse, opens
-    # a row on the pickerized tabs, and does nothing on Overview/Models or in a session.
     if not in_main(app):
         return False
     if app.view == "browse":
         return True
     if app.view == "zoom":
         return app.active_tab_name() in ("Sessions", "Projects", "Harnesses")
-    if _on_turns(app):  # select folds/unfolds the selected ▸ prompt group
+    if _on_turns(app):
         return True
     return False
 
@@ -264,8 +213,6 @@ def _enter_summary(app: App) -> str:
 
 
 def _aliases_summary(app: App, ctx: str, actions: tuple[str, ...], base: str) -> str:
-    # "move / scroll (↑ ↓ too)" -- the parenthetical is every SECONDARY key of the
-    # actions, so it follows a remap and vanishes when the aliases are unbound.
     extra = " ".join(lab for a in actions for lab in app.keymap.labels(ctx, a)[1:])
     return f"{base} ({extra} too)" if extra else base
 
@@ -292,9 +239,7 @@ def _mode_keys(app: App) -> str:
 
 
 def _mode_segments(app: App) -> list:
-    # "t/p/m mode", the active one lit. Walks App.BROWSE_MODES rather than naming the
-    # three actions, so a mode joins the footer with the rest of the app instead of
-    # being the one chip nobody remembered to add.
+    # Derive from BROWSE_MODES so newly registered modes reach the footer automatically.
     segs: list = []
     for i, mode in enumerate(app.BROWSE_MODES):
         if i:
@@ -318,12 +263,9 @@ def _tab_focus_segments(app: App) -> list:
     ]
 
 
-# --- the table ----------------------------------------------------------------------
-# Help renders it in section order (Here · Navigation · Pickers · Global); the footer
-# renders FOOTER_ORDER. Two orderings, one set of facts.
+# Help and footer use different orderings over the same entries.
 
 KEYS: tuple[Key, ...] = (
-    # ---- Here: the main views (browse -> zoom -> session) --------------------------
     Key(
         id="enter",
         ctx="main",
@@ -450,7 +392,6 @@ KEYS: tuple[Key, ...] = (
         section="here",
         when=lambda app: in_main(app) or in_price_list(app),
     ),
-    # ---- Here: the Trends overlay ---------------------------------------------------
     Key(
         id="trends-tabs",
         ctx="trends",
@@ -477,7 +418,7 @@ KEYS: tuple[Key, ...] = (
         actions=("down", "up"),
         summary=_trend_jk,
         section="here",
-        # Monthly has one chart and nothing to page: down/up does nothing there.
+        # Monthly has no paging dimension.
         when=lambda app: in_trends(app) and bool(_trend_jk(app)),
         chip=lambda app: "rows" if _ranked_trend(app) or app.trend_drill else "page",
     ),
@@ -509,7 +450,6 @@ KEYS: tuple[Key, ...] = (
         chip=lambda app: "back" if (app.trend_focus or app.trend_drill is not None) else "close",
         chip_actions=("back",),
     ),
-    # ---- Here: the Prices overlay ---------------------------------------------------
     Key(
         id="prices-view",
         ctx="prices",
@@ -576,7 +516,6 @@ KEYS: tuple[Key, ...] = (
         chip="close",
         chip_actions=("close",),
     ),
-    # ---- Navigation -----------------------------------------------------------------
     Key(
         id="tab-focus",
         ctx="main",
@@ -602,8 +541,7 @@ KEYS: tuple[Key, ...] = (
         keys=_mode_keys,
         summary="Time / Projects / Machines browse mode",
         section="nav",
-        # Works from a drilled-in session too (set_browse_mode snapshots it), so advertise
-        # it there -- returning to the mode lands back on that session.
+        # Mode switching snapshots drilled session state and works from a session.
         when=in_main,
         segments=_mode_segments,
         chip="mode",
@@ -637,7 +575,7 @@ KEYS: tuple[Key, ...] = (
             "pick a ▸ prompt" if _on_turns(app) else "move / scroll",
         ),
         section="nav",
-        when=lambda app: not in_trends(app),  # Trends binds down/up itself -- its own entry
+        when=lambda app: not in_trends(app),
     ),
     Key(
         id="page",
@@ -661,22 +599,14 @@ KEYS: tuple[Key, ...] = (
         summary="click selects · double-click drills · header sorts",
         section="nav",
     ),
-    # ---- Pickers --------------------------------------------------------------------
-    # The GLOBAL modal choosers, all handled in the same pre-overlay slot (they float above
-    # Trends/Prices/help): pop a list, pick one (D's is a multi-check). Context-gated pickers
-    # (s sort, L launch) stay in "Here" where they apply; F (an ssh action) stays in "Global".
+    # Global modal pickers float above overlays; context-specific pickers remain in Here.
     Key(
         id="source",
         ctx="main",
         actions=("harness",),
-        # In a fleet the harness key FILTERS by harness (keeps every machine); elsewhere
-        # it swaps the backend store. Available whenever either applies -- a fleet with a
-        # single local source still filters, so machines_present widens the gate.
         summary=lambda app: "filter harness (fleet)" if app.machines_present else "switch harness",
         section="pickers",
-        # Shown when there's actually something to do: a backend swap available, or a fleet
-        # harness filter with >=2 harnesses / one armed to clear (never a bare single-harness
-        # fleet no-op, and never an armed filter you can't reach to clear).
+        # Keep an armed fleet filter reachable to clear, but hide true no-op menus.
         when=lambda app: app.can_switch_source() or app.can_harness_filter(),
         chip=lambda app: app.harness_filter if app.harness_filter else "harness",
         active=lambda app: app.source_menu or app.harness_menu or bool(app.harness_filter),
@@ -685,8 +615,6 @@ KEYS: tuple[Key, ...] = (
         id="machine-filter",
         ctx="main",
         actions=("machine",),
-        # Twin of the harness key: not in_main-gated, floats above Trends/Prices/help
-        # (handled there in the overlay-common paths), so machines_present is the whole gate.
         summary="filter every view to one machine",
         section="pickers",
         when=lambda app: app.machines_present,
@@ -699,11 +627,7 @@ KEYS: tuple[Key, ...] = (
         actions=("whatif",),
         summary="what-if — reprice a session at one model",
         section="pickers",
-        # What-if is SESSION-scoped: an armed target only ever moves numbers on the open
-        # session's Overview and Subagents tab, so advertising it from the Months sidebar
-        # offered a key that would visibly do nothing. It stays shown while a target is
-        # armed, wherever you have wandered to -- the lit chip is both the honest "a
-        # target is armed" and the way to press w again and clear it.
+        # Session-scoped, but remain visible elsewhere while armed so it can be cleared.
         when=lambda app: in_session(app) or (in_main(app) and bool(app.whatif_model)),
         chip="model",
         active=lambda app: bool(app.whatif_model),
@@ -720,8 +644,6 @@ KEYS: tuple[Key, ...] = (
         id="demo",
         ctx="main",
         actions=("demo",),
-        # Lit, the key is a plain off switch (the $/T/P idiom), so say that rather than
-        # keep advertising the picker you already came through.
         summary=lambda app: (
             "back to real data"
             if getattr(app.store, "demo", False)
@@ -732,7 +654,6 @@ KEYS: tuple[Key, ...] = (
         chip=lambda app: "demo·on" if app.store.demo else "demo",
         active=lambda app: app.demo_menu or bool(getattr(app.store, "demo", False)),
     ),
-    # ---- Global ---------------------------------------------------------------------
     Key(
         id="range",
         ctx="main",
@@ -784,8 +705,6 @@ KEYS: tuple[Key, ...] = (
         id="refresh-machines",
         ctx="main",
         actions=("refresh_machines",),
-        # A fleet ACTION (an ssh re-fetch), not movement -- it belongs in Global with the
-        # other things that always work when a fleet is present, not under Navigation.
         summary="re-pull machine summaries over ssh",
         section="global",
         when=lambda app: in_main(app) and app.machines_present,
@@ -838,9 +757,7 @@ KEYS: tuple[Key, ...] = (
 
 BY_ID = {k.id: k for k in KEYS}
 
-# The footer's own order: motion, then what you can do here, then the globals. It is
-# spelled out rather than derived from the table, because the help reads best grouped by
-# section and the footer reads best grouped by hand.
+# Footer ordering is hand-tuned; help ordering follows sections.
 FOOTER_ORDER = (
     "tab-focus",
     "trends-close",
@@ -858,7 +775,7 @@ FOOTER_ORDER = (
     "esc",
     "max",
     "mode",
-    "machine-filter",  # both fleet-gated: shown only when a fleet is in view
+    "machine-filter",
     "refresh-machines",
     "ignore",
     "ignored",
@@ -884,7 +801,6 @@ SECTIONS = ("here", "nav", "pickers", "global")
 
 
 def sections(app: App) -> list[tuple[str, list[Key]]]:
-    # (title, entries) for the help overlay: what works here, how to move, what always works.
     titles = {
         "here": f"Here — {context_label(app)}",
         "nav": "Navigation",
@@ -900,7 +816,6 @@ def sections(app: App) -> list[tuple[str, list[Key]]]:
 
 
 def footer_parts(app: App) -> list:
-    # The chips draw_footer paints, in FOOTER_ORDER: an entry with a chip, shown here.
     parts: list = []
     for key_id in FOOTER_ORDER:
         entry = BY_ID[key_id]

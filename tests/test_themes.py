@@ -1,5 +1,3 @@
-"""The theme palettes shared by the TUI and the web browser (themes.py)."""
-
 import re
 
 import opentab as ot

@@ -1,5 +1,3 @@
-"""The CSV and JSONL request-log backends (stores/csv_source.py + stores/jsonl_source.py)."""
-
 import json
 import os
 import re
@@ -659,9 +657,6 @@ def test_jsonl_tool_field_accepts_a_list_or_delimited_string():
 
 
 def test_csv_context_curve_only_with_real_session_ids():
-    # A synthetic (date, project) session interleaves unrelated conversations, so
-    # its "curve" would be noise with fake compactions -- no Context tab. Rows
-    # with a real session_id keep it.
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "log.csv")
         _write_csv(
@@ -704,11 +699,6 @@ def test_csv_context_curve_only_with_real_session_ids():
 
 
 def test_csv_and_jsonl_coerce_a_number_that_parses_as_infinity():
-    # `1e400` is valid JSON *and* an ordinary CSV cell, and float() maps it to inf. The
-    # token coercer's int(inf) raises OverflowError -- an ArithmeticError, so `except
-    # ValueError` misses it and the backend dies at workflows(). The cost coercer is
-    # worse: max(0.0, inf) doesn't raise at all, it silently poisons every sum it
-    # reaches. Both clamp to 0 now, and the rest of the row still counts.
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "requests.csv")
         _write_csv(

@@ -1,7 +1,3 @@
-"""Per-session *worked* time: the agent's active bursts with the idle waits (you
-composing the next prompt) removed -- the helper, every backend that can measure it,
-the backends that honestly can't, and the sort/column/detail/web that surface it."""
-
 import json
 import os
 import sqlite3

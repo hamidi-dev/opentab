@@ -16,10 +16,7 @@ from opentab.util import git_root, read_files_parallel, windows_to_wsl_path
 
 
 class VscodeStore:
-    """Read GitHub Copilot Chat usage from VS Code's own chat-session store behind the
-    same interface App expects from Store: workflows(), summary(), workflow_nodes(),
-    model_breakdown(), plus the .demo/.demo_scale attributes and the Turns opt-in
-    (message_timeline/supports_turns) -- every chat request is one recorded LLM turn.
+    """Read GitHub Copilot Chat usage from VS Code's chat-session store.
 
     Where the data lives (per VS Code variant -- Code, Code - Insiders, VSCodium):
 
@@ -27,34 +24,16 @@ class VscodeStore:
         <User>/workspaceStorage/<hash>/chatSessions/<session>.json    (plain, older)
         <User>/globalStorage/emptyWindowChatSessions/<session>.json[l] (no-folder windows)
 
-    The journal format is NDJSON of patches replayed into one session object: kind 0
-    (snapshot -> v), kind 1 (set v at path k), kind 2 (append list v at path k, default
-    ["requests"]). The older plain .json is that final object directly; both shapes are
-    read (a migrated session present in both dedupes by request id, journal first).
+    Journal NDJSON replays kind 0 snapshots, kind 1 assignments, and kind 2 appends.
+    Plain JSON stores the final object. Migrated duplicates prefer journal requests.
 
-    Token accounting comes from VS Code core (chatModel.ts), which serializes per
-    request: `completionTokens` -- accumulated across *all* tool-call rounds of the turn
-    (setUsage sums per-round usage) -- and `promptTokens` plus the Copilot extension's
-    `result.metadata.{promptTokens,outputTokens,resolvedModel}` from the last round. So
-    output takes max(completionTokens, metadata.outputTokens) (the fuller figure; the
-    metadata one is a single round and undercounts agentic turns), input takes
-    max(metadata.promptTokens, promptTokens) -- the final round's full context. Caveats
-    recorded nowhere in this store: per-round prompts are not summed (a many-round turn
-    bills more input than recorded) and there is no cache read/write split, so input
-    stays one bucket. Requests with no recorded tokens (canceled/queued/errored) are
-    skipped; sessions with none at all are dropped.
+    Completion tokens accumulate across tool-call rounds; extension metadata may describe
+    only one round, so output uses their maximum. Input uses the maximum prompt figure but
+    still undercounts multi-round requests because intermediate prompts are not persisted.
+    No cache split or dollar cost is recorded; all tokens remain unpriced.
 
-    VS Code records *no* dollar cost here (`copilotCredits` counts premium requests, a
-    quota unit, not USD) -> a token-only *subscription* backend like ClaudeStore:
-    records_cost = False, recorded cost $0, every token lands in the unpriced_* splits
-    and the "$" what-if reprices at API list rates. Models are mixed-provider
-    (gpt-4.1, claude-sonnet, gemini -- resolvedModel covers the "auto" router), so ids
-    are provider-prefixed for pricing (the CsvStore pattern). The project comes from the
-    workspace's workspace.json folder/workspace URI folded to its git root (file:// and
-    vscode-remote:// both handled; under WSL a Windows drive path folds onto its /mnt
-    mount first so the walk can reach it); empty-window sessions group under
-    "(no workspace)". Title precedence: customTitle -> computedTitle -> first real user
-    prompt -> "(untitled)". No subagent tree.
+    Workspace URIs support local and remote forms; Windows paths fold to WSL mounts before
+    git-root resolution. Title precedence is custom, computed, then first prompt.
     """
 
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
@@ -64,14 +43,11 @@ class VscodeStore:
     def __init__(self, user_dirs: str | list[str], args: argparse.Namespace):
         self.user_dirs = [user_dirs] if isinstance(user_dirs, str) else list(user_dirs)
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the
-        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
-        self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
+        self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
         self._project_cache: dict[str, str] = {}  # workspaceStorage hash dir -> directory
 
-    # --- mixed-provider model ids (mirrors CsvStore/CopilotStore) -------------
     @staticmethod
     def _infer_provider(model: str) -> str:
         m = model.lower()
@@ -144,7 +120,6 @@ class VscodeStore:
         except (OverflowError, OSError, ValueError):
             return ""
 
-    # --- discovery -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
         # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
         return [path for path, _ in self._session_files()]
@@ -223,7 +198,6 @@ class VscodeStore:
             path = path[1:]
         return windows_to_wsl_path(path) or path
 
-    # --- journal replay ----------------------------------------------------------
     @classmethod
     def _replay(cls, lines) -> dict:
         # Rebuild the session object from the journal: kind 0 snapshot, kind 1 set at
@@ -309,7 +283,6 @@ class VscodeStore:
         if arr is not None:
             arr.extend(items)
 
-    # --- parsing -------------------------------------------------------------
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
             return self._sessions
@@ -479,7 +452,6 @@ class VscodeStore:
         s["total_tokens"] = sum(r["tokens_total"] for r in rows)
         s["unpriced_tokens"] = s["total_tokens"]  # all of it
 
-    # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         self._project_cache = {}
@@ -563,7 +535,6 @@ class VscodeStore:
     def _demo_node(self, n: dict) -> dict:
         return scramble_node(n, self.demo_scale, self.demo_cats)
 
-    # --- Turns tab opt-in ----------------------------------------------------
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # Chronological per-turn rows, one per chat request; the request id doubles as
         # prompt_id so each user prompt heads its own "▸" group (a VS Code turn is

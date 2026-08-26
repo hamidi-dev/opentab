@@ -1,5 +1,3 @@
-"""The models.dev catalog, canonical ids, effective price and the `$` API-equivalent costing (pricing.py)."""
-
 import json
 import os
 import sqlite3
@@ -11,7 +9,6 @@ from tests._support import _model_row, app_with, workflow
 
 
 def test_canonical_model_folds_alias_spellings():
-    # Route prefix ignored, dots == dashes, date pins and effort suffixes stripped.
     assert ot.canonical_model("anthropic/claude-sonnet-4.5") == "claude-sonnet-4-5"
     assert ot.canonical_model("claude-sonnet-4-5-20250929") == "claude-sonnet-4-5"
     assert ot.canonical_model("gpt-4o-2024-08-06") == "gpt-4o"
@@ -28,7 +25,6 @@ def test_canonical_model_folds_alias_spellings():
 
 
 def test_effective_price_blends_mix_and_flags_missing_cache_read():
-    # eff = the mix's shares priced at the model's rates, per 1M tokens.
     eff, approx = ot.effective_price((2.0, 10.0, 0.2, 0.4), (0.5, 0.5, 0.0, 0.0))
     assert eff == 6.0 and not approx
     # A cache-heavy mix is dominated by the cache-read rate.
@@ -72,8 +68,6 @@ def test_price_token_mix_folds_reasoning_into_output():
 
 
 def test_model_matches_is_the_one_rule_behind_every_model_filter():
-    # The P overlay's `f` and the `w` picker both go through pricing.model_matches, so
-    # the rules are asserted once, here.
     m = ot.model_matches
     # Model id: word-anchored fuzzy (util.anchored_fuzzy_match), and dots == dashes
     # in both directions.
@@ -100,10 +94,7 @@ def test_model_matches_is_the_one_rule_behind_every_model_filter():
 
 
 def test_api_price_helpers():
-    # input/output/cache priced per 1M, reasoning billed as output. Rates come from
-    # the bundled models.dev snapshot, which is regenerated every release -- so
-    # assert *resolution* (known models price, aliases fold, fallbacks catch), never
-    # a pinned dollar figure that would break on the next scripts/update_prices.py.
+    # Assert catalog resolution rather than release-specific dollar values.
     for name in (
         "anthropic/claude-fable-5",
         "anthropic/claude-sonnet-4-5",
@@ -132,8 +123,6 @@ def test_api_price_helpers():
 
 
 def test_local_providers_are_not_priced():
-    # Local models run on your own hardware: there is no per-token API bill, so the
-    # "$" what-if must leave them at $0 rather than inventing cloud list prices.
     for name in ("ollama/llama3.1:70b", "mlx/qwen2.5", "lmstudio/whatever", "local/foo"):
         assert ot.model_price(name) == (0.0, 0.0, 0.0, 0.0)
         assert ot.api_equivalent_cost(name, 5e6, 1e6, 0, 0, 0) == 0.0
@@ -358,11 +347,7 @@ def test_api_price_split_uses_store_root_unpriced_columns_for_same_model():
 
 
 def test_has_known_price_asks_where_the_price_came_from_not_what_it_equals():
-    # Regression: has_known_price used to compare the resolved rates against
-    # FALLBACK_PRICE, which brands any genuinely-catalogued model whose real rate card
-    # happens to equal it as "unpriced" -- dropping it from the `w` picker and offering
-    # it to a models.dev refresh that already knows it. The bundled catalog prices
-    # openai/gpt-image-1-mini at exactly FALLBACK_PRICE, so this is not hypothetical.
+    # A catalogued card may legitimately equal FALLBACK_PRICE.
     assert ot.model_price("openai/gpt-image-1-mini") == ot.pricing.FALLBACK_PRICE
     assert ot.has_known_price("openai/gpt-image-1-mini")  # catalogued -> real, priced model
     assert ot.has_known_price("anthropic/claude-opus-4.5")  # named outright
@@ -440,9 +425,6 @@ def test_model_price_uses_embedded_table_without_cache():
 
 
 def test_bundled_catalog_is_the_offline_price_source():
-    # With no user cache, everything prices off the release-bundled models.dev
-    # snapshot: every provider, so open models on paid routes resolve offline (the
-    # old embedded table covered only the big three and left them to FALLBACK_PRICE).
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         os.environ["XDG_CACHE_HOME"] = tmp
@@ -465,10 +447,7 @@ def test_bundled_catalog_is_the_offline_price_source():
 
 
 def test_price_layers_newest_fetch_wins():
-    # The cache and the bundled snapshot are ordered by fetched_at: a year-old cache
-    # must not shadow a fresher release snapshot, and a fresh refresh beats any
-    # release. (Pre-catalog behavior was "cache always wins", which inverts once the
-    # bundled layer refreshes every release.)
+    # fetched_at, not layer type, determines precedence.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         os.environ["XDG_CACHE_HOME"] = tmp
@@ -505,9 +484,7 @@ def test_price_layers_newest_fetch_wins():
 
 
 def test_legacy_flat_price_cache_still_read():
-    # A pre-catalog cache ({"models": {bare_id: [4 rates]}}) still prices lookups;
-    # the models.dev view falls back to the bundled provider tree the flat shape
-    # can't provide.
+    # The legacy flat cache has rates but no provider tree.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         os.environ["XDG_CACHE_HOME"] = tmp
@@ -642,12 +619,7 @@ def test_a_zero_rate_card_never_wins_on_being_the_vendor():
 
 
 def test_pricing_bills_long_ttl_cache_writes_at_the_long_ttl_rate():
-    # Anthropic prices a prompt-cache WRITE by how long the entry is kept: 1.25x the input
-    # rate for the 5-minute tier, 2.00x for the 1-hour one. models.dev carries ONE
-    # cache_write rate per model and for every Anthropic row it is exactly input x 1.25 --
-    # the short tier -- so opentab billed every long write at the short price. Measured on
-    # a real corpus: 91% of cache-write tokens were 1h, understating total Claude Code
-    # spend by 7.5%.
+    # models.dev carries Anthropic's 5m write rate; the 1h rate is 2x input.
     m = "anthropic/claude-opus-4-5"
     inp, _out, _cr, cw = ot.model_price(m)
     assert cw == round(inp * 1.25, 6)  # the catalog rate IS the 5m tier
@@ -714,10 +686,7 @@ def _turn(
 
 
 def test_cache_ttl_is_read_off_the_turn_not_off_a_provider_table():
-    # The tier a request bought is recorded per turn (usage.cache_creation splits the
-    # write by TTL), so it is read there rather than assumed per provider. A table would
-    # get Claude Code exactly wrong: 91.7% of its writes are the 1-hour tier, measured,
-    # so a 5-minute assumption would call every 10-minute break an expiry that never was.
+    # Cache TTL is per request, not per provider.
     assert ot.cache_ttl_seconds("anthropic/claude-opus-4-8", 900, 1000) == ot.CACHE_TTL_LONG
     assert ot.cache_ttl_seconds("anthropic/claude-opus-4-8", 0, 1000) == ot.CACHE_TTL_SHORT
     # Claude sold through a gateway keeps Anthropic's contract -- the FAMILY decides,
@@ -731,7 +700,6 @@ def test_cache_ttl_is_read_off_the_turn_not_off_a_provider_table():
 
 
 def test_cache_miss_blames_the_wait_only_when_the_gap_was_the_users():
-    # A big cached prefix, then a turn that reads none of it back and re-buys it.
     rows = [
         _turn("2026-06-10 10:00:00", read=200000, write=100000, write_1h=100000, prompt="a"),
         _turn("2026-06-10 12:00:00", write=300000, write_1h=300000, prompt="b"),  # 2h later
@@ -791,10 +759,7 @@ def test_cache_miss_separates_causes_it_must_not_blame_on_waiting():
 
 
 def test_cache_miss_names_a_reasoning_switch_instead_of_the_catch_all():
-    # "invalidated" lists four Anthropic causes (edited tools, an image, tool_choice,
-    # the thinking config) and can name none of them -- but the thinking config is the
-    # one a transcript actually records, so when the effort moved across the pair the
-    # miss gets a cause the reader can act on: it was a decision, not a mystery.
+    # The transcript exposes effort changes but not the other invalidation causes.
     hi = _turn("2026-06-10 10:00:00", read=200000, write=100000, effort="high", prompt="a")
     lo = _turn("2026-06-10 10:00:30", write=300000, effort="low", prompt="b")
     (miss,) = ot.cache_misses([hi, lo])
@@ -840,9 +805,7 @@ def test_cache_miss_names_a_reasoning_switch_instead_of_the_catch_all():
 
 
 def test_cache_miss_prices_a_provider_that_bills_no_cache_write():
-    # Claude via GitHub Copilot (and OpenAI) record cache reads but no writes, so the
-    # re-bought context comes back as plain uncached INPUT. Same subtraction, and the
-    # feature must not go quiet just because one column is always zero.
+    # Providers without cache-write accounting report the re-buy as uncached input.
     m = "github-copilot/claude-opus-4.5"
     rows = [
         _turn("2026-06-10 10:00:00", model=m, read=200000, prompt="a"),

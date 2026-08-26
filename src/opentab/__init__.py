@@ -1,24 +1,11 @@
-"""OpenTab — a lazygit-style browser for your AI coding spend.
-
-Reads OpenCode, Claude Code, Codex, Hermes, the Copilot CLI, pi-agent, omp, OpenClaw,
-Zaly, and logged-request CSVs read-only and shows cost by month / day / project /
-session / model, including the recursive subagent tree.
-
-This package is the modular form of what used to be a single ``opentab`` script.
-The top level re-exports the public API (and a few stdlib modules) so callers and
-tests can reach everything through ``opentab.<name>`` as before.
-"""
+"""Read-only browser for AI coding spend, with a compatibility re-export surface."""
 
 from __future__ import annotations
 
-# Single source of truth for the version (also read by hatchling at build time,
-# and imported by opentab.pricing / opentab.cli). Must be set before the
-# re-exports below import those modules.
+# Hatchling and importing modules read this before the re-exports below.
 __version__ = "1.18.0"
 
-# Stdlib modules re-exposed as attributes of the package. Modules are singletons,
-# so patching e.g. ``opentab.os.startfile`` is visible to every submodule that
-# imported ``os`` — which keeps the test suite's monkeypatching working.
+# Compatibility exports also keep package-level monkeypatches visible to submodules.
 import csv
 import os
 import sys
@@ -238,14 +225,8 @@ from opentab.util import (
     workflow_fuzzy_score,
 )
 
-# The web frontend is the one part of the package NOT re-exported eagerly. Its
-# http.server import costs ~13ms, which every `opentab cost` poll and every TUI
-# start paid just to have these five names on the package -- cli.web_command has
-# always imported opentab.web lazily for the same reason, so this closes the last
-# eager path to it. PEP 562: the attribute materializes on first access, so
-# `opentab.build_payload` (and patching it) works exactly as before.
-# `doctor` rides the same mechanism for the same reason: a one-shot verb nobody runs
-# in a loop has no business on the import path of one that is polled per tmux pane.
+# Keep http.server and doctor dependencies off the frequently polled cost import path.
+# PEP 562 preserves the package-level compatibility surface on first access.
 _LAZY_ATTRS = {
     "build_payload": "opentab.web",
     "html_command": "opentab.web",
@@ -255,11 +236,7 @@ _LAZY_ATTRS = {
     "build_report": "opentab.doctor",
     "doctor_command": "opentab.doctor",
 }
-# The two MODULES as well, not just the names above. `from opentab.web import ...`
-# used to bind `opentab.web` as a side effect of importing it, and callers rely on
-# that (ot.web.ReportServer, ot.webpage.render_html). Without these entries the
-# attribute exists only once something else has resolved a lazy name -- which is a
-# bug that hides, because it depends on what ran first.
+# Preserve module attributes independently of which lazy name is accessed first.
 _LAZY_MODULES = ("web", "webpage", "doctor")
 
 
@@ -273,7 +250,7 @@ def __getattr__(name: str):
         if module is None:
             raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         value = getattr(importlib.import_module(module), name)
-    globals()[name] = value  # cached, so later reads never reach __getattr__
+    globals()[name] = value
     return value
 
 
@@ -281,10 +258,7 @@ def __dir__() -> list[str]:
     return sorted({*globals(), *_LAZY_ATTRS, *_LAZY_MODULES})
 
 
-# Spelled out because a lazy name is invisible to `from opentab import *` until it
-# has been materialized: with no __all__, star-import reads the module dict and
-# would silently skip exactly the deferred names. Built from the eager surface so
-# it stays identical to what star-import exported when everything was eager.
+# Include unmaterialized lazy names in the compatibility star-import surface.
 __all__ = sorted(
     {n for n in globals() if not n.startswith("_")} | set(_LAZY_ATTRS) | set(_LAZY_MODULES)
 )

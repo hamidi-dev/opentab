@@ -14,45 +14,12 @@ from opentab.util import read_files_parallel, safe_float, safe_int, tool_rows_fr
 
 
 class OpenClawStore:
-    """Read OpenClaw gateway sessions (~/.openclaw/agents/<agent>/sessions/*.jsonl, or the
-    root named by $OPENCLAW_DIR / --openclaw-dir) behind the same four methods App expects
-    from Store, plus the .demo/.demo_scale attributes -- like the other JSONL backends.
+    """Read OpenClaw gateway NDJSON sessions.
 
-    OpenClaw is a self-hosted, multi-provider agent gateway (openai-codex, github-copilot,
-    anthropic, ollama, ...). Like pi-agent it writes a per-message `usage.cost.total`, but
-    that figure is a *list-price* estimate for **every** provider, including
-    subscription/OAuth routes (a ChatGPT-plan openai-codex turn, a Copilot turn) whose
-    marginal cost is actually $0. So the recorded cost is real spend only on **metered**
-    routes (a direct Anthropic API key, OpenRouter); a subscription route's cost is a
-    what-if estimate, not spend. Mirroring `PiStore`/`HermesStore`'s billing split, a message
-    is classed **subscription** when its provider's auth profile is an OAuth login
-    (`openclaw.json` -> auth.profiles[*].mode == "oauth", read read-only) or matches a known
-    plan marker (`_SUBSCRIPTION_MARKERS`: codex/copilot/ollama/...) -- those tokens are left
-    **unpriced** (the "$" view estimates them) while metered messages with a real cost price
-    as spend. The two accumulate independently per message, so a session (even one model)
-    mixing both routes is split correctly. Cost is therefore mixed, so -- exactly like
-    `CsvStore`/`HermesStore`/`PiStore` -- **`records_cost` is a per-instance property** (True
-    iff any *metered* message has a cost), resolved lazily: derived from a parse when one
-    has run, else by an early-exit probe on first read (never in `__init__`, so construction
-    stays free and the warm-start cache can answer it without touching the files).
-
-    Parsing: each session file is newline-delimited JSON,
-    and only `type:"message"` records with `message.role == "assistant"` and a `message.usage`
-    object carry usage; `type:"model_change"` (and `type:"custom"` + customType
-    "model-snapshot") records set the current model/provider for following messages when a
-    message omits its own. OpenClaw also writes a parallel *trace* schema
-    (session.started/model.completed/...) in **separate** files; those hold no `type:"message"`
-    record, so reading only assistant messages never double-counts.
-    Token accounting is **Anthropic-style**: `input` is already the *uncached* prompt
-    (cacheRead/cacheWrite are tracked separately, never folded in); total =
-    input + output + cacheRead + cacheWrite (a record carrying only `totalTokens` back-fills
-    the gap as output). Models are recorded bare (gpt-5.3-codex, claude-opus-4-6), so they're
-    provider-prefixed by inferred family (the `CsvStore` pattern) for pricing and the
-    Providers rollup. The **project is the agent** (finance-os, homelab, ...) -- the directory
-    under agents/ -- which is far more useful than OpenClaw's generic gateway cwd. Assistant
-    messages are deduped by their stable record `id` across a session's live + archived
-    (.jsonl.reset./.jsonl.deleted.) files. No subagent tree (every session is one depth-0
-    node); sessions with no recorded usage are dropped.
+    Assistant-message ids deduplicate live and archived files; the parallel trace schema
+    is ignored. Input is already uncached and cache tokens are separate. OpenClaw records
+    list-price cost for all routes, so OAuth/plan usage remains unpriced while metered
+    usage counts as spend. ``openclaw.json`` is read only for auth mode and provider.
     """
 
     combined = False
@@ -78,17 +45,11 @@ class OpenClawStore:
     def __init__(self, root_dir: str, args: argparse.Namespace):
         self.root_dir = root_dir
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the
-        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
-        self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
-        # openclaw.json (at the root, beside agents/) records, per auth profile, whether a
-        # provider logs in via "oauth" (a consumer plan, subscription) or a static "token"
-        # (a metered API key). Read-only; we read only the mode + provider name.
+        self._sessions: dict[str, dict] | None = None
         self._oauth_providers = self._load_oauth_providers()
         self._records_cost: bool | None = None  # resolved lazily (records_cost property)
 
-    # --- mixed-provider model ids (mirrors CsvStore) -------------------------
     @staticmethod
     def _infer_provider(model: str) -> str:
         m = model.lower()
@@ -112,7 +73,6 @@ class OpenClawStore:
         prov = cls._infer_provider(model)
         return f"{prov}/{model}" if prov else model
 
-    # --- billing classification ----------------------------------------------
     def _auth_path(self) -> str:
         # The file that decides the oauth-vs-metered split. cache_inputs() fingerprints
         # it alongside the transcripts (see there for why).
@@ -142,7 +102,6 @@ class OpenClawStore:
         text = prov + " " + (api or "").lower()
         return any(marker in text for marker in self._SUBSCRIPTION_MARKERS)
 
-    # --- small helpers -------------------------------------------------------
     @staticmethod
     def _is_session_file(name: str) -> bool:
         # Live "<id>.jsonl" plus OpenClaw's archived snapshots ("<id>.jsonl.reset.<ts>",
@@ -272,7 +231,6 @@ class OpenClawStore:
             "prompts": [],  # user messages, for the Turns tab's ▸ grouping
         }
 
-    # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
         # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore) --
         # the transcripts PLUS openclaw.json, because the oauth/metered split lives
@@ -660,7 +618,6 @@ class OpenClawStore:
             "tokens_total": acc["tokens_total"],
         }
 
-    # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         # Re-read the login state too: `r` exists to pick up changes, and a profile
@@ -740,7 +697,6 @@ class OpenClawStore:
     def _demo_node(self, n: dict) -> dict:
         return scramble_node(n, self.demo_scale, self.demo_cats)
 
-    # --- Turns tab opt-in ----------------------------------------------------
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # Chronological per-turn rows for the Turns tab (the ClaudeStore pattern,
         # on epoch-seconds timestamps): walking the two time-sorted streams in

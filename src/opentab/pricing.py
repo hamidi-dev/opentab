@@ -12,29 +12,16 @@ from datetime import datetime, timezone
 from opentab import __version__, paths
 from opentab.util import anchored_fuzzy_match
 
-# Providers whose models run on your own hardware. There is no per-token API bill,
-# so the "$" what-if view must price them at $0 (pricing them at cloud list rates
-# would invent spend that never existed). Demo mode also remaps them to a
-# recognizable cloud model so screenshots show a clean provider/model mix instead
-# of whatever local tags you happen to run.
+# Local providers have no per-token API bill; list-price mode must not invent one.
 LOCAL_PROVIDERS = frozenset(
     {"ollama", "lmstudio", "lm-studio", "llamacpp", "llama.cpp", "llama-cpp", "mlx", "local"}
 )
 
-# Per-1M-token list prices (input, output, cache_read, cache_write) powering the
-# "$" API-equivalent toggle and the P overlay. opentab ships a *bundled* models.dev
-# snapshot (src/opentab/data/models.json -- every provider, regenerated each release
-# by scripts/update_prices.py), so pricing works offline out of the box; the explicit
-# --refresh-models opt-in (or `r` in the P overlay) fetches a fresh copy into
-# the price cache ($XDG_CACHE_HOME/opentab/prices.json). Between the two layers the newest fetch wins a
-# lookup, so a stale cache never shadows a fresher release (and a fresh refresh beats
-# any release). Lookup order: bare model id in the newest layer, then the older
-# layer, then the hand-kept MODEL_PRICE_FALLBACKS (substring, to catch dotted/dated/
-# effort-suffixed ids and models too new for any snapshot), then FALLBACK_PRICE so an
-# unknown model still yields a plausible estimate, not $0. Approximate by design
-# (list prices, a point in time); real invoices differ.
+# Per-million-token list prices for API-equivalent estimates. The newest explicit
+# models.dev refresh or bundled release snapshot wins, followed by family and generic
+# fallbacks. Normal pricing remains offline and approximate.
 
-# Substring families, specific before generic (first hit wins). Hand-maintained.
+# Specific substring families must precede generic ones.
 MODEL_PRICE_FALLBACKS = (
     ("claude-3-opus", 15.0, 75.0, 1.5, 18.75),
     ("claude-3-5-haiku", 0.8, 4.0, 0.08, 1.0),
@@ -63,14 +50,10 @@ MODEL_PRICE_FALLBACKS = (
     ("gemini-2.5-flash", 0.3, 2.5, 0.03, 0.0),
     ("gemini", 1.25, 10.0, 0.125, 0.0),
 )
-FALLBACK_PRICE = (2.0, 8.0, 0.2, 0.0)  # unknown model: a mid-range estimate
+FALLBACK_PRICE = (2.0, 8.0, 0.2, 0.0)
 
-# Context-window sizes (tokens) for the session Context tab's "% of window" readout.
-# The bundled models.dev snapshot carries each model's real limit (limit.context,
-# kept by prune_models_dev); these hand-kept substring families back-fill ids too
-# new/odd for any snapshot, mirroring MODEL_PRICE_FALLBACKS (specific before
-# generic, first hit wins). Approximate by design -- a wrong window only shifts a
-# percentage readout, never a cost.
+# Context limits fall back by specific-first family when the catalog lacks an id.
+# Approximation affects only the Context percentage, never cost.
 MODEL_CONTEXT_FALLBACKS = (
     ("gpt-4o-mini", 128_000),
     ("gpt-4o", 128_000),
@@ -88,19 +71,14 @@ MODEL_CONTEXT_FALLBACKS = (
     ("llama", 131_072),
     ("claude", 200_000),
 )
-DEFAULT_CONTEXT_WINDOW = 200_000  # unknown model: the common agent-harness window
+DEFAULT_CONTEXT_WINDOW = 200_000
 
 
 def is_local_provider(name: str) -> bool:
-    # name is "provider/model"; local-hardware providers have no API token cost.
     return str(name).split("/", 1)[0].lower() in LOCAL_PROVIDERS
 
 
-# The vendor/family behind a model, inferred from the *bare* model name -- (family,
-# label, name-prefixes). Order matters only for display grouping, not matching (the
-# prefixes are disjoint). The route in a "route/model" id is how you *access* the
-# model (a gateway like github-copilot or openrouter carries many vendors), so the
-# actual vendor must come from the model name, never the prefix.
+# Infer vendor from the bare model name, never a gateway route carrying many vendors.
 _MODEL_FAMILIES = (
     ("anthropic", "Anthropic", ("claude",)),
     ("openai", "OpenAI", ("gpt", "chatgpt", "o1", "o3", "o4", "codex", "davinci", "dall-e")),
@@ -117,20 +95,8 @@ _MODEL_FAMILIES = (
 )  # fmt: skip
 _FAMILY_LABELS = {fam: label for fam, label, _p in _MODEL_FAMILIES}
 
-# models.dev provider ids for a family whose route is spelled differently from the family
-# key above (which comes from the model NAME). The two agree for anthropic/openai/google/
-# xai/meta/deepseek/mistral/cohere, so identity is the default and only the misses are
-# listed. Deliberately narrow -- a vendor owns several routes, and the wrong ones would
-# win the "vendor's own card" test for the wrong reason: alibaba-coding-plan prices its
-# models at $0 (a subscription plan, which would beat a real rate card outright),
-# alibaba-cn is a different geography at different rates, and azure is Microsoft's
-# *access* route to OpenAI's models, not the vendor's own list price.
-# Exactly ONE route per family: two routes for the same vendor are not
-# interchangeable. Zhipu is deliberately absent -- it sells GLM through both `zhipuai`
-# and `zai` at genuinely different regional rates (glm-5v-turbo is (5, 22, 1.2, 0) on
-# one and (1.2, 4, 0.24, 0) on the other), and since model_price keys by bare model id
-# it cannot tell which one the user actually bought through. Listing both would just
-# hand the choice to catalog file order, so GLM keeps the ordinary completeness rule.
+# Only unambiguous vendor-route aliases belong here. Subscription, regional, and access
+# routes are not interchangeable; ambiguous families use the normal completeness rule.
 _VENDOR_PROVIDER_IDS = {
     "qwen": ("alibaba",),
     "moonshot": ("moonshotai",),
@@ -138,9 +104,6 @@ _VENDOR_PROVIDER_IDS = {
 
 
 def model_family(name: str) -> str:
-    # The vendor family for a model id (e.g. "anthropic" for github-copilot/claude-*),
-    # inferred from the bare model name, or "" (Other) when unrecognized. See
-    # _MODEL_FAMILIES for why the route prefix is deliberately ignored.
     bare = str(name).rsplit("/", 1)[-1].lower()
     for fam, _label, prefixes in _MODEL_FAMILIES:
         if bare.startswith(prefixes):
@@ -149,15 +112,7 @@ def model_family(name: str) -> str:
 
 
 def is_vendor_route(provider_id: str, name: str) -> bool:
-    """Is this catalog route the model's OWN vendor, rather than a gateway reselling it?
-
-    The one question behind "on a cross-provider collision the model's own vendor route
-    wins over gateway resale rates". It compares a models.dev *provider id* against the
-    family inferred from the model *name*, which mostly agree -- but not always, and a
-    bare equality test silently answered "no vendor here" for every Qwen, Kimi and GLM
-    model, letting a gateway's markup win on completeness and file order instead
-    (llmgateway's qwen3-coder-plus card is 6x Alibaba's own input rate).
-    """
+    """Identify an unambiguous vendor-owned route over gateway resale cards."""
     fam = model_family(name)
     if not fam:
         return False
@@ -166,61 +121,31 @@ def is_vendor_route(provider_id: str, name: str) -> bool:
 
 
 def family_label(family: str) -> str:
-    # Human label for a family key ("anthropic" -> "Anthropic"); "" -> "Other".
     return _FAMILY_LABELS.get(family, "Other")
 
 
-# One model, many spellings: routes disagree on separators ("claude-sonnet-4.5" vs
-# "claude-sonnet-4-5"), pin releases with a date ("-20250929", "-2024-08-06"), and
-# Codex appends the reasoning effort ("gpt-5.2-xhigh") -- all the same billed model
-# at the same list price. canonical_model() folds them to one grouping key so the P
-# overlay shows one row per model instead of one per spelling.
+# Fold separator, date-pin, and reasoning-effort aliases of the same billed model.
 _MODEL_DATE_SUFFIX = re.compile(r"-(?:\d{8}|\d{4}-\d{2}-\d{2})$")
 _MODEL_EFFORT_SUFFIX = re.compile(r"-(?:minimal|low|medium|high|xhigh)$")
 
 
 def display_model(bare: str) -> str:
-    # The human spelling of a bare model id: release-date and reasoning-effort
-    # suffixes stripped, the id's own separator style kept.
     return _MODEL_EFFORT_SUFFIX.sub("", _MODEL_DATE_SUFFIX.sub("", str(bare)))
 
 
 def dots_to_dashes(text: str) -> str:
-    # Version dots normalized to dashes ("4.5" == "4-5"), so a query and the id it is
-    # matched against agree on spelling whichever way either was written.
     return re.sub(r"(?<=\d)\.(?=\d)", "-", text)
 
 
 def canonical_model(name: str) -> str:
-    # The alias-folding key for a model id (route prefix ignored): the display
-    # spelling, lowercased, with version dots normalized to dashes ("4.5" == "4-5").
     return dots_to_dashes(display_model(str(name).rsplit("/", 1)[-1].lower()))
 
 
 def model_matches(query: str, bare: str, routes: Iterable[str] = (), family: str = "") -> bool:
-    """Does `query` match this model? The one rule behind every model-list filter --
-    the P overlay's `f` and the `w` picker's, which ask the same question of the same
-    rows and must not answer it differently.
+    """Match model ids with anchored fuzzy search and route/vendor fields by substring.
 
-    Matched PER FIELD, never over the joined "route/model" string, and with a
-    different rule per field because the fields are typed differently:
-
-    * the **model id** by word-anchored fuzzy match (util.anchored_fuzzy_match):
-      a substring, or a subsequence that may scatter inside a word but only enters
-      a word at its first character. Abbreviating is the whole point ("opus48" ->
-      claude-opus-4-8, "snt45" -> claude-sonnet-4-5), and dots==dashes so "opus4.5"
-      finds "opus-4-5" -- but a BARE subsequence is a false-positive machine over
-      the 5k-row catalog: "opus" walks qwen3-cOder-PlUS, and with rows kept in
-      column order (below) instead of fzf's match-ranking, that junk sorts to the
-      top instead of out of sight;
-    * the **route** and the **vendor label** by plain substring -- these are a short
-      fixed vocabulary you type in full ("openai", "copilot"), nobody abbreviates
-      them, and the bare subsequence over them was the same machine: "gpt" walked
-      "github-copilot" (g-ithub-co-p-ilo-t) and dragged every Claude model sold
-      through Copilot into a search for GPT.
-
-    Callers keep their own row order: a filtered list still answers "which of these do
-    I lean on", so rows are never re-ranked by match quality.
+    Fields stay separate to prevent route characters from satisfying a model query.
+    Callers preserve their ranking rather than sorting by match quality.
     """
     if not query:
         return True
@@ -236,44 +161,30 @@ def model_matches(query: str, bare: str, routes: Iterable[str] = (), family: str
 def effective_price(
     price: tuple[float, float, float, float], mix: tuple[float, float, float, float]
 ) -> tuple[float, bool]:
-    # What 1M tokens of `mix` (input/output/cache-read/cache-write shares) cost at
-    # `price` -- the P overlay's single comparable "eff $/M" figure. No provider
-    # reads cache for free, so a 0 cache-read rate is a missing datum, not a
-    # discount: bill those reads at the full input rate (an upper bound) and flag
-    # the result as approximate so the UI can mark it.
+    # Missing cache-read rates fall back to input rather than pretending reads are free.
     ir, orr, crr, cwr = price
     approx = crr <= 0 < ir
     cr = ir if approx else crr
     return mix[0] * ir + mix[1] * orr + mix[2] * cr + mix[3] * cwr, approx
 
 
-# --- the models.dev catalog: bundled snapshot + optional refreshed cache -----
 # Both layers share one on-disk schema, {"source", "fetched_at", "providers":
 # {pid: {"name", "models": {mid: {"cost": [in, out, cr, cw], "status"?,
-# "limit"?}}}}} (limit = the context window in tokens):
-# the bundled file is written by scripts/update_prices.py at release time, the
-# cache by refresh_model_prices() on the explicit --refresh-models / `r` opt-in.
-# Normal runs fetch nothing; opentab stays offline and stdlib-only by default.
+# "limit"?}}}}}. Only explicit refreshes write the cache; normal runs stay offline.
 MODELS_DEV_URL = "https://models.dev/api.json"
 _MODEL_STATUSES = ("alpha", "beta", "deprecated")
-# One parsed layer: (bare-id price map, bare-id context-limit map, provider tree,
-# meta-or-None).
+# Parsed layer: prices, context limits, provider tree, metadata, vendor-route flags.
 _BUNDLED: tuple[dict, dict, dict, dict | None] | None = None
 _PRICE_CACHE: tuple[dict, dict, dict, dict | None] | None = None
 
 
 def price_cache_path() -> str:
-    # A refreshed models.dev snapshot -> XDG cache dir (regenerable via --refresh-models).
     return os.path.join(paths.cache_dir(), "prices.json")
 
 
 def prune_models_dev(data: dict) -> dict:
-    # Reduce a raw models.dev api.json to the catalog schema's "providers" tree.
-    # Only models with numeric input+output rates survive (no cost object means
-    # unpriced/local); the alpha/beta/deprecated lifecycle flag rides along so the
-    # P overlay's models.dev view can mark those rows. Keys are sorted so the
-    # bundled snapshot diffs cleanly between releases. Shared by
-    # scripts/update_prices.py (bundled snapshot) and refresh_model_prices (cache).
+    # Keep numerically priced models, lifecycle status, and context limits. Sorted keys
+    # keep generated release snapshots stable.
     providers: dict[str, dict] = {}
     if not isinstance(data, dict):
         return providers
@@ -305,7 +216,7 @@ def prune_models_dev(data: dict) -> dict:
             limit = m.get("limit")
             ctx = limit.get("context") if isinstance(limit, dict) else None
             if isinstance(ctx, (int, float)) and ctx > 0:
-                entry["limit"] = int(ctx)  # context window, for the Context tab's %
+                entry["limit"] = int(ctx)
             kept[str(mid)] = entry
         if kept:
             name = p.get("name")
@@ -317,15 +228,8 @@ def prune_models_dev(data: dict) -> dict:
 
 
 def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
-    # One catalog layer -> (bare-id price map, bare-id context-limit map, provider
-    # tree, meta, bare-id "came from the vendor's own route" map). Accepts the
-    # provider-keyed schema and the legacy flat {"models": {id: [4 rates]}} cache
-    # written before the bundled catalog existed. Both maps key by *bare* model id
-    # (last path segment, matching model_price's lookup); on a cross-provider
-    # collision the model's own vendor route wins (openrouter also lists
-    # anthropic/claude-*, often at a markup), ties to the most completely priced.
-    # The vendor map records which of those two won, because model_price needs to
-    # know whether a spelling is authoritative or merely the best resale card.
+    # Accept provider-keyed and legacy flat layers. Bare-id collisions prefer a priced
+    # vendor-owned route, then the most complete resale card; retain which route won.
     prices: dict[str, tuple[float, float, float, float]] = {}
     limits: dict[str, int] = {}
     rank: dict[str, tuple] = {}
@@ -355,11 +259,7 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
                     entry["limit"] = int(limit)
                 kept[str(mid)] = entry
                 bare = str(mid).rsplit("/", 1)[-1].lower()
-                # An all-zero card is not a rate card -- a vendor lists one for models
-                # it only sells inside a plan -- so it must not win the vendor test and
-                # shadow a route that does publish rates: zhipuai prices glm-4.7-flash
-                # at (0, 0, 0, 0) while half a dozen routes quote a real one, and a $0
-                # resolution would also make the model armable in `w` for "$0 at target".
+                # Subscription-only zero cards must not shadow published metered rates.
                 priced = sum(1 for v in row if v > 0)
                 score = (is_vendor_route(pid, bare) and priced > 0, priced)
                 if bare not in rank or score > rank[bare]:
@@ -376,7 +276,7 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
                 }
     else:
         models = data.get("models")
-        if isinstance(models, dict):  # legacy flat cache (already keyed by bare id)
+        if isinstance(models, dict):
             for mid, row in models.items():
                 if isinstance(row, (list, tuple)) and len(row) == 4:
                     try:
@@ -392,9 +292,7 @@ def _parse_catalog(data) -> tuple[dict, dict, dict, dict | None, dict]:
 
 
 def _load_bundled() -> tuple[dict, dict, dict, dict | None, dict]:
-    # Parse the release-bundled snapshot once, lazily. importlib.resources (not a
-    # path join) so a zipped install still resolves; a missing/garbled file
-    # degrades to the hand-kept fallbacks, never a crash.
+    # importlib.resources supports zipped installs; bad data degrades to fallbacks.
     global _BUNDLED
     if _BUNDLED is None:
         try:
@@ -408,7 +306,6 @@ def _load_bundled() -> tuple[dict, dict, dict, dict | None, dict]:
 
 
 def _load_price_cache() -> tuple[dict, dict, dict, dict | None, dict]:
-    # Read the user cache once, lazily; a missing/garbled file means "no overlay".
     global _PRICE_CACHE
     if _PRICE_CACHE is None:
         try:
@@ -420,24 +317,17 @@ def _load_price_cache() -> tuple[dict, dict, dict, dict | None, dict]:
 
 
 def _layers() -> list[tuple[dict, dict, dict, dict | None, dict]]:
-    # The catalog layers, newest models.dev fetch first -- the newer of the user
-    # cache and the bundled release snapshot wins a lookup, so a year-old cache
-    # can't shadow a fresher release and a fresh refresh beats any release.
-    # ISO-8601 UTC timestamps compare lexically; a tie keeps the cache first.
+    # Newest fetch wins; ISO-8601 UTC timestamps compare lexically and ties keep cache first.
     layers = [layer for layer in (_load_price_cache(), _load_bundled()) if layer[3]]
     layers.sort(key=lambda layer: str(layer[3].get("fetched_at") or ""), reverse=True)
     return layers
 
 
 def price_cache_meta() -> dict | None:
-    # Meta of the *user cache* only (gates the one-time fetch prompt).
     return _load_price_cache()[3]
 
 
 def price_source_meta() -> dict | None:
-    # The layer model_price() reads first -- what the P overlay's source line
-    # shows. kind: "cache" (a --refresh-models fetch) or "bundled" (the snapshot
-    # shipped with this release). None only when both layers are absent/garbled.
     layers = _layers()
     if not layers:
         return None
@@ -446,10 +336,7 @@ def price_source_meta() -> dict | None:
 
 
 def catalog_models() -> list[tuple[str, str, tuple[float, float, float, float], str]]:
-    # Every model in the newest layer that carries provider structure, as
-    # (provider_id, model_id, (in, out, cacheR, cacheW), status) rows -- the P
-    # overlay's models.dev view. A legacy flat cache has no provider tree, so the
-    # bundled snapshot backs the view even when a newer flat cache wins lookups.
+    # A legacy flat cache can win lookups but cannot replace the provider-tree view.
     for _prices, _limits, tree, _meta, _vendor in _layers():
         if tree:
             return [
@@ -466,10 +353,7 @@ def invalidate_price_cache() -> None:
 
 
 def refresh_model_prices(url: str = MODELS_DEV_URL, dest: str | None = None) -> tuple[int, str]:
-    # Fetch every provider's list prices from models.dev and write the local cache
-    # (same provider-keyed schema as the bundled snapshot). Returns (model_count,
-    # path); raises OSError/ValueError on network or parse failure. The one place
-    # runtime opentab touches the network -- only on explicit refresh.
+    # The only runtime network path, reached only through an explicit refresh.
     from urllib.request import Request, urlopen
 
     req = Request(url, headers={"User-Agent": f"opentab/{__version__}"})
@@ -497,37 +381,25 @@ def refresh_model_prices(url: str = MODELS_DEV_URL, dest: str | None = None) -> 
 
 
 def model_price(name: str) -> tuple[float, float, float, float]:
-    # (input, output, cache_read, cache_write) per 1M tokens for the model.
     if is_local_provider(name):
-        return (0.0, 0.0, 0.0, 0.0)  # runs on your hardware -- no per-token API bill
+        return (0.0, 0.0, 0.0, 0.0)
     mid = str(name).rsplit("/", 1)[-1].lower()
-    plain = display_model(mid)  # date-pin and effort suffix stripped, separators kept
+    plain = display_model(mid)
     for prices, _limits, _tree, _meta, vendor in _layers():
         row = prices.get(mid)
         if row is None:
-            # Nothing under this exact spelling. A harness logs the id it was given
-            # ("claude-3-5-haiku-20241022"), so fall back to the plain one before the
-            # hand-kept families -- a real rate card beats a substring guess.
+            # Prefer a real unpinned catalog card before family guesses.
             row = prices.get(plain)
             if row is not None:
                 return row
             continue
         if plain == mid or vendor.get(mid) or not model_family(mid):
-            # Nothing to fold; or this spelling IS the vendor's own card and stays
-            # authoritative even when a plainer one exists (openai prices
-            # gpt-4o-2024-05-13 at (5, 15, 0, 0), genuinely dearer than plain gpt-4o);
-            # or the vendor is one _MODEL_FAMILIES doesn't name, in which case every
-            # route looks like resale and folding would be a guess -- sakana's own
-            # fugu-ultra-20260615 card would pick up a cache-write rate it never charges.
+            # Preserve authoritative dated vendor cards; unknown vendors cannot be folded safely.
             return row
         alt = prices.get(plain)
         if alt is None:
             return row
-        # Only resale routes carry this suffixed spelling, and a gateway that lists no
-        # cache-read rate is not selling a cheaper model -- it is publishing a less
-        # complete rate card. Prefer the plain spelling when it is the vendor's own, or
-        # simply prices more of the four components; a cache-heavy agent session priced
-        # off the incomplete card came out ~82% under.
+        # Prefer vendor-owned or more complete plain cards over incomplete resale aliases.
         if vendor.get(plain) or sum(1 for v in alt if v > 0) > sum(1 for v in row if v > 0):
             return alt
         return row
@@ -535,36 +407,22 @@ def model_price(name: str) -> tuple[float, float, float, float]:
 
 
 def has_known_price(name: str) -> bool:
-    """Does this model resolve to a list price we actually know?
+    """Return whether a catalog or family rule, rather than the generic guess, priced it.
 
-    False for a local model (it runs on your hardware -- there is no API rate to know)
-    and for one that resolves to nothing better than the generic FALLBACK_PRICE: a
-    mid-range guess that exists so the "$" estimate degrades gracefully, NOT a rate
-    anyone charges. Anything the user is asked to *choose* -- the `w` what-if target --
-    must be priced for real, or the screen would quote "$2.00 at unknown (not recorded)
-    list rates", a number no price list contains. The same notion drives
-    App.unknown_priced_models (the models the price prompt offers to fetch).
-
-    It asks where the price CAME FROM, never what it equals. Comparing the resolved
-    tuple against FALLBACK_PRICE looks equivalent and isn't: real rate cards land on
-    those numbers by coincidence -- the bundled catalog prices openai/gpt-image-1-mini
-    at exactly (2, 8, 0.2, 0) -- and such a model would be branded unpriced, dropped
-    from the picker, and offered to a models.dev refresh that already knows it.
+    Compare provenance, not tuple equality: a real rate card may equal FALLBACK_PRICE.
+    Local models have no API rate and cannot be what-if targets.
     """
     if is_local_provider(name):
         return False
     mid = str(name).rsplit("/", 1)[-1].lower()
-    plain = display_model(mid)  # model_price folds to this, so it counts as named too
+    plain = display_model(mid)
     if any(mid in prices or plain in prices for prices, _limits, _tree, _meta, _v in _layers()):
-        return True  # the catalog names it outright
-    return any(needle in mid for needle, *_p in MODEL_PRICE_FALLBACKS)  # a hand-kept family
+        return True
+    return any(needle in mid for needle, *_p in MODEL_PRICE_FALLBACKS)
 
 
 def model_context_window(name: str) -> int:
-    # The model's context-window size in tokens, for the Context tab's "% of
-    # window" readout. Same resolution order as model_price (bare id in the newest
-    # catalog layer first), backed by the hand-kept family fallbacks; local models
-    # have windows too, so there is no is_local_provider short-circuit here.
+    # Local models still have context windows, so unlike price resolution they do not short-circuit.
     mid = str(name).rsplit("/", 1)[-1].lower()
     for _prices, limits, _tree, _meta, _vendor in _layers():
         if mid in limits:
@@ -574,50 +432,24 @@ def model_context_window(name: str) -> int:
     )
 
 
-# The token types a cost decomposes into, in api_equivalent_cost's argument order --
-# the labels the Token economics box and its web twin read. Reasoning bills at the
-# output rate but stays its own row: "you paid $57 to think" is exactly what folding it
-# into Output would hide.
-#
-# "Uncached input", not "Input": the backends report input_tokens as the RESIDUAL after
-# cache accounting -- the slice of the prompt that was neither read from nor written to
-# the cache -- so the three input-side rows are disjoint and only their sum is "what you
-# sent". A caching agent puts its last breakpoint at the end of the newest turn, which
-# leaves this row at a couple of tokens per request while the real new material lands in
-# Cache write. Labelled "Input" it reads as "everything I sent", and a 774-token row
-# next to a 107M-token cache read looks like a bug in us rather than the point of the
-# chart.
+# Argument-order labels. Input is the uncached residual, disjoint from cache reads/writes;
+# reasoning bills at output rates but remains visible as its own category.
 TOKEN_TYPES = ("Uncached input", "Output", "Reasoning", "Cache read", "Cache write")
 
 
-# Anthropic prices a prompt-cache WRITE by how long the entry is kept: the 5-minute
-# tier costs 1.25x the input rate, the 1-hour tier 2.00x. models.dev carries a single
-# cache_write rate per model, and for every Anthropic row it is exactly input x 1.25 --
-# the 5-minute tier -- so the long tier has to be derived.
+# models.dev carries Anthropic's 5-minute write rate; derive the 2x-input one-hour tier.
 CACHE_WRITE_1H_MULTIPLIER = 2.0
 
 
 def cache_write_1h_price(name: str) -> float:
-    """Per-1M rate for a 1-HOUR-TTL prompt-cache write.
+    """Derive Anthropic's one-hour write rate from input, never below the short tier.
 
-    Derived from the INPUT rate, not by scaling cache_write: a catalog row that lists
-    no cache_write (or 0) would then make hour-long writes silently free, whereas the
-    input rate is the one number every priced row carries. A gateway's markup rides
-    along either way, since a reseller marks up input too. Never below the 5-minute
-    rate, so a strange rate card cannot make the longer TTL look cheaper.
+    Family gating prevents a supplied TTL count from inflating another vendor's writes.
+    Extend catalog pruning before replacing this with a published one-hour field.
     """
-    # Gated on the vendor family, not on "the caller passed a 1h count": TTL-tiered
-    # cache writes are an Anthropic pricing rule, and nothing should be able to inflate
-    # another vendor's writes by handing this a number. model_family reads the bare
-    # model name, so a gateway route (github-copilot/claude-*, us.anthropic.*) still
-    # resolves to anthropic.
-    #
-    # Derivation, not lookup: prune_models_dev keeps only (input, output, cache_read,
-    # cache_write), so even if models.dev later publishes a real 1h rate it would be
-    # dropped before reaching here -- extend that pruning first if it ever does.
     inp, _out, _cr, cw = model_price(name)
     if model_family(name) != "anthropic" or not inp:
-        return cw  # not TTL-tiered, or unpriced/local: don't invent a rate
+        return cw
     return max(inp * CACHE_WRITE_1H_MULTIPLIER, cw)
 
 
@@ -630,18 +462,11 @@ def api_equivalent_cost(
     cache_write: float,
     cache_write_1h: float = 0.0,
 ) -> float:
-    # What this usage would cost at API list prices. Reasoning tokens bill as
-    # output; cache reads/writes at their own discounted/surcharged rates.
-    #
-    # cache_write is the TOTAL written; cache_write_1h names the 1-hour-TTL SUBSET of
-    # it, billed at the higher long-TTL rate. Keeping it a subset (rather than a
-    # sixth additive token type) is what makes this safe to add: every token column,
-    # total and export keeps its meaning, and the default 0.0 leaves every caller
-    # that cannot see a TTL split -- which is every backend except Claude Code -- on
-    # exactly the arithmetic it had before.
+    # ``cache_write_1h`` replaces the rate for a subset of total writes; it is not an
+    # additive sixth token type. Reasoning bills at the output rate.
     ir, orr, crr, cwr = model_price(name)
     cost = inp * ir + (out + reasoning) * orr + cache_read * crr
-    long = min(max(cache_write_1h, 0.0), cache_write)  # clamp: a bad split can't distort
+    long = min(max(cache_write_1h, 0.0), cache_write)
     if long:
         cost += (cache_write - long) * cwr + long * cache_write_1h_price(name)
     else:
@@ -649,45 +474,23 @@ def api_equivalent_cost(
     return cost / 1e6
 
 
-# --- cache misses: what a context you had to buy twice cost -------------------
-#
-# A provider caches the prompt prefix and bills a hit at a tenth of the input rate. Let
-# the entry die and the next request re-pays for the SAME context -- at the write rate
-# where writes are billed (Anthropic direct), at the plain input rate where they are not
-# (Claude via GitHub Copilot, OpenAI). Either way it is money for something you already
-# bought, and unlike almost everything else opentab reports, it was avoidable.
-#
-# The clock is the gap between CONSECUTIVE REQUESTS, not since your last message: an
-# entry "is refreshed for no additional cost each time the cached content is used"
-# (Anthropic's prompt-caching docs), so an agent grinding away for two hours keeps its
-# own cache alive the whole time and owes nothing. What kills it is a quiet stretch.
-CACHE_TTL_SHORT = 300  # the default ephemeral tier, and what every gateway resells
-CACHE_TTL_LONG = 3600  # the "1h" tier, opted into per request -- see cache_ttl_seconds
-# Below this there was no meaningful cache to lose. Comfortably over the largest
-# documented minimum cacheable prompt (4,096 tokens), so a prefix that never qualified
-# for caching in the first place is not reported as a lost one.
+# Cache lifetime is measured between consecutive requests because hits refresh the entry.
+CACHE_TTL_SHORT = 300
+CACHE_TTL_LONG = 3600
+# Ignore prefixes below documented cacheability thresholds.
 CACHE_MISS_MIN_PREFIX = 5000
-CACHE_MISS_COLD_RATIO = 0.5  # read back less than half the prefix -> it was not reused
-CACHE_MISS_KEPT_RATIO = 0.6  # below this the window shrank: a compaction, not a loss
+CACHE_MISS_COLD_RATIO = 0.5
+CACHE_MISS_KEPT_RATIO = 0.6
 
 
 def cache_ttl_seconds(name: str, cache_write_1h: float = 0.0, cache_write: float = 0.0):
-    """The lifetime a cache entry for `name` was actually bought with, or None.
+    """Return Anthropic's bought cache lifetime, or None for opportunistic providers.
 
-    None means the provider publishes no lifetime, and is the important return: measured
-    over 45k turn pairs, Anthropic-family models fall off a CLIFF (100% of entries alive
-    at 55-60 minutes on the 1h tier, 23% past it; 85% at 4-5 minutes on the short tier,
-    20% past it), while OpenAI's decays smoothly with no edge anywhere -- 84% at 4-5
-    minutes, 61% at 10-30, 44% at 30-55. Their cache is opportunistic, so there is no
-    promise to have missed and no honest way to call a gap "too long". Gated on the model
-    FAMILY, never the route: Claude sold through a gateway keeps Anthropic's contract.
+    Gate by model family rather than access route so gateway-sold Claude keeps its TTL.
     """
     if model_family(name) != "anthropic":
         return None
-    # Only Anthropic's own logs record the tier (usage.cache_creation splits the write
-    # by TTL). Take the majority tier of what this turn wrote; a backend that normalizes
-    # the split away reports 0 and lands on the short tier, which is the default a
-    # request gets when it does not ask for "1h".
+    # Use the majority recorded tier; normalized-away splits imply the default short tier.
     return CACHE_TTL_LONG if cache_write_1h > cache_write * 0.5 else CACHE_TTL_SHORT
 
 
@@ -695,37 +498,24 @@ def cache_ttl_seconds(name: str, cache_write_1h: float = 0.0, cache_write: float
 class CacheMiss:
     """One turn that paid again for a context the previous turn had already cached."""
 
-    index: int  # position in the turn rows, so a renderer can anchor a marker
-    cause: str  # see CACHE_MISS_CAUSES
-    idle: float  # seconds since the previous request -- the gap that killed it
-    ttl: int  # the lifetime it was bought with (0 when the provider publishes none)
-    repaid: int  # tokens bought a second time
-    cost: float  # dollars those tokens cost ABOVE what a cache hit would have
-    # What changed, when the cause can name it ("high → low" for "reasoning"). Kept
-    # generic rather than a pair of effort fields: a later cause that can point at its
-    # own trigger writes the same slot instead of growing the dataclass again.
+    index: int
+    cause: str
+    idle: float
+    ttl: int
+    repaid: int
+    cost: float
     detail: str = ""
 
 
-# Ordered by how much the reader can do about it. Only "waited" and "reasoning" are the
-# user's own doing, and separating them is the whole point: a marker that blames you for
-# a build that ran long, or for a tool change that invalidated the prefix, teaches you to
-# ignore the marker.
+# Order causes by user actionability; do not blame long-running agents for human delay.
 CACHE_MISS_CAUSES = ("waited", "reasoning", "agent", "invalidated", "compacted", "switched")
 
 
 def cache_misses(rows) -> list[CacheMiss]:
-    """Every turn in `rows` (a session's Turns rows) that re-bought its context.
+    """Find main-thread turns that re-bought context using the shared turn-row shape.
 
-    Backend-agnostic on purpose: every backend's turn rows already carry cache_read,
-    cache_write, input, model_name and a canonical "YYYY-MM-DD HH:MM:SS" local time, so
-    this reads the same on OpenCode, Claude Code, Codex, pi, omp, OpenClaw, Zaly and the
-    request logs without any of them growing a field.
-
-    Subagent rows are not compared against the main thread -- they run in their own
-    context windows, so their traffic neither loses nor refreshes the main thread's
-    entry -- but their TIMESTAMPS are used, because a subagent grinding through the gap
-    means the human was not the one keeping the session idle.
+    Subagent windows are not compared, but their timestamps distinguish agent work from
+    human idle time.
     """
     main = [(i, r) for i, r in enumerate(rows) if not r.get("depth")]
     busy = sorted(t for t in (_row_epoch(r) for r in rows if r.get("depth")) if t is not None)
@@ -733,20 +523,15 @@ def cache_misses(rows) -> list[CacheMiss]:
     for (_pi, prev), (ci, cur) in zip(main, main[1:]):
         prefix = _int(prev.get("cache_read")) + _int(prev.get("cache_write"))
         if prefix < CACHE_MISS_MIN_PREFIX:
-            continue  # nothing worth caching was alive
+            continue
         if _int(cur.get("cache_read")) >= prefix * CACHE_MISS_COLD_RATIO:
-            continue  # it read the prefix back: a hit, whatever the gap
+            continue
         write, inp = _int(cur.get("cache_write")), _int(cur.get("input"))
         repaid = min(prefix, write + inp)
         if repaid <= 0:
             continue
         model = cur.get("model_name") or ""
-        # The TTL of the entry that DIED, so it is read off PREV -- the turn that created
-        # or last refreshed it -- never off `cur`, which is re-buying the context and may
-        # well be writing a different tier. Reading it from cur got the verdict wrong on
-        # 5.5% of cold turns in a real corpus, both ways: a 1h entry with 50 minutes left
-        # was called expired because cur happened to write the 5m tier, and a genuinely
-        # dead 5m entry was excused because cur wrote a 1h one.
+        # The previous turn owns the expired entry's TTL; the current turn may buy another tier.
         ttl = cache_ttl_seconds(
             prev.get("model_name") or model,
             _int(prev.get("cache_write_1h")),
@@ -770,46 +555,34 @@ def cache_misses(rows) -> list[CacheMiss]:
 
 
 def _effort(row) -> str:
-    # The reasoning level a turn ran at, "" when its backend records none.
     return str(row.get("effort") or "").strip()
 
 
 def _miss_cause(prev, cur, prefix, repaid, idle, ttl, busy, a, b) -> str:
     if (cur.get("model_name") or "") != (prev.get("model_name") or ""):
-        return "switched"  # a different model cannot read another's cache
+        return "switched"
     if _int(cur.get("cache_read")) + repaid < prefix * CACHE_MISS_KEPT_RATIO:
-        return "compacted"  # the window was rebuilt smaller, not lost to time
+        return "compacted"
     if ttl is None or idle <= ttl:
-        # Alive by the clock, so something changed the prefix instead. Anthropic lists
-        # the causes: edited tool definitions, an image added or removed, a changed
-        # tool_choice or thinking config. Of those, the thinking config is the one the
-        # transcript actually records (Claude's per-record `effort`, Codex's
-        # turn_context, omp's thinking_level_change, zaly's session-settings), so when
-        # the level moved across this pair the prefix has a NAMED cause instead of the
-        # catch-all -- and unlike the rest of that list it is a choice the reader made
-        # and can price. Both sides must be recorded: an absent level on one side is a
-        # backend that stopped writing the field, not a switch.
+        # A recorded effort change identifies one prefix invalidation cause. Require both
+        # sides so a backend omitting the field is not misclassified as a user switch.
         if _effort(cur) and _effort(prev) and _effort(cur) != _effort(prev):
             return "reasoning"
         return "invalidated"
     if a is not None and b is not None and any(a < t < b for t in busy):
-        return "agent"  # a subagent was working through the gap
+        return "agent"
     if cur.get("prompt_id") == prev.get("prompt_id"):
-        return "agent"  # same prompt still running: a long tool call or build, not you
-    return "waited"  # the gap ended on a NEW prompt: the follow-up came too late
+        return "agent"
+    return "waited"
 
 
 def _repay_cost(model: str, repaid: int, write: int, write_1h: int) -> float:
-    # What the re-bought tokens cost above a cache hit. They arrive either as a cache
-    # write (billed at 1.25x input, 2x on the 1h tier) or as plain uncached input,
-    # depending on whether the provider bills writes at all -- so bill the write part as
-    # a write and the remainder as input, and subtract what a hit would have cost.
+    # Bill re-bought writes and uncached input at their own rates, then subtract a hit.
     ir, _out, crr, cwr = model_price(model)
     w = min(write, repaid)
     w1h = min(write_1h, w)
     paid = (w - w1h) * cwr + w1h * cache_write_1h_price(model) + (repaid - w) * ir
-    # A missing cache-read rate is not free reads (effective_price's rule): fall back to
-    # the input rate, which reports no saving rather than inventing a whole-prefix one.
+    # A missing cache-read rate falls back to input rather than inventing free hits.
     return max(0.0, paid - repaid * (crr if crr > 0 else ir)) / 1e6
 
 
@@ -821,12 +594,7 @@ def _int(v) -> int:
 
 
 def _row_epoch(row):
-    # Turn rows keep only the canonical local "YYYY-MM-DD HH:MM:SS" -- every backend
-    # converts to it and drops the raw stamp, including two (VS Code, the CSV log) that
-    # never had one -- so the gap is measured off that. Local time makes a DST shift
-    # worth exactly one hour, twice a year, on whichever turn spans it; the alternative
-    # is a new epoch field in nine stores to fix a handful of turns, which is why this
-    # reads the string instead.
+    # Shared turn rows retain only canonical local time; DST may shift the rare spanning gap.
     try:
         return datetime.strptime(str(row.get("time") or ""), "%Y-%m-%d %H:%M:%S").timestamp()
     except ValueError:

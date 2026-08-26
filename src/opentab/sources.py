@@ -27,9 +27,7 @@ from opentab.stores.zaly import ZalyStore, default_zaly_data_dir
 
 
 def _default_requests_path(name: str) -> str:
-    # Auto-discovered input log (a CSV/NDJSON you point opentab at). It's user-provided
-    # data -> the XDG data dir; but keep finding a file a pre-split user left in the old
-    # config dir, so an upgrade doesn't silently stop discovering it.
+    # Preserve auto-discovery of user data left in the pre-XDG-split config directory.
     data = os.path.join(paths.data_dir(), name)
     legacy = os.path.join(paths.config_dir(), name)
     return legacy if (not os.path.exists(data) and os.path.exists(legacy)) else data
@@ -40,37 +38,23 @@ DEFAULT_JSONL_PATH = _default_requests_path("requests.jsonl")
 
 
 def default_remotes_dir() -> str:
-    # Where `opentab --pull` drops (and `--source remote` reads) other machines'
-    # exported summaries -- one *.json per machine. A fetched cache -> the XDG cache dir
-    # (re-`pull` to repopulate); the machine list itself is remotes.json in the config dir.
     return os.path.join(paths.cache_dir(), "remotes")
 
 
 def _default_pi_dir() -> str:
-    # pi-agent honors $PI_AGENT_DIR (a comma-separated list; we take the first dir);
-    # otherwise its sessions live under ~/.pi/agent/sessions.
     env = (os.environ.get("PI_AGENT_DIR") or "").split(",")[0].strip()
     return env or os.path.expanduser("~/.pi/agent/sessions")
 
 
 def _default_omp_dir() -> str:
-    # omp (a pi-agent fork) has no session-dir env var of its own -- $OMP_AGENT_DIR is
-    # opentab's OWN override (unlike $PI_AGENT_DIR, which pi-agent itself reads),
-    # matching --pi-dir's shape; otherwise its sessions live under ~/.omp/agent/sessions.
+    # OMP_AGENT_DIR is opentab's override; omp itself defines no session-dir variable.
     env = (os.environ.get("OMP_AGENT_DIR") or "").strip()
     return env or os.path.expanduser("~/.omp/agent/sessions")
 
 
 def _default_vscode_user_dirs() -> list[str]:
-    # VS Code's per-user storage root ("User"), per variant. Chat sessions live under
-    # <User>/workspaceStorage/<hash>/chatSessions and
-    # <User>/globalStorage/emptyWindowChatSessions.
-    #
-    # Deliberately NOT scanned: the Windows-side profiles from inside WSL
-    # (/mnt/c/Users/*/AppData/Roaming/...). Surfacing that source would parse every
-    # session file over the drvfs/9p mount on startup -- slow enough to break the
-    # fast-first-frame rule. WSL users opt in explicitly (--vscode-dir, see its --help
-    # example); VscodeStore._uri_to_path handles the Windows/Remote-WSL URIs then.
+    # Do not auto-scan Windows profiles from WSL: drvfs session reads make startup slow.
+    # Users opt in with --vscode-dir; VscodeStore maps the resulting Windows URIs.
     home = os.path.expanduser("~")
     if sys.platform == "darwin":
         base = os.path.join(home, "Library", "Application Support")
@@ -84,9 +68,7 @@ def _default_vscode_user_dirs() -> list[str]:
 
 
 def _vscode_dirs(args: argparse.Namespace) -> list[str]:
-    # --vscode-dir narrows the scan to one directory. argparse always sets the
-    # attribute (None = "scan every installed variant"); a namespace *without* it (bare
-    # test stubs) means the source is simply not wired up -- never scan the real home.
+    # A namespace lacking this argparse field must not make test stubs scan the real home.
     explicit = getattr(args, "vscode_dir", "")
     if explicit:
         return [explicit]
@@ -94,22 +76,15 @@ def _vscode_dirs(args: argparse.Namespace) -> list[str]:
 
 
 def _default_openclaw_dir() -> str:
-    # OpenClaw honors $OPENCLAW_DIR (a comma-separated list; we take the first
-    # dir); otherwise its gateway home (holding agents/ and openclaw.json) is ~/.openclaw.
     env = (os.environ.get("OPENCLAW_DIR") or "").split(",")[0].strip()
     return env or os.path.expanduser("~/.openclaw")
 
 
 def _default_zaly_dir() -> str:
-    # Zaly's data dir (holding sessions/), resolved like zaly's own envPaths:
-    # $ZALY_DATA / $ZALY_ROOT/data / $XDG_DATA_HOME/zaly, default ~/.local/share/zaly
-    # (LOCALAPPDATA\\zaly\\Data on native Windows). Lives in the store module so the
-    # auth.json (state-dir) twin sits beside it.
+    # Store-owned resolution keeps Zaly's data and auth-state conventions together.
     return default_zaly_data_dir()
 
 
-# Which --flag each concrete source reads its path from (used to route a bare
-# positional path into the right slot).
 _PATH_SLOT = {
     "csv": "csv",
     "jsonl": "jsonl",
@@ -127,29 +102,19 @@ _PATH_SLOT = {
 
 
 def _infer_source_from_path(path: str) -> str | None:
-    # Guess which backend a bare positional path belongs to, by shape. A directory is
-    # ambiguous (Claude Code vs Codex both use dirs), so it returns None and the caller
-    # asks for an explicit --source.
+    # Directories are ambiguous across transcript backends and require an explicit source.
     low = path.lower()
     if low.endswith(".csv"):
         return "csv"
     if low.endswith((".jsonl", ".ndjson")):
-        return "jsonl"  # a single .jsonl FILE is the logged-request source (the dir-
-        # based JSONL backends -- claude/codex/pi/omp/openclaw/copilot -- want --source)
+        return "jsonl"
     if low.endswith((".db", ".sqlite", ".sqlite3")):
         return "opencode"
     return None
 
 
 def _route_path_arg(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    # Make "point opentab at a file" intuitive so you never have to name the source
-    # twice. All of these show that CSV:
-    #     opentab requests.csv
-    #     opentab --csv requests.csv
-    #     opentab --source csv requests.csv
-    # With an explicit --source the positional fills THAT source's path; with no
-    # --source the source is inferred from the path (.csv -> csv, .db -> opencode) and
-    # opentab opens it on its own. A bare `opentab` is unchanged (auto-merge).
+    # An explicit source owns the positional path; otherwise infer file-backed sources.
     csv_explicit = args.csv is not None
     jsonl_explicit = args.jsonl is not None
     path = args.path
@@ -161,18 +126,17 @@ def _route_path_arg(parser: argparse.ArgumentParser, args: argparse.Namespace) -
             if target is None:
                 parser.error(f"can't tell which source {path!r} is -- pass --source explicitly")
             if args.source == "auto":
-                args.source = target  # view that file's source on its own
+                args.source = target
         else:
             target = args.source
         slot = _PATH_SLOT.get(target)
-        if slot is None:  # e.g. a path given with --source all but no usable extension
+        if slot is None:
             parser.error(f"--source {target} does not take a path argument")
         setattr(args, slot, path)
         if target == "csv":
             csv_explicit = True
         elif target == "jsonl":
             jsonl_explicit = True
-    # An explicit --csv/--jsonl (with no --source) also means "just show that file".
     if csv_explicit and args.source == "auto":
         args.source = "csv"
     if jsonl_explicit and args.source == "auto":
@@ -184,9 +148,7 @@ def _route_path_arg(parser: argparse.ArgumentParser, args: argparse.Namespace) -
 
 
 def _jsonl_dir_available(directory: str) -> bool:
-    # Only "is there at least one *.jsonl?" -- iglob + next stops the recursive walk at
-    # the first hit instead of enumerating the whole tree just to test a boolean, which
-    # matters on a directory with many sessions (and on a slow/scanned filesystem).
+    # Stop at the first hit instead of enumerating large or remotely scanned trees.
     if not os.path.isdir(directory):
         return False
     return (
@@ -195,35 +157,10 @@ def _jsonl_dir_available(directory: str) -> bool:
 
 
 def opencode_db_verdict(db: str) -> tuple[str, str]:
-    """Whether `db` is an OpenCode database: `("", "")` when it is, else a
-    ``(kind, message)`` pair — kind ``missing`` / ``unreadable`` / ``foreign``.
+    """Classify a database as valid, missing, unreadable, or foreign.
 
-    Existence alone is not enough: ``--db`` (and the documented
-    ``opentab path/to/opencode.db`` shortcut) names an arbitrary file, and picking the
-    wrong ``.db`` is an ordinary mistake whose reply used to be a raw traceback out of
-    sqlite ("no such table: session", or "file is not a database" for a non-sqlite
-    file) rather than the clean SystemExit every neighbouring backend produces.
-    ``HermesStore``'s schema probe is the model. One open plus a ``pragma table_info``
-    per table, so it is cheap enough for the detection path too.
-
-    It checks **columns**, not table names, against ``opencode.REQUIRED_SCHEMA`` — the
-    columns every query path uses unconditionally, declared beside the SQL that uses
-    them so the two cannot drift. Names alone are not enough twice over: `session` is
-    what any web app's session store calls its own, and a foreign pair of `session` +
-    `message` tables passes a name check and then dies on "no such column: child.id".
-    Requiring these costs nothing real — a database missing any of them cannot survive
-    ``workflows()`` or the ``model_breakdown()`` scan ``App.run()`` starts one frame
-    later, so it never worked, it only failed later. Nothing *else* may be required:
-    cost, tokens_*, time_updated, title, directory and agent are all probed with
-    fallbacks (`_has_session_token_columns` and friends), and demanding one of those
-    would reject a real OpenCode database that works today.
-
-    The **kind** is what keeps the report honest, and it is the reason this returns a
-    pair rather than a string: a database that is merely *locked* or unreadable is not
-    evidence about its schema, and calling it "not an OpenCode database" sends someone
-    hunting for the wrong file. Every kind still makes the backend unavailable — one
-    opentab cannot read is one it cannot show, and dropping it keeps the other eleven
-    alive under ``all`` — but only ``foreign`` means "you pointed at the wrong file".
+    Probe only REQUIRED_SCHEMA columns; optional schema remains adaptive. Distinguishing
+    unreadable from foreign keeps diagnostics honest while ``all`` skips unusable stores.
     """
     if not db:
         return "missing", "No OpenCode database configured (--db)."
@@ -233,16 +170,15 @@ def opencode_db_verdict(db: str) -> tuple[str, str]:
         conn = sqlite3.connect("file:" + quote(os.path.abspath(db)) + "?mode=ro", uri=True)
     except sqlite3.OperationalError as exc:
         return "unreadable", f"OpenCode database could not be opened: {db} ({exc})"
-    except sqlite3.Error as exc:  # e.g. "file is not a database" -- a real verdict
+    except sqlite3.Error as exc:
         return "foreign", f"Not an OpenCode database: {db} ({exc})"
     missing = []
     try:
         for table, columns in REQUIRED_SCHEMA.items():
-            # table_info returns nothing for a table that isn't there, so this covers
-            # "no such table" too. The names are module constants, never user input.
+            # Empty table_info also detects a missing table; names are trusted constants.
             have = {row[1] for row in conn.execute(f"pragma table_info({table})")}
             missing += [f"{table}.{c}" for c in columns if c not in have]
-    except sqlite3.OperationalError as exc:  # locked / busy: transient, not a schema fact
+    except sqlite3.OperationalError as exc:
         return "unreadable", f"OpenCode database could not be read: {db} ({exc})"
     except sqlite3.Error as exc:
         return "foreign", f"Not an OpenCode database: {db} ({exc})"
@@ -260,8 +196,6 @@ def opencode_db_verdict(db: str) -> tuple[str, str]:
 
 
 def _openclaw_available(root_dir: str) -> bool:
-    # OpenClaw sessions live at <root>/agents/<agent>/sessions/<id>.jsonl (plus archives);
-    # check that precise shape so an unrelated ~/.openclaw/**/*.jsonl never trips detection.
     if not root_dir or not os.path.isdir(root_dir):
         return False
     return (
@@ -271,9 +205,6 @@ def _openclaw_available(root_dir: str) -> bool:
 
 
 def _zaly_available(root_dir: str) -> bool:
-    # Zaly sessions live at <data>/sessions/<encoded-workspace>/<uuid>/session.jsonl;
-    # check that precise shape (launching zaly writes settings-only files, but only under
-    # that layout) so an unrelated zaly-named directory never trips detection.
     if not root_dir or not os.path.isdir(root_dir):
         return False
     return (
@@ -283,8 +214,6 @@ def _zaly_available(root_dir: str) -> bool:
 
 
 def _copilot_otel_available(args: argparse.Namespace) -> bool:
-    # Copilot CLI usage lives only in its (opt-in) OTEL export: the export directory
-    # holding *.jsonl, or the single file named by $COPILOT_OTEL_FILE_EXPORTER_PATH.
     if _jsonl_dir_available(getattr(args, "copilot_dir", "")):
         return True
     extra = os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH") or ""
@@ -292,10 +221,7 @@ def _copilot_otel_available(args: argparse.Namespace) -> bool:
 
 
 def _vscode_available(args: argparse.Namespace) -> bool:
-    # Merely opening VS Code's chat panel leaves empty session files behind, so file
-    # presence alone would surface a "vscode" source for every VS Code user. Require a
-    # session that actually recorded tokens: scan the (small) session files for the
-    # token markers and stop at the first hit.
+    # Empty chat-panel files are not usage; require token markers and stop at the first hit.
     for user_dir in _vscode_dirs(args):
         patterns = (
             os.path.join(user_dir, "workspaceStorage", "*", "chatSessions", "*.json*"),
@@ -303,7 +229,7 @@ def _vscode_available(args: argparse.Namespace) -> bool:
             os.path.join(user_dir, "*.json*"),  # pointed straight at a chatSessions dir
         )
         for pattern in patterns:
-            for path in glob.iglob(pattern):  # lazy: stop at the first token-bearing file
+            for path in glob.iglob(pattern):
                 if not path.endswith((".json", ".jsonl")):
                     continue
                 try:
@@ -316,7 +242,6 @@ def _vscode_available(args: argparse.Namespace) -> bool:
     return False
 
 
-# Display names for the source keys, matching each backend's source_name.
 SOURCE_LABELS = {
     "opencode": "OpenCode",
     "claude": "Claude Code",
@@ -333,8 +258,6 @@ SOURCE_LABELS = {
     "all": "all",
 }
 
-# How each tool reopens one of its sessions (the `L` key copies this command,
-# keyed by Workflow.source).
 RESUME_COMMANDS = {
     "OpenCode": "opencode --session",
     "Claude Code": "claude --resume",
@@ -348,9 +271,7 @@ RESUME_COMMANDS = {
 
 
 def _detect_fingerprint(args: argparse.Namespace) -> tuple:
-    # Everything available_sources() inspects, so the memo below invalidates the moment
-    # any source path changes (a source added between runs, or a test that re-points a
-    # --dir on the same namespace) rather than serving a stale detection.
+    # Fingerprint every detection input so namespace path changes invalidate the memo.
     return tuple(
         getattr(args, name, "")
         for name in (
@@ -371,18 +292,13 @@ def _detect_fingerprint(args: argparse.Namespace) -> tuple:
 
 
 def available_sources(args: argparse.Namespace) -> list[str]:
-    # The single-source backends actually present on this machine, in priority order.
-    # Memoized on the namespace: resolve_source() calls this up to three times and
-    # make_store("all") once more, each otherwise re-walking every backend's tree --
-    # a real cost on Windows/WSL where the per-open tax dominates. Keyed on the paths
-    # it reads (see _detect_fingerprint) so it re-scans if any of them change.
+    # Memoize repeated tree probes, especially costly on Windows/WSL, by all path inputs.
     fp = _detect_fingerprint(args)
     cached = getattr(args, "_available_sources", None)
     if cached is not None and cached[0] == fp:
-        return list(cached[1])  # a copy -- source_cycle() appends "all" to its result
+        return list(cached[1])
     keys = []
-    # Not just exists(): a db opentab cannot read (or one that isn't OpenCode's) would
-    # be merged into `all` and take the whole run down with a sqlite traceback.
+    # Never merge an unreadable or foreign database into ``all``.
     if not opencode_db_verdict(args.db)[0]:
         keys.append("opencode")
     if _jsonl_dir_available(args.claude_dir):
@@ -412,8 +328,6 @@ def available_sources(args: argparse.Namespace) -> list[str]:
 
 
 def source_cycle(args: argparse.Namespace) -> list[str]:
-    # The order the `H` key cycles through: each present source, plus "all" (merged)
-    # when at least two exist. Demo merges too -- CombinedStore shares one hidden scale.
     keys = available_sources(args)
     if len(keys) >= 2:
         keys.append("all")
@@ -421,26 +335,20 @@ def source_cycle(args: argparse.Namespace) -> list[str]:
 
 
 def resolve_source(args: argparse.Namespace, state: dict | None = None) -> str:
-    # The concrete starting source: an explicit --source wins; otherwise restore the
-    # last-used source from saved state (when it's still available). With no saved
-    # preference, auto merges every present source ("all") so you never need --source to
-    # see them together; `H` narrows to a single source and that choice is remembered.
+    # Explicit selection wins, then available saved state, then an automatic merged view.
     if args.source != "auto":
         return args.source
     saved = (state or {}).get("source")
-    if saved in source_cycle(args):  # valid + available (incl. "all" only when >=2)
+    if saved in source_cycle(args):
         return saved
-    if "all" in source_cycle(args):  # >=2 sources present -> show them merged
+    if "all" in source_cycle(args):
         return "all"
     present = available_sources(args)
     return present[0] if present else "opencode"
 
 
 def _wrap_cache(store, key: str, args: argparse.Namespace):
-    # Wrap a leaf backend in the warm-start cache. The merged view itself isn't wrapped
-    # -- its sub-stores are cached individually, so a change in one backend doesn't
-    # cold-start the others. Off under --demo (never persists; per-process scale) and
-    # --no-cache; a backend that hasn't opted in (no cache_inputs) is passed through.
+    # Cache leaves independently; never persist per-process demo transforms.
     if key == "all" or getattr(store, "combined", False):
         return store
     if getattr(args, "demo", False) or getattr(args, "no_cache", False):
@@ -452,8 +360,6 @@ def _wrap_cache(store, key: str, args: argparse.Namespace):
 
 
 def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
-    # Build the backend for a concrete source key, then wrap it in the warm-start cache.
-    # Returns (store, loading-hint); exits with a clear message when the source isn't present.
     store, hint = _build_store(args, key)
     return _wrap_cache(store, key, args), hint
 
@@ -470,22 +376,14 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
         from opentab.stores.remote import MachineTaggedStore
 
         remotes = getattr(args, "remotes", None) or default_remotes_dir()
-        # The fleet view = THIS machine (live, full drill-in, tagged by hostname) + every
-        # pulled summary. Including local is what makes `opentab --remote` show the box
-        # you're on, not just the ones you pulled. The label comes from the shared helper
-        # the App also labels untagged sessions with, so the box you're sitting at is one
-        # row whether or not a fleet is in view.
+        # Fleet view combines live local drill-in with pulled summaries under one hostname.
         hostname = util.local_machine_name()
         local_subs = [make_store(args, k)[0] for k in available_sources(args)]
-        # Live-local sessions win over any pulled summary that re-states them (this
-        # machine's own summary left in the remotes dir, or a session synced between
-        # boxes): excluding those ids from the remote store stops the double-count and
-        # keeps drill-in pointed at the live copy. cache_inputs makes this cheap on a warm
-        # start; the App's own workflows() call then hits the same cache.
+        # Live rows win duplicate ids so totals and drill-in do not use stale summaries.
         local_ids = {w.id for sub in local_subs for w in sub.workflows()}
         remote = RemoteStore(remotes, args, exclude_ids=local_ids)
         subs = [MachineTaggedStore(sub, hostname) for sub in local_subs]
-        if remote.machines:  # any summary FILE present (even a valid zero-session export)
+        if remote.machines:
             subs.append(remote)
         if not subs:
             raise SystemExit(

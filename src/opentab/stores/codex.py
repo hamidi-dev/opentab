@@ -21,42 +21,12 @@ from opentab.util import (
 
 
 class CodexStore:
-    """Read Codex CLI rollout transcripts (~/.codex/sessions/**/rollout-*.jsonl) behind
-    the same interface App expects from Store: workflows(), summary(), workflow_nodes(),
-    model_breakdown(), plus the .demo/.demo_scale attributes -- exactly like ClaudeStore.
+    """Read Codex CLI rollout transcripts.
 
-    Like Claude Code, Codex records token usage but no per-message dollar cost, so a
-    Codex session is an OpenCode *subscription* session: recorded cost is $0, every
-    token is "unpriced", and the normal "$" what-if machinery reprices it at API list
-    rates. records_cost = False drives the same header hints (see ClaudeStore).
-
-    Token accounting differs from Anthropic's in two ways and both are handled here:
-      * each turn logs a *cumulative* total_token_usage (running session total) in a
-        token_count event, and Codex emits each turn's token_count twice (once as the
-        turn result, once echoed right after the next turn_context). So we drive
-        per-turn deltas off the monotonic cumulative total: a strictly larger total is
-        a new turn (delta = total - prev), an equal total is the duplicate echo (skip),
-        and a smaller total is a context-compaction reset (the new total is fresh
-        usage). The accepted deltas sum back to the final authoritative total, and each
-        is attributed to the model active at that turn (the latest turn_context.model).
-      * OpenAI's input_tokens includes both cached_input_tokens and (since GPT-5.6)
-        cache_write_input_tokens, so we split it into uncached input + cache reads +
-        cache writes. Both cache categories are subsets of input, never extra tokens.
-        reasoning_output is already counted inside output_tokens, so -- as in
-        ClaudeStore -- it is folded into output and never priced twice. Rollouts from
-        Codex before 0.145 omit cache_write_input_tokens; absence remains 0.
-
-    Codex's collab / multi-agent mode writes each spawned thread as its own rollout
-    file whose session_meta.source carries the parent thread id (_spawn_source), so
-    those fold into a subagent tree under their parent (_link_subagents): the child
-    leaves the workflows list, the root's totals cover the subtree (root_* keeps its
-    own share -- the ClaudeStore accounting), workflow_nodes lists the children with
-    their agent nickname/role, and Turns/Tools cover the whole tree. A plain session
-    stays a single depth-0 node. Sessions with no recorded token usage
-    (legacy/aborted) are dropped.
-    Implements the **Turns** opt-in (message_timeline/supports_turns): every accepted
-    token_count delta is one turn row, grouped under the ▸ user_message that triggered
-    it (the ClaudeStore lockstep pattern); cost stays $0, so "$" estimates each row.
+    Usage is cumulative and duplicated: growth is a turn delta, equality an echo, and
+    shrinkage a compaction reset. Inclusive input is split into uncached, cache-read,
+    and cache-write tokens; reasoning remains inside output. Spawned rollouts fold into
+    the parent thread's tree. Codex records no cost, so all usage remains unpriced.
     """
 
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
@@ -66,14 +36,11 @@ class CodexStore:
     def __init__(self, root_dir: str, args: argparse.Namespace):
         self.root_dir = root_dir
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the
-        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
-        self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
+        self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
         self._head_meta_cache: dict[str, dict | None] = {}  # path -> head metadata
 
-    # --- token accumulation helpers (mirror ClaudeStore) ---------------------
     @staticmethod
     def _new_acc() -> dict[str, int]:
         return {
@@ -135,9 +102,7 @@ class CodexStore:
         agent = spawn.get("agent_nickname") or spawn.get("agent_role") or "subagent"
         return str(parent), str(agent)
 
-    # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
-        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
         return self._files()
 
     def _files(self) -> list[str]:
@@ -638,7 +603,6 @@ class CodexStore:
             "tokens_total": acc["tokens_total"],
         }
 
-    # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         sessions = self._parse()
@@ -847,7 +811,6 @@ class CodexStore:
                 turns.append({**t, "depth": depth, "agent": agent})
         return turns
 
-    # --- Turns tab opt-in ----------------------------------------------------
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # Chronological per-turn rows for the Turns tab (the ClaudeStore pattern):
         # ISO timestamps sort lexicographically, and walking the two time-sorted

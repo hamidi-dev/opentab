@@ -10,19 +10,11 @@ from opentab.stores.csv_source import CsvStore
 
 
 class JsonlStore(CsvStore):
-    """Read an NDJSON file of logged API requests (one JSON object per line) behind the
-    same interface App expects -- the per-line twin of CsvStore. It inherits CsvStore's
-    OpenAI-style token accounting, mixed per-row cost (records_cost is a per-instance
-    attr), provider-prefixed models, synthetic-session fallback, the priced/unpriced
-    split and demo handling; only the parser (NDJSON instead of csv.DictReader) differs.
+    """Read one logged API request per NDJSON object.
 
-    Like CSV (which shares the machinery), each line is one API request = one LLM step
-    ("turn") on the Turns tab; the optional per-line `prompt` groups turns under the
-    user message that triggered them, the way OpenCode/Claude do.
-
-    One JSON object per line (UTF-8, NDJSON -- *not* a JSON array). Keys are matched by a
-    small alias set; required are a timestamp, a model, and input/output token counts.
-    Everything else is optional:
+    This is CsvStore's per-line twin and inherits its accounting, synthetic-session,
+    pricing, Turns, and Tools rules. Timestamp, model, input, and output are required;
+    supported optional fields are:
 
         timestamp   timestamp|time|ts|date|created_at   ISO-8601 or epoch (s/ms/us)
         model       model|model_id|model_name           e.g. gpt-4o, claude-sonnet-4
@@ -39,13 +31,7 @@ class JsonlStore(CsvStore):
         title       title|name|label                     session label (default first prompt)
         cost        cost_usd|cost (USD) | credits|credit (x $0.01)   presence -> metered
 
-    A logged Copilot request carries no dollar cost (usage-based credits settle
-    server-side), so a $0/absent-cost row is a *subscription* row: every token unpriced,
-    repriced at list rates under "$". A populated cost_usd/credits column prices those
-    rows as real spend (records_cost True, unpriced_* zeroed) -- the HermesStore pattern.
-    Requests with a stable `request_id` dedupe across a regenerated/appended file; with
-    no `session_id`, requests group into one synthetic session per (date, project). No
-    subagent tree -- every turn is depth 0. Sessions with no token usage are dropped.
+    Stable request ids deduplicate appended logs. Malformed lines are skipped.
     """
 
     source_name = "JSONL"
@@ -82,7 +68,6 @@ class JsonlStore(CsvStore):
     def __init__(self, path: str, args: argparse.Namespace):
         self.path = path
         self.args = args
-        # Same demo config CsvStore uses (categories + hidden factor); 1.0 outside demo.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
@@ -92,7 +77,6 @@ class JsonlStore(CsvStore):
         # The single JSONL file whose (size, mtime) fingerprints the warm-start cache.
         return [self.path]
 
-    # --- value access --------------------------------------------------------
     @classmethod
     def _get(cls, obj: dict, field: str):
         for k in cls._KEYS[field]:
@@ -130,7 +114,6 @@ class JsonlStore(CsvStore):
             return False
         return False
 
-    # --- parsing -------------------------------------------------------------
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
             return self._sessions
@@ -240,6 +223,3 @@ class JsonlStore(CsvStore):
         if isinstance(raw, list):
             return [str(t).strip() for t in raw if str(t).strip()]
         return self._split_tools(raw)
-
-    # The Turns tab opt-in (message_timeline/supports_turns) is inherited from
-    # CsvStore -- both backends keep one turn per request row, same shape.

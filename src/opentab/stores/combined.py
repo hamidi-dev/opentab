@@ -8,19 +8,11 @@ from opentab.models import Workflow
 
 
 def _gather(calls: list) -> list:
-    # Run each 0-arg callable in its own thread and return the results IN ORDER. The
-    # backends hold disjoint state (each its own files / sqlite connection), so their
-    # workflows()/model_breakdown() -- the bulk of startup -- run independently; only the
-    # merge that consumes these results touches shared state, back on the caller's
-    # thread. Overlapping them collapses --source all from the sum of the backends toward
-    # the slowest single one. sqlite/read() release the GIL, so even the DB scan overlaps
-    # the file parses. Exceptions propagate on iteration, matching the old serial loop.
+    # Backends own disjoint state; overlap their I/O, then merge in input order.
     calls = list(calls)
     if len(calls) <= 1:
         return [c() for c in calls]
-    # Local import (as util.read_files_parallel): concurrent.futures costs ~6ms of
-    # imports, and sources.py reaches this module for every command -- including the
-    # one-shot `opentab cost`, which never merges backends at all.
+    # Keep the ~6 ms import off commands that never merge stores.
     from concurrent.futures import ThreadPoolExecutor
 
     with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="opentab-store") as ex:
@@ -28,37 +20,15 @@ def _gather(calls: list) -> list:
 
 
 class CombinedStore:
-    """Merge several backends (OpenCode Store + Claude Code ClaudeStore + Codex
-    CodexStore + Hermes + CSV + Copilot CLI + pi) into one view by delegating the same four
-    methods to each and concatenating the results.
-
-    Workflow ids are globally unique across sources (OpenCode "ses_..." vs Claude/Codex
-    UUIDs), so model_breakdown root_ids never clash and workflow_nodes routing stays
-    unambiguous; an _owner map (built in workflows()) records which backend produced
-    each workflow so workflow_nodes goes straight to it. Projects group by directory
-    across both tools, so the same repo worked in OpenCode and Claude Code rolls up
-    into one row.
-
-    Cost is mixed -- OpenCode's recorded dollars plus Claude Code's $0 (until "$"
-    reprices its tokens). The normal "$" what-if reprices every unpriced row across
-    both backends, so it just works. records_cost is False when any backend doesn't
-    record cost (i.e. Claude is in the mix), driving the header hint; combined=True
-    turns on the per-session source tags in the sessions list.
-    """
+    """Merge backend rollups and route session detail to each workflow's owner."""
 
     combined = True
     source_name = "all"  # the merged view; per-session origin lives on Workflow.source
 
     def __init__(self, stores: list):
         self.stores = stores
-        # Combined demo: each backend would otherwise draw its own random hidden scale,
-        # which would distort the cross-source ratio (the Sources view lies about the
-        # OpenCode-vs-Claude proportion). Share ONE scale across all backends so the
-        # proportions stay truthful -- still private (a single hidden factor can't be
-        # inverted to real dollars).
+        # One hidden demo scale preserves cross-source proportions.
         self.demo = any(getattr(s, "demo", False) for s in stores)
-        # The category selection is the same across every sub-store (they read one args),
-        # so take it from any demo sub-store; default all when none is in demo.
         self.demo_cats = next(
             (getattr(s, "demo_cats", DEMO_ALL) for s in stores if getattr(s, "demo", False)),
             DEMO_ALL,
@@ -70,8 +40,6 @@ class CombinedStore:
             self.demo_scale = scale
         else:
             self.demo_scale = 1.0
-        # Tool breakdown is OpenCode-only today; offer the Tools tab if any backend
-        # in the mix supports it. tool_breakdown() routes per session to its owner.
         self.supports_tool_breakdown = any(
             getattr(s, "supports_tool_breakdown", False) for s in stores
         )
@@ -79,18 +47,12 @@ class CombinedStore:
 
     @cached_property
     def records_cost(self) -> bool:
-        # AND of the backends (False when any doesn't record cost), evaluated lazily so
-        # building the merged view never forces a backend's full-corpus cost probe --
-        # after workflows() the warm-start cache answers this for free.
+        # Evaluate lazily so construction cannot trigger a corpus cost probe.
         return all(getattr(s, "records_cost", True) for s in self.stores)
 
     @property
     def machine_meta(self) -> dict[str, dict]:
-        # Merge every sub-store's per-machine niceties for the fleet view. The N local
-        # backends are all MachineTaggedStore under one hostname, so their identical
-        # {hostname: {live:True}} entries collapse to one; the RemoteStore adds a row per
-        # pulled box. Live wins on a name clash (a box that is both local and re-pulled is
-        # the live one you're sitting at).
+        # Local metadata wins when a machine is also present in pulled summaries.
         out: dict[str, dict] = {}
         for store in self.stores:
             for name, meta in getattr(store, "machine_meta", {}).items():
@@ -99,8 +61,6 @@ class CombinedStore:
         return out
 
     def workflows(self) -> list[Workflow]:
-        # Roll up every backend in parallel, then build the id->owner map and merge on
-        # this thread (deterministic, order-preserving) -- see _gather.
         out: list[Workflow] = []
         owner: dict[str, object] = {}
         for store, workflows in zip(self.stores, _gather([s.workflows for s in self.stores])):
@@ -112,7 +72,6 @@ class CombinedStore:
         return out
 
     def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
-        # summary() is pure over the passed workflows, so any backend computes it.
         return self.stores[0].summary(workflows)
 
     def model_breakdown(self) -> list:
@@ -132,22 +91,15 @@ class CombinedStore:
         return []
 
     def tool_breakdown(self, workflow_id: str) -> list:
-        # Route to the owning backend; a backend without the Tools opt-in
-        # (Hermes, Copilot, VS Code, OpenClaw) contributes no rows.
         owner = self._owner.get(workflow_id)
         fetch = getattr(owner, "tool_breakdown", None)
         return fetch(workflow_id) if fetch else []
 
     def supports_tools(self, workflow_id: str) -> bool:
-        # The owning backend decides per session (the supports_turns pattern) -- so
-        # an OpenCode/Claude/Codex/pi/CSV session offers the Tools tab even in the
-        # merged view, while a backend without the opt-in never does.
         check = getattr(self._owner.get(workflow_id), "supports_tools", None)
         return bool(check(workflow_id)) if check else False
 
     def message_timeline(self, workflow_id: str) -> list:
-        # Route to the owning backend; only OpenCode and Claude Code implement it, so
-        # a Codex/Hermes/CSV session has no Turns tab even in the merged view.
         owner = self._owner.get(workflow_id)
         fetch = getattr(owner, "message_timeline", None)
         return fetch(workflow_id) if fetch else []
@@ -157,10 +109,7 @@ class CombinedStore:
         return bool(check(workflow_id)) if check else False
 
     def message_timeline_all(self) -> dict:
-        # Whole-corpus Turns for `--export`: merge each backend's batch (the sub-store's
-        # message_timeline_all, where it has one -- OpenCode does, to dodge its
-        # per-session recursive-CTE scan). Backends without a batch contribute nothing
-        # here; build_export falls back to their cheap per-session path for those.
+        # Export merges available batch paths; its caller handles per-session fallbacks.
         out: dict = {}
         for store in self.stores:
             fn = getattr(store, "message_timeline_all", None)
@@ -169,9 +118,6 @@ class CombinedStore:
         return out
 
     def context_breakdown(self, workflow_id: str) -> list:
-        # Route to the owning backend; a backend without the composition opt-in
-        # (everything but Claude Code and Zaly so far) contributes no rows -- the
-        # Context tab's measured curve still works off its turn rows.
         owner = self._owner.get(workflow_id)
         fetch = getattr(owner, "context_breakdown", None)
         return fetch(workflow_id) if fetch else []
@@ -181,9 +127,7 @@ class CombinedStore:
         return bool(check(workflow_id)) if check else False
 
     def supports_context_curve(self, workflow_id: str) -> bool:
-        # Mirror App.session_supports_context_curve's default for the owning
-        # backend: absent method = any Turns backend qualifies; a backend that
-        # defines it (Codex) decides for its own sessions.
+        # Absent an explicit curve gate, Turns support is the default.
         owner = self._owner.get(workflow_id)
         check = getattr(owner, "supports_context_curve", None)
         if check is not None:

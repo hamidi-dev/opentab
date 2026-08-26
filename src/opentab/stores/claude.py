@@ -24,21 +24,10 @@ from opentab.util import (
 
 
 class ClaudeStore:
-    """Read Claude Code transcripts (~/.claude/projects/**/*.jsonl) behind the same
-    interface App expects from Store: workflows(), summary(), workflow_nodes(),
-    model_breakdown(), plus the .demo/.demo_scale attributes.
+    """Read Claude Code transcripts from ``~/.claude/projects/**/*.jsonl``.
 
-    Claude Code records no per-message dollar cost -- only token usage. So a Claude
-    session is exactly an OpenCode *subscription* session: every message has a real
-    recorded cost of $0, and its tokens are reported as "unpriced". That lets the
-    normal real-vs-"$" machinery work unchanged -- normal mode shows $0, and "$"
-    (what-if) reprices the tokens at API list rates via the same _compute_api_costs /
-    api_equivalent_cost path Store uses. records_cost = False just drives a header
-    hint that $0 means "not recorded, press $".
-
-    A "workflow" is one sessionId; depth-0 is its main thread (isSidechain == False)
-    and each group of sidechain messages (Task subagents) becomes a depth-1 node, so
-    the subagent tree and root/total cost split mirror Store's recursive CTE.
+    Claude records tokens but no cost, so all usage remains unpriced for list-rate
+    estimation. Sidechain messages form depth-1 Task nodes under the main thread.
     """
 
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
@@ -48,14 +37,11 @@ class ClaudeStore:
     def __init__(self, root_dir: str, args: argparse.Namespace):
         self.root_dir = root_dir
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the
-        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
-        self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
-        self._one: tuple[str, dict] | None = None  # last single-transcript parse (_session)
+        self._sessions: dict[str, dict] | None = None
+        self._one: tuple[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
 
-    # --- token accumulation helpers ------------------------------------------
     @staticmethod
     def _new_acc() -> dict[str, int]:
         return {
@@ -65,20 +51,13 @@ class ClaudeStore:
             "reasoning": 0,  # thinking tokens are already counted in output_tokens
             "cache_read": 0,
             "cache_write": 0,
-            # The 1-hour-TTL SUBSET of cache_write (never added to tokens_total -- it is
-            # part of cache_write, not extra tokens). Anthropic bills a 1h write at 2.00x
-            # input against the 5m tier's 1.25x, and the catalog only carries the 5m rate,
-            # so without this every long write is undercharged. See pricing.
+            # Subset of cache_write; never add it to tokens_total.
             "cache_write_1h": 0,
             "tokens_total": 0,
         }
 
     @staticmethod
     def _int(value) -> int:
-        # A usage field is whatever the transcript says it is, and a bare int() takes
-        # the WHOLE backend down on a string, a nested object, or a number JSON allows
-        # and float cannot hold. util.safe_int is the one rule the file backends coerce
-        # through; Claude's usage read had no coercion at all.
         return safe_int(value)
 
     @classmethod
@@ -87,11 +66,7 @@ class ClaudeStore:
         o = cls._int(u.get("output_tokens", 0) or 0)
         cr = cls._int(u.get("cache_read_input_tokens", 0) or 0)
         cw = cls._int(u.get("cache_creation_input_tokens", 0) or 0)  # cache creation == write
-        # usage.cache_creation splits that same total by TTL
-        # ({ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}, summing to the flat
-        # field). Only the 1h half is kept: the 5m half is the remainder, and deriving it
-        # means a transcript that omits the split (or a future third tier) still prices at
-        # the old 5m rate rather than losing tokens.
+        # cache_creation splits the flat write total by TTL; retain only the 1h subset.
         cc = u.get("cache_creation")
         cw1h = cls._int(cc.get("ephemeral_1h_input_tokens", 0) or 0) if isinstance(cc, dict) else 0
         acc["runs"] += 1
@@ -137,9 +112,7 @@ class ClaudeStore:
         "<user-memory-input",
     )
 
-    # The Context tab's "injected context" sub-buckets: fold each wrapper tag to a
-    # readable kind so the composition tree shows "system reminders" instead of
-    # eleven raw tag spellings.
+    # Fold wrapper tags into readable Context categories.
     _INJECTED_KINDS = (
         ("<system-reminder", "system reminders"),
         ("<bash-", "bash in/output"),
@@ -156,18 +129,13 @@ class ClaudeStore:
 
     @classmethod
     def _injected_kind(cls, text: str) -> str | None:
-        # The injected-context bucket for a wrapper-tagged user text, or None for a
-        # genuine prompt (the composition twin of _prompt_text's wrapper skip).
         if not text.startswith(cls._WRAPPER_TAGS):
             return None
         return next((kind for tag, kind in cls._INJECTED_KINDS if text.startswith(tag)), "other")
 
     @classmethod
     def _prompt_text(cls, message) -> str | None:
-        # A *real* user prompt's full text (the Turns tab can expand it; the
-        # session-title fallback caps it at its use site). Returns None for empty
-        # content or an injected wrapper (see above), so the caller keeps scanning
-        # to the next user message.
+        # Return full user text, excluding empty or injected wrapper messages.
         if not isinstance(message, dict):
             return None
         content = message.get("content")
@@ -186,9 +154,7 @@ class ClaudeStore:
             return None
         return text
 
-    # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
-        # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
         return self._files()
 
     def _files(self) -> list[str]:
@@ -201,31 +167,21 @@ class ClaudeStore:
 
     @classmethod
     def _sidecar_owner(cls, path: str) -> str | None:
-        # The session a sidecar transcript belongs to, or None for a main transcript.
-        # Keyed off the directory layout rather than the "agent-" file-name prefix,
-        # which is Claude Code's to change.
+        # Directory layout is stable; the sidecar filename prefix is not our contract.
         holder = os.path.dirname(path)
         if os.path.basename(holder) != cls._SIDECAR_DIR:
             return None
         return os.path.basename(os.path.dirname(holder)) or None
 
     def _transcripts(self, session_id: str) -> list[str]:
-        # A session's transcript is <project-slug>/<sessionId>.jsonl. Resuming the
-        # session from another directory can leave the same id under a second slug,
-        # so glob for every copy -- plus the sidecars holding its subagents' turns,
-        # whose records carry this session's id and whose tokens are part of its
-        # subtree. Without them the single-transcript paths (_parse_one, and so the
-        # cold status_nodes) priced the main thread alone and undercounted every
-        # session that delegated. _parse() must NOT come here: it reads every file
-        # through _files() already, and would count the sidecars twice.
+        # Include resumed copies and owned sidecars. The corpus parser uses _files()
+        # instead; routing it here would count sidecars twice.
         main = [
             p
             for p in glob.glob(
                 os.path.join(self.root_dir, "**", session_id + ".jsonl"), recursive=True
             )
-            # A sidecar whose file name happens to equal the id we were asked about is
-            # not that session's transcript; keeping it would let a phantom
-            # "agent-<hex>" id confirm itself in root_of.
+            # A matching sidecar filename is not a main session transcript.
             if self._sidecar_owner(p) is None
         ]
         sidecars = glob.glob(
@@ -234,33 +190,14 @@ class ClaudeStore:
         )
         return list(dict.fromkeys(main + sidecars))
 
-    # How much of a transcript's TAIL to scan for a sessionKind marker. A background
-    # session replays its parent's history verbatim into its own file -- same message
-    # ids, same requestIds, same uuids and timestamps, only sessionId rewritten -- so
-    # parent and child both claim the same API calls and the (message.id, requestId)
-    # dedup below has to pick one. Measured on a real corpus, the marker first appears
-    # ~157KB in (the replayed prefix carries none, and that prefix is as long as the
-    # history it replays), so a head scan misses it; the tail always carries it,
-    # because the background session is the one still writing.
+    # Background sessions replay parent history with identical dedup keys. sessionKind
+    # appears after the replayed prefix, so detect it from the tail rather than the head.
     _SESSION_KIND_TAIL_BYTES = 8192
 
     def _replays_history(self, path: str) -> bool:
-        # Whether this transcript belongs to a marked session kind -- one that may be
-        # replaying another session's records rather than having made those calls.
-        #
-        # The window widens only when it holds no complete record: one transcript's
-        # final line can be megabytes (a pasted prompt -- 1.37MB is the largest in a
-        # real corpus, 141 records over 1MiB), and the marker sits near that record's
-        # START, so a fixed tail would read the middle of it and see nothing. A newline
-        # means we have seen a whole record and the marker really isn't on it, so the
-        # common no costs exactly one 8KB read (measured: 364 files in 10ms, and only
-        # 22 of them needed a second read).
-        #
-        # There is deliberately NO byte ceiling on the widening. One would reopen the
-        # exact hole this loop closes, and it would protect nothing: the only caller
-        # that scans every transcript is _parse(), which is about to read all of them
-        # in full anyway, so the scan can never cost more than the parse behind it.
-        # Termination is `window >= size` -- x8 growth reaches any file in a few steps.
+        # Widen until one complete tail record is visible: a final JSON line may exceed
+        # the initial window. No byte ceiling is needed because the caller parses every
+        # file in full next; the common case remains one 8 KiB read (~10 ms/364 files).
         try:
             size = os.path.getsize(path)
             window = self._SESSION_KIND_TAIL_BYTES
@@ -279,23 +216,14 @@ class ClaudeStore:
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
             return self._sessions
-        # Replay-capable transcripts go LAST, because the dedup credits the FIRST
-        # claimer of a key: the session that actually made the calls must be parsed
-        # before any session that merely replays them. Left to glob order the winner
-        # was alphabetical luck -- measured, a parent session showed 0 tokens and an
-        # empty Turns tab while its background child held all 96 of its turns. Totals
-        # are unaffected either way (the calls are counted once); this decides WHICH
-        # session they are counted under. A stable sort, so files keep glob order
-        # within each group, and ~10ms of tail reads over a 370-file corpus.
+        # Dedup credits the first claimant, so original transcripts must precede replay
+        # sessions. The stable sort preserves file order within both groups.
         files = sorted(self._files(), key=self._replays_history)
         self._sessions = self._parse_texts(read_files_parallel(files))
         return self._sessions
 
     def _parse_one(self, workflow_id: str, paths: list[str] | None = None) -> dict | None:
-        # Parse only this session's own transcript(s) -- the --status fast path, so
-        # pricing one session never pays for the whole ~/.claude/projects tree. A
-        # transcript can replay resumed/forked history under other sessionIds; the
-        # grouping lands those rows under their own ids and we return just ours.
+        # Parse only this session and its sidecars for status/detail fast paths.
         if paths is None:
             paths = self._transcripts(workflow_id)
         if not paths:
@@ -303,47 +231,25 @@ class ClaudeStore:
         return self._parse_texts(read_files_parallel(paths)).get(workflow_id)
 
     def _session(self, workflow_id: str, fallback: bool = True) -> dict | None:
-        # One session's parsed state for the per-session extras (subagent tree, Turns,
-        # Tools, Context), off the single-transcript parse when the whole corpus hasn't
-        # been read yet. Those four used to call _parse() each, so opening ONE session
-        # read every transcript under ~/.claude/projects: 2.2s on a 367-file corpus, and
-        # paid even with the warm-start cache HOT -- CachedStore serves workflows() from
-        # disk without ever parsing, so the drill-in was the first thing that did, which
-        # made `--goto` (a tmux popup that lands straight in a session) slow no matter
-        # what. _parse_one reads just this session's own transcripts + sidecars: ~5ms.
-        #
-        # fallback=False is the --status contract (status_nodes): never widen to the
-        # whole tree.
+        # Detail reads stay session-local (~5 ms versus ~2.2 s corpus-wide).
+        # fallback=False is the status contract: never widen to the whole corpus.
         if self._sessions is not None:
             return self._sessions.get(workflow_id)  # already parsed: nothing to save
         if self._one is not None and self._one[0] == workflow_id:
             return self._one[1]
         paths = self._transcripts(workflow_id)
-        # A replay-capable transcript is the one case that CANNOT be read alone: it
-        # holds its parent's records as well as its own, and the marker tags the whole
-        # session rather than the replayed rows (measured: all 257 replayed records and
-        # all 29 own-new ones carry it alike), so nothing in the file separates them.
-        # Only the corpus parse can, by letting the parent claim its keys first.
+        # Replay files cannot be parsed in isolation: only corpus ordering lets the
+        # original session claim shared dedup keys first.
         if paths and not any(self._replays_history(p) for p in paths):
             s = self._parse_one(workflow_id, paths)
             if s is not None:
-                # Single-entry, not a growing map: App.prefetch_session_data asks for
-                # all four extras of the same session back to back (that burst is the
-                # whole point), while browsing N sessions in turn must not accumulate a
-                # second copy of the corpus in memory.
+                # One-entry memo serves the detail prefetch burst without growing by session.
                 self._one = (workflow_id, s)
                 return s
         if not fallback:
-            # --status must answer without reading the tree, so it keeps the
-            # single-transcript answer even for a replaying session (where that
-            # over-reports by the history it replayed -- what --status already did
-            # before this fast path existed).
+            # Status accepts replay over-reporting rather than parsing the corpus.
             return self._parse_one(workflow_id, paths) if paths else None
-        # Either a replaying transcript (above), or _parse_one came up empty while the
-        # session still exists: a resumed/forked transcript replays records under their
-        # ORIGINAL sessionId, so a session whose own file was since deleted or rotated
-        # survives only inside another session's file -- _transcripts() can't find it by
-        # name, the corpus parse still groups it.
+        # A deleted/rotated session may survive only as original-id records in a replay.
         return self._parse().get(workflow_id)
 
     # A record whose JSON string holds a LITERAL control character is not the record the
@@ -682,7 +588,6 @@ class ClaudeStore:
         else:
             self._add_usage(entry["root"], usage)
 
-    # --- context composition (the Context tab) --------------------------------
     # What the session's context window filled up with, estimated at chars/4
     # (util.est_tokens) since transcripts record content but not per-block token
     # counts. The system prompt and tool/MCP schemas are NOT in any transcript --
@@ -901,7 +806,6 @@ class ClaudeStore:
             "tokens_total": acc["tokens_total"],
         }
 
-    # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         self._one = None  # ... and so must the single-transcript memo behind _session
@@ -977,7 +881,6 @@ class ClaudeStore:
             out.extend(s["model_rows"])
         return out
 
-    # --- incremental warm-start cache (CachedStore opt-ins) ------------------
     def cache_provenance(self) -> dict[str, list[str]]:
         """session id -> the transcripts that produced its rows, for the last parse.
 

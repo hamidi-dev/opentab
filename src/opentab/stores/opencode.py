@@ -24,9 +24,7 @@ case
 end
 """
 
-# Per-message model attribution from message.data JSON. The session.model column
-# is only populated for newer sessions and holds a single model, so it can't
-# represent multi-model sessions; the message table is the accurate source.
+# session.model is incomplete and cannot represent model switches; use message data.
 MSG_MODEL_EXPR = (
     "coalesce(json_extract(m.data, '$.providerID'), 'unknown') || '/' || "
     "coalesce(json_extract(m.data, '$.modelID'), 'unknown')"
@@ -40,18 +38,10 @@ MSG_TOKEN_TOTAL_EXPR = " + ".join(
         "coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)",
     ]
 )
-# The per-message wall-clock timestamp, shared by the Turns queries (per-session and
-# the whole-corpus batch); epoch ms in the message JSON, present whether or not the
-# table carries a time_created column.
+# Epoch milliseconds available across schema versions.
 _TL_TS = "json_extract(m.data, '$.time.created')"
 
-# What makes a database this Store can actually open, as opposed to one that merely has
-# tables by these names -- the columns EVERY query path uses unconditionally. It lives
-# here, beside the SQL that uses them, so the schema check in `sources` can never drift
-# from what the queries need. Deliberately short: everything else this Store touches
-# (cost, tokens_*, time_updated, title, directory, agent, part) is probed and has a
-# fallback -- see `_has_session_token_columns` and friends -- so requiring any of THOSE
-# would reject a real OpenCode database that works today.
+# Only require columns used unconditionally; optional schema features are probed.
 REQUIRED_SCHEMA = {
     "session": ("id", "parent_id", "time_created"),
     "message": ("id", "session_id", "data"),
@@ -59,48 +49,27 @@ REQUIRED_SCHEMA = {
 
 
 def _process_timeline(rows: list[dict], tools: dict[str, list[str]] | None = None) -> list[dict]:
-    # Turn the time-ordered (user + assistant) rows of ONE session into the Turns tab's
-    # assistant-turn rows, each tagged with the prompt that triggered it: the most recent
-    # user message owns every assistant turn until the next one. Shared by
-    # message_timeline (one session) and message_timeline_all (per group). `rows` must be
-    # a single session's messages in chronological order.
-    #
-    # `tools` maps message id -> the tool names that step invoked, joined here rather
-    # than selected inline: see _timeline_tools for why this is a separate scan.
+    # Assign each assistant row to the latest root user prompt. Tools arrive from the
+    # separate grouped part-table scan; see _timeline_tools.
     out: list[dict] = []
     cur_id, cur_title, cur_full = "", "", ""
     for d in rows:
         if d["role"] == "user":
-            # Only a depth-0 (root) user message opens a prompt -- the SAME rule the
-            # worked-time CTE already applies as `is_human`, and the one this loop was
-            # missing. A subagent's `user` message is the agent-authored task it was
-            # handed, so treating it as a prompt fabricated a row nobody typed, and
-            # then kept it: measured on a real session, all 15 human prompts read "1
-            # turn" while their work -- 62 subagent turns AND the main thread's own
-            # turns after the hand-off -- sat under 8 invented prompts titled "Mo wants
-            # to understand why...". The new Agents column made it visible (every real
-            # prompt showed "-"), but it was already mis-attributing cost, cached share
-            # and the cumulative curve.
+            # Subagent user rows are task instructions, not human prompt boundaries.
             if d["depth"]:
                 continue
             cur_id = d["mid"] or ""
             cur_title = _clean_prompt(d["summary_title"] or d["prompt_text"])
-            # The expandable full text is the raw prompt itself (uncapped, line breaks
-            # kept); the generated summary only stands in when no text part was recorded.
+            # Preserve raw prompt text for expansion; summary is fallback only.
             cur_full = str(d["prompt_text"] or d["summary_title"] or "").strip()
             continue
-        # A turn that recorded neither tokens nor cost (an aborted/errored step) is noise
-        # on a "how the money accrued" timeline -- drop it.
+        # Aborted or errored zero-usage steps do not belong on a spend timeline.
         if not (d["tokens_total"] or d["cost"]):
             continue
         d["time"] = d["time"] or ""
         d["prompt_id"] = cur_id
         d["prompt_title"] = cur_title
         d["prompt_full"] = cur_full
-        # The tools this step called, in call order -- the same `part` rows
-        # tool_breakdown attributes tokens to, carried onto the turn row so the Turns
-        # tab can name them without a second per-session fetch. The file backends build
-        # this list in their parser; OpenCode joins it here.
         d["tools"] = (tools or {}).get(d["mid"], [])
         for k in ("role", "mid", "summary_title", "prompt_text"):
             del d[k]
@@ -109,9 +78,6 @@ def _process_timeline(rows: list[dict], tools: dict[str, list[str]] | None = Non
 
 
 class Store:
-    # OpenCode records real per-message dollar cost; records_cost=False marks sources
-    # (Claude Code) whose cost is $0 until "$" reprices their tokens, driving a header
-    # hint. source_name labels the active backend; combined is set only by CombinedStore.
     records_cost = True
     combined = False
     source_name = "OpenCode"
@@ -119,29 +85,15 @@ class Store:
     def __init__(self, db: str, args: argparse.Namespace):
         self.db = db
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the hidden
-        # magnitude factor -- one log-uniform draw (~0.33x..3x) so a screenshot can't be
-        # reverse-engineered into real spend (tokens x list price would recover dollars),
-        # or 1.0 when spend isn't scrambled. See demo.demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
-        # Open read-only (URI mode) so opentab physically cannot modify the
-        # OpenCode database it reads -- the "never writes" promise, enforced.
+        # Enforce the read-only database contract at connection level.
         uri = "file:" + quote(os.path.abspath(db)) + "?mode=ro"
-        # check_same_thread=False lets CombinedStore run workflows()/model_breakdown() on
-        # a worker thread (parse the backends in parallel). Each Store owns its own
-        # connection and it is only ever touched by ONE thread at a time -- never
-        # concurrently -- so no cross-thread locking is needed. Read-only regardless.
+        # CombinedStore may move this connection between threads, never use it concurrently.
         self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._tune(self.conn)
         self.session_columns = self._table_columns("session")
-        # The Tools tab attributes tokens to individual tool calls, which live in the
-        # `part` table (one row per tool invocation). Older OpenCode schemas predate
-        # it, so probe once: without it the tab is simply not offered.
         self.supports_tool_breakdown = self._table_exists("part")
-        # The Turns tab lists every assistant message (one LLM step) chronologically.
-        # It only needs the message table, which every OpenCode schema has, but probe
-        # so a degenerate DB without it simply omits the tab instead of crashing.
         self.supports_message_timeline = self._table_exists("message")
 
     @staticmethod

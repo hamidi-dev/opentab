@@ -1,5 +1,3 @@
-"""CachedStore: the warm-start rollup cache (stores/cached.py)."""
-
 import json
 import os
 import sqlite3
@@ -213,9 +211,6 @@ def test_cached_store_round_trips_ended_at():
 
 
 def test_cached_store_invalidates_a_stale_cache_version():
-    # A cache file written by an older opentab carries an older CACHE_VERSION; that
-    # mismatch alone must force a real re-parse rather than silently serving rows
-    # shaped for the old version until some unrelated file edit.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         os.environ["XDG_CACHE_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
@@ -270,11 +265,7 @@ def test_cached_store_invalidates_a_stale_cache_version():
 
 
 def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
-    # OpenCode runs SQLite in WAL mode, so a new session lands in <db>-wal while the
-    # main .db's size/mtime don't move until a checkpoint. cache_inputs() must
-    # fingerprint the WAL sidecars, or CachedStore keeps serving the stale rollup and a
-    # reload (r) / the browser's refresh never shows sessions written since -- the
-    # reported "--web refresh doesn't get new sessions" bug.
+    # WAL writes leave the main database fingerprint unchanged until checkpoint.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         os.environ["XDG_CACHE_HOME"] = os.path.join(tmp, "cfg")  # isolate the cache dir
@@ -427,9 +418,6 @@ def _touch(path, text):
 
 
 def test_cached_store_splices_only_the_sessions_a_changed_file_touches():
-    # The whole point: a corpus-wide fingerprint made ONE appended transcript throw away
-    # the rollup for every other file (measured: 4KB of growth cost a 531MB re-parse on
-    # every launch from inside a live session).
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         try:
@@ -475,11 +463,7 @@ def test_cached_store_splices_only_the_sessions_a_changed_file_touches():
 
 
 def test_cached_store_splice_reparses_a_whole_session_not_just_the_changed_file():
-    # One file can hold several sessions (a subagent sidecar carries its PARENT's id), so
-    # re-reading only the changed file would rebuild a co-tenant session from half its
-    # records -- a plausible-looking undercount. The closure runs over the file<->session
-    # graph, so a changed sidecar drags in its parent's transcript AND the other sessions
-    # that transcript feeds.
+    # A sidecar can feed its parent and co-tenant sessions in another file.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         try:
@@ -516,9 +500,6 @@ def test_cached_store_splice_reparses_a_whole_session_not_just_the_changed_file(
 
 
 def test_cached_store_falls_back_to_a_full_parse_when_the_splice_cannot_be_trusted():
-    # Each of these would otherwise serve a number no parse would ever produce, so each
-    # one costs the full parse it was trying to avoid. Cheap: measured on a real corpus,
-    # a replay-capable transcript is 1 file of 257.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         try:
@@ -590,9 +571,6 @@ def test_cached_store_falls_back_to_a_full_parse_when_the_splice_cannot_be_trust
 
 
 def test_cached_store_splice_refuses_a_file_that_shrank():
-    # A transcript that shrank was rewritten, not appended to, and a record that vanished
-    # may have been the first claim on a dedup key another session also holds -- which
-    # would hand that call to the other session. Rows this splice keeps cannot see that.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         try:
@@ -621,9 +599,6 @@ def test_cached_store_splice_refuses_a_file_that_shrank():
 
 
 def test_cached_store_splice_survives_a_corrupt_cache_payload():
-    # These paths only run on a MISS, where the old code simply reparsed -- so a cache
-    # file someone hand-edited (or a half-migrated one) must fall back to a full parse,
-    # never raise out of a launch.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         try:
@@ -668,9 +643,6 @@ def test_cached_store_splice_survives_a_corrupt_cache_payload():
 
 
 def test_cached_store_rejects_a_cache_whose_rows_are_the_wrong_shape():
-    # Row shapes are checked at LOAD, not at each use: the rows are read on the hit path
-    # too (Workflow(**row) / dict(row)), so checking only the splice left a hand-edited
-    # model_breakdown raising TypeError out of a launch whose fingerprint matched exactly.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         try:
@@ -723,10 +695,6 @@ def test_cached_store_rejects_a_cache_whose_rows_are_the_wrong_shape():
 
 
 def test_cached_store_incremental_flag_is_per_call_not_sticky():
-    # --timings reads this. One wrapper answers workflows() more than once (reload, and
-    # --remote builds the local store then profiles it), so a splice followed by a full
-    # parse must not still report "incremental" -- a profiler that is confidently wrong
-    # about why a launch was slow is worse than one that says nothing.
     with tempfile.TemporaryDirectory() as tmp:
         old_xdg = os.environ.get("XDG_CACHE_HOME")
         try:

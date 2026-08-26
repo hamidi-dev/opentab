@@ -1,5 +1,3 @@
-"""build_payload/session_extras and the served browser (web.py + webpage.py)."""
-
 import json
 import os
 import re
@@ -149,9 +147,6 @@ def test_web_session_extras_reports_turns_with_both_costs():
 
 
 def test_web_turns_ship_the_tools_each_step_called():
-    # The page names what each step DID in its drilled view, and counts the calls on the
-    # prompt row -- so the raw names travel per turn. Raw, not pre-labelled: folding and
-    # shortening are width questions, and the page answers them at its own widths.
     class Working(TurnsFakeStore):
         def message_timeline(self, workflow_id):
             rows = super().message_timeline(workflow_id)
@@ -169,11 +164,6 @@ def test_web_turns_ship_the_tools_each_step_called():
 
 
 def test_web_turn_tools_are_sanitized_at_the_boundary_not_by_the_page():
-    # The page's own gate can only reject what still LOOKS wrong on arrival, and a bare
-    # list() launders the bad shapes into plausible ones: "Bash" becomes four one-letter
-    # tools that pass every client-side check, a dict yields its KEYS, and a
-    # non-iterable raises inside the /api/session handler. So the payload goes through
-    # the same util.tool_names gate the TUI uses.
     def shipped(value):
         class S(TurnsFakeStore):
             def message_timeline(self, workflow_id):
@@ -193,9 +183,6 @@ def test_web_turn_tools_are_sanitized_at_the_boundary_not_by_the_page():
 
 
 def test_web_turns_carry_the_context_size_and_mark_compactions():
-    # The page marks compactions in its Turns table like the TUI's detail_turns, so the
-    # per-turn context size has to travel on the turn row (the Context tab's `points` are
-    # main-thread-only and minute-stamped -- not something a turn can be matched back to).
     class Compacting(TurnsFakeStore):
         def message_timeline(self, workflow_id):
             rows = super().message_timeline(workflow_id)
@@ -235,8 +222,6 @@ def test_web_turns_carry_the_context_size_and_mark_compactions():
 
 
 def test_web_session_extras_context_gated_by_curve_support():
-    # A backend whose turn rows are cumulative deltas (Codex) opts out of the
-    # curve; the payload ships context: None so the page never draws a wrong one.
     class DeltaTurns(TurnsFakeStore):
         def supports_context_curve(self, workflow_id):
             return False
@@ -361,10 +346,6 @@ def test_web_payload_reshapes_roles_to_css_vars():
 
 
 def test_web_payload_embeds_the_price_reference():
-    # The P overlay's data: priced models you've used, with the eff $/M blend. The
-    # FakeStore has no model_breakdown, so a store with model rows is needed -- reuse
-    # NodesFakeStore, which returns a fable-5 node but no model_breakdown either;
-    # so assert the structural shape (present, both row sets, mix optional).
     app = app_with([workflow("w1", "2026-05-01 10:00:00")])
     prices = ot.build_payload(app)["prices"]
     assert set(prices) >= {"byModel", "byRoute", "catalog"}
@@ -418,10 +399,6 @@ def _js_whatif_totals(payload, session_id, target):
 
 
 def test_web_payload_ships_the_whatif_ingredients():
-    # The `w` what-if can't travel precomputed (the target model is picked at view time),
-    # so the payload ships the ingredients: the per-MODEL token splits the baseline needs,
-    # the nodes' splits the tree's What-if column needs, and the list rates of every model
-    # you've used. That is enough to price anything client-side.
     with tempfile.TemporaryDirectory() as tmp:
         payload = ot.build_payload(_whatif_db(tmp))
     root, kid = payload["nodes"]["root"]
@@ -455,11 +432,6 @@ def test_web_payload_ships_the_whatif_ingredients():
 
 
 def test_web_payload_ships_the_whatif_catalog_tier():
-    # The picker's Tab tier travels as the TUI's own whatif_catalog_candidates rows --
-    # same names, same model_price rates, same cheapest-for-your-mix order -- because
-    # deriving it client-side from prices.catalog would re-implement the dedupe and
-    # could drift. Slim {m, p} rows: eff and its ~ flag are pure functions of p + the
-    # shipped mix, recomputed client-side exactly like the P overlay's catalog rows.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         payload = ot.build_payload(app)
@@ -486,9 +458,6 @@ def test_web_payload_ships_the_whatif_catalog_tier():
 
 
 def test_web_whatif_reprices_the_serialized_tokens_to_the_tui_figure():
-    # The page's arithmetic, run over the page's own numbers: its per-model baseline and
-    # its counterfactual must land on the exact figures the TUI's whatif_session_totals
-    # quotes -- one formula, two frontends.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         payload = ot.build_payload(app)
@@ -510,10 +479,6 @@ def test_web_whatif_reprices_the_serialized_tokens_to_the_tui_figure():
 
 
 def test_web_whatif_baseline_is_the_exact_per_model_list_price():
-    # CRITICAL: the baseline prices EVERY token at its OWN model's list rates, off the
-    # per-model rows -- never a node's recorded/`api` cost. A node keeps a partially
-    # metered session's few cents as its whole cost, and carries one dominant model label
-    # for a session that may have switched models; either error inflates the "saving".
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp, costs=(1.5, 0.44))
         payload = ot.build_payload(app)
@@ -539,10 +504,6 @@ def test_web_whatif_baseline_is_the_exact_per_model_list_price():
 
 
 def test_web_whatif_answers_for_a_solo_session_with_no_nodes():
-    # A session that delegated nothing has no tree for the Subagents pane to table, so its
-    # what-if lives on the Overview -- and it needs no node row at all: both panes reduce
-    # over the per-model rows, which ship for every session with usage. So nodes go back to
-    # riding along only for sessions that actually have a subagent tree.
     with tempfile.TemporaryDirectory() as tmp:
         # A solo (subscription) session on Opus, plus an unrelated Haiku one -- so Haiku
         # is an armable target even though this session never used it.
@@ -567,12 +528,6 @@ def test_web_whatif_answers_for_a_solo_session_with_no_nodes():
 
 
 def test_web_page_matches_models_through_one_shared_rule():
-    # One JS helper (modelMatches, the mirror of pricing.model_matches) behind BOTH model
-    # filters: the P overlay's and the `w` picker's. Model ids match by word-anchored
-    # fuzzy (the mirror of util.anchored_fuzzy_match -- a bare subsequence filled a
-    # filter for "opus" with qwen3-cOder-PlUS junk), routes and vendor labels by plain
-    # substring -- subsequencing the route is what made "gpt" walk "github-copilot" and
-    # drag every Claude model sold through it into a GPT search.
     js = _js_source()
     assert js.count("function modelMatches(") == 1  # exactly one matcher, not two
     assert "rows = rows.filter(r => modelMatches(PRICES.q, r.model, r.routes, r.familyLabel))" in js
@@ -584,9 +539,6 @@ def test_web_page_matches_models_through_one_shared_rule():
 
 
 def test_web_whatif_target_is_transient_and_app_wide_costs_never_move():
-    # The target is deliberately NOT persisted -- not to localStorage (unlike the theme and
-    # the price pins), not to the hash: a remembered what-if would silently falsify every
-    # later look. And it is session-scoped, so no app-wide figure moves while it's armed.
     js = _js_source()
     keys = set(re.findall(r"localStorage\.setItem\('([^']+)'", js))
     assert keys == {"opentab-theme", "opentab-pins"}  # nothing what-if shaped
@@ -675,10 +627,6 @@ def test_web_server_is_hardened_against_csrf_and_dns_rebinding():
 
 
 def test_serve_command_runs_serve_forever_off_the_main_thread():
-    # Regression: on Windows a Ctrl-C never wakes serve_forever's select(), so serving
-    # in the foreground was unkillable from the keyboard. serve_command must run
-    # serve_forever on a background thread (leaving the main thread free to catch the
-    # interrupt) and always tear the server down via shutdown() + server_close().
     import threading
     import types
 
@@ -717,8 +665,6 @@ def test_serve_command_runs_serve_forever_off_the_main_thread():
 
 
 def test_web_open_report_opens_a_browser_and_survives_a_headless_box():
-    # --web pops the browser open cross-platform via stdlib webbrowser; a box with no
-    # browser must return False, never raise, so serving keeps running.
     import webbrowser
 
     calls = []
@@ -859,8 +805,6 @@ def test_web_refresh_endpoint_repulls_the_named_machine():
 
 
 def test_web_refresh_endpoint_ignores_malformed_and_unnamed_requests():
-    # A malformed/empty/non-string machine must be a no-op -- never "refresh every box"
-    # (an ssh storm) and never crash the handler on an unhashable value.
     import threading
     import urllib.request
 
@@ -889,12 +833,7 @@ def test_web_refresh_endpoint_ignores_malformed_and_unnamed_requests():
 
 
 def test_web_context_points_carry_their_own_window():
-    """The page derives peak/final itself, and a session can switch models mid-way, so the
-    peak % must be measured against the window the PEAK TURN ran in -- the TUI's split
-    (renderer.detail_context). Shipping only the live model's window made the page print an
-    impossible 120% of the window for a session that peaked on a big model and ended on a
-    smaller one; shipping one precomputed peakWindow could still disagree with whichever
-    turn the client picked as the peak, so every point carries its own."""
+    # Each point needs the context window of the model used for that turn.
     base = {
         "depth": 0,
         "agent": "-",
@@ -961,10 +900,6 @@ def _js_token_economics(payload, session_ids):
 
 
 def test_web_token_economics_matches_the_tui_split_exactly():
-    # One formula, two frontends -- the same rule the what-if follows. The page computes
-    # the split client-side (only it knows the drilled/filtered scope), so the payload has
-    # to carry everything that needs: the per-model token splits, every used model's
-    # rates, and which of those models are local.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         payload = ot.build_payload(app)
@@ -1006,11 +941,6 @@ def test_web_token_economics_pane_is_two_stacked_bars_over_a_fixed_order_table()
 
 
 def test_web_models_tab_drills_in_place_in_every_scope():
-    # The TUI's Models drill, mirrored: a model row arms the in-place sub-drill in EVERY
-    # scope that has a Models tab, not just the Machines box -- there is no model scope to
-    # navigate to instead. Harnesses/Projects stay box-gated (they DO have their own
-    # scope), and the clearable chip is no longer box-gated either, or an armed model
-    # drill outside a box would have no way back out.
     js = _js_source()
     body = js.split("function renderDetail(", 1)[1].split("\nfunction ", 1)[0]
     models = body.index("modelsTable('t-tab-models'")
@@ -1024,10 +954,6 @@ def test_web_models_tab_drills_in_place_in_every_scope():
 
 
 def test_web_overview_closes_with_the_models_table():
-    # The TUI's rule (renderer._model_table), mirrored: the models table is the widest
-    # block and the least likely answer to "where did the money go", so every Overview
-    # ends with it and the blocks that read in a glance -- Token economics, Top projects,
-    # Top sessions -- come first.
     js = _js_source()
     body = js.split("function renderOverview(", 1)[1].split("\nfunction ", 1)[0]
     econ = body.index("tokenEconomicsPane(")
@@ -1099,11 +1025,6 @@ def test_web_tools_treemap_is_passive_themed_and_precedes_the_table():
 
 
 def test_web_flamegraph_divides_the_same_node_costs_as_the_tui():
-    # One chart, two frontends. The target is not the issue here (the flamegraph has
-    # none) -- the SCOPE is: widths follow the live $ toggle, so the page computes them
-    # client-side and the payload has to carry each node's two costs, its depth, and the
-    # fields the labels need. Restating sessionFlame() over the payload has to land on
-    # App.session_flame's segments exactly.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)  # a subscription session: root + one Docs subagent, $0
         app.show_api_prices = True
@@ -1206,8 +1127,6 @@ def test_web_flamegraph_sits_above_the_tree_and_ignores_an_armed_target():
 
 
 def test_web_payload_names_the_local_models_so_the_page_can_exclude_them():
-    # Without this list the page cannot apply App.token_economics' rule and would price
-    # local tokens at the generic fallback -- inventing spend that no one was billed.
     app = app_with([workflow("w1", "2026-05-01 10:00:00", cost=0.0)])
     app._model_by_root = {
         "w1": [
@@ -1244,18 +1163,7 @@ def test_web_payload_names_the_local_models_so_the_page_can_exclude_them():
 
 
 def test_web_names_stay_reachable_from_a_cold_package_import():
-    # opentab/__init__.py re-exports every module eagerly EXCEPT this one: reaching
-    # opentab.web pulls http.server (~13ms) that no TUI start and no `opentab cost`
-    # poll should pay, so the five web names and the two modules resolve on demand
-    # (PEP 562). This test lives here because the deferred set is exactly the web
-    # frontend's surface -- if the registry ever generalizes, it moves.
-    #
-    # The trap it guards: `from opentab.web import build_payload` used to bind
-    # `opentab.web` as a side effect, so ot.web.ReportServer worked. With a lazy
-    # registry that only knows FUNCTION names, ot.web resolves only once something
-    # else happened to trigger an import -- passing or failing depending on what ran
-    # first in the process. So the modules are registered too, and a subprocess with
-    # nothing else imported is the only honest way to assert it.
+    # Exercise deferred web exports from a subprocess with no prior opentab.web import.
     import subprocess
     import sys
 
@@ -1327,10 +1235,6 @@ class ExpiryFakeStore(FakeStore):
 
 
 def test_web_ships_cache_expiries_precomputed_rather_than_mirroring_the_rule():
-    # Unlike the what-if (armed at view time) and the compaction markers (three lines off
-    # the `ctx` each turn already carries), this needs list rates and the TTL rules and
-    # moves with nothing on the page -- so it is computed once, in Python, and the page
-    # only draws it. A JS twin here could only drift away from the TUI.
     args = type("Args", (), {"since": None, "until": None, "days": None})()
     app = ot.App(ExpiryFakeStore([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
     (exp,) = ot.session_extras(app, "w1")["expiries"]
@@ -1354,9 +1258,6 @@ def test_web_ships_cache_expiries_precomputed_rather_than_mirroring_the_rule():
 
 
 def test_web_expiries_stay_empty_when_the_backend_cannot_support_the_reading():
-    # The Context-curve opt-in gates it, exactly as it gates the TUI's marker and the
-    # compaction rows -- a cumulative-delta backend cannot have its cache split read as
-    # one request's prompt, and the two frontends must not disagree about that.
     args = type("Args", (), {"since": None, "until": None, "days": None})()
 
     class NoCurve(ExpiryFakeStore):
@@ -1368,12 +1269,6 @@ def test_web_expiries_stay_empty_when_the_backend_cannot_support_the_reading():
 
 
 def test_web_turn_costs_bill_long_ttl_writes_so_an_expiry_fits_inside_its_turn():
-    # A cache expiry's cost is not a separate charge -- it is the part of the FOLLOWING
-    # turn's cost that went on re-buying context, so it can never exceed that turn. The
-    # page broke the invariant by pricing turns without the 1h-TTL cache-write subset
-    # (2.00x input, against the 5m tier's 1.25x) while the marker priced the re-buy with
-    # it: measured on a real session, a $4.81 expiry sat inside a turn the page called
-    # $3.27. The TUI's detail_turns/detail_tools always passed it; the page now does too.
     args = type("Args", (), {"since": None, "until": None, "days": None})()
     app = ot.App(ExpiryFakeStore([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
     extras = ot.session_extras(app, "w1")
@@ -1396,8 +1291,6 @@ def test_web_turn_costs_bill_long_ttl_writes_so_an_expiry_fits_inside_its_turn()
 
 
 def test_web_turns_carry_the_cached_share_and_keep_the_table_rectangular():
-    # The one number that answers "did this turn re-buy its context", shipped rather
-    # than derived: the page has each turn's total tokens but not its cache split.
     args = type("Args", (), {"since": None, "until": None, "days": None})()
     app = ot.App(ExpiryFakeStore([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
     warm, cold = ot.session_extras(app, "w1")["turns"]
@@ -1416,9 +1309,6 @@ def test_web_turns_carry_the_cached_share_and_keep_the_table_rectangular():
 
 
 def test_web_cached_share_is_gated_like_every_other_per_request_reading():
-    # A cumulative-delta backend cannot have one row read as one request's prompt, so it
-    # gets no share at all rather than a plausible wrong one -- the same opt-in behind
-    # the compaction markers, the expiry markers and the Context curve.
     args = type("Args", (), {"since": None, "until": None, "days": None})()
 
     class NoCurve(ExpiryFakeStore):
@@ -1430,11 +1320,7 @@ def test_web_cached_share_is_gated_like_every_other_per_request_reading():
 
 
 def test_web_turns_subtotal_each_run_not_each_prompt_id():
-    # A prompt id is not unique -- a backend without explicit ids groups by the prompt
-    # TEXT, so asking the same thing twice in one session gives A, B, A. The page drew a
-    # header per RUN but looked its subtotal up in a Map keyed by ID, so both A headers
-    # showed the two runs' combined cost and a $6 session rendered $4 + $2 + $4. Same bug
-    # the TUI's turn_group_rows had, in the page's own copy of the grouping.
+    # Repeated prompt text creates separate non-consecutive runs with the same id.
     js = _js_source()
     # turnGroupRows is the page's mirror of Renderer.turn_group_rows: a LIST of runs
     # addressed by ordinal, never a map keyed by the id.
@@ -1448,9 +1334,6 @@ def test_web_turns_subtotal_each_run_not_each_prompt_id():
 
 
 def test_web_ships_the_reasoning_level_and_names_the_switch_that_dropped_the_cache():
-    # The Eff column and the ⚙ marker, mirrored. The cause travels with each expiry so
-    # the page can tell an idle gap from an effort switch -- one "cache expired" line
-    # covering both would tell someone who never went idle that they did.
     args = type("Args", (), {"since": None, "until": None, "days": None})()
     app = ot.App(ExpiryFakeStore([workflow("w1", "2026-06-10 10:00:00", cost=0.0)]), args)
     rows = app.session_turn_rows("w1")
@@ -1473,11 +1356,6 @@ def test_web_ships_the_reasoning_level_and_names_the_switch_that_dropped_the_cac
 
 
 def test_web_prompt_rows_name_the_subagents_that_ran_them():
-    # The page mirrors the TUI's Agents column: which subagents a prompt delegated to,
-    # gated on the rows (a session that delegated nothing draws no column), with the
-    # unnamed executions folded into one "subagent ×n" through the same dull-name set
-    # the flamegraph labels use -- one set, so the two can't disagree about which names
-    # are worth printing.
     js = _js_source()
     assert js.count("const DULL_AGENTS = new Set(") == 1  # shared with flameLabel
     assert "FLAME_DULL" not in js
@@ -1495,11 +1373,6 @@ def test_web_prompt_rows_name_the_subagents_that_ran_them():
 
 
 def test_web_a_range_change_forgets_the_scope_state_itself():
-    # applyRange used to leave this to the hashchange listener, via go('', ''). That
-    # event only fires when the hash actually CHANGES, so applying a range from the root
-    # scope -- the most ordinary way to do it -- kept an armed model sub-drill and a
-    # typed filter over a dataset they were never chosen in. On screen that reads as a
-    # Sessions tab that came back empty for no reason.
     js = _js_source()
     reset = "function resetScopeState() { FILTER = ''; EXPANDED.clear(); MSUB = null; }"
     assert reset in js

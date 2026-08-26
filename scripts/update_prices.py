@@ -49,8 +49,7 @@ def main() -> int:
         "fetched_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "providers": providers,
     }
-    # indent=1 + sorted keys: one leaf per line, so the per-release regeneration
-    # diffs as changed models rather than one opaque blob.
+    # One sorted leaf per line keeps catalog refresh diffs readable.
     text = json.dumps(payload, indent=1, sort_keys=True) + "\n"
     args.target.parent.mkdir(parents=True, exist_ok=True)
     args.target.write_text(text)

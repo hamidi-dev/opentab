@@ -1,20 +1,8 @@
-"""Shared theme palettes — the single source of truth for the web browser and the TUI.
-
-Each theme names a role palette (semantic slots, not hues) plus a calendar heat ramp
-(`heat`, coldest→hottest) and a cheap→pricey price-heat ramp (`price_heat`), and a
-`dark` flag. The web browser reads these verbatim (`web_payload()` reshapes them to the
-JS token names and is injected into the page), and the curses TUI maps the same role
-hexes to color pairs via `init_color` on true-color terminals (or nearest-256 elsewhere).
-Adding a theme is one entry here; both frontends and the `--theme` CLI choices pick it up.
-
-Pure stdlib. The curses application lives in the TUI (this module only supplies data and
-the hex→terminal-color math, which is unit-testable without a screen).
-"""
+"""Shared semantic palettes and terminal-colour math for both frontends."""
 
 from __future__ import annotations
 
-# Role slots every theme fills. The web maps these to CSS variables (underscores ->
-# hyphens); the TUI maps a subset to curses color pairs (see tui/app.run).
+# The web maps role underscores to CSS hyphens; the TUI maps roles to curses pairs.
 ROLE_KEYS = (
     "bg",
     "bg_glow",
@@ -43,7 +31,7 @@ def _theme(name, dark, roles, heat, price_heat):
     }
 
 
-# roles order == ROLE_KEYS: bg bg_glow panel panel2 line line2 axis ink ink2 mut accent accent_bright good bad
+# Order matches ROLE_KEYS.
 THEMES = {
     "tokyo-night": _theme(
         "Tokyo Night",
@@ -551,8 +539,7 @@ THEMES = {
         ["#141414", "#3d2f24", "#69503a", "#9c7654", "#cc9c72", "#ffc799"],
         ["#99ffe4", "#c6e6bb", "#ffc799", "#ffa27a", "#ff8080"],
     ),
-    # Light themes last, so the picker groups darks together (and, since the picker
-    # wraps, `k` from the top jumps straight to a light one).
+    # Light themes stay last so the wrapping picker groups both classes.
     "catppuccin-latte": _theme(
         "Catppuccin Latte",
         False,
@@ -734,9 +721,6 @@ def web_payload() -> dict:
     return out
 
 
-# --- hex → terminal-color math (pure; the TUI does the curses calls) ---------
-
-
 def hex_rgb(color: str) -> tuple[int, int, int]:
     c = color.lstrip("#")
     return int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
@@ -758,7 +742,6 @@ def ink_on(color: str) -> str:
     return "#101014" if black > white else "#ffffff"
 
 
-# The xterm-256 cube (16..231) steps and the greyscale ramp (232..255), for nearest().
 _CUBE = (0, 95, 135, 175, 215, 255)
 
 
@@ -767,7 +750,6 @@ def _cielab(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
     lin = [v / 255 for v in rgb]
     lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in lin]
     r, g, b = lin
-    # sRGB -> XYZ, normalised by the D65 white point.
     x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
     y = 0.2126 * r + 0.7152 * g + 0.0722 * b
     z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
@@ -780,10 +762,7 @@ def _cielab(rgb: tuple[int, int, int]) -> tuple[float, float, float]:
 
 
 def _palette_256() -> list[tuple[int, tuple[float, float, float]]]:
-    """The 240 addressable xterm-256 entries (cube + grey ramp) with their Lab values,
-    built once. 0..15 are excluded on purpose: those are the slots the user's own
-    terminal theme redefines, so matching against xterm's nominal values for them would
-    pick colours that render as something else entirely."""
+    """Cache addressable xterm entries, excluding user-redefinable slots 0..15."""
     global _PALETTE_LAB
     if _PALETTE_LAB is None:
         entries = []
@@ -800,29 +779,10 @@ _NEAREST_256_CACHE: dict[str, int] = {}
 
 
 def nearest_256(color: str, avoid: frozenset[int] | None = None) -> int:
-    """The xterm-256 palette index closest to a hex color, for terminals that can't
-    redefine colors. Searches all 240 entries (the 6×6×6 cube and the 24-step grey ramp)
-    for the smallest CIE76 ΔE.
+    """Find the nearest xterm-256 entry by CIE76 distance.
 
-    `avoid` excludes indices already handed to a *different* colour, so a theme's roles
-    stay distinguishable from one another. Searching for the globally closest entry
-    makes each role more accurate but pulls neighbouring roles onto the SAME index --
-    measured across the 30 themes, role collisions went 3 -> 13, which is how a focused
-    border stops being distinguishable from ordinary accent text. Second-nearest for the
-    later role beats an exact match nobody can tell apart; callers that want a ramp
-    (where levels legitimately collapse, and monotonicity matters more than
-    distinctness) pass nothing.
-
-    The distance is measured in Lab, not RGB, and the whole palette is searched rather
-    than each channel being rounded to its nearest cube level independently. Both
-    matter, because the cube's levels are unevenly spaced (0, 95, 135, 175, 215, 255):
-    per-channel rounding sends neighbouring channels in OPPOSITE directions, which
-    distorts the ratio between them -- i.e. the hue. Measured on Tokyo Night's `ink`
-    (#c0caf5, the colour most of the screen is painted in), that rounded red down to 175
-    while rounding green up to 215, landing on #afd7ff: a 19° hue swing that reads as a
-    green cast over the whole UI (issue #12). The Lab search picks #d7d7ff instead --
-    ΔE 6.4 rather than 10.0, hue error 11° rather than 19°. Across all 30 themes' roles
-    it cuts mean ΔE 9.7 -> 8.1 and, more visibly, WORST-case ΔE 37.6 -> 22.9.
+    ``avoid`` keeps semantic roles distinct; ramps omit it because monotonicity matters
+    more than distinct indices. Lab search avoids hue distortion from the uneven RGB cube.
     """
     if not avoid:
         hit = _NEAREST_256_CACHE.get(color)
@@ -843,7 +803,7 @@ def nearest_256(color: str, avoid: frozenset[int] | None = None) -> int:
     return best
 
 
-# The 8 basic ANSI colors at xterm's default RGB, index == the curses COLOR_* constant.
+# Indexes match curses' basic ANSI constants.
 _ANSI8 = (
     (0, 0, 0),  # black
     (205, 0, 0),  # red
@@ -857,9 +817,7 @@ _ANSI8 = (
 
 
 def nearest_8(color: str) -> int:
-    """The basic ANSI color (0..7) closest to a hex, for 8-color terminals -- the
-    Linux console, real serial terminals -- whose palette init_pair refuses anything
-    past. The heat ramps have their own generated ANSI path; this is for the roles."""
+    """Find the nearest basic ANSI role colour for terminals limited to indexes 0..7."""
     r, g, b = hex_rgb(color)
     return min(
         range(8),

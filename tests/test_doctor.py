@@ -1,5 +1,3 @@
-"""The `opentab doctor` health report (doctor.py)."""
-
 import contextlib
 import io
 import json

@@ -14,16 +14,12 @@ if TYPE_CHECKING:
 
 
 def state_path(migrate: bool = True) -> str:
-    # Regenerable UI prefs -> XDG state dir; migrated from the old config dir on read.
-    # migrate=False looks without moving -- `opentab doctor`'s, and only doctor's; see
-    # paths.resolved for why that distinction has to exist.
+    # migrate=False lets doctor inspect preferences without moving them.
     target = os.path.join(paths.state_dir(), "state.json")
     return paths.migrated(target) if migrate else paths.resolved(target)
 
 
 def load_state(path: str | None = None) -> dict:
-    # `path` overrides where to read, for the one caller that must not touch the disk:
-    # `opentab doctor` pairs it with state_path(migrate=False). See paths.resolved.
     try:
         with open(path or state_path()) as fh:
             data = json.load(fh)
@@ -47,17 +43,17 @@ def save_state(app: App) -> None:
         "prices_sort_reverse": app.prices_sort_reverse,
         "trend_sort_reverse": app.trend_sort_reverse,
         "browse_mode": app.browse_mode,
-        "focus": app.focus,  # which stacked time panel (Years/Months/Days) was active
-        "zoom_maximized": app.zoom_maximized,  # + in a zoomed detail: full-screen vs split
+        "focus": app.focus,
+        "zoom_maximized": app.zoom_maximized,
         "ignored_projects": sorted(app.ignored_projects),
         "ignored_sessions": sorted(app.ignored_sessions),
-        "bookmarks": sorted(app.bookmarks),  # sessions starred with `b`
-        "pinned_models": sorted(app.pinned_models),  # P-overlay pins ("route/canon", space)
+        "bookmarks": sorted(app.bookmarks),
+        "pinned_models": sorted(app.pinned_models),
         "show_api_prices": app.show_api_prices,
-        "source": app.source_key,  # restore the last source (opencode/claude/all) next run
-        "theme": app.theme_id,  # the colour theme (shared with the web browser)
-        "cal_levels": app.cal_levels,  # the Calendar heat-map granularity (+/-)
-        "prices_prompt_dismissed": app.prices_prompt_dismissed,  # "don't ask again" for prices
+        "source": app.source_key,
+        "theme": app.theme_id,
+        "cal_levels": app.cal_levels,
+        "prices_prompt_dismissed": app.prices_prompt_dismissed,
     }
     path = state_path()
     try:
@@ -69,15 +65,12 @@ def save_state(app: App) -> None:
 
 
 def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
-    # CLI range flags win; otherwise restore the last range used. Sort and browse
-    # mode are pure UI prefs and are always restored.
+    # Explicit CLI range flags override the saved range.
     if not (args.since or args.until or args.days is not None):
         saved_range = state.get("range")
         if saved_range:
             try:
                 app.set_range_from_text(saved_range)
-                # The restored range can change which years/months have data, so
-                # re-pick the default (All years, current month) against the new slice.
                 app._anchor_default_selection()
             except ValueError:
                 pass
@@ -85,8 +78,7 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     if saved_sort in app.sort_options:
         app.sort_by = saved_sort
     elif saved_sort in app.subagent_sort_options:
-        # A pre-split state.json could stash a subagent-only key ("depth", "model",
-        # "agent") in sort_by; route it home instead of silently dropping it.
+        # Migrate legacy subagent-only values formerly stored in sort_by.
         app.subagent_sort_by = saved_sort
     if state.get("project_sort_by") in app.project_sort_options:
         app.project_sort_by = state["project_sort_by"]
@@ -94,22 +86,15 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.subagent_sort_by = state["subagent_sort_by"]
     if state.get("prices_sort") in app.prices_sort_options:
         app.prices_sort = state["prices_sort"]
-    # The Trends ranking column. Validated against the union of the ranked tabs'
-    # vocabularies, not one tab's: the stored key is per-OVERLAY and re-validated per
-    # tab at draw time (trend_sort_key), so a saved "tokens" must survive a launch that
-    # happens to open on Models, which withdraws it. The isinstance guard is not
-    # decoration: the union is a SET, and `[] in a_set` RAISES (unhashable) where the
-    # tuple-valued checks around it quietly answer False -- so a hand-edited
-    # `"trend_sort": []` would kill the launch before the first frame.
+    # Validate against the overlay-wide vocabulary. Guard the set lookup because a
+    # hand-edited unhashable value would otherwise abort startup.
     saved_trend_sort = state.get("trend_sort")
     trend_sort_ok = isinstance(saved_trend_sort, str) and saved_trend_sort in app.TREND_SORT_KEYS
     if trend_sort_ok:
         app.trend_sort = saved_trend_sort
     if state.get("prices_view") in {k for k, _label in app.prices_views}:
         app.prices_view = state["prices_view"]
-    # Restore a direction flip only when its column key was restored too -- a
-    # direction without its column would flip whatever default the key fell back
-    # to (e.g. a pre-split "depth" + reverse must not start sessions cheapest-first).
+    # A direction without its validated column must not flip the fallback column.
     if isinstance(state.get("sort_reverse"), bool) and saved_sort in app.sort_options:
         app.sort_reverse = state["sort_reverse"]
     if isinstance(state.get("project_sort_reverse"), bool):
@@ -118,23 +103,13 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.subagent_sort_reverse = state["subagent_sort_reverse"]
     if isinstance(state.get("prices_sort_reverse"), bool):
         app.prices_sort_reverse = state["prices_sort_reverse"]
-    # Same rule as sort_reverse above, and for the same reason: a direction with no
-    # column behind it would flip the DEFAULT one, so a state file carrying only
-    # `"trend_sort_reverse": true` would open every ranking cheapest-first.
     if isinstance(state.get("trend_sort_reverse"), bool) and trend_sort_ok:
         app.trend_sort_reverse = state["trend_sort_reverse"]
     mode = state.get("browse_mode")
-    if mode in app.BROWSE_MODE_KEYS:  # derived from App.BROWSE_MODES, never re-typed
+    if mode in app.BROWSE_MODE_KEYS:
         app.browse_mode = mode
-    # The focused sidebar panel is a pref like the browse mode above it: quit reading
-    # a month and you come back to that month, not to today. Assigned directly rather
-    # than through set_focus(), which also resets scroll/zoom state for a LIVE panel
-    # switch -- at restore time those are already at their defaults, and `tab` isn't
-    # persisted, so there is no carried tab index for set_focus to re-map. Only the
-    # three real panels are accepted; a value from a future/edited state.json leaves
-    # __init__'s "days" standing. Restored unconditionally: `focus` is meaningless in
-    # projects/machines mode (it is simply not read there), so gating it on the
-    # restored browse_mode would only lose it for someone who switches back with `t`.
+    # Assign directly: set_focus() has live-navigation side effects not wanted at restore.
+    # Keep Time focus even while another browse mode is active for a later switch back.
     if state.get("focus") in app.FOCUS_CYCLE:
         app.focus = state["focus"]
     if isinstance(state.get("zoom_maximized"), bool):
@@ -150,22 +125,15 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     if isinstance(ignored_sessions, list):
         app.ignored_sessions = {s for s in ignored_sessions if isinstance(s, str) and s}
         app._invalidate_workflow_cache()
-    # Bookmarked session ids survive restarts; ids of sessions that have since
-    # vanished (or live in another source) are kept — harmless, and they light up
-    # again if that source returns. The B view flag itself always starts off.
+    # Keep vanished bookmark ids; their source may return later.
     marks = state.get("bookmarks")
     if isinstance(marks, list):
         app.bookmarks = {m for m in marks if isinstance(m, str) and m}
-    # Restore the what-if ($) view. Only the flag is set here; the actual reprice
-    # rides on the deferred model scan in run() (via _load_model_cache ->
-    # _apply_price_mode), so the first paint still comes up off the fast rollup.
-    # An explicit saved value (True or False) overrides App.__init__'s estimate-view
-    # default; absent (first run, or --no-state), that default stands.
+    # Repricing remains deferred to the model scan; restore only an explicit saved flag.
     saved_api = state.get("show_api_prices")
     if saved_api is not None and not app.store.demo:
         app.show_api_prices = bool(saved_api)
-    # Restore the last theme, unless an explicit non-default --theme was passed
-    # (which App.__init__ already applied and should win, like the range flags).
+    # An explicit non-default CLI theme wins over saved state.
     if getattr(args, "theme", themes.DEFAULT_THEME) in (None, themes.DEFAULT_THEME):
         saved_theme = state.get("theme")
         if saved_theme in themes.THEMES:

@@ -92,24 +92,15 @@ from opentab.util import (
 
 
 def _turn_agent(row) -> str:
-    # The Agent cell for one turn row: a subagent is marked with "↳", a main-thread turn
-    # shows its own label (or "-" when the backend gives none). Mirrors the page's
-    # `t.depth ? '↳ ' + t.agent : t.agent`.
+    # Keep the subagent marker consistent with the web frontend.
     label = (row.get("agent") or "-").strip() or "-"
     return f"↳ {label}" if row.get("depth") else label
 
 
 class Renderer:
-    """All terminal drawing for OpenTab.
+    """Terminal drawing, delegating state and logic reads to the App."""
 
-    Holds the App and reads its state through __getattr__, so the App stays a
-    pure controller (state + input + data) with no curses/rendering code.
-    """
-
-    # Ordered (sort_key, label) for the clickable headers of the sortable picker
-    # lists, matching the labels the *_header builders emit. The session picker
-    # prepends a varying date column (Started/Time) and, in multi-project views,
-    # inserts a Project column before Title, so neither is listed here.
+    # Must match the labels emitted by the header builders for click hit-testing.
     SESSION_SORT_COLUMNS = (
         ("cost", "Cost"),
         ("tokens", "Tokens"),
@@ -123,7 +114,6 @@ class Renderer:
         ("sessions", "Ses"),
         ("subagents", "Subagents"),
     )
-    # The Subagents tab's clickable headers, in column order (detail_subagents).
     SUBAGENT_SORT_COLUMNS = (
         ("date", "Started"),
         ("depth", "D"),
@@ -133,10 +123,7 @@ class Renderer:
         ("tokens", "Tokens"),
         ("title", "Title"),
     )
-    # The P overlay's clickable price-table headers: (sort_key, label) in column
-    # order, matching what _price_header draws. The active column carries a v/^
-    # direction arrow; _register_sort_header locates each base label in the drawn
-    # text (arrow included) so the click zones line up.
+    # Base labels are located in the rendered header, including active-sort arrows.
     PRICE_SORT_COLUMNS = (
         ("model", "model"),
         ("eff", "eff $/M"),
@@ -148,17 +135,13 @@ class Renderer:
     )
 
     def _key(self, ctx: str, action: str) -> str:
-        # The primary key bound to (ctx, action), for a painted hint ("j", "Enter").
-        # Every hint below asks the live keymap instead of quoting a character, so a
-        # remapped key renames itself in every modal title and footer line.
+        # Painted hints must follow live keymap remappings.
         return self.app.keymap.label(ctx, action)
 
     def _keys(self, ctx: str, *actions: str) -> str:
-        # Slash-joined primaries for a hint ("j/k", "h/l"); unbound actions vanish.
         return "/".join(filter(None, (self.app.keymap.label(ctx, a) for a in actions)))
 
     def _menu_title(self, title: str, ctx: str) -> str:
-        # The standard picker title: "Sort by · j/k · Enter · Esc", off the live keymap.
         parts = [
             title,
             self._keys(ctx, "down", "up"),
@@ -169,72 +152,39 @@ class Renderer:
 
     def __init__(self, app: App) -> None:
         self.app = app
-        # The app frame (lazygit's outer border) is a *viewport*, not a layout change:
-        # draw() paints the frame in screen coordinates, then sets this origin and hands
-        # every drawer the inner (height - 2, width - 2) box. The three primitives that
-        # actually touch curses -- write/hline/frame -- add it, so every drawer, region
-        # and modal below keeps addressing cell (0, 0) as the top-left of the *content*
-        # and no geometry had to learn about the border. It stays (0, 0) until draw()
-        # frames a real screen, so a drawer called on its own (the suite does this a
-        # lot) paints exactly where it's told.
+        # Drawers use content coordinates. Only write/hline/frame add the app-frame
+        # origin; it remains zero for headless tests that call drawers directly.
         self.oy = 0
         self.ox = 0
-        # Per-segment colour runs for the Token economics bars, keyed by line text
-        # (_token_stack_line). draw() clears it per frame; seeded here so a line-builder
-        # called on its own -- which the suite does a lot -- has somewhere to record.
+        # Paint side channels are initialized here for headless line-builder tests.
         self._token_runs: dict[str, list[tuple[int, int, int]]] = {}
-        # Palette bookkeeping, re-seeded by init_theme_colors; here too so _color_index
-        # works on a renderer the suite drives without a curses screen.
         self._theme_color_cache: dict[str, int] = {}
         self._fallback_used: set[int] = set()
-        # Tools treemap fills are keyed by detail-line index: most chart rows are
-        # spaces, so unlike Token economics their line text is not a unique key.
+        # Treemap lines are mostly spaces, so line text is not a unique paint key.
         self._tool_tree_runs: dict[int, list[tuple[int, int, int]]] = {}
-        # Clickable hit regions, rebuilt every draw() so they always match what is
-        # on screen. Each is ("rows", kind, y0, y_last, x0, x1, start) for a list
-        # (click row y selects index start + (y - y0)) or (kind, y, x0, x1, index)
-        # for a tab label where kind is "tab"/"trend". hit() resolves a click. They are
-        # content coordinates: App.handle_mouse subtracts the origin once, at getmouse().
+        # Rebuilt each frame in content coordinates; App removes the origin once.
+        # Row regions map y to start + offset; other regions carry a direct index.
         self.regions: list[tuple] = []
-        # Clickable column-header zones for sortable lists: (y, x0, x1, key, target).
-        # Rebuilt every draw() alongside regions; sort_hit() resolves a click.
+        # (y, x0, x1, key, target), rebuilt with regions each frame.
         self.sort_regions: list[tuple] = []
-        # Trends-overlay paint artifacts, stashed by the drawers for draw_trends to
-        # turn into mouse geometry / row highlights: the last bar chart's per-bar
-        # slots + clickable height, and where a ranked/sessions list's rows sit
-        # within its returned lines as (first line, rows drawn, dataset offset).
+        # Draw-time trend geometry used for hit-testing and row highlights.
         self._bar_slots: list[tuple[int, int, str]] | None = None
         self._bar_click_rows = 0
         self._trend_rows_at: tuple[int, int, int] | None = None
-        # Turns tab: which detail-line indices are ▸ prompt headers (click unfolds).
         self._turn_header_at: dict[int, str] = {}
-        # The line index of the selected ▸ group's header (App._turn_cursor resolved
-        # against the drawn headers), so draw_detail can highlight it and scroll it
-        # into view. None when the Turns tab has no groups. Recomputed each paint.
+        # Selected prompt header line, recomputed each paint for scroll/highlight.
         self._turn_cursor_line: int | None = None
-        # Line-based panes (browse previews, the Subagents tab): which line indices
-        # are sortable column headers, as line_index -> (columns, target). The paint
-        # loops turn a visible one into sort_regions at its on-screen y, so header
-        # clicks sort these lists exactly like the zoom pickers' headers.
+        # Logical header lines become screen-coordinate sort regions during paint.
         self._line_sort_headers: dict[int, tuple[tuple, str]] = {}
-        # Models tab: which detail-line indices are model rows, as line_index -> row
-        # ordinal, plus the line the cursor sits on (App.model_pick_index resolved
-        # against the drawn rows). The turnline pattern -- the table stays a list of
-        # plain strings, and the selection resolves to a colour pair only at paint.
+        # Models remain plain strings; line-to-row mapping adds selection at paint time.
         self._model_row_at: dict[int, int] = {}
         self._model_cursor_line: int | None = None
-        # Where the last _ruled_box put its first body row. DERIVED as the box is
-        # built, never counted off its prologue (the treemap-offset rule): a box grows
-        # a rule between header and body only when the body is non-empty.
+        # Derive body offsets while building: empty bodies change box prologue length.
         self._ruled_body_start: int | None = None
-        # The framed column-header strings the builders have emitted, so the paint can
-        # give each one the header band (_mark_box_header explains why it's keyed by
-        # text). Cleared each frame by draw().
+        # Header identity is textual because independently built boxes are later stacked.
         self._box_headers: set[str] = set()
 
     def __getattr__(self, name: str):
-        # Misses are App state/logic; read them from the App. (Renderer's own
-        # methods are found normally, so they win over this delegation.)
         return getattr(self.app, name)
 
     def _add_rows_region(
@@ -244,8 +194,7 @@ class Renderer:
             self.regions.append(("rows", kind, y_first, y_first + drawn - 1, x0, x1, start))
 
     def hit(self, my: int, mx: int) -> tuple[str, int] | None:
-        # Resolve a mouse (y, x) to (kind, value): a list index for "rows" regions,
-        # or a tab index for "tab"/"trend" regions. First match wins.
+        # First match wins, allowing broad catch-all regions to be appended last.
         for region in self.regions:
             if region[0] == "rows":
                 _, kind, y0, y_last, x0, x1, start = region
@@ -260,11 +209,7 @@ class Renderer:
     def _register_sort_header(
         self, y: int, x_base: int, header: str, columns, target: str, max_w: int
     ) -> None:
-        # Make each column label in a sortable list header clickable so a click on
-        # the name sorts the list by that column. `columns` is the ordered
-        # (key, label) list exactly as the labels appear in `header`; we locate each
-        # in the text actually drawn (post-shorten) so every zone lines up with what
-        # is on screen even when the active-sort arrow has shifted columns right.
+        # Locate labels in the clipped, arrow-bearing text so hit zones match pixels.
         drawn = shorten(header, max_w)
         pos = 0
         for key, label in columns:
@@ -275,45 +220,27 @@ class Renderer:
             pos = i + len(label)
 
     def sort_hit(self, my: int, mx: int) -> tuple[str, str] | None:
-        # Resolve a click over a column header to (sort_key, target), or None.
         for y, x0, x1, key, target in self.sort_regions:
             if my == y and x0 <= mx <= x1:
                 return key, target
         return None
 
     def _mark_box_header(self, text: str, width: int) -> None:
-        # Record a box's COLUMN HEADER by the exact framed string it will be drawn as,
-        # so the paint can find it again. Keyed by TEXT, deliberately not by line index:
-        # a pane stacks several boxes (an Overview has four) and each builder only knows
-        # offsets within its own block, so an index recorded here is one every caller has
-        # to keep re-basing -- which is exactly how the Subagents sort zone drifted off
-        # its header once already. Position can't answer it either: _sectioned_box opens
-        # the Token economics card with a CHART, so "the row after the top border" would
-        # band a bar caption and miss the real header three sections down.
+        # Text survives later box stacking; local line indices do not. Position is also
+        # insufficient because sectioned boxes may place charts before their headers.
         self._box_headers.add(self.box_row(text, width))
 
     def box_header_lines(self, lines: list[str]) -> set[int]:
-        # Which lines of a built pane are a column header. A stale entry from an earlier
-        # pane can only match a line that is byte-identical to some box's header, which
-        # makes it one too -- so the lookup stays correct between the per-frame clears.
+        # A stale textual match is harmless: byte-identical framed text is still a header.
         return {i for i, line in enumerate(lines) if line in self._box_headers}
 
-    # The column header: accent_bright, bold -- the focus colour, the brightest ink the
-    # theme has. Text only, deliberately NOT a filled band: a pane stacks up to five boxes
-    # (an Overview has four before the model table), and five solid bars down one screen
-    # read as chrome competing with the data rather than labelling it. What it replaced
-    # was the structural grey (pair 4, the keybar's colour), which sat a shade BELOW the
-    # numbers it labelled and vanished under the box's own title. The row cursor is the
-    # same accent REVERSED (paint_cursor_row), so a header and a selection are the same
-    # family and still unmistakable for each other -- one is ink, one is a bar.
+    # Text-only accent avoids stacking multiple filled chrome bands in Overview panes.
     HEADER_PAIR = 6
 
     def _paint_box_header(
         self, stdscr: curses.window, y: int, x: int, line: str, width: int
     ) -> None:
-        # A boxed column header: the gutters stay in the frame's plain attribute so only
-        # the labels light up (draw_picker_frame paints its own through here too, so a
-        # table reads identically in both of its frames).
+        # Keep frame gutters plain; only column labels receive the header attribute.
         row = shorten(line, width)
         attr = curses.color_pair(self.HEADER_PAIR) | curses.A_BOLD
         if len(row) > self.BOX_CHROME and row[:1] in ("│", "|") and row[-1:] in ("│", "|"):
@@ -327,8 +254,6 @@ class Renderer:
     def _register_line_sort_header(
         self, sy: int, sx: int, line_index: int, line: str, max_w: int
     ) -> None:
-        # If this detail line is a sortable column header (_line_sort_headers), give
-        # it click zones at the y it was actually painted on.
         meta = self._line_sort_headers.get(line_index)
         if meta:
             self._register_sort_header(sy, sx, line, meta[0], meta[1], max_w)
@@ -336,24 +261,15 @@ class Renderer:
     def _paint_detail_lines(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, lines: list[str]
     ) -> None:
-        # The shared body painter for the line-based detail panes (browse previews,
-        # zoom tabs without a picker): clamp the scroll, paint the visible window,
-        # and make any sortable header line clickable.
         visible = h - 4
-        # The zoomed Models tab is one of those line-based panes WITH a cursor. Gate on
-        # the tab rather than on the map being non-empty: _model_row_at is only rewritten
-        # by _model_table, so another tab's paint would otherwise consult a stale one
-        # (the same reason draw_detail gates its "turnline" region on current == "Turns").
+        # Gate model cursor state on the active tab; its line map persists until the
+        # model table is rebuilt and is therefore stale while another tab is visible.
         models = self.view == "zoom" and self.on_models_tab
         if models:
-            # Scrolling this tab IS moving the cursor (the wheel and j/k both drive
-            # model_pick_index), so there is no manual scroll to fight -- keep the
-            # selected row on screen unconditionally.
+            # Model scrolling moves the cursor, so always keep the selection visible.
             self._scroll_line_into_view(self._model_cursor_line, visible)
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
         drawn = lines[self.scroll : self.scroll + visible]
-        # A column header reads as one (accent, bold) wherever it is drawn -- the pickers
-        # paint theirs that way, and these are the same headers.
         headers = self.box_header_lines(lines) | set(self._line_sort_headers)
         for offset, line in enumerate(drawn):
             index = self.scroll + offset
@@ -370,8 +286,6 @@ class Renderer:
             self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
             self._register_line_sort_header(y + 3 + offset, x + 2, index, line, w - 4)
         if models:
-            # Make the model rows clickable: the region maps a row back to its line
-            # index; _apply_click resolves that to an ordinal via _model_row_at.
             self._add_rows_region("zoommodel", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
 
     def paint_cursor_row(
@@ -384,18 +298,12 @@ class Renderer:
         attr: int | None = None,
         bars: bool = False,
     ) -> None:
-        # The selected row of ANY navigable table, boxed or not. Painted with write(),
-        # deliberately NOT write_rich(): the rich pass overpaints every money/token span
-        # with its own colour, and a table row is almost entirely money and tokens -- the
-        # highlight would come out in shreds around the one cell that isn't a number.
-        # `bars` overdraws block-glyph runs so a cost bar doesn't read as a hole in the
-        # highlight band (see write_selected_bars).
+        # Use write(), not write_rich(): rich token/money overpainting shreds reverse
+        # highlights. `bars` restores block glyphs hidden by reverse video.
         attr = curses.color_pair(6) | curses.A_BOLD | curses.A_REVERSE if attr is None else attr
         row = shorten(line, width)
         if len(row) > self.BOX_CHROME and row[:1] in ("│", "|") and row[-1:] in ("│", "|"):
-            # Reverse only the CELLS between the ruled box's gutters, so the selection
-            # bar sits inside the table instead of punching a hole through its vertical
-            # rules. A pane too narrow to keep the closing gutter falls through below.
+            # Reverse only cells between gutters so the cursor does not erase the frame.
             head, cells, tail = row[:2], row[2:-2], row[-2:]
             frame = self.line_attr(line)
             self.write(stdscr, y, x, head, frame)
@@ -448,9 +356,7 @@ class Renderer:
         )
 
     def project_total_text(self, rows: list[ProjectSummary], width: int) -> str:
-        # The boxed TOTAL row, in project_row_text's own columns so the sums land under
-        # the numbers they sum. Only the line-based frame draws one -- the picker's rows
-        # scroll, and a total pinned to the bottom border would sum a window, not a list.
+        # Pickers omit totals because a fixed footer would appear to sum only the window.
         name_width = self.project_name_width(width)
         return (
             f"  {pad('TOTAL', name_width)} "
@@ -470,31 +376,24 @@ class Renderer:
         )
 
     def list_width(self, rows_text: list[str], width: int) -> int:
-        # Size a left list to its content; keep at least 44 cols for the detail pane.
         content = max((len(r) for r in rows_text), default=20)
         return max(24, min(content + 3, max(24, width - 44)))
 
     def projects_left_width(self, width: int) -> int:
-        # Size to the longest (home-shortened) project path plus the stat columns,
-        # but never wider than half the screen — so it fits the content yet leaves
-        # the detail pane room. Long paths truncate inside the panel instead.
+        # Leave at least half the screen, and 44 columns, for detail.
         longest = max(
             (display_width(short_path(p.directory, 999)) for p in self.projects), default=8
         )
         natural = max(longest, len("Project")) + 42  # marker + Cost/Tokens/Ses/Subagents
         return max(24, min(natural, width // 2, max(24, width - 44)))
 
-    # --- Machines mode sidebar (the fleet view) ------------------------------
     @staticmethod
     def machine_name_width(width: int) -> int:
         return max(8, width - 30)
 
     @staticmethod
     def machine_badge(machine: MachineSummary) -> str:
-        # ● the live box you're on (full drill-in), ○ a pulled snapshot, ∑ the synthetic
-        # fleet row (neither -- it is the sum of both kinds, and the web spells it the
-        # same way). Same decorative Unicode register as the ★/✎ session marks, so it
-        # rides the same capable terminal.
+        # Match the web frontend: live, pulled snapshot, synthetic fleet total.
         if machine.fleet:
             return "∑"
         return "●" if machine.live else "○"
@@ -514,9 +413,7 @@ class Renderer:
 
     def machines_left_width(self, width: int) -> int:
         longest = max((display_width(m.name) for m in self.machines), default=8)
-        # +34: the marker and the Cost/Tokens/Ses cells (32), plus the badge and the space
-        # after it -- which rides INSIDE the name field, so a name that fits the panel
-        # still lost its last two characters ("● workstation" -> "● worksta...").
+        # Include the badge and its space inside the name field budget.
         natural = max(longest, len("Machine")) + 34
         return max(24, min(natural, width // 2, max(24, width - 44)))
 
@@ -528,18 +425,14 @@ class Renderer:
         rows = [self.year_row_text(yr, ">") for yr in self.years]
         rows += [self.month_row_text(m, ">") for m in self.months]
         rows += [self.day_row_text(d, ">") for d in self.panel_days]
-        # Size to the text, then reserve a lane for the inline spend bar (without
-        # ever starving the detail pane of its minimum 44 columns).
+        # Reserve the spend-bar lane without starving the detail pane below 44 columns.
         base = self.list_width(rows, width)
         return max(24, min(base + BAR_CELLS + 2, max(24, width - 44)))
 
     def draw_time_panels(
         self, stdscr: curses.window, top: int, avail: int, left: int, focus: str | None
     ) -> None:
-        # The three stacked time panels (browse sidebar, and the inactive sidebar
-        # beside a zoomed detail -- focus=None dims all three). Years is short (few
-        # rows), so size it to show every year (panels render h-3 rows, hence +3),
-        # capped so a long history can't starve Months/Days; those split the rest.
+        # Panels render h-3 rows. Cap Years so a long history cannot starve Months/Days.
         years_h = max(4, min(len(self.years) + 3, max(4, avail // 3)))
         remaining = avail - years_h
         months_h = max(4, min(len(self.months) + 3, remaining // 2))
@@ -552,16 +445,12 @@ class Renderer:
 
     @staticmethod
     def bar_lane(w: int) -> tuple[int, int]:
-        # (bar_cells, text_width) for a list panel of inner width w. The bar gets
-        # its own lane on the right so it is never painted under a row highlight
-        # (which would invert it); 0 cells when the panel is too narrow to spare.
+        # Keep bars outside row highlights; omit the lane when the panel is too narrow.
         if w < 46:
             return 0, w - 2
         return BAR_CELLS, (w - 2) - (BAR_CELLS + 2)
 
-    # What the chrome eats out of the window before a pager's first line: the app frame
-    # (2 rows / 2 columns), the header strip, the footer strip, and the detail box's own
-    # border and tabs. One constant, because App._page_step strides by the same height.
+    # App._page_step must use the same frame/header/footer/detail chrome budget.
     CHROME_ROWS = 11
     CHROME_COLS = 2
 
@@ -580,8 +469,7 @@ class Renderer:
             workflow = self.current_session()
             if workflow is None:
                 return []
-            # Dispatch by tab NAME like draw_detail: current_tabs() appends Turns and
-            # Tools per session, so a fixed index would page the wrong line count.
+            # Optional session tabs make name-based dispatch mandatory.
             tabs = self.current_tabs()
             current = tabs[self.tab % len(tabs)]
             if current == "Subagents":
@@ -675,20 +563,15 @@ class Renderer:
         return []
 
     def draw(self, stdscr: curses.window) -> None:
-        # Settle any drill whose data moved BEFORE a single cell is painted. The disarm
-        # lives inside current_sessions (App._drilled), which the breadcrumb is drawn
-        # ahead of -- so without this the frame that heals shows a crumb naming a drill
-        # its own session list has already dropped.
+        # Settle before painting so breadcrumbs cannot name a drill the session list drops.
         self.app.settle_drills()
         self.apply_background(stdscr)  # theme bg fills the screen (before erase reads it)
         stdscr.erase()
-        self.regions = []  # rebuilt below as panels draw, for this frame's clicks
-        self.sort_regions = []  # column-header sort zones, same lifecycle as regions
-        self._line_sort_headers = {}  # refilled by the line-based drawers below
-        self._box_headers = set()  # ditto: the framed header strings, for the header band
-        # Per-segment colour runs for the Token economics bars, keyed by the line's own
-        # text (see _token_stack_line). Cleared per frame like the other paint
-        # side-channels, so a stale bar can never colour a line that outlived it.
+        self.regions = []  # rebuilt for this frame's clicks
+        self.sort_regions = []
+        self._line_sort_headers = {}
+        self._box_headers = set()
+        # Paint side channels must not color geometry from an earlier frame.
         self._token_runs: dict[str, list[tuple[int, int, int]]] = {}
         self._tool_tree_runs = {}
         self.oy = self.ox = 0  # screen coordinates until the app frame is up
@@ -700,11 +583,7 @@ class Renderer:
             stdscr.refresh()
             return
 
-        # The app frame: one border around the whole UI (lazygit's outer box), painted
-        # in screen coordinates. Everything after this draws inside it -- the origin
-        # shifts by one cell and the drawers are handed the inner box, so they lay
-        # themselves out exactly as they did full-screen, two rows and two columns
-        # smaller. Active, so the frame reads as chrome the panels can highlight against.
+        # Paint the outer frame in screen coordinates, then switch to its inner viewport.
         self.frame_app(stdscr, height, width)
         self.oy = self.ox = 1
         height -= 2
@@ -716,9 +595,7 @@ class Renderer:
         top = 3
         bottom = height - 2
         avail = bottom - top
-        # The key list is NOT a view: it floats over whatever you were looking at (drawn
-        # after the body, below the pickers), because it answers "what can I press *from
-        # here*" and the answer is only legible with `here` still on screen.
+        # Help floats over the body so its key context remains visible.
         if self.show_prices:
             self.draw_prices(stdscr, top, bottom, width)
         elif self.trends:
@@ -726,9 +603,7 @@ class Renderer:
         elif self.view == "session":
             self.draw_detail(stdscr, top, 0, avail, width)
         elif self.view == "zoom":
-            # lazygit-style: the detail is the active pane of the same split, the
-            # sidebar stays put (inactive, still clickable to re-scope); `+`
-            # maximizes the detail full-screen on demand.
+            # Keep the inactive sidebar clickable while zoomed; `+` maximizes detail.
             zx, zw = 0, width
             if not self.zoom_maximized:
                 left = self.browse_left_width(width)
@@ -758,8 +633,7 @@ class Renderer:
             left = self.browse_left_width(width)
             self.draw_project_list(stdscr, top, 0, avail, left)
             self.draw_project_detail(stdscr, top, left, avail, width - left, active=False)
-            # Catch-all region under the preview's own tabs/rows (first match wins,
-            # so it's appended last): a click anywhere in the pane focuses it.
+            # Append catch-all last because hit() uses first match.
             self._add_rows_region("detail", top, left, width - 1, 0, avail)
         else:
             left = self.browse_left_width(width)
@@ -778,8 +652,6 @@ class Renderer:
         if self.toast_history:
             self.draw_toast_history(stdscr, top, bottom, width)
 
-        # Small centered modals float on top of the current view (so context stays
-        # visible behind them), unlike the full-body prices/trends overlays.
         if self.price_prompt:
             self.draw_price_prompt(stdscr, height, width)
         elif self.theme_menu:
@@ -799,7 +671,7 @@ class Renderer:
         elif self.launch_menu is not None:
             self.draw_launch_menu(stdscr, height, width)
 
-        # Toasts float over everything, including modals -- they're the topmost layer.
+        # Toasts are the topmost layer, including above modals.
         self.draw_toasts(stdscr, height, width)
 
         stdscr.refresh()
@@ -814,21 +686,16 @@ class Renderer:
             f"subagents {summary['subagents']} "
         )
         self.write(stdscr, 0, 0, title, curses.color_pair(2) | curses.A_BOLD)
-        # Source chip, always visible (and live-switchable with `H`): which backend
-        # this data comes from — OpenCode / Claude Code / both.
         chip = f" {self.store.source_name} "
         self.write(stdscr, 0, len(title), chip, curses.color_pair(7) | curses.A_BOLD)
-        # No what-if tag here on purpose: an armed `w` target changes nothing the header
-        # counts (it reprices one session's tree on its Subagents tab, which titles and
-        # caveats itself), so tagging the header would call recorded spend counterfactual.
+        # Session-scoped what-if does not alter these aggregate header figures.
         if self.store.demo:
             tag = " DEMO — synthetic "
         elif self.show_api_prices:
             if getattr(self.store, "records_cost", True):
                 tag = " WHAT-IF — would-have-paid at API prices "
             else:
-                # No recorded dollars exist to deviate from, so this isn't a
-                # "what-if" — the estimate is the only meaningful number.
+                # With no recorded dollars, list-price spend is an estimate, not a delta.
                 tag = " ESTIMATED — tokens × API list prices "
         elif not getattr(self.store, "records_cost", True):
             tag = f" $0 = no recorded cost · press {self._key('main', 'api_prices')} to estimate "
@@ -852,13 +719,8 @@ class Renderer:
             )
         drilled = self.view in ("zoom", "session")
         sort_by = self.effective_sort_by()
-        # The header is persistent view state. A modifier that LIMITS what you see --
-        # a non-default range, a committed filter, ignored projects -- is shown in the
-        # orange accent so you can't forget your view is narrowed; everything else (the
-        # scope path, sort order) stays quiet grey. Same single meaning for orange as
-        # everywhere else: active / non-default. Transient status pops up as a toast.
-        # The live filter query is NOT echoed here -- it's in the bottom command line
-        # while you type -- so the filter shows only once committed.
+        # Accent only persistent narrowing modifiers; scope and sort remain neutral.
+        # The live filter appears in the command line and is shown here only when committed.
         x = 0
         if drilled:
             chip = " ZOOM "
@@ -871,9 +733,7 @@ class Renderer:
         rest_bc = bc[len(range_lbl) :] if bc.startswith(range_lbl) else bc
         segs = [(range_lbl, active if range_lbl != "all time" else base), (rest_bc, base)]
         if sort_by:
-            # Named as the COLUMN, lowercased -- the Trends rankings share two keys
-            # ("name"/"count") across four tables that call them different things, and
-            # "sort: count" names nothing the screen shows.
+            # Display the visible column label, not a shared internal sort key.
             segs.append((f"  ·  sort: {self.sort_label(sort_by).lower()}", base))
         if self.query and not self.filter_active:
             segs.append((f"  ·  filter: {self.query}", active))
@@ -886,16 +746,11 @@ class Renderer:
             segs.append((f"  ·  harness: {self.harness_filter}", active))
         if self.show_bookmarks_only:
             segs.append(("  ·  ★ bookmarks only", active))
-        # Transient status lives in floating toasts now (draw_toasts), not the header.
         for text, attr in segs:
             x = self.write_seg(stdscr, 1, x, text, attr, width)
         self.draw_mode_tabs(stdscr, 2, width)
 
     def draw_mode_tabs(self, stdscr: curses.window, y: int, width: int) -> None:
-        # The top-level browse-mode strip on the header's rule row: Time · Projects ·
-        # [Machines], the active one accented. It makes the whole navigation self-
-        # describing (the t/p/m keys were invisible) and is clickable (modetab regions);
-        # the rest of the row stays the header/body separator rule.
         tabs = self.mode_tab_list()
         modes = [m for _lbl, m in tabs]
         active_index = modes.index(self.browse_mode) if self.browse_mode in modes else 0
@@ -904,8 +759,6 @@ class Renderer:
         ]
         gap = 1
         total = sum(len(lbl) for lbl in labels) + gap * (len(labels) - 1)
-        # Center the strip on the rule row: ──── [Time] Projects Machines ────. The chips
-        # carry their own panel2/accent background, so they sit on the rule as real tabs.
         start = max(0, (width - total) // 2)
         if start >= 2:
             self.hline(stdscr, y, 0, start - 1)  # left rule, a blank cell before the chips
@@ -930,9 +783,6 @@ class Renderer:
     def write_seg(
         self, stdscr: curses.window, y: int, x: int, text: str, attr: int, width: int
     ) -> int:
-        # Write one clipped segment of a single-line strip and return the next x, so a
-        # line can be painted piece by piece with per-segment colours (the bottom
-        # command line uses it to highlight just the input field, not the whole bar).
         if not text or x >= width - 1:
             return x
         clipped = shorten(text, width - x - 1)
@@ -941,21 +791,15 @@ class Renderer:
 
     @staticmethod
     def machine_crumb(machine: MachineSummary) -> str:
-        # How a Machines-mode scope names itself in the breadcrumb. The fleet row takes
-        # its sidebar spelling rather than its bare name, so it stays distinguishable
-        # from a box a user labelled "all machines" -- in the full-screen session view
-        # the crumb is the ONLY locator, with no sidebar or pane title beside it.
+        # Preserve the fleet sigil where the breadcrumb may be the only locator.
         return f"∑ {machine.name}" if machine.fleet else machine.name
 
     def breadcrumb(self) -> str:
-        # Always-visible "you are here" path: scope › month › day › session › tab.
-        # It is the only locator once a zoom hides the sidebar.
         sep = " › "
         tabs = self.current_tabs()
         tab_name = tabs[self.tab % len(tabs)]
         segs = [self.range_label()]
-        # (Machines mode returns below without any drill crumb -- a box's drills are
-        # mutually exclusive and its breadcrumb is already machines : <box> : <tab>.)
+        # Machine drills are mutually exclusive and need no additional crumb.
         if self.browse_mode == "machines" and self.view != "session":
             machine = self.selected_machine_summary
             segs.append("machines")
@@ -985,8 +829,7 @@ class Renderer:
                     segs.append(self.focused_year)  # show a bare year when that's the scope
             elif self.focused_month:
                 segs.append(self.focused_month)
-            # The day/zoom_project crumbs are time-mode locators only; machines mode has
-            # neither, so it must not borrow the sidebar's inherited focused month/day.
+            # Do not leak inherited time-sidebar state into machine breadcrumbs.
             if self.browse_mode == "time" and self.focus == "days" and self.active_day:
                 segs.append(self.active_day)
             if self.browse_mode == "time" and self.zoom_project:
@@ -1021,24 +864,16 @@ class Renderer:
         return sep.join(s for s in segs if s)
 
     def _drill_crumbs(self, armed: bool = True) -> list[str]:
-        # The drills armed inside a zoom, innermost last. A model drill goes after the
-        # partitions because it LAYERS on them (a membership filter), so it reads as the
-        # deepest scope and matches the order Esc pops them in. Without a crumb an armed
-        # model is invisible the moment you leave the Models tab you set it from -- the
-        # Sessions list just reads short, which is how a filter gets mistaken for a bug.
+        # Model membership layers over partition drills, so it is the innermost crumb
+        # and the first one Esc removes.
         if not armed:
             return []
         return [c for c in (self.zoom_source, self.zoom_machine, self.zoom_model) if c]
 
     def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
-        # Context-sensitive: show only keys that do something in the current view, so
-        # the strip stays short enough to read instead of silently truncating. Plain
-        # movement (j/k/h/l, arrows) is deliberately omitted -- vim users know it and
-        # everyone else reaches for the arrow keys.
+        # Show only contextual actions; omit conventional movement keys to save space.
         if self.filter_active:
-            # Bottom command line: you type here. The whole input field -- the
-            # "filter:" label, the query, and the block cursor -- is orange; only the
-            # key hints stay plain, so the accent marks the field, not the whole bar.
+            # Accent the input field, not its key hints.
             self.hline(stdscr, height - 2, 0, width)
             x = self.write_seg(
                 stdscr,
@@ -1060,18 +895,11 @@ class Renderer:
                 width,
             )
             return
-        # The chips come from the keymap table (keymap.KEYS), the same one the `?`
-        # overlay lists -- so a key can never be offered down here and go unexplained up
-        # there, nor be offered in a context that swallows it. Each entry is one or more
-        # (label, active) segments; an active toggle -- its overlay or mode is ON, its
-        # session bookmarked -- renders in the orange accent, so the strip reflects state
-        # at a glance. e export / o open stay help-only: the footer keeps navigation,
-        # toggles with visible state, and the overlay openers.
+        # Footer and help share keymap.KEYS so advertised actions cannot diverge.
+        # Active toggle segments use the accent; less common actions remain help-only.
         parts: list = keymap.footer_parts(self.app)
         self.hline(stdscr, height - 2, 0, width)
-        # Version in the bottom-right corner, lazygit-style: a quiet chrome label.
-        # Reserve its slot so the key strip truncates before it instead of colliding;
-        # paint it last so it always wins those right-edge cells.
+        # Reserve the version slot before drawing the keybar, then paint it last.
         ver = f" v{__version__} "
         if len(ver) + 4 < width:
             self.draw_keybar(stdscr, height - 1, width - len(ver), parts)
@@ -1080,11 +908,7 @@ class Renderer:
             self.draw_keybar(stdscr, height - 1, width, parts)
 
     def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts) -> None:
-        # Render the footer key strip segment by segment so active toggles can stand
-        # out in the orange accent (pair 6) against the slate baseline (pair 4),
-        # instead of one flat-coloured joined string. An entry may itself be a list
-        # of (text, on) sub-segments painted contiguously (no separator), so one
-        # token inside a hint -- the focused panel in "Tab yr/mo/day" -- can light up.
+        # Entries may contain contiguous sub-segments so only the active token is accented.
         base = curses.color_pair(4)
         active = curses.color_pair(6) | curses.A_BOLD
         x = 0
@@ -1092,9 +916,7 @@ class Renderer:
         x += 1
         for i, part in enumerate(parts):
             segs = part if isinstance(part, list) else [part]
-            # Stop before a hint (plus its leading separator) that won't fully fit -- a
-            # clean gap at the right edge, and ahead of the version label, instead of a
-            # clipped half-word.
+            # Never draw a partial hint.
             if x + (2 if i else 0) + sum(len(t) for t, _ in segs) > width - 1:
                 break
             if i:
@@ -1104,9 +926,7 @@ class Renderer:
                 self.write(stdscr, y, x, text, active if on else base)
                 x += len(text)
 
-    # Each list's column headings read that list's own sort pair -- never the
-    # context-dependent effective_sort_by -- so when a project list and a session
-    # list share the screen (projects mode) neither borrows the other's arrow.
+    # Each visible list owns its sort arrow; shared screens must not use effective_sort_by.
     def sort_heading(self, key: str, label: str) -> str:
         if self.session_sort_key() != key:
             return label
@@ -1126,37 +946,24 @@ class Renderer:
         return f"{label} {'v' if desc else '^'}"
 
     def trend_sort_heading(self, key: str, label: str, tab: str) -> str:
-        # A Trends ranking's column heading. Takes the TAB explicitly rather than
-        # reading the active one: the four tables are also drawn straight (the suite,
-        # and a frame built before the overlay's tab index moves), and a heading that
-        # asked "which tab is selected" would arrow the wrong column there.
+        # Explicit tab keeps direct rendering independent of overlay selection state.
         if self.app.trend_sort_key(tab) != key:
             return label
         desc = self.sort_descending(key, self.app.trend_sort_reverse_for(tab))
         return f"{label} {'v' if desc else '^'}"
 
     def _scope_spans_days(self) -> bool:
-        # True whenever the session list spans more than the one scoped day: projects and
-        # machines modes (a box's whole history), a month, a year, or "All years". Only a
-        # focused single day in time mode shares one date across every row.
         return self.browse_mode in ("projects", "machines") or self.focus != "days"
 
     def session_started(self, workflow: Workflow) -> str:
-        # Date when the scope spans more than a day; a bare clock time only when every
-        # row shares the scoped day.
         return workflow.created_at[:10] if self._scope_spans_days() else workflow.created_at[11:16]
 
     def session_date_label(self) -> str:
         return "Started" if self._scope_spans_days() else "Time"
 
     def session_date_column(self) -> tuple[str, str]:
-        # The Date column's (sort key, header label) pair -- swaps to the activity
-        # timestamp under a "last_activity" sort so the visible order is legible: the
-        # column you're sorted by is the one shown, not always the session's start.
-        # "Last act" (not "Last act.") is deliberate: the header field is `:<10` and
-        # sort_heading() always appends a " v"/" ^" arrow, so anything over 8 chars
-        # overflows the column and shifts every header after it -- "Started"/"Time"
-        # both clear it too, just with room to spare.
+        # Show the timestamp being sorted. "Last act" leaves room for the arrow in
+        # the fixed 10-cell field; a longer label shifts every following column.
         if self.session_sort_key() == "last_activity":
             return ("last_activity", "Last act")
         return ("date", self.session_date_label())
@@ -1164,24 +971,15 @@ class Renderer:
     def session_date_cell(self, workflow: Workflow) -> str:
         if self.session_sort_key() != "last_activity":
             return self.session_started(workflow)
-        # Always a date, never a bare clock time: App.active_session_sort_options()
-        # makes "last_activity" unreachable in a single-day scope (browse_mode=="time"
-        # and focus=="days" -- the one case _scope_spans_days() is False), so a session
-        # sorted by activity is always shown across a scope wide enough that a clock
-        # time alone would be ambiguous anyway.
+        # Activity sort is unavailable in single-day scope, so a date is always required.
         return (workflow.ended_at or workflow.created_at)[:10]
 
-    # The line a ruled box's column header sits on: index 0 is the titled top border.
-    # Boxed line-based tables register their sort zones against this.
     BOX_HEADER_LINE = 1
 
-    TOP_SESSIONS_LIMIT = 20  # the Overview previews are leaderboards, not the full list
+    TOP_SESSIONS_LIMIT = 20
 
     def top_sessions(self, rows: list[Workflow]) -> list[Workflow]:
         ranked = sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True)
-        # A top-N slice: the Sessions tab is the full, navigable list -- the Overview
-        # box (month/year/day/project) only wants the headline few, or a busy month
-        # spills hundreds of rows past the pane.
         return ranked[: self.TOP_SESSIONS_LIMIT]
 
     @staticmethod
@@ -1202,47 +1000,30 @@ class Renderer:
         }.get(workflow.source, (workflow.source or "??")[:2].lower())
 
     def source_tag(self, workflow: Workflow) -> str:
-        # A compact origin marker ("[cc] ") prepended to titles in the sessions
-        # picker and Top Sessions lists, only when sources are merged, so you can
-        # tell OpenCode from Claude Code rows at a glance. Empty in single-source
-        # views (the header chip already says which).
         if not getattr(self.store, "combined", False) or not workflow.source:
             return ""
         return f"[{self._source_abbrev(workflow)}] "
 
     def bookmark_tag(self, workflow: Workflow) -> str:
-        # "★ " before the title of a session starred with `b`, in every list that
-        # shows session titles, so bookmarks are spottable wherever they surface.
         return "★ " if workflow.id in self.bookmarks else ""
 
     def note_tag(self, workflow: Workflow) -> str:
-        # "✎ " for a session carrying a note (`n`) — the note itself is too long
-        # for a list row, but *that there is one* is exactly what a list must say.
         return "✎ " if self.note_for(workflow.id) else ""
 
     def session_marks(self, workflow: Workflow) -> str:
-        # The user-authored marks that ride in front of a session title, wherever
-        # one is listed: starred, annotated.
         return self.bookmark_tag(workflow) + self.note_tag(workflow)
 
     def ignored_session_tag(self, workflow: Workflow) -> str:
         return "ignored: " if workflow.id in self.ignored_sessions else ""
 
     def session_project(self, workflow: Workflow) -> str:
-        # A session's project as its root directory's last path segment -- compact
-        # enough for a fixed column (worktrees already fold into their parent repo).
         root = self.project_root(workflow.directory)
         return root.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or root
 
     def sessions_span_projects(self) -> bool:
-        # Whether the sessions picker can mix projects: true in time mode without a
-        # Projects-tab drill-in. Gates the Project column, which would otherwise
-        # repeat the one project the view is already scoped to.
         return self.browse_mode != "projects" and not self.zoom_project
 
     def src_col(self, workflow: Workflow | None = None) -> str:
-        # The "Hns" (harness) column in the session tables (None = the header cell), only
-        # when harnesses are merged — the one view where a row's origin isn't implied.
         if not getattr(self.store, "combined", False):
             return ""
         if workflow is None:
@@ -1252,9 +1033,6 @@ class Renderer:
     MACHINE_COL_W = 8
 
     def mach_col(self, workflow: Workflow | None = None) -> str:
-        # The "Machine" column in the session tables (None = the header cell), only in
-        # the fleet view (--pull/--remote) where sessions span machines. Full-ish name
-        # (hostnames don't abbreviate to two letters the way harness names do).
         if not self.machines_present:
             return ""
         w = self.MACHINE_COL_W
@@ -1262,27 +1040,16 @@ class Renderer:
             return f"{'Machine':<{w}} "
         return f"{pad(shorten(workflow.machine or '?', w), w)} "
 
-    # --- The session table: one builder, two frames -------------------------------
-    # The browse preview (lines) and the zoom picker (navigable) render the SAME
-    # table through session_columns/session_header_text/session_row_text, so Enter
-    # only lights up a row -- it never re-shapes the columns under you. They were two
-    # hand-written tables once, and drifted: different columns (Models/Src vs
-    # Project), a stray heading line, a 2-column indent shift, a different header
-    # colour. Add a column here and both frames get it. (The project list already
-    # worked this way: project_header_text/project_row_text.)
+    # Preview and picker must use these same builders so entering zoom only adds a cursor.
     SESSION_TITLE_MIN = 24  # room the title keeps before an optional column earns its cells
     SESSION_PROJECT_MAX = 20
 
     def session_columns(self, sessions: list[Workflow], width: int) -> tuple[bool, int, bool]:
-        # The optional cells this pane can afford: (Models, Project width, Duration).
-        # Both frames measure the same pane, so a column can't appear on Enter and
-        # vanish on Esc. A squeezed pane drops Models first (a bare count), the
-        # Project column second, Duration third, and never the title -- a session
-        # list is read by its titles.
+        # Both frames must measure the same pane. Drop Models, Project, then Duration;
+        # preserve the title floor because session lists are read by title.
         proj_w = 0
         if self.sessions_span_projects():
-            # Only where the list can mix projects; sized to the longest name on show
-            # (the _model_table pattern), capped so one deep path can't own the row.
+            # Cap project width so one deep path cannot consume the title.
             head = self.sort_heading("project", "Project")
             longest = max((display_width(self.session_project(wf)) for wf in sessions), default=0)
             proj_w = max(len(head), min(self.SESSION_PROJECT_MAX, longest))
@@ -1316,10 +1083,7 @@ class Renderer:
         return header + self.sort_heading("title", "Title")
 
     def _worked_suffix(self, workflow: Workflow) -> str:
-        # "· worked 2h 13m (until 16:42)" appended to a session's Started line: the
-        # agent's active working time (idle waits removed), and, if the backend also
-        # recorded a last-activity stamp, when that work last happened. Same-day ends
-        # show a bare clock time; a session that ran into another day keeps the date.
+        # Worked time excludes idle waits. Keep the date when activity crosses a day.
         seconds = workflow.worked_seconds
         if seconds is None:
             return ""
@@ -1330,9 +1094,7 @@ class Renderer:
         return f"   · worked {human_duration(seconds)} (until {until})"
 
     def session_duration(self, workflow: Workflow) -> str:
-        # How long the agent actually worked on this session, idle waits excluded.
-        # Blank when the backend can't tell work from waiting (a source with no
-        # human-turn markers, an old --export) -- never a fake 0s.
+        # Unknown active time stays blank rather than becoming a fake 0s.
         seconds = workflow.worked_seconds
         return human_duration(seconds) if seconds is not None else ""
 
@@ -1361,11 +1123,8 @@ class Renderer:
     def session_total_text(
         self, sessions: list[Workflow], models: bool, proj_w: int, dur: bool = True
     ) -> str:
-        # The boxed TOTAL row, laid out by session_row_text's own fields so the sums sit
-        # under the columns they sum. Everything past Subagents is identity, not quantity
-        # (a model count, a harness, a title), so those cells stay blank rather than
-        # inventing a sum. Worked time sums only the sessions whose backend recorded it --
-        # a blank stays blank, never a fake 0s.
+        # Sum only quantitative fields. Worked excludes unknown values and stays blank
+        # when no backend supplied it.
         worked = [wf.worked_seconds for wf in sessions if wf.worked_seconds is not None]
         text = f"  {pad('TOTAL', 10)} "
         if dur:
@@ -1383,7 +1142,6 @@ class Renderer:
         return text
 
     def session_sort_columns(self, proj_w: int, dur: bool = True) -> tuple:
-        # (sort_key, label) in drawn order, for the clickable headers of both frames.
         columns = [self.session_date_column(), *self.SESSION_SORT_COLUMNS]
         if dur:
             columns.insert(1, ("duration", "Worked"))  # right after the date cell
@@ -1392,22 +1150,16 @@ class Renderer:
         return tuple(columns)
 
     def preview_session_source(self) -> list[Workflow] | None:
-        # Same rows the picker will show, not just the same columns: with `i` on and
-        # ignored sessions about, App.current_sessions widens from all_workflows to
-        # ranged_workflows, and a preview that didn't would drop a row that Enter then
-        # conjures back. None = the default (all_workflows).
+        # Preview and picker must widen identically when ignored sessions are visible.
+        # None selects the default all_workflows source.
         return self.ranged_workflows if self._showing_ignored_workflows() else None
 
     def preview_project_source(self) -> list[Workflow] | None:
-        # The same, for the project lists: App.zoom_projects widens under `i` (and
-        # keeps the ignored rows, which it marks "×") -- so the preview must too.
+        # Project preview and picker must widen identically under `i`.
         return self.ranged_workflows if self.show_ignored_projects else None
 
     def scoped_sessions(self, rows: list[Workflow]) -> list[Workflow]:
-        # The sessions a scope actually shows, for the tables that COUNT them (the
-        # Sources tab) rather than list them: the committed `f` query narrows the
-        # sessions list, so a Sources row aggregating past it would advertise spend
-        # that Enter on it then refuses to open.
+        # Aggregate the filtered rows that Enter can actually open.
         return self.filtered_sessions(rows)
 
     @staticmethod
@@ -1419,10 +1171,7 @@ class Renderer:
         return f"Projects · {len(projects)}" if projects else "Projects"
 
     def session_table(self, rows: list[Workflow], width: int) -> list[str]:
-        # The browse preview of a Sessions tab: the picker's table minus the cursor, in the
-        # same ruled box. The tab's name rides the BORDER rather than a heading line above
-        # the table -- a heading would shift every row when the picker takes over on Enter,
-        # which is why this table had none at all before it was boxed.
+        # Put the title in the border so adding the picker cursor cannot shift rows.
         sessions = self.filtered_sessions(rows)
         inner = max(1, width - self.BOX_CHROME)
         models, proj_w, dur = self.session_columns(sessions, inner)
@@ -1438,9 +1187,7 @@ class Renderer:
                 else None
             )
             lines = self._ruled_box(title, header, body, total, [], width)
-        # The header is line 1 of the box (below the titled top border), and the click
-        # zones are located in the text actually drawn -- so the gutters shift them right
-        # by exactly the two cells the paint also shifts the line by.
+        # Register against rendered framed text so gutter offsets match paint.
         self._line_sort_headers[self.BOX_HEADER_LINE] = (
             self.session_sort_columns(proj_w, dur),
             "session",
@@ -1448,8 +1195,7 @@ class Renderer:
         return lines
 
     def unpriced_hint(self) -> str:
-        # Trails any block whose totals include $0.00 subscription tokens. Worded
-        # per price mode so it never says "not billed" beside estimated dollars.
+        # Do not describe estimated dollars as unbilled.
         if self.show_api_prices:
             return "! estimates — subscription tokens at API list prices"
         return (
@@ -1458,68 +1204,42 @@ class Renderer:
         )
 
     def line_attr(self, line: str) -> int:
-        # Shared prefix styling for the text panes: "# " section titles (accent -- they
-        # were structural grey and read as chrome, not headings), "! " caveats (amber --
-        # attention without alarm; red is for errors and the error toast only), "· "
-        # explainer captions (dim).
+        # Prefixes carry semantic styling: headings, caveats, and dim explanations.
         if line.startswith("# "):
             return curses.color_pair(2) | curses.A_BOLD
         if line.startswith("! "):
             return curses.color_pair(2)
         if line.startswith("▼ "):
-            # A Turns-tab compaction marker: the same amber the Context tab's ▼ rows get
-            # from _CTX_MARK, so one event reads as one thing on both tabs.
+            # Match Context-tab compaction styling.
             return curses.color_pair(2) | curses.A_BOLD
         if line.startswith("❄ ") or line.startswith("⚙ "):
-            # A Turns-tab cache expiry, or the effort switch that dropped the prefix.
-            # Red rather than the ▼ amber, and this is the one place in the panes that
-            # earns it: every other number opentab shows is money already spent on work
-            # you got, while this is money spent buying a context you had already
-            # bought -- the only lines in the app that report waste.
+            # Cache repurchases are waste, distinct from informational compactions.
             return curses.color_pair(4) | curses.A_BOLD
         if line.startswith("· "):
             return curses.color_pair(1)
         if line.startswith("TOTAL"):
-            # A totals line that is NOT inside a ruled table -- the w tab's
-            # "TOTAL (list rates)" footer. Bold ink, no background bar (the model
-            # tables carry their own boxed TOTAL row now, and the bar read as mud).
+            # Unboxed what-if total.
             return curses.A_BOLD
-        # The ruled model/tool tables (_ruled_box): the title rides the top border in
-        # the accent (matching its "# " sibling headings), the header/total rules and
-        # bottom border stay plain, and the boxed TOTAL row is bold. Keyed on the leading
-        # glyph -- ASCII "+" is a top border only when it carries a title (has letters),
-        # else a plain rule/bottom. Model/tool cells never contain box glyphs, so a data
-        # row never trips these.
+        # Box styling keys off frame glyphs; an ASCII '+' is a title only when text follows.
         first = line[:1]
         if first == "┌" or (first == "+" and line.strip("+- ") != ""):
-            # A ruled-box top border carrying a title -- the accent, matching its "# "
-            # sibling headings above.
             return curses.color_pair(2) | curses.A_BOLD
         if first in ("├", "└", "+"):
             return curses.A_NORMAL
         if first in ("│", "|"):
             content = line[2:].lstrip()
-            # A Turns-tab marker row inside the box: the ▼/❄/⚙ events sit between the
-            # prompt rows they happened between, so the glyph tests above have to reach
-            # past the gutter to keep them amber/red rather than flattening them into
-            # table rows.
+            # Reach past box gutters for timeline event styling.
             if content[:1] in ("▼", "❄", "⚙"):
                 return self.line_attr(content)
-            # The Money card's armed what-if rows are marked with a leading ★ and painted
-            # in the orange accent (pair 6 -- the same state-emphasis colour as the Turns
-            # ▸ headers and the narrowed-view chip), so the counterfactual pops off the
-            # white recorded-cost rows above it (money spans keep their own colour on top).
+            # Separate counterfactual rows from recorded-cost rows.
             if content.startswith("★"):
                 return curses.color_pair(6) | curses.A_BOLD
-            # The boxed TOTAL row -- "TOTAL" as a whole word (it is always followed by the
-            # count column's separator), so a model/tool named "TOTALizer" isn't mistaken
-            # for it.
+            # Match TOTAL as a word so names such as "TOTALizer" stay ordinary rows.
             return curses.A_BOLD if content.startswith("TOTAL ") else curses.A_NORMAL
         return curses.A_NORMAL
 
     def money_attr(self, cost_text: str) -> int:
-        # "$0.00" means zero or unpriced (tokens with no local price); muted grey so
-        # it recedes behind real spend. "<$0.01" is a real cost and stays green.
+        # $0.00 means zero/unpriced; <$0.01 is real spend and must remain emphasized.
         if cost_text == "$0.00":
             return curses.color_pair(1)
         return curses.color_pair(3) | curses.A_BOLD
@@ -1560,16 +1280,11 @@ class Renderer:
                 self.token_attr(token_text),
             )
 
-    # What the picker frame costs a scrolling list: the top border, the header row and
-    # the rule under it, plus the bottom border. Subtracted from the rows a pane can
-    # show, and added back by the callers that size a body against `h`.
+    # Top border, header, rule, bottom border.
     PICKER_CHROME = 4
 
     def picker_box_width(self, w: int) -> int:
-        # The content width a boxed picker's rows get from a pane `w` wide. The browse
-        # PREVIEW of the same table must measure with this too -- both frames size their
-        # optional columns off it, and a column that appeared on Enter and vanished on
-        # Esc is exactly the drift the shared builders exist to prevent.
+        # Preview and picker must use this same boxed width for optional columns.
         return max(1, w - 4 - self.BOX_CHROME)
 
     def draw_picker_frame(
@@ -1584,24 +1299,15 @@ class Renderer:
         sort_columns: tuple = (),
         sort_target: str = "",
     ) -> tuple[int, int, int]:
-        # The ruled box a NAVIGABLE list sits in -- the static tables' frame (_ruled_box)
-        # made scrollable. The static ones can assemble their whole box as strings up
-        # front; a picker only knows how many rows it will draw after it has clamped its
-        # window against the pane, so the frame is painted around it in pieces instead.
-        # Same glyphs, same titled top border, same rule under the header, so the two
-        # cannot drift apart.
-        #
-        # Returns (first body y, content x, inner width). The caller paints `nrows` rows
-        # at that x and MUST NOT draw more than it declared -- the bottom border is
-        # painted here, below them.
+        # Static tables assemble frames up front; scrolling pickers paint the same pieces
+        # after sizing their window. Callers must paint exactly `nrows`, because the
+        # bottom border is already placed beneath them.
         outer = max(5, w - 4)
         inner = outer - self.BOX_CHROME
         cx = x + 2 + 2
         self.write(
             stdscr, cy, x + 2, self.box_top(title, outer), curses.color_pair(2) | curses.A_BOLD
         )
-        # The framed header, painted by the same helper the line-based tables use, so the
-        # two frames of one table cannot end up wearing different headers.
         self._paint_box_header(stdscr, cy + 1, x + 2, self.box_row(header, outer), outer)
         if sort_columns:
             self._register_sort_header(cy + 1, cx, header, sort_columns, sort_target, inner)
@@ -1622,9 +1328,7 @@ class Renderer:
         token_text: str = "",
         bars: bool = False,
     ) -> None:
-        # One row inside a draw_picker_frame box: the gutters, then the cells. A selected
-        # row reverses only the cells (paint_cursor_row), so the highlight sits inside the
-        # table rather than punching a hole through its vertical rules.
+        # Selection reverses cells only; gutters retain the table frame.
         g = self.box_glyphs()["v"]
         self.write(stdscr, ry, x + 2, f"{g} ", curses.A_NORMAL)
         self.write(stdscr, ry, cx + inner, f" {g}", curses.A_NORMAL)
@@ -1638,12 +1342,8 @@ class Renderer:
             self.write_rich(stdscr, ry, cx, pad(shorten(text, inner), inner))
 
     def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        # Navigable session list on the Sessions tab of a zoomed month/day/project:
-        # the browse preview's table (session_table), made selectable.
         sessions = self.current_sessions()
         cy = y + 3
-        # Measured against the BOXED width, exactly as session_table's preview is, so a
-        # column can't appear on Enter and vanish on Esc.
         models, proj_w, dur = self.session_columns(sessions, self.picker_box_width(w))
         header = self.session_header_text(models, proj_w, dur)
         columns = self.session_sort_columns(proj_w, dur)
@@ -1684,7 +1384,6 @@ class Renderer:
             )
 
     def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        # Navigable project list on the Projects tab of a zoomed month/day.
         projects = self.zoom_projects()
         cy = y + 3
         inner_w = self.picker_box_width(w)
@@ -1719,15 +1418,11 @@ class Renderer:
             )
 
     def draw_sources_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        # Navigable source list on the Sources tab of a zoomed scope (merged view):
-        # j/k pick a tool, Enter its sessions within this scope.
         self._draw_dimension_picker(
             stdscr, y, x, h, w, self.zoom_source_rows(), self.source_index, "Harness", "zoomsource"
         )
 
     def draw_machines_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
-        # The Sources picker's twin on the fleet's per-scope Machines tab: j/k pick a box,
-        # Enter its sessions within this scope. Shared body, so the two can't drift.
         self._draw_dimension_picker(
             stdscr,
             y,
@@ -1752,10 +1447,6 @@ class Renderer:
         col: str,
         region_kind: str,
     ) -> None:
-        # The shared navigable ranked-spend picker behind the Sources and Machines tabs of
-        # a zoomed scope: a name column, a cost bar, Cost/Share/Tokens/Sess, and Enter to
-        # narrow the Sessions list to the selected row. `col` is the name-column header,
-        # `region_kind` the click region (zoomsource / zoommachine).
         cy = y + 3
         inner_w = self.picker_box_width(w)
         title = f"Spend by {col.lower()}"
@@ -1814,11 +1505,7 @@ class Renderer:
         kind: str = "tab",
         center: bool = False,
     ) -> None:
-        # Every tab is a chip: the active one filled with the accent (pair 7) and wearing
-        # [brackets] (the monochrome/pair-starved fallback for "which is active"), the
-        # inactive ones a raised panel2 chip (_TAB_PAIR) so they read as tabs, not grey
-        # text. `center` offsets the whole strip within `width` (the detail tab bars center
-        # over their pane); the modals leave it left-aligned.
+        # Brackets preserve active-tab state in monochrome or pair-starved terminals.
         if width <= 0 or not tabs:
             return
         active_index %= len(tabs)
@@ -1847,9 +1534,6 @@ class Renderer:
 
     @staticmethod
     def panel_title(number: int, title: str, active: bool = False) -> str:
-        # lazygit's numbered panels: the key that jumps here is written into the box
-        # title, so the keymap is on screen instead of in the footer. The sidebar is
-        # numbered top to bottom (1/2/3) and the detail pane on the right is 0.
         return f"[{number}] {title}" + (" ▸" if active else "")
 
     def draw_year_list(
@@ -1861,8 +1545,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No years in range.", curses.color_pair(1))
             return
 
-        # Scale per-year bars among the concrete years; "All years" (the sum) would
-        # otherwise dwarf them. cost_bar clamps the all-years row to a full bar.
+        # Exclude the synthetic sum from the bar scale.
         peak = max((yr.cost for yr in rows if yr.year != ALL_YEARS), default=0.0)
         bar_cells, text_w = self.bar_lane(w)
         visible = h - 3
@@ -1955,17 +1638,13 @@ class Renderer:
     def draw_project_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
     ) -> None:
-        # Projects mode has a single left panel, so it is panel 1 here.
         self.box(stdscr, y, x, h, w, self.panel_title(1, "Projects", active), active=active)
         rows = self.projects
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No projects in range.", curses.color_pair(1))
             return
 
-        # The same header every table in the app wears (_paint_box_header). This one
-        # carries no box -- the panel frame around the sidebar already is one, and a
-        # second frame inside a ~40-column list would spend four of them on chrome --
-        # so it takes the LOOK without the gutters.
+        # Reuse header styling without nesting another frame inside the sidebar panel.
         header = self.project_header_text(w - 2)
         self._paint_box_header(stdscr, y + 1, x + 1, header, w - 2)
         self._register_sort_header(
@@ -2044,14 +1723,12 @@ class Renderer:
     def draw_machine_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
     ) -> None:
-        # The Machines-mode sidebar: one row per box, the live one first (● / ○), a spend
-        # bar-free stat line. Panel 1 (single left list, like Projects mode).
         self.box(stdscr, y, x, h, w, self.panel_title(1, "Machines", active), active=active)
         rows = self.machines
         if not rows:
             self.write(stdscr, y + 2, x + 2, "No machines in range.", curses.color_pair(1))
             return
-        header = self.machine_header_text(w - 2)  # the shared header look, see draw_project_list
+        header = self.machine_header_text(w - 2)
         self._paint_box_header(stdscr, y + 1, x + 1, header, w - 2)
         visible = h - 4
         start = max(0, min(self.machine_index - visible // 2, max(0, len(rows) - visible)))
@@ -2107,9 +1784,6 @@ class Renderer:
         self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
-        # Sessions drills into a session; Harnesses/Projects/Models each drill into the
-        # box's sessions along that dimension (the navigable pickers the Projects-mode
-        # detail uses, plus a Models one). Overview stays a read-only breakdown.
         if current == "Sessions" and self.view == "zoom":
             self.draw_sessions_picker(stdscr, y, x, h, w)
             return
@@ -2133,9 +1807,6 @@ class Renderer:
         self._paint_detail_lines(stdscr, y, x, h, w, lines)
 
     def machine_overview(self, machine: MachineSummary, width: int) -> list[str]:
-        # The Machines-mode main view -- the niceties the plain rollup can't give: live vs
-        # pulled, when it was last pulled and by which opentab, plus this box's model mix
-        # and its top projects (the "different machines had different stories" cut).
         workflows = self.machine_scope(machine)
         if machine.fleet:
             return self._fleet_overview(machine, workflows, width)
@@ -2166,19 +1837,13 @@ class Renderer:
                 f"Press {self._key('main', 'refresh_machines')} to re-pull.",
             ]
         elif not self.machines_present:
-            # The one-box case: this view is complete, but it is also where you find out
-            # the axis exists at all -- so say how a second box joins it. One SHORT line:
-            # detail lines are clipped, not wrapped, and this pane can be narrow.
+            # Detail lines clip rather than wrap, so keep this discovery hint short.
             lines += ["", "Only this machine. `opentab --pull HOST` adds another."]
         if machine.live:
-            # A pulled box carries only rollups -- no per-model rows travel in a summary,
-            # so there is nothing to decompose and the box would render "no priceable
-            # usage" beside a real cost. Live boxes have the rows.
+            # Pulled summaries contain no per-model rows to decompose.
             lines.append("")
             lines.extend(self._token_economics_box(workflows, width))
         if self.projects_for_workflows(workflows):
-            # The shared Top Projects box, not this view's own spelling of it -- same
-            # leaderboard, same columns, wherever it appears.
             lines.append("")
             lines.extend(self._top_projects_box(workflows, machine.cost, width))
         lines.append("")
@@ -2189,15 +1854,10 @@ class Renderer:
     def _fleet_overview(
         self, machine: MachineSummary, workflows: list[Workflow], width: int
     ) -> list[str]:
-        # The synthetic "all machines" row: the whole fleet as one scope. It carries none
-        # of the per-box niceties -- no live/pulled status (it is the sum of both kinds)
-        # and no re-pull line (a refresh here re-pulls every box, not one) -- and in
-        # their place comes the cut a single box can't show: spend BY box, the headline
-        # breakdown you drill into next, exactly where year_overview puts Top Months.
+        # The synthetic fleet row has no per-box status; decompose it by machine instead.
         lines = self._stat_card(
             "# Fleet",
             [
-                # The fleet row itself sits in self.machines and is not one of the boxes.
                 f"Machines:     {sum(1 for m in self.machines if not m.fleet)}",
                 f"Cost:         {money(machine.cost)}",
                 f"Tokens:       {tokens(machine.tokens)}",
@@ -2209,10 +1869,7 @@ class Renderer:
         )
         lines.append("")
         lines.extend(self.machine_table(workflows, width))
-        # Unconditional, unlike a single box's (which hides it for a pulled summary):
-        # this is a cross-machine scope, and every other one -- year, month, day, project
-        # -- decomposes the mix it can price and leaves the rest out, rather than
-        # dropping the box because part of the fleet didn't export model rows.
+        # Decompose the priceable fleet subset even when pulled boxes lack model rows.
         lines.append("")
         lines.extend(self._token_economics_box(workflows, width))
         if self.projects_for_workflows(workflows):
@@ -2225,7 +1882,6 @@ class Renderer:
 
     def machine_models(self, machine: MachineSummary, width: int) -> list[str]:
         agg = self.aggregate_models(self.compose_zoom_drills(self.machine_scope(machine)))
-        # The fleet row's table spans every box, so it must not be titled "Machine".
         title = "# Fleet Model Spend" if machine.fleet else "# Machine Model Spend"
         return self._models_tab(self._agg_rows(agg), title, width)
 
@@ -2430,11 +2086,8 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No session selected.", curses.color_pair(1))
             return
         if not self.app.session_data_ready(workflow.id):
-            # First frame after a drill-in: the lazy fetches (subagent tree, Turns,
-            # Tools) can mean parsing the whole backend on a warm start, so show
-            # this placeholder instead of freezing mid-draw; run()'s prefetch tick
-            # does the blocking work right after and repaints. Tabs are skipped
-            # too -- current_tabs' supports_* gates could trigger the same parse.
+            # Lazy extras may parse an entire backend. Paint first, then let run() prefetch;
+            # even current_tabs() is skipped because supports_* may trigger that parse.
             self.app._session_loading = workflow.id
             src = getattr(workflow, "source", "") or self.store.source_name
             self.write(
@@ -2456,11 +2109,7 @@ class Renderer:
         elif current == "Turns":
             lines = self.detail_turns(workflow, w - 4)
         elif current == "Tools":
-            # Treemap overhead around the chart itself: title, headline, rule, caption,
-            # bottom and the trailing blank, plus a note in the $0 token-fallback mode
-            # and a second headline row when the pane is too narrow for one. The table's
-            # first data row is its fourth. Budget for the LARGEST form, so that exact
-            # row stays visible in either cost mode and at any width.
+            # Budget the treemap's largest chrome form so the first exact row stays visible.
             lines = self.detail_tools(workflow, w - 4, max(0, visible - 12))
         elif current == "Context":
             lines = self.detail_context(workflow, w - 4)
@@ -2468,8 +2117,7 @@ class Renderer:
             lines = self.detail_overview(workflow, w - 4)
 
         if current == "Turns" and self.app._turn_follow:
-            # j/k/Enter moved or toggled the ▸ cursor -- bring its header into view
-            # before the scroll clamp, then consume the request (one-shot).
+            # Follow is one-shot and must run before the scroll clamp.
             self._scroll_turn_cursor_into_view(visible)
             self.app._turn_follow = False
         self.app.scroll = max(0, min(self.app.scroll, max(0, len(lines) - visible)))
@@ -2478,13 +2126,8 @@ class Renderer:
         for offset, line in enumerate(drawn):
             attr = self.line_attr(line)
             if current == "Turns" and self.scroll + offset == self._turn_cursor_line:
-                # The selected prompt row, in the pickers' own reverse video. Keyed on
-                # the LINE INDEX, never on a leading glyph: the rows are ordinary table
-                # rows now, and a glyph test silently highlighted nothing at all once the
-                # ▸ headers became columns -- j/k moved a cursor the eye could not find.
-                # Painted like every other table cursor: reversed BETWEEN the box gutters,
-                # and with write() rather than write_rich(), whose money/token overpaint
-                # would shred a highlight on a row that is almost all numbers.
+                # Select by line index, not a display glyph. paint_cursor_row preserves
+                # gutters and prevents rich number colors from shredding the highlight.
                 self.paint_cursor_row(stdscr, y + 3 + offset, x + 2, line, w - 4)
                 continue
             if self.scroll + offset in headers:
@@ -2494,9 +2137,7 @@ class Renderer:
                 )
                 continue
             if current == "Context":
-                # The context chart's rows are heat-shaded by how full the window is
-                # at that height; detail_context stashed each line's level by index
-                # (plain data -- the color pair resolves only here, at paint time).
+                # Resolve plain heat levels to curses pairs only at paint time.
                 lvl = self._ctx_line_heat.get(self.scroll + offset)
                 if lvl == self._CTX_MARK:
                     attr = curses.color_pair(2) | curses.A_BOLD
@@ -2512,18 +2153,13 @@ class Renderer:
                 y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
             )
         if current == "Turns":
-            # Make the ▸/▾ headers clickable: the region maps a row back to its line
-            # index; _apply_click resolves headers via _turn_header_at.
             self._add_rows_region("turnline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
 
     def _scroll_turn_cursor_into_view(self, visible: int) -> None:
-        # The Turns tab's selected ▸ header. Its expanded body flows below it.
         self._scroll_line_into_view(self._turn_cursor_line, visible)
 
     def _scroll_line_into_view(self, line: int | None, visible: int) -> None:
-        # Nudge the scroll so `line` sits within the visible window -- only when it's
-        # off-screen, so following a cursor never yanks a row that's already
-        # comfortably in view. Shared by the Turns and Models cursors.
+        # Do not re-anchor an already visible row.
         if line is None or visible <= 0:
             return
         top = self.app.scroll
@@ -2543,58 +2179,23 @@ class Renderer:
         selectable: bool = False,
     ) -> list[str]:
         # rows: (name, count, cost, tokens, cache_read, cache_write, output).
-        #
-        # This box CLOSES every Overview -- every scope's, and the session's -- and that
-        # placement is deliberate: it is the widest thing on the pane (up to eight columns,
-        # one row per model) and it is the least likely answer to "where did the money go".
-        # The blocks above it (the stats, Token economics, Top projects/sessions) each fit
-        # in a few lines and each name a different axis of the same spend, so they read as
-        # a summary; the model table is the detail you scroll to, and it has its own tab in
-        # every scope that can afford one. Adding a section? It goes ABOVE this one.
-        #
-        # Built as a ruled box
-        # (_ruled_box): the title rides the top border, the columns sit inside,
-        # and a multi-row table closes with a rule + TOTAL row -- no coloured sum bar. The
-        # name column fits the longest entry (so the numbers sit right after it), capped by
-        # the box-reduced width so long names aren't cut when there's room. name_label/
-        # count_label let the Tools tab reuse this as Tool/Calls (which also turns
-        # price_split off -- tool names don't resolve to model rates). `selectable`
-        # adds a CURSOR and nothing else: the zoomed Models tab is this same table with
-        # one row picked out, never a slimmer picker beside it (see _models_tab).
-        # The count column fits its widest value -- the TOTAL row's sum, which is >= any
-        # single row -- so a 5-digit Msgs count (10,484) doesn't overflow a 4-wide field
-        # and cascade a 1-char shove that clips the rightmost column.
+        # `selectable` only adds a cursor; browse and zoom must retain identical columns.
+        # Size the count column from its TOTAL, which is at least as wide as any row.
         cw_ = max(4, len(count_label), len(str(sum(int(r[1]) for r in rows))) if rows else 0)
         longest = max([len(str(r[0])) for r in rows] + [len(name_label)])
-        # Every boxed table opens with the same 2-cell marker gutter (blank here -- this
-        # table marks its selection with the reverse bar, not a ">"), so a stack of boxes
-        # in one pane has ONE left inset and the columns of adjacent tables line up.
-        # Without it the Models/Tools tables started flush at the gutter while the session,
-        # project and harness tables above them were indented, and the pane read as two
-        # different grids.
+        # Keep the common 2-cell marker gutter so stacked table columns align.
         lead = "  "
         inner = max(1, width - self.BOX_CHROME - len(lead))
-        # In wide panes the CacheR/CacheW/Output cells carry the tokens' attributed
-        # share of the Cost column too -- "811.6k ($10)" -- because counts alone hide
-        # how skewed the money is (cache writes bill at 12.5x the cache-read rate on
-        # current Anthropic models). Costs 16 more columns than the plain layout, so
-        # it only kicks in when the name column still gets its 20-char floor; with
-        # no dollars anywhere ($0.00 unpriced rows) there is nothing to attribute.
+        # Wide panes attribute Cost across CacheR/CacheW/Output. Require both recorded
+        # dollars and the 20-cell model-name floor; $0 rows have nothing to attribute.
         split = price_split and any(float(r[2]) > 0 for r in rows) and inner - 80 - cw_ >= 20
-        # The split layout gets a two-space gutter between columns: single-spacing packed
-        # the "($1.1k)" cells so tight they butted against the next column while the wide
-        # pane stranded empty space on the right (the "crowded" look). The plain fallback
-        # is the narrow-pane layout, where a one-space gutter keeps the rightmost column
-        # from clipping -- so `sep` threads header, body, and TOTAL identically per mode,
-        # and the split cells stay aligned under their labels.
+        # Split cells need two-space gutters; the narrow fallback needs every spare cell.
         sep = "  " if split else " "
         block = 80 if split else 57
         mw = min(longest, max(20, inner - block - cw_))
         total_cost = sum(float(r[2]) for r in rows)
         if split:
-            # Each split cell is two fixed sub-columns -- tokens right-aligned in 6,
-            # dollars right-aligned in 8 inside the parens -- so the numbers line up
-            # row to row and the label sits exactly over the token half.
+            # Split cells use fixed token and dollar sub-columns.
             tail_head = sep.join(f"{h:>6}{'':8}" for h in ("CacheR", "CacheW", "Output"))
         else:
             tail_head = sep.join((f"{'CacheR':>9}", f"{'CacheW':>9}", f"{'Output':>8}"))
@@ -2624,11 +2225,8 @@ class Renderer:
             )
         total = None
         if len(rows) > 1:
-            # A rule + TOTAL row closes every multi-row table: the count/token columns
-            # summed, and in split mode the attributed dollars summed per row at
-            # each row's OWN rates -- so "what did cache writes cost me this
-            # year" is one glance, not per-model mental math. A single-row table
-            # is its own total; Share is definitionally 100%, so it stays blank.
+            # Sum attributed dollars per row at each model's own rates. A single row is
+            # already its total, and aggregate Share is definitionally blank.
             truns, ttok, tcr, tcw, tout = (sum(int(r[i]) for r in rows) for i in (1, 3, 4, 5, 6))
             if split:
                 dollars = (0.0, 0.0, 0.0)
@@ -2656,17 +2254,11 @@ class Renderer:
                 "",
                 "! unknown (not recorded) means provider/model metadata was not stored for these rows.",
             ]
-        # CLAMP, exactly as App.zoom_selected_model does -- never bail on an out-of-range
-        # index. Anything that shrinks the list without moving the cursor (typing an `f`
-        # query is the easy one: the move handlers clamp, a keystroke in the filter does
-        # not) would otherwise leave Enter drilling the clamped last row while the pane
-        # highlighted nothing at all.
+        # Clamp exactly like App.zoom_selected_model so filtering cannot make highlight
+        # and Enter resolve to different rows.
         picked = min(max(0, self.app.model_pick_index), len(body) - 1) if body else 0
         if selectable and body:
-            # The ">" every navigable table marks its selection with, in the gutter the
-            # lead reserves. The reverse bar says the same thing in colour; this says it
-            # in ink, which is what a screenshot, a monochrome terminal and a colour-blind
-            # reader are left with -- and what made this table the odd one out.
+            # Preserve a non-color selection cue for screenshots and accessibility.
             body[picked] = ">" + body[picked][1:]
         lines = self._ruled_box(title, header, body, total, notes, width)
         self._model_row_at = {}
@@ -2677,10 +2269,7 @@ class Renderer:
             self._model_cursor_line = start + picked
         return lines
 
-    # The ruled-box glyphs. Unicode on a UTF-8 screen; the locale-independent ASCII set
-    # where a multibyte glyph would land as a garbage byte (util.unicode_screen: a
-    # question asked, never caught -- see draw_frame). These are content strings, not the
-    # ACS line set frame() draws its panels with, so they take the ASCII fallback instead.
+    # Content strings cannot use curses ACS; use ASCII when the screen is not UTF-8.
     _TABLE_GLYPHS = {
         "tl": "┌",
         "tr": "┐",
@@ -2702,30 +2291,18 @@ class Renderer:
         "v": "|",
     }
 
-    # -- the ruled box, in pieces ------------------------------------------------
-    #
-    # Every table in the app is drawn in this one frame, whether it is a static block
-    # of text (the Models/Tools tables), a line-based pane with a cursor (Turns), or a
-    # self-painting scrolling picker (Sessions/Projects/Harnesses). The pieces are split
-    # out because those three build their box differently -- the first two assemble a
-    # list of strings up front, the third paints borders around a window it only sizes
-    # at draw time -- and a second hand-rolled frame is exactly how the two frames drift
-    # apart (they did, once: the Sessions preview and its picker grew different columns).
-    # BOX_CHROME is what a box costs a caller sizing content against a pane.
+    # Static tables and scrolling pickers share these pieces despite building at different
+    # times. BOX_CHROME is the width callers must reserve for the frame.
 
-    BOX_CHROME = 4  # "| " + " |": the cells a box takes off the content width
+    BOX_CHROME = 4  # "| " + " |"
 
     @classmethod
     def box_glyphs(cls) -> dict:
-        # Unicode on a UTF-8 screen, the locale-independent ASCII set otherwise. Asked,
-        # never caught -- see the _TABLE_GLYPHS note.
         return cls._TABLE_GLYPHS if unicode_screen() else cls._TABLE_GLYPHS_ASCII
 
     @classmethod
     def box_top(cls, title: str, width: int) -> str:
-        # The titled top border. A titled box needs at least "| x |" (5 cells); below
-        # that the frame can't be square, so `width` is clamped and the paint clips the
-        # clamped box to the actual pane.
+        # A square titled frame needs at least five cells; paint clips narrower panes.
         g = cls.box_glyphs()
         width = max(5, width)
         heading = shorten(title[2:] if title.startswith("# ") else title, max(1, width - 6))
@@ -2739,9 +2316,7 @@ class Renderer:
 
     @classmethod
     def box_row(cls, text: str, width: int) -> str:
-        # One content line inside the gutters, padded/clipped to the inner width so the
-        # frame stays square even on a narrow pane -- at the cost of the rightmost column
-        # there (the pre-box tables just overflowed the pane and were clipped at paint).
+        # Clip inside gutters so narrow panes retain a square frame.
         g = cls.box_glyphs()
         inner = max(5, width) - cls.BOX_CHROME
         return f"{g['v']} {pad(shorten(text, inner), inner)} {g['v']}"
@@ -2755,11 +2330,8 @@ class Renderer:
         notes: list[str],
         width: int,
     ) -> list[str]:
-        # Wrap a column-aligned table in a ruled box: the title on the top border, a rule
-        # under the header, the data rows, an optional rule + TOTAL row, then the bottom
-        # border. width is the OUTER width. line_attr colours the pieces by their leading
-        # glyph: the titled top in the accent, the TOTAL row bold. Any "! ..." caveat
-        # rides OUTSIDE the box, below it, as its own amber line.
+        # `width` is outer width. Caveats remain outside the box so line_attr can style
+        # them independently; the title and TOTAL are recognized by their framed text.
         lines = [self.box_top(title, width), self.box_row(header, width)]
         self._mark_box_header(header, width)
         self._ruled_body_start = None
@@ -2777,11 +2349,7 @@ class Renderer:
     def _sectioned_box(
         self, title: str, groups: list[list[str]], width: int, notes: list[str]
     ) -> list[str]:
-        # A ruled box like _ruled_box, but its body is several row GROUPS separated by
-        # rules -- the Overview's Money card stacks the cost breakdown and, below a rule,
-        # the armed what-if rows. Same glyphs, same titled top border (line_attr paints it
-        # in the accent), same "! ..." notes riding outside the box below it. Empty groups
-        # are dropped so a rule never opens onto nothing.
+        # Drop empty groups so separators never open onto nothing.
         lines = [self.box_top(title, width)]
         for i, group in enumerate(g2 for g2 in groups if g2):
             if i:
@@ -2795,12 +2363,8 @@ class Renderer:
     def _price_split_dollars(
         name: str, cost: float, tok: int, cr: int, cw: int, out: int
     ) -> tuple[float, float, float]:
-        # The (cacheR, cacheW, output) dollar attribution behind the split cells:
-        # tokens weighed at the same list rates api_equivalent_cost bills them at,
-        # then scaled so the three shares plus the implicit input remainder sum to
-        # the row's Cost -- exact for $-estimated rows (same math), honest
-        # attribution for recorded costs that predate today's rates. A row with no
-        # dollars, or a model with no rates at all, attributes nothing.
+        # Weight token categories at list rates, then scale to recorded Cost. This is exact
+        # for list-price estimates and proportional for historical recorded costs.
         ir, orr, crr, cwr = model_price(name)
         inp = max(0, tok - cr - cw - out)
         raw = (inp * ir, cr * crr, cw * cwr, out * orr)
@@ -2810,10 +2374,6 @@ class Renderer:
 
     @staticmethod
     def _split_cell(tokens_n: int, dollars: float) -> str:
-        # One "tokens(dollars)" cell, 14 wide with fixed sub-columns -- tokens
-        # right-aligned in 6, then the whole "($13)" group right-aligned in 8 so
-        # the parens hug the amount (no inner gap) while the amounts stay flush
-        # right row to row.
         label = f"({money_label(dollars)})" if dollars > 0 else ""
         return f"{human_tokens(tokens_n):>6}{label:>8}"
 
@@ -2821,8 +2381,6 @@ class Renderer:
     def _price_split_cells(
         name: str, cost: float, tok: int, cr: int, cw: int, out: int
     ) -> tuple[str, str, str]:
-        # "tokens(dollars)" cells: each category's attributed share of the row's
-        # Cost (_price_split_dollars), rendered in the fixed _split_cell shape.
         d = Renderer._price_split_dollars(name, cost, tok, cr, cw, out)
         return (
             Renderer._split_cell(cr, d[0]),
@@ -2831,17 +2389,8 @@ class Renderer:
         )
 
     def _models_tab(self, rows: list[tuple], title: str, width: int) -> list[str]:
-        # The Models tab body, with the live `f` filter applied to model names.
-        # Unlike sessions we keep the cost ranking rather than re-ranking by fuzzy
-        # score: model lists are short and the cost order is the useful one.
-        #
-        # In a zoom the SAME table becomes navigable -- a cursor plus Enter, drilling to
-        # the scope's sessions that used the model. Deliberately not a separate picker
-        # beside it: this tab used to render one table in browse (eight columns, price
-        # splits, a TOTAL row) and a four-column ranked list on Enter, which is exactly
-        # the drift the Sessions/Projects tables were unified to end -- and it silently
-        # re-pointed `f` from model names at session titles on the way. So `selectable`
-        # adds a cursor and nothing else: same rows, same columns, same filter.
+        # Filter model names without fuzzy re-ranking; cost order remains meaningful.
+        # Zoom adds only a cursor to this same table.
         if self.query:
             rows = [r for r in rows if fuzzy_score(self.query, str(r[0])) is not None]
             if not rows:
@@ -2883,29 +2432,18 @@ class Renderer:
     def _paint_token_runs(
         self, stdscr: curses.window, y: int, x: int, line: str, width: int
     ) -> None:
-        # Repaint a Token economics bar (or its legend) segment by segment, after
-        # write_rich has laid the line down in one attribute. Same two-pass shape
-        # write_rich itself uses for money/token runs: draw once, then overpaint the
-        # spans that own a colour. A line with no recorded runs -- every other line in
-        # the app -- costs one dict miss.
+        # Overpaint recorded spans after write_rich; unrelated lines cost one dict miss.
         runs, shift = self._token_runs.get(line), 0
         if runs is None and len(line) > 4 and line[0] in "│|" and line[-1] in "│|":
-            # The bar lives inside a ruled box, so the painted line is the recorded one
-            # wrapped in "│ … │" gutters. Look up the content and shift the runs by the
-            # gutter rather than making the builder predict its own wrapping -- it is
-            # spliced into six different Overviews and cannot know.
-            #
-            # Strip exactly the frame ("│ " + content padded to width + " │") and then
-            # only the PADDING, never trailing content characters: the flamegraph's
-            # labels are session titles, and rstrip("│|") ate the last character of any
-            # label that happened to end in a pipe, so its swatch lost its colour.
+            # Builders cannot predict their later box offset. Strip exact gutters and
+            # padding only; trailing `|` may be real label content.
             runs, shift = self._token_runs.get(line[2:-2].rstrip(" ")), 2
         if not runs:
             return
         for col, length, slot in runs:
             col += shift
             if col >= width:
-                break  # the pane clipped this segment away entirely
+                break
             self.write(
                 stdscr,
                 y,
@@ -2917,8 +2455,7 @@ class Renderer:
     def _paint_tool_tree_runs(
         self, stdscr: curses.window, y: int, x: int, index: int, line: str, width: int
     ) -> None:
-        # Repaint complete tile spans after write_rich, which would otherwise turn
-        # embedded dollar labels green. Each pair owns contrast-safe ink + heat fill.
+        # Repaint complete tiles so rich dollar coloring cannot override contrast-safe ink.
         if not self._tool_heat_ok:
             return
         for col, length, level in self._tool_tree_runs.get(index, []):
@@ -2933,26 +2470,13 @@ class Renderer:
             )
 
     def _token_glyph(self, slot: int) -> str:
-        # A solid cell when the five colour pairs took, a per-type density glyph when
-        # they didn't (a pair-starved terminal). Colour and glyph carry the SAME
-        # distinction, so exactly one of them is ever in play.
+        # Pair-starved terminals distinguish token types by glyph instead of color.
         return "█" if self._token_series_ok else TOKEN_SERIES_GLYPHS[slot]
 
     @staticmethod
     def _stack_widths(rows, total: float, cells: int) -> list[int]:
-        # The 100%-stacked bar's per-segment widths, summing to exactly `cells`.
-        # Split out from _token_stack_line because the flamegraph's label row has to sit
-        # under the segments it names, and geometry computed twice is geometry that
-        # drifts by a cell and puts every name half a segment to the left.
-        #
-        # Cumulative rounding, so there is no drift opening a gap at the right edge, and
-        # every positive value keeps at least one cell -- a type that cost real money is
-        # never invisible. `bump` is that floor, paid per positive row and reserved out
-        # of the width first; both halves of it drop together once the positive segments
-        # outnumber the cells, because paying an unpayable floor builds a line LONGER
-        # than the pane, which the box then clips -- silently dropping whatever sits at
-        # the right edge. (Chart 1 has five segments and cannot reach that; the
-        # flamegraph's count is the session's subagent count.)
+        # Compute geometry once for bars and labels. Cumulative rounding closes the right
+        # edge; positive segments get one cell unless they outnumber available cells.
         floor = sum(1 for _, value, _ in rows if value > 0)
         bump = 1
         if floor > cells:
@@ -2965,22 +2489,13 @@ class Renderer:
             edge = min(room, round(acc * room))
             widths.append(max(0, edge - used) + (bump if value > 0 else 0))
             used = edge
-        short = cells - sum(widths)  # rounding can leave a cell unclaimed
+        short = cells - sum(widths)
         if short > 0 and widths:
             widths[widths.index(max(widths))] += short
         return widths
 
     def _token_stack_line(self, rows, total: float, cells: int, labels=None, share_fmt=None) -> str:
-        # One 100%-stacked bar as a single string, plus the per-segment colour runs it
-        # needs, stashed in _token_runs keyed by the line TEXT rather than its index --
-        # the box is spliced into a bigger line list by six different Overviews, so it
-        # cannot know its final offsets, and two identical bar strings want identical
-        # colouring anyway.
-        #
-        # Widths come from cumulative rounding so they sum to exactly `cells` with no
-        # drift opening a gap at the right edge, and every positive value keeps at least
-        # one cell -- a type that cost real money is never invisible. That floor is
-        # reserved out of the width first, so honouring it can never overflow the bar.
+        # Key color runs by text because boxes splice this line at unknown offsets.
         widths = self._stack_widths(rows, total, cells)
         runs: list[tuple[int, int, int]] = []
         text, col = "", 0
@@ -2988,24 +2503,14 @@ class Renderer:
             if w <= 0:
                 continue
             glyph = self._token_glyph(slot)
-            # `share_fmt` lets a caller impose its own rounding rule (the flamegraph
-            # guards both ends, so a sliver never reads "0%" and a near-total never
-            # reads a flat "100%" beside the segments it is standing next to). Default
-            # is chart 1's plain round, so its five bars are untouched.
+            # Flamegraph shares guard near-zero and near-total values; other bars use round.
             share = ""
             if total > 0:
                 share = (
                     share_fmt(value / total) if share_fmt else f"{round(100.0 * value / total)}%"
                 )
-            # The percentage rides INSIDE its segment when it fits with a cell of air on
-            # each side; otherwise the legend and the table carry it, rather than
-            # smearing two digits across a three-cell sliver. Only when colour is doing
-            # the separating -- with glyphs in play the fill itself is the identity and
-            # punching a label through it would break the one distinction left.
-            # `labels` (the flamegraph) offers a NAME to ride in front of the share when
-            # the segment is roomy enough for both -- a wide frame that says what it is
-            # beats a wide frame you have to look up in the legend. It degrades to the
-            # bare share, then to plain fill, so the fallback is chart 1's exact rule.
+            # Inline labels require surrounding space and color separation. In glyph
+            # fallback mode, overwriting fill would remove the only category cue.
             body = glyph * w
             if self._token_series_ok:
                 named = f"{labels[i]} {share}".strip() if labels else ""
@@ -3020,12 +2525,8 @@ class Renderer:
         return text
 
     def _token_legend_lines(self, rows, inner: int) -> list[str]:
-        # "<swatch> Cache read  <swatch> Output …" -- every type keyed to its fill, so a
-        # segment too narrow for its own label is still identifiable without dropping to
-        # the table. Wraps onto more rows rather than letting the box clip it: a legend
-        # missing its last entry is worse than a legend two rows tall, because the
-        # clipped type is exactly the small one whose segment you couldn't read either.
-        # Built and measured in one pass so each row's runs land on its own swatches.
+        # Wrap rather than clip: narrow segments rely most on the legend. Build color runs
+        # with each line so wrapped swatches retain their positions.
         lines: list[str] = []
         runs: list[tuple[int, int, int]] = []
         text = ""
@@ -3044,17 +2545,8 @@ class Renderer:
         return lines
 
     def _token_economics_box(self, workflows: list[Workflow], width: int) -> list[str]:
-        # "Where the money actually goes": the same five token types measured twice --
-        # what you SENT, then what you PAID -- as two 100%-stacked bars, one above the
-        # other. The reading is the gap between them (a type that is most of the first
-        # bar and a sliver of the second), which is why they share a scale and a colour
-        # per type. One ruled box holds the bars, the legend and the numbers as three
-        # sections, so the chart reads as one object rather than loose lines above a
-        # table -- and on a pane too narrow for five legible segments the bar section
-        # drops out and the numbers alone still answer.
-        #
-        # Always list rates (App.token_economics explains why nothing else is
-        # decomposable), so the title says so rather than following "$".
+        # Compare token volume with list-price spend using one color per token type.
+        # Recorded cost is not decomposable, so this box always uses list rates.
         econ = self.app.token_economics(workflows)
         if econ is None:
             return self._ruled_box(
@@ -3062,9 +2554,7 @@ class Renderer:
             )
         approx = "~" if econ.estimated else ""
         inner = max(1, width - 4)
-        # `slot` is the token TYPE's index, carried with the row so a type owns one
-        # colour in both bars, in the legend and in the table however the cost ordering
-        # moves it around.
+        # Keep each token type's color stable after cost sorting.
         rows = [
             (label, econ.tokens[i], econ.cost[i], i)
             for i, label in enumerate(TOKEN_TYPES)
@@ -3073,9 +2563,7 @@ class Renderer:
         rows.sort(key=lambda r: (r[2], r[1]), reverse=True)
 
         def share_text(value: float, total: float) -> str:
-            # NOT formatting.pct: it floors everything under 1% to "<1%", and here the
-            # sub-percent rows are the punchline -- output is half a percent of the
-            # tokens and a sixth of the bill, which "<1%" can't say.
+            # Preserve informative sub-percent differences that formatting.pct floors.
             share = 100.0 * value / total if total > 0 else 0.0
             if share >= 10 or share == 0:
                 return f"{share:.0f}%"
@@ -3083,11 +2571,9 @@ class Renderer:
                 return f"{share:.1f}%"
             if share >= 0.005:
                 return f"{share:.2f}%"
-            return "<0.01%"  # present but tiny -- never round a real row down to 0.00%
+            return "<0.01%"
 
-        # --- section 1: the two bars + the colour key. Below ~34 usable cells five
-        # segments stop being legible (several are slivers), so the section drops out
-        # rather than drawing five ambiguous cells.
+        # Below 34 cells, omit ambiguous bars and keep the exact table.
         chart: list[str] = []
         if inner >= 34:
             for caption, index, total, fmt in (
@@ -3095,7 +2581,7 @@ class Renderer:
                 ("share of dollars billed", 2, econ.total_cost, money),
             ):
                 if chart:
-                    chart.append("")  # a blank row between the bars, so they read as two
+                    chart.append("")
                 figure = fmt(total)
                 chart.append(caption + " " * max(1, inner - len(caption) - len(figure)) + figure)
                 chart.append(
@@ -3104,12 +2590,9 @@ class Renderer:
             chart.append("")
             chart.extend(self._token_legend_lines(rows, inner))
 
-        # --- section 2: the numbers behind the bars
         type_w = max(max((len(label) for label, *_ in rows), default=4), len("TOTAL"))
         cost_w = max(8, *(len(money(c)) for _, _, c, _ in rows), len(money(econ.total_cost)) + 1)
-        # The 2-cell marker gutter every boxed table opens with (see _model_table): the
-        # bars above are a chart and start flush, but the numbers below them are a table
-        # and line up with every other one on the pane.
+        # Use the common 2-cell table gutter below the flush chart.
         table = [
             f"  {'Type':<{type_w}}  {'Tokens':>8}  {'Volume':>6}  {'Cost':>{cost_w}}  {'Spend':>6}"
         ]
@@ -3145,16 +2628,12 @@ class Renderer:
     def _top_sessions_box(
         self, workflows: list[Workflow], scope_cost: float, width: int
     ) -> list[str]:
-        # The Overview's "Top Sessions" preview as a ruled box, matching the Top Models
-        # table above it: Cost · Share · Tokens · Subs · Title. A top-N slice, so no
-        # TOTAL row (it would sum only the shown few, not the scope).
+        # A top-N slice has no TOTAL because it would not represent the full scope.
         rows = self.top_sessions(workflows)
         if not rows:
             return self._ruled_box("# Top Sessions", "no sessions in range", [], None, [], width)
         inner = max(1, width - self.BOX_CHROME - 2)  # -2: the shared marker gutter
-        # Size Cost/Subs to their widest value so a 6-figure cost ($100,000.00 is 11
-        # cells, not 10) or a 5-digit subagent count doesn't overflow a fixed field and
-        # shove every following column one cell right of its header.
+        # Size numeric columns from data to prevent overflow shifting later columns.
         cost_w = max(10, *(len(money(w.total_cost)) for w in rows))
         subs_w = max(4, *(len(str(w.subagents)) for w in rows))
         prefix = cost_w + 2 + 5 + 2 + 8 + 2 + subs_w + 2  # Cost·Share·Tokens·Subs + gaps
@@ -3171,9 +2650,7 @@ class Renderer:
     def _top_projects_box(
         self, workflows: list[Workflow], scope_cost: float, width: int
     ) -> list[str]:
-        # The Overview's "Top Projects" as a ruled box, matching Top Sessions/Top Models:
-        # Cost · Share · Tokens · Sess · Project. Cost-ranked (never the Projects-tab
-        # sort/filter -- this is an at-a-glance leaderboard), a top-N slice so no TOTAL row.
+        # Cost-ranked top-N, independent of Projects-tab sort/filter; no partial TOTAL.
         grouped: dict[str, list[Workflow]] = defaultdict(list)
         for w in workflows:
             grouped[self.project_root(w.directory)].append(w)
@@ -3187,8 +2664,7 @@ class Renderer:
         )[: self.TOP_SESSIONS_LIMIT]
         if not ranked:
             return self._ruled_box("# Top Projects", "no projects in range", [], None, [], width)
-        # Fold each project to its (directory, cost, tokens, sessions) once, so the column
-        # widths and the rows read the same sums.
+        # Aggregate once so width calculation and rows use identical sums.
         agg = [
             (
                 directory,
@@ -3199,8 +2675,6 @@ class Renderer:
             for directory, ws in ranked
         ]
         inner = max(1, width - self.BOX_CHROME - 2)  # -2: the shared marker gutter
-        # Size Cost/Sess to their widest value (see _top_sessions_box) so a 6-figure
-        # project cost or a 4-digit session count doesn't overflow and shift the columns.
         cost_w = max(10, *(len(money(cost)) for _, cost, _, _ in agg))
         sess_w = max(4, *(len(str(n)) for _, _, _, n in agg))
         prefix = cost_w + 2 + 5 + 2 + 8 + 2 + sess_w + 2  # Cost·Share·Tokens·Sess + gaps
@@ -3281,7 +2755,6 @@ class Renderer:
             [self.unpriced_hint()] if year.unpriced_tokens else [],
         )
         year_ws = self.workflows_for_year(year.year)
-        # Top Months is the year's headline breakdown -- the level you drill into next.
         by_month: dict[str, list[Workflow]] = defaultdict(list)
         for w in year_ws:
             by_month[w.created_at[:7]].append(w)
@@ -3375,8 +2848,6 @@ class Renderer:
         lines.extend(self._token_economics_box(day_ws, width))
         lines.append("")
         lines.extend(self._top_sessions_box(day_ws, day.cost, width))
-        # A day touches few models, so the full model table lives here in the
-        # Overview rather than in its own (near-empty) tab.
         lines.append("")
         agg = self.aggregate_models(day_ws)
         lines.extend(self._model_table(self._agg_rows(agg), "# Model Mix", width))
@@ -3425,8 +2896,6 @@ class Renderer:
         )
         lines.append("")
         lines.extend(self._token_economics_box(workflows, width))
-        # The same Top Sessions box every other scope's Overview closes with, rather than
-        # this scope's own hand-rolled spelling of it -- one leaderboard, one layout.
         lines.append("")
         lines.extend(self._top_sessions_box(workflows, project.cost, width))
         lines.append("")
@@ -3512,43 +2981,28 @@ class Renderer:
         )
 
     def note_lines(self, workflow: Workflow, width: int) -> list[str]:
-        # The note sits in the Session block, wrapped to the pane and hanging-indented
-        # under its label like every other field there. It's above the Money card on purpose:
-        # it's the one line on this screen that says what the money was *for*.
         note = self.note_for(workflow.id)
         if not note:
             return []
-        # Wrapped by display cells, not codepoints: a note with CJK or an emoji wrapped
-        # by len() overflows the pane, and the pane then clips the overflow away -- the
-        # note would lose text on screen that it still has on disk.
+        # Wrap by display cells so wide Unicode cannot be clipped from the on-screen note.
         wrapped = wrap_cells(note, max(20, width - 12)) or [note]
         return [f"Note:     {wrapped[0]}"] + [f"          {line}" for line in wrapped[1:]]
 
     def _money_overview(self, workflow: Workflow, width: int) -> list[str]:
-        # The Overview's Money card (a _sectioned_box): one box that carries the cost
-        # split, the shape stats folded in (so there is no separate "# Shape" block to
-        # crowd the pane), a root-vs-subagents proportion bar -- the TUI's pie stand-in --
-        # and, when a `w` target is armed, the what-if comparison as accent-highlighted
-        # rows below a rule. Both sides of the what-if are list rates (whatif_session_totals),
-        # so the recorded-cost rows above and the comparison rows below never quote the same
-        # number for different things by accident.
+        # Keep recorded cost and list-rate what-if in separate sections; their figures have
+        # different semantics even when displayed in one card.
         root, total = workflow.root_cost, workflow.total_cost
         sub = total - root
-        # A summary card, not a full-width table: capped so a wide pane doesn't strand the
-        # values a hundred columns from their labels (the model table below fills the pane
-        # with real columns; this one is label/value and reads best compact).
+        # Cap label/value cards so wide panes do not strand values far from labels.
         width = min(width, 76)
         inner = max(10, width - 4)
 
         def kv(label: str, value: str) -> str:
-            # A left label and a right-aligned value, filling the box's inner width.
             return f"{label}{value:>{max(1, inner - display_width(label))}}"
 
         money_rows = []
-        # The root-vs-subagents "pie" -- a two-glyph proportion bar (filled = root,
-        # light = subagents), one color but readable by glyph. Only when the split is
-        # real: a solo session (no subagents) or a $0 subscription session in normal mode
-        # has nothing to divide, so the bar would be a solid or undefined block.
+        # Glyph density keeps the proportion readable without color. Omit undefined or
+        # trivial splits for solo and $0 sessions.
         if workflow.subagents and total > 0:
             cells = max(8, min(28, inner - 26))
             rc = max(0, min(cells, round(cells * root / total)))
@@ -3564,9 +3018,7 @@ class Renderer:
         ]
         title = "# Money card"
         notes: list[str] = []
-        # An armed `w` target answers for THIS session right here -- including a solo one,
-        # which has no subagent tree for the Subagents tab to show. The ★ marks the rows
-        # line_attr paints in the accent (the "highlight").
+        # Session-level what-if must also cover solo sessions with no Subagents table.
         whatif_rows: list[str] = []
         totals = self.whatif_session_totals(workflow)
         if self.whatif_model and totals:
@@ -3597,19 +3049,11 @@ class Renderer:
             notes.append(self.unpriced_hint())
         return self._sectioned_box(title, [money_rows, whatif_rows], width, notes)
 
-    # A summary card is capped rather than filled: a label/value block stretched across a
-    # wide pane strands its values a hundred columns from their labels. The Money card
-    # already read this way; the stat blocks above it did not, which is what made them
-    # look like loose text above a row of designed boxes.
     CARD_WIDTH = 76
 
     def _stat_card(
         self, title: str, rows: list[str], width: int, notes: list[str] = ()
     ) -> list[str]:
-        # The identity/stat blocks that open every Overview -- "# Session", "# Monthly
-        # Insight", "# Project Spend" -- as the same ruled card the Money box below them
-        # wears. They are label/value pairs, not columns, so they carry NO header row and
-        # no marker gutter: _sectioned_box gives a titled box whose whole body is data.
         return self._sectioned_box(title, [list(rows)], min(width, self.CARD_WIDTH), list(notes))
 
     def detail_overview(self, workflow: Workflow, width: int) -> list[str]:
@@ -3640,16 +3084,8 @@ class Renderer:
 
     @staticmethod
     def _flame_pct(frac: float) -> str:
-        # A share of one session's spend, with BOTH ends guarded -- which formatting.pct
-        # only does at the bottom. An icicle prints the parts beside the whole, so
-        # "root kept 100%" above five visible subagent segments contradicts itself on
-        # its own screen: a near-total reads ">99%" and only an exact whole reads 100%.
-        # And a sliver is common (65 segments in the corpus are under half a percent, and
-        # they are exactly the ones a "biggest …" line might name), so the bottom floors
-        # at "<1%" rather than printing a segment that exists as "0%".
-        #
-        # Half-up on purpose: Python rounds .5 to even and JS's Math.round rounds it up,
-        # so an exact 12.5% would read "12%" in the TUI and "13%" on the page.
+        # Guard both ends so visible parts never read as 0% or make a near-total read 100%.
+        # Half-up matches JavaScript Math.round in the web frontend.
         if frac >= 1:
             return "100%"
         if frac <= 0:
@@ -3663,12 +3099,8 @@ class Renderer:
 
     @staticmethod
     def _legend_names(segments, with_model: bool = False) -> list[str]:
-        # Key labels, clipped to the key's column budget -- and re-separated after the
-        # clip. App._flame_labels guarantees the FULL names are unique; shortening can
-        # undo that (two long agent names sharing their first 21 characters), and two
-        # identical key LINES collide in _token_runs, which is keyed by line text: the
-        # second silently overwrites the first's colour runs and both swatches paint in
-        # the second segment's colour.
+        # Re-separate names after clipping: duplicate line text collides in _token_runs
+        # and would assign both swatches the latter color.
         out: list[str] = []
         used: dict[str, int] = {}
         for seg in segments:
@@ -3680,18 +3112,8 @@ class Renderer:
         return out
 
     def _flame_label_line(self, segments, widths, text_of) -> tuple[str, list[int]]:
-        # One row of labels under the band: each segment's text written at that segment's
-        # own starting column, in that segment's own colour, so the reader maps label to
-        # slice by POSITION rather than by matching a swatch in a key. A label wider than
-        # its segment is dropped rather than shifted -- a name sitting over the wrong
-        # slice is worse than no name, and the key picks those up.
-        #
-        # One cell of air is reserved before the next segment so two labels never run
-        # together into a single unreadable word; the last segment can use its full
-        # width, there being nothing after it to collide with.
-        #
-        # Returns the line and the INDEXES it managed to label, so the caller can give a
-        # key to exactly the segments position could not speak for.
+        # Position labels under their own segments; drop rather than shift oversized text.
+        # Reserve one cell between labels and return labeled indices for legend fallback.
         text, runs, done = "", [], []
         for i, (seg, w) in enumerate(zip(segments, widths)):
             if w <= 0:
@@ -3710,14 +3132,8 @@ class Renderer:
         return text, done
 
     def _flamegraph_box(self, workflow: Workflow, width: int) -> list[str]:
-        # "Where the money went": the session as a spend hierarchy -- one bar for the
-        # whole, the band beneath it split into the root's own work and every subagent,
-        # width = dollars. The tree TABLE below ranks the nodes; this says what share
-        # each one took, which is the question a delegation setup is actually judged on
-        # ("did routing move the work off the expensive model, or did the root keep it?").
-        #
-        # Widths are App.session_flame's, i.e. the table's own Cost column, so the chart
-        # and the table can never quote different figures for the same node.
+        # Visualize root/subagent share using App.session_flame, the same values as the
+        # table's Cost column. Width falls back to tokens when no costs exist.
         flame = self.app.session_flame(workflow)
         if flame is None or not flame.segments:
             return []
@@ -3731,8 +3147,7 @@ class Renderer:
         kids = flame.children
         own = flame.total - sum(s.value for s in kids)
 
-        # --- the headline: the chart's finding as a sentence. It survives a pane too
-        # narrow for the bands, because a share you can read beats a bar you can't.
+        # Keep the finding readable when the pane is too narrow for bands.
         parts = [f"root kept {self._flame_pct(flame.self_share)} ({fmt(own)})"]
         if kids:
             parts.append(
@@ -3740,8 +3155,6 @@ class Renderer:
                 f"split {fmt(sum(s.value for s in kids))}"
             )
             if len(kids) > 1:
-                # The bare agent here too: the sentence points at one segment, so the
-                # handle that tells five "code-reviewer" runs apart is noise in it.
                 parts.append(
                     f"biggest {shorten(kids[0].agent, 22)} {self._flame_pct(kids[0].share)}"
                 )
@@ -3749,22 +3162,14 @@ class Renderer:
             parts = [f"root kept all {approx}{fmt(flame.total)} — no subagent recorded a share"]
         head = [" · ".join(parts)]
 
-        # --- the band, and the names UNDER it. Writing a name into the fill made the
-        # chart harder to read, not easier: the text fought the colour it was punched
-        # through, and it could only ever appear on the segments wide enough not to need
-        # it. Below the band each name sits at its own segment's column, in its own
-        # segment's colour, so position does the pointing and the fill stays a fill.
-        # The pane has to hold a cell per segment as well as the legibility floor: a
-        # session that delegated more times than the band has columns cannot be
-        # partitioned at all, and the sentence above says more than a row of identical
-        # single cells would.
+        # Place names below the fill so text does not erase color. Require at least one
+        # cell per segment; otherwise the headline is more honest than indistinguishable
+        # single-cell slices.
         chart: list[str] = []
         named: list[int] = []
         if inner >= max(self._FLAME_MIN_INNER, len(flame.segments)):
             caption = "session · width = " + ("dollars" if dollars else "tokens")
-            # One model for the whole tree (85 of 135 real sessions) says itself once
-            # here rather than repeating under every segment -- which is exactly what
-            # leaves the other 50 the room to name theirs per segment.
+            # State a uniform model once; use positioned labels only for mixed trees.
             if flame.one_model:
                 caption += f" · all on {flame.one_model}"
             figure = approx + fmt(flame.total)
@@ -3777,24 +3182,15 @@ class Renderer:
             names, named = self._flame_label_line(flame.segments, widths, lambda s: s.agent)
             if names:
                 chart.append(names)
-            # A second positioned row for the models, and only when the segments disagree
-            # about them -- a uniform tree said it once in the caption, and repeating one
-            # model under every segment would spend a row to say nothing. Each row
-            # degrades on its own, so a segment too thin for its model still gets a name.
             if not flame.one_model:
                 models, _ = self._flame_label_line(flame.segments, widths, lambda s: s.model)
                 if models:
                     chart.append(models)
-            # The key only carries what position could not: a segment too thin to hold
-            # its own name. When every segment is named below, there is nothing left for
-            # a key to say and it disappears.
+            # The legend carries only segments too narrow for positioned names.
             rest = [s for i, s in enumerate(flame.segments) if i not in set(named)]
             if rest:
                 chart.append("")
                 legend = rest[: self._FLAME_LEGEND_MAX]
-                # The key has a whole line to wrap in, so it carries the model that the
-                # thin segments below the band had no room for -- otherwise the models
-                # row would answer only for the wide slices.
                 names_ = self._legend_names(legend, with_model=not flame.one_model)
                 chart.extend(
                     self._token_legend_lines(
@@ -3826,9 +3222,8 @@ class Renderer:
         elif flame.estimated:
             notes.append("! widths include list-price estimates for what recorded no cost")
         if flame.deep:
-            # The stores record a node's depth but not its parent, so a nested execution
-            # cannot be drawn under the one it ran below. It joins the band as a sibling
-            # (marked "↳") rather than inventing a nesting -- see SessionFlame.
+            # Stores expose depth but not parent identity; show deep nodes as marked
+            # siblings rather than inventing tree edges.
             notes.append(
                 f"! {flame.deep} execution{'s' if flame.deep != 1 else ''} ran under another "
                 "subagent (↳) — shown alongside, since the tree records depth but not parents"
@@ -3849,23 +3244,13 @@ class Renderer:
         nodes = self.session_node_rows(workflow.id)
         if not any(row["depth"] > 0 for row in nodes):
             return ["# Subagents", "No subagents used in this workflow."]
-        # The chart rides ABOVE the tree table on both variants: it answers "what share"
-        # where the table answers "which node, how much", and it reads recorded/estimated
-        # spend either way, so an armed `w` target leaves it alone. It is passed IN rather
-        # than prepended after, because the sort-header registration below is keyed by
-        # absolute line index -- a prefix bolted on afterwards would silently move the
-        # clickable header off the header row.
+        # Build the chart prefix before registering the table's absolute sort-header line.
+        # What-if does not alter the chart's recorded/estimated share.
         head = self._flamegraph_box(workflow, width)
         totals = self.whatif_session_totals(workflow)
         if self.whatif_model and totals:
-            # With a what-if target the root (depth 0) joins the table. Normally it's
-            # excluded because it isn't an execution *under* the session -- but the
-            # question here ("what if the expensive model had done the delegated work
-            # too?") is about the whole tree, and the root is the model the delegation
-            # was made from. Without a target the table is exactly what it always was.
-            # A session with no per-model rows has no computable baseline (totals is
-            # None), so it keeps the ordinary table rather than quoting half a
-            # comparison.
+            # What-if covers the whole tree, including root. Without per-model rows the
+            # baseline is unknowable, so retain the ordinary table rather than quote half.
             return self._subagents_whatif(
                 self.sorted_subagent_rows(self._priced_nodes(nodes)),
                 self.whatif_model,
@@ -3904,9 +3289,7 @@ class Renderer:
                 f"{human_tokens(sum(row['tokens_total'] for row in rows)):>9}  "
             )
         box = self._ruled_box("# Subagent Executions", header, body, total, [], width)
-        # The header is line 1 of the box, offset by however many lines the flamegraph
-        # above it took -- the sort zones are keyed by ABSOLUTE line index, so this must
-        # be derived from the prefix, never written as a constant.
+        # Sort zones use absolute line indices, so derive the chart-prefix offset.
         self._line_sort_headers[len(head) + self.BOX_HEADER_LINE] = (
             self.SUBAGENT_SORT_COLUMNS,
             "subagent",
@@ -3915,21 +3298,13 @@ class Renderer:
 
     @staticmethod
     def signed_pct(part: float, whole: float, sign: str) -> str:
-        # A share with its direction glued on -- except when there is no share to sign:
-        # pct() answers "-" for a zero denominator (undefined), and "+-" is not a
-        # percentage. An undefined change stays bare.
+        # A zero denominator is undefined; do not turn pct()'s "-" into "+-".
         share = pct(abs(part), whole)
         return share if share == "-" else f"{sign}{share}"
 
     def detail_whatif_summary(self, workflow: Workflow) -> list[str]:
-        # The armed target's effect on THIS session, in three figures. It lives on the
-        # Overview because the Subagents tab can't answer for a session that delegated
-        # nothing: a solo session has no tree to table, and "routing saved $X" would be
-        # crediting a routing decision that was never made. So the summary stays neutral
-        # -- the two list-price totals and the change between them -- and the Subagents
-        # tab keeps the routing narrative for the sessions that actually routed.
-        # Both figures come from App.whatif_session_totals (per-MODEL rows, both sides at
-        # list rates), so the two views cannot drift into quoting different numbers.
+        # Keep the session comparison neutral so it also applies to solo sessions.
+        # Both sides come from per-model rows at list rates via whatif_session_totals.
         totals = self.whatif_session_totals(workflow)
         if not totals:
             return []
@@ -3964,23 +3339,10 @@ class Renderer:
         width: int,
         head: list[str] | None = None,
     ) -> list[str]:
-        # The what-if payoff table -- the feature's ONE visible effect, scoped to this
-        # session: the whole tree (root + every subagent), each node's cost beside what
-        # that node's tokens would have cost had `target` produced them. Nothing outside
-        # this table and the Overview summary moves; "$" keeps owning every app-wide
-        # figure (an app-wide reprice would leave "$" nothing to toggle).
-        #
-        # Two columns, not three. The per-node What-if is exact (one model, one rate
-        # card, that node's own tokens). A per-node *baseline* is not: workflow_nodes
-        # labels a node with its single dominant model, so pricing its whole token split
-        # at that one label is wrong for every node that switched model mid-flight -- so
-        # there is no per-node Δ, because there is no honest per-node figure to subtract
-        # from. The exact comparison exists only at session level, where the per-model
-        # rows split the tokens properly (App.whatif_session_totals), and that is what
-        # the TOTAL line reports -- both sides at list rates, the only apples-to-apples
-        # basis. The Cost column stays what it is everywhere else: recorded spend,
-        # "$"-estimated where nothing was recorded -- which is why it does NOT add up to
-        # the TOTAL, and says so.
+        # What-if is session-scoped; `$` continues to own all app-wide figures. Per-node
+        # target cost is exact, but no per-node delta is shown: a node exposes only its
+        # dominant model and may have switched models. The exact baseline therefore comes
+        # from session per-model rows, with both TOTAL sides priced at list rates.
         priced = [(row, self.whatif_node_price(row, target)) for row in rows]
         prefix = list(head or [])
         header = (
@@ -4004,11 +3366,8 @@ class Renderer:
             f"{row['title']}"
             for row, wi in priced
         ]
-        # No boxed TOTAL row here, unlike every other multi-row table: this tab's total is
-        # the session-level footer below, and its two figures deliberately do NOT equal
-        # the columns above them (the Cost column is recorded spend, $0 wherever a
-        # subscription recorded none). A column sum ruled into the box would sit two lines
-        # above a different TOTAL and read as an arithmetic bug.
+        # Do not add a column TOTAL: recorded Cost intentionally differs from the exact
+        # list-rate session footer below.
         lines = prefix + self._ruled_box(
             f"# Session Tree · what-if {target}", header, body, None, [], width
         )
@@ -4017,8 +3376,7 @@ class Renderer:
             "subagent",
         )
         actual, total = totals
-        # Signed from the TARGET's point of view: what running all of it on the target
-        # would have saved (or cost extra) against the models that actually ran it.
+        # Sign from the target's point of view.
         saved = actual - total
         verb = "saved" if saved >= 0 else "cost more"
         approx = "~" if self.whatif_baseline_is_estimated(workflow) else ""
@@ -4037,14 +3395,10 @@ class Renderer:
                 "! ~ your models include one with no known list rate — its tokens are priced at a "
                 "generic estimate, so the baseline is not a real list price."
             )
-        # Normally the What-if column sums to the counterfactual (same tokens, same rate).
-        # It won't when a session's node rollup disagrees with its message-level totals --
-        # rare, and not this feature's doing, but an unexplained mismatch on screen reads
-        # as a bug, so name it only on the sessions where it is actually true.
+        # Node and message rollups can disagree; explain only observed mismatches.
         column = sum(wi for _row, wi in priced)
         if abs(column - total) > 0.01:
-            # Which way it drifts is not fixed -- a node rollup can overshoot the message
-            # totals as easily as undershoot them -- so say the direction, don't assume it.
+            # A node rollup may drift in either direction.
             direction = "more" if column > total else "less"
             lines.append(
                 "! This session's node totals disagree with its message totals, so the What-if "
@@ -4056,9 +3410,7 @@ class Renderer:
     def _treemap_rects(
         items: list[tuple[str, float]], width: int, height: int
     ) -> list[tuple[str, float, int, int, int, int]]:
-        # The web twin uses the same balanced-binary rule: split weights nearest
-        # half along the current long edge, then recurse. Integer cuts make every
-        # returned rectangle paintable in terminal cells.
+        # Match the web's balanced-binary split; integer cuts remain paintable as cells.
         out: list[tuple[str, float, int, int, int, int]] = []
 
         def place(rows, x: int, y: int, w: int, h: int) -> None:
@@ -4094,17 +3446,13 @@ class Renderer:
         place(positive, 0, 0, max(1, width), max(1, height))
         return out
 
-    # The narrowest column that can still carry a tool name plus its inset -- below it a
-    # tile is a stripe, and the exact table is the honest place for it.
+    # Narrower tiles cannot carry a useful label; the exact table still lists them.
     _TOOL_TILE_MIN = 12
 
     @staticmethod
     def _heat_position(value: float, lo: float, hi: float, levels: int) -> int:
-        # A 0..levels-1 bucket for `value`'s LOGARITHMIC position in [lo, hi] -- the same
-        # reasoning as _price_heat_level, for the same reason: per-call rates span orders
-        # of magnitude (a sub-cent Read beside a $0.60 WebFetch), and a linear ramp
-        # collapses everything but the most expensive tool into one indistinguishable
-        # band. A degenerate range reads coolest rather than falsely hot.
+        # Per-call rates span orders of magnitude, so use logarithmic heat. Degenerate
+        # ranges stay cool rather than falsely hot.
         if not (hi > lo > 0) or value <= lo:
             return 0
         frac = (math.log(value) - math.log(lo)) / (math.log(hi) - math.log(lo))
@@ -4113,8 +3461,7 @@ class Renderer:
     def _tool_treemap_box(
         self, bucket: dict[str, dict], width: int, max_height: int | None = None
     ) -> list[str]:
-        # Area follows the table's live Cost column. A wholly-$0 subscription session
-        # has no spend geometry, so it falls back to attributed tokens until `$` is on.
+        # Area follows visible Cost, falling back to attributed tokens when all costs are $0.
         costs = {name: float(it["cost"]) for name, it in bucket.items()}
         dollars = sum(costs.values()) > 0
         values = costs if dollars else {name: float(it["tokens"]) for name, it in bucket.items()}
@@ -4128,8 +3475,7 @@ class Renderer:
             return []
 
         inner = max(1, width - 4)
-        # The graph is a summary, not a table blocker: at the supported 80x20
-        # minimum the first exact tool row must still fit in the initial viewport.
+        # Preserve the first exact table row at the 80x20 minimum.
         height = max(3, min(5, inner // 14))
         if max_height is not None:
             height = min(height, max_height)
@@ -4137,13 +3483,7 @@ class Renderer:
             self._tool_tree_runs = {}
             return []
 
-        # How many tiles the pane can actually SPEAK for. A box this wide and this short
-        # partitions into full-height columns, so a tile's width is its share of `inner`
-        # -- and a 3-cell column carries no name, no figure and no story, just a stripe.
-        # A row of those at the right edge is most of what made the old chart read as big
-        # and empty. So the tail folds into "Other" until every remaining tile can hold at
-        # least its own label; the long tail is read in the exact table below, which is
-        # where a long tail belongs.
+        # Fold the unlabeled tail into Other; the exact table below retains every tool.
         def fold(keep: int) -> list[tuple[str, float]]:
             head, tail = ranked[:keep], ranked[keep:]
             if not tail:
@@ -4153,10 +3493,7 @@ class Renderer:
             out.sort(key=lambda row: (-row[1], row[0].lower()))
             return out
 
-        # Only the TAIL folds -- the tiles that individually cannot hold a label. Asking
-        # instead that every tile in the folded set clear the floor makes one small tool
-        # drag away everything ranked below it: on real data (18 tools, an 884-cell pane)
-        # that rule left three tiles, which is a bar chart with extra steps.
+        # Fold from the first tile below the label floor, never based on aggregate tail size.
         grand = sum(value for _, value in ranked)
         keep = 0
         while keep < min(8, len(ranked)):
@@ -4165,20 +3502,9 @@ class Renderer:
             keep += 1
         ranked_all, ranked = ranked, fold(max(1, keep))
 
-        # Shade is the PER-CALL rate, deliberately not the area's own measure: area
-        # already says what a tool cost in total, so colouring by the same number spends
-        # the second channel saying it twice. $/call is the one thing the table below
-        # cannot be read off at a glance, and it splits the two findings that look
-        # identical in a Cost column -- "expensive because it ran 200 times" (a big, cool
-        # tile: a workflow question) from "expensive every single time" (a small, hot
-        # one: a context question). It needs a call count for EVERY drawn tile to be a
-        # scale at all, so a bucket without them falls back to the area's measure, where
-        # the fill is at worst redundant rather than arbitrary.
-        # The SCALE comes off the full ranking, not the drawn tiles: whether per-call
-        # rates exist and vary is a property of the data, and pinning the range to it
-        # keeps a tool the same colour when a resize folds a neighbour away. A folded
-        # "Other" carries the blended rate of what it swallowed, which sits inside that
-        # range by construction.
+        # Area already encodes total cost, so shade encodes cost per call when every tool
+        # has call counts. Use the full ranking's range so resizing/folding cannot recolor
+        # unchanged tools; otherwise shade by area rather than inventing partial rates.
         all_rates = {name: value / calls[name] for name, value in ranked_all if calls.get(name)}
         by_rate = len(all_rates) == len(ranked_all) and max(all_rates.values()) > min(
             all_rates.values()
@@ -4206,18 +3532,12 @@ class Renderer:
                 return f"{human_tokens(int(round(rate)))}/call"
             if rate >= 0.01:
                 return f"{money(rate)}/call"
-            # money() floors at the cent, but a per-call rate usually lives below one and
-            # the whole point of the figure is telling $0.0004 from $0.006 -- rendering
-            # both as "<$0.01" would erase exactly the distinction the shade is drawing.
+            # money() intentionally collapses sub-cent values, but per-call heat needs
+            # enough precision to distinguish them.
             return "<$0.0001/call" if rate < 0.0001 else f"${rate:.4f}".rstrip("0") + "/call"
 
         for name, value, x, y, w, h in rects:
-            # A one-cell panel gutter separates adjacent heat fills -- but only where
-            # there is actually a neighbour to separate from. A tile on the chart's own
-            # right or bottom edge keeps its last cell, because the gutter there abuts
-            # the frame, not another fill: at five rows a blanked bottom edge was a
-            # quarter of the chart spent on nothing. Runt rectangles keep their single
-            # cell; the exact table below always carries the label.
+            # Add gutters only between tiles, not against the frame; preserve runt cells.
             tw = w if x + w >= inner else max(1, w - 1)
             th = h if y + h >= height else max(1, h - 1)
             level = (
@@ -4241,10 +3561,7 @@ class Renderer:
                     grid[yy][xx] = fill
                 row_runs[yy].append((x, tw, level))
 
-            # Name, then the area's own figure, then the shade's -- each on its own row
-            # and each dropping independently, so a tile too short for the rate still
-            # names itself. No vertical centring any more: the box is five rows at most
-            # now, and the row it used to spend on air is the row the rate reads from.
+            # Drop name, area, and rate independently as height shrinks.
             inset = 1 if tw >= 4 else 0
             room = tw - inset * 2
             if room >= 4 and th >= 2:
@@ -4253,10 +3570,8 @@ class Renderer:
                 stat = f"{metric} · {pct(value, total)}"
                 if len(stat) <= room:
                     put(y + 1, x + inset, stat, room)
-                # Every figure here is gated on FITTING, never clipped: `shorten` marks a
-                # cut name with an ellipsis, but a clipped money value is silently a
-                # different number ("$0.02/call" losing its tail reads as "$0.0"), so a
-                # rate with no room is omitted and the table below answers instead.
+                # Never clip numeric values into different numbers; omit them if they do
+                # not fit and let the exact table answer.
                 rate = rate_text(rates.get(name))
                 n = calls.get(name) or 0
                 both = f"{rate} · {n} call{'s' if n != 1 else ''}"
@@ -4275,12 +3590,8 @@ class Renderer:
         )
         total_label = money(total) if dollars else f"{human_tokens(int(total))} tokens"
 
-        # The finding, as a sentence -- the flamegraph's headline, for the same reason:
-        # it is the part that survives a pane too narrow to read tiles off, and it is
-        # what a passive chart otherwise makes you derive yourself. It reads the FULL
-        # ranking, not the drawn tiles, so the tool the fold swallowed into "Other" can
-        # still be named -- which matters most exactly when it is the hot one, since a
-        # tool that is pricey per call is usually small by total and folds first.
+        # Derive the headline from the full ranking so folded expensive-per-call tools
+        # remain visible on narrow panes.
         top_name, top_value = ranked_all[0]
         of_what = "the spend" if dollars else "the tokens"
         headline = [
@@ -4309,9 +3620,7 @@ class Renderer:
                     "! nothing here recorded a cost, so area is TOKENS — press "
                     f"{self._key('main', 'api_prices')} for list-price spend"
                 )
-        # One line when it fits, its clauses stacked when it doesn't -- never clipped.
-        # _sectioned_box shortens what overflows, and a headline ending in "…" loses the
-        # figure it exists to deliver; a second row is the cheaper price.
+        # Stack headline clauses rather than clipping their figures.
         joined = " · ".join(headline)
         boxed = self._sectioned_box(
             f"# Tool-attributed spend · {total_label}",
@@ -4319,11 +3628,8 @@ class Renderer:
             width,
             notes,
         )
-        # Where the chart landed inside the box, DERIVED rather than counted off the
-        # prologue: the box is title + groups + rules + bottom + notes, and a literal
-        # index silently shifts every tile's colour a row the moment a group grows a
-        # line -- which the headline just did. Content rows carry the frame's two-cell
-        # gutter, so the columns shift with them.
+        # Derive chart offset after box assembly; headline wrapping changes prologue size.
+        # Shift runs by the frame's two-cell gutter.
         chart_at = len(boxed) - len(notes) - 1 - len(chart)
         self._tool_tree_runs = {
             chart_at + row: [(col + 2, length, level) for col, length, level in runs]
@@ -4334,11 +3640,8 @@ class Renderer:
     def detail_tools(
         self, workflow: Workflow, width: int, treemap_height: int | None = None
     ) -> list[str]:
-        # Which tools (and MCP servers) the LLM calls cost the most. Each row is the
-        # tokens/cost of the assistant steps that invoked a tool, split evenly when a
-        # step called several -- so this is "tokens spent in turns that used this
-        # tool", not the tool's own output size. The "$" view reprices $0
-        # (subscription) rows at list price, like every other panel.
+        # Attribute each assistant step across its invoked tools. These are turn costs,
+        # not tool-output sizes; `$` reprices wholly unpriced rows at list rates.
         if not self.session_supports_tools(workflow.id):
             return [
                 "# Tools",
@@ -4363,8 +3666,7 @@ class Renderer:
 
         by_tool, by_server = agg(), agg()
         for r in rows:
-            # A wholly-$0 (tool, model) row is unpriced -- estimate it at list price in
-            # the "$" view (mirrors _priced_nodes); a priced row keeps its real cost.
+            # Preserve recorded cost; only wholly unpriced rows receive list-price estimates.
             cost = r["cost"]
             if api and not cost:
                 cost = api_equivalent_cost(
@@ -4425,8 +3727,7 @@ class Renderer:
         return lines
 
     def turn_costs(self, rows) -> list[float]:
-        # Each turn's cost as the tab shows it: recorded spend, or -- under "$" -- a
-        # wholly-unpriced ($0) turn's tokens at list rates, long-TTL writes included.
+        # `$` estimates wholly unpriced turns, including long-TTL cache writes.
         api = self.show_api_prices and not self.store.demo
         out = []
         for r in rows:
@@ -4445,13 +3746,7 @@ class Renderer:
         return out
 
     def detail_turn_drill(self, workflow: Workflow, width: int) -> list[str]:
-        """One prompt, drilled into: its full text, its totals, and the turns it took.
-
-        Where the per-turn detail went when the tab became a table -- a prompt that ran
-        217 turns is one row out there and its own view in here, rather than 217 lines
-        shoved between two rows of the table you were reading. Esc steps back out, like
-        every other drill in the app.
-        """
+        """Render one prompt's full text, totals, and turns."""
         rows = self.session_turn_rows(workflow.id)
         if not rows:
             return []
@@ -4461,11 +3756,8 @@ class Renderer:
         if not isinstance(i, int) or not 0 <= i < len(groups):
             return []
         g = groups[i]
-        # The table's click map and selected line belong to the TABLE. Left standing they
-        # keep answering inside the drill, where draw_detail still lays a "turnline"
-        # region over every line: a click on drilled text re-drilled whatever prompt used
-        # to occupy that row, and the stale cursor line put the selection highlight on an
-        # unrelated line of prompt text.
+        # Clear table-only maps: draw_detail still lays a turnline region over this drill,
+        # so stale rows would make prompt text clickable and highlighted incorrectly.
         self._turn_header_at = {}
         self._turn_cursor_line = None
         n = i + 1
@@ -4481,32 +3773,20 @@ class Renderer:
             lines += textwrap.wrap(para, max(20, width)) or [""]
         lines.append("")
         idx_w = max(2, len(str(len(rows))))
-        # "↳ " marks a subagent turn, as the page does; a main-thread turn keeps whatever
-        # label its backend gave it. Forcing "-" there threw a real one away -- OpenCode
-        # names its main agent ("build" on 1,574 turns of a real corpus), and the page was
-        # already showing it, so the two frontends disagreed about a visible cell.
+        # Preserve backend-provided main-agent labels and match web subagent markers.
         agent_w = min(
             12,
             max(5, max((len(_turn_agent(rows[i])) for i in g["indices"]), default=5)),
         )
         inner = max(1, width - self.BOX_CHROME - 2)
-        # The reasoning level each call ran at, beside the model that ran it -- the two
-        # halves of "what answered this", and a switch is worth real money in both
-        # directions (a level change also drops the prompt cache, which the ⚙ marker on
-        # the prompt table prices). Only four backends record it (Claude, Codex, omp,
-        # zaly), so it is gated on the ROWS like Tools and simply absent elsewhere.
+        # Gate effort on row data; changing it can invalidate prompt cache as marked above.
         efforts = {i: str(rows[i].get("effort") or "") for i in g["indices"]}
         eff_w = max((len(e) for e in efforts.values()), default=0)
         eff_w = min(7, max(len("Eff"), eff_w)) if any(efforts.values()) else 0
         fixed = idx_w + agent_w + 14 + 6 + 9 + 9 + 6 + (eff_w + 1 if eff_w else 0)
         mw = max(12, min(30, inner - fixed))
-        # What each step actually DID, beside what it cost -- the one cell that turns a
-        # column of near-identical numbers into a readable trace ("Read, Read, Bash ×3").
-        # It takes whatever the model column left (that one is a fixed vocabulary and
-        # caps at 30; a tool list is open-ended), and is dropped entirely when the pane
-        # can't hold the floor or the prompt called nothing -- a backend that records no
-        # per-step tool calls would otherwise get a blank column charged to the model
-        # name. Gated on the ROWS, not on a backend flag, so it follows the data.
+        # Gate Tools on row data and a width floor. Tool lists are open-ended, so they use
+        # space left after the capped model column and disappear rather than steal it.
         TOOLS_MIN = 10
         labels = {i: tool_call_label(rows[i].get("tools")) for i in g["indices"]}
         tools_w = inner - fixed - mw - 1
@@ -4537,9 +3817,7 @@ class Renderer:
                 f"  {'':>{idx_w}} {pad('TOTAL', 14)} {pad('', mw)} "
                 + (f"{pad('', eff_w)} " if eff_w else "")
                 + f"{pad('', agent_w)} "
-                # The prompt's whole tool mix, busiest first -- shortened like every
-                # other cell (pad only fills, it never truncates, so an unshortened
-                # 40-tool mix would walk straight through the box's right rule).
+                # pad() does not truncate, so shorten the aggregate tool mix first.
                 + (
                     f"{pad(shorten(tool_mix_label([rows[i] for i in g['indices']]), tools_w), tools_w)} "
                     if tools_w
@@ -4553,27 +3831,11 @@ class Renderer:
 
     @staticmethod
     def turn_group_rows(rows, costs):
-        """The Turns table's rows: one per RUN of consecutive turns sharing a prompt_id.
+        """Aggregate consecutive prompt-id runs in chronological order.
 
-        Returned as a LIST, and identified downstream by ORDINAL, because a prompt_id is
-        not unique: a backend without explicit ids groups by the prompt TEXT (CsvStore
-        does), so asking "fix the bug" twice in one session yields A, B, A. Keyed by id,
-        the two A runs collapsed into one row worth both their costs while
-        App.turn_groups still counted three -- the cursor's last ordinal addressed a row
-        that was never drawn, and Enter opened the merged first run.
-
-        Each aggregate carries what the row prints plus the turn indices behind it, which
-        the markers (▼ compaction, ❄ expiry) and the drilled view both need.
-
-        `cached` is the share of context the group's FIRST main-thread turn served from
-        cache -- not an average over its turns. Every later turn in a prompt is warm by
-        construction (the one before it just wrote the cache), so averaging drags every
-        row toward 100% and buries the only moment that could have missed: measured on a
-        real session, the prompt that followed an 8h44m expiry read 5% of its context
-        back on the turn that mattered and averaged to 76%, directly under a ❄ marker
-        saying it had re-bought the lot. A prompt with 114 turns hid the same thing at
-        97%. The question this column answers -- did this prompt have to buy its context
-        again -- is decided when the prompt starts.
+        Prompt IDs may recur non-consecutively, so downstream identity is list ordinal.
+        `cached` uses the first main-thread turn: later turns are warm by construction and
+        averaging them would hide whether the prompt initially repurchased context.
         """
         groups: list[dict] = []
         last = object()
@@ -4591,10 +3853,10 @@ class Renderer:
                         "tokens": 0,
                         "cost": 0.0,
                         "indices": [],
-                        "calls": 0,  # tool calls this prompt made, across its turns
-                        "subturns": 0,  # how many of its turns ran under a subagent
-                        "_rows": [],  # the group's turn rows, for the tool/agent mixes
-                        "_first": None,  # the group's first main-thread turn
+                        "calls": 0,
+                        "subturns": 0,
+                        "_rows": [],
+                        "_first": None,
                     }
                 )
             g = groups[-1]
@@ -4602,16 +3864,11 @@ class Renderer:
             g["tokens"] += int(r.get("tokens_total") or 0)
             g["cost"] += cost
             g["indices"].append(i)
-            # Through the same gate the labels use, so the count can never disagree
-            # with the names it summarizes (an unusable entry counted here but dropped
-            # there would read as "3 calls" over a two-tool cell).
+            # Count through the same sanitizer as labels so the two cannot disagree.
             g["calls"] += len(tool_names(r.get("tools")))
             g["subturns"] += 1 if r.get("depth") else 0
             g["_rows"].append(r)
-            # Subagents run in their OWN context windows, so they neither answer for the
-            # main thread's cache nor stand in for it: a prompt whose turns were all
-            # subagent work (an interrupt lands like this) reports no share at all rather
-            # than the subagent's.
+            # Subagents have separate context windows and cannot represent main-thread cache.
             if not r.get("depth") and g["_first"] is None:
                 g["_first"] = r
         for g in groups:
@@ -4621,15 +3878,8 @@ class Renderer:
         return groups
 
     def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
-        # How this session's cost accrued, in the order you spent it: one row per PROMPT,
-        # each with the turns it took, how much of its context came from cache, its
-        # tokens, its cost and the running total. Chronological, never cost-sorted -- the
-        # point of the tab is WHEN the money went. The individual turns behind a row live
-        # in the popup (Enter / a click), which is what lets every row carry real columns:
-        # they used to be hidden inside a per-prompt expansion, so the only view that
-        # listed them was one keystroke away from the view you were reading, and opening a
-        # 40-turn prompt buried the table. Wholly-unpriced ($0) turns reprice at list
-        # price under "$", like every other panel.
+        # Keep prompts chronological because this tab answers when cost accrued. Per-turn
+        # detail is drilled separately; `$` reprices wholly unpriced turns at list rates.
         if not self.session_supports_turns(workflow.id):
             return [
                 "# Turns",
@@ -4642,27 +3892,14 @@ class Renderer:
             drilled = self.detail_turn_drill(workflow, width)
             if drilled:
                 return drilled
-            self.app.turn_drill = None  # the prompt went away under us (reload)
+            self.app.turn_drill = None
         costs = self.turn_costs(rows)
         total = sum(costs)
-        # One entry per prompt, in the order the prompts ran. Consecutive turns sharing a
-        # prompt_id are one group -- the same split App.turn_groups makes, so the cursor
-        # ordinal lines up with these rows.
         groups = self.turn_group_rows(rows, costs)
 
-        # Compactions and cache expiries are the two things on this tab that are NOT
-        # prompts: the window was cleared, or the cache died, between two turns. Both are
-        # gated by the SAME opt-in the Context tab is (supports_context_curve) -- reading
-        # a row's cache split as one request's prompt is exactly what a cumulative-delta
-        # backend (Codex) and the synthetic CSV/JSONL sessions cannot support, and two
-        # tabs disagreeing about one session is what that shared gate exists to prevent.
-        #
-        # Of the expiry causes only the two the reader DID are drawn: "waited" (the
-        # follow-up came too late) and "reasoning" (you moved the effort level, which
-        # changes the thinking config and drops the prefix with it). The rest stay
-        # silent -- "invalidated" (a changed tool set, an added image) is both the most
-        # common and the least actionable, and a marker on every one of those would be
-        # noise that teaches you to skip the marker you wanted.
+        # Share supports_context_curve with Context: cumulative-delta and synthetic rows
+        # cannot interpret a row's cache split as one request. Show only actionable cache
+        # misses caused by waiting or changing reasoning effort.
         curve = self.session_supports_context_curve(workflow.id)
         comps = context_compactions(rows) if curve else {}
         misses = cache_misses(rows) if curve else []
@@ -4682,63 +3919,28 @@ class Renderer:
             spent = sum(m.cost for m in switched.values())
             head += f" · ⚙ {len(switched)} effort switch{'' if len(switched) == 1 else 'es'}"
             head += f", {money(spent)}"
-        # ONE ROW PER PROMPT -- the thing you actually sent. Every row carries its own
-        # numbers and the header is always drawn, because the columns are the point of
-        # the tab; the per-turn rows live in the popup (Enter / a click), where a prompt
-        # that ran 40 turns costs a keystroke instead of 40 lines of the pane. This tab
-        # used to fold to prompt headers with the columns hidden INSIDE an expansion,
-        # which put every number one keystroke away from the only view that listed them.
         idx_w = max(2, len(str(len(groups))))
-        time_w = 11  # "MM-DD HH:MM" -- a prompt is a moment, its turns carry the seconds
+        time_w = 11
         turns_w, cached_w, tok_w, cost_w = 5, 6, 8, 9
-        # Optional cells, budgeted against the pane like session_columns does rather than
-        # left to overflow and be clipped at paint -- a column the frame eats is worse
-        # than one deliberately dropped, because it takes the prompt text with it. The
-        # bar goes first (it restates the Cost cell), Cumulative second; the prompt keeps
-        # at least PROMPT_MIN, since a prompt list is read by its prompts.
+        # Budget optional columns incrementally so box_row never clips the right edge.
+        # Preserve PROMPT_MIN; drop the redundant bar before Cumulative.
         PROMPT_MIN = 20
-        inner = max(1, width - self.BOX_CHROME)  # the ruled box's gutters
+        inner = max(1, width - self.BOX_CHROME)
         base = idx_w + time_w + turns_w + cached_w + tok_w + cost_w + 8
-        # Each optional cell is tested against what is ALREADY spoken for, its own
-        # SEPARATOR included -- `used`, not a fresh expression per column. Written as
-        # three independent subtractions this drifts by exactly one cell per column
-        # that forgot its space, and the symptom is silent: the prompt floors at
-        # PROMPT_MIN, the row comes out one wider than `inner`, and box_row TRUNCATES
-        # it -- so the last column is clipped rather than dropped, which is the precise
-        # outcome this budgeting exists to prevent. Measured before this rewrite: a
-        # 93-column pane clipped "Cumulative" to "Cumula...", and an 87-column one did
-        # the same without the Calls cell even being drawn.
+        # Include each separator in `used`; independent width expressions drift by a cell
+        # and cause box_row to clip a column that should have been dropped.
         used = base
         cum_w = 14 if inner - used - 15 >= PROMPT_MIN else 0
         used += cum_w + (1 if cum_w else 0)
-        # How many tool calls the prompt made -- the count only, since the NAMES are an
-        # open-ended list and this row is already the widest thing on the pane; they
-        # live one keystroke away in the prompt's own view. Beside Turns it separates
-        # "12 turns of thinking" from "12 turns of grepping". Dropped when no group
-        # made a call, so a backend that records no per-step tools shows no column
-        # rather than a stripe of zeros.
-        # Sized from the DATA, like idx_w above, not pinned at the header's width: a
-        # fixed field is only ever right until a session exceeds it, and then the cell
-        # overflows and shoves every column after it out through the frame. Real
-        # corpora sit far under this (389 calls in the busiest prompt measured, 1,735
-        # in a whole session), which is exactly why a fixed 5 would have looked correct
-        # indefinitely. The TOTAL row sums them, so it sets the floor.
+        # Show call count only when present; names live in the drill. Size from the TOTAL
+        # so unexpectedly large counts cannot shift following columns.
         total_calls = sum(g["calls"] for g in groups)
         calls_w = max(len("Calls"), len(str(total_calls)))
         calls_w = calls_w if total_calls and inner - used - calls_w - 1 >= PROMPT_MIN else 0
         used += calls_w + (1 if calls_w else 0)
-        # WHO ran the prompt's turns. Delegation was invisible on this table: the Agent
-        # column with its "↳" lives in the per-prompt drill, so the only view that listed
-        # the prompts gave no sign which of them had farmed their work out -- and a prompt
-        # that spawned five subagents is read completely differently from one that didn't.
-        # Names rather than a count, because "which agent" is the question a Cost column
-        # next to it can't answer; unnamed executions fold to "subagent ×n"
-        # (util.agent_mix_label). Gated on the ROWS like Calls, so a session that
-        # delegated nothing shows no column instead of a stripe of dashes.
+        # Gate agent names on actual delegation; unnamed executions are folded upstream.
         AGENTS_MIN, AGENTS_MAX = 12, 22
-        # Sized from the RENDERED cells, "↳ " included -- measuring the bare label leaves
-        # every cell two cells short, which shows up as a shortened tail on the very
-        # names the column exists to print ("↳ subagen..." for a mix that fit).
+        # Measure rendered cells including the delegation marker.
         agent_cells = {
             n: ("↳ " + g["agents"] if g["agents"] else "-") for n, g in enumerate(groups)
         }
@@ -4748,12 +3950,11 @@ class Renderer:
             if inner - used - agents_w - 1 < PROMPT_MIN:
                 agents_w = 0
         used += agents_w + (1 if agents_w else 0)
-        # The bar restates the Cost cell, so it yields first and keeps a wider cushion.
         bar_w = 8 if inner - used - 9 >= PROMPT_MIN + 12 else 0
         used += bar_w + (1 if bar_w else 0)
         fixed = used
         peak = max((g["cost"] for g in groups), default=0.0)
-        pw = max(PROMPT_MIN, inner - fixed)  # the prompt text takes whatever is left
+        pw = max(PROMPT_MIN, inner - fixed)
 
         header = (
             f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Prompt':<{pw}} {'Turns':>{turns_w}} "
@@ -4765,13 +3966,10 @@ class Renderer:
         )
         cum = 0.0
         body: list[str] = []
-        cursor_rows: list[int] = []  # body-relative index of each prompt row
+        cursor_rows: list[int] = []
         for n, g in enumerate(groups, start=1):
             cum += g["cost"]
-            # Marker rows first: they describe what happened BEFORE this prompt ran. They
-            # ride INSIDE the box, between the rows they sit between -- they are events in
-            # the same chronology, and line_attr reaches past the gutter to keep their
-            # amber/red.
+            # Marker rows belong inside the chronology immediately before the prompt.
             for i in g["indices"]:
                 comp = comps.get(i)
                 if comp:
@@ -4791,9 +3989,7 @@ class Renderer:
                     )
                 eff = switched.get(i)
                 if eff:
-                    # The switch is why the next turn came back cold: changing the
-                    # thinking config changes the prefix, so the whole cached context is
-                    # bought again. The price of the decision, on the turn it was made.
+                    # Changing thinking configuration invalidates the cached prefix.
                     body.append(
                         f"⚙ reasoning effort {eff.detail} — the cache went with it, "
                         f"{human_tokens(eff.repaid)} bought again for {money(eff.cost)}"
@@ -4806,13 +4002,9 @@ class Renderer:
             body.append(
                 f"  {n:>{idx_w}} {g['time'][5:16]:<{time_w}} {pad(shorten(title, pw), pw)} "
                 f"{g['turns']:>{turns_w}} "
-                # A prompt that called nothing reads "-", not "0": the tab already uses
-                # a red $0.00 to mean "unpriced", and a column of zeros invites the same
-                # second glance for something that is simply absent.
+                # "-" means no calls; avoid another zero beside $0.00's unpriced meaning.
                 + (f"{(str(g['calls']) if g['calls'] else '-'):>{calls_w}} " if calls_w else "")
-                # "↳" marks the cell as delegation, the same glyph the per-turn Agent
-                # column and the flamegraph use; a prompt the main thread ran itself
-                # reads "-" (absence), never an empty cell that looks like a clip.
+                # Keep a non-color delegation cue; main-thread-only rows show explicit absence.
                 + (f"{pad(shorten(agent_cells[n - 1], agents_w), agents_w)} " if agents_w else "")
                 + f"{cached:>{cached_w}} "
                 f"{human_tokens(g['tokens']):>{tok_w}} {money(g['cost']):>{cost_w}}"
@@ -4821,17 +4013,12 @@ class Renderer:
             )
         totals_row = None
         if len(groups) > 1:
-            # Turns and tokens summed; Cost too, which the last Cumulative cell already
-            # equals -- the row is here because every multi-row table has one, and reading
-            # the sum off the bottom beats reading it off the last row of a running total.
-            # Cached is a per-prompt ratio, not a quantity, so it stays blank.
+            # Cached is a per-prompt ratio, not an additive quantity.
             totals_row = (
                 f"  {'':>{idx_w}} {pad('TOTAL', time_w)} {'':<{pw}} "
                 f"{sum(g['turns'] for g in groups):>{turns_w}} "
                 + (f"{sum(g['calls'] for g in groups):>{calls_w}} " if calls_w else "")
-                # The session's whole agent mix, busiest first -- the tool-mix TOTAL's
-                # rule, and shortened for the same reason (pad only fills, so an
-                # unshortened eight-agent mix would walk through the box's right rule).
+                # pad() does not truncate, so shorten the aggregate agent mix first.
                 + (
                     f"{pad(shorten('↳ ' + agent_mix_label(rows), agents_w), agents_w)} "
                     if agents_w
@@ -4842,9 +4029,7 @@ class Renderer:
                 f"{money(total):>{cost_w}}"
             )
         lines = self._ruled_box(head, header, body, totals_row, [], width)
-        # The click/cursor maps are ABSOLUTE line indices, so they rebase onto wherever
-        # the box actually put its first body row -- derived from the box, never counted
-        # off its prologue.
+        # Rebase click maps from the box's derived body start, never a counted prologue.
         start = self._ruled_body_start or 0
         self._turn_header_at = {start + row: n for n, row in enumerate(cursor_rows)}
         cur = self.app._turn_cursor
@@ -4880,47 +4065,31 @@ class Renderer:
                 "and so drops the cached prefix with it — the next turn re-bought its whole "
                 "context. Worth doing, worth doing early."
             )
-        # WRAPPED, unlike every earlier version of this tab: these run past 140 characters
-        # and the paint clips rather than wraps, so on a real pane they ended mid-sentence
-        # ("...the context it was miss"). Continuations indent under the "· ".
+        # Paint clips, so wrap long notes and indent continuations under the bullet.
         lines.append("")
         for note in notes:
-            # Wrapped to width MINUS the continuation indent, not to width: adding the
-            # two spaces afterwards pushed continuations two cells past the pane, so at
-            # an 80-column terminal the ❄ note was still clipped by the very fix meant
-            # to stop it being clipped.
+            # Reserve continuation indentation inside the wrapping width.
             wrapped = textwrap.wrap(note, max(20, width - 2)) or [note]
             lines.append(wrapped[0])
             lines += ["  " + piece for piece in wrapped[1:]]
         return lines
 
-    # The Context tab's chart geometry: enough rows for the curve's shape without
-    # eating the pane, and a right-aligned y-axis gutter ("681.7k┤").
+    # Fixed chart height and right-aligned y-axis gutter.
     _CTX_CHART_ROWS = 9
     _CTX_GUTTER = 8
 
-    # Marker value in _ctx_line_heat for the amber ▼ compaction rows (heat levels
-    # are >= 0); draw_detail maps levels to color pairs at paint time, keeping
-    # detail_context plain-text like every other drawing method.
+    # Negative sentinel keeps compaction markers distinct from nonnegative heat levels.
     _CTX_MARK = -1
 
     @staticmethod
     def _ctx_heat_level(value: float, window: int) -> int:
-        # The green→red price-heat ramp, repurposed: how full the window is at this
-        # height. Fixed pairs (PRICE_HEAT_BASE_PAIR..), so no per-frame inits.
         frac = value / window if window > 0 else 0.0
         return max(0, min(PRICE_HEAT_LEVELS - 1, int(frac * PRICE_HEAT_LEVELS)))
 
     @staticmethod
     def _turn_dt(row: dict) -> datetime | None:
-        # A turn row's localtime string ("YYYY-MM-DD HH:MM:SS") as a naive datetime,
-        # for the Context graph's wall-clock span. None when a backend's row carries no
-        # (or a malformed) time -- the caller then drops the time enrichments.
-        # Caveat: the string is local and tz-naive, so a span across a DST change is off
-        # by the offset (e.g. an hour short over a fall-back). It's display-only (never a
-        # money total) and human_duration clamps a negative to 0s, so the worst case is a
-        # cosmetically wrong duration on the rare session that straddles the switch --
-        # accepted rather than thread a UTC timestamp through every backend's timeline.
+        # Local naive timestamps make DST-crossing display durations approximate. They do
+        # not affect accounting; malformed or absent times simply omit enrichments.
         try:
             return datetime.strptime((row.get("time") or "")[:19], "%Y-%m-%d %H:%M:%S")
         except ValueError:
@@ -4928,20 +4097,13 @@ class Renderer:
 
     @staticmethod
     def _ctx_clock(row: dict, multiday: bool) -> str:
-        # "HH:MM" for a same-day session, "MM-DD HH:MM" once it spans days so the
-        # left/right axis clocks and the ▼ times stay unambiguous.
         t = row.get("time") or ""
         return t[5:16] if multiday else t[11:16]
 
     def detail_context(self, workflow: Workflow, width: int) -> list[str]:
-        # What the session's context window did over time -- the *measured* side is
-        # exact (every main-thread turn's recorded prompt = input + cacheRead +
-        # cacheWrite IS the live context size at that step), drawn as a heat-shaded
-        # area chart with ▼ compaction markers; the *estimated* side (what filled
-        # it) is the per-category composition tree the content-carrying backends
-        # opt into, chars/4 like zaly's own /context. The system prompt and tool
-        # schemas exist only in the live request -- no harness logs them -- so they
-        # can only ever appear here as the measured turn-1 baseline.
+        # Measured context is input + cacheRead + cacheWrite per main-thread turn.
+        # Composition is an optional chars/4 estimate; unlogged system/tool schemas can
+        # only appear as part of the measured first-turn baseline.
         self._ctx_line_heat: dict[int, int] = {}
         rows = self.session_turn_rows(workflow.id)
         main = [r for r in rows if not r.get("depth")]
@@ -4951,20 +4113,16 @@ class Renderer:
             return ["# Context", "No per-turn context usage recorded for this session."]
         vals = [v for _r, v in pts]
         n = len(vals)
-        model = pts[-1][0]["model_name"]  # the chart scales to the live (last) window
+        model = pts[-1][0]["model_name"]
         window = model_context_window(model)
         final, peakv, start = vals[-1], max(vals), vals[0]
         peak_i = vals.index(peakv)
         peak_at = peak_i + 1
-        # A session can switch models mid-way: the peak % is honest to the window
-        # the peak turn actually ran in, and mixed windows get a "!" caveat --
-        # the heat rows can't re-scale per column (one attr per line), so the
-        # header declares which window the chart uses.
+        # Peak percentage uses its turn's model window. Heat rows have one attribute per
+        # line, so mixed-model charts scale to the final window and disclose that choice.
         peak_window = model_context_window(pts[peak_i][0]["model_name"])
         windows = {model_context_window(r["model_name"]) for r, _v in pts}
-        # The same rule the Turns tab marks with (util.context_compactions), applied to
-        # this tab's own main-thread series so the marker positions stay indices into
-        # `pts`/`vals` -- what the chart's columns and the ▼ lines below it are numbered by.
+        # Apply the shared compaction rule to this filtered series so indices match chart columns.
         comps = [
             (j, vals[j - 1], vals[j])
             for j in range(1, n)
@@ -4982,13 +4140,8 @@ class Renderer:
             f"  peak {human_tokens(peakv):>7}  ({pct(peakv, peak_window)}) at turn {peak_at} · "
             f"session start {human_tokens(start)} · {n} turns"
         )
-        # The peak line describes the value the chart's top row draws -- give it
-        # that height's heat color (against its own turn's window) so the stats
-        # and the chart read as one scale, like the end line above.
+        # Color peak against its own model window.
         self._ctx_line_heat[len(lines) - 1] = self._ctx_heat_level(peakv, peak_window)
-        # Money + wall-clock: what the session cost and how it evolved in real time,
-        # so the context curve isn't read in a vacuum -- spend and pace live nowhere
-        # else on this tab. Both come straight off the turn rows / the session total.
         start_dt, end_dt = self._turn_dt(pts[0][0]), self._turn_dt(pts[-1][0])
         elapsed = (end_dt - start_dt).total_seconds() if start_dt and end_dt else 0.0
         multiday = bool(start_dt and end_dt and start_dt.date() != end_dt.date())
@@ -5005,7 +4158,7 @@ class Renderer:
             lines.append(
                 f"  compacted {len(comps)}× — freed ~{human_tokens(freed)} of context along the way"
             )
-            self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK  # ▼ amber, one grammar
+            self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK
         if len(windows) > 1:
             lines.append(
                 "! this session switched between models with different windows — the "
@@ -5013,16 +4166,14 @@ class Renderer:
             )
         lines.append("")
 
-        # --- the growth curve: one column per turn (bucketed max when the session
-        # outgrows the pane), eighth-block resolution, rows heat-shaded by window
-        # fullness so the chart itself says how close to the limit it ran.
+        # Bucket by max when turns outgrow the pane, preserving peaks and compactions.
         gut, chart_h = self._CTX_GUTTER, self._CTX_CHART_ROWS
         plot_w = max(10, width - gut - 1)
-        rep = max(1, min(4, plot_w // n))  # widen the columns when turns are few
+        rep = max(1, min(4, plot_w // n))
         cols = min(plot_w, n * rep)
         ymax = float(peakv)
 
-        def bucket(c: int) -> int:  # peak-preserving: a bucket shows its max turn
+        def bucket(c: int) -> int:
             lo = c * n // cols
             hi = max(lo + 1, (c + 1) * n // cols)
             return max(vals[lo:hi])
@@ -5051,12 +4202,11 @@ class Renderer:
             band_mid = ymax * (chart_h - r - 0.5) / chart_h
             self._ctx_line_heat[len(lines) - 1] = self._ctx_heat_level(band_mid, window)
         lines.append(" " * gut + "└" + "─" * cols)
-        # The x-axis carries turn indices *and* the start/end clock, so the chart's
-        # left and right edges are pinned to real time -- when there's room for both.
+        # Add edge clocks only when they fit without obscuring turn indices.
         sc, ec = self._ctx_clock(pts[0][0], multiday), self._ctx_clock(pts[-1][0], multiday)
         xl = f"turn 1 · {sc}" if sc else "turn 1"
         xr = f"{ec} · turn {n}" if ec else str(n)
-        if len(xl) + len(xr) + 1 > cols:  # clocks don't fit this narrow -> bare indices
+        if len(xl) + len(xr) + 1 > cols:
             xl, xr = "turn 1", str(n)
         lines.append(" " * (gut + 1) + xl + " " * max(1, cols - len(xl) - len(xr)) + xr)
         for j, before, after in comps[:4]:
@@ -5068,12 +4218,11 @@ class Renderer:
             lines.append(
                 f"  ▼ turn {j + 1} · {when}{into} — {human_tokens(before)} → {human_tokens(after)}"
             )
-            self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK  # same amber as the ▼ row
+            self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK
         if len(comps) > 4:
             lines.append(f"  ▼ … and {len(comps) - 4} more")
             self._ctx_line_heat[len(lines) - 1] = self._CTX_MARK
 
-        # --- what filled it (estimated), for backends whose logs carry content.
         comp_rows = (
             self.session_context_rows(workflow.id)
             if self.session_supports_context(workflow.id)
@@ -5088,8 +4237,7 @@ class Renderer:
             )
             total_est = sum(cr["est_tokens"] for cr in comp_rows)
             top = sum(x["est_tokens"] for x in cats[0][1])
-            # Kind names flex (MCP tools are long); the category column tracks them
-            # (+3: its shallower indent) so the count/token columns stay aligned.
+            # Keep category width three cells wider than its indented kind rows.
             kw = max(19, min(34, width - 62))
             cw = kw + 3
             lines += ["", f"# What filled it — ~{human_tokens(total_est)} of content sent"]
@@ -5120,9 +4268,6 @@ class Renderer:
                 "measured at turn 1 (system prompt + tools + first prompt)"
             )
 
-        # Two footnote lines, no more -- the rows explain themselves (the fixed-
-        # overhead line carries its own label, a ▼ line shows the before → after).
-        # The full story lives in docs/keys.md.
         lines += [
             "",
             "· Measured per-turn prompt tokens; green → red = window fullness. Subagents excluded.",

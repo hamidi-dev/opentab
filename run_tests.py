@@ -27,7 +27,7 @@ def collect():
         raise SystemExit(f"no test modules found in {TESTS}")
     for fname in files:
         name = f"tests.{fname[:-3]}"
-        mod = importlib.import_module(name)  # an ImportError here is fatal, by design
+        mod = importlib.import_module(name)
         found = [
             (f"{fname[:-3]}.{k}", v)
             for k, v in sorted(vars(mod).items())

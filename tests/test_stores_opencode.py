@@ -1,5 +1,3 @@
-"""The OpenCode SQLite backend: schema-adaptive queries, turns and tools (stores/opencode.py)."""
-
 import json
 import os
 import sqlite3
@@ -89,8 +87,6 @@ def test_tools_tab_offered_only_with_part_table():
         _write_opencode_db_with_tools(db)
         app = ot.App(ot.Store(db, type("A", (), {"demo": False})()), args())
         app.view = "session"
-        # An OpenCode session offers every per-session tab (Turns, Tools, Context).
-        # The model mix lives in the Overview, so there is no separate Models tab.
         assert app.current_tabs() == (
             "Overview",
             "Subagents",
@@ -132,13 +128,6 @@ def test_message_timeline_orders_by_time_and_marks_subagent_turns():
 
 
 def test_turn_rows_carry_the_reasoning_variant_opencode_records():
-    # OpenCode DOES record the reasoning level -- it calls it the model VARIANT, written
-    # per assistant message, so it follows a mid-session switch. It is the richest source
-    # of them: measured on a real 41,857-message corpus, 11,965 rows carry one and 21
-    # sessions switched level mid-run, which is more than every other backend combined
-    # (16 of them re-bought $7.55 of context for it). A message whose provider exposes
-    # no variant reports "" -- every Anthropic row in that corpus -- and that is what
-    # leaves the column off rather than drawing a stripe of dashes.
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
         _write_opencode_db_with_turns(db)
@@ -157,9 +146,6 @@ def test_turn_rows_carry_the_reasoning_variant_opencode_records():
 
 
 def test_turn_rows_carry_the_tools_each_step_called():
-    # The Turns tab names what each step DID, and for OpenCode those names live in the
-    # `part` table rather than on the message -- so the timeline joins them on. In call
-    # order, repeats kept, and every non-tool part ignored (m1's "step-start").
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
         _write_opencode_db_with_tools(db)
@@ -175,11 +161,7 @@ def test_turn_rows_carry_the_tools_each_step_called():
 
 
 def test_the_tool_join_is_a_separate_scan_not_a_per_row_subquery():
-    # Guards the reason _timeline_tools exists at all: selecting the tools inline in
-    # _timeline_columns costs the whole-corpus export 300ms -> 3,819ms on a real DB
-    # (46,785 messages / 182,133 parts), a 12x regression on the exact path
-    # message_timeline_all was written to keep fast. The shape is the guard -- one
-    # grouped scan of `part` per call, never one per message.
+    # Tool names must come from one grouped part-table scan, never one query per message.
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
         _write_opencode_db_with_tools(db)
@@ -203,8 +185,6 @@ def test_the_tool_join_is_a_separate_scan_not_a_per_row_subquery():
 
 
 def test_turn_rows_carry_no_tools_when_the_schema_has_no_part_table():
-    # supports_tool_breakdown is False on an older schema; the turn rows then carry an
-    # empty list rather than raising, and both frontends drop the column.
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
         conn = sqlite3.connect(db)
@@ -238,9 +218,6 @@ def test_turn_rows_carry_no_tools_when_the_schema_has_no_part_table():
 
 
 def test_message_timeline_all_matches_the_per_session_path():
-    # The whole-corpus batch (used by --export to dodge OpenCode's per-session
-    # recursive-CTE scan) must return BYTE-IDENTICAL rows to message_timeline, keyed by
-    # ROOT session -- a subagent's turns fold under its root, not a key of their own.
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
         _write_opencode_db_with_turns(db)
@@ -252,14 +229,7 @@ def test_message_timeline_all_matches_the_per_session_path():
 
 
 def test_a_subagents_task_message_does_not_open_a_prompt_of_its_own():
-    # A subagent's `user` message is the task the AGENT handed it, not something you
-    # typed -- the rule the worked-time CTE already applies as `is_human` (depth 0), and
-    # the one the Turns grouping was missing. Treating it as a prompt fabricated a row
-    # nobody wrote AND kept it: every following main-thread turn landed there too, so on
-    # a real session all 15 human prompts read "1 turn" while their work sat under 8
-    # invented prompts titled "Mo wants to understand why...". The Agents column made it
-    # visible (every real prompt showed "-"), but the cost, cached share and cumulative
-    # curve were already attributed to the wrong row.
+    # A subagent user message is an agent-authored task, not a human prompt boundary.
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
         _write_opencode_db_with_turns(db)
@@ -327,8 +297,6 @@ def _write_opencode_db_with_long_prompt(path, long_prompt):
 
 
 def test_opencode_turns_carry_the_full_prompt_uncapped():
-    # No summary.title on the user message: the one-line group title is the capped
-    # raw prompt, prompt_full the whole thing with its line breaks kept.
     long_prompt = ("rework the cache invalidation and explain the tradeoffs " * 5).strip()
     long_prompt += "\nthen run the whole suite"
     assert len(long_prompt) > 200
@@ -353,14 +321,12 @@ def test_opencode_turns_carry_the_full_prompt_uncapped():
         body = " ".join(rnd.detail_turn_drill(wf, 90))
         assert "then run the whole suite" in body  # the tail survived
         assert " ".join(long_prompt.split()) in " ".join(body.split())  # nothing lost
-        # A click on a row opens that prompt, and moves the keyboard cursor onto it.
         app.turn_drill = None
         rnd.detail_turns(wf, 96)  # a paint pass records the row line indices
         idx, pid = next(iter(rnd._turn_header_at.items()))
         app._apply_click(("turnline", idx), drill=False)
         assert app.turn_drill == pid
         assert "then run the whole suite" in " ".join(rnd.detail_turn_drill(wf, 90))
-        # The table underneath is unchanged -- opening a prompt never re-shapes it.
         assert rnd.detail_turns(wf, 96) == rnd.detail_turns(wf, 96)
 
 
@@ -593,12 +559,6 @@ def _minimal_db(path, session_cols, message_cols, rows=True):
 
 
 def test_required_schema_is_exactly_what_every_query_path_needs():
-    # REQUIRED_SCHEMA is what `sources.opencode_db_verdict` refuses a database for, so it
-    # is wrong in BOTH directions and the expensive direction is "too large": a column
-    # that is really optional would reject a real OpenCode database that works today.
-    # It lives beside these queries so it cannot drift from them; this test is what makes
-    # that true. Everything else the Store touches (cost, tokens_*, time_updated, title,
-    # directory, agent, the part table) is probed with a fallback and must stay out.
     args = type("A", (), {"demo": False})()
     session_cols = list(REQUIRED_SCHEMA["session"])
     message_cols = list(REQUIRED_SCHEMA["message"])

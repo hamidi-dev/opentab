@@ -1,5 +1,3 @@
-"""The App state machine: views, keys, mouse, filter, bookmarks, ignores, menus (tui/app.py)."""
-
 import contextlib
 import os
 from types import SimpleNamespace
@@ -21,8 +19,6 @@ from tests._support import (
 
 
 def test_terminal_resize_does_not_close_overlays():
-    # A SIGWINCH (font/terminal resize) arrives as a KEY_RESIZE keystroke; it must not
-    # be read as the "any other key closes" key that shuts an open overlay.
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {"a": [_model_row("claude-opus-4-8", 5.0, 100)]}
     app.handle_key(None, ord("P"))
@@ -41,10 +37,6 @@ def test_terminal_resize_does_not_close_overlays():
 
 
 def test_frame_draws_the_heavy_box_without_hline():
-    # Every panel/overlay/modal is framed through this one method (box() adds only the
-    # colors and the title, which need a real initscr). The frame is heavy box-drawing,
-    # i.e. multibyte -- so it must go through addch/addstr, never hline/vline, whose
-    # chtype is a single byte (FakeScreen raises OverflowError there, as curses does).
     renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
     screen = FakeScreen(height=10, width=20)
     renderer.frame(screen, 0, 0, 4, 12, 0, *renderer._HEAVY_FRAME)
@@ -78,11 +70,6 @@ def _acs_constants():
 
 
 def test_frame_falls_back_to_acs_on_a_non_unicode_screen():
-    # The heavy glyphs are multibyte: on a non-UTF-8 screen curses paints a garbage byte
-    # and raises NOTHING (it hands the str to the wide-character path, which consults no
-    # encoding), so the choice is made from the locale BEFORE drawing -- never from an
-    # exception. Where the answer is no, the frame is the ACS line set: locale-independent,
-    # and the only thing that renders there.
     renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
     screen = FakeScreen(height=10, width=20)
     with _acs_constants() as acs:
@@ -96,12 +83,6 @@ def test_frame_falls_back_to_acs_on_a_non_unicode_screen():
 
 
 def test_frame_falls_back_when_a_narrow_curses_build_rejects_the_glyphs():
-    # The other half of the fallback, and the only one an exception can carry: a narrow
-    # (non-ncursesw) build encodes the str itself, so a multibyte glyph either isn't in
-    # the window's encoding (UnicodeEncodeError) or is but doesn't fit a chtype's single
-    # byte (OverflowError, on a UTF-8 window). Nothing we ship on is narrow today
-    # (windows-curses is PDC_WIDE), so this guards the build we don't control: either
-    # error must land on ACS rather than propagate, which would kill the first frame.
     renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
 
     class NarrowScreen(FakeScreen):
@@ -120,8 +101,6 @@ def test_frame_falls_back_when_a_narrow_curses_build_rejects_the_glyphs():
 
 
 def test_page_keys_stride_lists_by_half_a_screen():
-    # PgDn/PgUp and Ctrl-D/Ctrl-U move by half the visible pager height; headless
-    # (no screen to measure) the stride is a fixed 10 rows.
     app = app_with([workflow(f"s{i:02d}", "2026-06-01 12:00:00") for i in range(25)])
     app.view = "zoom"
     app.tab = app.current_tabs().index("Sessions")
@@ -172,10 +151,6 @@ def test_page_keys_scroll_the_detail_help_and_prices_pagers():
 
 
 def test_theme_pairs_respect_a_pair_starved_terminal():
-    # A terminal can be color-capable and still pair-starved: minitel1 reports
-    # COLORS=8 with COLOR_PAIRS=8, so pairs 1..7 fit but the heat ramps (8+, 20+)
-    # and the bg pair (32) don't -- and init_pair raises ValueError there, which
-    # killed startup. _set_pair must skip what doesn't fit and init the rest.
     renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
     made = []
     saved = {k: getattr(ot.curses, k, None) for k in ("COLORS", "COLOR_PAIRS", "init_pair")}
@@ -197,10 +172,6 @@ def test_theme_pairs_respect_a_pair_starved_terminal():
 
 
 def test_color_index_never_exceeds_an_8_color_palette():
-    # On an 8-color terminal (TERM=linux, real serial terminals) init_pair raises
-    # ValueError for any color index >= COLORS, so _color_index must resolve every
-    # role hex within the terminal's actual palette -- nearest-of-8 there, never the
-    # xterm-256 index that crashed init_theme_colors on the Linux console.
     renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
     renderer._theme_color_cache = {}
     renderer._can_change = False  # what init_theme_colors resolves on a dumb palette
@@ -240,13 +211,6 @@ def _truecolor_curses(recorded_colors, recorded_pairs):
 
 
 def test_every_custom_colour_is_written_to_its_bold_twin():
-    # Some terminals apply "bold is bright" (fg -> fg|8) across the WHOLE 256-palette,
-    # not just the 8 base colours. Every index we redefine therefore needs the slot 8
-    # higher to hold the same colour, or a bold cell reads an unrelated one. It did:
-    # roles used to land at 16.., so bold ink2 (18) read slot 26 -- which the Tools
-    # treemap had loaded with ink_on's near-black -- and the breadcrumb, inactive panel
-    # titles and the selected row of an unfocused sidebar panel all painted #101014 on
-    # a #1a1b26 background (issue #12). Nothing on screen may depend on that bump.
     colors, pairs = {}, {}
     renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
     renderer.app.colors_ok = True
@@ -266,11 +230,6 @@ def test_every_custom_colour_is_written_to_its_bold_twin():
 
 
 def test_no_init_color_keeps_themes_distinguishable_on_a_lying_terminal():
-    # A terminal can advertise `ccc`, accept every init_color, and ignore it -- then all
-    # eleven roles paint as the default cube at 16.., identically under every theme
-    # (issue #12: "always dark blue no matter which theme I pick"). --no-init-color
-    # drops onto the nearest-256 path, which uses the standard palette every terminal
-    # renders, so the themes differ again.
     colors, pairs = {}, {}
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.colors_ok = True
@@ -307,8 +266,6 @@ def test_no_init_color_keeps_themes_distinguishable_on_a_lying_terminal():
 
 
 def test_theme_picker_floats_above_help():
-    # Help closes on any unbound key, but C is the exception: the picker floats
-    # above it (help is the swatch background) and Esc closes only the picker.
     app = app_with([workflow("a", "2026-06-10 12:00:00")])
     app.handle_key(None, ord("?"))
     assert app.help
@@ -319,8 +276,6 @@ def test_theme_picker_floats_above_help():
 
 
 def test_source_and_demo_toggles_route_from_inside_overlays():
-    # H and D are overlay-wide too: from inside Trends or P they open the source
-    # picker / swap demo data instead of being swallowed, and the overlay stays up.
     app = app_with([workflow("a", "2026-06-10 12:00:00", cost=5)])
     app._models_loaded = True
     calls = []
@@ -338,9 +293,6 @@ def test_source_and_demo_toggles_route_from_inside_overlays():
 
 
 def test_data_swap_reanchors_overlay_cursors():
-    # A source switch / demo toggle replaces the dataset, so every overlay cursor
-    # that pointed into the old one (a drilled model, a bar cursor, the P drill)
-    # re-anchors instead of dangling; the overlays themselves stay open.
     app = app_with([workflow("a", "2026-06-10 12:00:00", cost=5)])
     app.trends = True
     app.trend_drill = ("model", "anthropic/gone")
@@ -389,17 +341,14 @@ def test_mouse_click_selects_and_double_click_drills():
     )
     app.focus = "months"
     app._apply_click(("month", 1), drill=False)
-    assert app.month_index == 1 and app.view == "browse"  # single click only selects
+    assert app.month_index == 1 and app.view == "browse"
     app._apply_click(("month", 1), drill=True)
-    assert app.view == "zoom"  # double-click drills in
+    assert app.view == "zoom"
     app._apply_click(("tab", 2), drill=False)
-    assert app.tab == 2  # clicking a tab switches detail tab
+    assert app.tab == 2
 
 
 def test_tab_click_in_browse_preview_zooms_into_the_detail():
-    # Clicking a tab in the right preview pane moves the focus there: the browse
-    # view zooms into the selected scope and lands on that tab, so j/k drive the
-    # detail the user clicked instead of the still-active left list.
     app = app_with(
         [
             workflow("a", "2026-06-01 12:00:00"),
@@ -410,15 +359,13 @@ def test_tab_click_in_browse_preview_zooms_into_the_detail():
     sessions = app.current_tabs().index("Sessions")
     app._apply_click(("tab", sessions), drill=False)
     assert app.view == "zoom" and app.tab == sessions
-    app.handle_key(None, ord("j"))  # keys now drive the zoomed detail...
+    app.handle_key(None, ord("j"))
     assert app.workflow_index == 1
-    app.handle_key(None, 27)  # ...and Esc steps back out to browse
+    app.handle_key(None, 27)
     assert app.view == "browse"
 
 
 def test_plus_drills_from_browse_and_toggles_maximize_in_zoom():
-    # + keeps its browse meaning (an Enter alias), and once the detail is the
-    # active pane it becomes lazygit's screen-mode key: split <-> full-screen.
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     assert not app.zoom_maximized  # the split is the default
     app.handle_key(None, ord("+"))
@@ -434,10 +381,6 @@ def test_plus_drills_from_browse_and_toggles_maximize_in_zoom():
 
 
 def test_sidebar_click_rescopes_the_zoomed_detail():
-    # The split keeps the sidebar clickable while the detail is the active pane:
-    # a row click re-scopes the zoom in place, keeping the tab across sibling
-    # scopes (the web's sidebar rule), and a double-click must not fall through
-    # to "open the selected session" on a Sessions tab.
     app = app_with(
         [
             workflow("jun", "2026-06-01 12:00:00"),
@@ -457,8 +400,6 @@ def test_sidebar_click_rescopes_the_zoomed_detail():
 
 
 def test_click_anywhere_in_the_preview_pane_focuses_it():
-    # The browse preview registers a catch-all region after its real ones, so a
-    # click on empty pane space focuses (zooms) it while tab clicks still win.
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     r = app.renderer
     r.regions = [("tab", 4, 30, 40, 1), ("rows", "detail", 3, 20, 28, 100, 0)]
@@ -502,8 +443,6 @@ def test_handle_mouse_wheel_scrolls_the_list():
 
 
 def test_mouse_wheel_scrolls_the_panel_under_the_cursor():
-    # The wheel scrolls whichever panel the cursor is over -- even a non-active one:
-    # hovering the Days list while Months is focused scrolls Days, not Months.
     app = app_with(
         [workflow(f"d{i}", f"2026-06-{i + 1:02d} 12:00:00") for i in range(6)]
         + [workflow("m", "2026-05-10 12:00:00")]
@@ -525,9 +464,6 @@ def test_mouse_wheel_scrolls_the_panel_under_the_cursor():
 
 
 def test_clicks_are_translated_out_of_the_app_frame():
-    # getmouse reports screen cells; regions are content cells inside the app frame.
-    # handle_mouse takes the frame's origin off the click once -- get this wrong and
-    # every click silently lands one row/column away from the row you aimed at.
     app = app_with(
         [
             workflow("jun", "2026-06-01 12:00:00"),
@@ -753,9 +689,6 @@ def test_bookmark_toggles_on_selected_session():
 
 
 def test_bookmark_toast_ignores_error_words_in_the_title():
-    # The toast kind must never be inferred from user data: a session titled
-    # "… backup failure analysis" used to paint the bookmark confirmation as
-    # a red "✕ Error" card because the title matched the "fail" marker.
     app = app_with(
         [workflow("a", "2026-06-01 12:00:00", title="Vzdump snapshot backup failure analysis")]
     )
@@ -796,9 +729,6 @@ def test_bookmarks_view_narrows_every_list_to_starred_sessions():
 
 
 def test_source_and_demo_switches_do_not_bury_the_notes_warning():
-    # Toasts set within one handler collapse onto the last, so a "demo mode" / "source:"
-    # notice would swallow the warning that notes.json is broken — and with the map
-    # cleared by demo, the notes would then simply look deleted.
     assert ot.save_notes({"a": "keep me"})
     app = _app_on_session([workflow("a", "2026-06-01 12:00:00")], "a")
     app.refresh_notes()
@@ -856,9 +786,6 @@ def test_removing_last_bookmark_exits_the_bookmarks_view():
 
 
 def test_unstarring_last_bookmark_keeps_the_open_session_selected():
-    # Dropping the B filter widens the list back out; the cursor (and an open
-    # session detail) must stay on the just-unstarred session, not jump to
-    # whatever now sorts first.
     app = app_with(
         [
             workflow("expensive", "2026-06-01 12:00:00", cost=50),
@@ -902,10 +829,6 @@ def test_bookmarked_rows_wear_a_star_in_the_sessions_picker():
 
 
 def test_showing_ignored_rows_agrees_between_preview_and_picker():
-    # The preview must show the same ROWS the picker will, not just the same columns:
-    # under `i` (show ignored) the pickers widen to ranged_workflows, and the previews
-    # used to stay on all_workflows -- so an ignored session/project was missing until
-    # Enter conjured it back.
     app = app_with(
         [
             workflow("a", "2026-06-01 12:00:00", title="kept"),
@@ -976,12 +899,6 @@ def test_digit_keys_jump_to_a_panel_lazygit_style():
 
 
 def test_the_sidebar_column_headers_wear_the_shared_table_header_look():
-    # Projects and Machines mode are the two sidebars with a COLUMN HEADER, and they were
-    # the last two painting it in the structural grey (pair 4, the keybar's colour) after
-    # every table moved to the shared look. They carry no ruled box of their own -- the
-    # panel frame around the sidebar already is one, and a second frame inside a
-    # 40-column list would spend four of them on chrome -- so they take the look without
-    # the gutters, through the same painter.
     app = fleet_app({"alpha": [workflow("a", "2026-06-01 12:00:00", directory="/repo/x")]})
     orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
     ot.curses.color_pair = lambda n: n * 100
@@ -1027,10 +944,6 @@ def _panel_titles(app):
 
 
 def test_a_panel_jump_never_carries_a_tab_index_across_scopes():
-    # A tab index means nothing outside the scope that produced it: a session's tab 2
-    # is Subagents, a month's is Projects. Jumping out of a session used to reinterpret
-    # the index against the browse tabs and land on an unrelated tab -- including when
-    # the target panel was the one already focused (the carry was skipped entirely).
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.focus = "months"
     app.tab = app.month_tabs.index("Sessions")
@@ -1058,9 +971,6 @@ def test_a_panel_jump_never_carries_a_tab_index_across_scopes():
 
 
 def test_each_panel_wears_its_jump_key_in_its_title():
-    # lazygit's affordance: the key that jumps to a panel is written in its box
-    # title, so the keymap is on screen (and the footer stays about motion).
-    # Sidebar top to bottom = 1/2/3, the detail pane on the right = 0.
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/alpha")])
     app.focus = "months"
     titles = _panel_titles(app)
@@ -1271,15 +1181,12 @@ def test_clicking_active_column_header_toggles_direction():
             workflow("b", "2026-06-02 12:00:00", cost=5.0, tokens=10),
         ]
     )
-    # Click a column that isn't the current sort -> its natural order (tokens high->low).
     app.apply_header_sort("tokens", "session")
     assert app.sort_by == "tokens" and app.sort_reverse is False
     assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["a", "b"]
-    # Re-clicking the active column flips it to ascending.
     app.apply_header_sort("tokens", "session")
     assert app.sort_reverse is True
     assert [w.id for w in app.sorted_workflows(app.all_workflows)] == ["b", "a"]
-    # Clicking a different column resets to that column's natural order.
     app.apply_header_sort("title", "session")
     assert app.sort_by == "title" and app.sort_reverse is False
 
@@ -1308,9 +1215,6 @@ def test_last_activity_sort_orders_by_activity_and_falls_back_to_created_at():
 
 
 def test_last_activity_sort_is_unavailable_while_the_days_pane_is_focused():
-    # Per spec, "last_activity" is a Months/Years feature -- the Days pane's Sessions
-    # list is by definition every session that STARTED that day, so ranking it by an
-    # out-of-day activity timestamp doesn't apply there. It must not even be offered.
     app = app_with(
         [
             workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00"),
@@ -1342,9 +1246,6 @@ def test_last_activity_sort_is_unavailable_while_the_days_pane_is_focused():
 
 
 def test_last_activity_sort_falls_back_and_resumes_across_a_day_focus_round_trip():
-    # Switching focus never mutates sort_by -- it's the same non-destructive fallback
-    # pattern session_sort_key() already uses for any out-of-vocabulary value, just
-    # with a context-dependent vocabulary instead of the static one.
     app = app_with(
         [
             workflow("a", "2026-06-01 12:00:00", cost=1, ended_at="2026-06-05 09:00:00"),
@@ -1370,11 +1271,6 @@ def test_last_activity_sort_falls_back_and_resumes_across_a_day_focus_round_trip
 
 
 def test_withdrawn_last_activity_falls_back_to_date_not_cost_on_the_opening_screen():
-    # The Days pane is the DEFAULT focus and `focus` restores from state.json, so a
-    # saved "last_activity" is withdrawn on the first frame of any launch that lands
-    # on Days -- a routine path, not a corrupt-state one. Separating cost from date
-    # needs rows where the two disagree: "cheap-but-recent" started last, "pricey"
-    # costs 99x more. A cost fallback puts "pricey" on top; a date fallback doesn't.
     app = app_with(
         [
             workflow("pricey", "2026-06-01 12:00:00", cost=99),
@@ -1394,10 +1290,6 @@ def test_withdrawn_last_activity_falls_back_to_date_not_cost_on_the_opening_scre
 
 
 def test_an_unknown_saved_sort_key_still_falls_back_to_the_head_of_the_vocabulary():
-    # SORT_FALLBACKS is for a key the CONTEXT withdrew, not for one that was never a
-    # session sort key. An unreadable/hand-edited state.json keeps the old escape
-    # hatch: sort_options[0]. (state.apply_state filters these out, so this is the
-    # in-process guard, e.g. a key retired by a future version.)
     app = app_with([workflow("a", "2026-06-01 12:00:00"), workflow("b", "2026-06-02 12:00:00")])
     app.sort_by = "no-such-column"
     for focus in ("days", "months"):
@@ -1414,9 +1306,6 @@ def test_apply_header_sort_rejects_last_activity_while_the_days_pane_is_focused(
 
 
 def test_apply_header_sort_still_accepts_last_activity_in_projects_mode_with_stale_days_focus():
-    # set_browse_mode("projects") leaves self.focus wherever it was (it's meaningless
-    # there) -- and "days" is the DEFAULT, so this is the common case, not an edge
-    # case: a fresh app that never touched Time mode's sidebar is already in it.
     app = app_with(
         [
             workflow("a", "2026-06-01 12:00:00", cost=1, ended_at="2026-06-05 09:00:00"),
@@ -1446,9 +1335,6 @@ def test_clicking_the_last_activity_column_sets_it_and_re_click_flips_direction(
 
 
 def test_session_date_column_follows_the_active_sort():
-    # The Date column is what both the browse preview and the zoom picker draw off
-    # (session_header_text/session_row_text/session_sort_columns feed both), so
-    # testing these three is testing both frames at once.
     app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
     app.focus = "months"  # a scope spanning more than one day, so the date form is "Started"
     rnd = app.renderer
@@ -1467,9 +1353,6 @@ def test_session_date_column_follows_the_active_sort():
 
 
 def test_session_date_column_header_never_overflows_its_field():
-    # "Last act" plus sort_heading()'s " v"/" ^" arrow must still fit the header's
-    # `:<10` field -- a longer label would push every column after it out of
-    # alignment with the rows beneath (regression: "Last act." + " v" was 11 chars).
     app = app_with([workflow("a", "2026-06-01 12:00:00", ended_at="2026-06-05 09:00:00")])
     app.focus = "months"  # last_activity is unreachable while the Days pane is focused
     app.sort_by = "last_activity"
@@ -1493,9 +1376,6 @@ def test_header_arrow_reflects_sort_direction():
 
 
 def test_sort_arrows_do_not_cross_lists_in_projects_mode():
-    # Projects browse mode shows the project sidebar and a sessions preview at
-    # once; each header must arrow its own list's sort (they used to share the
-    # context-dependent effective_sort_by, so one list borrowed the other's arrow).
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/tmp/a")])
     app.set_browse_mode("projects")
     app.project_sort_by = "tokens"
@@ -1512,8 +1392,6 @@ def test_sort_arrows_do_not_cross_lists_in_projects_mode():
 
 
 def test_preview_session_lists_register_clickable_sort_headers():
-    # Browse previews used to show sort arrows on headers that ignored clicks;
-    # the drawers now mark the header line so the paint loop registers zones.
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.focus = "months"
     rnd = app.renderer
@@ -1577,14 +1455,13 @@ def test_zoom_projects_tab_drills_into_scoped_sessions():
     app.focus = "months"
     app.view = "browse"
 
-    app.drill_in()  # browse -> month zoom
+    app.drill_in()
     assert app.view == "zoom"
     app.tab = app.month_tabs.index("Projects")
 
     # projects in scope are this month's only (no /tmp from May's "old")
     assert {p.directory for p in app.zoom_projects()} == {"/tmp/a", "/tmp/b"}
 
-    # select /tmp/a (cost-sorted: b=5 first, a=3 second) and drill into its sessions
     app.project_index = [p.directory for p in app.zoom_projects()].index("/tmp/a")
     app.drill_in()
 
@@ -1592,7 +1469,6 @@ def test_zoom_projects_tab_drills_into_scoped_sessions():
     assert app.on_sessions_tab
     assert {w.id for w in app.current_sessions()} == {"a1", "a2"}  # June /tmp/a only
 
-    # Enter opens one of those sessions
     app.drill_in()
     assert app.view == "session"
     assert app.current_session().directory == "/tmp/a"
@@ -1630,8 +1506,6 @@ def test_project_sessions_drill_into_session():
 
 
 def test_projects_drill_keeps_the_selected_project():
-    # Regression: drilling into a non-first project must zoom into THAT project,
-    # not reset the selection to projects[0].
     app = app_with(
         [
             workflow("x", "2026-06-01 12:00:00", cost=9, directory="/tmp/expensive"),
@@ -1742,7 +1616,6 @@ def test_years_panel_groups_and_scopes_months_to_the_focused_year():
 
 
 def test_all_years_row_omitted_with_a_single_year():
-    # With one year an "All years" row would just mirror it, so it's not shown.
     app = app_with(
         [
             workflow("a", "2026-06-01 12:00:00"),
@@ -1875,10 +1748,6 @@ def test_drilling_into_a_year_zooms_and_lists_its_sessions():
 
 
 def test_opening_a_session_steps_out_of_a_leftover_turn_drill():
-    # turn_drill names a prompt in ONE session. Opening another must not inherit it: a
-    # prompt-id collision would show the new session a prompt the user never drilled into, and
-    # a stale id would render an empty view. Reload / source-switch leave it alongside
-    # the turn cache it reads from.
     app = app_with([workflow("a", "2026-06-01 12:00:00"), workflow("b", "2026-06-02 12:00:00")])
     app.turn_drill = "p1"
     assert app.goto_session("b")  # -> drill_into_session -> drill_in -> session view
@@ -2097,7 +1966,6 @@ def test_launch_menu_opens_in_tmux_and_copy_only_outside():
         assert app.launch_menu is None
         assert app.launch_menu_backend is None
         assert launches[0][:3] == ("window", "/repo/a", "claude --resume ses_1")
-        # Esc cancels without launching
         app.handle_key(None, ord("L"))
         app.handle_key(None, 27)
         assert len(launches) == 1 and "cancelled" in app.notice and app.launch_menu_backend is None
@@ -2395,11 +2263,6 @@ def test_remote_herdr_launch_heading_names_host_and_backend():
 
 
 def test_launch_reopens_a_pulled_session_on_its_own_machine_over_ssh():
-    # A session you pulled from another box ran THERE: its id is that box's, and its
-    # project path may not even exist here. Spawning it locally would resume the wrong
-    # thing in the wrong place, so the launch goes over ssh -- and what `y` yanks is the
-    # same one-liner, because a `cd` into a path that is not on this machine is not a
-    # command anyone can paste.
     app = _remote_launch_app({"giant": "root@giant"})
     old_tmux = os.environ.get("TMUX")
     real_backend, real_launch, real_copy = (
@@ -2454,9 +2317,6 @@ def test_launch_reopens_a_pulled_session_on_its_own_machine_over_ssh():
 
 
 def test_launch_on_a_machine_with_no_ssh_target_offers_only_the_yank():
-    # A box pulled over `url` (or one dropped from remotes.json) has no shell to open:
-    # the spawn rows come off the menu rather than silently resuming another machine's
-    # session id here, and the picker says why.
     app = _remote_launch_app({})
     old_tmux = os.environ.get("TMUX")
     real_backend, real_launch = ot.util.launch_backend, ot.util.launch_command
@@ -2505,7 +2365,6 @@ def test_launch_only_works_on_session_contexts():
 
 
 def test_live_filter_ranks_best_fuzzy_match_first():
-    # b would win the default cost sort; with a query the match quality decides.
     a = workflow("a", "2026-06-01 12:00:00", title="fix trends view", cost=1.0)
     b = workflow("b", "2026-06-02 12:00:00", title="travel reimbursement node", cost=50.0)
     c = workflow("c", "2026-06-03 12:00:00", title="unrelated", cost=99.0)
@@ -2525,22 +2384,20 @@ def test_f_enters_live_filter_mode():
             workflow("b", "2026-06-02 12:00:00", title="beta"),
         ]
     )
-    # "f" only filters where a session/project list is shown -- put it on a Sessions tab
     app.view = "zoom"
     app.tab = app.current_tabs().index("Sessions")
     assert app.can_filter_current_view()
     assert app.handle_key(None, ord("f")) and app.filter_active
     for ch in "bet":
         app.handle_key(None, ord(ch))
-    assert app.query == "bet"  # edits apply live, no Enter needed
+    assert app.query == "bet"
     assert [w.title for w in app.current_sessions()] == ["beta"]
-    app.handle_key(None, 127)  # backspace
+    app.handle_key(None, 127)
     assert app.query == "be"
-    app.handle_key(None, 10)  # Enter keeps the filter and leaves the mode
+    app.handle_key(None, 10)
     assert not app.filter_active and app.query == "be"
-    # Esc restores the query from before `f`
     app.handle_key(None, ord("f"))
-    app.handle_key(None, ord("x"))  # types into the query, doesn't clear the filter
+    app.handle_key(None, ord("x"))
     assert app.query == "bex"
     app.handle_key(None, 27)
     assert not app.filter_active and app.query == "be"
@@ -2576,9 +2433,6 @@ def test_slash_is_an_alias_for_the_filter_key():
 
 
 def test_f_is_a_noop_where_no_list_is_filtered():
-    # The time-browse main view shows Months/Days, not a session/project list, so the
-    # query would filter nothing -- "f" must not enter filter mode there, and the
-    # footer must not advertise it (mirrors how "s/S sort" is gated).
     app = app_with(
         [
             workflow("a", "2026-06-01 12:00:00", title="alpha"),
@@ -2596,8 +2450,6 @@ def test_f_is_a_noop_where_no_list_is_filtered():
 
 
 def test_f_filters_the_models_tab_by_name():
-    # "f" also narrows the Models tab, matching the query against the model name
-    # (cost order preserved). Overview's Top Models stays unfiltered.
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {
         "a": [
@@ -2730,9 +2582,6 @@ def _machine_wf(id, machine, cost=1.0, when="2026-05-01 10:00:00"):
 
 
 def test_machines_present_requires_two_distinct_machines():
-    # The gate is >=2 machines, not `combined`: a lone machine's column/tab would be a
-    # 100% no-op, and the ordinary --source all merge (every machine == "") must not
-    # grow one.
     assert app_with([workflow("a", "2026-05-01 10:00:00")]).machines_present is False
     one = app_with(
         [_machine_wf("a", "laptop"), _machine_wf("b", "laptop", when="2026-05-02 10:00:00")]
@@ -2787,9 +2636,6 @@ def _fleet():
 
 
 def test_machines_property_floats_the_live_box_first():
-    # The synthetic fleet row opens the list (the Years panel's "All years"), then the live
-    # box (laptop) even though server outspends it: it's "you are here" and the only box
-    # with full drill-in. Then by spend.
     app = _fleet()
     rows = app.machines
     assert rows[0].name == ot.ALL_MACHINES and rows[0].live is False
@@ -2800,9 +2646,6 @@ def test_machines_property_floats_the_live_box_first():
 
 
 def test_the_fleet_row_sums_every_box_and_stays_off_a_lone_machine():
-    # It carries the whole fleet's totals (and no live/exported meta -- a fleet is neither
-    # live nor pulled), and it is gated like the "All years" row: with one box it would
-    # only mirror it, so the sidebar stays a single row.
     app = _fleet()
     fleet = app.machines[0]
     assert fleet.cost == 13.0 and fleet.workflows == 3
@@ -2817,11 +2660,6 @@ def test_the_fleet_row_sums_every_box_and_stays_off_a_lone_machine():
 
 
 def test_a_box_actually_LABELLED_all_machines_stays_its_own_box():
-    # Codex finding: a machine label is free text (`opentab --label "all machines"
-    # --export`), not a hostname, so a name-based sentinel would hand that real box the
-    # whole fleet -- its own $3 headline over the fleet's $12 of sessions, an ∑ badge and
-    # a re-pull of every box. The identity is `MachineSummary.fleet`, so the collision is
-    # a duplicate NAME and nothing more.
     from tests._support import fleet_app
 
     app = fleet_app(
@@ -2846,8 +2684,6 @@ def test_a_box_actually_LABELLED_all_machines_stays_its_own_box():
 
 
 def test_the_fleet_row_is_what_the_machines_sidebar_opens_on():
-    # Selecting it scopes the detail to every box -- the default, like the web's
-    # `∑ all machines` -- so entering the mode answers "the fleet" before you pick a box.
     app = _fleet()
     app.set_browse_mode("machines")
     assert app.selected_machine_summary.name == ot.ALL_MACHINES
@@ -2855,8 +2691,6 @@ def test_the_fleet_row_is_what_the_machines_sidebar_opens_on():
 
 
 def test_refresh_on_the_fleet_row_repulls_every_box():
-    # The refresh key acts on the SELECTED box in Machines mode; on the fleet row there is
-    # no one box, so it falls back to the everywhere-else meaning -- all of them (None).
     app = _fleet()
     app.set_browse_mode("machines")
     assert app.refresh_target() is None
@@ -2878,9 +2712,6 @@ def test_machines_mode_scopes_sessions_to_the_selected_box():
 
 
 def test_machines_mode_harness_tab_drills_into_a_harness_on_the_box():
-    # The Machines-mode Harnesses tab is a navigable picker (like the Projects-mode one):
-    # Enter on a harness row scopes the box's Sessions to that harness -- "Claude Code on
-    # server" opens with one drill -- and Esc pops back to the picker.
     from tests._support import fleet_app
 
     a = workflow("a", "2026-05-01 10:00:00", cost=3.0)
@@ -2906,7 +2737,6 @@ def test_machines_mode_harness_tab_drills_into_a_harness_on_the_box():
 
 
 def test_machines_mode_harness_row_double_click_drills():
-    # A double-click on a harness row drills the same way Enter does (via _apply_click).
     from tests._support import fleet_app
 
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
@@ -2925,8 +2755,6 @@ def test_machines_mode_harness_row_double_click_drills():
 
 
 def test_machines_mode_switching_box_clears_an_armed_harness():
-    # Re-scoping to another box (a sidebar click in zoom) must drop a harness drill scoped
-    # to the previous box -- else the new box's Sessions are silently filtered by it.
     from tests._support import fleet_app
 
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
@@ -2947,8 +2775,6 @@ def test_machines_mode_switching_box_clears_an_armed_harness():
 
 
 def test_machines_mode_wheel_over_the_sidebar_also_clears_an_armed_harness():
-    # The scroll-wheel re-scopes to another box just like a click, so it must drop the
-    # harness drill too (else the wheeled-to box's Sessions stay filtered by it).
     from tests._support import fleet_app
 
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
@@ -2970,8 +2796,6 @@ def test_machines_mode_wheel_over_the_sidebar_also_clears_an_armed_harness():
 
 
 def test_machines_mode_projects_tab_drills_into_a_project_on_the_box():
-    # The Projects tab is a navigable picker in Machines mode too: Enter scopes the box's
-    # Sessions to that project.
     from tests._support import fleet_app
 
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
@@ -2992,8 +2816,6 @@ def test_machines_mode_projects_tab_drills_into_a_project_on_the_box():
 
 
 def test_machines_mode_models_tab_drills_into_sessions_using_a_model():
-    # The Models tab drills into the box's sessions that USED a model (a membership filter,
-    # since a session can use several models).
     from tests._support import fleet_app
 
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
@@ -3034,9 +2856,6 @@ def _month_app_with_models():
 
 
 def test_month_models_tab_drills_into_sessions_using_a_model():
-    # The Models tab drills in EVERY zoom that has one, not just a fleet box: "which
-    # sessions this month ran opus" had no other path (Trends' and P's model drills are
-    # both app-wide, so neither can answer it for one month).
     app = _month_app_with_models()
     app.focus = "months"
     app.drill_in()
@@ -3053,9 +2872,6 @@ def test_month_models_tab_drills_into_sessions_using_a_model():
 
 
 def test_a_model_drill_layers_on_another_drill_and_pops_first():
-    # Outside a fleet box a model drill is a membership filter stacked ON TOP of an armed
-    # partition (it clears nothing), so both apply -- and Esc has to undo the inner one
-    # first or the model filter would outlive the project scope it was chosen within.
     app = _month_app_with_models()
     app.focus = "months"
     app.drill_in()
@@ -3077,10 +2893,6 @@ def test_a_model_drill_layers_on_another_drill_and_pops_first():
 
 
 def test_re_scoping_from_the_sidebar_disarms_the_model_drill():
-    # The sidebar stays clickable behind a zoom, and a row click re-scopes in place. An
-    # armed model drill must go with the scope: the next month may never have run that
-    # model, so it would silently empty the Sessions list -- and a Day has no Models tab
-    # to show the filter on at all, leaving it invisible and eating the next Esc.
     may = workflow("m", "2026-05-02 10:00:00", cost=9.0)
     jun = workflow("j", "2026-06-02 10:00:00", cost=5.0)
     app = app_with([may, jun])
@@ -3100,9 +2912,6 @@ def test_re_scoping_from_the_sidebar_disarms_the_model_drill():
 
 
 def test_wheeling_the_sidebar_onto_a_new_scope_disarms_the_model_drill():
-    # The wheel re-scopes the sidebar just like a click does, so it has to drop the model
-    # drill for the same reason -- but only when the row actually CHANGED, matching the
-    # Machines branch: wheeling against the end of the list must not disarm what you armed.
     may = workflow("m", "2026-05-02 10:00:00", cost=9.0)
     jun = workflow("j", "2026-06-02 10:00:00", cost=5.0)
     app = app_with([may, jun])
@@ -3127,10 +2936,6 @@ def test_wheeling_the_sidebar_onto_a_new_scope_disarms_the_model_drill():
 
 
 def test_a_model_drill_disarms_itself_when_its_data_moves_away():
-    # The safety net. The drill is a name plus an ordinal into a ranking that the range,
-    # `i`, `M`, `H`, `B`, a reload and every sidebar move all rebuild; clearing it at each
-    # of those is how it gets missed. So a drill that can only ever produce an EMPTY list
-    # drops itself where it is applied, and the list heals instead of reading empty.
     may = workflow("m", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
     jun = workflow("j", "2026-06-02 10:00:00", cost=5.0, directory="/work/beta")
 
@@ -3176,9 +2981,6 @@ def _drill_app():
 
 
 def test_a_range_change_disarms_every_drill_not_just_the_project_one():
-    # Changing the range changes which sessions exist. Only the project drill used to be
-    # dropped, so a harness or model drill stayed armed against a window that may contain
-    # neither -- a Sessions list that is empty for no visible reason.
     for tab, attr, armed in (
         ("Harnesses", "zoom_source", "OpenCode"),
         ("Models", "zoom_model", "haiku"),
@@ -3194,10 +2996,6 @@ def test_a_range_change_disarms_every_drill_not_just_the_project_one():
 
 
 def test_the_models_tab_only_offers_models_the_armed_drill_can_open():
-    # A picker must never offer a row its Enter cannot open. The Models ranking covered
-    # the whole zoom, ignoring an armed project drill, so it listed a model that project
-    # never ran -- picking it armed a drill matching nothing, which the net then dropped,
-    # so the pick silently did nothing and Esc popped the project instead.
     alpha1 = workflow("a", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
     alpha2 = workflow("a2", "2026-05-02 11:00:00", cost=3.0, directory="/work/alpha")
     beta = workflow("b", "2026-05-03 10:00:00", cost=5.0, directory="/work/beta")
@@ -3231,10 +3029,6 @@ def test_the_models_tab_only_offers_models_the_armed_drill_can_open():
 
 
 def test_wheeling_a_panel_below_the_focused_one_keeps_the_drills():
-    # The wheel scrolls whatever panel the pointer is over without moving focus, and the
-    # detail follows the FOCUSED panel -- so spinning Months while Years has focus
-    # re-anchors a list the detail never reads. Disarming there throws away a drill for a
-    # scope that did not change.
     ws = []
     for i in range(4):
         w = workflow(f"w{i}", f"2026-0{5 + i // 2}-0{i % 2 + 1} 10:00:00", cost=float(9 - i))
@@ -3265,8 +3059,6 @@ def test_wheeling_a_panel_below_the_focused_one_keeps_the_drills():
 
 
 def test_a_frame_never_paints_a_crumb_for_a_drill_its_own_list_dropped():
-    # The net disarms inside current_sessions, which the breadcrumb is drawn ahead of.
-    # settle_drills runs it once up front so the healing frame is internally consistent.
     may = workflow("m", "2026-05-02 10:00:00", cost=9.0)
     jun = workflow("j", "2026-06-02 10:00:00", cost=5.0)
     app = app_with([may, jun])
@@ -3287,10 +3079,6 @@ def test_a_frame_never_paints_a_crumb_for_a_drill_its_own_list_dropped():
 
 
 def test_a_range_change_keeps_the_selected_session_while_disarming_drills():
-    # selection_anchor() names the session at workflow_index in the CURRENT (drilled)
-    # list, so it has to be taken before the drills are cleared -- clearing first widens
-    # the list under the cursor and anchors the wrong session, which restore_selection
-    # then faithfully restores.
     ws = []
     for i, src in enumerate(["Claude Code", "OpenCode", "OpenCode"]):
         w = workflow(f"w{i}", f"2026-05-0{i + 1} 10:00:00", cost=float(9 - i))
@@ -3320,10 +3108,6 @@ def test_a_range_change_keeps_the_selected_session_while_disarming_drills():
 
 
 def test_clearing_the_project_drill_never_moves_the_projects_mode_sidebar():
-    # project_index wears two hats: the zoom Projects-tab PICKER cursor in time/machines
-    # mode, but in projects mode the sidebar selection itself -- the project you are
-    # looking at, which no drill owns. Zeroing it there walks you back to the first
-    # project on any range change.
     ws = [
         workflow("a", "2026-05-02 10:00:00", cost=1.0, directory="/work/alpha"),
         workflow("b", "2026-05-03 10:00:00", cost=9.0, directory="/work/beta"),
@@ -3356,8 +3140,6 @@ def test_clearing_the_project_drill_never_moves_the_projects_mode_sidebar():
 
 
 def test_wheeling_the_sidebar_disarms_every_drill_not_just_the_model_one():
-    # The wheel is the same re-scope a click is, and the click path has always dropped
-    # these. It was the one route that kept them.
     app = _drill_app()
     app.drill_in()
     app.tab = app.current_tabs().index("Harnesses")
@@ -3371,8 +3153,6 @@ def test_wheeling_the_sidebar_disarms_every_drill_not_just_the_model_one():
 
 
 def test_editing_the_filter_snaps_every_zoom_cursor_back():
-    # The query narrows the Harnesses/Machines rankings too (by the sessions behind each
-    # row), so their cursors go stale exactly like the Models one.
     app = _drill_app()
     app.drill_in()
     app.tab = app.current_tabs().index("Harnesses")
@@ -3384,9 +3164,6 @@ def test_editing_the_filter_snaps_every_zoom_cursor_back():
 
 
 def test_esc_returns_the_cursor_to_the_row_it_drilled_even_after_a_rerank():
-    # Esc's contract is "back to the row you came from", and a stored ordinal cannot keep
-    # it: `$` re-ranks these tables by a different cost while the drill is armed, so the
-    # old ordinal lands on whatever has since taken that position.
     app = _drill_app()
     app._model_by_root = {"m": [_model_row("cheap", 1.0, 100), _model_row("pricey", 9.0, 900)]}
     app.drill_in()
@@ -3401,9 +3178,6 @@ def test_esc_returns_the_cursor_to_the_row_it_drilled_even_after_a_rerank():
 
 
 def test_a_model_drill_survives_a_scope_emptied_by_something_else():
-    # The net must not misattribute: when the scope is empty for a reason that has
-    # nothing to do with the model (bookmarks-only with nothing bookmarked), the drill
-    # is not the cause and must still be armed when that filter comes back off.
     may = workflow("m", "2026-05-02 10:00:00", cost=9.0)
     app = app_with([may])
     app._model_by_root = {"m": [_model_row("haiku", 9.0, 900)]}
@@ -3420,10 +3194,6 @@ def test_a_model_drill_survives_a_scope_emptied_by_something_else():
 
 
 def test_the_models_cursor_moves_on_the_first_press_after_the_list_reorders():
-    # The ranking can shrink or re-order with no keypress (`x` clearing the filter, `$`
-    # re-ranking). The paint clamps what it highlights, so stepping from the RAW index
-    # would spend the first press re-clamping onto the row already highlighted -- a key
-    # that visibly does nothing. Clamp before stepping instead.
     app = app_with([workflow("a", "2026-05-02 10:00:00", cost=9.0)])
     app._model_by_root = {"a": [_model_row(f"m{i}", float(9 - i), 100) for i in range(6)]}
     app.focus = "months"
@@ -3436,9 +3206,6 @@ def test_the_models_cursor_moves_on_the_first_press_after_the_list_reorders():
 
 
 def test_changing_focus_snaps_the_models_cursor_back():
-    # Tab from a year (many models) to a month (few) rebuilds the row set under the
-    # cursor. set_focus already dropped the drill; the cursor is half of the same
-    # selection, and left stale it makes the first j/k read as a dead keystroke.
     app = app_with(
         [
             workflow("a", "2026-05-02 10:00:00", cost=9.0),
@@ -3459,9 +3226,6 @@ def test_changing_focus_snaps_the_models_cursor_back():
 
 
 def test_editing_the_filter_snaps_the_models_cursor_back():
-    # The query filters this list by model NAME, so a keystroke can shrink it under the
-    # cursor. Left dangling past the end, the first j/k clamps to where the highlight
-    # already was and reads as a dead keystroke.
     app = app_with([workflow("a", "2026-05-02 10:00:00", cost=9.0)])
     app._model_by_root = {
         "a": [
@@ -3486,9 +3250,6 @@ def test_editing_the_filter_snaps_the_models_cursor_back():
 
 
 def test_the_breadcrumb_names_an_armed_model_drill():
-    # Once you leave the Models tab, the crumb is the drill's only trace: the Sessions
-    # list would otherwise just read short, which is how a filter gets mistaken for a
-    # bug. Innermost last, matching the order Esc pops them in.
     app = _month_app_with_models()
     app.focus = "months"
     app.drill_in()
@@ -3502,9 +3263,6 @@ def test_the_breadcrumb_names_an_armed_model_drill():
 
 
 def test_a_models_tab_click_maps_a_line_to_its_row():
-    # The tab is a lines-rendered table, so its click region carries a LINE index; only
-    # the data rows resolve to an ordinal (the frame, header and TOTAL rows land nowhere,
-    # where a picker's region would have had every row be a row).
     app = _month_app_with_models()
     app.focus = "months"
     app.drill_in()
@@ -3521,8 +3279,6 @@ def test_a_models_tab_click_maps_a_line_to_its_row():
 
 
 def test_machines_mode_drills_are_mutually_exclusive():
-    # Arming a Projects drill drops an armed Harnesses drill on the same box (they don't
-    # compose -- each picker ranks the whole box), so Sessions is never doubly filtered.
     from tests._support import fleet_app
 
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
@@ -3542,8 +3298,6 @@ def test_machines_mode_drills_are_mutually_exclusive():
 
 
 def test_machines_mode_wheeling_in_place_keeps_an_armed_drill():
-    # Wheeling at the sidebar boundary (already on the first box) doesn't change the box, so
-    # it must NOT drop an armed drill -- only an actual re-scope to another box does.
     from tests._support import fleet_app
 
     a = workflow("a", "2026-05-01 10:00:00", cost=9.0)
@@ -3562,8 +3316,6 @@ def test_machines_mode_wheeling_in_place_keeps_an_armed_drill():
 
 
 def test_machines_mode_switching_to_a_smaller_box_resets_the_picker_cursor():
-    # An actual box switch clears the drills AND zeros the picker cursors -- else a cursor
-    # left at row 3 of a 4-model box points off the end of a 2-model box (a dead first j/k).
     from tests._support import fleet_app
 
     big = [workflow(f"s{i}", f"2026-05-0{i + 1} 10:00:00", cost=float(9 - i)) for i in range(4)]
@@ -3580,9 +3332,6 @@ def test_machines_mode_switching_to_a_smaller_box_resets_the_picker_cursor():
 
 
 def test_machines_mode_refresh_drops_a_project_drill_like_source_and_model():
-    # A fleet refresh restores UI state, but a Machines-mode project drill is per-box: the
-    # refreshed box may no longer carry it while another box does, so restoring it globally
-    # would leave the Sessions list wrongly filtered. It's dropped, like zoom_source/model.
     from tests._support import fleet_app
 
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
@@ -3599,8 +3348,6 @@ def test_machines_mode_refresh_drops_a_project_drill_like_source_and_model():
 
 
 def test_mode_tab_list_always_offers_machines():
-    # The mode strip is fixed: off a fleet Machines is a one-row view of the box you're
-    # on, not an empty list -- and it is where the consolidated view announces itself.
     modes = ["time", "projects", "machines"]
     assert [
         m for _l, m in app_with([workflow("a", "2026-05-01 10:00:00")]).mode_tab_list()
@@ -3627,9 +3374,6 @@ def test_machine_row_click_selects_and_double_click_drills():
 
 
 def test_m_key_off_a_fleet_shows_this_one_machine():
-    # `m` works everywhere: with no fleet the mode holds exactly one row -- this box,
-    # named by its hostname (never "unknown") and LIVE (full drill-in), not a `○ pulled
-    # summary` just because no store stamped it.
     plain = app_with([workflow("a", "2026-05-01 10:00:00")])
     assert plain.handle_key(None, ord("m")) is True
     assert plain.browse_mode == "machines"
@@ -3645,9 +3389,6 @@ def test_m_key_off_a_fleet_shows_this_one_machine():
 
 
 def test_this_machines_label_is_scrambled_under_demo():
-    # The one-box row is named by the REAL hostname, so demo must scramble it like any
-    # pulled label -- a hostname is identity, as a title or a path is. And the grouping
-    # must follow the scramble (one row, not one real + one fake).
     app = app_with([workflow("a", "2026-05-01 10:00:00")])
     real = app.local_machine_name
     app.store.demo = True
@@ -3674,9 +3415,6 @@ def test_switch_browse_mode_steps_out_of_a_session():
 
 
 def test_mode_keys_switch_browse_mode_from_within_a_session():
-    # The p/t/m KEYS must work from a drilled-in session, like the mode-tab click already
-    # did -- they used to no-op there (set_browse_mode returned early on the session view),
-    # so the keyboard and the mouse disagreed.
     app = _fleet()
     app.set_browse_mode("machines")
     app.machine_index = 1
@@ -3689,8 +3427,6 @@ def test_mode_keys_switch_browse_mode_from_within_a_session():
 
 
 def test_returning_to_a_browse_mode_restores_the_session_and_tab():
-    # Switching modes and back lands you exactly where you were -- same session, same detail
-    # tab (a session's Context graph, say) -- not a fresh browse reset to the top.
     app = _fleet()
     app.set_browse_mode("machines")
     app.machine_index = 2  # server
@@ -3710,9 +3446,6 @@ def test_returning_to_a_browse_mode_restores_the_session_and_tab():
 
 
 def test_returning_after_a_range_change_dropped_the_session_demotes_to_zoom():
-    # Codex finding: a raw index would clamp onto a surviving neighbour and silently open a
-    # DIFFERENT session after the range dropped the one you were viewing. The value-anchored
-    # memory re-finds by id; when the id is gone the view demotes to zoom, opening nothing.
     from tests._support import fleet_app
 
     old = workflow("old", "2020-01-01 10:00:00", cost=5.0)
@@ -3732,9 +3465,6 @@ def test_returning_after_a_range_change_dropped_the_session_demotes_to_zoom():
 
 
 def test_returning_after_a_sort_reorder_reopens_the_same_session():
-    # Codex finding: a raw workflow_index opens whatever now sits at that slot after a
-    # re-sort. Value-anchoring stores the session id, so the SAME session reopens regardless
-    # of order -- and the missing-session guard can't false-negative (the other row exists).
     from tests._support import fleet_app
 
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
@@ -3755,9 +3485,6 @@ def test_returning_after_a_sort_reorder_reopens_the_same_session():
 
 
 def test_maximize_stays_global_across_a_mode_switch():
-    # zoom_maximized is ONE global full-screen preference (persisted in state.json), not
-    # per-mode: turning it off in another mode must stay off on return, never roll back to a
-    # stale per-mode value. So it's deliberately excluded from the per-mode memory.
     app = _fleet()
     app.set_browse_mode("machines")
     app.drill_in()  # zoom on the box
@@ -3769,9 +3496,6 @@ def test_maximize_stays_global_across_a_mode_switch():
 
 
 def test_trends_date_drill_remembers_the_mode_it_left():
-    # Drilling through Trends into a date jumps to time browse by assigning browse_mode
-    # directly (bypassing set_browse_mode). It must still snapshot the mode it left, so the
-    # Projects/Machines session you were on is restored when you return via m/p.
     app = _fleet()
     app.set_browse_mode("machines")
     app.machine_index = 2  # server
@@ -3802,9 +3526,6 @@ def test_export_dataset_in_machines_mode():
 
 
 def test_machines_mode_query_still_shows_the_selected_box_sessions():
-    # A committed filter must NOT empty a box's Sessions: the machine list is not filtered
-    # by the query (a hostname isn't a session field), so selecting server and filtering by a
-    # word in its titles still lists those sessions.
     app = _fleet()
     app.set_browse_mode("machines")
     app.machine_index = 2  # server (its sessions are "b", "c")
@@ -3818,8 +3539,6 @@ def test_machines_mode_query_still_shows_the_selected_box_sessions():
 
 
 def test_refresh_reanchors_the_selected_machine_by_name():
-    # A refresh can reorder the boxes; restore_selection must re-find the SAME box by name,
-    # not keep the stale positional index.
     app = _fleet()
     app.set_browse_mode("machines")
     app.machine_index = 2  # server
@@ -3832,10 +3551,6 @@ def test_refresh_reanchors_the_selected_machine_by_name():
 
 
 def test_the_anchor_tells_the_fleet_row_apart_from_a_box_of_the_same_name():
-    # Round-2 Codex finding: the anchor named the machine, and restore took the FIRST row
-    # with that name -- always the fleet row at index 0. A box labelled "all machines"
-    # therefore jumped back to the whole fleet on every reload/range/refresh. The fleet
-    # row anchors as "" (a name machine_of cannot produce) and is re-found by its flag.
     from tests._support import fleet_app
 
     app = fleet_app(
@@ -3877,8 +3592,6 @@ def test_request_machine_refresh_paths():
 
 
 def test_per_scope_machines_tab_is_a_picker_that_narrows_sessions():
-    # The fleet's per-scope Machines tab (the Harnesses picker's twin): in a month zoom,
-    # pick a box -> Enter narrows Sessions to that box within the scope; Esc returns to it.
     from tests._support import fleet_app
 
     app = fleet_app(
@@ -3905,10 +3618,6 @@ def test_per_scope_machines_tab_is_a_picker_that_narrows_sessions():
 
 
 def test_cross_dimension_picker_counts_what_enter_opens():
-    # With a box narrowed (zoom_machine) then h/l over to the Harnesses picker WITHOUT
-    # stepping out, that picker must count only the box's sessions -- exactly what Enter
-    # then opens. Counting the whole scope while Enter applies both filters is the
-    # "advertises 2, opens 1" bug.
     from tests._support import fleet_app
 
     app = fleet_app(
@@ -3970,8 +3679,6 @@ def test_breadcrumb_shows_the_armed_per_scope_machine():
 
 
 def test_machines_mode_has_no_per_scope_machines_picker_tab():
-    # In Machines MODE you're already scoped to one box, so the per-scope Machines tab is
-    # not injected (that would be a box-within-a-box).
     from tests._support import fleet_app
 
     app = fleet_app(
@@ -3986,8 +3693,6 @@ def test_machines_mode_has_no_per_scope_machines_picker_tab():
 
 
 def test_refresh_machines_now_is_a_no_op_under_demo():
-    # The web sync refresh must make NO network side effects under demo (matching the
-    # TUI's F gate), so a re-pull clicked on a demo page never fires an ssh fetch.
     app = _fleet()
     called = []
     app._refresh_backend = lambda keys: called.append(keys) or [(k, 1, "") for k in keys]
@@ -3997,8 +3702,6 @@ def test_refresh_machines_now_is_a_no_op_under_demo():
 
 
 def test_machine_sessions_show_full_dates_not_a_bare_clock():
-    # A box's sessions span many days, so the Sessions column is "Started" (full date),
-    # like projects mode -- not the single-day "Time"/HH:MM of a focused day in time mode.
     app = _fleet()
     app.set_browse_mode("machines")
     r = app.renderer
@@ -4010,9 +3713,6 @@ def test_machine_sessions_show_full_dates_not_a_bare_clock():
 
 # --- The `M` global machine filter (the harness-picker twin) ------------------
 def test_machine_filter_narrows_every_view_and_clears():
-    # Arming a box narrows all_workflows -- and everything that reads it, the machines
-    # list included -- to that one box, the twin of the `H` harness narrowing. The mode
-    # stays available (machines_present reads the raw loaded set, not the filtered one).
     app = _fleet()
     assert {w.machine for w in app.all_workflows} == {"laptop", "server"}
     app.select_machine_filter("server")
@@ -4059,8 +3759,6 @@ def test_machine_filter_key_off_a_fleet_is_a_no_op():
 
 
 def test_machine_filter_revalidated_when_its_box_disappears():
-    # A source swap / demo rename that drops the box must clear the filter, not silently
-    # empty every view. _revalidate_machine_filter keeps it only while the box exists.
     app = _fleet()
     app.select_machine_filter("server")
     app.loaded = [w for w in app.loaded if w.machine == "laptop"]  # server gone
@@ -4088,9 +3786,6 @@ def test_machine_filter_shows_in_the_header_as_a_narrowing_chip():
 
 
 def test_machine_filter_narrows_the_prices_overlay_like_the_harness_picker():
-    # The P overlay reads _model_by_root, which the `H` picker rebuilds per backend. `M`
-    # doesn't rebuild it, so its mix/rows/drill/export must scope to the armed box instead
-    # -- else P shows the other machine's models while the header says "machine: server".
     from tests._support import _model_row, fleet_app
 
     app = fleet_app(
@@ -4119,9 +3814,6 @@ def test_machine_filter_narrows_the_prices_overlay_like_the_harness_picker():
 
 
 def test_machine_filter_key_is_advertised_wherever_it_is_handled():
-    # Regression: `M` floats above Trends/Prices (handled in the overlay-common paths), so
-    # its keymap entry must be shown there too -- footer chips can't advertise what help
-    # omits, nor vice versa. Exercised across the same contexts as the disagree invariant.
     app = _fleet()
     orig_cycle = ot.sources.source_cycle  # a full keymap sweep evaluates `H`'s when, which
     ot.sources.source_cycle = lambda args: ["opencode", "claude"]  # probes the filesystem
@@ -4158,8 +3850,6 @@ def _mixed_fleet():
 
 
 def test_harness_filter_narrows_by_tool_and_keeps_every_machine():
-    # The whole point of the fork: `H` in a fleet narrows to one tool across ALL machines
-    # (harness ⊥ machine), and composes with the `M` machine filter -- "OpenCode, on server".
     app = _mixed_fleet()
     assert {w.source for w in app.all_workflows} == {"OpenCode", "Claude Code"}
     app.select_harness_filter("OpenCode")
@@ -4213,9 +3903,6 @@ def test_open_harness_menu_needs_more_than_one_harness():
 
 
 def test_armed_harness_filter_is_always_clearable_even_with_one_harness_left():
-    # Regression (Codex P2): arm a harness, then the OTHER harness's sessions vanish while
-    # the fleet remains. Revalidation keeps the armed filter -- so the picker MUST still
-    # open (to reach "All harnesses"), even though only one harness is now present.
     app = _mixed_fleet()
     app.select_harness_filter("OpenCode")
     app.loaded = [w for w in app.loaded if w.source == "OpenCode"]  # Claude's session gone
@@ -4228,9 +3915,6 @@ def test_armed_harness_filter_is_always_clearable_even_with_one_harness_left():
 
 
 def test_source_swap_out_of_a_fleet_keeps_machines_mode_on_this_box():
-    # Switching to a single harness drops the pulled boxes, but not the one you're on:
-    # Machines mode survives the swap and shows this machine (it used to strand on a
-    # phantom "unknown" box, which is why it fell back to time browse instead).
     app = app_with([workflow("a", "2026-05-01 10:00:00")])  # a non-fleet store
     app.browse_mode = "machines"  # as if we'd been in a fleet's Machines mode
     app.view = "zoom"
@@ -4246,11 +3930,6 @@ def _sourced(wid, source, when):
 
 
 def test_a_source_swap_disarms_the_drills_of_the_modes_you_are_not_in():
-    # Regression (Codex): _reload_for_source cleared the ACTIVE mode's zoom_source/
-    # project/model/machine (they name things the new data may not have) but left the
-    # dormant per-mode snapshots armed, and _restore_mode_memory reinstated them
-    # unchecked -- so `H` to one backend and then `p`/`m` came back scoped to a harness
-    # that is no longer in the data: an empty session list beside a full dataset.
     both = [
         _sourced("a", "Claude", "2026-05-01 10:00:00"),
         _sourced("b", "OpenCode", "2026-05-02 10:00:00"),
@@ -4270,9 +3949,6 @@ def test_a_source_swap_disarms_the_drills_of_the_modes_you_are_not_in():
 
 
 def test_a_plain_reload_disarms_the_dormant_drills_too():
-    # `r` drops the ACTIVE mode's drills outright (it exists to pick up data that
-    # changed), so the dormant snapshots must drop theirs too -- else returning to a
-    # mode scopes its Sessions by a harness the reload just removed.
     app = app_with(
         [
             _sourced("a", "Claude", "2026-05-01 10:00:00"),
@@ -4291,10 +3967,6 @@ def test_a_plain_reload_disarms_the_dormant_drills_too():
 
 
 def test_a_dormant_project_drill_survives_a_restoring_reload_iff_it_still_exists():
-    # The mode you're standing in and the ones you aren't must come out of ONE reload
-    # the same way: the restore path (a `D` toggle, an `F` re-pull) keeps a project drill
-    # that still exists, so a dormant snapshot's must survive too -- and vanish with the
-    # project, exactly like the active one.
     def drilled():
         app = app_with(
             [
@@ -4322,10 +3994,6 @@ def test_a_dormant_project_drill_survives_a_restoring_reload_iff_it_still_exists
 
 
 def test_notices_overlay_swallows_mouse_events():
-    """The N scrollback is drawn over the whole body, but had no mouse branch, so the
-    body's regions stayed live underneath: a double-click where the session list had been
-    drilled into a session behind the overlay, and the wheel scrolled that list instead of
-    the scrollback. Same contract as the help overlay: wheel pages it, a click closes it."""
     app = app_with([workflow("s1", "2026-07-01 12:00:00"), workflow("s2", "2026-07-02 12:00:00")])
     app.view, app.workflow_index = "zoom", 0
     app.renderer.regions = [("rows", "session", 5, 20, 2, 100, 0)]  # a body region beneath it
@@ -4344,9 +4012,6 @@ def test_notices_overlay_swallows_mouse_events():
 
 
 def test_reopen_trends_survives_a_tab_that_no_longer_exists():
-    """_trend_return names the tab Esc should return to. Every other overlay cursor is
-    re-anchored on a source swap; this one was not, and Machines can vanish outright when
-    the fleet does -- so trend_tabs.index() raised ValueError out of curses.wrapper."""
     app = app_with([workflow("s1", "2026-07-01 12:00:00")])
     assert "Machines" not in app.trend_tabs  # a single non-remote backend has no fleet
     app._trend_return = ("drill", "machine", "boxA", 0)
@@ -4355,10 +4020,6 @@ def test_reopen_trends_survives_a_tab_that_no_longer_exists():
 
 
 def test_whatif_picker_ignores_a_stray_non_ascii_key():
-    """With the filter off, a non-ASCII character was appended to the query anyway, so a
-    stray dead key emptied the list to "no model matches -- backspace to widen" while
-    backspace was still bound to cancel: the one key the screen named threw the picker
-    away. An ASCII character in that state is ignored, so this one is too."""
     app = app_with([workflow("s1", "2026-07-01 12:00:00")])
     app.whatif_menu, app.whatif_filter_active, app.whatif_query = True, False, ""
     app.handle_whatif_menu_key("ä")
@@ -4369,11 +4030,6 @@ def test_whatif_picker_ignores_a_stray_non_ascii_key():
 
 
 def test_reload_demotes_a_session_that_vanished_instead_of_showing_a_neighbour():
-    """The reload restore guarded with `not self.current_session()`, but current_session()
-    CLAMPS workflow_index -- so a session dropped by the reload handed back its neighbour,
-    which is truthy, and the guard never fired. You kept reading a session detail that had
-    silently become someone else's numbers. _restore_mode_memory already compares identity;
-    this path now does too."""
     keeper = workflow("keeper", "2026-07-01 12:00:00", cost=1.0)
     gone = workflow("gone", "2026-07-02 12:00:00", cost=9.0)
 
@@ -4394,13 +4050,7 @@ def test_reload_demotes_a_session_that_vanished_instead_of_showing_a_neighbour()
 
 
 def test_unpriced_tokens_are_restated_at_message_granularity():
-    """workflows() is the fast first-frame query, so a backend answers unpriced_tokens at
-    whatever granularity it already aggregates -- OpenCode per session NODE, which counts a
-    node holding one priced message as entirely priced and zeroes the rest of its tokens.
-    model_breakdown (the deferred scan the "$" estimate itself comes from) splits it per
-    MESSAGE and is right, so the App restates it from there: 23 of 692 real sessions were
-    labelled priced when they were not, the worst printing "Unpriced tokens: 0" against $37
-    of estimable spend while suppressing the "press $" hint."""
+    # Model rows supersede node-granular workflow totals when present.
 
     class NodeGranularStore(FakeStore):
         def model_breakdown(self):
@@ -4428,11 +4078,6 @@ def test_unpriced_tokens_are_restated_at_message_granularity():
 
 
 def test_a_box_ranks_models_over_exactly_the_sessions_its_enter_opens():
-    # A box's drills are mutually exclusive: picking a model CLEARS an armed harness
-    # drill. So the Models ranking must not compose that harness either -- ranking
-    # through a filter the pick discards makes the row read narrower than the list it
-    # produces, which is the one failure a picker scope exists to prevent (measured: a
-    # row saying one session opened two).
     from tests._support import fleet_app
 
     b = workflow("b", "2026-05-02 10:00:00", cost=9.0)
@@ -4465,9 +4110,6 @@ def test_a_box_ranks_models_over_exactly_the_sessions_its_enter_opens():
 
 
 def test_the_browse_mode_table_is_the_only_place_modes_are_enumerated():
-    # Every list of modes in the app is DERIVED from App.BROWSE_MODES. Before it the
-    # same set was spelled four ways, and a mode added to one and missed in another does
-    # not raise -- it renders as Time. This is the test that makes the omission loud.
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     modes = app.BROWSE_MODES
     assert [m.key for m in modes] == ["time", "projects", "machines"]
@@ -4488,8 +4130,6 @@ def test_the_browse_mode_table_is_the_only_place_modes_are_enumerated():
 
 
 def test_an_unknown_saved_browse_mode_falls_back_instead_of_raising():
-    # browse_mode is restored from state.json, so a hand-edited value reaches this
-    # before the first frame. The trend_sort guard's rule: fall back, never raise.
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.browse_mode = "harnesses"  # a mode from a future version, or a typo
     assert app.browse_mode_spec is app.BROWSE_MODES[0]
@@ -4497,9 +4137,6 @@ def test_an_unknown_saved_browse_mode_falls_back_instead_of_raising():
 
 
 def test_the_selection_anchor_is_read_by_name_and_still_indexes():
-    # It is built in one place and read in another (_restore_mode_memory wanted the
-    # session id and reached for anchor[5]), so a field inserted mid-tuple used to hand
-    # every later reader its neighbour -- silently, and with a plausible value.
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     anchor = app.selection_anchor()
     assert anchor.session == "a"
@@ -4513,10 +4150,6 @@ def test_the_selection_anchor_is_read_by_name_and_still_indexes():
 
 
 def test_both_session_lists_scope_from_the_one_mode_scope():
-    # The picker RANKS a scope and Enter OPENS it, so the two must never disagree -- a
-    # row reading "1 session · $3" that opens two sessions and $5 is the bug
-    # _zoom_picker_scope exists to prevent. They now derive the scope from one method
-    # instead of re-spelling the same three branches.
     app = fleet_app(
         {
             "laptop": [workflow("a", "2026-06-01 12:00:00", cost=5.0, directory="/x")],
@@ -4561,10 +4194,6 @@ def _zoom_reprice_app():
 
 
 def test_dollar_keeps_every_zoom_picker_on_the_row_it_was_on():
-    # The zoom tabs' pickers are cost-ranked ordinals into a list "$" re-orders, and
-    # selection_anchor does not speak for them -- it covers the sidebar and the sessions
-    # list. Left un-anchored, the Harnesses picker sat on B, "$" reordered to [A, B], and
-    # Enter drilled A: a pick the reader never made, with nothing on screen to say so.
     app = _zoom_reprice_app()
     assert app.show_api_prices
     assert [n for n, _ in app.zoom_source_rows()] == ["B", "A"]
@@ -4579,9 +4208,6 @@ def test_dollar_keeps_every_zoom_picker_on_the_row_it_was_on():
 
 
 def test_dollar_leaves_the_projects_sidebar_selection_to_the_anchor():
-    # project_index means the zoom Projects PICKER in time/machines mode but the SIDEBAR
-    # row in projects mode, where selection_anchor already restores it by directory.
-    # Re-anchoring it as a picker there would fight the anchor for the same field.
     app = _zoom_reprice_app()
     app.set_browse_mode("projects")
     before = app.selected_project_summary

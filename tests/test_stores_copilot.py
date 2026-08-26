@@ -1,5 +1,3 @@
-"""The GitHub Copilot CLI OpenTelemetry backend (stores/copilot.py)."""
-
 import os
 import sqlite3
 import tempfile
@@ -344,11 +342,7 @@ def _tokens(otel):
 
 
 def test_copilot_dedup_keeps_distinct_calls_sharing_one_trace():
-    """A response id names ONE call; a trace id groups a whole turn, and an agentic turn
-    makes several calls on one trace. Coverage was (same trace) OR (same response), so a
-    single chat span suppressed every other call logged under its trace -- real tokens
-    gone. Only a matching response counts now, with the trace still standing in when the
-    covering record named no response at all (OTel makes it recommended, not required)."""
+    # A trace groups a turn; response ids distinguish calls within it.
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")
         # chat(r1) + its duplicate inference(r1) + a DISTINCT second call inference(r2)
@@ -393,11 +387,6 @@ def test_copilot_dedup_keeps_distinct_calls_sharing_one_trace():
 
 
 def test_copilot_record_joins_the_conversation_named_on_its_trace():
-    """_SESSION_ATTRS ranks gen_ai.conversation.id above the per-call gen_ai.response.id,
-    and _parse keeps the best id per trace -- but _to_candidate threw the priority away
-    and consulted the trace only when the record had no session attribute at all. A
-    record whose only one was a response id therefore became its own session per LLM
-    call, each missing the session-store.db title and cwd keyed by session id."""
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")
         _write_otel(
@@ -413,10 +402,6 @@ def test_copilot_record_joins_the_conversation_named_on_its_trace():
 
 
 def test_copilot_cache_fingerprint_covers_the_session_store_db():
-    """_finalize reads each session's title and cwd from the sibling session-store.db, but
-    cache_inputs listed only the OTEL files -- so a rollup parsed before the CLI wrote that
-    DB was served from cache forever (reload re-fingerprints, still matches, still hits),
-    freezing the session at "(untitled)" / "(unknown)" and out of its project."""
     with tempfile.TemporaryDirectory() as tmp:
         otel = os.path.join(tmp, ".copilot", "otel")
         _write_otel(otel, [_otel_chat(COPILOT_SID, "gpt-5.4-mini", 60, 10)])

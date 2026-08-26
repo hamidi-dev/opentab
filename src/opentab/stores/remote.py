@@ -1,27 +1,8 @@
-"""RemoteStore: browse other machines' spend from exported summary files.
+"""Read portable machine summaries and merge them into a read-only fleet view.
 
-opentab reads only local data. To consolidate several machines, each machine
-exports a compact summary (``opentab --export``) and those summaries are gathered
-into one directory -- via ``opentab --pull``, a shared folder, scp, Syncthing,
-whatever moves a file. RemoteStore reads that directory and presents every
-machine's sessions merged, each tagged with the machine it came from.
-
-The summary IS the warm-start cache payload (workflows() + model_breakdown() +
-records_cost) plus a machine label -- so ``build_export`` here is the mirror image
-of stores.cached.CachedStore._write, and RemoteStore is CachedStore read in
-reverse. Because the raw per-model rows travel too, the "$" what-if and the "w"
-model-target comparison recompute against list prices on remote data exactly as
-they do locally, with no special-casing.
-
-The rollup travels, and so does the drill-in: the subagent TREE (workflow_nodes, for
-the sessions that delegated) and, as of export v2, the lazy per-session extras --
-Turns (message_timeline), Tools (tool_breakdown) and the estimated Context
-composition (context_breakdown) -- so a pulled session's tabs are as real as a local
-one's. That makes the extras the heavy part of an export (transcript-scale, fetched
-per session), a cost paid once at ``--export`` time; the summaries themselves grow
-accordingly. A v1 summary carried none of the extras, so RemoteStore's supports_*
-gates simply hide those tabs for it -- older exports still load, just without the
-turn-by-turn detail.
+Exports carry rollups, model rows, subagent nodes, and optional Turns/Tools/Context
+detail. Unknown fields and older exports are accepted; detail rows are normalized or
+dropped before they reach renderers.
 """
 from __future__ import annotations
 
@@ -37,18 +18,12 @@ from opentab.demo import DEMO_ALL, demo_config, demo_machine, scramble_node, scr
 from opentab.models import Workflow
 from opentab.util import tool_names
 
-# The on-disk summary format version. Separate from CachedStore.CACHE_VERSION on
-# purpose: a summary is a portable interface between machines that may run different
-# opentab versions, so it evolves on its own cadence (and RemoteStore stays
-# tolerant of unknown keys -- see _load). Bump only on an incompatible shape change.
+# Portable exports evolve independently from the local warm-start cache.
 EXPORT_VERSION = 2  # v2 adds the per-session Turns/Tools/Context extras (see build_export)
 
 _WF_FIELDS = {f.name for f in fields(Workflow)}
 
-# The subagent-node fields the App/Renderer read (detail_subagents, _priced_nodes,
-# whatif_node_price). An exported node is normalized to exactly these on load, with safe
-# defaults + coerced types, so a partial/garbage node (a crafted `{}` or a string where a
-# count is expected) renders/scales instead of crashing with KeyError/TypeError.
+# Normalize untrusted node fields before rendering or demo scaling.
 _NODE_INT_FIELDS = (
     "tokens_input",
     "tokens_output",
@@ -74,10 +49,7 @@ def _coerce_float(value) -> float:
         return 0.0
 
 
-# The v2 extras are normalized on load just like _clean_node: a summary is an untrusted
-# file (corrupt, hand-edited, or from a future version), and the Turns/Tools/Context
-# renderers read these fields with [] -- so a partial row like {} must render as zeros,
-# never KeyError the drill-in. Each cleaner emits exactly the fields its renderer reads.
+# Extra rows are untrusted and must expose every field their renderers index.
 _TURN_INT_FIELDS = (
     "depth",
     "tokens_total",
@@ -105,20 +77,12 @@ def _clean_turn(row: dict) -> dict:
         "time": str(row.get("time") or ""),
         "model_name": str(row.get("model_name") or "unknown"),
         "agent": str(row.get("agent") or "-"),
-        # The reasoning level this call ran at. In the whitelist for the reason the
-        # whole whitelist exists: leave it out and a pulled machine loses both the Eff
-        # column and its ⚙ cache markers while the local one draws them.
         "effort": str(row.get("effort") or ""),
         "prompt_id": str(row.get("prompt_id") or ""),
         "prompt_title": str(row.get("prompt_title") or ""),
         "prompt_full": str(row.get("prompt_full") or row.get("prompt_title") or ""),
         "cost": _coerce_float(row.get("cost")),
-        # The tools this step called. This whitelist is what a pulled machine's Turns
-        # tab gets, so a field missing here is a column that silently disappears on
-        # every remote session while the local one still draws it -- the two-views-
-        # disagreeing failure. Sanitized through the SAME gate the renderer uses, so a
-        # hostile or older payload can't put anything through here that a local
-        # transcript couldn't (util.tool_names documents what it rejects and why).
+        # Apply the same sanitizer as local turn rows.
         "tools": tool_names(row.get("tools")),
     }
     for field in _TURN_INT_FIELDS:
@@ -141,8 +105,6 @@ def _clean_context(row: dict) -> dict:
     return {
         "category": str(row.get("category") or "other"),
         "kind": str(row.get("kind") or ""),
-        # detail_context sums this per category ("40× ~200 tokens"); a row without
-        # it (an older/partial export) must default to 0, never KeyError mid-draw.
         "count": _coerce_int(row.get("count")),
         "est_tokens": _coerce_int(row.get("est_tokens")),
     }
@@ -166,8 +128,7 @@ def _clean_node(row: dict) -> dict:
 
 
 def _export_supports(store, name: str, sid: str) -> bool:
-    # Per-session opt-in gate (supports_turns/tools/context), tolerant of a backend that
-    # doesn't implement it or raises on a bad session.
+    # One bad session must not sink the export.
     fn = getattr(store, name, None)
     if not fn:
         return False
@@ -178,9 +139,7 @@ def _export_supports(store, name: str, sid: str) -> bool:
 
 
 def _export_curve_ok(store, sid: str) -> bool:
-    # Whether the measured Context growth curve applies -- App.session_supports_context_curve's
-    # rule, shipped from the source so the remote view doesn't have to re-derive it: any turns
-    # backend supports it UNLESS it explicitly opts out (Codex's cumulative deltas, CSV/JSONL).
+    # Turns imply a measured curve unless the source explicitly opts out.
     fn = getattr(store, "supports_context_curve", None)
     if fn is None:
         return True
@@ -191,8 +150,6 @@ def _export_curve_ok(store, sid: str) -> bool:
 
 
 def _export_rows(store, name: str, sid: str) -> list[dict]:
-    # One session's extra rows (message_timeline/tool_breakdown/context_breakdown/workflow_nodes)
-    # as plain dicts. One bad session must not sink the whole export.
     fn = getattr(store, name, None)
     if not fn:
         return []
@@ -203,12 +160,8 @@ def _export_rows(store, name: str, sid: str) -> list[dict]:
 
 
 def _collect_timeline(store, wf_objs) -> dict[str, list[dict]]:
-    # {session id: Turns rows} for every session, using a backend's whole-corpus batch
-    # (message_timeline_all) where it offers one and the per-session path otherwise.
-    # OpenCode's per-session Turns query re-scans the message table under a recursive CTE
-    # (~200ms/session; 138s over 689 sessions in a real export) -- its batch collapses
-    # that to one grouped scan, ~100x. File backends (Claude/Codex/pi/Zaly) parse once and
-    # slice, so their per-session path is already cheap and needs no batch.
+    # Prefer corpus batches: OpenCode measured 138 s per-session versus ~100x faster
+    # grouped export. File backends already parse once and slice cheaply.
     batch_fn = getattr(store, "message_timeline_all", None)
     batched: dict[str, list[dict]] = {}
     batch_ok = False
@@ -221,12 +174,7 @@ def _collect_timeline(store, wf_objs) -> dict[str, list[dict]]:
     owner = getattr(store, "_owner", None)
 
     def batch_covers(sid: str) -> bool:
-        # True when a batch DEFINITIVELY owns this session (so an all-aborted session it
-        # returned no rows for is not re-fetched by the slow per-session query). Only when
-        # the batch actually SUCCEEDED -- if message_timeline_all raised, batched is empty
-        # and every session must fall back, or the export would silently drop all its
-        # Turns. For the merged store "owns" is "the owning backend has a batch"; for a
-        # leaf export, "the store does".
+        # An empty successful batch result is authoritative; a failed batch must fall back.
         if not batch_ok:
             return False
         if owner is not None:
@@ -255,27 +203,10 @@ def build_export(
     exported_at: str = "",
     opentab_version: str = "",
 ) -> dict:
-    """Serialize a machine's whole rollup to a portable summary dict.
+    """Serialize rollups and session detail into a portable machine summary.
 
-    ``store`` is any backend (usually the merged "all" view), so its workflows()
-    already carry each session's ``source`` (backend) tag; RemoteStore adds the
-    machine tag on load. model_breakdown() rows may be sqlite3.Row (OpenCode) --
-    ``dict(row)`` normalizes both, matching CachedStore._write.
-
-    The subagent TREE (workflow_nodes, for the sessions that delegated) and the lazy
-    per-session extras -- Turns (``message_timeline``), Tools (``tool_breakdown``) and the
-    estimated Context composition (``context_breakdown``), plus the ``curve_ok`` set naming
-    the sessions whose measured Context growth curve applies -- ride along too, so a pulled
-    session's tabs are as real as a local one's. The extras are the HEAVY part of an export:
-    transcript-scale (an order of magnitude larger than the rollup), the scan the TUI defers
-    to drill-in, paid up front here for every session. Turns go through the whole-corpus
-    batch (``_collect_timeline``) -- OpenCode's per-session Turns query is a recursive-CTE
-    message-table re-scan that dominates a big export (measured 138s over 689 sessions),
-    which one grouped scan cuts ~100x. The other extras stay per-session: a file backend
-    parses once and slices (cheap), and OpenCode's nodes/tools are already ~per-session
-    scans over the smaller session/part tables. The raw rows travel; a demo view
-    re-anonymises them lazily (App._scale_demo_turns et al.), exactly as it does for a local
-    store -- RemoteStore never demos the extras itself, so there's no double-scaling.
+    Turns use a whole-corpus batch where available; other extras remain per-session.
+    Raw detail rows travel unchanged so the receiving App applies demo scaling once.
     """
     wf_objs = store.workflows()
     workflows = [asdict(w) for w in wf_objs]
@@ -318,12 +249,7 @@ def build_export(
 
 
 class RemoteStore:
-    """Merge several machines' exported summaries into one read-only view.
-
-    combined=True turns on the per-session origin tags (the Src column / [oc]-style
-    title tags) already used by the merged local view -- remote data spans both
-    backends and machines, so the same machinery labels it.
-    """
+    """Merge exported summaries while retaining source and machine identity."""
 
     combined = True
     source_name = "remote"
@@ -549,7 +475,6 @@ class RemoteStore:
             if self._demo_names:  # the box name is identity too -- hide it with titles
                 w.machine = demo_machine(w.machine)
 
-    # --- Store interface (four methods) -------------------------------------------
     def workflows(self) -> list[Workflow]:
         # FRESH copies every call, like the leaf stores (which re-parse) and CachedStore
         # (which rebuilds from dicts). The App mutates Workflow.total_cost in place under

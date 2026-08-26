@@ -1,5 +1,3 @@
-"""The OpenClaw gateway backend (stores/openclaw.py)."""
-
 import json
 import os
 import tempfile
@@ -263,11 +261,6 @@ def test_openclaw_turns_timeline_groups_by_prompt():
 
 
 def test_openclaw_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_cache():
-    # The oauth/metered split lives in openclaw.json, NOT in the transcripts: switch a
-    # profile between a token and a plan login and every cost in the rollup changes
-    # (records_cost with it, which drives the "$"/ESTIMATED framing) while no transcript
-    # is touched. Without openclaw.json in cache_inputs() the fingerprint still matches,
-    # the warm start serves the pre-login split, and `r` never self-corrects.
     with tempfile.TemporaryDirectory() as root:
         rows = [_ocl_msg("model-x", 1000, 500, cost=1.23, provider="acme-cloud")]
         _ocl_write(root, "bot", OCL_SID, rows)
@@ -290,8 +283,6 @@ def test_openclaw_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_c
 
 
 def test_openclaw_reload_re_reads_the_login_state():
-    # `r` exists to pick up changes, and the login is one: a profile that switched to a
-    # plan since launch must stop counting as spend without a restart.
     with tempfile.TemporaryDirectory() as root:
         _ocl_write(
             root, "bot", OCL_SID, [_ocl_msg("model-x", 1000, 500, cost=1.23, provider="acme-cloud")]
@@ -303,11 +294,6 @@ def test_openclaw_reload_re_reads_the_login_state():
 
 
 def test_openclaw_survives_junk_lines_that_are_valid_json_but_not_objects():
-    # `["cost"]` is valid JSON that passes `except ValueError` and then raises
-    # AttributeError out of .get() -- taking down the WHOLE backend, not the line. It
-    # also carries the `"cost"` substring the records_cost probe prefilters on, so both
-    # readers see it. `1e400` parses to inf, and int(inf) raises OverflowError (an
-    # ArithmeticError, missed by `except (TypeError, ValueError)`).
     with tempfile.TemporaryDirectory() as root:
         d = os.path.join(root, "agents", "bot", "sessions")
         os.makedirs(d)
@@ -342,11 +328,6 @@ def test_openclaw_survives_junk_lines_that_are_valid_json_but_not_objects():
 
 
 def test_openclaw_turns_name_the_tools_each_step_called():
-    # OpenClaw records every step's toolCall blocks -- 4,106 of them over 6,489
-    # assistant messages on a real corpus -- so the Turns tab can name what each step
-    # DID, and the Tools tab can attribute that step's tokens across them. This was
-    # missing not because the data was absent but because the parser only ever read
-    # user content; the tab was hidden on a backend that could always support it.
     with tempfile.TemporaryDirectory() as root:
         _ocl_write(
             root,
@@ -388,9 +369,6 @@ def test_openclaw_turns_name_the_tools_each_step_called():
 
 
 def test_openclaw_tool_blocks_survive_a_malformed_name():
-    # The content list is whatever the gateway wrote. A block with no name, a
-    # non-string name, or a content field that isn't a list must degrade to "no
-    # tools" -- a malformed entry reaching a dict key raises mid-paint.
     with tempfile.TemporaryDirectory() as root:
         msg = _ocl_msg("model-x", 100, 10, mid="a1")
         msg["message"]["content"] = [

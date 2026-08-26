@@ -1,5 +1,3 @@
-"""The omp (Oh My Pi) backend: pi-agent fork w/ SQLite auth + a subagent tree (stores/omp.py)."""
-
 import os
 import tempfile
 
@@ -20,12 +18,7 @@ from tests._support import (
 
 
 def test_omp_subagent_transcript_is_never_silently_dropped():
-    """The exact bug a naive pi-port has: RepoPurposeScout.jsonl's own filename carries
-    no uuid (PiStore._id_from_name returns None for it, the same code path pi uses to
-    skip a stray file), so a copy-pasted parser would silently skip the whole
-    transcript. Measured on the real corpus: that undercounts one session 3.5x
-    (255,528 recorded vs 906,397 actual subtree tokens). OmpStore must key the file by
-    its *containing directory's* uuid instead."""
+    # omp subagent filenames carry labels; their session UUID is inside the transcript.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -130,11 +123,7 @@ def test_omp_root_session_folds_subagent_into_totals_and_root_cost_is_its_own_sh
 
 
 def test_omp_model_breakdown_keeps_root_vs_subtree_split_under_subscription():
-    """Mirrors the real corpus's ground truth: the only route is openai-codex, whose
-    agent.db credential is oauth -> subscription. Both the root's own tokens and the
-    subagent's must land in unpriced_* (the whole subtree), but root_unpriced_* must
-    cover ONLY the root's own share -- that split is exactly what the "$" view
-    depends on to reprice a session without double-counting the child's tokens twice."""
+    # The subtree and root-only unpriced splits must remain distinct.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -190,9 +179,7 @@ def test_omp_model_breakdown_keeps_root_vs_subtree_split_under_subscription():
 
 
 def test_omp_sqlite_auth_marks_oauth_credential_type_as_subscription_and_others_as_metered():
-    """The provider name here ("acme-cloud") is deliberately NOT one of pi's hardcoded
-    _SUBSCRIPTION_MARKERS, so this only passes if OmpStore is really reading agent.db's
-    auth_credentials table -- not silently falling back to the marker heuristic."""
+    # acme-cloud deliberately bypasses the inherited subscription markers.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -231,9 +218,6 @@ def test_omp_sqlite_auth_marks_oauth_credential_type_as_subscription_and_others_
 
 
 def test_omp_missing_or_corrupt_agent_db_degrades_to_marker_heuristic_without_raising():
-    """agent.db absent or unreadable must never crash construction -- it should just
-    fall back to the inherited _SUBSCRIPTION_MARKERS heuristic, exactly like pi
-    degrades with no auth.json."""
     for corrupt in (False, True):
         with tempfile.TemporaryDirectory() as tmp:
             root = os.path.join(tmp, "sessions")
@@ -288,9 +272,6 @@ def test_omp_model_label_qualifies_bare_model_with_provider_and_avoids_double_pr
 
 
 def test_omp_title_precedence_prefers_title_change_over_title_record_and_session_title():
-    """The real corpus never had all three disagree at once, so this is exactly the
-    untested gap the spec calls out: session.title, a `title` record, and a
-    `title_change` record all present with different text."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -622,9 +603,7 @@ def test_omp_folds_cwd_to_git_root():
 
 
 def test_omp_reasoning_tokens_are_a_subset_of_output_and_never_double_counted():
-    """usage.reasoningTokens is OpenAI's reasoning_tokens DETAIL, a subset of `output` --
-    proven by input + output + cacheRead + cacheWrite == totalTokens closing exactly
-    without adding it in. Counting it again would double-bill under "$"."""
+    # reasoningTokens is a detail of output, not an additive token category.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -656,10 +635,6 @@ def test_omp_reasoning_tokens_are_a_subset_of_output_and_never_double_counted():
 
 
 def test_omp_child_of_a_usage_less_root_surfaces_as_its_own_standalone_root():
-    """A root that spawned a subagent but recorded no usage of its own is dropped by
-    the usage-less filter BEFORE the subagent fold runs, so _link_subagents never gets
-    a chance to re-parent its child under it. The data must not vanish with the
-    parent -- the child just surfaces as its own top-level session instead."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -695,12 +670,6 @@ def test_omp_child_of_a_usage_less_root_surfaces_as_its_own_standalone_root():
 
 
 def test_omp_recent_roots_takes_freshness_from_the_whole_subtree():
-    """recent_roots is the no-parse freshness signal behind the one-shot `status`
-    command. A subagent transcript's filename carries no uuid, so PiStore's version
-    skips it outright -- which would report a session as idle while its subagent is
-    mid-burst (exactly when a tmux status line is worth reading). OmpStore keys such a
-    file by its containing directory's PARENT uuid, so the freshest file anywhere in
-    the subtree sets last_active, and the row is still identified by the root."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -744,12 +713,7 @@ def test_omp_recent_roots_takes_freshness_from_the_whole_subtree():
 
 
 def test_omp_folds_a_nested_grandchild_subagent_at_full_depth():
-    """omp's spawn layout is RECURSIVE: it builds a child's transcript as
-    resolve(<spawning transcript minus ".jsonl">, "<child>.jsonl") at every level and
-    walks up to 8 levels to find a root. So a subagent that itself delegates puts its
-    child at <ts>_<uuid>/Impl/Helper.jsonl -- whose immediate directory is an agent
-    nickname carrying NO uuid. Keying parentage off a uuid in the dirname (rather than
-    off the path) matches only depth 1 and drops the whole grandchild transcript."""
+    # Parentage follows the recursively nested transcript path, not directory UUIDs.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -815,10 +779,6 @@ def test_omp_folds_a_nested_grandchild_subagent_at_full_depth():
 
 
 def test_omp_orphaned_subagent_is_its_own_root_consistently_across_workflows_and_status():
-    """A spawned transcript whose parent file is gone (deleted, rotated, or simply not
-    in this batch) still holds real usage. workflows() surfaces it under its own id, so
-    root_of/status_nodes MUST agree -- answering with the absent parent's uuid would
-    make `opentab cost` price $0 for a session the browser happily lists."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -852,10 +812,6 @@ def test_omp_orphaned_subagent_is_its_own_root_consistently_across_workflows_and
 
 
 def test_omp_a_resumed_root_keeps_children_spawned_from_every_transcript():
-    """A resumed session legitimately spans several files under ONE id, and each of
-    them can have spawned subagents. Keying the parent lookup off a single "the" path
-    per session strands every child spawned from any resume but the last, promoting it
-    to a standalone root and dropping its tokens out of the parent's total."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -901,11 +857,6 @@ def test_omp_a_resumed_root_keeps_children_spawned_from_every_transcript():
 
 
 def test_omp_a_usage_less_intermediate_subagent_is_spliced_not_cut():
-    """A subagent that only delegated further records no usage of its own, so the
-    usage-less drop removes it. Its grandchild must be re-parented onto the nearest
-    surviving ancestor -- cutting the branch instead would list the grandchild as its
-    own root in workflows() while root_of still walked the filesystem up to the real
-    root, so `status` and the browser would report different subtree totals."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -961,12 +912,7 @@ def test_omp_a_usage_less_intermediate_subagent_is_spliced_not_cut():
 
 
 def test_omp_cache_fingerprint_covers_the_wal_but_stays_stable_across_reads():
-    """agent.db is WAL-mode, so a login change can land entirely in agent.db-wal while
-    the main db's size and mtime never move -- the warm-start cache must fingerprint
-    the -wal or it serves the old metered/subscription split. But NOT -shm: that is
-    shared-memory index state SQLite rewrites on every open, including opentab's own
-    read of the credentials, so fingerprinting it would change the fingerprint on
-    every launch and the warm start could never hit."""
+    # Credential changes can live in -wal; volatile -shm state must not invalidate cache.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -1007,11 +953,6 @@ def test_omp_cache_fingerprint_covers_the_wal_but_stays_stable_across_reads():
 
 
 def test_omp_status_prices_the_subtree_of_a_root_that_only_delegated():
-    """A root that recorded no usage of its own but spawned a child that did must
-    still price its subtree for `opentab cost`. The target has to survive the
-    usage-less splice ITSELF -- re-adding it afterwards leaves its children already
-    promoted past it, so the tree renders as one bogus empty node and the child's
-    tokens vanish from the status line."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -1037,8 +978,6 @@ def test_omp_status_prices_the_subtree_of_a_root_that_only_delegated():
 
 
 def test_omp_status_reports_nothing_for_a_session_with_neither_usage_nor_children():
-    """A stub session (launched, nothing asked) has no figures at all. --status's
-    contract for an unpriceable target is an empty segment, not a $0.00 row."""
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")

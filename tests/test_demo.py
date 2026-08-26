@@ -1,5 +1,3 @@
-"""Demo mode: deterministic anonymisation and the hidden per-process scale (demo.py)."""
-
 import os
 import sqlite3
 import tempfile
@@ -31,7 +29,7 @@ def test_demo_toggle_hides_and_locks_notes_live():
     assert "demo" in app.notice
     assert ot.load_notes() == {"a": "real money, real client"}  # the file is untouched
 
-    app.store.demo = False  # back to real data: the notes come back, same run
+    app.store.demo = False
     app._reload_for_source()
     assert app.allow_notes and app.note_for("a") == "real money, real client"
     ot.save_notes({})
@@ -137,12 +135,11 @@ def test_demo_picker_toggles_categories_and_applies_the_subset():
 
         app.open_demo_menu()
         assert app.demo_menu and app.demo_menu_sel == set(ot.demo.DEMO_ALL)  # seeded all
-        # move to the Spend row and uncheck it with Space
         app.handle_key(None, ord("j"))  # titles -> turns
         app.handle_key(None, ord("j"))  # turns -> spend
         app.handle_key(None, ord(" "))  # uncheck spend
         assert app.demo_menu_sel == {"titles", "turns"}
-        app.handle_key(None, 10)  # Enter applies
+        app.handle_key(None, 10)
         assert not app.demo_menu and app.store is built
         assert specs == ["titles,turns"]  # the store was built for exactly that subset
         assert app.notice == "demo: titles, turns"
@@ -188,9 +185,7 @@ def test_demo_cost_zero_and_deterministic():
 def test_demo_model_remaps_local_only():
     assert ot.demo_model("ollama/llama3.1:70b") in ot.DEMO_MODEL_POOL
     assert ot.demo_model("lmstudio/whatever") in ot.DEMO_MODEL_POOL
-    # stable per source name
     assert ot.demo_model("ollama/llama3.1:70b") == ot.demo_model("ollama/llama3.1:70b")
-    # cloud models pass through untouched
     assert ot.demo_model("anthropic/claude-opus-4.6") == "anthropic/claude-opus-4.6"
     assert ot.demo_model("github-copilot/claude-sonnet-4.5") == "github-copilot/claude-sonnet-4.5"
 
@@ -447,10 +442,8 @@ def test_capital_d_opens_the_picker_that_toggles_real_and_demo():
             "",
         )
 
-        # D opens the multi-check picker; nothing applied yet, still real data.
         app.handle_key(None, ord("D"))
         assert app.demo_menu and app.store is real
-        # Enter applies the default (all categories checked) -> demo store.
         app.handle_key(None, 10)
         assert not app.demo_menu and app.store is demo
         assert app.view == "zoom" and app.current_tabs()[app.tab] == "Models"

@@ -7,48 +7,34 @@ import re
 import unicodedata
 from datetime import datetime, timezone
 
-# Real token figures from human_tokens are always decimal + space-delimited
-# ("35.0B", "1.0M"); model param tags are integer + hyphen-delimited ("-35B-A3B").
-# Requiring the decimal and excluding hyphen boundaries keeps name segments from
-# being mistaken for token counts (e.g. the "35B" in Qwen3.6-35B-A3B). Also exclude a
-# leading "$": the digits inside a compact money label ("$1.2k") look exactly like a
-# token count, and since write_rich paints tokens AFTER money, an unguarded match here
-# would overpaint "$1.2k"'s digits token-grey, leaving only the "$" green.
+# Require human_tokens' decimal form and reject model-tag/money boundaries; token paint
+# runs after money paint and must not overpaint compact dollar labels.
 TOKEN_PATTERN = re.compile(r"(?<![A-Za-z0-9_.\-$])\d+\.\d+[kMB](?![A-Za-z0-9_\-])")
-# The trailing "k?" catches money_label's compact form ("$1.2k", "$12k") so the whole
-# amount paints as one green span; guarded against a following letter so it never eats
-# into an alphanumeric run.
+# Include compact ``k`` amounts without consuming a following identifier.
 MONEY_PATTERN = re.compile(r"\$\d+(?:,\d{3})*(?:\.\d+)?(?:k(?![A-Za-z]))?")
-# Block glyphs (cost_bar / the ranked spend bars) fill their cell with the
-# *foreground* colour, so under a selected row's A_REVERSE they invert to the
-# theme background — a hole punched in the highlight band. Selected-row writers
-# overdraw runs of them (matched here) non-reversed to keep the bar visible.
+# Selected rows redraw these foreground bars without A_REVERSE to avoid highlight holes.
 BAR_GLYPH_PATTERN = re.compile(r"[█▏▎▍▌▋▊▉]+")
 
 
 def money(value: float) -> str:
-    # A positive sub-cent cost rounds to "$0.00" and reads as free, which is
-    # indistinguishable from genuinely unpriced rows. Show it as nonzero-but-tiny.
+    # Preserve the distinction between positive sub-cent spend and unpriced $0.00.
     if 0 < value < 0.005:
         return "<$0.01"
     return f"${value:,.2f}"
 
 
 def money_label(value: float) -> str:
-    # Compact spend for a label that sits on top of a (possibly narrow) bar, so
-    # it fits where the full "$1,234.56" form would not. Empty for zero so blank
-    # buckets stay unlabelled.
     if value <= 0:
         return ""
     if value < 0.005:
         return "<$0.01"
     if value < 10:
-        return f"${value:.2f}"  # $2.34
+        return f"${value:.2f}"
     if value < 1000:
-        return f"${value:.0f}"  # $234
+        return f"${value:.0f}"
     if value < 10000:
-        return f"${value / 1000:.1f}k"  # $1.2k
-    return f"${value / 1000:.0f}k"  # $12k
+        return f"${value / 1000:.1f}k"
+    return f"${value / 1000:.0f}k"
 
 
 def pct(part: float, whole: float) -> str:
@@ -60,14 +46,12 @@ def pct(part: float, whole: float) -> str:
     return f"{round(share)}%"
 
 
-BAR_CELLS = 8  # width of the inline spend bar lane in the Months/Days lists
-BAR_EIGHTHS = " ▏▎▍▌▋▊▉"  # 0..7 eighths of a cell; a full cell is "█"
+BAR_CELLS = 8
+BAR_EIGHTHS = " ▏▎▍▌▋▊▉"
 
 
 def cost_bar(value: float, peak: float, cells: int = 8) -> str:
-    # Fixed-width unicode bar so spend magnitude is legible at a glance in the
-    # Months/Days lists. Scaled to the largest value in the same list; any
-    # positive value shows at least a sliver so cheap-but-nonzero rows are visible.
+    # Any positive value gets at least one eighth-cell, preserving nonzero spend.
     if peak <= 0 or value <= 0:
         return " " * cells
     eighths = max(1, min(round((value / peak) * cells * 8), cells * 8))
@@ -78,10 +62,7 @@ def cost_bar(value: float, peak: float, cells: int = 8) -> str:
 
 
 def iso_to_local(ts: str) -> str:
-    # Claude Code timestamps are ISO-8601 UTC ("2026-06-10T18:46:00.000Z"); render
-    # them as local "YYYY-MM-DD HH:MM:SS" to match Store's created_at (datetime(...,
-    # 'localtime')). Python 3.9's fromisoformat rejects the "Z"/millisecond form, so
-    # fall back to parsing the leading seconds as UTC.
+    # Normalize ISO UTC timestamps to Store's local created_at format.
     if not ts:
         return ""
     try:
@@ -97,10 +78,7 @@ def iso_to_local(ts: str) -> str:
 
 
 def iso_to_epoch(ts: str) -> float | None:
-    # The same ISO-8601 forms iso_to_local accepts ("...Z", millis, naive), as a
-    # POSIX epoch float for arithmetic. None when empty or unparseable. Naive stamps
-    # are read as UTC (as elsewhere); the epoch is tz-absolute, so worked_seconds is
-    # immune to the DST-straddle caveat that dogs the naive-local span parse.
+    # Read naive stamps as UTC so duration arithmetic remains timezone-absolute.
     if not ts:
         return None
     try:
@@ -119,19 +97,8 @@ WORKED_BURST_GAP_SECONDS = 30 * 60
 
 
 def worked_seconds(event_epochs, prompt_epochs) -> float | None:
-    # How long the agent actually worked, idle excluded: walk the session's activity
-    # timestamps in order and sum each gap EXCEPT the one that lands on a human prompt
-    # -- that gap is the user reading/composing the follow-up, not the agent working.
-    # `prompt_epochs` are the epochs of those human turns or equivalent user-driven
-    # boundaries (a subset of event_epochs). Some harnesses emit resume metadata before
-    # the next prompt, so an unmarked gap beyond the conventional 30-minute activity
-    # window also starts a fresh burst instead of claiming days of silence as work.
-    # A backend that can't identify any boundaries must still leave worked unknown.
-    # Returns None on fewer than two activity points (nothing to measure -> the UI
-    # shows blank, never a fake 0s). Equal timestamps contribute a 0 gap, so replayed
-    # duplicate records are harmless. Non-finite epochs (a stray inf/nan from a
-    # malformed stamp) are dropped rather than propagated -- an inf worked would crash
-    # human_duration's int() at render time.
+    # Exclude gaps ending at human prompts and long unmarked idle gaps. Return None when
+    # there is insufficient activity; discard non-finite input before duration rendering.
     times = sorted(e for e in event_epochs if e is not None and math.isfinite(e))
     if len(times) < 2:
         return None
@@ -139,15 +106,12 @@ def worked_seconds(event_epochs, prompt_epochs) -> float | None:
     total = 0.0
     for a, b in zip(times, times[1:]):
         if b in prompts or b - a > WORKED_BURST_GAP_SECONDS:
-            continue  # gap leading into a human prompt = idle wait, not work
+            continue
         total += b - a
     return total
 
 
 def relative_age(ts: str, now: datetime | None = None) -> str:
-    # "2h ago" / "3d ago" / "just now" for a machine summary's export time. `now` is
-    # injectable so the Machines-mode freshness line is testable without pinning the
-    # clock. Empty (blank) for the live box or an unparseable stamp.
     if not ts:
         return ""
     try:
@@ -162,7 +126,7 @@ def relative_age(ts: str, now: datetime | None = None) -> str:
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     secs = (now - dt.astimezone(timezone.utc)).total_seconds()
     if secs < 0:
-        return "just now"  # a clock-skewed future stamp reads better than "-2h ago"
+        return "just now"
     if secs < 60:
         return "just now"
     if secs < 3600:
@@ -173,9 +137,6 @@ def relative_age(ts: str, now: datetime | None = None) -> str:
 
 
 def human_bytes(n: int) -> str:
-    # Compact on-disk size: the --timings machine table (a pulled summary file is where
-    # the v2 Turns/Tools/Context extras land, so its size is a real signal) and every
-    # file `opentab doctor` reports on.
     if n >= 1024**3:
         return f"{n / 1024**3:,.1f} GB"
     if n >= 1024 * 1024:
@@ -190,11 +151,7 @@ def tokens(value: int) -> str:
 
 
 def human_tokens(value: int) -> str:
-    # Switch unit just BEFORE the boundary, not at it: rounding to one decimal first
-    # turned 999,950 into "1000.0k" and 999,950,000 into "1000.0M" -- seven characters,
-    # which overflow the fixed six-wide token cells (Renderer._split_cell) and shift that
-    # row's remaining columns one place right of their headers. Nothing here ever exceeds
-    # six characters now.
+    # Switch before rounded unit boundaries so fixed six-cell columns never get ``1000.0k``.
     if value >= 999_950_000_000:
         return f"{value / 1_000_000_000_000:.1f}T"
     if value >= 999_950_000:
@@ -207,9 +164,6 @@ def human_tokens(value: int) -> str:
 
 
 def human_duration(seconds: float) -> str:
-    # Compact wall-clock span for the Context graph's "how the session evolved"
-    # line: seconds → minutes → "Hh Mm" → "Dd Hh". The coarser unit drops its
-    # zero remainder ("2h" not "2h 0m") so the common cases stay short.
     seconds = int(max(0, seconds))
     if seconds < 60:
         return f"{seconds}s"
@@ -230,17 +184,13 @@ def _char_cells(ch: str) -> int:
 
 
 def display_width(value: str) -> int:
-    # Terminal cells, not codepoints: east-asian Wide/Fullwidth glyphs take two
-    # cells, combining marks none. An approximation (emoji ZWJ sequences and flags
-    # are beyond east_asian_width), but it keeps CJK titles/paths in their columns.
+    # Terminal-cell approximation: wide glyphs use two cells and combining marks none.
     if value.isascii():
         return len(value)
     return sum(_char_cells(ch) for ch in value)
 
 
 def clip(value: str, width: int) -> str:
-    # Longest prefix within `width` display cells; a wide char that would straddle
-    # the boundary is dropped, so the result never exceeds the cell budget.
     if width <= 0:
         return ""
     if value.isascii():
@@ -259,8 +209,6 @@ def clip(value: str, width: int) -> str:
 
 
 def clip_tail(value: str, width: int) -> str:
-    # clip()'s mirror: the longest *suffix* within `width` cells. What a scrolling input
-    # field needs — you look at the end you're typing, not the start.
     if width <= 0:
         return ""
     if value.isascii():
@@ -279,21 +227,17 @@ def clip_tail(value: str, width: int) -> str:
 
 
 def wrap_cells(value: str, width: int) -> list[str]:
-    # textwrap.wrap counts codepoints, so a CJK/emoji line it "wrapped" to 60 can still
-    # be 100 cells wide -- and the pane then clips half of every line away. This wraps on
-    # what the terminal actually spends: cells.
+    # ``textwrap`` counts codepoints rather than terminal cells.
     if width <= 0:
         return []
     lines: list[str] = []
     current = ""
     for word in value.split():
-        while display_width(word) > width:  # one word wider than the whole line: split it
+        while display_width(word) > width:
             if current:
                 lines.append(current)
                 current = ""
-            # A single glyph wider than the whole line (界 in a 1-cell pane) can't be
-            # clipped to fit -- emit it whole and overflow by a cell rather than emit an
-            # empty line and stall. Never drop it: this is someone's text.
+            # Preserve a single glyph wider than the pane rather than stalling or dropping it.
             head = clip(word, width) or word[0]
             lines.append(head)
             word = word[len(head) :]
@@ -311,7 +255,6 @@ def wrap_cells(value: str, width: int) -> list[str]:
 
 
 def pad(value: str, width: int) -> str:
-    # ljust by display cells, so a padded wide-char row still fills exactly `width`.
     return value + " " * max(0, width - display_width(value))
 
 
@@ -333,16 +276,12 @@ def shorten(value: str, width: int) -> str:
 
 
 def _clean_prompt(text, limit: int = 160) -> str:
-    # A user prompt collapsed to a one-line turn-group title: fold whitespace and
-    # cap it (the Turns renderer shortens further to the panel width). Empty in,
-    # empty out, so callers can treat "" as "no prompt".
     if not text:
         return ""
     return " ".join(str(text).split())[:limit]
 
 
 def _clip_tail(value: str, width: int) -> str:
-    # Longest suffix within `width` display cells (the tail-keeping twin of clip).
     if value.isascii():
         return value[len(value) - width :] if width > 0 else ""
     out = []

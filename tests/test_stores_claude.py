@@ -1,5 +1,3 @@
-"""The Claude Code transcript backend (stores/claude.py)."""
-
 import json
 import os
 import random
@@ -86,9 +84,6 @@ def test_claude_message_timeline_orders_by_time_and_marks_sidechain():
 
 
 def test_claude_turns_carry_the_reasoning_effort_the_call_ran_at():
-    # Claude Code records the level on every assistant record (109 of 120 real
-    # transcripts carry one; the rest predate the field and ship "", which is what drops
-    # the Eff column rather than drawing a stripe of dashes).
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -167,9 +162,6 @@ def test_claude_message_timeline_groups_turns_by_owning_user_prompt():
 
 
 def test_claude_turns_carry_the_full_prompt_uncapped():
-    # The Turns tab can unfold a prompt, so the timeline keeps its whole text: the
-    # one-line group title stays capped, prompt_full is the raw prompt (line breaks
-    # kept), and the session-title fallback stays short.
     long_prompt = ("please refactor the frobnicator carefully " * 6).strip() + "\nkeep tests green"
     assert len(long_prompt) > 200
     with tempfile.TemporaryDirectory() as tmp:
@@ -316,9 +308,6 @@ def _claude_user(text, *, cwd, meta=False, side=False, uuid="u"):
 
 
 def test_claude_title_skips_injected_command_and_meta_messages():
-    # A session started by a slash command opens with Claude Code's injected
-    # messages (meta caveat, <command-name> wrapper). With no ai-title, the title
-    # must fall through to the first *real* user prompt, not the scaffolding.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -336,8 +325,6 @@ def test_claude_title_skips_injected_command_and_meta_messages():
 
 
 def test_claude_title_keeps_genuine_short_first_prompt():
-    # When the only real user message is "ok" (a continuation/resume stub) and there
-    # is no ai-title, opentab honestly shows "ok" rather than inventing a title.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -428,14 +415,7 @@ def test_claude_tool_breakdown_splits_steps_across_tool_use_blocks():
 
 
 def test_claude_context_breakdown_composes_split_records_and_matches_tools():
-    # One streamed assistant message = several records (same message.id/requestId,
-    # one content block each): composition must walk every record, the tool_result
-    # must resolve its tool name through the pending tool_use id, and the later
-    # records' tool calls must fold into the turn the first record opened (the
-    # Tools tab fix). Wrapper/meta/compact user messages land in their own buckets.
-    # The transcript is written under TWO project slugs (a resumed session's
-    # replay): every count below must stay single -- user records need the same
-    # record-uuid replay guard as the assistant side.
+    # Streamed blocks share message/request ids; the resumed copy repeats their UUIDs.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         root2 = os.path.join(tmp, "projects", "slug2")
@@ -553,11 +533,7 @@ def test_recent_roots_reads_the_directory_from_the_newest_resumed_copy():
 
 
 def test_claude_reads_the_cache_write_ttl_split_and_prices_long_writes_higher():
-    # Claude Code records cache writes twice: the flat cache_creation_input_tokens, and
-    # usage.cache_creation splitting that SAME total into 5-minute and 1-hour TTL halves.
-    # opentab read only the flat field, so every 1h write was billed at the 5m rate --
-    # 1.25x input where 2.00x is owed. On a real corpus 91% of cache-write tokens were 1h,
-    # understating Claude Code spend by 7.5%.
+    # The TTL split must sum to the flat cache_creation_input_tokens total.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -690,10 +666,6 @@ def _adverse_order(store, root):
 
 
 def test_claude_replayed_calls_are_credited_to_the_session_that_made_them():
-    # A background session opens by replaying its parent's transcript verbatim, so both
-    # claim the same (message.id, requestId). Whoever the dedup credits, the calls are
-    # counted ONCE -- but crediting the replay leaves the parent showing 0 tokens and an
-    # empty Turns tab for work it actually did. Ordering (not glob luck) decides.
     with tempfile.TemporaryDirectory() as tmp:
         root = _replay_corpus(tmp)
         store = _adverse_order(ot.ClaudeStore(root, _claude_args()), root)
@@ -712,9 +684,7 @@ def test_claude_replayed_calls_are_credited_to_the_session_that_made_them():
 
 
 def test_claude_session_kind_marker_survives_an_oversized_final_record():
-    # The marker sits near a record's START, and one transcript's last line can be
-    # megabytes (a pasted prompt), so a fixed-size tail read lands mid-record and sees
-    # nothing. The window widens only while it holds no complete record.
+    # The oversized final record pushes the marker outside the initial tail window.
     with tempfile.TemporaryDirectory() as tmp:
         root = _replay_corpus(tmp)
         bg = os.path.join(root, "slug", "a-bg.jsonl")
@@ -734,9 +704,6 @@ def test_claude_session_kind_marker_survives_an_oversized_final_record():
 
 
 def test_claude_drill_in_reads_one_transcript_without_parsing_the_corpus():
-    # The --goto path: opening a session must not re-read every transcript under
-    # ~/.claude/projects (measured 2.2s on a 367-file corpus, paid even with the
-    # warm-start cache hot, because CachedStore serves workflows() without parsing).
     with tempfile.TemporaryDirectory() as tmp:
         store = ot.ClaudeStore(_replay_corpus(tmp), _claude_args())
         rows = store.message_timeline("b-parent")
@@ -747,10 +714,6 @@ def test_claude_drill_in_reads_one_transcript_without_parsing_the_corpus():
 
 
 def test_claude_drill_in_widens_to_the_corpus_for_a_replaying_transcript():
-    # The one session that CANNOT be read alone: its file holds its parent's records
-    # too, and the marker tags the whole session rather than the replayed rows, so
-    # nothing inside the file separates them. Reading it alone would report 310 tokens
-    # against a list row of 10 -- so the drill-in widens to the corpus and they agree.
     with tempfile.TemporaryDirectory() as tmp:
         store = ot.ClaudeStore(_replay_corpus(tmp), _claude_args())
         rows = store.message_timeline("a-bg")
@@ -759,8 +722,6 @@ def test_claude_drill_in_widens_to_the_corpus_for_a_replaying_transcript():
 
 
 def test_claude_status_nodes_never_widens_to_the_corpus():
-    # --status polls a tmux status line; it must answer off the single transcript even
-    # for a replaying session, where widening would make every poll read the tree.
     with tempfile.TemporaryDirectory() as tmp:
         store = ot.ClaudeStore(_replay_corpus(tmp), _claude_args())
         assert len(store.status_nodes("a-bg")) == 1
@@ -770,10 +731,6 @@ def test_claude_status_nodes_never_widens_to_the_corpus():
 
 
 def test_claude_survives_a_valid_json_line_that_is_not_an_object():
-    # `[]`, `"hello"` and `0` are all valid JSON: they pass the `except ValueError` and
-    # then raise AttributeError out of .get() -- taking down the WHOLE backend at
-    # startup, not the one line. _files() globs ~/.claude/projects/**/*.jsonl, so any
-    # stray .jsonl a user or another tool drops anywhere in that tree is enough.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -786,9 +743,6 @@ def test_claude_survives_a_valid_json_line_that_is_not_an_object():
 
 
 def test_claude_survives_a_token_count_json_parses_as_infinity():
-    # A usage field is whatever the transcript says. `1e400` is valid JSON that json maps
-    # to inf, and a bare int(inf) raises OverflowError -- an ArithmeticError, so it isn't
-    # even caught as a ValueError, and the whole backend dies at workflows().
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -806,11 +760,7 @@ def test_claude_survives_a_token_count_json_parses_as_infinity():
 
 
 def test_claude_rejoins_a_record_split_by_a_literal_newline():
-    # A record whose JSON string holds a LITERAL newline arrives split across physical
-    # lines: each half fails json.loads on its own, so the plain skip drops the whole
-    # record with no trace (measured once in a real 345-file corpus). Rejoining and
-    # re-parsing with strict=False recovers it -- `strict` is exactly the rule that
-    # rejects a literal control character inside a string.
+    # A literal newline splits one JSON record across physical lines.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -834,14 +784,7 @@ def test_claude_rejoins_a_record_split_by_a_literal_newline():
 
 
 def test_claude_keeps_a_record_whose_string_holds_a_literal_control_character():
-    # The rejoin's sibling case, and the one that needs no rejoin: a literal TAB keeps
-    # the record on ONE line and still fails a strict json.loads, so it was dropped
-    # outright. Every line is parsed non-strict now, which keeps it -- and which is what
-    # makes the arming signal below independent of WHICH control character split a
-    # record: strict, a half ending `..."a` says "Unterminated string" while one ending
-    # `..."a\r` says "Invalid control character". (util._read_text reads in text mode,
-    # so \r\n and a lone \r reach the parser as \n; _records is checked directly here so
-    # it stays correct for a caller that hands it untranslated text.)
+    # A literal tab stays on one physical line but still needs non-strict parsing.
     assert list(ot.ClaudeStore._records('{"a": "x\r\ny"}\r\n{"b": 2}\r\n')) == [
         {"a": "x\r\ny"},
         {"b": 2},
@@ -867,13 +810,6 @@ def test_claude_keeps_a_record_whose_string_holds_a_literal_control_character():
 
 
 def test_claude_still_refuses_a_literal_control_character_it_cannot_be_split_by():
-    # The relaxation is narrowed to the three characters the recovery is ABOUT, because
-    # "tolerate control characters" is wider than "tolerate the ones that split a
-    # record". A literal ESC, backspace or NUL is not something a JSON writer emits
-    # unescaped; it lands in a title, and curses ACTS on it -- "AB\x08C" paints as "AC",
-    # and a run of backspaces walks back over the column beside it. Strict parsing
-    # refused those lines and so does this, so the recovery widens the intake by exactly
-    # the split it exists to fix and nothing else.
     for ctrl in ("\x08", "\x1b", "\x00", "\x0b", "\x1f"):
         text = '{"a": "x%sy"}\n{"b": 2}\n' % ctrl
         assert list(ot.ClaudeStore._records(text)) == [{"b": 2}], ctrl
@@ -925,18 +861,7 @@ def test_claude_still_refuses_a_literal_control_character_it_cannot_be_split_by(
 
 
 def test_claude_record_recovery_never_absorbs_a_record_the_plain_parser_kept():
-    # THE invariant, and the reason the rejoin is safe to have at all: it may only ever
-    # ADD records the old `json.loads(line); except: continue` dropped -- never swallow
-    # one it kept. A line that is a complete RECORD is one, whatever an open buffer
-    # would have made of it.
-    #
-    # The counter-example is not the obvious one, which is why this is fuzzed rather
-    # than reasoned about: a following `{"type":…}` closes the buffer's dangling string
-    # on its own first quote and then fails to parse, so it falls out safely -- but a
-    # record with NO quote in it just extends that string and disappeared into the
-    # buffer (found at 10 losses in 120k blobs). A complete NON-dict is deliberately not
-    # authoritative the same way: `2` / `null` / `"x"` are valid JSON this parser skips
-    # anyway, and a prompt whose second line reads `2` splits into exactly that.
+    # Recovery may add dropped records but must preserve every complete object line.
     plain = lambda blob: [  # noqa: E731 - the pre-recovery parser, verbatim
         o
         for o in (_json_or_none(line.strip()) for line in blob.split("\n") if line.strip())
@@ -976,10 +901,6 @@ def _json_or_none(line):
 
 
 def test_claude_does_not_accumulate_a_buffer_over_a_file_of_unterminated_garbage():
-    # The rejoin is armed only by an "Unterminated string" failure and bounded on both
-    # lines and bytes, because a stray text file full of quotes would otherwise
-    # accumulate to EOF and re-parse a growing buffer per line -- quadratic on a corpus
-    # measured in hundreds of MB. The real session in the same tree must still parse.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -1027,9 +948,6 @@ def _incremental_corpus(tmp):
 
 
 def test_claude_cache_provenance_names_every_file_a_session_was_built_from():
-    # The map CachedStore splices on. A session fed by a sidecar must list BOTH files, or
-    # an incremental re-parse would rebuild it from half its records and undercount the
-    # subagent subtree -- silently, since the rollup still looks like a plausible number.
     with tempfile.TemporaryDirectory() as tmp:
         store = ot.ClaudeStore(_incremental_corpus(tmp), type("A", (), {"demo": False})())
         assert store.cache_provenance() == {}  # nothing parsed yet: nothing to claim
@@ -1059,9 +977,6 @@ def test_claude_parse_subset_matches_a_full_parse_for_the_files_it_read():
 
 
 def test_claude_parse_subset_refuses_a_replay_capable_transcript():
-    # The one thing that makes the parse order-dependent: a resumed/forked transcript
-    # replays its parent's records, and only a whole-corpus parse (which reads it LAST)
-    # can tell whose they are. Read alone it would claim all of them.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -1074,9 +989,6 @@ def test_claude_parse_subset_refuses_a_replay_capable_transcript():
 
 
 def test_claude_workflow_order_breaks_ties_deterministically():
-    # Every Claude row costs $0, so the order rides entirely on total_tokens -- and the
-    # rows tied on it must not depend on which ones a splice happened to rebuild. Two
-    # sessions with identical usage, fed to the sorter in both orders.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -1093,9 +1005,6 @@ def test_claude_workflow_order_breaks_ties_deterministically():
 
 
 def test_claude_parse_subset_drops_the_single_transcript_memo():
-    # Reload (r) used to reset this by way of workflows(); a splice never calls it. A
-    # stale memo would leave an open session's Turns/Tools/Context tabs painting the
-    # parse from before the edit while the rollup beside them shows the new one.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -1120,18 +1029,6 @@ def test_claude_parse_subset_drops_the_single_transcript_memo():
 
 
 def test_claude_parse_subset_refuses_the_slice_that_would_double_count():
-    # The failure the replay guard exists to prevent, end to end: a transcript that
-    # replays another session's records claims the SAME (message.id, requestId) keys.
-    # Read alone it credits them to itself while the cache still holds them under the
-    # session that made them -- the same API calls counted twice, in the rollup rather
-    # than in one session's detail view.
-    #
-    # Measured on a 257-file corpus: 96 of 17,944 usage keys appear in more than one
-    # file, all of them one pair, and that pair IS the replay-flagged transcript. Zero
-    # collisions between two unflagged files -- which is the assumption ClaudeStore
-    # already makes elsewhere (_session reads a single transcript alone behind this very
-    # guard), so the splice adds no new trust, only a wider blast radius if it were ever
-    # wrong. Hence: pin the guard.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -1156,11 +1053,7 @@ def test_claude_parse_subset_refuses_the_slice_that_would_double_count():
 
 
 def test_claude_parse_subset_reads_files_in_the_order_a_full_parse_would():
-    # Two fields are decided by the order a session's files are read -- `cwd` (hence the
-    # project) takes the FIRST seen, an ai-/custom-title the LAST -- so a slice that
-    # sorted its paths gave a multi-file session a different title AND a different
-    # project than the full parse of the same bytes. Both answers look plausible; only
-    # one matches the rows cached beside it.
+    # cwd takes the first file while custom/AI titles take the last.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -1201,10 +1094,6 @@ def test_claude_parse_subset_reads_files_in_the_order_a_full_parse_would():
 
 
 def test_claude_parse_subset_drops_the_corpus_memo_so_a_reload_shows_the_edit():
-    # After a cold start _sessions holds the WHOLE corpus, and _session prefers it over
-    # everything. A splice never reaches workflows(), which is what used to reset it, so
-    # every open session's Turns/Tools/Context tabs would keep painting the pre-edit
-    # parse while the rollup beside them showed the new one.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -1225,9 +1114,6 @@ def test_claude_parse_subset_drops_the_corpus_memo_so_a_reload_shows_the_edit():
 
 
 def test_claude_parse_subset_refuses_when_a_requested_file_vanished():
-    # The caller sized its splice around every file it asked for (they all stat()ed fine
-    # a moment ago). If one was deleted in between, reading the rest is not the slice
-    # that was ordered -- and the sessions it would have fed keep their cached rows.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -1242,11 +1128,6 @@ def test_claude_parse_subset_refuses_when_a_requested_file_vanished():
 
 
 def test_claude_parse_subset_refuses_when_a_file_vanishes_mid_read():
-    # read_files_parallel SKIPS a file that disappears (or turns unreadable) after the
-    # glob. A full parse merely under-reports for that run; a splice would write the
-    # partial rows to the cache under the pre-existing fingerprint, so restoring the file
-    # without changing its size or mtime -- a rename away and back -- would leave every
-    # later exact hit serving a rollup missing a transcript.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(os.path.join(root, "s1", "subagents"))

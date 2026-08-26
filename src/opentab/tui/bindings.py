@@ -1,37 +1,11 @@
-"""User-configurable key bindings: the registry, the conf file, the resolver.
+"""Registry, configuration, and resolver for user-configurable TUI bindings.
 
-Every key the TUI answers to is an *action* in a *context* here -- `handle_key` and
-the menu handlers never compare against a character again; they ask the active
-`Keymap` "what action is this key, where I am?" and switch on the answer. That one
-indirection is the whole feature: rebind anything by editing
-`~/.config/opentab/keymap.conf` (the `K` key opens it in $EDITOR and reloads on
-return), and the help overlay / footer chips re-label themselves from the live
-table, because they read the same resolver.
+The registry generates the default config and supplies missing actions. User overrides
+beat defaults; an empty value unbinds, conflicting user claims warn and resolve last-one-
+wins, while invalid entries fall back safely. Subcontexts inherit actions from family
+contexts unless they define their own. Help and footer labels read the composed map.
 
-Three layers, one source of truth:
-
-- REGISTRY -- every context, its actions, their default keys and one-line docs.
-  The shipped conf file is *generated* from it (default_conf_text), so file and
-  code cannot drift; a release that adds an action needs no conf migration, the
-  resolver falls back to the registry default for anything the file doesn't name.
-- keymap.conf -- the user's overrides, INI-style, fully commented. Only what it
-  names changes; an empty value unbinds; unknown names warn and fall back rather
-  than break the TUI (a typo must never lock you out of the tool that would show
-  you the typo).
-- Keymap -- the composed result: per context, a flat key-code -> action map. User
-  bindings always beat defaults (binding `x` to `down` really moves `x` to it,
-  even though `x` was `clear_filter`'s); two *user* claims on one key warn, last
-  one wins.
-
-Contexts are keyboard states, not screens: a focused Trends chart, a picker, the
-filter line each own the keyboard while they're up, so each is a context. Three
-families share keys through a fallback section -- `menu.*` -> `[menu]` (one place
-to re-teach every picker j/k), `trends.*` -> `[trends]`, `prices.sessions` ->
-`[prices]` -- resolved per action: a sub-context that defines `back` itself keeps
-it, everything it doesn't define flows down.
-
-Ctrl-C is deliberately NOT here: it is the hardwired panic quit in every context,
-because a keymap that can rebind away the exit is a trap, not a feature.
+Ctrl-C remains a hardwired panic exit and cannot be rebound.
 """
 
 from __future__ import annotations
@@ -48,11 +22,9 @@ except ImportError:  # native Windows has no stdlib curses; specs fall back to n
 
 
 def keymap_path() -> str:
-    # Genuine user config (hand-edited, hand-committed) -> the XDG config dir.
     return os.path.join(paths.config_dir(), "keymap.conf")
 
 
-# --- key specs ----------------------------------------------------------------------
 # A spec is what the conf file says ("j", "enter", "ctrl-u", "shift-tab", "ö"); a code
 # is what _read_key hands the handlers (an int, or a str for one non-ASCII character).
 # One spec can carry several codes -- Enter really is three different codes at the
@@ -60,8 +32,7 @@ def keymap_path() -> str:
 
 
 def _kc(name: str, fallback: int) -> int:
-    # A curses KEY_* constant, or its standard ncurses value where curses is absent
-    # (native Windows) -- the resolver must compose there too, the web path imports it.
+    # The resolver is also imported on native Windows before curses is available.
     return getattr(curses, name, fallback) if curses else fallback
 
 
@@ -82,7 +53,7 @@ _NAMED: dict[str, tuple[int, ...]] = {
     "pgdn": (_kc("KEY_NPAGE", 338),),
     "home": (_kc("KEY_HOME", 262),),
     "end": (_kc("KEY_END", 360),),
-    "comma": (44,),  # "," itself is the list separator in the conf file
+    "comma": (44,),  # Bare comma separates config values.
 }
 _ALIASES = {
     "escape": "esc",
@@ -97,7 +68,7 @@ _ALIASES = {
     "npage": "pgdn",
     "ppage": "pgup",
 }
-for _n in range(1, 13):  # f1..f12
+for _n in range(1, 13):
     _NAMED[f"f{_n}"] = (_kc("KEY_F0", 264) + _n,)
 
 _PRETTY: dict[str, str] = {
@@ -120,11 +91,10 @@ _PRETTY: dict[str, str] = {
     "comma": ",",
 }
 
-RESERVED_CTRL_C = 3  # the panic quit, hardwired in every handler; never bindable
+RESERVED_CTRL_C = 3
 
 
 def parse_key(spec: str) -> tuple[int | str, ...]:
-    """One spec token -> its key codes. Raises ValueError on anything it can't read."""
     token = spec.strip()
     if not token:
         raise ValueError("empty key")
@@ -141,14 +111,12 @@ def parse_key(spec: str) -> tuple[int | str, ...]:
             raise ValueError("ctrl-c is the hardwired quit; it cannot be rebound")
         return (code,)
     if len(token) == 1 and not token.isspace():
-        # A literal character, case-sensitive ("S" is shift-s). ASCII arrives as an
-        # int code; anything wider arrives from get_wch as the character itself.
+        # Match _read_key: ASCII is int, non-ASCII remains str; letters are case-sensitive.
         return (ord(token),) if token.isascii() else (token,)
     raise ValueError(f"unknown key {spec!r}")
 
 
 def pretty_key(spec: str) -> str:
-    """The display form of one spec token -- what the help overlay and footer print."""
     token = spec.strip()
     low = _ALIASES.get(token.lower(), token.lower())
     if low in _PRETTY:
@@ -161,25 +129,24 @@ def pretty_key(spec: str) -> str:
     return token
 
 
-# --- the registry -------------------------------------------------------------------
 # Order matters twice: it is the order the generated conf file lists things in, and
 # the order actions claim keys during composition (user lines still beat defaults).
 
 
 class Action(NamedTuple):
     name: str
-    keys: tuple[str, ...]  # default specs; () = deliberately unbound by default
-    doc: str  # ONE short line; it becomes the comment above the conf line
+    keys: tuple[str, ...]  # () means deliberately unbound by default.
+    doc: str  # Emitted above the action in generated config.
 
 
 class Context(NamedTuple):
-    name: str  # the conf section, dotted for sub-states ("menu.theme")
-    doc: str  # the comment block opening the section
-    fallback: str | None  # actions not defined here flow down to this context
+    name: str
+    doc: str
+    fallback: str | None
     actions: tuple[Action, ...]
 
 
-_SCROLL = (  # the pager keys every list/overlay shares, spelled once
+_SCROLL = (
     Action("down", ("j", "down"), "move / scroll down"),
     Action("up", ("k", "up"), "move / scroll up"),
     Action("page_down", ("pgdn", "ctrl-d"), "half a page down"),
@@ -475,20 +442,13 @@ REGISTRY: tuple[Context, ...] = (
 BY_NAME: dict[str, Context] = {c.name: c for c in REGISTRY}
 
 
-# --- the composed keymap ------------------------------------------------------------
-
-
 class Keymap:
-    """Defaults + one user's overrides, composed into per-context dispatch tables."""
-
     def __init__(
         self,
         overrides: dict[tuple[str, str], list[str]] | None = None,
         warnings: list[str] | None = None,
     ):
-        # overrides: (context, action) -> spec list ([] = unbind). Built by load();
-        # composition turns them into _table (code -> action per context) and _specs
-        # (the effective spec list per action, the labels the UI prints).
+        # Empty override lists explicitly unbind. _table dispatches; _specs labels the UI.
         self.overrides = overrides or {}
         self.warnings = list(warnings or [])
         self._specs: dict[tuple[str, str], tuple[str, ...]] = {}
@@ -496,17 +456,9 @@ class Keymap:
         for ctx in REGISTRY:
             self._compose(ctx)
 
-    # - composition -
     def _rows(self, ctx: Context) -> list[tuple[Action, tuple[str, ...], int]]:
-        # Every action this context answers to, each with its effective specs and its
-        # precedence tier when keys collide:
-        #   0  an explicit line in [ctx] itself (own or inherited action) -- strongest
-        #   1  an own action's registry default (the sub-context deliberately shadows
-        #      the family keys: trends.chart's cursor_left owns ← even though [trends]
-        #      tab_prev also says ←)
-        #   2  an inherited action carrying the fallback section's user line (one
-        #      [menu] edit re-teaches every picker that didn't insist otherwise)
-        #   3  an inherited action's registry default
+        # Collision precedence: local override, local default, inherited override,
+        # inherited default. Local defaults intentionally shadow family bindings.
         rows: list[tuple[Action, tuple[str, ...], int]] = []
         for a in ctx.actions:
             if (ctx.name, a.name) in self.overrides:
@@ -530,7 +482,7 @@ class Keymap:
     def _compose(self, ctx: Context) -> None:
         rows = self._rows(ctx)
         table: dict[int | str, str] = {}
-        explicit_codes: set[int | str] = set()  # codes claimed by a [ctx] line (tier 0)
+        explicit_codes: set[int | str] = set()
         for tier in (0, 1, 2, 3):
             for action, specs, at in rows:
                 if at != tier:
@@ -543,23 +495,20 @@ class Keymap:
                         continue
                     for code in codes:
                         if code in table:
-                            # Within tier 0 two of the user's own lines fight -- say
-                            # so, last one wins (file order == registry order here).
+                            # Two local user claims warn and resolve by registry order.
                             if tier == 0 and code in explicit_codes:
                                 self.warnings.append(
                                     f"[{ctx.name}] {pretty_key(spec)} is bound to both "
                                     f"{table[code]} and {action.name}; {action.name} wins"
                                 )
                             else:
-                                continue  # a lower tier never steals a claimed key
+                                continue
                         table[code] = action.name
                         if tier == 0:
                             explicit_codes.add(code)
                 self._specs.setdefault((ctx.name, action.name), tuple(specs))
-        # An action stripped of every key by the user's *explicit* lines is
-        # unreachable; say so (an empty value -- a deliberate unbind -- is not, and
-        # registry-level shadowing between a sub-context and its fallback is design,
-        # not an accident).
+        # Warn only when explicit competing claims make an action unreachable. Deliberate
+        # empty unbinds and registry-level fallback shadowing are not conflicts.
         for action, specs, _tier in rows:
             live = {c for spec in specs for c in _codes_or_empty(spec)}
             if not live or any(table.get(c) == action.name for c in live):
@@ -571,21 +520,14 @@ class Keymap:
                 )
         self._table[ctx.name] = table
 
-    # - dispatch -
     def action(self, context: str, key: int | str) -> str | None:
-        """The action `key` triggers in `context`, or None (unbound -> caller decides)."""
         return self._table[context].get(key)
 
     def is_action(self, context: str, key: int | str, action: str) -> bool:
         return self._table[context].get(key) == action
 
-    # - display -
     def specs(self, context: str, action: str) -> tuple[str, ...]:
-        """The spec tokens (context, action) actually answers to -- the user's, else
-        default, else the fallback context's, MINUS any spec every one of whose codes
-        another action claimed. The labels must read off the same table dispatch does:
-        after `down = x` steals x, printing `x  clear the filter` in the help would
-        advertise a key that moves the cursor."""
+        """Return only effective specs whose codes still dispatch to this action."""
         got = self._specs.get((context, action))
         if got is None:
             parent = BY_NAME[context].fallback
@@ -594,24 +536,18 @@ class Keymap:
         return tuple(s for s in got if any(table.get(c) == action for c in _codes_or_empty(s)))
 
     def label(self, context: str, action: str) -> str:
-        """The primary pretty key ("Enter", "s", "^U") -- what a footer chip prints."""
         specs = self.specs(context, action)
         return pretty_key(specs[0]) if specs else ""
 
     def labels(self, context: str, action: str) -> list[str]:
-        """Every pretty key, in binding order -- what the help overlay prints."""
         return [pretty_key(s) for s in self.specs(context, action)]
 
     def chip(self, context: str, *actions: str) -> str:
-        """Compact comma-joined primaries for a footer chip ("f,/" · "t/p/m")."""
         return ",".join(p for a in actions if (p := self.label(context, a)))
 
 
 def typed_char(key: int | str) -> str | None:
-    """The character `key` would type into a text field, or None if it isn't one.
-    ASCII printables arrive as ints from _read_key; anything wider arrives as the
-    character itself. The text handlers ask this AFTER the keymap, so a bound key
-    acts and an unbound one types."""
+    """Return printable input after the keymap has had first chance to bind it."""
     if isinstance(key, int):
         return chr(key) if 32 <= key <= 126 else None
     if isinstance(key, str) and key.isprintable():
@@ -626,10 +562,8 @@ def _codes_or_empty(spec: str) -> tuple[int | str, ...]:
         return ()
 
 
-DEFAULT = Keymap()  # the pristine table; App falls back to it when no file is loaded
+DEFAULT = Keymap()
 
-
-# --- the conf file ------------------------------------------------------------------
 
 _HEADER = """\
 # opentab keymap — every key the TUI answers to, remappable.
@@ -660,17 +594,12 @@ _HEADER = """\
 """
 
 
-# Actions that existed in an earlier opentab and no longer do. Their bindings are
-# ignored without complaint (see the loader), so upgrading never turns a customized
-# keymap.conf into an error message. Names are never reused for something else --
-# a stale binding must stay dead, not silently acquire a new meaning.
-#   fold_turns: the Turns tab folded to ▸ prompt headers; it is a table now, and the
-#               per-prompt detail moved into the popup Enter opens.
+# Ignore retired user bindings without warnings, and never reuse their names for a new
+# meaning. Existing config must not become noisy or silently change behavior on upgrade.
 RETIRED_ACTIONS = frozenset({"fold_turns"})
 
 
 def default_conf_text() -> str:
-    """The full, commented conf file, generated from the registry (so it can't drift)."""
     out = [_HEADER]
     for ctx in REGISTRY:
         out.append("")
@@ -684,7 +613,6 @@ def default_conf_text() -> str:
 
 
 def ensure_user_keymap(path: str | None = None) -> str:
-    """Install the commented default file on first run; never overwrite an edit."""
     path = path or keymap_path()
     if not os.path.exists(path):
         try:
@@ -692,14 +620,12 @@ def ensure_user_keymap(path: str | None = None) -> str:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(default_conf_text())
         except OSError:
-            pass  # a read-only home shouldn't stop the TUI; K will retry and toast
+            pass  # Read-only config must not stop the TUI; K can retry and report it.
     return path
 
 
 def load_user_keymap(path: str | None = None) -> Keymap:
-    """Read the user's conf into a composed Keymap. Never raises: every problem
-    becomes a warning on the result (shown as a toast + the N notices), and the
-    broken line falls back to its default -- a typo must not lock the TUI."""
+    """Compose user config without letting malformed input block the TUI."""
     path = path or keymap_path()
     overrides: dict[tuple[str, str], list[str]] = {}
     warnings: list[str] = []
@@ -707,18 +633,14 @@ def load_user_keymap(path: str | None = None) -> Keymap:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
     except OSError:
-        return Keymap()  # no file (or unreadable): pure defaults, not an error
+        return Keymap()
     except UnicodeDecodeError:
-        # A conf saved in a non-UTF-8 encoding (or a stray binary byte) used to escape
-        # this function -- UnicodeDecodeError is a ValueError, not an OSError -- and
-        # take the whole TUI down at launch, which is exactly the "a typo must not lock
-        # you out" promise above. It becomes a warning like every other problem.
+        # UnicodeDecodeError is not an OSError; convert it into the same safe fallback.
         return Keymap(warnings=[f"{path}: not valid UTF-8; using the built-in keys"])
     import configparser
 
-    # RawConfigParser: no %-interpolation (a spec may BE "%"); strict=False lets a
-    # duplicated line mean "last one wins" instead of refusing the whole file; no
-    # inline comments, so # and ; stay bindable characters.
+    # Disable interpolation because `%` may be a key; duplicate lines are last-one-wins,
+    # and no inline comments keeps `#` and `;` bindable.
     parser = configparser.RawConfigParser(
         delimiters=("=",), comment_prefixes=("#", ";"), strict=False, interpolation=None
     )
@@ -737,12 +659,7 @@ def load_user_keymap(path: str | None = None) -> Keymap:
             known |= {a.name for a in BY_NAME[ctx.fallback].actions}
         for option, value in parser.items(section):
             if option not in known:
-                # A binding for a feature this version no longer has is dropped in
-                # SILENCE. keymap.conf is user-authored config, and the user did nothing
-                # wrong by having pinned a key to a command an upgrade later retired --
-                # warning them makes an opentab release into a chore, on every launch,
-                # for a line they cannot act on except by deleting it. A genuine typo
-                # still warns, which is what the warning is for.
+                # Retired actions are valid stale config; genuine unknown names still warn.
                 if option not in RETIRED_ACTIONS:
                     warnings.append(f"[{section}] unknown action {option!r} ignored")
                 continue
@@ -757,6 +674,6 @@ def load_user_keymap(path: str | None = None) -> Keymap:
                     good.append(token)
             if specs and not good:
                 warnings.append(f"[{section}] {option}: no valid key left, using the default")
-                continue  # all tokens bad: default, not an accidental unbind
-            overrides[(section, option)] = good  # [] only when the value was empty
+                continue  # All invalid means fallback, not an accidental unbind.
+            overrides[(section, option)] = good
     return Keymap(overrides, warnings)

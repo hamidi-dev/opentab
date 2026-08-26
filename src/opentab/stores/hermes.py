@@ -15,50 +15,13 @@ from opentab.util import git_root, safe_float, safe_int
 
 
 class HermesStore:
-    """Read Hermes Agent sessions (~/.hermes/state.db) behind the same interface
-    App expects from Store: workflows(), summary(), workflow_nodes(),
-    model_breakdown(), plus the .demo/.demo_scale attributes.
+    """Read Hermes sessions from its SQLite state and rotating agent logs.
 
-    Token model is provider-agnostic. Hermes works with any provider (OpenAI,
-    Anthropic, Google, OpenRouter, Nous, local, ...) but normalizes every one to
-    a single canonical shape *before* writing the row (see hermes-agent's
-    usage_pricing.canonicalize_usage): input_tokens is the **uncached** prompt
-    (cache_read_tokens / cache_write_tokens are tracked separately, never folded
-    in), and output_tokens already **includes** reasoning_tokens as a subset
-    (OpenAI convention, preserved for all providers). So total = input + output +
-    cache_read + cache_write, reasoning is priced once via output, and there is no
-    per-provider special-casing to do here.
-
-    Cost is mixed. Subscription routes (e.g. openai-codex) record billing_mode
-    'subscription_included' and $0, so their tokens are "unpriced" and the "$"
-    what-if machinery reprices them at list rates. Metered routes (OpenRouter,
-    Nous, direct API keys) DO record a per-session cost in estimated_cost_usd /
-    actual_cost_usd; per session a recorded cost (actual preferred, else
-    estimated) is trusted as real/priced and shown in normal mode. records_cost is
-    True iff any live session carries a recorded cost (computed once at init,
-    since CombinedStore reads it before workflows()).
-
-    Titles: sessions.title when Hermes set one; otherwise the first real user
-    prompt from the messages table (api_server/voice sessions are never titled by
-    Hermes). Hermes wraps injected context in leading "[ ... ]" blocks ("[Note:
-    model was just switched...]", "[CONTEXT COMPACTION ...]"), which are stripped
-    -- except a voice turn, whose whole prompt lives inside one such block as
-    '[The user sent a voice message~ Here's what they said: "..."]'; that quoted
-    transcript is the title.
-
-    Turns are assembled from BOTH halves of the install, because neither half holds
-    the whole story: `messages.token_count` exists but is never populated (0 of
-    2,474 rows on a real DB), so per-call usage is read from the agent LOG
-    (~/.hermes/logs/agent.log*, one "API call #N: ... in= out= total= cache=" line
-    per call, carrying the session id it belongs to), while the PROMPT text the tab
-    groups by comes from the messages table, which stores content but no tokens.
-    Because that log rotates, `supports_turns` is genuinely per-session -- a session
-    older than the retained window keeps its rollup and simply offers no tab.
-
-    Sessions with a parent_session_id form a subagent tree; HermesStore rolls
-    child tokens/cost up into the root's totals. cwd is resolved to the git repo
-    root. Archived sessions are excluded. The schema is probed (Store-style) so
-    the backend degrades gracefully if optional columns are absent.
+    Hermes stores uncached input separately from cache reads/writes and includes
+    reasoning in output. Positive actual cost wins over estimated cost; zero-cost
+    subscription usage remains unpriced. Session parents form the subagent tree.
+    Per-turn usage comes from logs because ``messages.token_count`` is unpopulated.
+    Optional database columns are probed before use.
     """
 
     combined = False
@@ -104,8 +67,6 @@ class HermesStore:
     def __init__(self, db_path: str, args: argparse.Namespace):
         self.db_path = db_path
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the
-        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._sessions: dict[str, dict] | None = None
         self._turns_by_session: dict[str, list[dict]] | None = None
@@ -611,7 +572,6 @@ class HermesStore:
         # rollup cache on every line the gateway writes.
         return [self.db_path, self.db_path + "-wal", self.db_path + "-shm"]
 
-    # --- Turns, from the agent log ---------------------------------------------
     # Hermes' `messages` table HAS a `token_count` column and NEVER populates it
     # (0 of 2,474 rows on a real DB, verified 2026-08-07), which is why this backend
     # had no Turns tab for so long. The per-call usage does exist, but only in the

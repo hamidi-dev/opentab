@@ -1,5 +1,3 @@
-"""Saved prefs: what persists to state.json, and how it is restored (state.py)."""
-
 import os
 import tempfile
 

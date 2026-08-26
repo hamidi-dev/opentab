@@ -1,5 +1,3 @@
-"""The pi-agent backend: metered vs subscription routes (stores/pi.py)."""
-
 import json
 import os
 import tempfile
@@ -282,13 +280,6 @@ def test_pi_tool_breakdown_splits_metered_cost_across_tool_calls():
 
 
 def test_pi_auth_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_cache():
-    # The oauth/metered split lives in auth.json, NOT in the transcripts: switch a
-    # provider between an API key and a plan login and every cost in the rollup changes
-    # (records_cost with it, which drives the "$"/ESTIMATED framing) while no transcript
-    # is touched. cache_inputs() must name auth.json or CachedStore's fingerprint still
-    # matches, the warm start keeps serving the pre-login split, and `r` re-fingerprints
-    # to the same value -- it never self-corrects. OmpStore documents and fixes exactly
-    # this for its agent.db; pi/OpenClaw/Zaly had the same shape and not the fix.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -318,9 +309,6 @@ def test_pi_auth_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_ca
 
 
 def test_pi_reload_re_reads_the_login_state():
-    # `r` exists to pick up changes, and the login is one: a provider that switched to a
-    # plan since launch must stop counting as spend without a restart. The store re-reads
-    # auth.json in workflows() (OmpStore's rule), so the same instance answers correctly.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -338,9 +326,6 @@ def test_pi_reload_re_reads_the_login_state():
 
 
 def test_pi_survives_a_valid_json_line_that_is_not_an_object():
-    # `["type"]` and `["cost"]` are valid JSON that pass the `except ValueError` and then
-    # raise AttributeError out of .get() -- taking down the WHOLE backend, not the line.
-    # Both the parse and the records_cost probe read these lines, so both are covered.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")
@@ -362,10 +347,6 @@ def test_pi_survives_a_valid_json_line_that_is_not_an_object():
 
 
 def test_pi_survives_a_token_count_json_parses_as_infinity():
-    # `1e400` is valid JSON that json maps to inf, and int(inf) raises OverflowError --
-    # an ArithmeticError, so `except (TypeError, ValueError)` misses it and the backend
-    # dies at workflows(). An inf *cost* doesn't raise at all: it silently poisons every
-    # sum it reaches, which is worse.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
         cwd = os.path.join(tmp, "repo")

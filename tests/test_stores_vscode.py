@@ -1,5 +1,3 @@
-"""The Copilot-Chat-in-VS-Code backend (stores/vscode.py)."""
-
 import json
 import os
 import tempfile

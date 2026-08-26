@@ -1,5 +1,3 @@
-"""The `w` what-if model: a session-scoped comparison at one model's list rates."""
-
 import tempfile
 
 import opentab as ot
@@ -19,9 +17,6 @@ from tests._support import (
 
 
 def _table(lines):
-    # The Subagents tab opens with the flamegraph box ("Where the money went"), which is
-    # about recorded/estimated spend and so is identical with a target armed. Everything
-    # below is about the TABLE, whose own ruled box carries its title on the top border.
     start = next(
         i
         for i, ln in enumerate(lines)
@@ -31,19 +26,14 @@ def _table(lines):
 
 
 def _table_cells(lines):
-    # The table's content rows (header, data, TOTAL) with the box gutters stripped.
     return box_cells(_table(lines))
 
 
 def _wi_row(lines, label):
-    # The Overview's Money card renders the what-if as accent "★"-marked rows inside a
-    # ruled box; a test reads the row carrying a given label (value is right-aligned).
     return next((ln for ln in lines if label in ln), "")
 
 
 def test_local_usage_stays_zero_in_what_if_view():
-    # A local-only session: $0 recorded, real tokens. The "$" what-if must not turn
-    # those tokens into cloud dollars.
     app = app_with([workflow("a", "2026-06-01 12:00:00", cost=0, directory="/x")])
     app._model_by_root = {
         "a": [
@@ -63,10 +53,6 @@ def test_local_usage_stays_zero_in_what_if_view():
 
 
 def test_whatif_overview_answers_for_a_solo_session_that_has_no_subagents():
-    # A session that delegated nothing has no tree for the Subagents tab to table, so the
-    # Overview is where its what-if lives -- otherwise `w` would silently do nothing on
-    # every solo session. Neutral wording on purpose: with no delegation there is no
-    # routing decision to credit, so it reports the change, not a "routing saved".
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp, solo=True)
         wf = app.loaded[0]
@@ -93,7 +79,6 @@ def test_whatif_overview_answers_for_a_solo_session_that_has_no_subagents():
 
 
 def test_whatif_overview_and_subagents_tab_never_quote_different_totals():
-    # Both read whatif_session_totals, so a session's two what-if views cannot drift.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         wf = app.loaded[0]
@@ -110,11 +95,6 @@ def test_whatif_overview_and_subagents_tab_never_quote_different_totals():
 
 
 def test_whatif_target_a_single_model_session_already_used_is_a_zero_change():
-    # THE invariant, and the one that catches every baseline bug at once: repricing a
-    # session that ran on ONE model at that same model's rates is a substitution of a
-    # rate card for itself -- exactly $0 change, whatever was (or wasn't) recorded.
-    # The old node-row baseline failed this: a session with $1.50 recorded and $5.00 of
-    # list-rate value reported a fake +$3.50 "what-if".
     with tempfile.TemporaryDirectory() as tmp:
         sessions = [("root", None, "Solo", "/tmp/p", 1760000000000, 1.5, 3_000_000)]
         messages = [  # one model, two turns, only one of them billed
@@ -137,10 +117,6 @@ def test_whatif_target_a_single_model_session_already_used_is_a_zero_change():
 
 
 def test_whatif_baseline_prices_a_partially_recorded_session_in_full():
-    # A session whose turns are MOSTLY subscription ($0) with a little metered usage: the
-    # baseline must price every token at list rates, not pass the recorded cents off as
-    # the whole comparison. (Measured on real data: 20 of 48 metered nodes are shaped
-    # like this, and the node-cost baseline understated one by $21.40.)
     with tempfile.TemporaryDirectory() as tmp:
         sessions = [
             ("root", None, "Mixed", "/tmp/p", 1760000000000, 0.01, 3_000_000),
@@ -172,10 +148,6 @@ def test_whatif_baseline_prices_a_partially_recorded_session_in_full():
 
 
 def test_whatif_baseline_prices_each_model_not_the_dominant_one():
-    # A node carries ONE model label (its dominant one), so pricing its whole token split
-    # at that label is wrong for every session that switched model mid-flight. The
-    # baseline goes through the per-model rows instead. (Measured: 73 of 147 multi-model
-    # sessions were off by >5%, worst case 47%.)
     with tempfile.TemporaryDirectory() as tmp:
         sessions = [("root", None, "Mixed", "/tmp/p", 1760000000000, 0, 3_000_000)]
         messages = [  # dominant by tokens: Opus. But a third of the tokens are Haiku's.
@@ -196,10 +168,7 @@ def test_whatif_baseline_prices_each_model_not_the_dominant_one():
 
 
 def test_whatif_ignores_zero_token_model_rows():
-    # OpenCode emits a model row with no tokens for an assistant record whose usage never
-    # landed (an aborted turn). It names a model but is not usage, so it must neither
-    # float that model into the picker's your-models tier nor, if it is unpriceable,
-    # mark an otherwise exact baseline "~".
+    # OpenCode can emit named model rows for aborted turns with no usage.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp, solo=True)  # 1M Opus tokens, priced
         wf = app.loaded[0]
@@ -214,9 +183,6 @@ def test_whatif_ignores_zero_token_model_rows():
 
 
 def test_whatif_baseline_is_marked_estimated_when_a_model_has_no_list_rate():
-    # Every token is priced (dropping the unpriceable ones would understate the baseline),
-    # but a generic guess is not a list price -- so the figure wears a `~` instead of
-    # quoting an invented rate as fact.
     with tempfile.TemporaryDirectory() as tmp:
         sessions = [("root", None, "Solo", "/tmp/p", 1760000000000, 0, 2_000_000)]
         messages = [
@@ -246,11 +212,6 @@ def test_whatif_baseline_is_marked_estimated_when_a_model_has_no_list_rate():
 
 
 def test_whatif_target_survives_a_dataset_that_never_used_it():
-    # Arm a target, then reload into a dataset that never used it (a `c` source switch or
-    # `D` demo toggle does exactly this). The picker's catalog tier can arm any model
-    # the price catalog knows, so usage is no longer what makes a target valid -- only
-    # a target we can no longer price for real is dropped (its "rates" would be the
-    # generic FALLBACK_PRICE, a guess no price list contains).
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.select_whatif_model("anthropic/claude-haiku-4.5")
@@ -269,10 +230,6 @@ def test_whatif_target_survives_a_dataset_that_never_used_it():
 
 
 def test_whatif_price_refresh_drops_a_target_that_lost_its_list_rate():
-    # A models.dev refresh can rename or remove a model, so an armed target may lose its
-    # list rate mid-session. refresh_prices_action reloads prices but _ensure_models is a
-    # no-op once models are loaded, so its usual revalidation never runs -- the refresh
-    # must revalidate by hand, or the target stays armed and reprices at FALLBACK_PRICE.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.select_whatif_model("anthropic/claude-opus-4.5")
@@ -292,10 +249,6 @@ def test_whatif_price_refresh_drops_a_target_that_lost_its_list_rate():
 
 
 def test_whatif_candidates_skip_models_with_no_known_price():
-    # An unpriceable model must not be armable: model_price() falls back to a generic
-    # mid-range guess for an id it doesn't know, so arming "unknown (not recorded)" would
-    # quote "$2.00/M at unknown (not recorded) list rates" -- a rate that exists nowhere.
-    # Same spirit as the local-model exclusion (no API rate at all).
     with tempfile.TemporaryDirectory() as tmp:
         sessions = [("root", None, "Solo", "/tmp/p", 1760000000000, 0, 3_000_000)]
         messages = [
@@ -318,9 +271,6 @@ def test_whatif_candidates_skip_models_with_no_known_price():
 
 
 def test_whatif_change_of_a_zero_baseline_is_never_a_plus_dash():
-    # pct() answers "-" for a zero denominator (an undefined share), and gluing a sign to
-    # that printed "(+- vs actual)". A session whose models are all local prices to $0 at
-    # list rates, which is exactly that denominator.
     with tempfile.TemporaryDirectory() as tmp:
         sessions = [
             ("root", None, "Local", "/tmp/p", 1760000000000, 0, 1_000_000),
@@ -344,10 +294,6 @@ def test_whatif_change_of_a_zero_baseline_is_never_a_plus_dash():
 
 
 def test_whatif_subagents_tab_prices_the_session_tree_and_the_savings_footer():
-    # The feature's ONE visible effect: on a session's Subagents tab, the whole tree
-    # (root row included), each node's Cost beside an EXACT per-node What-if -- and no
-    # per-node Δ, because a node that mixed models has no baseline we can compute. The
-    # exact comparison is the TOTAL line: both sides at list rates.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         wf = app.loaded[0]
@@ -379,7 +325,6 @@ def test_whatif_subagents_tab_prices_the_session_tree_and_the_savings_footer():
 
 
 def test_subagents_tab_is_unchanged_without_a_whatif_target():
-    # Strict requirement: no target, no change -- the old columns, no root row, no footer.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         lines = _table(app.renderer.detail_subagents(app.loaded[0], 200))
@@ -392,10 +337,6 @@ def test_subagents_tab_is_unchanged_without_a_whatif_target():
 
 
 def test_whatif_target_never_moves_an_app_wide_cost():
-    # The what-if target is SESSION-SCOPED. Arming one must not touch a single app-wide
-    # figure -- not the session's own cost, not a day/month rollup, not the model mix.
-    # (It used to reprice all of them, which left "$" nothing to move: a dead key that
-    # still flipped -- and persisted -- show_api_prices behind an unchanged screen.)
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         wf = app.loaded[0]
@@ -420,9 +361,6 @@ def test_whatif_target_never_moves_an_app_wide_cost():
 
 
 def test_dollar_toggle_still_works_while_a_whatif_target_is_armed():
-    # Subscription-shaped data ($0 recorded, real tokens): "$" is the only thing that
-    # can move those rows, and an armed what-if target must neither move them itself nor
-    # take the toggle away. The two features are independent and never fight.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp, costs=(0, 0))
         wf = app.loaded[0]
@@ -447,11 +385,6 @@ def test_dollar_toggle_still_works_while_a_whatif_target_is_armed():
 
 
 def test_whatif_baseline_prices_unrecorded_usage_even_with_the_dollar_toggle_off():
-    # Regression: on a subscription backend every recorded cost is $0, so a what-if
-    # table that took its baseline from the "$" toggle compared a real counterfactual
-    # against nothing and reported "routing saved 100%". The baseline prices every token
-    # at its own model's list rates, exactly as the counterfactual does -- and does not
-    # move with "$".
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp, costs=(0, 0))  # subscription: tokens, no recorded cost
         wf = app.loaded[0]
@@ -473,9 +406,6 @@ def test_whatif_baseline_prices_unrecorded_usage_even_with_the_dollar_toggle_off
 
 
 def test_whatif_target_is_not_tagged_into_the_header():
-    # The header counts real/estimated spend, which an armed target does not change --
-    # tagging it "WHAT-IF" would call recorded money counterfactual. The Subagents tab
-    # titles and caveats itself; the footer chip is the honest "a target is armed".
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.toggle_api_prices()  # to the real view, where only the target could tag it
@@ -516,23 +446,19 @@ def test_whatif_key_opens_the_picker_and_clears_an_active_target():
         ]
         assert app.handle_key(None, ord("w"))
         assert app.whatif_menu and app.whatif_menu_index == 0
-        assert app.handle_key(None, ord("j"))  # move to the Opus row
-        assert app.handle_key(None, 10)  # Enter arms it
+        assert app.handle_key(None, ord("j"))
+        assert app.handle_key(None, 10)
         assert not app.whatif_menu
         assert app.whatif_model == "anthropic/claude-opus-4.5"
-        # Armed, not applied: the sessions list still reads the actual $1.94, and only
-        # the Subagents tab grows the what-if columns.
         assert round(app.loaded[0].total_cost, 2) == 1.94
         assert "What-if" in _table_cells(app.renderer.detail_subagents(app.loaded[0], 200))[0]
 
-        # `w` with a target set clears it (no picker), and the tab goes back to normal.
         assert app.handle_key(None, ord("w"))
         assert not app.whatif_menu
         assert app.whatif_model is None
         assert round(app.loaded[0].total_cost, 2) == 1.94
         assert "What-if" not in app.renderer.detail_subagents(app.loaded[0], 200)[1]
 
-        # Esc cancels the picker without arming anything.
         assert app.handle_key(None, ord("w"))
         assert app.whatif_menu
         assert app.handle_key(None, 27)
@@ -542,33 +468,30 @@ def test_whatif_key_opens_the_picker_and_clears_an_active_target():
 def test_whatif_picker_filters_the_model_list():
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
-        app.toggle_whatif()  # opens the picker on the full list
+        app.toggle_whatif()
         assert app.whatif_menu and [n for n, _t in app.whatif_rows()] == [
             "anthropic/claude-haiku-4.5",  # most tokens first, never re-ranked by match
             "anthropic/claude-opus-4.5",
         ]
 
-        app.handle_whatif_menu_key(ord("f"))  # `f` starts the live filter
+        app.handle_whatif_menu_key(ord("f"))
         assert app.whatif_filter_active
         for ch in "opus4-5":  # a subsequence over the fully-qualified name
             app.handle_whatif_menu_key(ord(ch))
         assert [n for n, _t in app.whatif_rows()] == ["anthropic/claude-opus-4.5"]
 
-        # Enter selects the highlighted match outright -- type, Enter, done.
         app.handle_whatif_menu_key(10)
         assert app.whatif_model == "anthropic/claude-opus-4.5"
         assert not app.whatif_menu
 
-        # Dots == dashes both ways: "4.5" typed against an id spelled "4-5" and back.
-        app.toggle_whatif()  # a target is set, so this clears it
-        app.toggle_whatif()  # ...and this reopens the picker, on a fresh full list
+        app.toggle_whatif()
+        app.toggle_whatif()
         assert app.whatif_query == "" and len(app.whatif_rows()) == 2
         app.handle_whatif_menu_key(ord("f"))
         for ch in "haiku4.5":
             app.handle_whatif_menu_key(ord(ch))
         assert [n for n, _t in app.whatif_rows()] == ["anthropic/claude-haiku-4.5"]
 
-        # A query matching nothing selects nothing -- and Esc widens instead of closing.
         app.handle_whatif_menu_key(ord("z"))
         assert app.whatif_rows() == []
         app.handle_whatif_menu_key(10)
@@ -579,11 +502,6 @@ def test_whatif_picker_filters_the_model_list():
 
 
 def test_whatif_catalog_candidates_cover_the_catalog_and_price_what_they_show():
-    # The picker's Tab tier: every models.dev model, not just the ones you've used.
-    # One row per canonical model -- gateway resale rows and date-pinned aliases fold,
-    # because arming prices through model_price(), where the vendor's own rate wins,
-    # so per-route rows would all arm the SAME rate card. The invariant that matters:
-    # each row's eff is computed from exactly the rates arming that name would use.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         rows = app.whatif_catalog_candidates()
@@ -614,18 +532,18 @@ def test_whatif_picker_tab_flips_to_the_catalog_and_arms_from_it():
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.toggle_whatif()
-        assert app.whatif_menu and not app.whatif_catalog  # opens on your models
+        assert app.whatif_menu and not app.whatif_catalog
 
-        app.handle_whatif_menu_key(ord("f"))  # the query survives the flip:
-        for ch in "haiku4.5":  # type on the your-models tier...
+        app.handle_whatif_menu_key(ord("f"))
+        for ch in "haiku4.5":
             app.handle_whatif_menu_key(ord(ch))
-        app.handle_whatif_menu_key(ord("\t"))  # ...then widen to the catalog
+        app.handle_whatif_menu_key(ord("\t"))
         assert app.whatif_catalog and app.whatif_query == "haiku4.5"
         assert app.whatif_menu_index == 0
         rows = app.whatif_rows()
         assert rows and all("haiku" in name for name, _eff, _approx in rows)
 
-        app.handle_whatif_menu_key(10)  # Enter arms the highlighted catalog row
+        app.handle_whatif_menu_key(10)
         assert not app.whatif_menu
         assert app.whatif_model == rows[0][0]
         assert ot.has_known_price(app.whatif_model)
@@ -636,9 +554,6 @@ def test_whatif_picker_tab_flips_to_the_catalog_and_arms_from_it():
 
 
 def test_whatif_picker_renders_the_tier_tab_strip():
-    # The tier switch is a real tab strip -- the P overlay's view tabs, drawn by the
-    # same draw_tabs renderer with the same bracketed-active convention and the same
-    # clickable regions (kind="whatiftab"), not a text label.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.toggle_whatif()
@@ -650,21 +565,18 @@ def test_whatif_picker_renders_the_tier_tab_strip():
             text = screen_text(screen)
             assert "[your models]" in text and " models.dev " in text
             tabs = [r for r in app.renderer.regions if r[0] == "whatiftab"]
-            assert [t[-1] for t in tabs] == [0, 1]  # both tabs registered clickable
+            assert [t[-1] for t in tabs] == [0, 1]
 
             app.whatif_toggle_catalog()
             screen2 = FakeScreen(30, 90)
             app.renderer.draw_whatif_menu(screen2, 30, 90)
-            assert "[models.dev]" in screen_text(screen2)  # the flip moves the brackets
+            assert "[models.dev]" in screen_text(screen2)
         finally:
             ot.curses.color_pair = orig_cp
 
 
 def test_whatif_picker_keeps_the_selected_row_on_screen_at_the_minimum_height():
-    # The 80x20 minimum terminal hands draw_whatif_menu scr_h=18 (the frame eats two
-    # rows). The tier strip added two content lines, so the row cap must reserve for them
-    # or the selected LAST row of a filtered catalog scrolls off the bottom while Enter
-    # still arms it -- an off-screen pick. The picker must draw the highlighted row.
+    # The app frame leaves an 18-row picker at the 80x20 minimum terminal size.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.toggle_whatif()
@@ -672,23 +584,20 @@ def test_whatif_picker_keeps_the_selected_row_on_screen_at_the_minimum_height():
         app.whatif_filter_active = True
         app.whatif_query = "gpt"  # a long filtered catalog list
         rows = app.whatif_rows()
-        assert len(rows) > 6  # enough to force scrolling at scr_h=18
-        app.whatif_menu_index = len(rows) - 1  # cursor on the last match
+        assert len(rows) > 6
+        app.whatif_menu_index = len(rows) - 1
         orig_cp = ot.curses.color_pair
         ot.curses.color_pair = lambda n: 0
         try:
             screen = FakeScreen(18, 100)
             app.renderer.draw_whatif_menu(screen, 18, 100)
             selected = rows[app.whatif_menu_index][0]
-            assert selected[:20] in screen_text(screen)  # the armed row is actually visible
+            assert selected[:20] in screen_text(screen)
         finally:
             ot.curses.color_pair = orig_cp
 
 
 def test_whatif_picker_tier_tab_click_flips_the_tier():
-    # Clicking a tier tab flips the picker (and keeps it open); clicking anywhere
-    # else in the modal still cancels. Matched by region kind, never the generic
-    # hit() -- the modal floats over body regions covering the same cells.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.toggle_whatif()
@@ -701,19 +610,17 @@ def test_whatif_picker_tier_tab_click_flips_the_tier():
         try:
             ot.curses.getmouse = lambda: (0, 30, 5, 0, ot.curses.BUTTON1_CLICKED)
             app.handle_mouse()
-            assert app.whatif_menu and app.whatif_catalog  # models.dev tab: flip, stay open
+            assert app.whatif_menu and app.whatif_catalog
             app.handle_mouse()
-            assert app.whatif_menu and app.whatif_catalog  # re-click the active tab: inert
+            assert app.whatif_menu and app.whatif_catalog
             ot.curses.getmouse = lambda: (0, 30, 15, 0, ot.curses.BUTTON1_CLICKED)
             app.handle_mouse()
-            assert not app.whatif_menu  # a click off the tabs cancels, as before
+            assert not app.whatif_menu
         finally:
             ot.curses.getmouse = orig
 
 
 def test_whatif_picker_h_l_switch_the_tier_tabs():
-    # The tiers are tabs, so h/l switch them like tabs everywhere else (Tab and a
-    # click still flip too) -- while the filter is live, h/l stay typable characters.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.toggle_whatif()
@@ -731,9 +638,6 @@ def test_whatif_picker_h_l_switch_the_tier_tabs():
 
 
 def test_whatif_picker_opens_on_the_catalog_when_nothing_used_is_priceable():
-    # A user on a single unpriceable model (or none at all) is exactly who needs more
-    # models to compare against -- the picker opens straight on the catalog tier
-    # instead of refusing like it used to.
     with tempfile.TemporaryDirectory() as tmp:
         sessions = [("root", None, "Solo", "/tmp/p", 1760000000000, 0, 1_000_000)]
         messages = [_whatif_msg("root", "unknown", "not recorded", 0, 1_000_000)]
@@ -749,9 +653,6 @@ def test_whatif_picker_opens_on_the_catalog_when_nothing_used_is_priceable():
 
 
 def test_whatif_is_allowed_in_demo_mode_unlike_the_dollar_toggle():
-    # "$" refuses in demo (it would price real tokens); what-if does not. Demo already
-    # scales every token by a hidden factor, so list rates on scaled tokens recover no
-    # real dollars -- and the routing RATIO, the point of the feature, stays real.
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp, demo=True)  # demo-scaled at load, like a real --demo run
         wf = app.loaded[0]

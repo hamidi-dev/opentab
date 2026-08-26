@@ -60,47 +60,12 @@ def _default_zaly_state_dir() -> str:
 
 
 class ZalyStore:
-    """Read Zaly sessions (<data>/sessions/<encoded-workspace>/<uuid>/session.jsonl, data
-    resolved like zaly's own envPaths: $ZALY_DATA / $ZALY_ROOT/data / $XDG_DATA_HOME/zaly,
-    default ~/.local/share/zaly, or --zaly-dir) behind the same four methods App expects
-    from Store, plus the .demo/.demo_scale attributes -- like the other JSONL backends.
+    """Read Zaly's append-only session DAGs.
 
-    Zaly (folke's conversational coding agent) persists each session as an append-only
-    JSONL DAG: `session-settings` nodes snapshot `{sessionId, cwd, workspace, modelId}`,
-    `message` nodes carry the conversation, and resume/fork append to the *same* file (so
-    there is no cross-file dedup problem; assistant messages still dedupe by `message.id`
-    since a regenerated branch keeps its abandoned siblings -- each was a real API call and
-    counts). Assistant messages record `meta.usage`: **Anthropic-normalized** tokens
-    (`input` is already the *uncached* prompt -- zaly's OpenAI adapter subtracts
-    `cached_tokens` itself -- cacheRead/cacheWrite separate; total = input + output +
-    cacheRead + cacheWrite) with `reasoning` a *subset of output* (OpenAI's
-    `reasoning_tokens` detail) -- reported as 0 here like the other folded backends
-    (Codex/Copilot), since opentab's reasoning column is an *additive* token class and
-    counting the subset would double-bill it under "$". `meta.usage.cost` is a
-    per-component USD object
-    ({input, output, cacheRead, ...}, no .total) summed here -- but zaly computes it from
-    its model catalog for **every** route, including subscription/OAuth ones (a
-    ChatGPT-plan openai-codex login) whose marginal cost is actually $0. So the same
-    metered-vs-subscription split as `PiStore`/`OpenClawStore`: a message is
-    **subscription** when its provider (the `meta.modelId` prefix before "/") is an OAuth
-    login in zaly's auth.json (`<state>/auth.json`, `{provider: {type: "oauth"|"api-key"}}`,
-    read read-only) or matches a plan/local marker (`_SUBSCRIPTION_MARKERS`:
-    codex/copilot/ollama/...) -- those tokens stay **unpriced** (the "$" view estimates
-    them) while metered messages price as real spend; **`records_cost` is a per-instance
-    property** (True iff any metered cost), resolved lazily so construction stays free for
-    the warm-start cache. Models arrive provider-qualified (`openai-codex/gpt-5.6-sol`) and
-    are used verbatim for pricing and the Providers rollup.
-
-    The workspace (settings `workspace`, falling back to `cwd`) folds to the **git root**;
-    the session id prefers settings `sessionId` over the directory name. `compact` nodes
-    (their `summary` is a system message) and role "system"/meta records carry no usage and
-    are skipped. **No subagent tree**: zaly writes subagent transcripts to tmpdir (outside
-    the sessions tree) and does not fold their usage into the parent's `meta.usage`, so
-    subagent spend is not recorded anywhere durable -- a latent undercount if zaly ever
-    persists them. Sessions with no recorded usage are dropped (merely launching zaly
-    writes a settings-only file). Implements **Turns** (one row per assistant message,
-    ▸-grouped by user prompt, epoch-ms timestamps) and **Tools** (the step's `tool-call`
-    content parts, split evenly like the other turn-based backends).
+    Input is already uncached, cache tokens are separate, and reasoning is a subset of
+    output. Per-component catalog cost is spend only for metered routes; OAuth/plan usage
+    remains unpriced. ``auth.json`` is read only for provider auth type. Resume and fork
+    append to one file. Subagent transcripts are temporary and therefore unavailable.
     """
 
     combined = False
@@ -124,22 +89,14 @@ class ZalyStore:
     def __init__(self, root_dir: str, args: argparse.Namespace):
         self.root_dir = root_dir
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the
-        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
-        self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
+        self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
-        # zaly's auth.json lives in its STATE dir (not beside the data dir): providers with
-        # type "oauth" are consumer-plan logins whose recorded cost is not spend. Resolved
-        # ONCE, here: _default_zaly_state_dir() reads $ZALY_STATE/$ZALY_ROOT live, and this
-        # path is now read on every workflows() (reload) and every cache_inputs()
-        # (fingerprint) -- a store must keep answering about the tree it was built against,
-        # the way root_dir does, rather than following the ambient environment mid-run.
+        # Pin the independent state tree at construction; reloads must not follow env drift.
         self._auth_file = os.path.join(_default_zaly_state_dir(), "auth.json")
         self._oauth_providers = self._load_oauth_providers()
         self._records_cost: bool | None = None  # resolved lazily (records_cost property)
 
-    # --- helpers -------------------------------------------------------------
     def _git_root(self, cwd: str) -> str:
         if cwd not in self._git_root_cache:
             self._git_root_cache[cwd] = git_root(cwd)
@@ -282,7 +239,6 @@ class ZalyStore:
             "context": {},  # (category, kind) -> [count, est_tokens], Context tab
         }
 
-    # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
         # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore) --
         # the transcripts PLUS <state>/auth.json, because the oauth/metered split lives
@@ -583,7 +539,6 @@ class ZalyStore:
             }
         )
 
-    # --- context composition (the Context tab) --------------------------------
     # Estimated at chars/4, mirroring zaly's own /context command (its
     # estimatePart walks the same part types with the same flat attachment
     # guesses), so opentab's Zaly composition stays comparable to zaly's. The
@@ -759,7 +714,6 @@ class ZalyStore:
             "tokens_total": acc["tokens_total"],
         }
 
-    # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         # Re-read the login state too: `r` exists to pick up changes, and a provider
@@ -839,7 +793,6 @@ class ZalyStore:
     def _demo_node(self, n: dict) -> dict:
         return scramble_node(n, self.demo_scale, self.demo_cats)
 
-    # --- Turns/Tools tab opt-ins ----------------------------------------------
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # Chronological per-turn rows for the Turns tab (the ClaudeStore pattern, on
         # epoch-seconds timestamps): walking the two time-sorted streams in lockstep tags

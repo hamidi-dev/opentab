@@ -1,13 +1,9 @@
-"""money/pct/tokens/cost_bar/short_path and the display-width helpers (formatting.py)."""
-
 import opentab as ot
 
 from tests._support import app_with, workflow
 
 
 def test_relative_age():
-    # The Machines-mode "pulled Nh ago" freshness. `now` is injected so it's testable
-    # without pinning the clock; empty for a blank/unparseable stamp (the live box).
     from datetime import datetime, timedelta, timezone
 
     from opentab.formatting import relative_age
@@ -33,7 +29,7 @@ def test_human_tokens():
 
 def test_human_duration():
     assert ot.human_duration(0) == "0s"
-    assert ot.human_duration(-5) == "0s"  # clamped, never negative
+    assert ot.human_duration(-5) == "0s"
     assert ot.human_duration(45) == "45s"
     assert ot.human_duration(60) == "1m"
     assert ot.human_duration(125) == "2m"  # seconds drop once we reach minutes
@@ -50,7 +46,6 @@ def test_money_is_two_decimals():
 
 
 def test_money_marks_sub_cent_costs():
-    # A nonzero cost under a cent must not look identical to a truly-zero row.
     assert ot.money(0.004) == "<$0.01"
     assert ot.money(0.0001) == "<$0.01"
     assert ot.money(0) == "$0.00"
@@ -58,15 +53,11 @@ def test_money_marks_sub_cent_costs():
 
 
 def test_money_label_marks_sub_cent_costs_like_money():
-    # The compact bar label spells sub-cent the same way money() does.
     assert ot.money_label(0.004) == "<$0.01"
     assert ot.money_label(0) == ""
 
 
 def test_money_pattern_covers_the_compact_k_suffix():
-    # money_label emits "$1.2k"/"$12k" on the Trends bars; the paint regex must span the
-    # whole amount (incl. the "k") so write_rich colours it as one green run, not "$1.2"
-    # green + a stray uncoloured "k".
     from opentab.formatting import MONEY_PATTERN
 
     for label in ("$1.2k", "$12k", "$1,234.56", "$0.00", "<$0.01"):
@@ -76,9 +67,6 @@ def test_money_pattern_covers_the_compact_k_suffix():
 
 
 def test_token_pattern_never_clobbers_a_money_k_label():
-    # The bug this guards: "$1.2k"'s digits look exactly like a token count "1.2k", and
-    # write_rich paints tokens AFTER money -- so an unguarded token match repainted them
-    # grey, leaving only the "$" green. A leading "$" must block the token match.
     from opentab.formatting import TOKEN_PATTERN
 
     assert TOKEN_PATTERN.search("$1.2k") is None
@@ -97,7 +85,6 @@ def test_display_width_counts_terminal_cells():
 
 
 def test_shorten_truncates_by_display_cells():
-    # A CJK title must never render wider than its column budget.
     title = "日本語のセッションタイトル"
     for width in (6, 7, 10, 13):
         cut = ot.shorten(title, width)
@@ -186,10 +173,6 @@ def test_notice_is_info_and_colours_are_explicit():
 
 
 def test_human_tokens_never_exceeds_six_characters():
-    """The unit was chosen before rounding, so 999,950 printed "1000.0k" and 999,950,000
-    "1000.0M" -- seven characters, overflowing the fixed six-wide token cells in the
-    price-split columns and shifting that row's CacheW/Output one place right of their
-    headers. Switch unit just before the boundary instead."""
     assert ot.human_tokens(999_950) == "1.0M"
     assert ot.human_tokens(999_949) == "999.9k"
     assert ot.human_tokens(999_950_000) == "1.0B"

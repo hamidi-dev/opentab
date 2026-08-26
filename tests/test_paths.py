@@ -1,5 +1,3 @@
-"""XDG base-dir resolution and the config->state/data migration (opentab.paths)."""
-
 import os
 import tempfile
 
@@ -49,8 +47,7 @@ def test_each_root_honors_its_env_then_falls_back_to_the_spec_default():
 
 
 def test_a_relative_xdg_value_is_ignored_per_the_spec():
-    # The XDG spec: a non-absolute $XDG_*_HOME "should be considered invalid and
-    # ignored" -- never resolved against the CWD (which would write into the repo).
+    # The XDG spec requires ignoring relative base directories.
     home = os.path.expanduser("~")
     restore = _set(XDG_STATE_HOME="relative-not-absolute", XDG_CACHE_HOME=".cache")
     try:
@@ -61,8 +58,6 @@ def test_a_relative_xdg_value_is_ignored_per_the_spec():
 
 
 def test_cross_device_migration_copies_atomically_and_leaves_no_temp():
-    # When os.replace can't rename across filesystems, migration falls back to an atomic
-    # copy: the destination ends up complete and no half-written temp is left behind.
     with tempfile.TemporaryDirectory() as home:
         cfg, state = os.path.join(home, "config"), os.path.join(home, "state")
         os.makedirs(os.path.join(cfg, "opentab"))
@@ -91,9 +86,6 @@ def test_cross_device_migration_copies_atomically_and_leaves_no_temp():
 
 
 def test_atomic_copy_refuses_to_clobber_an_existing_destination():
-    # The os.link publish is exclusive: if a racing migrator (or a note authored right
-    # after the winner published) already created dst, the copy is dropped, not
-    # overwritten -- so a slow cross-device migration can't lose a just-authored note.
     with tempfile.TemporaryDirectory() as d:
         src, dst = os.path.join(d, "legacy.json"), os.path.join(d, "current.json")
         with open(src, "w") as fh:
@@ -107,9 +99,6 @@ def test_atomic_copy_refuses_to_clobber_an_existing_destination():
 
 
 def test_state_json_migrates_out_of_the_old_config_dir_on_read():
-    # A pre-split user's state.json sits in the config dir; the first state_path() call
-    # relocates it to the XDG state dir, moving (not copying) the file, and is a no-op
-    # afterwards. This is what stops an upgrade from silently resetting saved prefs.
     with tempfile.TemporaryDirectory() as home:
         cfg, state = os.path.join(home, "config"), os.path.join(home, "state")
         os.makedirs(os.path.join(cfg, "opentab"))
@@ -128,8 +117,6 @@ def test_state_json_migrates_out_of_the_old_config_dir_on_read():
 
 
 def test_notes_json_migrates_out_of_the_old_config_dir_on_read():
-    # The authored notes file is the one thing a lost migration would truly cost; it
-    # moves from config to the XDG data dir the same way.
     with tempfile.TemporaryDirectory() as home:
         cfg, data = os.path.join(home, "config"), os.path.join(home, "data")
         os.makedirs(os.path.join(cfg, "opentab"))
@@ -147,8 +134,6 @@ def test_notes_json_migrates_out_of_the_old_config_dir_on_read():
 
 
 def test_migration_never_clobbers_an_existing_new_file():
-    # If both locations hold a file (e.g. a downgrade-then-upgrade), the new one is
-    # authoritative and the stale legacy copy is left untouched, never merged in.
     with tempfile.TemporaryDirectory() as home:
         cfg, state = os.path.join(home, "config"), os.path.join(home, "state")
         os.makedirs(os.path.join(cfg, "opentab"))
@@ -167,9 +152,6 @@ def test_migration_never_clobbers_an_existing_new_file():
 
 
 def test_legacy_caches_move_to_the_cache_dir_when_the_new_location_is_empty():
-    # A fresh upgrade: the regenerable caches (warm-start cache/, prices.json, pulled
-    # remotes/) move out of config into the XDG cache dir, preserving their contents, and
-    # the stale notes.json.lock is swept.
     with tempfile.TemporaryDirectory() as home:
         cfg, cache = os.path.join(home, "config"), os.path.join(home, "cache")
         os.makedirs(os.path.join(cfg, "opentab", "cache"))
@@ -196,8 +178,6 @@ def test_legacy_caches_move_to_the_cache_dir_when_the_new_location_is_empty():
 
 
 def test_legacy_caches_are_dropped_when_the_new_location_already_exists():
-    # A machine that already ran the new version owns the cache; the pre-split copy is a
-    # stale orphan and is removed rather than moved over the live one.
     with tempfile.TemporaryDirectory() as home:
         cfg, cache = os.path.join(home, "config"), os.path.join(home, "cache")
         os.makedirs(os.path.join(cfg, "opentab", "cache"))
@@ -217,9 +197,6 @@ def test_legacy_caches_are_dropped_when_the_new_location_already_exists():
 
 
 def test_a_superseded_state_json_orphan_is_swept_from_config():
-    # An old opentab run during the upgrade window can rewrite state.json into config after
-    # the real one already moved to the state dir; that orphan is cleaned, the state-dir
-    # copy left authoritative.
     with tempfile.TemporaryDirectory() as home:
         cfg, cache, state = (os.path.join(home, x) for x in ("config", "cache", "state"))
         os.makedirs(os.path.join(cfg, "opentab"))
@@ -238,8 +215,6 @@ def test_a_superseded_state_json_orphan_is_swept_from_config():
 
 
 def test_an_unmigrated_state_json_is_never_deleted_by_the_cache_tidy():
-    # With no state-dir copy yet the config state.json IS the real data; the tidy must not
-    # delete it -- migrated() moves it lazily on first read instead.
     with tempfile.TemporaryDirectory() as home:
         cfg, cache, state = (os.path.join(home, x) for x in ("config", "cache", "state"))
         os.makedirs(os.path.join(cfg, "opentab"))
@@ -256,8 +231,6 @@ def test_an_unmigrated_state_json_is_never_deleted_by_the_cache_tidy():
 
 
 def test_requests_default_prefers_data_but_still_finds_a_legacy_config_file():
-    # requests.csv/jsonl auto-discovery: the canonical home is the XDG data dir, but a
-    # file a pre-split user left in the config dir keeps being discovered.
     with tempfile.TemporaryDirectory() as home:
         cfg, data = os.path.join(home, "config"), os.path.join(home, "data")
         restore = _set(XDG_CONFIG_HOME=cfg, XDG_DATA_HOME=data)

@@ -1,5 +1,3 @@
-"""The detail tabs: sessions/projects tables, models, subagents, turns, tools, context (tui/renderer.py)."""
-
 import os
 import re
 import sqlite3
@@ -24,14 +22,10 @@ from tests._support import (
     workflow,
 )
 
-# Moved to _support once a second module needed it (every table is a ruled box now).
 _cells = box_cells
 
 
 def test_top_models_is_a_ruled_box_with_full_model_columns():
-    # The "Top Models" overview section reuses the Models-tab table, now drawn as a
-    # ruled box: the title rides the top border and the row carries the cache/output
-    # columns too (name, runs, cost, tokens, cacheR, cacheW, output).
     app = app_with([])
     rows = [("m", 3648, 1.0, 205_600_000, 1_000_000, 2_000_000, 5_000_000)]
     lines = app.renderer._model_table(rows, "# Top Models", 120)
@@ -69,11 +63,6 @@ def _models_tab_app():
 
 
 def test_the_zoomed_models_tab_is_the_browse_table_plus_a_cursor():
-    # The tab renders ONE table, twice. Zooming used to swap the eight-column ruled box
-    # for a four-column ranked picker, which is exactly the drift the Sessions/Projects
-    # tables were unified to end -- so Enter may add a cursor and NOTHING else: same
-    # rows, same columns, same TOTAL row, same width, byte for byte apart from the ">"
-    # in the marker gutter every boxed table reserves.
     app = _models_tab_app()
     month = app.selected_month_summary
     preview = app.renderer.month_models(month, 116)
@@ -96,9 +85,6 @@ def test_the_zoomed_models_tab_is_the_browse_table_plus_a_cursor():
 
 
 def test_the_models_filter_still_narrows_model_names_in_a_zoom():
-    # `f` on this tab has always matched MODEL NAMES. The old picker ran the query
-    # against session titles/paths instead, so focusing the tab silently re-pointed the
-    # filter and a query that had narrowed the list stopped matching anything.
     app = _models_tab_app()
     app.drill_in()
     app.tab = app.current_tabs().index("Models")
@@ -110,10 +96,6 @@ def test_the_models_filter_still_narrows_model_names_in_a_zoom():
 
 
 def test_a_shrinking_model_list_never_strands_the_cursor_off_screen():
-    # Typing an `f` query shrinks the list without moving the cursor (the j/k handlers
-    # clamp, a keystroke in the filter does not). The paint must clamp the SAME way
-    # zoom_selected_model does, or Enter drills the clamped last row while the pane
-    # highlights nothing -- a selection you cannot see acting on a row you did not pick.
     app = _models_tab_app()
     app.drill_in()
     app.tab = app.current_tabs().index("Models")
@@ -126,10 +108,6 @@ def test_a_shrinking_model_list_never_strands_the_cursor_off_screen():
 
 
 def test_model_table_splits_cost_across_token_categories_in_wide_panes():
-    # The cacheR/cacheW/Output cells carry their attributed share of the Cost
-    # column: fable lists at $10/M in, $50/M out, $1/M cacheR, $12.50/M cacheW,
-    # so 100k cache-write tokens cost more than 800k cache reads -- the skew the
-    # plain token counts hide.
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
     row = _cells(app.renderer._model_table(rows, "# Top Models", 120))[1]
@@ -139,9 +117,6 @@ def test_model_table_splits_cost_across_token_categories_in_wide_panes():
 
 
 def test_model_table_split_scales_to_the_recorded_cost():
-    # A recorded cost that differs from today's list-price total is attributed
-    # proportionally, so the split (with the implicit input remainder) always
-    # sums to the Cost column.
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 10.10, 1_000_000, 800_000, 100_000, 50_000)]
     row = _cells(app.renderer._model_table(rows, "# Top Models", 120))[1]
@@ -151,9 +126,6 @@ def test_model_table_split_scales_to_the_recorded_cost():
 
 
 def test_model_table_split_cells_align_under_their_labels():
-    # Fixed sub-columns: the token count right-aligns under the header label and
-    # the "($13)" groups end flush at the same column on every row, the parens
-    # hugging the amount (no inner gap), whatever the magnitudes.
     app = app_with([])
     rows = [
         ("anthropic/claude-fable-5", 92, 20.60, 13_400_000, 13_100_000, 194_700, 99_200),
@@ -189,9 +161,6 @@ def test_model_table_split_needs_width_dollars_and_models():
 
 
 def test_model_table_total_row_sums_every_column():
-    # A multi-row table closes with a rule + TOTAL row -- runs, cost, and every token
-    # column summed -- so "what did cache writes cost me this year" is one
-    # glance. Share stays blank (definitionally 100%).
     app = app_with([])
     rows = [
         ("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000),
@@ -217,11 +186,6 @@ def test_model_table_total_row_sums_every_column():
 
 
 def test_model_table_total_row_sums_attributed_dollars_at_each_rows_rates():
-    # In split mode the TOTAL's (dollar) parts are the per-row attributions
-    # summed -- each row priced at its own model's rates, never the summed
-    # tokens at one model's rates. Two fable rows keep the math checkable:
-    # each attributes cacheR $0.80, cacheW $1.25, output $2.50 (the split test
-    # above), so TOTAL carries exactly double.
     app = app_with([])
     row = ("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)
     total = _cells(app.renderer._model_table([row, row], "# Top Models", 120))[-1]
@@ -233,11 +197,7 @@ def test_model_table_total_row_sums_attributed_dollars_at_each_rows_rates():
 
 
 def test_model_table_total_split_dollars_keep_the_compact_label_convention():
-    # The parenthetical attributions are approximations by construction (scaled
-    # shares), rendered through money_label -- which drops cents at >=$10. So a
-    # TOTAL crossing the threshold shows "($10)" while its <$10 rows keep cents;
-    # pinned deliberately: the exact figure lives in the Cost column (full
-    # money()), and widening the 14-char cells would break the fixed grid.
+    # money_label intentionally drops cents once this attribution crosses $10.
     app = app_with([])
     row = ("anthropic/claude-fable-5", 10, 5.05, 100_000, 0, 0, 100_000)
     _, first, second, total = _cells(app.renderer._model_table([row, row], "# Top Models", 120))
@@ -246,7 +206,6 @@ def test_model_table_total_split_dollars_keep_the_compact_label_convention():
 
 
 def test_model_table_single_row_has_no_total():
-    # A one-row table IS its own total; a TOTAL row would just repeat it.
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
     lines = app.renderer._model_table(rows, "# Top Models", 120)
@@ -254,8 +213,6 @@ def test_model_table_single_row_has_no_total():
 
 
 def test_tools_table_total_row_stays_unsplit():
-    # The Tools-tab reuse gets the TOTAL row too (rows partition the session's
-    # tool-using turns, so the sum is real), but never the (dollar) split.
     app = app_with([])
     rows = [
         ("Bash", 10, 1.00, 1_000_000, 800_000, 100_000, 50_000),
@@ -270,8 +227,6 @@ def test_tools_table_total_row_stays_unsplit():
 
 
 def test_model_table_split_gives_columns_a_two_space_gutter():
-    # The wide split layout separates columns with two spaces (was one) so a
-    # "($0.80)" attribution cell stops butting against the next column.
     app = app_with([])
     rows = [("anthropic/claude-fable-5", 10, 5.05, 1_000_000, 800_000, 100_000, 50_000)]
     row = _cells(app.renderer._model_table(rows, "# Top Models", 120))[1]
@@ -279,9 +234,6 @@ def test_model_table_split_gives_columns_a_two_space_gutter():
 
 
 def test_top_sessions_overview_box_caps_the_leaderboard_at_twenty():
-    # A busy month spills hundreds of sessions; the Overview's Top Sessions box is a
-    # leaderboard (the full, navigable list is the Sessions tab), so it caps at 20 and
-    # ranks by cost -- the priciest first.
     ws = [workflow(f"s{i}", "2026-06-01 12:00:00", cost=float(i + 1)) for i in range(25)]
     app = app_with(ws)
     assert len(app.renderer.top_sessions(ws)) == 20
@@ -293,10 +245,6 @@ def test_top_sessions_overview_box_caps_the_leaderboard_at_twenty():
 
 
 def test_the_model_table_closes_every_overview():
-    # The model table is the widest block on any Overview and the least likely answer to
-    # "where did the money go", so it goes LAST everywhere -- under the stats, Token
-    # economics and the Top projects/sessions boxes, which each fit in a glance. A new
-    # section goes above it, never below.
     from tests._support import _model_row, fleet_app
 
     ws = [workflow("a", "2026-06-01 12:00:00", directory="/x", cost=2.0, tokens=1000)]
@@ -323,8 +271,6 @@ def test_the_model_table_closes_every_overview():
 
 
 def test_top_projects_box_ranks_projects_by_cost_in_the_overview():
-    # The Overview grows a "# Top Projects" ruled box beside Top Models/Top Sessions,
-    # aggregating the scope's sessions by project directory, cost-ranked.
     ws = [
         workflow("a", "2026-06-01 12:00:00", cost=10.0, directory="/repo/big"),
         workflow("b", "2026-06-02 12:00:00", cost=1.0, directory="/repo/small"),
@@ -340,8 +286,6 @@ def test_top_projects_box_ranks_projects_by_cost_in_the_overview():
 
 
 def test_top_sessions_box_widens_cost_column_for_six_figure_spend():
-    # "$123,456.78" is 11 cells, not 10 -- the Cost column must widen so Share/Tokens/Subs
-    # stay under their headers instead of every row shoving one cell right.
     app = app_with([])
     ws = [workflow("a", "2026-06-01 12:00:00", cost=123456.78)]
     content = box_cells(app.renderer._top_sessions_box(ws, 200000.0, 120), lead=True)
@@ -363,8 +307,6 @@ def test_top_projects_box_widens_cost_column_for_six_figure_spend():
 
 
 def test_projects_merge_across_windows_slash_styles():
-    # Pi records the cwd with backslashes; OpenCode records the same directory with
-    # forward slashes. They must group as ONE project, not two (issue #4).
     app = app_with(
         [
             workflow("pi", "2026-06-01 12:00:00", cost=2, directory=r"C:\DEV\examples\okf"),
@@ -413,10 +355,6 @@ def _sessions_app(n):
 
 
 def test_a_picker_is_a_ruled_box_and_pays_the_frame_out_of_its_row_budget():
-    # The scrolling pickers wear the same box the static tables do, which costs four of
-    # the pane's rows: the titled top, the header, the rule under it and the bottom. The
-    # budget has to come off the LIST, not off the frame -- a picker that drew as many
-    # rows as before would paint its own bottom border over the last one.
     app = _sessions_app(40)
     painted = _paint_sessions_picker(app, 100)
     assert painted[0].startswith("┌ Sessions · 40")
@@ -430,9 +368,6 @@ def test_a_picker_is_a_ruled_box_and_pays_the_frame_out_of_its_row_budget():
 
 
 def test_the_picker_cursor_reverses_only_the_cells_between_the_gutters():
-    # A full-width reverse bar would punch a hole through the box's own vertical rules,
-    # so the selection stops at the gutters -- the rule _paint_model_cursor established
-    # for the Models table, now shared by every navigable one.
     app = _sessions_app(3)
     app.workflow_index = 1
     screen = AttrScreen(24, 100)
@@ -451,10 +386,6 @@ def test_the_picker_cursor_reverses_only_the_cells_between_the_gutters():
 
 
 def test_every_boxed_column_header_is_found_and_lit_the_same_way():
-    # One header look across every table, in both of a table's frames. The lookup is by
-    # the framed header STRING, not by position -- _sectioned_box opens the Token
-    # economics card with a chart, so "the row after the top border" would light a bar
-    # caption and miss the real header three sections down.
     app = _sessions_app(3)
     app._model_by_root = {"s0": [_model_row("opus", 9.0, 900)]}
     rnd = app.renderer
@@ -479,9 +410,6 @@ def test_every_boxed_column_header_is_found_and_lit_the_same_way():
 
 
 def test_zoom_pickers_paint_no_enter_hint():
-    # The pickers used to paint an "Enter: open session(s)" hint on the tab-strip row.
-    # It duplicated the footer's "Enter in" and, in the fleet view's six-tab strip, it
-    # overran the last tab. It's gone now -- no picker draws that hint.
     app = app_with(
         [
             workflow("s1", "2026-06-01 12:00:00", title="first", directory="/tmp/alpha"),
@@ -513,9 +441,6 @@ def test_sessions_picker_shows_a_project_column_in_time_mode():
 
 
 def test_sessions_picker_shows_the_date_beyond_day_scope():
-    # A year (or "All years") scope spans months, so a bare clock time is useless --
-    # the picker must show the date there, like the month scope already does. Only a
-    # zoomed day (every row shares that day) keeps the time-only column.
     app = app_with(
         [
             workflow("s1", "2026-06-01 12:15:00", title="june"),
@@ -571,11 +496,6 @@ def test_sessions_picker_hides_the_project_column_when_project_scoped():
 
 
 def test_browse_preview_and_zoom_picker_are_the_same_session_table():
-    # Enter (browse -> zoom) must light up a row, never re-shape the table. The
-    # preview and the picker were two hand-written tables and had drifted: the
-    # preview had Models + Src columns and a "# Monthly Sessions" heading, the
-    # picker had a Project column, an inline [oc] tag and a 2-column indent. They
-    # build from one set of helpers now, so the frames can't diverge again.
     app = app_with(
         [
             workflow("s1", "2026-06-01 12:00:00", title="first", directory="/tmp/alpha"),
@@ -643,9 +563,6 @@ def test_detail_tools_reprices_unpriced_under_dollar():
 
 
 def test_tool_treemap_shades_by_per_call_rate_not_by_its_own_area():
-    # The whole point of the second channel: area is the total, shade is the RATE, so a
-    # tool that is big because it ran often is cool and one that is small because it ran
-    # three times at $2 each is hot. Encoding the same number twice says nothing.
     rnd = app_with([]).renderer
     bucket = {
         "Bash": {"cost": 6.0, "tokens": 6000, "calls": 600},  # biggest tile, cheapest call
@@ -802,10 +719,6 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
 
 
 def test_turns_marks_compactions_even_while_folded():
-    # A compaction is the one event on the Turns tab that is not a turn: the window was
-    # cleared between two of them. It has to survive the tab's DEFAULT folded state --
-    # a marker hidden inside a collapsed group is a marker nobody sees -- and it must
-    # read off the same rule the Context tab draws its ▼ with (util.context_compactions).
     class CompactStore(FakeStore):
         # main-thread context: 20k, 900k, 300k (the clear), then a subagent turn whose
         # own window is unrelated, then 340k -- growth again, no second marker.
@@ -1016,24 +929,22 @@ def test_subagents_tab_is_sortable_by_date():
     app = app_with([workflow("june", "2026-06-01 12:00:00")])
     app.view = "session"
     app.tab = app.workflow_tabs.index("Subagents")
-    app.subagent_sort_by = "date"  # newest first by default
+    app.subagent_sort_by = "date"
     assert [r["title"] for r in app.sorted_subagent_rows(_subagent_rows())] == ["b", "a"]
     app.subagent_sort_reverse = True  # flipped: chronological
     assert [r["title"] for r in app.sorted_subagent_rows(_subagent_rows())] == ["a", "b"]
 
 
 def test_subagent_sort_is_independent_of_session_sort():
-    # Sorting the Subagents tab must not clobber the sessions-list preference
-    # (they used to share sort_by, so picking "depth" here reset sessions to cost).
     app = app_with([workflow("june", "2026-06-01 12:00:00")])
     app.sort_by = "date"
     app.view = "session"
     app.tab = app.workflow_tabs.index("Subagents")
 
-    assert app.handle_key(None, ord("s"))  # opens the subagent sort picker
+    assert app.handle_key(None, ord("s"))
     assert app.sort_menu and app.sort_menu_options() == app.subagent_sort_options
     app.handle_key(None, ord("G"))  # jump to the last option (depth)
-    app.handle_key(None, 10)  # Enter applies
+    app.handle_key(None, 10)
     assert app.subagent_sort_by == "depth"
     assert app.sort_by == "date"  # the sessions sort survived
 
@@ -1091,9 +1002,7 @@ def test_projects_sort_by_recency():
 
 
 def test_projects_sort_by_last_activity_differs_from_recency():
-    # /tmp/new's session started later than /tmp/old's, so recency (newest session
-    # START) ranks it first -- but /tmp/old's session ran on well past that, so
-    # last_activity (newest ended_at-or-created_at) must rank /tmp/old first instead.
+    # Start time and last activity deliberately rank these projects oppositely.
     app = app_with(
         [
             workflow(
@@ -1203,10 +1112,10 @@ def test_month_projects_are_scoped_and_sortable():
     assert "/tmp/a" in rows[1]  # rows[0] is the column header (the title rides the border)
     assert "/tmp/b" in rows[2]
     assert all("/tmp/old" not in line for line in lines)
-    assert app.handle_key(None, ord("s"))  # opens the project-sort picker
+    assert app.handle_key(None, ord("s"))
     assert app.sort_menu and app.sort_menu_index == 1  # current is tokens
     app.handle_key(None, ord("j"))  # -> sessions
-    app.handle_key(None, 10)  # Enter applies
+    app.handle_key(None, 10)
     assert app.project_sort_by == "sessions"
     assert app.sort_by == "cost"
 
@@ -1243,10 +1152,6 @@ def test_projects_panel_width_is_content_aware_and_bounded():
 
 
 def test_pager_lines_dispatch_session_tabs_by_name():
-    # current_pager_lines feeds G / max_scroll / page scrolling; it must dispatch
-    # the session tabs by NAME like draw_detail does -- current_tabs() appends
-    # Turns/Tools per session, so a fixed index would clamp e.g. the Turns tab
-    # against the Subagents line count.
     class RichStore(FakeStore):
         def workflow_nodes(self, wid):
             return [
@@ -1364,11 +1269,6 @@ def test_subagent_nodes_memoized_per_session():
 
 
 def test_session_data_ready_flips_after_prefetch():
-    # The TUI's drill-in loading frame: a session whose lazy fetches aren't
-    # memoized isn't "ready" (draw_detail paints the loading placeholder instead
-    # of blocking mid-draw), and one prefetch_session_data satisfies every gate
-    # so the next frame renders real data -- the prefetch must never leave
-    # ready() False (that would be a loading-frame loop).
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")
         os.makedirs(root)
@@ -1483,9 +1383,6 @@ def test_context_tab_no_usage_message():
 
 
 def test_context_tab_hidden_when_curve_unsupported():
-    # A backend whose turn rows are cumulative deltas, not per-request prompt
-    # sizes (Codex), opts out of the curve -- the whole tab disappears rather
-    # than charting per-turn consumption as context. Turns/Tools stay.
     class DeltaStore(_ContextStore):
         def supports_context_curve(self, wid):
             return False
@@ -1501,9 +1398,6 @@ def test_context_tab_hidden_when_curve_unsupported():
 
 
 def test_context_tab_flags_mixed_model_windows():
-    # After a mid-session model switch the chart still scales to the last model's
-    # window (declared in the header), but the peak %% must use the window the
-    # peak turn actually ran in, and a "!" caveat calls out the mixed windows.
     class SwitchStore(_ContextStore):
         def message_timeline(self, wid):
             rows = super().message_timeline(wid)
@@ -1521,9 +1415,6 @@ def test_context_tab_flags_mixed_model_windows():
 
 
 def test_context_tab_overlays_spend_wallclock_and_compaction_times():
-    # The graph carries how the session evolved in real time and what it cost, on
-    # top of the token curve: a spend + $/h burn line, the wall-clock span, clock
-    # edges on the x-axis, and each compaction stamped with its time-into-session.
     class SpanStore(FakeStore):
         SIZES = (30_000, 70_000, 120_000, 180_000, 55_000, 95_000, 150_000, 60_000, 110_000)
         TIMES = ("09:00", "09:20", "09:55", "10:30", "10:45", "11:20", "11:58", "12:07", "12:15")
@@ -1670,8 +1561,6 @@ def _turns_app(store_cls=_TurnNavStore):
 
 
 def test_turns_name_the_tools_each_step_called():
-    # The drilled view is where "what did this turn DO" belongs: one row per LLM step,
-    # so the Tools cell names that step's calls in call order with repeats folded.
     app = _turns_app(_TurnToolStore)
     wf = app.current_session()
     app.open_turn_drill(0)  # p1: Read, then Bash x2
@@ -1693,8 +1582,6 @@ def test_turns_name_the_tools_each_step_called():
 
 
 def test_turns_table_counts_the_calls_and_drops_the_column_without_them():
-    # The prompt table carries the COUNT, not the names: the names are open-ended and
-    # this row is already the widest on the pane, so they live one keystroke away.
     app = _turns_app(_TurnToolStore)
     lines = app.renderer.detail_turns(app.current_session(), 130)
     header = box_cells(lines)[0]
@@ -1718,16 +1605,7 @@ def test_turns_table_counts_the_calls_and_drops_the_column_without_them():
 
 
 def test_turns_optional_columns_never_get_clipped_by_the_frame():
-    # The budget's whole purpose: an optional column is DROPPED, never squeezed until
-    # the ruled box truncates it. Written as three independent subtractions it drifts
-    # by one cell per column that forgot its separator, and the symptom is silent --
-    # box_row clips the tail, so "Cumulative" reads "Cumula..." with nothing raising.
-    # Both frontends' widths are swept, since the header is the widest line either
-    # draws. 76/74 are the documented PROMPT_MIN/model floors, below which the prompt
-    # column deliberately wins over the frame (a prompt list is read by its prompts).
-    # Both fixtures, because the optional cells differ: one session calls tools (Calls),
-    # the other delegates (Agents), and a budget is only ever exact for the columns it
-    # was measured with.
+    # Sweep both optional-column fixtures at the documented prompt/model width floors.
     for store in (_TurnToolStore, _TurnAgentStore):
         app = _turns_app(store)
         wf = app.current_session()
@@ -1754,11 +1632,6 @@ def test_turns_optional_columns_never_get_clipped_by_the_frame():
 
 
 def test_turns_prompt_rows_show_which_subagents_ran_them():
-    # Delegation was invisible on the table you scan: the per-turn Agent column with its
-    # "↳" lives in the drill, so a prompt that farmed its work out read exactly like one
-    # the main thread ran alone. Named agents are named; the unnamed ones a backend
-    # writes as the literal "subagent" fold into one count rather than repeating a label
-    # that identifies nothing.
     app = _turns_app(_TurnAgentStore)
     lines = app.renderer.detail_turns(app.current_session(), 140)
     assert "Agents" in box_cells(lines)[0]
@@ -1778,9 +1651,6 @@ def test_turns_prompt_rows_show_which_subagents_ran_them():
 
 
 def test_turns_calls_column_is_sized_from_the_data_not_the_header():
-    # A fixed-width count field is right until a session exceeds it, and then the cell
-    # overflows and shoves every later column out through the frame. The TOTAL sums the
-    # prompts, so it is what sets the width.
     class Busy(_TurnToolStore):
         def message_timeline(self, wid):
             rows = super().message_timeline(wid)
@@ -1816,7 +1686,7 @@ def test_turns_cursor_walks_the_prompt_groups_with_jk_and_gG():
 
 def test_turns_enter_drills_into_the_selected_prompt_and_esc_steps_back():
     app = _turns_app()
-    app.move(1)  # select p2
+    app.move(1)
     assert app._toggle_turn_cursor()  # the Enter path
     assert app.turn_drill == 1  # the ordinal of the selected run
     wf = app.current_session()
@@ -1862,9 +1732,6 @@ def test_turns_click_moves_the_keyboard_cursor_onto_the_group():
 
 
 def test_turns_drill_scrolls_the_pane_and_esc_steps_back_out():
-    # A drilled prompt is an ordinary view, not a modal: j/k scroll the PANE (there is no
-    # prompt cursor in there to move), and Esc steps back to the table rather than out of
-    # the session -- the trend_drill rule.
     app = _turns_app()
     app._turn_cursor = 1
     app._toggle_turn_cursor()
@@ -1878,9 +1745,6 @@ def test_turns_drill_scrolls_the_pane_and_esc_steps_back_out():
 
 
 def test_turns_cursor_hands_the_key_back_at_either_end_so_the_pane_scrolls():
-    # The cursor swallowed j/k unconditionally, so once it reached the last prompt the
-    # pane stopped: everything below the last row -- the tab's own footnotes -- was
-    # unreachable. At an end the key belongs to the pane.
     app = _turns_app()
     app._turn_cursor = 0
     assert app._move_turn_cursor(-1) is False  # already at the top
@@ -2024,10 +1888,6 @@ def test_detail_tabs_center_as_accent_and_chip_pairs():
 
 
 def test_ranked_group_table_header_lines_up_with_short_names():
-    """The name column was sized to the DATA alone, so when every name is shorter than the
-    header label ("Harness", "Machine", "Provider") the header's own field overflowed and
-    pushed Cost/Share/Tokens/Sess right of the numbers they label. Short hostnames make
-    that the default in a fleet view; _model_table already guards the same way."""
     app = app_with([workflow("s1", "2026-07-01 12:00:00", cost=4.0)])
     rows = [
         ("pi", {"cost": 4.0, "tokens": 4000, "sessions": 2}),

@@ -1,5 +1,3 @@
-"""The Zaly session backend (stores/zaly.py)."""
-
 import json
 import os
 import tempfile
@@ -194,9 +192,6 @@ def test_zaly_store_reasoning_stays_inside_output():
 
 
 def test_zaly_turns_carry_the_reasoning_level_the_settings_node_put_in_force():
-    # zaly snapshots the level on session-settings, and resume/fork append a FRESH
-    # settings node to the same file -- so it is a running value, not a session-wide
-    # constant, and every turn keeps the level it actually ran at.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "zaly")
         cwd = os.path.join(tmp, "repo")
@@ -357,13 +352,6 @@ def test_zaly_context_breakdown_mirrors_its_own_estimator():
 
 
 def test_zaly_auth_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_cache():
-    # The oauth/metered split lives in <state>/auth.json, NOT in the transcripts -- and
-    # in a DIFFERENT directory tree from the sessions, so nothing about the data dir
-    # implies it. Switch a provider between an API key and a plan login and every cost
-    # in the rollup changes (records_cost with it, which drives the "$"/ESTIMATED
-    # framing) while no transcript is touched. Without auth.json in cache_inputs() the
-    # fingerprint still matches, the warm start serves the pre-login split, and `r`
-    # never self-corrects.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "zaly")
         cwd = os.path.join(tmp, "repo")
@@ -396,10 +384,6 @@ def test_zaly_auth_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_
 
 
 def test_zaly_reload_re_reads_the_login_state_from_the_dir_it_was_built_against():
-    # `r` re-reads auth.json, so a provider that switched to a plan since launch stops
-    # counting as spend without a restart. The path is resolved ONCE, at construction:
-    # _default_zaly_state_dir() reads $ZALY_STATE live, and a store must keep answering
-    # about the tree it was built against rather than follow the ambient environment.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "zaly")
         cwd = os.path.join(tmp, "repo")
@@ -423,10 +407,6 @@ def test_zaly_reload_re_reads_the_login_state_from_the_dir_it_was_built_against(
 
 
 def test_zaly_survives_a_token_count_json_parses_as_infinity():
-    # `1e400` is valid JSON that json maps to inf, and int(inf) raises OverflowError --
-    # an ArithmeticError, so `except (TypeError, ValueError)` misses it and the backend
-    # dies at workflows(). An inf cost component doesn't raise at all (and `inf > 0`
-    # passes the positivity check): it silently poisons every sum it reaches.
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "zaly")
         cwd = os.path.join(tmp, "repo")

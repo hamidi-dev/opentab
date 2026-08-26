@@ -1,5 +1,3 @@
-"""The configurable key bindings (tui/bindings.py): parsing, composition, dispatch."""
-
 import os
 import tempfile
 

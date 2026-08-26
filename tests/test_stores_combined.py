@@ -1,5 +1,3 @@
-"""CombinedStore: the merged view, its source tags and per-session routing (stores/combined.py)."""
-
 import os
 import sqlite3
 import tempfile
@@ -36,8 +34,6 @@ def test_trend_sources_row_drills_into_that_sources_sessions():
 
 
 def test_zoom_sources_tab_navigates_and_drills():
-    # The merged view's per-scope Sources tab works like the Trends Sources tab:
-    # j/k pick a tool, Enter narrows Sessions to it (scoped), Esc pops back.
     a = workflow("a", "2026-06-01 12:00:00", cost=5)
     b = workflow("b", "2026-06-01 13:00:00", cost=1)
     a.source, b.source = "OpenCode", "Claude Code"
@@ -65,9 +61,6 @@ def test_zoom_sources_tab_navigates_and_drills():
 
 
 def test_sources_tab_counts_the_sessions_it_opens():
-    # A Sources row must count exactly what Enter on it opens: it took neither the
-    # `i` widening nor a Projects-tab drill, so a row read "1 session · $3" and then
-    # produced two sessions and $5.
     class MergedStore(FakeStore):
         combined = True
 
@@ -111,8 +104,6 @@ def test_source_rows_follow_a_project_drill():
 
 
 def test_sources_rows_honour_the_committed_filter():
-    # The `f` query narrows the sessions list, so a Sources row that aggregates past
-    # it would advertise spend Enter then refuses to open.
     class MergedStore(FakeStore):
         combined = True
 
@@ -134,8 +125,6 @@ def test_sources_rows_honour_the_committed_filter():
 
 
 def test_combined_demo_shares_one_scale():
-    # A merged demo must scale every backend by the SAME hidden factor, or the
-    # cross-source ratio (the Sources view) would be distorted by two random scales.
     class Stub:
         def __init__(self, scale):
             self.demo = True
@@ -152,8 +141,6 @@ def test_combined_demo_shares_one_scale():
 
 
 def test_tools_tab_gated_to_opencode_sessions_in_combined_view():
-    # In the merged view the Tools tab must follow the SELECTED session's backend:
-    # an OpenCode session offers it, a non-OpenCode session never shows it empty.
     args = type("Args", (), {"since": None, "until": None, "days": None})
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
@@ -168,8 +155,6 @@ def test_tools_tab_gated_to_opencode_sessions_in_combined_view():
 
 
 def test_turns_tab_gated_per_session_in_combined_view():
-    # Like the Tools tab, Turns follows the SELECTED session's backend: OpenCode (and
-    # Claude) offer it; a backend without message_timeline never shows it.
     args = type("Args", (), {"since": None, "until": None, "days": None})
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "opencode.db")
@@ -231,7 +216,6 @@ def test_sources_tab_appears_in_combined_view_and_aggregates_by_source():
 
 
 def test_sources_tab_is_hidden_with_a_single_backend():
-    # One backend -> every row is the same source (a 100% bar), so the tab is noise.
     app = app_with([workflow("a", "2026-06-01 12:00:00")])  # FakeStore: not combined
     app.focus = "months"
     assert "Harnesses" not in app.current_tabs()

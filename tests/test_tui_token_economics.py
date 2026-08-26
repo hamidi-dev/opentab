@@ -1,5 +1,3 @@
-"""Token economics: a scope's tokens and its list-rate cost, split by token type."""
-
 import opentab.tui.app as app_mod
 from opentab.heatmap import TOKEN_SERIES_BASE_PAIR
 from opentab.pricing import TOKEN_TYPES, api_equivalent_cost, model_price
@@ -8,9 +6,7 @@ from tests._support import AttrScreen, _model_row, app_with, workflow
 
 
 def _row(model, **tok):
-    # A per-model breakdown row with an explicit token split. tokens_total has to agree
-    # with the parts: model_row_split derives `input` from the remainder when a store
-    # doesn't carry it, and a mismatch there would silently invent input tokens.
+    # model_row_split derives missing input from this exact total.
     row = _model_row(model, 0.0, 0)
     row.update(tok)
     row["tokens_total"] = sum(
@@ -20,8 +16,6 @@ def _row(model, **tok):
 
 
 def _unbox(lines):
-    # The box's content rows, with the "│ … │" gutters and the padding stripped -- what
-    # the builders recorded before _sectioned_box framed them.
     return [ln[2:].rstrip(" │|") for ln in lines if ln[:1] in ("│", "|")]
 
 
@@ -36,9 +30,6 @@ def _app(rows_by_session, workflows=None):
 
 
 def test_the_five_parts_sum_to_the_api_equivalent_total():
-    # The whole contract: this is a DECOMPOSITION of a figure the rest of the UI already
-    # prints, so it has to use api_equivalent_cost's own arithmetic. If the two ever
-    # disagree, the Token economics TOTAL contradicts the Money card on the same screen.
     rows = [
         _row(
             "anthropic/claude-opus-4.5",
@@ -71,17 +62,12 @@ def test_the_five_parts_sum_to_the_api_equivalent_total():
 
 
 def test_volume_and_spend_shares_disagree_which_is_the_point():
-    # One model, a cache-heavy mix: cache reads dominate the token count and output
-    # dominates the bill. A chart that showed only one of the two would say the opposite
-    # thing depending on which one you picked.
     rows = [_row("anthropic/claude-opus-4.5", output=50_000, cache_read=5_000_000)]
     econ = _app({"a": rows}).token_economics([workflow("a", "2026-06-01 12:00:00")])
     read_i, out_i = TOKEN_TYPES.index("Cache read"), TOKEN_TYPES.index("Output")
     vol = lambda i: econ.tokens[i] / econ.total_tokens  # noqa: E731
     spend = lambda i: econ.cost[i] / econ.total_cost  # noqa: E731
     assert econ.tokens[read_i] > econ.tokens[out_i] * 50  # reads are the volume
-    # The two measures pull in opposite directions -- reads shrink from volume to spend,
-    # output grows. Reading either one alone gives the opposite answer.
     assert vol(read_i) > spend(read_i)
     assert spend(out_i) > vol(out_i) * 20
     _ir, orr, crr, _cw = model_price("anthropic/claude-opus-4.5")
@@ -90,8 +76,6 @@ def test_volume_and_spend_shares_disagree_which_is_the_point():
 
 
 def test_reasoning_bills_at_the_output_rate_but_keeps_its_own_row():
-    # Reasoning has no rate of its own -- it bills as output. Folding it INTO output
-    # would still total correctly and would hide "you paid $x to think".
     rows = [_row("openai/gpt-5.5", output=10_000, reasoning=10_000)]
     econ = _app({"a": rows}).token_economics([workflow("a", "2026-06-01 12:00:00")])
     out_i, rea_i = TOKEN_TYPES.index("Output"), TOKEN_TYPES.index("Reasoning")
@@ -100,10 +84,6 @@ def test_reasoning_bills_at_the_output_rate_but_keeps_its_own_row():
 
 
 def test_local_models_leave_both_rows_not_just_the_cost_one():
-    # A local model has no API rate. Dropping it from cost while keeping it in volume
-    # would draw a token type that looks free; dropping it silently would make the
-    # totals disagree with the Models tab for no visible reason. So: excluded from
-    # both, and reported.
     rows = [
         _row("anthropic/claude-opus-4.5", input=1_000, output=1_000),
         _row("ollama/llama3.1", input=4_000_000, output=1_000_000),
@@ -115,8 +95,6 @@ def test_local_models_leave_both_rows_not_just_the_cost_one():
 
 
 def test_an_unpriced_model_marks_the_figure_as_an_estimate():
-    # Same rule as the what-if baseline: every token still gets counted (dropping them
-    # would understate the total), but the figure stops being a list price and says so.
     rows = [_row("somevendor/brand-new-model-9", input=1_000_000, output=100_000)]
     econ = _app({"a": rows}).token_economics([workflow("a", "2026-06-01 12:00:00")])
     assert econ.estimated
@@ -128,11 +106,7 @@ def test_an_unpriced_model_marks_the_figure_as_an_estimate():
 
 
 def test_a_missing_cache_read_rate_is_flagged_rather_than_read_as_free():
-    # A 0 cache-read rate is missing data, not free reads. api_equivalent_cost bills it
-    # at 0, so the decomposition has to as well (or it would stop summing to the total)
-    # -- which leaves the Cache read row understating, so the box says so beneath it.
-    # No shipped rate card has a 0 cache-read rate on a model that charges for input
-    # (the generic fallback carries 0.2), so the case has to be staged.
+    # Shipped paid cards have cache-read rates, so stage the missing-rate case.
     app = _app({"a": [_row("weird/no-cache-rate", input=1_000, cache_read=9_000_000)]})
     original = app_mod.model_price
     try:
@@ -165,8 +139,6 @@ def test_the_box_shows_both_shares_and_says_it_is_list_rates():
 
 
 def test_the_box_is_two_stacked_bars_that_sum_to_the_pane_width():
-    # The same five types twice, on one shared scale -- the reading is the gap between
-    # the bars, so both must span the full lane or the comparison is a lie.
     rows = [
         _row(
             "anthropic/claude-opus-4.5",
@@ -194,9 +166,6 @@ def test_the_box_is_two_stacked_bars_that_sum_to_the_pane_width():
 
 
 def test_a_type_owns_one_colour_across_both_bars_and_the_legend():
-    # Rows are ordered by COST, so a type sits at different positions in the two bars.
-    # Its colour slot has to follow the type, not the position, or the eye cannot track
-    # a block shrinking from one bar to the next -- which is the whole reading.
     rows = [_row("anthropic/claude-opus-4.5", output=50_000, cache_read=5_000_000)]
     app = _app({"a": rows})
     lines = app.renderer._token_economics_box(app.loaded, 100)
@@ -220,8 +189,6 @@ def test_a_narrow_pane_drops_the_bars_and_keeps_every_number():
 
 
 def test_every_scope_overview_carries_the_box():
-    # The pane is scope-scoped ("whatever is filtered"), so it has to be on each of the
-    # Overviews, not just the app-wide one.
     ws = [workflow("a", "2026-06-01 12:00:00", directory="/x", cost=2.0, tokens=1000)]
     app = app_with(ws)
     app._model_by_root = {
@@ -240,9 +207,6 @@ def test_every_scope_overview_carries_the_box():
 
 
 def test_the_painted_bar_carries_five_distinct_colour_pairs():
-    # The runs are plain data until paint time; this is the other half -- that the paint
-    # pass actually overwrites each segment with its own pair, on top of the single
-    # attribute write_rich laid down for the whole line.
     import opentab as ot
 
     rows = [
@@ -259,8 +223,7 @@ def test_the_painted_bar_carries_five_distinct_colour_pairs():
     r = app.renderer
     lines = r._token_economics_box(app.loaded, 80)
     bar = _bars(lines)[0]
-    # color_pair() needs a live screen; stand in a pure function of the pair number so
-    # the attributes stay distinguishable and the arithmetic stays checkable headless.
+    # Keep pair attributes distinguishable without a live screen.
     orig = ot.curses.color_pair
     ot.curses.color_pair = lambda n: n << 8
     try:
@@ -277,10 +240,6 @@ def test_the_painted_bar_carries_five_distinct_colour_pairs():
 
 
 def test_a_pair_starved_terminal_keeps_the_types_apart_with_glyphs():
-    # 8 colours is not the problem -- five distinct ANSI hues exist. A terminal short on
-    # COLOR_PAIRS is: _set_pair silently skips the block and every segment would render
-    # in the terminal default, one indistinguishable smear across a chart whose whole
-    # job is telling five things apart. There, the glyph carries the distinction.
     rows = [
         _row(
             "anthropic/claude-opus-4.5",
@@ -306,10 +265,6 @@ def test_a_pair_starved_terminal_keeps_the_types_apart_with_glyphs():
 
 
 def test_the_frame_wraps_the_chart_and_the_paint_sees_through_its_gutter():
-    # One box holds the bars, the legend and the numbers, so the chart reads as a single
-    # object. That means the painted line is the recorded one wrapped in "│ … │" -- the
-    # paint pass has to find its runs through the gutter and shift them by it, or every
-    # segment would be coloured two cells to the left.
     import opentab as ot
 
     rows = [
@@ -321,9 +276,7 @@ def test_the_frame_wraps_the_chart_and_the_paint_sees_through_its_gutter():
             cache_read=5_000_000,
             cache_write=100_000,
         ),
-        # A local model earns the box a note (its tokens have no API rate, so they are
-        # excluded from both bars) without touching either bar's composition -- the
-        # subject here is the frame, and the notes have to ride OUTSIDE it.
+        # Local usage adds a note outside the frame without changing the bars.
         _row("ollama/llama3.1", input=7_000),
     ]
     app = _app({"a": rows})
@@ -341,8 +294,6 @@ def test_the_frame_wraps_the_chart_and_the_paint_sees_through_its_gutter():
         r._paint_token_runs(screen, 4, 0, boxed, len(boxed))
     finally:
         ot.curses.color_pair = orig
-    # Each segment is coloured at its gutter-shifted column, and the frame itself is
-    # never repainted (column 0 stays untouched).
     assert (4, 0) not in screen.attrs
     for col, _w, slot in runs:
         assert (
@@ -351,8 +302,6 @@ def test_the_frame_wraps_the_chart_and_the_paint_sees_through_its_gutter():
 
 
 def test_a_legend_too_wide_for_the_pane_wraps_instead_of_being_clipped():
-    # A clipped legend loses exactly the small types whose segments were already too
-    # narrow to label -- the ones it exists to explain.
     rows = [
         _row(
             "anthropic/claude-opus-4.5",

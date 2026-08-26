@@ -14,14 +14,10 @@ from opentab.util import git_root, safe_float, safe_int, tool_rows_from_turns
 
 
 class CsvStore:
-    """Read a CSV of logged API requests (e.g. GitHub Copilot inside IntelliJ) behind
-    the same interface App expects from Store: workflows(), summary(), workflow_nodes(),
-    model_breakdown(), plus the .demo/.demo_scale attributes -- like the JSONL backends.
+    """Read one logged API request per CSV row.
 
-    CSV is already tabular, so this is the simplest backend: one row per API request
-    (pre-aggregated rows work too), rolled up by session. Column names are matched
-    case-insensitively with aliases, so the exporter has latitude. Required: a timestamp,
-    a model, and input/output token counts. Everything else is optional:
+    Headers are case-insensitive aliases. Timestamp, model, input, and output are
+    required; supported optional fields are:
 
         timestamp  time|date|created_at|ts        ISO-8601 or epoch (s/ms/us)
         model      model_id|model_name            e.g. claude-sonnet-4, gpt-4o, gemini-2.5-pro
@@ -36,26 +32,10 @@ class CsvStore:
         title      name|label                      session label (default first prompt)
         cost       cost_usd|credits                credits x $0.01; presence -> metered
 
-    A logged API request carries no dollar cost (Copilot's usage-based credit billing is
-    settled server-side), so a Copilot row is treated like an OpenCode *subscription* row:
-    recorded cost $0, every token unpriced, and the normal "$" machinery reprices it at API
-    list rates.
-    But cost is handled per-row like HermesStore: if the CSV carries a cost_usd/credits
-    column with positive values those rows price as real spend, so records_cost is a
-    per-instance property (True iff any row has a recorded cost), resolved lazily --
-    derived from a parse when one has run, else probed on first read (never in __init__,
-    so the warm-start cache can answer it without touching the file).
-
-    Models are mixed-provider, so each id is provider-prefixed (claude->anthropic/,
-    gpt|o3->openai/, gemini->google/) for pricing and the Providers rollup. OpenAI-style
-    accounting: input_tokens includes the cached read, so input is split into uncached +
-    cache_read (cache_write stays 0). No subagent tree -- every session is one depth-0
-    node. Sessions with no recorded token usage are dropped. Implements the **Turns**
-    opt-in (message_timeline/supports_turns): each row is one turn, the optional
-    `prompt` column grouping them under ▸ headers -- and the **Tools** opt-in
-    (tool_breakdown/supports_tools, gated per session on the optional `tool`
-    column being used): the row's tokens/cost split evenly across the tools it
-    names ("Bash;Read"). JsonlStore, the per-line twin, inherits this machinery.
+    Positive per-row cost is recorded spend; zero-cost rows remain unpriced, even when
+    mixed with metered rows of the same model. Input includes cache reads and is split
+    accordingly. Missing session ids create stable daily project buckets. Malformed rows
+    are skipped. JsonlStore inherits the accumulation and Turns/Tools behavior.
     """
 
     combined = False
@@ -117,14 +97,11 @@ class CsvStore:
     def __init__(self, csv_path: str, args: argparse.Namespace):
         self.csv_path = csv_path
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the
-        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
-        self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
+        self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
         self._records_cost: bool | None = None  # resolved lazily (records_cost property)
 
-    # --- header / value parsing ---------------------------------------------
     @classmethod
     def _resolve_headers(cls, fieldnames) -> tuple[dict[str, str], bool]:
         # Map canonical field -> the actual CSV header for it (first alias wins), plus a
@@ -282,7 +259,6 @@ class CsvStore:
             return False
         return False
 
-    # --- accumulation --------------------------------------------------------
     @staticmethod
     def _new_acc() -> dict:
         return {
@@ -335,7 +311,6 @@ class CsvStore:
             "synthetic": False,  # minted (date, project) bucket, not a logged session id
         }
 
-    # --- parsing -------------------------------------------------------------
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
             return self._sessions
@@ -546,7 +521,6 @@ class CsvStore:
             "tokens_total": acc["tokens_total"],
         }
 
-    # --- Store interface -----------------------------------------------------
     def cache_inputs(self) -> list[str]:
         # The single CSV file whose (size, mtime) fingerprints the warm-start cache.
         return [self.csv_path]
@@ -624,7 +598,6 @@ class CsvStore:
     def _demo_node(self, n: dict) -> dict:
         return scramble_node(n, self.demo_scale, self.demo_cats)
 
-    # --- Turns tab opt-in ----------------------------------------------------
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # Chronological per-turn rows. Canonical "YYYY-MM-DD HH:MM:SS" timestamps
         # sort in time order; a turn's prompt_id (the explicit id, else the prompt

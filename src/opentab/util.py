@@ -1,5 +1,3 @@
-"""Clipboard, launchers, git roots, fuzzy match, date/range parsing, tool labels."""
-
 from __future__ import annotations
 
 import json
@@ -19,27 +17,11 @@ _UNICODE_SCREEN: bool | None = None
 
 
 def unicode_screen() -> bool:
-    """Can curses actually put a multibyte glyph on the screen, legibly?
+    """Whether curses can render the UI's multibyte glyphs with stable cell widths.
 
-    Only in a UTF-8 locale (cli.enable_unicode_locale forces one wherever it can).
-    Anywhere else this has to be answered *before* drawing, because curses will not
-    tell you afterwards: CPython hands a str to the wide-character path (add_wch /
-    addwstr), which never consults an encoding, so an unencodable glyph raises
-    nothing -- it just leaves a garbage byte in the cell (measured in a US-ASCII
-    locale: `┏` lands as 0x0f). Only the locale-independent ACS line set survives
-    there, which is why the frame asks this before choosing its glyphs. (A legacy
-    CJK codeset like EUC-JP *can* encode box drawing, but renders it ambiguous-width
-    -- two cells -- which breaks every frame's geometry: UTF-8 is the right gate,
-    not "can encode".)
-
-    The Linux virtual console is the one terminal that pairs a UTF-8 locale with a
-    font that cannot show the glyphs: console fonts carry CP437's *light* box
-    drawing only, so a heavy `┏` goes out as valid UTF-8 and comes up a replacement
-    blob -- rendered client-side, invisible to curses, no error to catch. TERM is
-    the only tell. ACS is what terminfo knows how to draw there.
-
-    No nl_langinfo means Windows, where windows-curses renders the wide glyphs the
-    whole UI already draws -- so it is a yes.
+    In non-UTF-8 locales curses can silently paint garbage rather than raise (measured:
+    heavy ``┏`` became 0x0f). The Linux console also needs ACS despite UTF-8 because its
+    font lacks heavy frames. Windows without nl_langinfo supports wide glyphs via curses.
     """
     global _UNICODE_SCREEN
     if _UNICODE_SCREEN is None:
@@ -54,11 +36,7 @@ def unicode_screen() -> bool:
 
 
 def env_flag(name: str) -> bool | None:
-    """A tri-state environment switch: True, False, or None when it isn't set.
-
-    `bool(os.environ.get(...))` would read "0" and "false" as *on*, since any non-empty
-    string is truthy -- so a user trying to turn something off would turn it on.
-    """
+    """Read an environment switch without treating ``0`` or ``false`` as enabled."""
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return None
@@ -66,38 +44,17 @@ def env_flag(name: str) -> bool | None:
 
 
 def palette_writes_ignored() -> bool:
-    """Is this a terminal that accepts `init_color` and then throws the write away?
+    """Detect hosts known to accept palette writes but not render them.
 
-    Such a terminal can't be probed: `color_content()` reports ncurses' own idea of the
-    palette rather than the screen's, and a host that answers `OSC 4;n;?` truthfully
-    from a palette it never renders through looks identical to one that works. So this
-    is a deliberate denylist of programs known to do it, keyed on an identifier the
-    program sets itself -- never a guess from TERM.
-
-    **herdr** (`HERDR_ENV`) is a terminal multiplexer that runs each pane under
-    libghostty-vt and re-emits the parsed cells to the real terminal. It stores an
-    OSC 4 palette write (its OSC 4 *query* even answers with it), but a cell that
-    carries a palette index is forwarded as an INDEX, not as the redefined colour --
-    so the host terminal resolves it against its own palette and the write is
-    structurally discarded. Truecolor cells pass through untouched, which is why other
-    TUIs re-colour correctly inside it and opentab did not (issue #12). Verified
-    against herdr 0.7.5: `ghostty_cell_color()` maps `CellColor::Palette(i)` to
-    `Color::Indexed(i)`, and the resolved palette is read only to answer queries.
+    This cannot be probed: curses and OSC queries report stored palette state, not the
+    displayed cell. Herdr 0.7.5 forwards ``CellColor::Palette(i)`` as the index, so the
+    outer terminal resolves its own palette and discards the redefinition.
     """
     return in_herdr()
 
 
-# Terminal multiplexers, each keyed on a marker the program sets ITSELF -- the same
-# denylist discipline palette_writes_ignored explains, and for the same reason: a
-# multiplexer is invisible from inside except for what it advertises, and TERM is a
-# guess (tmux and screen share `screen-256color`, and a bare `xterm-256color` says
-# nothing either way).
-#
-# Presence, NOT env_flag: zellij sets $ZELLIJ to the string "0", which env_flag reads
-# as *off* -- it is tri-state for switches a user turns on and off, and these are not
-# switches. herdr is the exception, and deliberately: palette_writes_ignored decides
-# the colour path from env_flag("HERDR_ENV") is True, so detecting it any other way
-# would let the two rows of a doctor report disagree about the same terminal.
+# Use markers set by each multiplexer, never TERM guesses. Presence matters because
+# Zellij sets ``ZELLIJ=0``; Herdr alone shares env_flag semantics with colour detection.
 _MULTIPLEXERS = (
     ("tmux", "TMUX"),
     ("GNU screen", "STY"),
@@ -108,22 +65,14 @@ _MULTIPLEXERS = (
 
 
 def terminal_multiplexers() -> list[str]:
-    """Every terminal multiplexer this process is running inside.
+    """Return detected multiplexer layers; environment markers reveal no nesting order.
 
-    Usually zero or one; more than one means genuine nesting (tmux inside screen over
-    ssh is the classic), which is worth knowing because each layer re-emits the cells
-    the layer below produced and any of them can be the one mangling colour or glyphs.
-    Nesting order is not recoverable from the environment, so this is a set, not a
-    stack.
-
-    Byobu rides along as a qualifier rather than a layer: it is a *configuration* of
-    tmux or screen, not something wrapped around one, and counting it would report a
-    plain byobu session as two-deep.
+    Byobu qualifies its tmux/screen backend rather than adding a false second layer.
     """
 
     def running(name: str, var: str) -> bool:
         if name == "herdr":
-            return in_herdr()  # match palette_writes_ignored exactly
+            return in_herdr()
         return bool(os.environ.get(var))
 
     found = [name for name, var in _MULTIPLEXERS if running(name, var)]
@@ -135,22 +84,11 @@ def terminal_multiplexers() -> list[str]:
 
 
 def init_color_allowed() -> bool:
-    """May the renderer redefine palette slots to hit the theme's exact colours?
+    """Choose exact palette writes or nearest-256 fallback.
 
-    An explicit $OPENTAB_NO_INIT_COLOR wins over the detection, in BOTH directions:
-    `=1` for an affected terminal we don't know about yet (the denylist is provably
-    incomplete, and the failure can't be probed -- see palette_writes_ignored), and
-    `=0` to force the exact colours back on inside a host we do detect, so one that
-    fixes its rendering doesn't leave opentab approximating forever.
-
-    Deliberately an env var and not a CLI flag: this describes the TERMINAL, not the
-    invocation, so it wants to be set once in that terminal's profile rather than
-    remembered on every launch. It's the same reason it is never saved to state.json --
-    one emulator's run must not impose it on the next.
-
-    Lives here, beside its two inputs, rather than in cli: `opentab doctor` reports
-    which path the renderer will take and why, and a second copy of these two lines is
-    exactly how the report would come to disagree with the renderer it describes.
+    ``OPENTAB_NO_INIT_COLOR`` overrides detection in both directions because failures
+    cannot be probed and hosts may later be fixed. It is terminal state, not persisted
+    app state. Doctor and renderer share this single decision.
     """
     forced = env_flag("OPENTAB_NO_INIT_COLOR")
     if forced is not None:
@@ -158,31 +96,14 @@ def init_color_allowed() -> bool:
     return not palette_writes_ignored()
 
 
-# The largest integer a float holds exactly, and the ceiling for BOTH coercers below.
-# JSON has no size limit on a number and Python's int has no ceiling either, so a
-# 400-digit count parses fine, sums fine, and then raises `OverflowError: int too large
-# to convert to float` out of the FIRST float it meets -- api_equivalent_cost's multiply
-# under "$", or the tokens() formatter's divide. That is a crash one whole layer away
-# from the parse that let it in, in a store that never touched the bad file.
-#
-# The float side needs the same ceiling and not merely a finiteness check, because
-# finite is not the same as safe to ADD UP: `1e308` is a perfectly finite float, and two
-# of them sum to inf -- which raises nothing and silently poisons every session, day and
-# month total downstream. Bounded here instead, so no caller has to re-check a sum.
-# Nothing real is within nine orders of magnitude of this, in tokens or in dollars.
+# Bound untrusted numbers to the largest exact float integer. Huge Python ints fail only
+# later during pricing/formatting, while individually finite floats such as 1e308 can sum
+# to infinity and silently poison every aggregate.
 _NUMERIC_LIMIT = 1 << 53
 
 
 def safe_int(value) -> int:
-    """A non-negative token count read from an untrusted log field, or 0.
-
-    Every file backend coerces its usage fields through this one rule, because each
-    way of getting it wrong is a whole backend lost rather than one record skipped:
-    a string or a nested object raises TypeError/ValueError; `1e400` is valid JSON
-    that parses to inf, and `int(inf)` raises **OverflowError** — an ArithmeticError,
-    so the obvious `except (TypeError, ValueError)` misses it; and a huge JSON
-    *integer* raises nothing at all here (see `_NUMERIC_LIMIT`).
-    """
+    """Coerce an untrusted non-negative count, rejecting infinities and huge integers."""
     try:
         num = int(value)
     except (TypeError, ValueError, OverflowError):
@@ -191,14 +112,7 @@ def safe_int(value) -> int:
 
 
 def safe_float(value, default: float = 0.0) -> float:
-    """A finite, summable float read from an untrusted log field, or `default`.
-
-    The cost twin of `safe_int`, and the more dangerous half: an inf cost does not
-    raise anywhere, it silently poisons every sum it reaches — every session, day and
-    month total downstream reads `$inf`. (A huge JSON integer *does* raise here, out
-    of float() itself.) Bounded by magnitude, not just checked for finiteness, because
-    two finite `1e308` costs still sum to inf — see `_NUMERIC_LIMIT`.
-    """
+    """Coerce an untrusted summable float, bounded to prevent infinite aggregates."""
     try:
         num = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -207,9 +121,7 @@ def safe_float(value, default: float = 0.0) -> float:
 
 
 def _read_text(path: str) -> str | None:
-    # Text mode: universal-newline translation (\r\n -> \n) matches what `for line in
-    # fh` yields, so a caller that splits on "\n" gets exactly the same lines. Returns
-    # None on an unreadable file, which read_files_parallel drops.
+    # Universal-newline text matches serial line iteration; unreadable files are skipped.
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             return fh.read()
@@ -224,21 +136,16 @@ def _read_worker_count(n: int) -> int:
             return max(1, min(n, int(override)))
         except ValueError:
             pass
-    # Reading files is I/O-bound and open()/read() release the GIL, so oversubscribing
-    # cores overlaps the per-file open latency that dominates on Windows/WSL (every open
-    # is virus-scanned). Cap it so a huge transcript dir can't spawn a thread per file.
+    # Overlap Windows/WSL open latency without spawning a thread per transcript.
     return max(1, min(16, n, (os.cpu_count() or 4) * 2))
 
 
 def read_files_parallel(paths, max_workers: int | None = None):
-    """Yield (path, text) for each readable path, IN THE GIVEN ORDER, reading the files
-    concurrently in a thread pool.
+    """Read concurrently but yield readable files in input order.
 
-    Only the I/O is parallel: json.loads and each store's cross-file dedup/merge stay on
-    the caller's thread, so parsing determinism is untouched -- this just hides the
-    per-file open/read latency instead of paying it one file at a time. Unreadable files
-    are skipped. Set OPENTAB_MAX_WORKERS=1 to force serial reads (an A/B baseline, or a
-    filesystem that punishes concurrent opens)."""
+    Parsing and cross-file dedup stay serial and deterministic. Set
+    ``OPENTAB_MAX_WORKERS=1`` for an A/B baseline or hostile filesystem.
+    """
     paths = list(paths)
     if not paths:
         return
@@ -249,12 +156,10 @@ def read_files_parallel(paths, max_workers: int | None = None):
             if text is not None:
                 yield path, text
         return
-    # Imported here, not at module scope: concurrent.futures drags in logging +
-    # traceback + subprocess (~10ms), which every one-shot `opentab cost` would
-    # otherwise pay to reach money() -- and the serial path above never needs it.
+    # Keep concurrent.futures' measured ~10ms import cost off one-shot cost commands.
     from concurrent.futures import ThreadPoolExecutor
 
-    window = workers * 4  # bound how many files' contents sit in memory at once
+    window = workers * 4  # Bound file contents retained in memory.
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="opentab-read") as ex:
         for start in range(0, len(paths), window):
             batch = paths[start : start + window]
@@ -263,16 +168,8 @@ def read_files_parallel(paths, max_workers: int | None = None):
                     yield path, text
 
 
-# The coding tools' built-in tools (OpenCode, plus Claude Code / Codex / pi names,
-# matched lowercased; the historical constant name stays for the public API).
-# Everything else is an MCP server or a local plugin tool, which OpenCode names
-# "{server}_{tool}" (e.g. serena_find_symbol, playwright_browser_navigate) -- so the
-# server is the segment before the first underscore -- and Claude Code names
-# "mcp__{server}__{tool}". This set is only used to LABEL the Tools tab's server
-# rollup (built-in vs MCP); the token/cost attribution itself never depends on it.
-# Built-in names that themselves contain an underscore (apply_patch, shell_command,
-# update_plan...) must stay listed here so they aren't mis-split into a fake
-# "apply"/"shell" server.
+# Public historical name covering built-ins across harnesses. Underscored built-ins must
+# be explicit or server rollups misclassify them; attribution never depends on this set.
 OPENCODE_BUILTIN_TOOLS = frozenset(
     {
         "bash",
@@ -294,7 +191,7 @@ OPENCODE_BUILTIN_TOOLS = frozenset(
         "skill",
         "plan_exit",
         "invalid",
-        # Claude Code (logged CamelCase; matched lowercased)
+        # Claude Code logs these in CamelCase.
         "websearch",
         "toolsearch",
         "notebookedit",
@@ -304,8 +201,7 @@ OPENCODE_BUILTIN_TOOLS = frozenset(
         "bashoutput",
         "killshell",
         "slashcommand",
-        # Codex CLI (the underscored ones must be listed or they'd mis-split
-        # into a fake "shell"/"update" server)
+        # Codex CLI
         "shell",
         "shell_command",
         "update_plan",
@@ -316,11 +212,7 @@ OPENCODE_BUILTIN_TOOLS = frozenset(
 
 
 def tool_namespace(tool: str) -> str:
-    # Group a tool name into its source for the Tools tab's server rollup: a built-in
-    # tool folds to "(built-in)" -- matched case-insensitively, since OpenCode/pi log
-    # "bash" where Claude Code logs "Bash"; an MCP tool goes to its server, in Claude
-    # Code's "mcp__server__tool" form or OpenCode's "server_tool" prefix; anything
-    # else stands alone as its own bucket.
+    # Normalize built-ins case-insensitively and both MCP naming conventions.
     if tool.lower() in OPENCODE_BUILTIN_TOOLS:
         return "(built-in)"
     if tool.startswith("mcp__"):
@@ -330,12 +222,8 @@ def tool_namespace(tool: str) -> str:
 
 
 def short_tool_name(tool: str) -> str:
-    # An MCP tool's name for a per-turn cell: "mcp__chrome-devtools__take_screenshot"
-    # -> "chrome-devtools/take_screenshot". The "mcp__" wrapper is noise in a column
-    # this narrow, but the SERVER is not -- two servers can expose the same tool name,
-    # and the Tools tab rolls up by server precisely because that is the distinction
-    # that matters. Everything else stands verbatim: unlike tool_namespace, this does
-    # NOT split on a single "_", which would cut "update_plan" down to "update".
+    # Remove the MCP wrapper but retain the server, which disambiguates duplicate names.
+    # Non-MCP underscores remain intact.
     if tool.startswith("mcp__"):
         parts = tool.split("__")
         if len(parts) > 2 and parts[1]:
@@ -344,23 +232,10 @@ def short_tool_name(tool: str) -> str:
 
 
 def tool_names(value) -> list[str]:
-    """A turn's `tools` field normalized to a list of usable names.
+    """Validate the transcript/export ``tools`` trust boundary in one place.
 
-    THE one gate every reader of that field goes through -- the labels, the Calls
-    count, the column gates in both frontends, and the export's sanitizer. It exists
-    because the field crosses a trust boundary: it is built from whatever a harness
-    wrote into its transcript (Claude keeps any truthy `tool_use.name`, whatever its
-    JSON type) or from another machine's export, and two bugs came straight out of
-    not gating it in one place:
-
-    - a NON-STRING entry (`[["x"]]`, from a malformed name field) reached
-      `short_tool_name` and raised AttributeError -- a crash in the middle of a paint;
-    - an EMPTY name made the two frontends disagree, because the TUI gated its column
-      on the rendered label (empty -> column dropped) while the page gated on the raw
-      list length (non-zero -> a column of "-").
-
-    A bare string is rejected rather than wrapped: iterating one yields single
-    CHARACTERS, so "Bash" would become four one-letter tools.
+    Reject non-string and empty names before labels, hashing, or frontend column gates.
+    A bare string is invalid because treating it as an iterable creates character tools.
     """
     if not isinstance(value, (list, tuple)):
         return []
@@ -368,12 +243,7 @@ def tool_names(value) -> list[str]:
 
 
 def tool_call_label(tools) -> str:
-    # One turn's tool calls as a single cell, in CALL ORDER with repeats folded:
-    # ["Bash"] -> "Bash", ["Bash", "Bash"] -> "Bash ×2", ["Bash", "Read"] ->
-    # "Bash, Read". Order is preserved (dicts keep insertion order) so the cell reads
-    # like the step actually ran, and the counts are kept because "this turn called
-    # Bash eight times" is a different story from "this turn called Bash" -- which is
-    # exactly what the Turns tab is read for.
+    # Preserve call order while folding repeats into counts.
     counts: dict[str, int] = {}
     for tool in tool_names(tools):
         name = short_tool_name(tool)
@@ -382,10 +252,7 @@ def tool_call_label(tools) -> str:
 
 
 def tool_mix_label(turns) -> str:
-    # The same cell for a whole PROMPT: every tool its turns called, folded and ordered
-    # by call count (busiest first) rather than by first use -- a prompt that ran 40
-    # turns is read for what it spent its time doing, and the tail is what a narrow
-    # column drops first. Ties keep call order, so the label is stable frame to frame.
+    # Rank prompt-wide tools busiest-first; stable ties preserve first-call order.
     counts: dict[str, int] = {}
     for turn in turns or ():
         for tool in tool_names(turn.get("tools")):
@@ -395,23 +262,12 @@ def tool_mix_label(turns) -> str:
     return ", ".join(n if c == 1 else f"{n} ×{c}" for n, c in ordered)
 
 
-# Agent names that identify nothing -- what a backend writes when it delegated but did
-# not record to whom (Claude Code names none of its Tasks). Shared by the flamegraph's
-# segment labels and the Turns tab's Agents cell, so the two can't disagree about which
-# names are worth printing.
+# Shared dull-name rule keeps flamegraph and Turns labels consistent.
 DULL_AGENT_NAMES = frozenset({"", "-", "subagent", "unknown", "(untitled)"})
 
 
 def agent_mix_label(turns) -> str:
-    # Which subagents a whole PROMPT delegated to, busiest first -- the tool_mix_label
-    # cell for the Agent column. Only the turns that ran UNDER an agent count (depth),
-    # since a main-thread turn's label names the harness's own agent and would make
-    # every prompt look delegated.
-    #
-    # Unnamed executions fold into one "subagent ×n" rather than repeating a label that
-    # identifies nothing: Claude Code writes the literal "subagent" on every Task, so
-    # keeping them apart would spend the whole cell saying "subagent, subagent, subagent"
-    # on the backend where delegation is most common.
+    # Count only nested turns. Fold anonymous executions into one useful total.
     counts: dict[str, int] = {}
     unnamed = 0
     for turn in turns or ():
@@ -430,19 +286,10 @@ def agent_mix_label(turns) -> str:
 
 
 def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
-    # Aggregate per-turn rows (each carrying the "tools" it invoked that step) into
-    # the per-(tool, model) rows the Tools tab expects -- the Store.tool_breakdown
-    # attribution, computed off the in-memory turn rows the file-based backends
-    # already build: a turn's tokens/cost split evenly across its tool calls, so a
-    # step that called two tools contributes half its tokens to each. Duplicate
-    # names are kept (two Bash calls in one step = two calls, two shares). Turns
-    # with no tool calls don't appear -- this is "tokens spent in turns that used
-    # this tool", not the tool's own output size.
+    # Attribute a turn evenly across all calls, including duplicates. This measures
+    # tokens in turns using a tool, not the tool output's size.
     agg: dict[tuple[str, str], dict] = {}
-    # cache_write_1h rides along as a plain summed field: it is a SUBSET of cache_write,
-    # and dividing both by the same n keeps it one (a half-share of a turn's long writes
-    # sits inside that turn's half-share of all its writes). Backends that record no TTL
-    # tier simply contribute 0.
+    # Dividing the 1h-write subset by the same share preserves its subset invariant.
     fields = (
         "tokens_total",
         "input",
@@ -454,13 +301,7 @@ def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
         "cost",
     )
     for t in turns:
-        # Through the same gate the Turns tab uses -- this is the OTHER reader of the
-        # field, and it was the one that could still be hurt by it. A list-valued name
-        # (Claude keeps any truthy `tool_use.name`, whatever its JSON type) is used as
-        # part of a dict KEY below, so it raised `TypeError: unhashable type: 'list'`
-        # the moment you opened Tools on that session; and an empty name became a real
-        # row that took an even SHARE of the turn's tokens, so one bad entry beside
-        # "Bash" moved half that turn's attribution onto a nameless tool.
+        # Validate before names become hash keys or take an attribution share.
         tools = tool_names(t.get("tools"))
         n = len(tools)
         if not n:
@@ -479,16 +320,8 @@ def tool_rows_from_turns(turns: list[dict]) -> list[dict]:
 
 
 def model_row_split(row) -> tuple[float, float, float, float, float]:
-    # One model-breakdown row's tokens as (input, output, reasoning, cache_read,
-    # cache_write) -- pricing.api_equivalent_cost's argument order, so a row can be
-    # priced with `api_equivalent_cost(name, *model_row_split(row))`.
-    #
-    # These rows are the ONE place a session's tokens are split per model (a node row
-    # carries only its single dominant model label), which is what makes them the exact
-    # basis for the `w` what-if's baseline and for the P overlay's token mix. Old stores
-    # and in-memory test rows may carry no `input` column, so the total's remainder
-    # stands in for it -- the same rule in both callers, in one place, because a baseline
-    # and the mix it is compared against must count the same tokens.
+    # Match api_equivalent_cost's argument order. Per-model rows, unlike dominant-model
+    # nodes, provide the exact what-if baseline. Infer input for legacy rows from remainder.
     out = float(row.get("output") or 0)
     reasoning = float(row.get("reasoning") or 0)
     cache_read = float(row.get("cache_read") or 0)
@@ -502,33 +335,18 @@ def model_row_split(row) -> tuple[float, float, float, float, float]:
 
 
 def model_row_1h_write(row) -> float:
-    """The 1-hour-TTL SUBSET of a model row's cache writes (0 when unknown).
-
-    Deliberately NOT a sixth element of model_row_split: that tuple is the token *mix*
-    every caller blends over (price_token_mix's four-way share, the P overlay's eff
-    $/M), and a subset added there would be counted as extra volume. This is a pricing
-    refinement, so it travels beside the split -- api_equivalent_cost takes it as its
-    own trailing argument. Absent on every backend but Claude Code, which is the only
-    one whose logs record the TTL tier.
-    """
+    """Return the 1h subset separately so token-mix totals never double-count it."""
     return float(row.get("cache_write_1h") or 0)
 
 
 def node_1h_write(node) -> int:
-    """The 1-hour-TTL subset of a subagent-node row's cache writes (0 when unknown).
-
-    Separate from model_row_1h_write because node rows are NOT always dicts: OpenCode's
-    workflow_nodes yields sqlite3.Row, which has no .get -- a missing key raises IndexError
-    there and KeyError on a dict. Only Claude Code records the TTL tier, so every other
-    backend legitimately has no such column and prices as it always did.
-    """
+    """Read the optional 1h subset from dicts or sqlite3.Row values."""
     try:
         return int(node["tokens_cache_write_1h"] or 0)
     except (KeyError, IndexError, TypeError):
         return 0
 
 
-# --- context-composition estimation (the Context tab) ------------------------
 # No tokenizer in the stdlib, so composition sizes are chars/4 estimates -- the
 # same coarse constant zaly's own /context command uses (and labels "estimated"),
 # which keeps opentab's Zaly numbers comparable to zaly's. Attachments have no
@@ -538,15 +356,12 @@ ATTACHMENT_EST_TOKENS = {"image": 1500, "audio": 3000, "pdf": 8000, "video": 500
 
 
 def est_tokens(text) -> int:
-    # Estimated token count of a text blob (never 0 for non-empty text).
     if not text:
         return 0
     return max(1, (len(text) + EST_CHARS_PER_TOKEN - 1) // EST_CHARS_PER_TOKEN)
 
 
 def context_add(ctx: dict, category: str, kind: str, tokens: int, count: int = 1) -> None:
-    # Accumulate one content block into a session's composition map,
-    # {(category, kind): [count, est_tokens]} -- the shape context_rows flattens.
     if tokens <= 0:
         return
     row = ctx.get((category, kind))
@@ -557,8 +372,6 @@ def context_add(ctx: dict, category: str, kind: str, tokens: int, count: int = 1
 
 
 def context_rows(ctx: dict) -> list[dict]:
-    # Flatten a composition map into the rows store.context_breakdown returns,
-    # biggest first (the renderer nests kinds under their category itself).
     return sorted(
         (
             {"category": cat, "kind": kind, "count": c, "est_tokens": t}
@@ -569,50 +382,29 @@ def context_rows(ctx: dict) -> list[dict]:
     )
 
 
-# What counts as a context compaction: a drop this sharp from a context this big is a
-# clear, not just a smaller prompt. Heuristic, but backend-agnostic (only Codex records
-# resets explicitly). It lives here, not in a frontend, because FOUR views mark the same
-# event -- the TUI's Turns markers and Context curve, and the web's twin of each -- and
-# two of them sit on the same screen: disagreeing about whether the window was cleared
-# would be worse than not marking it at all.
-#
-# Both bounds are STRICT: the previous turn must be over the floor and the new one under
-# ratio × it, so an exactly-50,000-token turn is not a compaction candidate. That is the
-# rule the Context curve has always drawn with (0 turns of 37,589 real ones sit on the
-# boundary, so it decides nothing); it is stated here because the prose used to say
-# ">= 50k" while every frontend implemented ">".
+# Shared heuristic keeps four context/turn views consistent. Both bounds are strict:
+# previous context must exceed the floor and the new value be below the ratio.
 CONTEXT_COMPACT_FLOOR = 50_000
 CONTEXT_COMPACT_RATIO = 0.6
 
 
 def context_size(row) -> int:
-    # The live context at one turn: an Anthropic-style request's whole prompt is
-    # input + cache_read + cache_write, which IS what was in the window when it ran.
+    # Anthropic-style input plus cache reads/writes is the live prompt window.
     return int(
         (row.get("input") or 0) + (row.get("cache_read") or 0) + (row.get("cache_write") or 0)
     )
 
 
-# Below this a turn's context is too small for the share to mean anything (and under
-# every provider's minimum cacheable prompt), so the column stays blank rather than
-# printing a confident 0%.
+# Below provider cache minima, a cache share would imply false precision.
 CACHED_SHARE_FLOOR = 5000
 
 
 def cached_share(row):
-    """How much of ONE turn's context was served from cache, 0.0-1.0 (None if too small).
+    """Return one turn's cache-hit share, or None below the meaningful context floor.
 
-    The whole cache story in a single number, off a single turn -- no previous row, no
-    clock, no TTL. A turn either writes a sliver (its new prompt and the last reply) or
-    it re-writes the lot, and the two are nowhere near each other: measured across
-    ~37k turns, a normal turn leaves 0.4-0.7% of its context uncached while a re-buy
-    leaves 80-89%. There is no threshold to tune because there is no middle ground.
-
-    Deliberately (context - cache_read) / context rather than anything built from
-    cache_write, so it needs no per-backend branching: where writes are billed the
-    re-buy lands in cache_write (Anthropic direct), where they are not it lands in plain
-    input (Claude via GitHub Copilot records write:0 even on a miss), and both are simply
-    "not a cache hit".
+    Use cache_read rather than cache_write so billed writes and providers recording a
+    miss as plain input share one rule. In about 37k measured turns, ordinary misses and
+    full re-buys formed separate ranges, so no extra threshold is needed.
     """
     ctx = context_size(row)
     if ctx < CACHED_SHARE_FLOOR:
@@ -621,10 +413,7 @@ def cached_share(row):
 
 
 def context_compactions(rows) -> dict:
-    # {index into rows: (before, after)} for every main-thread turn whose context
-    # collapsed against the previous one. Subagents run in their own windows, so they
-    # neither trigger a marker nor break the main thread's chain; a turn with no
-    # measurable context (0) is skipped rather than read as a clear.
+    # Subagents have independent windows; zero-size turns neither clear nor break the chain.
     out: dict[int, tuple[int, int]] = {}
     prev = 0
     for i, row in enumerate(rows):
@@ -640,12 +429,10 @@ def context_compactions(rows) -> dict:
 
 
 class LazyStatusRoot(dict):
-    """A recent_roots() row whose expensive fields resolve on first access (the
-    ClaudeStore._TranscriptRoot pattern, shared by the other file backends): the
-    id and last-active come free from the file name and mtime, while "directory"
-    (a file-head read) -- or, for Codex, "id" (a spawned thread's walk up to its
-    root) -- is computed only when the --status scan actually reads it, so a
-    project scan walking rows newest-first stops paying at the row that matches."""
+    """Resolve expensive recent-root fields only until a newest-first scan matches.
+
+    Directory needs a file-head read; Codex root IDs may require walking spawned threads.
+    """
 
     def __init__(self, fields: dict, lazy: dict):
         super().__init__(fields)
@@ -662,10 +449,7 @@ MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 YEAR_PATTERN = re.compile(r"^\d{4}$")
 
 
-# The clipboard CLIs we try, per platform, each paired with how to encode the
-# payload for it. Windows ships none of the POSIX tools but always has clip.exe
-# (OEM/ANSI -- fine for the ASCII ids/paths/commands opentab copies) with
-# PowerShell's Set-Clipboard as a Unicode-safe fallback.
+# Clipboard commands and input encoding by platform; PowerShell is Windows' Unicode fallback.
 _WINDOWS_CLIPBOARD = (
     (["clip"], "utf-8"),
     (
@@ -688,7 +472,6 @@ _POSIX_CLIPBOARD = (
 
 
 def clipboard_tools_label() -> str:
-    # The tool names to name in a "no clipboard tool" notice, per platform.
     return "clip/powershell" if sys.platform == "win32" else "pbcopy/wl-copy/xclip/xsel"
 
 
@@ -713,8 +496,7 @@ def copy_to_clipboard(text: str) -> bool:
 def open_path(path: str) -> bool:
     target = os.path.expanduser(path)
     if sys.platform == "win32":
-        # Windows has no open/xdg-open; os.startfile (Windows-only) reveals the folder in
-        # Explorer, with explorer.exe as the fallback.
+        # Windows has no open/xdg-open; prefer its shell association.
         startfile = getattr(os, "startfile", None)
         if startfile is not None:
             try:
@@ -740,24 +522,15 @@ def open_path(path: str) -> bool:
 
 
 def in_tmux() -> bool:
-    # Inside a tmux session (not merely "tmux installed"): only then can the
-    # launch menu create windows/splits/popups next to opentab's own pane.
-    #
-    # Deliberately NOT terminal_multiplexers()'s tmux entry, despite reading the same
-    # variable: this asks "can I run `tmux split-window` and have it land next to me",
-    # which is true of tmux alone, while that one asks "what is between opentab and the
-    # terminal", which any of five programs answers. Folding them would make the launch
-    # menu offer tmux splits inside zellij.
+    # This asks whether tmux can create a sibling pane, unlike general mux detection.
     return bool(os.environ.get("TMUX"))
 
 
 def in_herdr() -> bool:
-    """Whether Herdr identifies the current pane through its official marker."""
     return env_flag("HERDR_ENV") is True
 
 
 def herdr_pane_id() -> str | None:
-    """The current Herdr pane ID, normalized, or None when it is unusable."""
     pane = os.environ.get("HERDR_PANE_ID")
     if pane is None:
         return None
@@ -792,7 +565,7 @@ def _tmux_pane_tty() -> str | None:
 
 
 def launch_backend() -> str | None:
-    """Select the explicit hook or the innermost supported multiplexer."""
+    """Select the explicit hook or infer the innermost supported multiplexer."""
     if launcher_hook() is not None:
         return "hook"
     tmux = in_tmux()
@@ -813,7 +586,6 @@ def launch_backend() -> str | None:
 
 
 def herdr_create_argv(kind: str, directory: str) -> list[str]:
-    """Build the focused Herdr tab or split creation command."""
     configured = os.environ.get("HERDR_BIN_PATH")
     herdr = (
         configured
@@ -865,8 +637,7 @@ def herdr_create_argv(kind: str, directory: str) -> list[str]:
 
 def _herdr_failure(stage: str, proc) -> str:
     detail = (getattr(proc, "stderr", "") or "").strip()
-    # Herdr writes successful responses as JSON. Do not put a failed response's raw
-    # JSON in a toast either; stderr is the CLI's human-facing diagnostic.
+    # Prefer Herdr's human stderr; never dump a raw JSON failure into a toast.
     try:
         json.loads(detail)
     except (TypeError, json.JSONDecodeError):
@@ -876,7 +647,6 @@ def _herdr_failure(stage: str, proc) -> str:
 
 
 def _herdr_cli_launch(kind: str, directory: str, command: str) -> str | None:
-    """Create a focused Herdr target, then run the complete command inside it."""
     create_argv = herdr_create_argv(kind, directory)
     try:
         created = subprocess.run(create_argv, capture_output=True, text=True, timeout=10)
@@ -915,7 +685,6 @@ def _herdr_cli_launch(kind: str, directory: str, command: str) -> str | None:
 
 
 def herdr_launch(kind: str, directory: str, command: str) -> str | None:
-    """Create a Herdr tab or split through its CLI, then run the command in it."""
     try:
         return _herdr_cli_launch(kind, directory, command)
     except ValueError as exc:
@@ -923,10 +692,7 @@ def herdr_launch(kind: str, directory: str, command: str) -> str | None:
 
 
 def launcher_hook() -> str | None:
-    # Optional user hook, git-hooks style: an executable that receives every
-    # launch-menu action instead of the built-in tmux commands, so launches can
-    # be routed through personal tooling (custom popup managers, zellij, kitty,
-    # ...) without any of it living here. Called as:
+    # Optional executable override for custom terminal tooling. Called as:
     #   <hook> <kind> <directory> <command>     kind ∈ window|hsplit|vsplit|popup
     # Exit 0 = handled; nonzero = stderr is shown as the launch error.
     candidates = (
@@ -943,12 +709,8 @@ _LOCAL_MACHINE = ""
 
 
 def local_machine_name() -> str:
-    # This box's hostname -- the ONE label an untagged session belongs to. Two callers
-    # must agree on it or the Machines view splits one box in two: the fleet build
-    # (sources.py) stamps this machine's live sessions with it, and the App labels every
-    # workflow that carries no tag at all (the ordinary, non-fleet run) with the same
-    # string. Memoized: a hostname doesn't change under a running TUI, and the import is
-    # local to keep it off the one-shot `status` import floor.
+    # Fleet stamping and untagged App rows must share one memoized hostname. Keep socket's
+    # import off one-shot cost commands.
     global _LOCAL_MACHINE
     if not _LOCAL_MACHINE:
         import socket
@@ -958,22 +720,13 @@ def local_machine_name() -> str:
 
 
 def ssh_command(target: str, directory: str, command: str) -> str:
-    # One line that reopens a session on ANOTHER box -- what the `L` menu runs (and
-    # copies) for a machine you pulled rather than the one you are sitting at.
-    #
-    # `-t` because every agent CLI here is interactive: without a tty the remote
-    # `claude --resume` gets a pipe and exits. The remote side is quoted as a SINGLE
-    # argument so the cd and the resume run in one remote shell -- passed as two, ssh
-    # joins them with a space and the `&&` is evaluated by the LOCAL shell instead,
-    # which is how you end up resuming in your own home directory.
+    # Agent CLIs need a tty. Quote the remote command as one argument so `&&` runs in the
+    # remote shell rather than changing the local shell's directory.
     inner = f"cd {shlex.quote(directory)} && {command}"
     return f"ssh -t {shlex.quote(target)} {shlex.quote(inner)}"
 
 
 def tmux_launch_argv(kind: str, directory: str, command: str) -> list[str]:
-    # Build the tmux invocation for one launch-menu action. `command` is the
-    # bare resume command ("claude --resume <id>"); the directory rides on the
-    # -c/-d flags.
     if kind == "window":
         return ["tmux", "new-window", "-c", directory, command]
     if kind == "hsplit":
@@ -986,8 +739,7 @@ def tmux_launch_argv(kind: str, directory: str, command: str) -> list[str]:
 def _run_tmux_or_hook(kind: str, argv: list[str], label: str) -> str | None:
     try:
         if kind == "popup":
-            # display-popup (and popup hooks that wrap it) can block until the
-            # popup closes; fire and forget so the TUI keeps running underneath.
+            # Popups may block until close; keep the underlying TUI responsive.
             subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return None
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=10)
@@ -1005,7 +757,6 @@ def launch_command(
     command: str,
     backend: str | None = None,
 ) -> str | None:
-    """Run a resume command through the configured hook or active backend."""
     backend = launch_backend() if backend is None else backend
     if backend == "hook":
         hook = launcher_hook()
@@ -1020,26 +771,20 @@ def launch_command(
 
 
 def tmux_launch(kind: str, directory: str, command: str) -> str | None:
-    """Run a resume command through tmux, retaining the legacy hook override."""
+    """Legacy tmux entry point; retain the launcher-hook override."""
     hook = launcher_hook()
     argv = [hook, kind, directory, command] if hook else tmux_launch_argv(kind, directory, command)
     return _run_tmux_or_hook(kind, argv, "launcher hook" if hook else "tmux")
 
 
 def normalize_project_path(directory: str) -> str:
-    # Canonicalize a Windows drive path so the SAME directory recorded by different
-    # tools collapses to one project. OpenCode (a JS app) stores forward slashes
-    # (C:/DEV/app) while native tools fold cwd to backslashes (C:\DEV\app), and the
-    # drive letter's case is arbitrary (c: == C:) -- left alone they group AND display
-    # as two separate projects (issue #4). Fold both to one spelling: uppercase drive,
-    # single backslash separators, no trailing slash. POSIX paths (and UNC shares,
-    # agent-name pseudo-dirs, "(unknown)") don't match the drive-path shape and are
-    # returned unchanged -- a backslash in a POSIX path can be a real filename char.
+    # Canonicalize drive case and separators so JS/native Windows cwd spellings group as
+    # one project. Leave POSIX and UNC paths untouched; backslash may be a valid POSIX name.
     m = re.match(r"^([A-Za-z]):[\\/](.*)$", directory)
     if not m:
         return directory
     rest = m.group(2).replace("/", "\\")
-    while "\\\\" in rest:  # collapse doubled separators from mixed spellings
+    while "\\\\" in rest:
         rest = rest.replace("\\\\", "\\")
     rest = rest.rstrip("\\")
     root = m.group(1).upper() + ":\\"
@@ -1047,16 +792,9 @@ def normalize_project_path(directory: str) -> str:
 
 
 def resolve_project_root(directory: str) -> str:
-    # Fold a git worktree into its main repo so feature worktrees don't show as
-    # separate projects. Two strategies, both pure local reads (no `git`):
-    #
-    #   1. Accurate: a linked worktree's `.git` is a FILE that reads
-    #      "gitdir: <main>/.git/worktrees/<name>" — the main working dir is what
-    #      comes before "/.git/worktrees/". Needs the worktree dir to still exist.
-    #   2. Path convention: fold ".../<repo>/.worktrees/<name>" (and the standard
-    #      ".git/worktrees/<name>") to <repo>. Works even when the worktree dir is
-    #      gone (a removed throwaway worktree still has sessions in the DB).
-    directory = normalize_project_path(directory)  # collapse C:/ vs C:\ spellings first
+    # Prefer a linked worktree's .git pointer; path conventions cover deleted worktrees.
+    # Both are local reads and avoid invoking git.
+    directory = normalize_project_path(directory)
     try:
         dotgit = os.path.join(os.path.expanduser(directory), ".git")
         if os.path.isfile(dotgit):
@@ -1081,25 +819,20 @@ def resolve_project_root(directory: str) -> str:
 
 
 def git_root(directory: str) -> str:
-    # Walk up from `directory` to the nearest ancestor that contains a `.git`
-    # entry, so a Claude Code session started in a subdir (frontend/, src/, ...)
-    # rolls up to its repo instead of showing as its own bare-basename project.
-    # Pure filesystem reads; returns `directory` unchanged when the path no longer
-    # exists or no repo is found (App.resolve_project_root then folds worktrees).
-    # Every return is separator-canonicalized (normalize_project_path) so a Windows
-    # cwd folds to one spelling regardless of the recording tool's slash style.
+    # Walk to the nearest .git ancestor using filesystem reads only. Preserve missing or
+    # non-repo recorded paths, but canonicalize Windows separators on every return.
     try:
         cur = os.path.abspath(os.path.expanduser(directory))
     except (OSError, ValueError):
         return normalize_project_path(directory)
     if not os.path.isdir(cur):
-        return normalize_project_path(directory)  # path gone -- keep the recorded cwd
+        return normalize_project_path(directory)
     while True:
         if os.path.exists(os.path.join(cur, ".git")):
             return normalize_project_path(cur)
         parent = os.path.dirname(cur)
         if parent == cur:
-            return normalize_project_path(directory)  # filesystem root, no repo
+            return normalize_project_path(directory)
         cur = parent
 
 
@@ -1107,8 +840,7 @@ _IS_WSL: bool | None = None
 
 
 def is_wsl() -> bool:
-    # WSL masquerades as plain Linux; the interop env vars (set in every WSL session)
-    # or the kernel string give it away. Memoized -- probed per store build.
+    # WSL identifies itself through interop variables or the kernel string.
     global _IS_WSL
     if _IS_WSL is None:
         _IS_WSL = False
@@ -1125,8 +857,6 @@ def is_wsl() -> bool:
 
 
 def wsl_mount_root(conf_path: str = "/etc/wsl.conf") -> str:
-    # Where WSL mounts the Windows drives: [automount] root= in /etc/wsl.conf,
-    # default /mnt (so C: appears at /mnt/c).
     try:
         section = ""
         with open(conf_path, encoding="utf-8", errors="replace") as fh:
@@ -1147,10 +877,8 @@ def wsl_mount_root(conf_path: str = "/etc/wsl.conf") -> str:
 
 
 def windows_to_wsl_path(path: str, mount_root: str | None = None) -> str:
-    # Fold a Windows drive path (C:\Users\... or C:/Users/...) onto its WSL mount
-    # (/mnt/c/Users/...) so filesystem probes like the git-root walk can reach it.
-    # "" when not applicable: not under WSL, not a drive path, or the drive isn't
-    # mounted -- callers keep the original path as a label then.
+    # Return empty unless a Windows drive path maps to an existing WSL mount; callers then
+    # keep the original path as a label.
     if mount_root is None:
         if not is_wsl():
             return ""
@@ -1164,11 +892,7 @@ def windows_to_wsl_path(path: str, mount_root: str | None = None) -> str:
 
 
 def fuzzy_score(query: str, text: str) -> int | None:
-    """fzf-style subsequence match (case-insensitive): every query character
-    must appear in `text` in order. Returns None on no match, else a score —
-    higher is better. Consecutive matches and word starts score up; the gap
-    skipped to reach each character scores down, so tight matches beat
-    scattered ones ("trend" ranks "trend view" above "travel node script")."""
+    """Score a case-insensitive subsequence, rewarding runs and word starts."""
     if not query:
         return 0
     t = text.lower()
@@ -1180,9 +904,9 @@ def fuzzy_score(query: str, text: str) -> int | None:
         if found < 0:
             return None
         if found == prev + 1:
-            score += 3  # extends a consecutive run
+            score += 3
         if found == 0 or t[found - 1] in " -_/.":
-            score += 2  # word / path-segment start
+            score += 2
         score -= found - pos
         prev = found
         pos = found + 1
@@ -1193,42 +917,32 @@ _WORD_BOUNDS = " -_/."
 
 
 def anchored_fuzzy_match(query: str, text: str) -> bool:
-    """The strict cousin of fuzzy_score, for identifier fields (model ids): a
-    plain substring, or a subsequence that may scatter INSIDE a word but only
-    enters a word at its first character. "opus48" still abbreviates
-    claude-OPUS-4-8 and "snt45" claude-SoNneT-4-5, but "opus" no longer counts
-    qwen3-cOder-PlUS as a match -- that `o` starts mid-word. The binary model
-    filters need this strictness because they keep the caller's row order: fzf
-    accepts those scattered subsequences too but ranks them out of sight, and
-    with no re-ranking the junk lands wherever the column sort puts it -- over
-    the 5k-row models.dev catalog, right at the top."""
+    """Match identifier subsequences that enter each new word only at its start.
+
+    Unlike ranked fuzzy search, binary model filters preserve row order; unrestricted
+    scatter would leave irrelevant matches near the top of the 5k-row catalog.
+    """
     if not query:
         return True
     q = query.lower()
     t = text.lower()
     if q in t:
         return True
-    # Cheap necessary condition first: a plain-subsequence scan (C-speed find)
-    # rejects most of the catalog before the anchored walk below has to run.
+    # Reject most catalog rows with a cheap plain-subsequence scan first.
     pos = 0
     for ch in q:
         pos = t.find(ch, pos) + 1
         if pos == 0:
             return False
-    # The anchored walk, one pass over the text tracking every viable alignment
-    # at once -- NOT a backtracking regex, which this replaced: on a near-miss
-    # (many same-letter words, the last query char unreachable) the regex
-    # enumerated the alignments instead and a single row froze the keystroke
-    # for seconds. Tracking all prefixes together is linear and, unlike a
-    # greedy scan, still lets "opus" over "openai-opus" abandon the dead-end
-    # o-p of "openai" for the real "opus".
+    # Track all viable prefixes in one linear pass. The former backtracking regex froze
+    # for seconds on near misses; a greedy scan cannot recover from a dead-end prefix.
     #   done[i]   -- q[:i] fully matched somewhere before this point
     #   in_word[i] -- ...with its last char inside the CURRENT word, so q[i]
     #                 may scatter onto any later char of the same word; a new
     #                 word admits q[i] only as its first char (start + done).
     n = len(q)
     prefix_at: dict = {}
-    for i in range(n, 0, -1):  # descending, so one text char never chains two query chars
+    for i in range(n, 0, -1):  # One text character cannot satisfy two query positions.
         prefix_at.setdefault(q[i - 1], []).append(i)
     done = [True] + [False] * n
     in_word = [False] * (n + 1)
@@ -1236,11 +950,7 @@ def anchored_fuzzy_match(query: str, text: str) -> bool:
     for c in t:
         boundary = c in _WORD_BOUNDS
         for i in prefix_at.get(c, ()):
-            # A boundary char typed in the query ("opus4-5", "-48") matches any
-            # later text boundary: a separator is not a word, so it carries no
-            # anchoring of its own -- order (done) is the whole requirement --
-            # and done-without-in_word is exactly "the next query char may enter
-            # the following word at its head". Letters keep the anchored rule.
+            # Query separators match later separators without adding word anchoring.
             if boundary:
                 ok = done[i - 1]
             else:
@@ -1260,10 +970,7 @@ def anchored_fuzzy_match(query: str, text: str) -> bool:
 
 
 def workflow_fuzzy_score(query: str, workflow: Workflow, note: str = "") -> int | None:
-    # Best match across the fields people aim for, nudged so a title hit
-    # outranks an equally good directory, note, or id hit. The note (`n`) is
-    # searchable on purpose: it's the field you wrote *because* the title
-    # wouldn't lead you back here.
+    # Prefer equal-quality title matches; notes remain searchable when titles are poor.
     best = None
     for bonus, text in (
         (2, workflow.title),
@@ -1278,8 +985,7 @@ def workflow_fuzzy_score(query: str, workflow: Workflow, note: str = "") -> int 
 
 
 def parse_range_text(raw: str) -> tuple[int | None, int | None, str | None, str | None]:
-    # Returns (days, months, since, until). Days and months are *relative*
-    # windows re-evaluated each run; since/until are absolute bounds.
+    # Relative days/months are reevaluated each run; since/until are absolute.
     value = raw.strip().lower()
     if value in ("", "a", "all", "all time", "all-time"):
         return None, None, None, None
@@ -1292,13 +998,12 @@ def parse_range_text(raw: str) -> tuple[int | None, int | None, str | None, str 
         unit = duration_match.group(2)[0]
         if amount <= 0:
             raise ValueError("range amount must be greater than 0")
-        # Days stay a rolling day window; months and years are calendar-accurate
-        # (a year is just twelve months), so "2m" is two whole months, not 60 days.
+        # Months and years are calendar windows, not fixed day counts.
         if unit == "d":
             return amount, None, None, None
         return None, amount * (12 if unit == "y" else 1), None, None
 
-    # A bare number is the obvious "N days" intent (4-digit values stay years).
+    # Bare numbers mean days; four digits remain a year.
     if value.isdigit() and not YEAR_PATTERN.fullmatch(value):
         amount = int(value)
         if amount <= 0:
@@ -1350,10 +1055,7 @@ def month_bounds(value: str) -> tuple[str, str]:
 
 
 def month_window_start(n: int, today: datetime | None = None) -> str:
-    # First day of the calendar month that opens a trailing window of n months:
-    # this month plus the n-1 before it. So "2m" spans exactly two month buckets
-    # (this month and last), whatever today's day-of-month is -- which is what the
-    # month-oriented views expect, rather than a 60-day window straddling three.
+    # Include this month and n-1 previous whole month buckets, independent of today's day.
     base = today or datetime.now()
     year, month0 = divmod(base.year * 12 + (base.month - 1) - (n - 1), 12)
     return datetime(year, month0 + 1, 1).strftime("%Y-%m-%d")

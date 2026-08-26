@@ -1,5 +1,3 @@
-"""The session flamegraph: a session's spend as a hierarchy, width = dollars."""
-
 import random
 
 import opentab as ot
@@ -77,9 +75,6 @@ def _tree(nodes, root_cost=6.0):
 
 
 def test_segment_widths_are_the_cost_columns_own_numbers():
-    # The one contract that keeps the chart and the table under it honest: a segment IS
-    # its row's Cost cell. If they ever diverge, the same screen shows a bar claiming one
-    # share and a table row claiming another, and neither can be trusted.
     nodes = _tree([_node(1, "docs", 3.0, 500), _node(1, "tests", 1.0, 200)], root_cost=6.0)
     app = _app(nodes)
     flame = app.session_flame(app.loaded[0])
@@ -95,8 +90,6 @@ def test_segment_widths_are_the_cost_columns_own_numbers():
 
 
 def test_the_root_owns_a_slot_no_subagent_can_wear():
-    # Root-vs-delegated is the ONE distinction the chart makes, so it cannot rest on a
-    # colour a sixth subagent also gets. Children cycle the other four.
     nodes = _tree([_node(1, f"a{i}", 1.0, 10) for i in range(6)])
     flame = _app(nodes).session_flame(_app(nodes).loaded[0])
     assert flame.segments[0].label == "root (self)"
@@ -107,10 +100,6 @@ def test_the_root_owns_a_slot_no_subagent_can_wear():
 
 
 def test_a_session_that_recorded_nothing_divides_tokens_and_names_the_key():
-    # A subscription backend with "$" off records $0 on every node, and a hierarchy of
-    # zeros is a blank frame. Tokens answer the same question one price list away -- but
-    # the unit has to be stated, and the way out of it named off the LIVE keymap (the
-    # user may have rebound "$").
     nodes = _tree([_node(1, "docs", 0.0, 400)], root_cost=0.0)
     app = _app(nodes)
     flame = app.session_flame(app.loaded[0])
@@ -124,9 +113,6 @@ def test_a_session_that_recorded_nothing_divides_tokens_and_names_the_key():
 
 
 def test_the_dollar_view_estimates_the_widths_and_marks_them():
-    # With "$" on, _priced_nodes reprices the unrecorded nodes at list rates -- so the
-    # chart gains dollars, and has to say they are estimates rather than pass a
-    # counterfactual off as a bill.
     nodes = _tree([_node(1, "docs", 0.0, 2_000_000)], root_cost=0.0)
     app = _app(nodes, api=True)
     flame = app.session_flame(app.loaded[0])
@@ -145,13 +131,6 @@ def test_a_fully_recorded_session_is_never_marked_estimated():
 
 
 def test_the_agent_is_mined_out_of_the_title_when_the_column_is_empty():
-    # A segment names the AGENT, never the session title. OpenCode records the name in
-    # its own column for only some sessions and leaves it in the title as "(@explore)"
-    # for the rest -- on real data mining it back lifts the share of nodes that can name
-    # their agent from 15% to 85%, and the names it recovers are exactly the ones the
-    # column holds when it is populated. With neither, "subagent" is the honest answer:
-    # Claude Code names no Task and titles them all "subagent run", so falling through to
-    # the title there would put a session name on the chart to say nothing.
     nodes = _tree(
         [
             _node(1, "code-reviewer", 4.0, 40, title="Review the browse mode"),
@@ -165,8 +144,6 @@ def test_the_agent_is_mined_out_of_the_title_when_the_column_is_empty():
 
 
 def test_the_segment_carries_its_model_in_its_short_spelling():
-    # Route prefix dropped and the release-date suffix stripped: a segment has tens of
-    # cells, not eighty.
     nodes = _tree(
         [_node(1, "explore", 3.0, 30, model="anthropic/claude-haiku-4-5-20251001")],
         root_cost=6.0,
@@ -179,11 +156,6 @@ def test_the_segment_carries_its_model_in_its_short_spelling():
 
 
 def test_repeated_agents_keep_a_unique_key_handle_but_a_bare_name_below():
-    # Agents repeat by nature -- five "code-reviewer" runs in one session is normal --
-    # so the two names diverge. Under the band position says which slice is which, so the
-    # bare agent is right there; in the key there is no position to lean on, so the ladder
-    # adds the start clock (findable in the table's Started column), then seconds, then a
-    # cost rank.
     spread = _tree(
         [
             _node(1, "code-reviewer", 3.0, 30, at="2026-06-01 12:05:00"),
@@ -212,9 +184,7 @@ def test_repeated_agents_keep_a_unique_key_handle_but_a_bare_name_below():
 
 
 def test_a_nested_execution_joins_the_band_as_a_marked_sibling():
-    # workflow_nodes records a node's depth but not its PARENT, so a depth-2 node cannot
-    # be drawn under the depth-1 node it ran below. It joins the band as a sibling --
-    # marked, counted, and explained -- rather than being nested under a guess.
+    # Nodes expose depth but not parent identity, so nested runs cannot be placed safely.
     nodes = _tree([_node(1, "docs", 3.0, 300), _node(2, "deep", 1.0, 100)])
     app = _app(nodes)
     flame = app.session_flame(app.loaded[0])
@@ -230,8 +200,6 @@ def test_a_nested_execution_joins_the_band_as_a_marked_sibling():
 
 
 def test_a_subagent_that_recorded_nothing_is_counted_not_drawn():
-    # A zero-width segment is not a segment -- but a subagent that ran and recorded
-    # nothing is a fact about the data, so it is counted and pointed at the table.
     nodes = _tree([_node(1, "docs", 3.0, 300), _node(1, "aborted", 0.0, 0)])
     app = _app(nodes)
     flame = app.session_flame(app.loaded[0])
@@ -250,8 +218,6 @@ def test_the_headline_reports_the_split_in_one_sentence():
 
 
 def test_a_narrow_pane_keeps_the_sentence_and_drops_the_bands():
-    # Below ~30 usable cells the segments stop being distinguishable, and five ambiguous
-    # cells say less than the sentence does.
     app = _app(_tree([_node(1, "docs", 3.0, 300), _node(1, "tests", 1.0, 100)]))
     wide = app.renderer._flamegraph_box(app.loaded[0], 90)
     narrow = app.renderer._flamegraph_box(app.loaded[0], 26)
@@ -260,11 +226,6 @@ def test_a_narrow_pane_keeps_the_sentence_and_drops_the_bands():
 
 
 def test_the_names_sit_under_their_own_segment_not_inside_it():
-    # Writing a name into the fill made the chart harder to read: the text fought the
-    # colour it was punched through, and it only ever fit the segments that least needed
-    # a label. Below the band each name starts at its own segment's column, so position
-    # does the pointing; a name wider than its slice is dropped rather than shifted,
-    # because a label sitting over the wrong slice is worse than no label.
     nodes = _tree([_node(1, "explore", 3.0, 300)] + [_node(1, f"t{i}", 0.05, 5) for i in range(6)])
     app = _app(nodes)
     lines = app.renderer._flamegraph_box(app.loaded[0], 100)
@@ -284,10 +245,6 @@ def test_the_names_sit_under_their_own_segment_not_inside_it():
 
 
 def test_the_models_get_their_own_positioned_row_only_when_they_differ():
-    # 85 of 135 real delegating sessions run one model end to end; there it belongs in
-    # the caption once, and a row repeating it under every segment would spend a line to
-    # say nothing. When they differ, each segment names its own -- which is exactly what
-    # the caption's restraint buys the room for.
     same = _app(_tree([_node(1, "explore", 4.0, 40)]))
     lines = same.renderer._flamegraph_box(same.loaded[0], 100)
     assert any("all on claude-opus-4.5" in ln for ln in _unbox(lines))
@@ -301,8 +258,6 @@ def test_the_models_get_their_own_positioned_row_only_when_they_differ():
 
 
 def test_only_the_top_segments_reach_the_key_and_the_rest_are_named():
-    # 21 subagents is a real session. A key that long is noise, so it is capped -- and
-    # the cut is stated rather than leaving unexplained unlabelled segments.
     nodes = _tree([_node(1, f"sub-{i}", 1.0, 10) for i in range(20)])
     app = _app(nodes)
     lines = app.renderer._flamegraph_box(app.loaded[0], 100)
@@ -312,10 +267,6 @@ def test_only_the_top_segments_reach_the_key_and_the_rest_are_named():
 
 
 def test_the_band_and_its_name_row_paint_in_the_same_per_segment_colours():
-    # The chart paints through chart 1's two-pass side channel: a line is laid down once,
-    # then its runs are overpainted. The names row records runs of its own, on the same
-    # slots as the band, so a name is in the colour of the slice above it -- which is what
-    # lets the key disappear for the segments that got named.
     nodes = _tree([_node(1, "docs", 3.0, 300), _node(1, "tests", 1.0, 100)])
     app = _app(nodes)
     r = app.renderer
@@ -345,8 +296,6 @@ def test_the_band_and_its_name_row_paint_in_the_same_per_segment_colours():
 
 
 def test_a_pair_starved_terminal_keeps_the_segments_apart_with_glyphs():
-    # Same escape hatch chart 1 has: when _set_pair could not take the ramp, colour is
-    # gone and the fill itself is the identity -- so no label is punched through it.
     nodes = _tree([_node(1, "Docs", 3.0, 300), _node(1, "Tests", 1.0, 100)])
     app = _app(nodes)
     r = app.renderer
@@ -360,9 +309,6 @@ def test_a_pair_starved_terminal_keeps_the_segments_apart_with_glyphs():
 
 
 def test_the_chart_sits_above_both_tables_and_takes_the_sort_header_with_it():
-    # The chart is spliced in as the tab's HEAD, not prepended afterwards, because the
-    # click-sortable header is registered by absolute line index -- a prefix bolted on
-    # later would leave the sort regions pointing at a bar.
     nodes = _tree([_node(1, "Docs", 3.0, 300)])
     app = _app(nodes)
     r = app.renderer
@@ -395,16 +341,12 @@ def test_the_chart_sits_above_both_tables_and_takes_the_sort_header_with_it():
 
 
 def test_a_solo_session_gets_no_chart_at_all():
-    # The tab already says "No subagents used"; a one-segment icicle would add nothing
-    # and imply a hierarchy that isn't there.
     app = _app([_node(0, "Root", 6.0, 1000)])
     assert app.renderer.detail_subagents(app.loaded[0], 90)[0] == "# Subagents"
     assert app.session_flame(app.loaded[0]).children == ()
 
 
 def test_an_armed_whatif_target_leaves_the_chart_alone():
-    # `w` is a counterfactual; the chart is recorded/estimated spend. Arming a target
-    # must not restate the chart's numbers as what-ifs -- the table below owns that.
     nodes = _tree([_node(1, "Docs", 3.0, 300)])
     app = _app(nodes)
     before = app.renderer._flamegraph_box(app.loaded[0], 90)
@@ -416,9 +358,6 @@ def test_an_armed_whatif_target_leaves_the_chart_alone():
 
 
 def test_the_label_ladder_ends_unique_even_against_a_literal_rank():
-    # The ranked rung is not self-evidently unique: a node genuinely titled "foo #1"
-    # beside two titled "foo" collides with the rank handed to one of them. A ladder
-    # that almost gets there just relocates the pair you cannot tell apart.
     nodes = _tree(
         [
             _node(1, "foo", 3.0, 30),
@@ -432,10 +371,6 @@ def test_the_label_ladder_ends_unique_even_against_a_literal_rank():
 
 
 def test_a_silent_child_never_marks_a_fully_recorded_chart_estimated():
-    # "~" claims a WIDTH ON SCREEN is an estimate. An aborted $0/0-token subagent draws
-    # no segment at all, so it cannot make one -- asking the question of every node
-    # instead of the drawn ones put a "~" on a chart of entirely recorded dollars.
-    # (One session in the real corpus is shaped exactly like this.)
     nodes = _tree([_node(1, "Docs", 3.0, 300), _node(1, "Aborted", 0.0, 0)])
     app = _app(nodes, api=True)
     flame = app.session_flame(app.loaded[0])
@@ -447,10 +382,6 @@ def test_a_silent_child_never_marks_a_fully_recorded_chart_estimated():
 
 
 def test_a_share_is_never_rounded_into_a_lie_at_either_end():
-    # 65 segments in the real corpus are under half a percent, and they are exactly the
-    # ones a "biggest …" line might name. Rounding them to "0%" describes a segment that
-    # is visibly there as nothing -- and rounding the root to a flat "100%" contradicts
-    # the subagent segments printed right beside it.
     nodes = _tree([_node(1, "Tiny", 1.0, 10), _node(1, "Tinier", 1.0, 10)], root_cost=9998.0)
     app = _app(nodes)
     head = _unbox(app.renderer._flamegraph_box(app.loaded[0], 100))[0]
@@ -465,10 +396,6 @@ def test_a_share_is_never_rounded_into_a_lie_at_either_end():
 
 
 def test_more_segments_than_cells_never_overflows_the_band():
-    # The one-cell floor is what keeps a paid segment visible, but it is unpayable once
-    # the segments outnumber the columns -- and paying it anyway makes the line longer
-    # than the pane, which the box CLIPS, silently dropping whatever sits at the right
-    # edge. Below that the chart drops out entirely and the sentence carries it.
     app = _app(_tree([_node(1, f"a{i}", 1.0, 10) for i in range(40)]))
     r = app.renderer
     assert not _band(r._flamegraph_box(app.loaded[0], 40))  # 41 segments, 36 cells
@@ -478,10 +405,6 @@ def test_more_segments_than_cells_never_overflows_the_band():
 
 
 def test_legend_labels_stay_distinct_after_being_clipped():
-    # App._flame_labels guarantees the FULL names are unique; the legend's 24-char clip
-    # can undo that, and two identical legend LINES collide in _token_runs (keyed by line
-    # text) -- the second overwrites the first's runs and both swatches paint in the
-    # second segment's colour.
     long_a = "Review the storyboard cache invalidation"
     long_b = "Review the storyboard cache eviction"
     app = _app(_tree([_node(1, long_a, 3.0, 30), _node(1, long_b, 2.0, 20)]))
@@ -494,9 +417,6 @@ def test_legend_labels_stay_distinct_after_being_clipped():
 
 
 def test_a_label_ending_in_a_pipe_still_gets_its_colour():
-    # The boxed-line lookup used to rstrip("│|"), which ate the last character of any
-    # label ending in a pipe -- the key missed and that swatch painted in plain ink.
-    # Titles are user text; the frame is the only thing that may be stripped.
     app = _app(_tree([_node(1, "make | work", 3.0, 30)]))
     r = app.renderer
     lines = r._flamegraph_box(app.loaded[0], 44)
@@ -513,10 +433,7 @@ def test_a_label_ending_in_a_pipe_still_gets_its_colour():
 
 
 def test_the_shared_bar_builder_is_byte_identical_for_chart_ones_five_segments():
-    # _token_stack_line grew two parameters and a floor escape hatch for this chart.
-    # Chart 1 (Token economics) calls it with neither, and its five-segment bars must
-    # come out unchanged to the byte -- so the pre-change algorithm is replayed here and
-    # diffed across a seeded sweep of widths, zero rows and lopsided splits.
+    # Replay the original five-segment algorithm across a deterministic width sweep.
     app = _app(_tree([_node(1, "Docs", 3.0, 300)]))
     r = app.renderer
 
@@ -556,9 +473,6 @@ def test_the_shared_bar_builder_is_byte_identical_for_chart_ones_five_segments()
 
 
 def test_the_bar_is_always_exactly_as_wide_as_the_pane():
-    # The invariant the floor escape hatch exists to protect: whatever the segment count,
-    # the line is exactly `cells` wide. A longer one is clipped by the box, which drops
-    # whatever sits at the right edge without saying so.
     app = _app(_tree([_node(1, "Docs", 3.0, 300)]))
     r = app.renderer
     rng = random.Random(11)
@@ -569,8 +483,6 @@ def test_the_bar_is_always_exactly_as_wide_as_the_pane():
 
 
 def test_the_boxed_line_lookup_handles_an_ascii_frame_and_a_runt_line():
-    # The gutter path also runs on the locale-independent ASCII frame ("| … |"), and it
-    # must not index off the end of a line too short to be one.
     app = _app(_tree([_node(1, "Docs", 3.0, 300)]))
     r = app.renderer
     orig = ot.curses.color_pair
@@ -587,11 +499,7 @@ def test_the_boxed_line_lookup_handles_an_ascii_frame_and_a_runt_line():
 
 
 def test_tied_segments_order_by_code_point_descending():
-    # The tie-break's whole job is determinism across the two frontends, so pin the
-    # Python contract the JS mirrors: a (value, tokens, title) tuple sorted reverse, i.e.
-    # title descending by CODE POINT. Both cases here are ones a JS shortcut gets wrong --
-    # localeCompare reverses "Z"/"a", and a bare `<` reverses an emoji against a high BMP
-    # character (it compares UTF-16 code units).
+    # JS locale/code-unit ordering differs for both pairs below.
     def order(*titles):
         # The sort key is the node's TITLE; each node's agent is set to it too, so the
         # resulting order reads straight off the segments.
@@ -603,10 +511,7 @@ def test_tied_segments_order_by_code_point_descending():
 
 
 def test_a_title_that_is_a_dict_method_name_still_gets_disambiguated():
-    # Python counts with list.count() and is immune, but the JS mirror counted into a
-    # plain object, where "constructor"/"toString"/"__proto__" read Object.prototype
-    # instead of a count and two identical labels were never detected. Pin the expected
-    # answer here so the two frontends can be compared on it.
+    # These names collide with properties on a plain JavaScript object.
     for name in ("constructor", "toString", "__proto__"):
         nodes = _tree([_node(1, name, 3.0, 30), _node(1, name, 2.0, 20)])
         labels = [s.label for s in _app(nodes).session_flame(_app(nodes).loaded[0]).children]

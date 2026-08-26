@@ -21,42 +21,12 @@ from opentab.util import (
 
 
 class PiStore:
-    """Read pi-agent sessions (~/.pi/agent/sessions/<project>/*.jsonl, or the dir named by
-    $PI_AGENT_DIR / --pi-dir) behind the same interface App expects from Store:
-    workflows(), summary(), workflow_nodes(), model_breakdown(), plus the
-    .demo/.demo_scale attributes -- like the other JSONL backends.
+    """Read pi-agent NDJSON sessions.
 
-    pi-agent writes a per-message `usage.cost.total` -- but, crucially, it writes a
-    *list-price* figure for **every** provider, including subscription/OAuth routes
-    (e.g. openai-codex on a ChatGPT plan) whose marginal cost is actually $0. So the cost
-    is trustworthy only for **metered** routes (OpenRouter, a direct API key); a
-    subscription route's cost is a what-if estimate, not spend. Like `HermesStore`'s
-    billing_mode split, a message is classed **subscription** when its provider is an OAuth
-    login (`auth.json` type "oauth", read read-only) or matches a known plan marker
-    (`_SUBSCRIPTION_MARKERS`: codex/copilot/claude-code/...) -- those tokens are left
-    **unpriced** (the "$" view estimates them), while metered messages with a real cost
-    price as spend. The two accumulate independently per message, so a session (even one
-    model) mixing both routes is split correctly. Cost is therefore mixed, so -- exactly
-    like `CsvStore`/`HermesStore` -- **`records_cost` is a per-instance property** (True iff
-    any *metered* message has a cost), resolved lazily: derived from a parse when one has
-    run, else by an early-exit probe on first read (never in `__init__`, so construction
-    stays free and the warm-start cache can answer it without touching the files).
-
-    Each session file is newline-delimited JSON: a `session` record carries the canonical
-    id + **cwd** (so directories fold to the **git root**, no path-decoding the project
-    dir name), `message`/`user` records give the title (first user text), and
-    `message`/`assistant` records carry `usage`. Token accounting is **Anthropic-style**:
-    `input` is already the *uncached* prompt (cacheRead/cacheWrite are tracked separately,
-    never folded in), so input is used as-is with no cache subtraction; total =
-    input + output + cacheRead + cacheWrite (a record carrying only `totalTokens` back-fills
-    the gap as output). Models are recorded already provider-qualified (e.g.
-    `moonshotai/kimi-k2.6`), so they're used verbatim for pricing and the Providers rollup.
-    Assistant messages are deduped by their stable `id` (resumed/forked files overlap). No
-    subagent tree (every session is one depth-0 node); sessions with no recorded usage are
-    dropped. Implements the **Turns** opt-in (message_timeline/supports_turns): every
-    assistant message is one turn row, grouped under the ▸ user prompt that triggered it
-    (the ClaudeStore lockstep pattern); a subscription turn's cost is $0 so "$" estimates
-    it, a metered turn carries its real spend.
+    Input is already uncached; cache reads/writes are separate and reasoning is included
+    in output. Stable assistant ids deduplicate resumed files. pi records list-price cost
+    for every route, so OAuth/plan usage remains unpriced while metered-route cost counts
+    as spend. ``auth.json`` is read only for provider authentication type.
     """
 
     combined = False
@@ -65,20 +35,12 @@ class PiStore:
     def __init__(self, root_dir: str, args: argparse.Namespace):
         self.root_dir = root_dir
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the
-        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
-        self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
+        self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
-        # pi writes a list-price `cost` for *every* provider, even subscription/OAuth routes
-        # (e.g. openai-codex on a ChatGPT plan) where the marginal cost is actually $0. So
-        # only metered routes count as real spend; subscription routes are unpriced and the
-        # "$" view estimates them -- exactly like HermesStore's billing_mode split. The
-        # signal: auth.json marks plan logins as type "oauth"; plus a few provider markers.
         self._oauth_providers = self._load_oauth_providers()
         self._records_cost: bool | None = None  # resolved lazily (records_cost property)
 
-    # --- helpers -------------------------------------------------------------
     def _git_root(self, cwd: str) -> str:
         if cwd not in self._git_root_cache:
             self._git_root_cache[cwd] = git_root(cwd)
@@ -96,15 +58,11 @@ class PiStore:
     )
 
     def _auth_paths(self) -> list[str]:
-        # The files that decide the oauth-vs-metered split -- a list, and a seam, because
-        # omp keeps the same split in a SQLite db with a WAL sidecar. cache_inputs()
-        # fingerprints these alongside the transcripts (see there for why).
+        # A list-shaped seam lets OmpStore include its SQLite WAL.
         return [os.path.join(os.path.dirname(os.path.normpath(self.root_dir)), "auth.json")]
 
     def _load_oauth_providers(self) -> set[str]:
-        # auth.json (beside the sessions dir) maps provider -> auth info; type "oauth" means
-        # a consumer-plan login (subscription), not a metered API key. Read-only; we only
-        # read each provider's "type", never the tokens.
+        # Read only provider auth types; credential values are irrelevant.
         path = self._auth_paths()[0]
         out: set[str] = set()
         try:
@@ -196,7 +154,6 @@ class PiStore:
             "prompts": [],  # user messages, for the Turns tab's ▸ grouping
         }
 
-    # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
         # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore) --
         # the transcripts PLUS the auth file, because the oauth/metered split lives
@@ -578,7 +535,6 @@ class PiStore:
             "tokens_total": acc["tokens_total"],
         }
 
-    # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         # Re-read the login state too: `r` exists to pick up changes, and a provider
@@ -658,7 +614,6 @@ class PiStore:
     def _demo_node(self, n: dict) -> dict:
         return scramble_node(n, self.demo_scale, self.demo_cats)
 
-    # --- Turns tab opt-in ----------------------------------------------------
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # Chronological per-turn rows for the Turns tab (the ClaudeStore pattern):
         # ISO timestamps sort lexicographically, and walking the two time-sorted

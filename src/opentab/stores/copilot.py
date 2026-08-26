@@ -14,42 +14,12 @@ from opentab.util import git_root, read_files_parallel
 
 
 class CopilotStore:
-    """Read GitHub Copilot CLI usage from its OpenTelemetry file export
-    (~/.copilot/otel/**/*.jsonl, plus the file named by $COPILOT_OTEL_FILE_EXPORTER_PATH)
-    behind the same interface App expects from Store: workflows(), summary(),
-    workflow_nodes(), model_breakdown(), plus the .demo/.demo_scale attributes -- like
-    the other JSONL backends.
+    """Read GitHub Copilot CLI's opt-in OpenTelemetry file export.
 
-    The Copilot CLI records *no* token usage in its session transcripts or its
-    session-store.db; the only place tokens land is the OTEL export, which is opt-in (set
-    COPILOT_OTEL_FILE_EXPORTER_PATH before launching/resuming a Copilot session, or point
-    --copilot-dir at the export). With export off there is simply nothing to read and the
-    source never appears. The OTEL export is the only place these tokens are recorded.
-
-    The OTEL export carries token usage but no dollar/credit cost. Since June 2026 Copilot
-    bills usage-based -- tokens (input/output/cached) x the listed per-model API rates,
-    converted to AI credits at 1 credit = 1 cent -- so that list-price figure is ~the real
-    bill and is exactly what the "$" what-if computes. With no recorded cost to read, a
-    Copilot session takes the same unpriced -> "$"-estimate path as the other token-only
-    backends: recorded cost is $0, every token is "unpriced", the normal "$" machinery
-    reprices it at API list rates, and records_cost = False drives the same header hints
-    (see ClaudeStore).
-
-    OTEL follows the GenAI semantic conventions, where one LLM call can be logged up to
-    four times -- a `chat` span, a `gen_ai.client.inference...` log, a
-    `copilot_chat.agent.turn` log, and an `invoke_agent` summary span -- so naively
-    summing would multi-count. We keep the highest-fidelity record per call (chat span >
-    inference log > agent-turn log > agent-summary span) and drop the rest by matching
-    trace id / response id. Token accounting is
-    OpenAI-style (gen_ai.usage.input_tokens *includes* the cached read, so input is split
-    into uncached + cache_read; reasoning is folded into output and never priced twice).
-    Models are mixed-provider (gpt-5.x, claude-sonnet, gemini), so each id is
-    provider-prefixed for pricing and the Providers rollup. OTEL carries no working
-    directory, so each session's cwd/title is enriched -- read-only, best effort -- from
-    the sibling session-store.db. No subagent tree (every session is one depth-0 node);
-    sessions with no recorded usage are dropped. Implements the **Turns** opt-in
-    (message_timeline/supports_turns) with one row per kept call -- headerless, since
-    OTEL captures no prompt content unless content capture is explicitly enabled.
+    A call may appear as chat, inference, agent-turn, and summary records; retain that
+    fidelity order and deduplicate by response/trace identity. Input includes cache reads
+    and reasoning remains inside output. OTEL records no cost or prompt text. Session cwd
+    and title are enriched read-only from the sibling ``session-store.db``.
     """
 
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
@@ -71,10 +41,8 @@ class CopilotStore:
     def __init__(self, root_dir: str, args: argparse.Namespace):
         self.root_dir = root_dir
         self.args = args
-        # Demo mode: which categories to scramble (titles/turns/spend) and the
-        # hidden magnitude factor (1.0 unless spend is scrambled). See demo_config.
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
-        self._sessions: dict[str, dict] | None = None  # parsed lazily / on reload
+        self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
         self._meta: dict[str, tuple[str, str]] | None = None  # id -> (cwd, summary)
         # GitHub's documented single-file exporter target (can live outside root_dir).
@@ -84,7 +52,6 @@ class CopilotStore:
             os.path.dirname(os.path.normpath(root_dir)), "session-store.db"
         )
 
-    # --- mixed-provider model ids (mirrors CsvStore) -------------------------
     @staticmethod
     def _infer_provider(model: str) -> str:
         m = model.lower()
@@ -127,7 +94,6 @@ class CopilotStore:
     def _new_session() -> dict:
         return {"cwd": None, "ts_min": None, "ts_max": None, "models": {}, "turns": []}
 
-    # --- OTEL attribute helpers ----------------------------------------------
     @staticmethod
     def _num(value) -> int:
         # OTEL numbers arrive as ints, floats or numeric strings; non-numeric/neg -> 0.
@@ -283,7 +249,6 @@ class CopilotStore:
         except (OverflowError, OSError, ValueError):
             return ""
 
-    # --- session-store.db enrichment (cwd/title; OTEL has neither) ------------
     def _load_meta(self) -> dict[str, tuple[str, str]]:
         if self._meta is not None:
             return self._meta
@@ -301,7 +266,6 @@ class CopilotStore:
         self._meta = meta
         return meta
 
-    # --- parsing -------------------------------------------------------------
     def cache_inputs(self) -> list[str]:
         # Files whose (size, mtime) fingerprint the warm-start cache (CachedStore).
         # session-store.db belongs here even though it holds no usage: _finalize reads
@@ -600,7 +564,6 @@ class CopilotStore:
             "tokens_total": acc["tokens_total"],
         }
 
-    # --- Store interface -----------------------------------------------------
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         self._meta = None
@@ -670,7 +633,6 @@ class CopilotStore:
     def _demo_node(self, n: dict) -> dict:
         return scramble_node(n, self.demo_scale, self.demo_cats)
 
-    # --- Turns tab opt-in ----------------------------------------------------
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # Chronological per-turn rows (one per kept OTEL call). The GenAI conventions
         # carry no prompt content unless content capture is explicitly enabled, so

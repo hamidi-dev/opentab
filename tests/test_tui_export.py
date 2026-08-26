@@ -1,5 +1,3 @@
-"""The `e` CSV export: what it writes for the view you are in."""
-
 import os
 
 import opentab as ot
@@ -20,8 +18,8 @@ def test_export_dataset_follows_the_visible_view():
     scope, header, rows = app._export_dataset()
     assert scope == "months"
     assert header[0] == "month"
-    assert [r[0] for r in rows] == ["2026-06", "2026-05"]  # newest-first
-    assert rows[0][1] == 2  # cost column
+    assert [r[0] for r in rows] == ["2026-06", "2026-05"]
+    assert rows[0][1] == 2
 
     app.set_browse_mode("projects")
     scope, header, rows = app._export_dataset()
@@ -46,14 +44,12 @@ def test_export_follows_the_active_panel():
         ]
     )
 
-    # Browse, Years focused -> the years list (previously fell through to days).
     app.view = "browse"
     app.focus = "years"
     scope, header, rows = app._export_dataset()
     assert scope == "years" and header[0] == "year"
     assert [r[0] for r in rows] == ["2026"]
 
-    # Zoom: the active tab decides, not a fixed "sessions".
     app.view = "zoom"
     app.focus = "months"
     app.tab = app.month_tabs.index("Sessions")
@@ -61,7 +57,7 @@ def test_export_follows_the_active_panel():
     app.tab = app.month_tabs.index("Models")
     scope, header, _ = app._export_dataset()
     assert scope == "models" and header[0] == "model"
-    app.tab = app.month_tabs.index("Overview")  # Overview falls back to the session list
+    app.tab = app.month_tabs.index("Overview")
     assert app._export_dataset()[0] == "sessions"
 
 
@@ -74,7 +70,7 @@ def test_export_prices_overlay_exports_the_price_table():
             {"model_name": "openai/gpt-5.3", "cost": 1.0},
         ]
     }
-    app.show_prices = True  # the P overlay is open; `e` exports its table
+    app.show_prices = True
 
     scope, header, rows = app._export_dataset()
     assert scope == "prices"
@@ -95,9 +91,9 @@ def test_export_prices_overlay_exports_the_price_table():
     ]
     names = [r[0] for r in rows]
     assert "claude-opus-4-8" in names and "gpt-5.3" in names
-    assert names[0] == "gpt-5.3"  # cheapest for the mix first (the eff default sort)
+    assert names[0] == "gpt-5.3"
     opus = next(r for r in rows if r[0] == "claude-opus-4-8")
-    assert opus[1] == "Anthropic" and opus[2] == "anthropic"  # family + route columns
+    assert opus[1] == "Anthropic" and opus[2] == "anthropic"
     # every priced row carries pinned/share/eff/approx and four numeric rates
     assert all(len(r) == 11 and all(isinstance(v, (int, float)) for v in r[7:]) for r in rows)
     assert all(isinstance(r[3], bool) and isinstance(r[6], bool) for r in rows)
@@ -114,7 +110,7 @@ def test_export_prices_overlay_exports_the_price_table():
     os.chdir(tempfile.mkdtemp(prefix="ot-prices-"))
     try:
         app.handle_key(None, ord("e"))
-        assert app.show_prices  # still open
+        assert app.show_prices
         assert "exported" in app.notice
         assert [f for f in os.listdir(".") if f.startswith("opentab-prices-")]
     finally:
@@ -134,7 +130,7 @@ def test_export_sources_tab_exports_the_source_breakdown():
     assert scope == "sources"
     assert header == ["source", "cost", "tokens", "sessions"]
     assert {r[0] for r in rows} == {"OpenCode", "Claude Code"}
-    assert rows[0][0] == "Claude Code" and rows[0][1] == 5  # cost-sorted, priciest first
+    assert rows[0][0] == "Claude Code" and rows[0][1] == 5
 
 
 def test_export_neutralizes_formula_prefixed_cells():

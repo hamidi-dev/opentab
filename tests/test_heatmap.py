@@ -1,5 +1,3 @@
-"""Heat levels, calendar cells and the week/month bucketing (heatmap.py)."""
-
 import opentab as ot
 
 
@@ -9,8 +7,6 @@ def test_month_range():
 
 
 def test_week_key_buckets_monday_to_sunday():
-    # Mon..Sun of one ISO week all fold to that week's Monday; the label sorts as a
-    # plain string, so the year boundary lands in the right (prior) week.
     assert ot.week_key("2026-06-01 09:00:00") == "2026-06-01"  # Monday
     assert ot.week_key("2026-06-03 12:00:00") == "2026-06-01"  # Wednesday, same week
     assert ot.week_key("2026-06-07 23:59:59") == "2026-06-01"  # Sunday, still same week
@@ -19,9 +15,6 @@ def test_week_key_buckets_monday_to_sunday():
 
 
 def test_week_key_tolerates_missing_or_garbage_date():
-    # Some backends emit a workflow with no usable timestamp (e.g. a Claude metadata-only
-    # session: just an ai-title, no messages, no timestamps). week_key returns "" instead
-    # of raising so such a row is treated as off-timeline, never crashing a trend view.
     assert ot.week_key("") == ""
     assert ot.week_key("not-a-date") == ""
     assert ot.week_key("2026-13-99 12:00:00") == ""  # parseable shape, impossible date
@@ -40,8 +33,6 @@ def test_heat_level_buckets():
 
 
 def test_heat_palette_grows_greener_to_red():
-    # Every level is a genuinely distinct shade on a 256-color terminal, all the way up
-    # to the finest granularity, and the ramp runs from green to red.
     for n in range(ot.HEAT_MIN_LEVELS, ot.HEAT_MAX_LEVELS + 1):
         pal = ot.heat_palette(n, has256=True)
         assert len(pal) == n and len(set(pal)) == n  # no two levels share a color
@@ -55,9 +46,6 @@ def test_heat_palette_grows_greener_to_red():
 
 
 def test_heat_levels_are_visually_distinct():
-    # The user's complaint: two adjacent legend swatches looked identical. Guard it —
-    # on 256-color every level is a distinct color; on 8-color (where only three colors
-    # exist) every level is a distinct (color, glyph) pair, so none ever look the same.
     for n in range(ot.HEAT_MIN_LEVELS, ot.HEAT_MAX_LEVELS + 1):
         colors = ot.heat_palette(n, has256=False)
         glyphs = [ot.heat_glyph(lvl, n, has256=False) for lvl in range(1, n + 1)]

@@ -1,22 +1,7 @@
-"""Per-session notes — notes.json in $XDG_DATA_HOME/opentab.
+"""Authored per-session notes in ``$XDG_DATA_HOME/opentab/notes.json``.
 
-This is the one file opentab writes that it cannot rebuild — which is why it lives
-in the XDG *data* dir, not among the regenerable state and caches. Everything else it
-persists is *derived* — the rollup cache re-parses, prices.json re-fetches,
-state.json is just prefs and is rewritten wholesale on every quit — but a note is
-authored, and nothing can recover it. That single difference sets the rules here:
-
-- Notes live in their **own file**, never inside state.json (which any
-  --no-state run or a botched pref would happily clobber).
-- The file is written **on each edit**, not at exit, and atomically (temp +
-  os.replace), so a crash or a full disk can't truncate the file that holds
-  every other note.
-- A note whose session id is no longer in view is **kept, never pruned**. Ids
-  vanish for boring reasons — a transcript rotated away, a source you didn't
-  merge in this run — and none of them are a reason to delete what you wrote.
-
-Keyed by session id, which is globally unique across backends (the same property
-CombinedStore's routing relies on), so one flat map serves every source.
+Notes are unrebuildable: keep them separate from regenerable state, write atomically
+on every edit, preserve unknown entries, and never prune vanished session ids.
 """
 from __future__ import annotations
 
@@ -35,26 +20,16 @@ NOTES_VERSION = 1
 
 
 def notes_path(migrate: bool = True) -> str:
-    # Authored, unrebuildable -> XDG data dir; migrated from the old config dir on read.
-    # migrate=False looks without moving -- `opentab doctor`'s, and only doctor's; see
-    # paths.resolved for why that distinction has to exist.
+    # migrate=False lets doctor inspect authored data without moving it.
     target = os.path.join(paths.data_dir(), "notes.json")
     return paths.migrated(target) if migrate else paths.resolved(target)
 
 
 @contextlib.contextmanager
 def _locked():
-    """Hold an exclusive lock across one read-modify-write.
+    """Lock a read-modify-write using a stable sidecar inode.
 
-    Merging on write is what stops a *slow* collision (two opentabs, minutes apart); it
-    does nothing for a fast one — both read `{}`, both save, and the second replaces the
-    first. The window is narrow (a human types the note) but the stake is an authored
-    note, so take a real lock. On a separate lockfile, because the notes file is replaced
-    (new inode) on every save, which a lock held on it would not survive.
-
-    Best effort by design: no lock (native Windows) or an unlockable config dir must not
-    stop you writing a note — it only leaves the millisecond race the merge already
-    narrows.
+    Locking is best effort where ``fcntl`` or advisory filesystem locks are unavailable.
     """
     if fcntl is None:
         yield
@@ -70,7 +45,7 @@ def _locked():
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         except OSError:
-            pass  # a filesystem with no advisory locking (some NFS/9p): write anyway
+            pass
         yield
     finally:
         try:
@@ -82,24 +57,11 @@ def _locked():
 
 
 def _read_raw(path: str | None = None) -> tuple[dict, bool]:
-    """(the notes mapping exactly as stored, readable). Values are NOT validated here.
+    """Read raw entries without dropping shapes this version does not understand.
 
-    `readable` is False only when a file IS there and we could not make sense of it —
-    unreadable (permissions), truncated, or not our shape. That distinction is the
-    difference between "you have no notes yet" and "your notes are right there and I
-    can't see them", and only one of those may be overwritten: an absent file is
-    readable-and-empty, a broken one must stop the next save cold, or a single `n` would
-    replace a file full of notes with a file holding exactly one.
-
-    The mapping comes back raw so that a save can write back entries this version
-    doesn't understand (a hand-edit, a newer opentab) instead of quietly dropping them.
-
-    `path` overrides where to look, and exists for exactly one caller: `opentab doctor`,
-    which must not touch the disk and so cannot go through `notes_path()` — that
-    resolves through `paths.migrated()`, which MOVES a pre-XDG-split file as a side
-    effect of being asked where it is. The readability rule above is the whole point of
-    the parameter: doctor has to report the same verdict the writer will act on, and a
-    second copy of these six lines is how the two would come to disagree.
+    An absent file is readable and empty; an existing unreadable or malformed file is
+    not, so the writer can refuse to overwrite authored data. ``path`` lets doctor use
+    the same verdict without triggering migration.
     """
     path = path or notes_path()
     if not os.path.exists(path):
@@ -116,7 +78,6 @@ def _read_raw(path: str | None = None) -> tuple[dict, bool]:
 
 
 def _valid(notes: dict) -> dict[str, str]:
-    # What the UI can actually show: string keys, non-empty string values.
     return {
         key: value
         for key, value in notes.items()
@@ -125,26 +86,17 @@ def _valid(notes: dict) -> dict[str, str]:
 
 
 def read_notes(path: str | None = None) -> tuple[dict[str, str], bool]:
-    """(notes the UI can show, readable). See _read_raw for what `readable` means, and
-    for why `path` exists (it is `opentab doctor`'s, and only doctor's)."""
+    """Return displayable notes and whether the underlying file is safe to update."""
     notes, readable = _read_raw(path)
     return _valid(notes), readable
 
 
 def load_notes() -> dict[str, str]:
-    """The saved {session id: note} map ({} when there's nothing readable to load)."""
     return read_notes()[0]
 
 
 def update_note(session_id: str, text: str) -> tuple[dict[str, str], str]:
-    """Set (or, with empty text, remove) one note. Returns (the map now on disk, error).
-
-    Read-modify-write under a lock, deliberately: the file is re-read on every edit and
-    the change merged into what's actually there. Two opentabs are a normal thing to have
-    open, and the obvious "write my in-memory map" would let each one's save silently
-    delete every note the other made since it started. Errors: "unreadable" (a broken
-    file we refuse to clobber) or "unwritable" — in both cases nothing was written.
-    """
+    """Merge one edit under lock so concurrent opentabs cannot erase each other's notes."""
     with _locked():
         notes, readable = _read_raw()
         if not readable:
@@ -159,20 +111,11 @@ def update_note(session_id: str, text: str) -> tuple[dict[str, str], str]:
 
 
 def save_notes(notes: dict) -> bool:
-    """Write the whole map, atomically. False on any OS error (the caller says so).
-
-    Entries are written back as given — including any this version wouldn't display (a
-    hand-edit, a newer opentab's shape). Dropping what we don't understand from a file of
-    authored data is still deleting someone's writing.
-    """
+    """Atomically write every entry, including shapes this version cannot display."""
     path = notes_path()
     payload = {
         "version": NOTES_VERSION,
-        # Sorted + indented: this file is small, user-authored, and the kind of
-        # thing you end up reading (or diffing in a dotfiles repo) by hand.
-        # `!= ""` and not `if notes[key]`: an empty string is a note we cleared, but
-        # every other falsy value (null, 0, false, {}) is a foreign entry we merely
-        # don't understand -- and truthiness is not a licence to delete it.
+        # Only an empty string means deletion; preserve all unknown falsy values.
         "notes": {key: notes[key] for key in sorted(notes, key=str) if notes[key] != ""},
     }
     tmp = f"{path}.{os.getpid()}.tmp"
@@ -182,9 +125,7 @@ def save_notes(notes: dict) -> bool:
             json.dump(payload, fh, ensure_ascii=False, indent=1)
         os.replace(tmp, path)
     except (OSError, TypeError, ValueError):
-        # ValueError covers UnicodeEncodeError: JSON will happily *load* an escaped lone
-        # surrogate that a UTF-8 stream then can't write. Fail the save (the caller says
-        # so) and take the temp file with us -- never a half-written note left behind.
+        # UnicodeEncodeError is a ValueError; remove any partial temporary file.
         try:
             os.unlink(tmp)
         except OSError:

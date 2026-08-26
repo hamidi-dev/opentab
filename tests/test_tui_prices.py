@@ -1,5 +1,3 @@
-"""The P prices overlay and the startup price-fetch prompt."""
-
 import os
 import tempfile
 
@@ -25,12 +23,12 @@ def test_capital_p_opens_model_prices_overlay():
     }
     assert not app.show_prices
     app.handle_key(None, ord("P"))
-    assert app.show_prices  # opens the reference overlay
+    assert app.show_prices
     lines = app.renderer.price_table_lines(80)
     # opus-4-8 lists at $5 in / $25 out per 1M, from the embedded models.dev table
     assert any("claude-opus-4-8" in ln and "5.00" in ln and "25.00" in ln for ln in lines)
     assert any("models.dev" in ln for ln in lines)
-    app.handle_key(None, 27)  # esc (a non-nav key) closes it
+    app.handle_key(None, 27)
     assert not app.show_prices
 
 
@@ -46,20 +44,20 @@ def test_jk_navigates_the_prices_overlay():
     app.handle_key(None, ord("P"))
     assert app.show_prices and app.prices_index == 0
     app.handle_key(None, ord("j"))
-    assert app.prices_index == 1 and app.show_prices  # moves the cursor, stays open
+    assert app.prices_index == 1 and app.show_prices
     app.handle_key(None, ord("k"))
     assert app.prices_index == 0
-    app.handle_key(None, ord("k"))  # floored at the top
+    app.handle_key(None, ord("k"))
     assert app.prices_index == 0
     app.handle_key(None, ord("G"))
-    assert app.prices_index == 2  # last model (3 rows)
-    app.handle_key(None, ord("j"))  # clamped at the last row
+    assert app.prices_index == 2
+    app.handle_key(None, ord("j"))
     assert app.prices_index == 2
     app.handle_key(None, ord("g"))
     assert app.prices_index == 0
-    app.handle_key(None, ord("x"))  # unbound keys are swallowed, the table stays
+    app.handle_key(None, ord("x"))
     assert app.show_prices
-    app.handle_key(None, ord("q"))  # closing is explicit (Esc/q/P)
+    app.handle_key(None, ord("q"))
     assert not app.show_prices
 
 
@@ -96,10 +94,10 @@ def test_prices_sort_picker_reorders_by_a_column():
     app = _price_sort_app()
     app.handle_key(None, ord("P"))
     app.prices_view = "flat"  # so the column sort orders globally
-    app.handle_key(None, ord("s"))  # opens the sort picker over the overlay
+    app.handle_key(None, ord("s"))
     assert app.sort_menu and app.sort_menu_options() == app.prices_sort_options
     app.sort_menu_index = app.prices_sort_options.index("input")
-    app.handle_key(None, 10)  # Enter applies
+    app.handle_key(None, 10)
     assert not app.sort_menu and app.prices_sort == "input"
     names = app.priced_model_names()
     # Priciest input first (the default numeric direction), spend no longer decides.
@@ -113,11 +111,11 @@ def test_prices_header_click_sorts_then_flips_direction():
     app = _price_sort_app()
     app.handle_key(None, ord("P"))
     app.prices_view = "flat"  # so the column sort orders globally
-    app.apply_header_sort("output", "prices")  # first click sorts by output, high->low
+    app.apply_header_sort("output", "prices")
     assert app.prices_sort == "output" and not app.prices_sort_reverse
     desc = [ot.model_price(n)[1] for n in app.priced_model_names()]
     assert desc == sorted(desc, reverse=True)
-    app.apply_header_sort("output", "prices")  # re-click flips to low->high
+    app.apply_header_sort("output", "prices")
     assert app.prices_sort == "output" and app.prices_sort_reverse
     asc = [ot.model_price(n)[1] for n in app.priced_model_names()]
     assert asc == sorted(asc)
@@ -168,7 +166,7 @@ def test_prices_pinning_floats_a_shortlist_and_persists():
     entries = app.priced_model_entries()
     top = [e for e in entries if e.pinned]
     assert [(e.canon, e.routes) for e in top] == [("gpt-5-mini", ("openai",))]
-    assert entries[0] == top[0]  # first
+    assert entries[0] == top[0]
     assert sum(1 for e in entries if e.canon == "gpt-5-mini") > 1  # resellers exist, unpinned
     # Pinning a catalog row pins exactly that (route, model) too.
     other = next(
@@ -304,7 +302,7 @@ def test_price_model_sessions_aggregates_alias_spellings():
         "b": [_model_row("github-copilot/claude-sonnet-4.5", 1.0, 20)],
     }
     rows = app.price_model_sessions("claude-sonnet-4-5")
-    assert [w.id for w, _c, _t in rows] == ["a", "b"]  # both spellings, most spend first
+    assert [w.id for w, _c, _t in rows] == ["a", "b"]
 
 
 def test_prices_group_by_family_dedupes_routes_and_tags_them():
@@ -346,7 +344,7 @@ def test_prices_p_cycles_view_modes():
     app.handle_key(None, ord("p"))  # -> the whole models.dev catalog (flat, ungrouped)
     assert app.prices_view == "all"
     assert not any(ln.startswith("▸ ") for ln in app.renderer.price_table_lines(160))
-    app.handle_key(None, ord("p"))  # wraps back to flat
+    app.handle_key(None, ord("p"))
     assert app.prices_view == "flat"
     app.handle_key(None, ord("l"))  # h/l walk the view tabs too, like Trends
     assert app.prices_view == "family"
@@ -372,7 +370,7 @@ def test_prices_models_dev_view_lists_the_whole_catalog_at_your_mix():
     assert len({e.routes[0] for e in used}) > 1  # your model, compared across routes
     unused = next(e for e in entries if e.share == 0)
     assert app.renderer._price_use_cell(unused, 1.0).strip() == ""
-    assert entries[0].eff <= entries[-1].eff  # default sort: cheapest-for-your-mix first
+    assert entries[0].eff <= entries[-1].eff
     app.query = "claude-opus-4.8"  # the f filter tames the ~5k rows
     hits = app.priced_model_entries()
     assert 0 < len(hits) < 200 and all("opus" in e.canon for e in hits)
@@ -449,7 +447,7 @@ def test_prices_enter_lists_sessions_that_used_the_model():
     app.handle_key(None, ord("P"))
     # Cheapest mix first: codex (fallback gpt-5 rate, 1.25 in) ahead of opus (5.00).
     assert app.priced_model_names() == ["gpt-5-codex", "claude-opus-4-8"]
-    app.handle_key(None, ord("j"))  # select opus
+    app.handle_key(None, ord("j"))
     app.handle_key(None, 10)  # Enter drills into that model's sessions
     assert app.prices_model == "claude-opus-4-8"
     sessions = app.price_model_sessions("claude-opus-4-8")
@@ -508,15 +506,15 @@ def test_prices_overlay_close_only_on_esc_q_or_P():
     was_api = app.show_api_prices
     app.handle_key(None, ord("$"))  # $ re-prices in place, the table stays
     assert app.show_api_prices is not was_api and app.show_prices
-    app.handle_key(None, ord("P"))  # P again closes (a toggle)
+    app.handle_key(None, ord("P"))
     assert not app.show_prices
     app.handle_key(None, ord("P"))
     assert app.handle_key(None, 3) is False  # Ctrl-C still quits from inside
-    app.handle_key(None, 10)  # Enter -> the model's sessions (overlay still open)
+    app.handle_key(None, 10)
     assert app.prices_model == "claude-opus-4-8"
     app.handle_key(None, ord("x"))  # swallowed, the list stays
     assert app.show_prices and app.prices_model is not None
-    app.handle_key(None, ord("q"))  # q closes the whole overlay from the drill
+    app.handle_key(None, ord("q"))
     assert not app.show_prices and app.prices_model is None
 
 

@@ -9,11 +9,10 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-BLOCKS_UP = " ▁▂▃▄▅▆▇"  # 0..7 eighths, bottom-aligned — the top cell of a rising bar
+BLOCKS_UP = " ▁▂▃▄▅▆▇"
 
 
 def month_range(first: str, last: str) -> list[str]:
-    # Inclusive list of "YYYY-MM" so quiet months show as gaps, not skips.
     y, m = int(first[:4]), int(first[5:7])
     ly, lm = int(last[:4]), int(last[5:7])
     out = []
@@ -26,11 +25,7 @@ def month_range(first: str, last: str) -> list[str]:
 
 
 def week_key(date_str: str) -> str:
-    # The Monday ("YYYY-MM-DD") of the ISO week a date falls in. Sorts chronologically
-    # as a plain string (so year boundaries are handled) and reads as "week of <date>".
-    # Returns "" for a missing or unparseable date: some backends emit a workflow with
-    # no usable timestamp (e.g. a metadata-only session), and such a row simply can't
-    # sit on a timeline -- so callers treat a "" key as off-timeline rather than crash.
+    # Monday sorts chronologically as text; invalid dates stay off the timeline.
     try:
         d = datetime.strptime((date_str or "")[:10], "%Y-%m-%d")
     except ValueError:
@@ -38,45 +33,27 @@ def week_key(date_str: str) -> str:
     return (d - timedelta(days=d.weekday())).strftime("%Y-%m-%d")
 
 
-# The Calendar heat map's granularity is live-adjustable with +/- between these
-# bounds; level 0 is always an in-range day with no spend. More levels = more shades,
-# capped at the number of maximally-distinct colors the ramp can hold (so no two
-# adjacent levels ever look the same).
+# Level 0 is an in-range day with no spend; the cap keeps adjacent shades distinct.
 HEAT_MIN_LEVELS = 3
 HEAT_MAX_LEVELS = 11
 HEAT_DEFAULT_LEVELS = 6
-HEAT_EMPTY_GLYPH = "·"  # a tracked-but-empty day (level 0)
-HEAT_RAMP = "░▒▓█"  # density glyphs; on 256-color the *color* carries the fine steps
+HEAT_EMPTY_GLYPH = "·"
+HEAT_RAMP = "░▒▓█"
 
-# The P overlay's per-column price heat reuses the same green(cheap)→red(pricy)
-# ramp but on a fixed, dedicated color-pair block above the calendar's dynamic
-# 8..(8+HEAT_MAX_LEVELS-1) range, so the two never collide and price colors never
-# shift when the calendar granularity (+/-) rescales its own pairs.
+# Dedicated fixed pair ranges prevent dynamic calendar levels from shifting other ramps.
 PRICE_HEAT_LEVELS = 5
-PRICE_HEAT_BASE_PAIR = 20  # pairs 20..24; clear of the calendar's 8..18
+PRICE_HEAT_BASE_PAIR = 20
 
-# Fixed theme-heat fills for the Tools treemap. Unlike the Calendar ramp these
-# pairs paint the heat colour as a background, and their levels never follow +/-.
 TOOL_HEAT_LEVELS = 6
-TOOL_HEAT_BASE_PAIR = 33  # pairs 33..38; clear of the window-bg pair at 32
+TOOL_HEAT_BASE_PAIR = 33
 
-# The token-type ramp: the ONE categorical ramp in the TUI, five slots for the five
-# token types of the Token economics box. Every other ramp here is SEQUENTIAL (more is
-# hotter); this one means "different", not "more", so it is its own thing.
-#
-# Two steppings of the same five hues, chosen for a dark and a light terminal
-# background and validated as a set (lightness band, chroma floor, adjacent-pair
-# separation under simulated colour-vision deficiency, contrast against the surface).
-# The web page ships the identical pair -- one chart, two frontends. Slot ORDER is the
-# colour-vision safety mechanism, not decoration: do not reorder without re-validating.
+# This categorical ramp means different token types, not increasing heat. Slot order is
+# validated for dark/light contrast and colour-vision separation; do not reorder casually.
 TOKEN_SERIES_DARK = ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181")
 TOKEN_SERIES_LIGHT = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4")
-TOKEN_SERIES_BASE_PAIR = 26  # pairs 26..30; clear of the price ramp's 20..24, tab 25, bg 32
+TOKEN_SERIES_BASE_PAIR = 26
 
-# An 8-colour terminal still has five distinct ANSI hues to spend, so the bar keeps its
-# colours there; only a PAIR-starved terminal (COLOR_PAIRS <= 26, e.g. minitel1) loses
-# them, and then the glyphs below carry identity instead. Same escape hatch the calendar
-# uses, applied to a categorical scale rather than a sequential one.
+# Glyphs preserve category identity when a terminal lacks enough colour pairs.
 TOKEN_SERIES_GLYPHS = ("█", "▓", "▒", "░", "▚")
 
 
@@ -85,8 +62,6 @@ def token_series(dark: bool) -> tuple[str, ...]:
 
 
 def token_series_ansi() -> tuple[int, ...]:
-    # Five distinct ANSI hues, in the validated ramp's own order (blue, red, green,
-    # yellow, magenta). Black/white are excluded -- they are the fore/background.
     return (
         curses.COLOR_BLUE,
         curses.COLOR_RED,
@@ -96,20 +71,12 @@ def token_series_ansi() -> tuple[int, ...]:
     )
 
 
-# 256-color: the high-contrast green→red edge of the xterm color cube — eleven
-# maximally-distinct steps (pure green, lime, yellow, orange, pure red). We sample N
-# of these so each level is a clearly different hue even at the finest granularity;
-# the four density glyphs necessarily repeat, but the color never does.
+# High-contrast green-to-red edge of the xterm cube, sampled to distinct levels.
 HEAT_CUBE_RAMP = (46, 82, 118, 154, 190, 226, 220, 214, 208, 202, 196)
 
 
 def heat_level(value: float, peak: float, levels: int) -> int:
-    # Bucket a day's spend into one of `levels` shades relative to the busiest day of
-    # the year. Spend spans orders of magnitude — a few heavy days dwarf the rest — so a
-    # *linear* ramp dumps almost every ordinary day into the faintest tier and the map
-    # reads as one flat shade. A log scale spreads the common low-spend days across the
-    # whole ramp instead, while the peak day still tops out and any nonzero day shows at
-    # least the faintest tier (mirroring cost_bar's "a sliver is never nothing").
+    # Log scaling keeps ordinary days distinguishable from a few dominant peaks.
     if value <= 0 or peak <= 0:
         return 0
     if value >= peak:
@@ -119,9 +86,6 @@ def heat_level(value: float, peak: float, levels: int) -> int:
 
 
 def heat_band_label(v: float) -> str:
-    # Compact dollar label for a legend bound: whole dollars past $10 (no gratuitous
-    # decimals), but a decimal below it so the log scale's bunched low-end bounds stay
-    # distinct instead of all rounding to the same "$1".
     if v >= 10:
         return f"${v:,.0f}"
     if v >= 1:
@@ -130,9 +94,7 @@ def heat_band_label(v: float) -> str:
 
 
 def _heat_ansi_ramp() -> tuple[tuple[int, str], ...]:
-    # 8-color fallback: only green/yellow/red exist, so each level is a distinct
-    # (color, glyph) *pair* climbing in heat, keeping adjacent levels apart where the
-    # 256-color ramp would collapse. Eleven pairs, matching HEAT_MAX_LEVELS.
+    # Pair ANSI colours with density glyphs so adjacent fallback levels remain distinct.
     g, y, r = curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_RED
     return (
         (g, "░"), (g, "▒"), (g, "▓"),
@@ -142,16 +104,12 @@ def _heat_ansi_ramp() -> tuple[tuple[int, str], ...]:
 
 
 def heat_sample(n: int, ramp: tuple) -> list:
-    # Evenly pick n entries from ramp; distinct whenever n <= len(ramp) (our level cap).
     if n <= 1:
         return [ramp[-1]]
     return [ramp[round(i * (len(ramp) - 1) / (n - 1))] for i in range(n)]
 
 
 def heat_glyph(level: int, levels: int, has256: bool = True) -> str:
-    # The glyph for a level. On 256-color it's a coarse ░▒▓█ density (the color carries
-    # the real distinction); on 8-color it's the paired glyph that keeps each level
-    # apart from its neighbours within the same ANSI color.
     if level <= 0:
         return HEAT_EMPTY_GLYPH
     if not has256:
@@ -161,10 +119,6 @@ def heat_glyph(level: int, levels: int, has256: bool = True) -> str:
 
 
 def heat_palette(n: int, has256: bool) -> list[int]:
-    # `n` colors from green (coolest) to red (hottest), sampled from the high-contrast
-    # ramp so every level is a genuinely different shade. 256-color walks the cube's
-    # green→red edge; 8-color collapses to the three ANSI heat colors (paired with the
-    # glyph by heat_glyph to stay distinct).
     if has256:
         return list(heat_sample(n, HEAT_CUBE_RAMP))
     return [color for color, _glyph in heat_sample(n, _heat_ansi_ramp())]
@@ -176,14 +130,10 @@ MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oc
 def calendar_cells(
     year: str, by_date: dict[str, float]
 ) -> tuple[list[list[float | None]], list[tuple[int, str]], int]:
-    # GitHub-style contribution grid for one calendar year: 7 rows (Mon..Sun) by up
-    # to 53 week-columns. Each cell is that day's spend, or None for the padding days
-    # of the leading/trailing partial weeks that spill outside the year. Also returns
-    # the (column, "Jan".."Dec") anchors for the month labels, and the column count.
     y = int(year)
     jan1 = datetime(y, 1, 1)
     dec31 = datetime(y, 12, 31)
-    grid_start = jan1 - timedelta(days=jan1.weekday())  # the Monday on/before Jan 1
+    grid_start = jan1 - timedelta(days=jan1.weekday())
     ncols = (dec31 - grid_start).days // 7 + 1
     grid: list[list[float | None]] = [[None] * ncols for _ in range(7)]
     months: list[tuple[int, str]] = []
@@ -192,6 +142,6 @@ def calendar_cells(
         col = (day - grid_start).days // 7
         grid[day.weekday()][col] = by_date.get(day.strftime("%Y-%m-%d"), 0.0)
         if day.day == 1:
-            months.append((col, MONTH_ABBR[day.month - 1]))  # English, never locale-folded
+            months.append((col, MONTH_ABBR[day.month - 1]))
         day += timedelta(days=1)
     return grid, months, ncols

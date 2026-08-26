@@ -1,5 +1,3 @@
-"""parse_args, --status and --goto: session/directory resolution across backends (cli.py)."""
-
 import contextlib
 import io
 import json
@@ -109,7 +107,7 @@ def test_status_line_scopes_to_project_and_estimates_unpriced():
             ],
         )
         store = ot.Store(db, type("A", (), {"demo": False})())
-        assert ot.status_line(store) == "$2.00"  # newest activity overall wins
+        assert ot.status_line(store) == "$2.00"
         expected = ot.money(
             ot.api_equivalent_cost("anthropic/claude-opus-4.5", 1_000_000, 0, 0, 0, 0)
         )
@@ -133,10 +131,10 @@ def test_status_line_prices_an_exact_session_id():
             ],
         )
         store = ot.Store(db, type("A", (), {"demo": False})())
-        assert ot.status_line(store, "/work/repo") == "$2.00"  # dir -> project's latest
+        assert ot.status_line(store, "/work/repo") == "$2.00"
         assert ot.status_line(store, "ses_new") == "$2.00"
-        assert ot.status_line(store, "ses_old") == "$5.50"  # exact session, subtree included
-        assert ot.status_line(store, "ses_oldchild") == "$5.50"  # subagent id -> its root
+        assert ot.status_line(store, "ses_old") == "$5.50"
+        assert ot.status_line(store, "ses_oldchild") == "$5.50"
         assert ot.status_line(store, "ses_gone") == ""
 
 
@@ -173,9 +171,9 @@ def test_status_line_prices_claude_sessions_without_a_full_parse():
         expected = "~" + ot.money(
             ot.api_equivalent_cost("anthropic/claude-opus-4-8", 1000, 50, 0, 0, 0)
         )
-        assert ot.status_line(store) != ""  # newest overall: sid_b
-        assert ot.status_line(store, alpha) == expected  # dir scopes to its project
-        assert ot.status_line(store, sid_a) == expected  # uuid prices exactly that one
+        assert ot.status_line(store) != ""
+        assert ot.status_line(store, alpha) == expected
+        assert ot.status_line(store, sid_a) == expected
         assert ot.status_line(store, "44444444-4444-4444-4444-444444444444") == ""
         assert store._sessions is None  # the full-tree parse never ran
 
@@ -197,17 +195,16 @@ def test_status_command_prices_whichever_tool_ran_last():
         claude_price = "~" + ot.money(
             ot.api_equivalent_cost("anthropic/claude-opus-4-8", 1000, 50, 0, 0, 0)
         )
-        assert ot.cli._status_line_all(args, repo) == claude_price  # claude is newer
+        assert ot.cli._status_line_all(args, repo) == claude_price
         assert ot.cli._status_line_all(args, "ses_oc") == "$2.00"
         assert ot.cli._status_line_all(args, sid) == claude_price
 
-        # Now OpenCode sees activity after the Claude transcript's mtime -- it wins.
         os.utime(
             os.path.join(projects, re.sub(r"[^A-Za-z0-9]", "-", repo), sid + ".jsonl"),
             (1760000100, 1760000100),
         )
         assert ot.cli._status_line_all(args, repo) == "$2.00"
-        assert ot.cli._status_line_all(args, None) == "$2.00"  # no target: newest overall
+        assert ot.cli._status_line_all(args, None) == "$2.00"
 
 
 def test_status_batch_prints_a_table_keyed_by_the_target_asked_for():
@@ -417,7 +414,7 @@ def test_status_line_prices_codex_sessions_and_folds_spawned_threads():
 
         store = ot.CodexStore(os.path.join(tmp, "sessions"), type("A", (), {"demo": False})())
         rows = store.recent_roots()
-        assert rows[0]["id"] == root_sid  # newest file is the child -> its root wins
+        assert rows[0]["id"] == root_sid
         assert rows[0]["directory"] == repo
         assert store.root_of(child_sid) == root_sid
         assert store.root_of(root_sid) == root_sid
@@ -429,7 +426,7 @@ def test_status_line_prices_codex_sessions_and_folds_spawned_threads():
         )
         assert ot.status_line(store, root_sid) == expected  # the subtree, not just the root
         assert ot.status_line(store, child_sid) == expected  # child id -> its root
-        assert ot.status_line(store, repo) == expected  # dir -> the project's newest root
+        assert ot.status_line(store, repo) == expected
 
         # A root that only spawned threads (no usage of its own) still prices its
         # children's subtree -- the browser's rollup drops it, --status must not.
@@ -821,7 +818,7 @@ def test_goto_target_resolves_ids_and_directories_like_status():
         assert ot.cli._goto_target(args) == ("claude", sid)
         args.goto = "ses_oc"
         assert ot.cli._goto_target(args) == ("opencode", "ses_oc")
-        args.goto = repo  # directory: the newest root wins (the Claude transcript)
+        args.goto = repo
         assert ot.cli._goto_target(args) == ("claude", sid)
         args.goto = "99999999-9999-9999-9999-999999999999"
         assert ot.cli._goto_target(args) is None  # unclaimed id, never a dir fallback
@@ -1536,11 +1533,6 @@ def test_remote_timings_without_pull_never_fetches():
 
 
 def test_demo_rejects_a_value_that_is_not_a_category():
-    """--demo takes an OPTIONAL value, so argparse eats the next positional: `--demo
-    requests.csv` bound the path to --demo, and `export --demo out.json` wrote the summary
-    to stdout while out.json was never created. parse_demo_cats drops unknown names on
-    purpose (an empty result means "everything"), which hides the swallowed filename -- so
-    the command line rejects it instead."""
     for argv in (["--demo", "requests.csv"], ["export", "--demo", "out.json"], ["--demo", "turnz"]):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
@@ -1558,9 +1550,6 @@ def test_demo_rejects_a_value_that_is_not_a_category():
 
 
 def test_export_under_demo_does_not_leak_the_real_hostname():
-    """--export pairs with --demo for a shareable summary, so the machine label -- a real
-    hostname, i.e. identity exactly like a title or a path -- must be scrambled with the
-    rest, behind the same `titles` gate RemoteStore uses at display time."""
     import socket
     import sys as _sys
 

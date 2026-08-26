@@ -1,5 +1,3 @@
-"""Shared fixtures for the test suite: fake stores/screens and per-backend builders."""
-
 import json
 import os
 import sqlite3
