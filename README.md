@@ -234,7 +234,8 @@ transcript; each backend is one small parser against a fixed contract.
 
 `--demo` (or `D` in-app) replaces titles, paths and absolute numbers with deterministic
 fakes in memory, keeping the shape of the data real. Scramble only part of it with
-`--demo titles,spend`. Nothing is written back, and demo mode never persists state —
+`--demo titles,spend` — project paths are their own scope, so `--demo titles,turns,spend`
+keeps your real project names on screen while everything else stays anonymous. Nothing is written back, and demo mode never persists state —
 `opentab --demo --html demo.html` gives you a shareable page.
 
 </details>

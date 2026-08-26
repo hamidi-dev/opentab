@@ -2475,7 +2475,8 @@ class App:
         return "demo: " + ", ".join(sorted(state))
 
     _DEMO_CAT_LABELS = {
-        "titles": "Titles  — session / prompt / project / model / machine names",
+        "titles": "Titles  — session / prompt / model / machine names",
+        "paths": "Paths   — project directories",
         "turns": "Turns   — the expandable full prompt text",
         "spend": "Spend   — dollars and token magnitudes",
     }

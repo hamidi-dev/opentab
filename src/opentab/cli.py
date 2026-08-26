@@ -176,10 +176,10 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         metavar="CATS",
         help="anonymize for live demos and screenshots (never writes to the DB). Bare "
         "--demo scrambles everything; a comma list limits it to some of titles "
-        "(session/prompt/project/model/machine names), turns (the expandable full "
-        "prompt text), spend (dollars + token magnitudes) -- e.g. --demo titles,spend "
-        "shows real prompt bodies but fake names and hidden costs. Toggle live in the "
-        "TUI with D",
+        "(session/prompt/model/machine names), paths (project directories), turns (the "
+        "expandable full prompt text), spend (dollars + token magnitudes) -- e.g. "
+        "--demo titles,spend shows real project paths and prompt bodies but fake "
+        "session names and hidden costs. Toggle live in the TUI with D",
     )
     parser.add_argument(
         "--no-state",

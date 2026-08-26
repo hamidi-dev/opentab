@@ -78,7 +78,11 @@ opens a Herdr socket. It does not call the socket operations `layout.apply` or
 `opentab --demo` is for showing the tool to other people without leaking your real
 work: session titles and project paths become deterministic, plausible fakes, and
 sessions recorded with no cost get a synthetic price derived from their real token
-counts — all transformed in memory on load, nothing written back. A single hidden
+counts — all transformed in memory on load, nothing written back. It splits into four
+independent scopes — `titles` (session/prompt/model/machine names), `paths` (project
+directories), `turns` (the expandable full prompt text) and `spend` (dollars and token
+magnitudes) — so `--demo titles,turns,spend` (or unchecking **Paths** in the `D` picker)
+keeps your real project names while hiding everything else. A single hidden
 per-process factor scales every cost and token count, so token × list-price can't
 recover your real dollars.
 

@@ -9,10 +9,12 @@ import zlib
 from opentab.models import Workflow
 from opentab.pricing import is_local_provider
 
-# `titles` hides identity (session/prompt/subagent titles, project paths, model and
-# machine names); `turns` hides the expandable full prompt text; `spend` hides the
-# money and token magnitudes. Default is all three.
-DEMO_CATEGORIES = ("titles", "turns", "spend")
+# `titles` hides identity (session/prompt/subagent titles, model and machine names);
+# `paths` hides the project directories; `turns` hides the expandable full prompt text;
+# `spend` hides the money and token magnitudes. Default is all four. Paths are their own
+# scope because a project tree is often the one label a demo WANTS real -- it is what
+# makes a screenshot legible -- while the prompts inside it stay private.
+DEMO_CATEGORIES = ("titles", "paths", "turns", "spend")
 DEMO_ALL = frozenset(DEMO_CATEGORIES)
 
 
@@ -53,6 +55,7 @@ def scramble_workflow(
     # ``guard_root`` avoids backfilling an already priced OpenCode root.
     if "titles" in cats:
         w.title = demo_title(w.id)
+    if "paths" in cats:
         w.directory = demo_dir(w.id)
     if w.unpriced_tokens > 0 and "spend" in cats:
         add = demo_cost(w.unpriced_tokens, w.id)

@@ -55,7 +55,7 @@ def test_demo_drops_a_filter_query_you_typed():
     assert "demo mode" in app.notice
 
 
-def test_demo_categories_gate_titles_turns_and_spend():
+def test_demo_categories_gate_titles_paths_turns_and_spend():
     from opentab.demo import demo_config, scramble_workflow
     from opentab.models import Workflow
 
@@ -74,17 +74,22 @@ def test_demo_categories_gate_titles_turns_and_spend():
         )
 
     # spend pins the scale (identity unless spend is scrambled), so cost only moves
-    # when spend is on; titles only rename when titles is on.
+    # when spend is on; titles only rename when titles is on. `paths` is its OWN scope:
+    # a project tree is often the one label a demo wants real (it is what makes the
+    # screen legible), while the prompts inside it stay private.
     def scrambled(spec):
         _en, scale, cats = demo_config(type("A", (), {"demo": spec})())
         w = scramble_workflow(wf(), scale, cats)
-        return w.title != "real title", w.total_cost != 5.0
+        return w.title != "real title", w.directory != "/home/me/repo", w.total_cost != 5.0
 
     assert demo_config(type("A", (), {"demo": "titles"})())[1] == 1.0  # no spend -> real $
-    assert scrambled("titles") == (True, False)  # fake name, real cost
-    assert scrambled("spend") == (False, True)  # real name, scaled cost
-    assert scrambled("turns") == (False, False)  # neither touches a workflow row
-    assert scrambled("all")[0] and scrambled("all")[1]  # everything moves
+    assert scrambled("titles") == (True, False, False)  # fake name, REAL path, real cost
+    assert scrambled("paths") == (False, True, False)  # real name, fake path
+    assert scrambled("spend") == (False, False, True)  # real labels, scaled cost
+    assert scrambled("turns") == (False, False, False)  # neither touches a workflow row
+    assert all(scrambled("all"))  # everything moves
+    # the whole point: everything but the project name
+    assert scrambled("titles,turns,spend") == (True, False, True)
     # an unknown category falls back to all, never a silent no-op demo
     _en, _sc, cats = demo_config(type("A", (), {"demo": "bogus"})())
     assert cats == ot.demo.DEMO_ALL
@@ -135,7 +140,9 @@ def test_demo_picker_toggles_categories_and_applies_the_subset():
 
         app.open_demo_menu()
         assert app.demo_menu and app.demo_menu_sel == set(ot.demo.DEMO_ALL)  # seeded all
-        app.handle_key(None, ord("j"))  # titles -> turns
+        app.handle_key(None, ord("j"))  # titles -> paths
+        app.handle_key(None, ord(" "))  # uncheck paths
+        app.handle_key(None, ord("j"))  # paths -> turns
         app.handle_key(None, ord("j"))  # turns -> spend
         app.handle_key(None, ord(" "))  # uncheck spend
         assert app.demo_menu_sel == {"titles", "turns"}
@@ -168,7 +175,7 @@ def test_fleet_rebuild_uses_the_demo_state_key_not_a_bool():
         app._rebuild_fleet_store()  # must not raise (a bool state would hit sorted(True))
         assert app.store is fresh
         assert ("remote", ot.demo.DEMO_ALL) in app._store_cache  # state key, not (…, True)
-        assert seen == ["spend,titles,turns"]  # a spec string reached make_store, never True
+        assert seen == ["paths,spend,titles,turns"]  # a spec string reached make_store, never True
     finally:
         ot.sources.make_store = real_make
 
@@ -396,7 +403,9 @@ def test_lit_demo_key_leaves_in_one_press_and_remembers_the_categories():
     try:
         ot.sources.make_store = lambda a, key: ((partial, "") if a.demo else (real, ""))
         app.open_demo_menu()
-        app.handle_key(None, ord("j"))  # titles -> turns
+        app.handle_key(None, ord("j"))  # titles -> paths
+        app.handle_key(None, ord(" "))  # uncheck paths
+        app.handle_key(None, ord("j"))  # paths -> turns
         app.handle_key(None, ord(" "))  # uncheck turns
         app.handle_key(None, ord("j"))  # turns -> spend
         app.handle_key(None, ord(" "))  # uncheck spend
