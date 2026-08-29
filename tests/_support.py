@@ -1054,3 +1054,143 @@ def _gemini_registry(root, projects):
     os.makedirs(root, exist_ok=True)
     with open(os.path.join(root, "projects.json"), "w", encoding="utf-8") as fh:
         json.dump({"projects": projects}, fh)
+
+
+# --- Antigravity: per-conversation SQLite whose payload columns are protobuf ----------
+
+ANTIGRAVITY_SID = "15264218-772f-434a-be2d-997ac0b4b199"
+
+
+def _antigravity_args():
+    return type("Args", (), {"demo": False})()
+
+
+def _pb_varint(value):
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        out.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(out)
+
+
+def _pb_int(field, value):
+    return _pb_varint(field << 3) + _pb_varint(value)
+
+
+def _pb_bytes(field, payload):
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    return _pb_varint((field << 3) | 2) + _pb_varint(len(payload)) + payload
+
+
+def _pb_msg(field, *parts):
+    return _pb_bytes(field, b"".join(parts))
+
+
+def _ag_usage(
+    response_id,
+    system=0,
+    fresh=0,
+    cache_read=0,
+    output=0,
+    thinking=0,
+    out_total=None,
+):
+    """One `usage` message. `out_total` defaults to the invariant output + thinking."""
+    parts = []
+    if system:
+        parts.append(_pb_int(1, system))
+    if fresh:
+        parts.append(_pb_int(2, fresh))
+    parts.append(_pb_int(3, output + thinking if out_total is None else out_total))
+    if cache_read:
+        parts.append(_pb_int(5, cache_read))
+    if output:
+        parts.append(_pb_int(9, output))
+    if thinking:
+        parts.append(_pb_int(10, thinking))
+    parts.append(_pb_bytes(11, response_id))
+    return b"".join(parts)
+
+
+def _ag_timestamp(field, seconds, nanos=0):
+    return _pb_msg(field, _pb_int(1, seconds), _pb_int(2, nanos))
+
+
+def _ag_gen_metadata(usage, model="gemini-3.7-flash"):
+    """A `gen_metadata.data` blob: the usage sits at #1.#4, the model at #1.#19."""
+    inner = [_pb_bytes(4, usage)]
+    if model:
+        inner.append(_pb_bytes(19, model))
+    return _pb_msg(1, *inner)
+
+
+def _ag_step_meta(seconds, usage=None, at_field=9):
+    """A `steps.metadata` blob: a timestamp at #1, and optionally a usage message."""
+    parts = [_ag_timestamp(1, seconds)]
+    if usage is not None:
+        parts.append(_pb_bytes(at_field, usage))
+    return b"".join(parts)
+
+
+def _ag_step_payload(prompt):
+    """A `steps.step_payload` blob carrying a typed user message at #19.#2."""
+    return _pb_msg(19, _pb_bytes(2, prompt))
+
+
+def _ag_trajectory_meta(workspace, seconds):
+    return b"".join(
+        [
+            _pb_msg(1, _pb_bytes(1, f"file://{workspace}")),
+            _ag_timestamp(2, seconds),
+        ]
+    )
+
+
+def _antigravity_db(root, sid, *, workspace, created, steps=(), gens=(), variant="antigravity"):
+    """Write one conversation database. `steps` are (step_type, metadata, payload)."""
+    directory = os.path.join(root, variant, "conversations")
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, f"{sid}.db")
+    if os.path.exists(path):  # a fixture rewriting the same conversation
+        os.remove(path)
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE trajectory_metadata_blob (id text, data blob, PRIMARY KEY (id))")
+    con.execute(
+        "CREATE TABLE steps (idx integer, step_type integer NOT NULL DEFAULT 0, "
+        "metadata blob, step_payload blob, PRIMARY KEY (idx))"
+    )
+    con.execute("CREATE TABLE gen_metadata (idx integer, data blob, PRIMARY KEY (idx))")
+    con.execute(
+        "INSERT INTO trajectory_metadata_blob VALUES (?, ?)",
+        ("main", _ag_trajectory_meta(workspace, created)),
+    )
+    for idx, (step_type, metadata, payload) in enumerate(steps):
+        con.execute("INSERT INTO steps VALUES (?, ?, ?, ?)", (idx, step_type, metadata, payload))
+    for idx, blob in enumerate(gens):
+        con.execute("INSERT INTO gen_metadata VALUES (?, ?)", (idx, blob))
+    con.commit()
+    con.close()
+    return path
+
+
+def _ag_tool_step(seconds, tool, call_id="call_1"):
+    """A tool-call step: the name lives on the metadata, and it carries no usage."""
+    return (
+        132,
+        _ag_step_meta(seconds) + _pb_msg(4, _pb_bytes(1, call_id), _pb_bytes(2, tool)),
+        None,
+    )
+
+
+def _ag_subagent_step(seconds, child_sid, parent_sid, agent="Joke Writer"):
+    """The step carrying a subagent's reply back, which is where the child id lives."""
+    payload = _pb_msg(
+        114,
+        _pb_msg(2, _pb_bytes(1, f"Message from {agent} (self)")),
+        _pb_bytes(3, "agent_message"),
+        _pb_msg(4, _pb_bytes(2, parent_sid), _pb_bytes(3, child_sid)),
+    )
+    return (101, _ag_step_meta(seconds), payload)

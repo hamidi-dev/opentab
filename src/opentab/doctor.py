@@ -299,6 +299,7 @@ _HARNESSES = (
     ("openclaw", "openclaw_dir", _TREE, "agents/*/sessions/*.jsonl*", "**/*.jsonl", "--openclaw-dir/$OPENCLAW_DIR want the gateway HOME holding agents/, not a sessions directory"),
     ("zaly", "zaly_dir", _TREE, "sessions/*/*/session.jsonl", "**/session.jsonl", "--zaly-dir/$ZALY_DATA want the DATA directory holding sessions/, not sessions/ itself"),
     ("gemini", "gemini_dir", _TREE, "tmp/*/chats/**/*.json*", "**/*.json*", "--gemini-dir/$GEMINI_CLI_HOME want the .gemini HOME holding tmp/, not a chats directory"),
+    ("antigravity", "antigravity_dir", _TREE, "antigravity*/conversations/*.db", "**/*.db", "--antigravity-dir wants the .gemini HOME holding antigravity/, not a conversations directory"),
 )  # fmt: skip
 
 

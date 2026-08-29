@@ -9,6 +9,10 @@ import sys
 from urllib.parse import quote
 
 from opentab import paths, util
+from opentab.stores.antigravity import (
+    CONVERSATION_DIRS as ANTIGRAVITY_DIRS,
+)
+from opentab.stores.antigravity import AntigravityStore, default_antigravity_dir
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import ClaudeStore
 from opentab.stores.codex import CodexStore
@@ -81,6 +85,12 @@ def _default_openclaw_dir() -> str:
     return env or os.path.expanduser("~/.openclaw")
 
 
+def _default_antigravity_dir() -> str:
+    # Antigravity keeps its conversations under the same Gemini home, in its own
+    # subdirectory, so the two sources share a root but never a flag.
+    return default_antigravity_dir()
+
+
 def _default_gemini_dir() -> str:
     # Store-owned resolution: $GEMINI_CLI_HOME replaces the HOME directory, not the
     # .gemini directory inside it.
@@ -106,6 +116,7 @@ _PATH_SLOT = {
     "openclaw": "openclaw_dir",
     "zaly": "zaly_dir",
     "gemini": "gemini_dir",
+    "antigravity": "antigravity_dir",
 }
 
 
@@ -236,6 +247,20 @@ def _gemini_available(root_dir: str) -> bool:
     return False
 
 
+def _antigravity_available(root_dir: str) -> bool:
+    if not root_dir or not os.path.isdir(root_dir):
+        return False
+    # A stray or truncated *.db must not advertise the source: `--harness antigravity`
+    # would pass validation and then open an empty browser. Opening is the only honest
+    # test, and it stops at the first real conversation.
+    for name in ANTIGRAVITY_DIRS:
+        pattern = os.path.join(root_dir, name, "conversations", "*.db")
+        for path in glob.iglob(pattern):
+            if AntigravityStore.is_conversation(path):
+                return True
+    return False
+
+
 def _copilot_otel_available(args: argparse.Namespace) -> bool:
     if _jsonl_dir_available(getattr(args, "copilot_dir", "")):
         return True
@@ -279,6 +304,7 @@ SOURCE_LABELS = {
     "openclaw": "OpenClaw",
     "zaly": "Zaly",
     "gemini": "Gemini",
+    "antigravity": "Antigravity",
     "all": "all",
 }
 
@@ -292,6 +318,7 @@ RESUME_COMMANDS = {
     "Omp": "omp --resume",
     "Zaly": "zaly --session",
     "Gemini": "gemini --resume",
+    "Antigravity": "antigravity",
 }
 
 
@@ -313,6 +340,7 @@ def _detect_fingerprint(args: argparse.Namespace) -> tuple:
             "openclaw_dir",
             "zaly_dir",
             "gemini_dir",
+            "antigravity_dir",
         )
     ) + (os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH", ""),)
 
@@ -351,6 +379,8 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("zaly")
     if _gemini_available(getattr(args, "gemini_dir", "")):
         keys.append("gemini")
+    if _antigravity_available(getattr(args, "antigravity_dir", "")):
+        keys.append("antigravity")
     args._available_sources = (fp, keys)
     return list(keys)
 
@@ -495,6 +525,17 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
                 f"(looked in {getattr(args, 'gemini_dir', '')})."
             )
         return GeminiStore(args.gemini_dir, args), "OpenTab: loading Gemini sessions…\r"
+    if key == "antigravity":
+        if not _antigravity_available(getattr(args, "antigravity_dir", "")):
+            raise SystemExit(
+                "No Antigravity conversations found. Point --antigravity-dir at a .gemini "
+                "directory holding antigravity/conversations/*.db "
+                f"(looked in {getattr(args, 'antigravity_dir', '')})."
+            )
+        return (
+            AntigravityStore(args.antigravity_dir, args),
+            "OpenTab: loading Antigravity conversations…\r",
+        )
     kind, problem = opencode_db_verdict(args.db)
     if kind:
         raise SystemExit(problem)

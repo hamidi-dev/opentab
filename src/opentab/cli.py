@@ -36,6 +36,7 @@ from opentab.sources import (
     DEFAULT_CSV_PATH,
     DEFAULT_JSONL_PATH,
     SOURCE_LABELS,
+    _default_antigravity_dir,
     _default_gemini_dir,
     _default_omp_dir,
     _default_openclaw_dir,
@@ -84,12 +85,14 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
             "openclaw",
             "zaly",
             "gemini",
+            "antigravity",
             "all",
             "remote",
         ),
         default="auto",
         help="which harness's spend to browse: opencode · claude · codex · hermes · csv · "
-        "jsonl · copilot · vscode · pi · omp · openclaw · zaly · gemini · all (merged) · "
+        "jsonl · copilot · vscode · pi · omp · openclaw · zaly · gemini · antigravity · "
+        "all (merged) · "
         "remote "
         "(other machines, via pull/export). Default auto merges every present local "
         "harness. Or just pass a file path -- e.g. `opentab requests.csv`. (--source is a "
@@ -156,6 +159,12 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         default=_default_gemini_dir(),
         help="Gemini CLI home directory holding tmp/*/chats/ (for --harness gemini); "
         "honors $GEMINI_CLI_HOME, default ~/.gemini",
+    )
+    parser.add_argument(
+        "--antigravity-dir",
+        default=_default_antigravity_dir(),
+        help="Gemini home directory holding antigravity/conversations/*.db (for "
+        "--harness antigravity); honors $GEMINI_CLI_HOME, default ~/.gemini",
     )
     parser.add_argument(
         "--csv",
@@ -527,6 +536,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "openclaw_dir",
             "zaly_dir",
             "gemini_dir",
+            "antigravity_dir",
             "csv",
             "jsonl",
             "remotes",
@@ -1078,6 +1088,7 @@ _STATUS_SOURCES = (
     "openclaw",
     "zaly",
     "gemini",
+    "antigravity",
 )
 
 

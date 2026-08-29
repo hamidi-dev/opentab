@@ -22,6 +22,7 @@ opentab --harness omp                        # omp (Oh My Pi; pi-agent fork, def
 opentab --harness openclaw                   # OpenClaw gateway (default ~/.openclaw)
 opentab --harness zaly                       # zaly (default ~/.local/share/zaly)
 opentab --harness gemini                     # Gemini CLI (default ~/.gemini)
+opentab --harness antigravity                # Antigravity (default ~/.gemini)
 opentab --csv requests.csv                   # a CSV of logged API requests (or --jsonl)
 opentab --harness all                        # all present harnesses, merged
 ```
@@ -49,6 +50,7 @@ trends. What each tool's records support on top:
 | OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
 | zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
 | Gemini CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
+| Antigravity | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
 | CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² | ✓ ⁴ |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
@@ -80,7 +82,7 @@ Days pane (see [`docs/keys.md`](keys.md#scope--filter)).
 ### Token-only harnesses
 
 The whole TUI works the same everywhere — with two differences for the token-only
-tools (Claude Code, Codex, Gemini, and Copilot, CLI and VS Code alike):
+tools (Claude Code, Codex, Gemini, Antigravity, and Copilot, CLI and VS Code alike):
 
 - Their sessions work like OpenCode subscription sessions: **$0 in normal mode** and an
   **estimate** (tokens × API list price) under the **`$`** view, which starts on by
@@ -278,6 +280,31 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   though Gemini drops it from the resumed conversation. The `<session_context>` block
   Gemini injects at the start of every session is skipped, so your first real prompt
   titles the session (OpenTab uses Gemini's own rule for what counts as a typed prompt).
+
+## [Antigravity](https://antigravity.google/)
+
+*Conversation databases · tokens only*
+
+- **Reads** `~/.gemini/antigravity/conversations/*.db` and the `antigravity-cli`
+  spelling (`--antigravity-dir`, honors `$GEMINI_CLI_HOME`). Each conversation is its own
+  SQLite file, opened read-only.
+- **Cost**: tokens are recorded, prices are not, so sessions read **$0** in normal mode
+  and are **estimated** under `$`, like Claude Code, Codex and Gemini CLI.
+- **Tokens**: Antigravity charges a fixed system-prompt block on top of the newly-read
+  input, and counts thinking separately from the text of the answer; OpenTab adds the
+  first to input and keeps the second in the reasoning column, where it is priced at the
+  output rate.
+- **Auxiliary calls count too**: a conversation makes small extra model calls (a routing
+  or availability check) that its generation table never records. OpenTab finds those and
+  counts them, so the total matches what was actually billed rather than what the main
+  table happened to list.
+- **Subagents**: a delegated agent runs in its own conversation database, and OpenTab
+  folds it back under the conversation that spawned it — so the parent's cost includes
+  the work it handed off, and the subagent appears in its Subagents tab under the name it
+  was given rather than as a separate session beside it.
+- **Notes**: projects come from the workspace the conversation was opened in, folded to
+  its git root; the title is your first message. The desktop app's older `.pb`
+  conversation files are not read — only the SQLite ones.
 
 ## CSV / JSONL request logs
 

@@ -149,6 +149,7 @@ from opentab.sources import (
     source_cycle,
 )
 from opentab.state import apply_state, load_state, save_state, state_path
+from opentab.stores.antigravity import AntigravityStore
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import ClaudeStore
 from opentab.stores.codex import CodexStore
