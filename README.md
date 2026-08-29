@@ -5,7 +5,7 @@
 <p align="center"><sub>Anonymized demo data — click the reel for the full-quality video.</sub></p>
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/e51e3d70-4e95-46fa-aae9-a2e8a604f019"><img src="https://github.com/user-attachments/assets/2580e2ae-05ee-414a-98a6-a7005131dbc5" alt="OpenTab — trends, a calendar spend heatmap, drill-downs across OpenCode / Claude Code / Codex, and live theming" width="900"></a>
+  <a href="https://github.com/user-attachments/assets/49531f8f-606d-4dea-9918-6588e3c3e69e"><img src="https://github.com/user-attachments/assets/2580e2ae-05ee-414a-98a6-a7005131dbc5" alt="OpenTab — trends, a calendar spend heatmap, drill-downs across OpenCode / Claude Code / Codex, and live theming" width="900"></a>
   <br><sub><b>One reel, every view</b> — trends, a calendar spend heatmap, drill from a month down to a single session, and live theming</sub>
 </p>
 
