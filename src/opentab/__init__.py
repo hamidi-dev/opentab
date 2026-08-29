@@ -150,6 +150,7 @@ from opentab.sources import (
 )
 from opentab.state import apply_state, load_state, save_state, state_path
 from opentab.stores.antigravity import AntigravityStore
+from opentab.stores.bahulam import BahulamStore
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import (
     CLAUDE_RETENTION_DEFAULT_DAYS,
