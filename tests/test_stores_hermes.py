@@ -665,10 +665,12 @@ def _hermes_log(root, lines):
         fh.write("\n".join(lines) + "\n")
 
 
-def _call_line(ts, sid, n, model="gpt-5.6-sol", provider="openai-codex", inp=0, out=0, cache=None):
+def _call_line(
+    ts, sid, n, model="gpt-5.6-sol", provider="openai-codex", inp=0, out=0, cache=None, ms=605
+):
     total = inp + out
     line = (
-        f"{ts},605 INFO [{sid}] agent.conversation_loop: API call #{n}: "
+        f"{ts},{ms:03d} INFO [{sid}] agent.conversation_loop: API call #{n}: "
         f"model={model} provider={provider} in={inp} out={out} total={total} latency=3.2s"
     )
     if cache is not None:
@@ -978,3 +980,740 @@ def test_hermes_demo_hides_the_child_session_title_in_the_agent_column():
         # the fake name for that node.
         node = next(n for n in st.workflow_nodes("root") if n["depth"])
         assert agents[1] == node["title"]
+
+
+def _hermes_db_0206(path, rows):
+    """A Hermes 0.20.6-shaped sessions table, as a compatibility record.
+
+    Carries the columns that version added and HermesStore must tolerate:
+    `hidden` (sidebar presentation state, NOT an accounting signal) and
+    `title_source` (provenance of `title`, NOT a validity flag)."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """CREATE TABLE sessions (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            title_source TEXT,
+            model TEXT,
+            cwd TEXT,
+            parent_session_id TEXT,
+            started_at REAL NOT NULL,
+            input_tokens INTEGER DEFAULT 0,
+            output_tokens INTEGER DEFAULT 0,
+            cache_read_tokens INTEGER DEFAULT 0,
+            cache_write_tokens INTEGER DEFAULT 0,
+            reasoning_tokens INTEGER DEFAULT 0,
+            archived INTEGER NOT NULL DEFAULT 0,
+            hidden INTEGER NOT NULL DEFAULT 0,
+            profile_name TEXT
+        )"""
+    )
+    conn.executemany(
+        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                r["id"],
+                r.get("title", r["id"]),
+                r.get("title_source"),
+                r.get("model", "gpt-5"),
+                r.get("cwd", ""),
+                r.get("parent_id"),
+                r.get("started_at", 1750000000.0),
+                r.get("inp", 0),
+                r.get("out", 0),
+                r.get("cr", 0),
+                r.get("cw", 0),
+                r.get("reasoning", 0),
+                r.get("archived", 0),
+                r.get("hidden", 0),
+                r.get("profile_name"),
+            )
+            for r in rows
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_hermes_hidden_sessions_still_count():
+    # `hidden` hides a session in Hermes' own sidebar; it says nothing about spend.
+    # Only `archived` may drop a session from the rollup -- treating the two as
+    # synonyms would silently delete real spend from the dashboard.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db_0206(
+            db,
+            [
+                {"id": "seen", "inp": 100, "out": 10, "hidden": 0},
+                {"id": "tucked", "inp": 200, "out": 20, "hidden": 1},
+                {"id": "gone", "inp": 400, "out": 40, "archived": 1},
+            ],
+        )
+        got = {w.id: w for w in ot.HermesStore(db, type("Args", (), {"demo": False})()).workflows()}
+        assert set(got) == {"seen", "tucked"}
+        assert got["tucked"].total_tokens == 220  # 200 in + 20 out, nothing dropped
+
+
+def test_hermes_own_title_wins_whatever_its_provenance():
+    # Precedence is on the VALUE, never on title_source: that column is provenance,
+    # not validity, and is NULL on every session written before 0.20.6. Switching on
+    # it would throw away legitimate historical titles.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db_0206(
+            db,
+            [
+                {"id": "named", "title": "Nur OK sagen", "title_source": "llm", "inp": 10},
+                {"id": "legacy", "title": "an older title", "title_source": None, "inp": 10},
+                {"id": "bare", "title": "", "title_source": None, "inp": 10},
+            ],
+        )
+        _hermes_messages(
+            db,
+            [
+                ("named", "user", "must not be used", 1.0),
+                ("legacy", "user", "must not be used either", 1.0),
+                ("bare", "user", "the first real prompt", 1.0),
+            ],
+        )
+        titles = {
+            w.id: w.title
+            for w in ot.HermesStore(db, type("Args", (), {"demo": False})()).workflows()
+        }
+        assert titles["named"] == "Nur OK sagen"
+        assert titles["legacy"] == "an older title"
+        assert titles["bare"] == "the first real prompt"
+
+
+def test_hermes_whitespace_only_title_falls_back_to_the_prompt():
+    # `row["title"] or ""` treats "   " as a real title, which would show a blank row.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "title": "   ", "inp": 10, "out": 5}])
+        _hermes_messages(db, [("s1", "user", "the real question", 1.0)])
+        (w,) = ot.HermesStore(db, type("Args", (), {"demo": False})()).workflows()
+        assert w.title == "the real question"
+
+
+def test_hermes_subagent_label_matches_the_rollup_title():
+    # _parse() gives an untitled session its first user prompt, but _subtree_ids()
+    # read the raw column -- so one child showed its prompt in Subagents and "-" in
+    # the Turns agent column. Both paths must apply the same precedence.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(
+            db,
+            [
+                {"id": "root", "inp": 10, "title": "the root"},
+                {"id": "kid", "parent_id": "root", "inp": 10, "title": ""},
+            ],
+        )
+        _hermes_messages(db, [("kid", "user", "dig through the logs", 1.0)])
+        _hermes_log(root, [_call_line("2026-08-02 07:00:10", "kid", 1, inp=200, out=2)])
+        rows = ot.HermesStore(db, type("Args", (), {"demo": False})()).message_timeline("root")
+        assert [r["agent"] for r in rows] == ["dig through the logs"]
+
+
+def test_hermes_offers_the_context_curve_wherever_it_offers_turns():
+    # The Context column rides on Turns: a store with per-request prompt sizes gets the
+    # curve from the app default unless it opts out. Hermes' turns carry input +
+    # cache_read, which reconstructs the real prompt size, so it qualifies -- and the
+    # capability must track Turns exactly, including the rotating-log gate.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(root, [_call_line("2026-08-02 07:00:00", "s1", 1, inp=100, out=1)])
+        st = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        assert st.supports_turns("s1") is True
+        # No opt-out attribute: the app's default grants the curve (tui/app.py).
+        assert getattr(st, "supports_context_curve", None) is None
+
+        # ...and a session whose calls have rotated out of the log offers neither.
+        _hermes_log(root, [_call_line("2026-08-02 07:00:00", "other", 1, inp=100, out=1)])
+        st2 = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        assert st2.supports_turns("s1") is False
+
+
+def _hermes_usage(db, rows):
+    """Hermes 0.20.6 `session_model_usage`: per (session, model, provider, task) usage.
+
+    task='' is the main agent loop (already summed into the sessions row); any other
+    task is an auxiliary call Hermes deliberately keeps OUT of that row."""
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """CREATE TABLE session_model_usage (
+            session_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            billing_provider TEXT NOT NULL DEFAULT '',
+            billing_base_url TEXT NOT NULL DEFAULT '',
+            billing_mode TEXT NOT NULL DEFAULT '',
+            task TEXT NOT NULL DEFAULT '',
+            api_call_count INTEGER NOT NULL DEFAULT 0,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+            estimated_cost_usd REAL NOT NULL DEFAULT 0,
+            actual_cost_usd REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (session_id, model, billing_provider, billing_base_url,
+                         billing_mode, task)
+        )"""
+    )
+    conn.executemany(
+        "INSERT INTO session_model_usage "
+        "(session_id, model, billing_provider, task, api_call_count, input_tokens,"
+        " output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens,"
+        " estimated_cost_usd, actual_cost_usd) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                r["id"],
+                r.get("model", "gpt-5"),
+                r.get("provider", ""),
+                r.get("task", ""),
+                r.get("calls", 1),
+                r.get("inp", 0),
+                r.get("out", 0),
+                r.get("cr", 0),
+                r.get("cw", 0),
+                r.get("reasoning", 0),
+                r.get("estimated_cost_usd", 0.0),
+                r.get("actual_cost_usd", 0.0),
+            )
+            for r in rows
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _hermes_one(db):
+    return ot.HermesStore(db, type("Args", (), {"demo": False})()).workflows()[0]
+
+
+def test_hermes_auxiliary_spend_is_added_when_the_main_rows_reconcile():
+    # The sessions row carries main-loop tokens only; aux tasks live beside it.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "model": "gpt-5", "inp": 100, "out": 50}])
+        _hermes_usage(
+            db,
+            [
+                {"id": "s1", "task": "", "inp": 100, "out": 50},
+                {"id": "s1", "task": "title_generation", "inp": 10, "out": 5},
+            ],
+        )
+        assert _hermes_one(db).total_tokens == 165  # 150 main + 15 aux
+
+
+def test_hermes_skewed_usage_rows_never_double_count():
+    # A future Hermes (or a mid-commit read) whose sessions row ALREADY folds aux in.
+    # Adding the aux rows again would inflate the dashboard, so reconciliation fails
+    # and the summary row stands alone.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "model": "gpt-5", "inp": 110, "out": 55}])
+        _hermes_usage(
+            db,
+            [
+                {"id": "s1", "task": "", "inp": 100, "out": 50},
+                {"id": "s1", "task": "title_generation", "inp": 10, "out": 5},
+            ],
+        )
+        assert _hermes_one(db).total_tokens == 165  # the sessions row, not 180
+
+
+def test_hermes_partially_written_usage_rows_fall_back_to_the_session_row():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "model": "gpt-5", "inp": 100, "out": 50}])
+        _hermes_usage(
+            db,
+            [
+                {"id": "s1", "task": "", "inp": 90, "out": 50},  # short by 10
+                {"id": "s1", "task": "approval", "inp": 10, "out": 5},
+            ],
+        )
+        assert _hermes_one(db).total_tokens == 150  # aux withheld, main untouched
+
+
+def test_hermes_session_with_only_auxiliary_usage_still_appears():
+    # Sessions with no usage are dropped from the rollup; an aux-only session has to
+    # gain its tokens BEFORE that test or it vanishes from the dashboard entirely.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "model": "gpt-5", "inp": 0, "out": 0}])
+        _hermes_usage(
+            db,
+            [
+                {"id": "s1", "task": "", "inp": 0, "out": 0},
+                {"id": "s1", "task": "vision", "inp": 10, "out": 5},
+            ],
+        )
+        assert _hermes_one(db).total_tokens == 15
+
+
+def test_hermes_model_switch_is_attributed_per_model():
+    # The sessions row pins one model; the usage rows know which model earned what.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "model": "gpt-5", "inp": 300, "out": 150}])
+        _hermes_usage(
+            db,
+            [
+                {"id": "s1", "model": "gpt-5", "task": "", "inp": 100, "out": 50},
+                {"id": "s1", "model": "gpt-4o", "task": "", "inp": 200, "out": 100},
+            ],
+        )
+        store = ot.HermesStore(db, type("Args", (), {"demo": False})())
+        rows = {r["model_name"]: r for r in store.model_breakdown()}
+        assert set(rows) == {"openai/gpt-5", "openai/gpt-4o"}
+        assert rows["openai/gpt-5"]["tokens_total"] == 150
+        assert rows["openai/gpt-4o"]["tokens_total"] == 300
+        # The rollup total is unchanged: attribution moved, nothing was invented.
+        assert store.workflows()[0].total_tokens == 450
+        assert sum(r["tokens_total"] for r in store.model_breakdown()) == 450
+
+
+def test_hermes_one_model_across_tasks_stays_one_model_row():
+    # Buckets merge by model, so model_count counts models -- not model-task pairs.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "model": "gpt-5", "inp": 100, "out": 50}])
+        _hermes_usage(
+            db,
+            [
+                {"id": "s1", "task": "", "inp": 100, "out": 50},
+                {"id": "s1", "task": "title_generation", "inp": 10, "out": 5},
+                {"id": "s1", "task": "approval", "inp": 20, "out": 10},
+            ],
+        )
+        rows = ot.HermesStore(db, type("Args", (), {"demo": False})()).model_breakdown()
+        assert len(rows) == 1
+        assert rows[0]["model_name"] == "openai/gpt-5"
+        assert rows[0]["tokens_total"] == 195  # 150 main + 15 title + 30 approval
+
+
+def test_hermes_auxiliary_auto_provider_merges_into_the_real_model():
+    # Hermes writes billing_provider='auto' on auxiliary rows -- its own unresolved
+    # config placeholder, not a vendor. Taken literally it splits one model into
+    # "openai/gpt-5.6-sol" and "auto/gpt-5.6-sol", inflating the model count and
+    # pricing half the tokens against a vendor that does not exist.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "model": "gpt-5.6-sol", "inp": 100, "out": 50}])
+        _hermes_usage(
+            db,
+            [
+                {
+                    "id": "s1",
+                    "model": "gpt-5.6-sol",
+                    "provider": "openai-codex",
+                    "task": "",
+                    "inp": 100,
+                    "out": 50,
+                },
+                {
+                    "id": "s1",
+                    "model": "gpt-5.6-sol",
+                    "provider": "auto",
+                    "task": "title_generation",
+                    "inp": 10,
+                    "out": 5,
+                },
+            ],
+        )
+        rows = ot.HermesStore(db, type("Args", (), {"demo": False})()).model_breakdown()
+        assert [r["model_name"] for r in rows] == ["openai/gpt-5.6-sol"]
+        assert rows[0]["tokens_total"] == 165
+
+
+def test_hermes_usage_table_can_be_the_only_metered_cost_truth():
+    # Hermes 0.20.6's sessions table has no cost columns; the per-model table can still
+    # carry real metered spend. Mixed main buckets must keep their own priced split.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db_0206(db, [{"id": "s1", "model": "gpt-5", "inp": 300, "out": 150}])
+        _hermes_usage(
+            db,
+            [
+                {
+                    "id": "s1",
+                    "model": "gpt-5",
+                    "task": "",
+                    "inp": 100,
+                    "out": 50,
+                    "actual_cost_usd": 0.30,
+                },
+                {"id": "s1", "model": "gpt-4o", "task": "", "inp": 200, "out": 100},
+                {"id": "s1", "model": "gpt-4o", "task": "approval", "inp": 10, "out": 5},
+            ],
+        )
+        store = _store(db)
+        assert store.records_cost is True
+        (workflow,) = store.workflows()
+        assert workflow.total_tokens == 465
+        assert workflow.total_cost == 0.30
+        assert workflow.unpriced_tokens == 315
+        rows = {r["model_name"]: r for r in store.model_breakdown()}
+        assert rows["openai/gpt-5"]["cost"] == 0.30
+        assert rows["openai/gpt-5"]["unpriced_input"] == 0
+        assert rows["openai/gpt-4o"]["unpriced_input"] == 210
+
+
+def test_hermes_usage_schema_defaults_each_missing_optional_column():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db_0206(db, [{"id": "s1", "model": "gpt-5", "inp": 100}])
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE session_model_usage (session_id TEXT, model TEXT, task TEXT, "
+            "input_tokens INTEGER, actual_cost_usd REAL)"
+        )
+        conn.executemany(
+            "INSERT INTO session_model_usage VALUES (?,?,?,?,?)",
+            [("s1", "gpt-5", "", 100, 0.20), ("s1", "gpt-5", "vision", 10, 0.10)],
+        )
+        conn.commit()
+        conn.close()
+        store = _store(db)
+        assert store.records_cost is True
+        (workflow,) = store.workflows()
+        assert workflow.total_tokens == 110
+        assert workflow.total_cost == 0.30
+        (row,) = store.model_breakdown()
+        assert row["runs"] == 2  # api_call_count is absent, so each bucket defaults to one
+
+
+def test_hermes_usage_message_count_uses_api_call_count():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db(db, [{"id": "s1", "model": "gpt-5", "inp": 100, "out": 50}])
+        _hermes_usage(
+            db,
+            [
+                {"id": "s1", "task": "", "calls": 7, "inp": 100, "out": 50},
+                {"id": "s1", "task": "title_generation", "calls": 2, "inp": 10, "out": 5},
+            ],
+        )
+        (row,) = _store(db).model_breakdown()
+        assert row["runs"] == 9
+
+
+def test_hermes_archived_usage_does_not_advertise_recorded_cost():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db_0206(
+            db,
+            [{"id": "live", "inp": 10}, {"id": "gone", "inp": 20, "archived": 1}],
+        )
+        _hermes_usage(
+            db,
+            [
+                {"id": "live", "task": "", "inp": 10},
+                {"id": "gone", "task": "", "inp": 20, "actual_cost_usd": 0.50},
+            ],
+        )
+        assert _store(db).records_cost is False
+
+
+def _at(local_str):
+    """Epoch for a local wall-clock stamp, so fixtures line up with the log's strings."""
+    from datetime import datetime as _dt
+
+    return _dt.strptime(local_str, "%Y-%m-%d %H:%M:%S.%f").timestamp()
+
+
+def _hermes_messages_tc(db, rows):
+    """`messages` including tool_calls: (session_id, role, tool_calls_json, epoch)."""
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS messages "
+        "(session_id TEXT, role TEXT, content TEXT, tool_calls TEXT, timestamp REAL)"
+    )
+    conn.executemany(
+        "INSERT INTO messages (session_id, role, content, tool_calls, timestamp) "
+        "VALUES (?,?,?,?,?)",
+        [(sid, role, "", tc, ts) for sid, role, tc, ts in rows],
+    )
+    conn.commit()
+    conn.close()
+
+
+def _tc(*names):
+    import json as _json
+
+    return _json.dumps([{"function": {"name": n, "arguments": "{}"}} for n in names])
+
+
+def _store(db):
+    return ot.HermesStore(db, type("Args", (), {"demo": False})())
+
+
+def test_hermes_tool_breakdown_attributes_the_calling_turns_tokens():
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-24 14:00:00", "s1", 1, inp=100, out=10, ms=100),
+                _call_line("2026-08-24 14:00:05", "s1", 2, inp=200, out=20, ms=100),
+            ],
+        )
+        _hermes_messages_tc(
+            db,
+            [
+                ("s1", "assistant", _tc("terminal"), _at("2026-08-24 14:00:00.101")),
+                ("s1", "tool", None, _at("2026-08-24 14:00:01.000")),
+                ("s1", "assistant", None, _at("2026-08-24 14:00:05.101")),
+            ],
+        )
+        st = _store(db)
+        assert st.supports_tools("s1") is True
+        rows = st.tool_breakdown("s1")
+        assert [r["tool"] for r in rows] == ["terminal"]
+        # Only the tool-calling turn's tokens, never the answering turn's.
+        assert rows[0]["tokens_total"] == 110
+        assert rows[0]["calls"] == 1
+
+
+def test_hermes_rejected_call_does_not_donate_its_tokens_to_the_retry():
+    # Hermes logs usage BEFORE it validates the response, so a call can be logged and
+    # then rejected with no assistant row (invalid/truncated tool calls have their own
+    # retry path). Measured: 12 of 118 real sessions log more calls than they persist
+    # assistant messages. "Next assistant wins" would pay the retry's tools with the
+    # rejected call's tokens; a newer call must supersede the older unmatched one.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-24 14:00:00", "s1", 1, inp=900, out=90, ms=100),
+                _call_line("2026-08-24 14:00:02", "s1", 2, inp=100, out=10, ms=100),
+            ],
+        )
+        _hermes_messages_tc(
+            db, [("s1", "assistant", _tc("terminal"), _at("2026-08-24 14:00:02.101"))]
+        )
+        rows = _store(db).tool_breakdown("s1")
+        assert [r["tool"] for r in rows] == ["terminal"]
+        assert rows[0]["tokens_total"] == 110  # call #2's tokens, not the rejected 990
+
+
+def test_hermes_intervening_event_cancels_a_pending_tool_match():
+    # A user message between a call and the next assistant means that assistant does
+    # not answer that call; binding across it would be a guess.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(root, [_call_line("2026-08-24 14:00:00", "s1", 1, inp=100, out=10, ms=100)])
+        _hermes_messages_tc(
+            db,
+            [
+                ("s1", "user", None, _at("2026-08-24 14:00:00.500")),
+                ("s1", "assistant", _tc("terminal"), _at("2026-08-24 14:00:00.900")),
+            ],
+        )
+        st = _store(db)
+        assert st.tool_breakdown("s1") == []
+        assert st.supports_tools("s1") is False
+
+
+def test_hermes_malformed_tool_calls_are_rejected_whole():
+    # All-or-nothing: keeping the valid half of a blob would hand the survivors a
+    # bigger share of the turn than they earned.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(root, [_call_line("2026-08-24 14:00:00", "s1", 1, inp=100, out=10, ms=100)])
+        _hermes_messages_tc(
+            db,
+            [
+                (
+                    "s1",
+                    "assistant",
+                    '[{"function":{"name":"terminal"}},{"function":{}}]',
+                    _at("2026-08-24 14:00:00.101"),
+                )
+            ],
+        )
+        assert _store(db).tool_breakdown("s1") == []
+
+    for blob in ("not json", "{}", '["bare"]', '[{"function":{"name":""}}]', None):
+        with tempfile.TemporaryDirectory() as root:
+            db = os.path.join(root, "state.db")
+            _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+            _hermes_log(root, [_call_line("2026-08-24 14:00:00", "s1", 1, inp=100, out=10, ms=100)])
+            _hermes_messages_tc(db, [("s1", "assistant", blob, _at("2026-08-24 14:00:00.101"))])
+            assert _store(db).tool_breakdown("s1") == [], blob
+
+
+def test_hermes_parallel_tool_calls_split_the_turn_evenly():
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(root, [_call_line("2026-08-24 14:00:00", "s1", 1, inp=90, out=10, ms=100)])
+        _hermes_messages_tc(
+            db,
+            [
+                (
+                    "s1",
+                    "assistant",
+                    _tc("terminal", "read_file", "terminal"),
+                    _at("2026-08-24 14:00:00.101"),
+                )
+            ],
+        )
+        rows = {r["tool"]: r for r in _store(db).tool_breakdown("s1")}
+        # Three calls, two names: the repeat takes two of the three shares.
+        assert rows["terminal"]["calls"] == 2
+        assert rows["read_file"]["calls"] == 1
+        assert abs(rows["terminal"]["tokens_total"] - 200 / 3) < 1e-6
+        assert abs(rows["read_file"]["tokens_total"] - 100 / 3) < 1e-6
+        assert abs(sum(r["tokens_total"] for r in rows.values()) - 100) < 1e-6
+
+
+def test_hermes_tools_are_gated_per_session_like_turns():
+    # DB tool names with no retained log = names but no tokens: no tab, not an empty one.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(root, [_call_line("2026-08-24 14:00:00", "other", 1, inp=100, out=10)])
+        _hermes_messages_tc(
+            db, [("s1", "assistant", _tc("terminal"), _at("2026-08-24 14:00:00.101"))]
+        )
+        st = _store(db)
+        assert st.supports_turns("s1") is False
+        assert st.supports_tools("s1") is False
+        assert st.tool_breakdown("s1") == []
+
+
+def test_hermes_root_tools_include_a_subagents_tools():
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(
+            db,
+            [
+                {"id": "root", "inp": 10, "title": "root"},
+                {"id": "kid", "parent_id": "root", "inp": 10, "title": "kid"},
+            ],
+        )
+        _hermes_log(root, [_call_line("2026-08-24 14:00:00", "kid", 1, inp=100, out=10, ms=100)])
+        _hermes_messages_tc(
+            db, [("kid", "assistant", _tc("search_files"), _at("2026-08-24 14:00:00.101"))]
+        )
+        st = _store(db)
+        assert st.supports_tools("root") is True
+        assert [r["tool"] for r in st.tool_breakdown("root")] == ["search_files"]
+
+
+def test_hermes_turns_and_tools_never_disagree():
+    # Tools is a strict projection of the rows the Turns tab draws: same source, so no
+    # token can reach the Tools tab that Turns does not also show.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-24 14:00:00", "s1", 1, inp=100, out=10, ms=100),
+                _call_line("2026-08-24 14:00:05", "s1", 2, inp=200, out=20, ms=100),
+            ],
+        )
+        _hermes_messages_tc(
+            db,
+            [
+                ("s1", "assistant", _tc("terminal"), _at("2026-08-24 14:00:00.101")),
+                ("s1", "assistant", _tc("memory"), _at("2026-08-24 14:00:05.101")),
+            ],
+        )
+        st = _store(db)
+        from opentab.util import tool_names
+
+        turn_tools = sorted(
+            t for r in st.message_timeline("s1") for t in tool_names(r.get("tools"))
+        )
+        assert turn_tools == ["memory", "terminal"]
+        rows = st.tool_breakdown("s1")
+        assert sum(r["tokens_total"] for r in rows) == 110 + 220
+
+
+def test_hermes_tool_cache_invalidates_when_the_db_message_arrives_later():
+    # Hermes writes the log before validating and persisting the assistant message.
+    # Caching the first half on the log fingerprint alone makes tools stay absent.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(root, [_call_line("2026-08-24 14:00:00", "s1", 1, inp=100, out=10)])
+        st = _store(db)
+        assert st.supports_tools("s1") is False
+
+        _hermes_messages_tc(
+            db, [("s1", "assistant", _tc("terminal"), _at("2026-08-24 14:00:00.606"))]
+        )
+        assert st.supports_tools("s1") is True
+        assert [r["tool"] for r in st.tool_breakdown("s1")] == ["terminal"]
+
+
+def test_hermes_parent_cycle_never_duplicates_turns():
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(
+            db,
+            [
+                {"id": "a", "parent_id": "b", "inp": 10, "title": "a"},
+                {"id": "b", "parent_id": "a", "inp": 20, "title": "b"},
+            ],
+        )
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-24 14:00:00", "a", 1, inp=100, out=10),
+                _call_line("2026-08-24 14:00:01", "b", 1, inp=200, out=20),
+            ],
+        )
+        st = _store(db)
+        assert st.root_of("a") == st.root_of("b") == "a"
+        assert [r["id"] for r in st.recent_roots()] == ["a"]
+        assert [sid for sid, _, _ in st._subtree_ids("a")] == ["a", "b"]
+        rows = st.message_timeline("a")
+        assert len(rows) == 2
+        assert sum(r["tokens_total"] for r in rows) == 110 + 220
+
+
+def test_hermes_prompt_later_in_the_same_second_does_not_claim_the_call():
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_messages(
+            db,
+            [
+                ("s1", "user", "old prompt", _at("2026-08-24 13:59:59.000")),
+                ("s1", "user", "future prompt", _at("2026-08-24 14:00:00.900")),
+            ],
+        )
+        _hermes_log(root, [_call_line("2026-08-24 14:00:00", "s1", 1, inp=100, out=10, ms=100)])
+        (row,) = _store(db).message_timeline("s1")
+        assert row["prompt_title"] == "old prompt"
+
+
+def test_hermes_live_child_of_archived_parent_is_its_own_root_everywhere():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        _hermes_db_full(
+            db,
+            [
+                {"id": "gone", "inp": 20, "title": "gone"},
+                {"id": "child", "parent_id": "gone", "inp": 10, "title": "child"},
+            ],
+        )
+        conn = sqlite3.connect(db)
+        conn.execute("UPDATE sessions SET archived = 1 WHERE id = 'gone'")
+        conn.commit()
+        conn.close()
+        st = _store(db)
+        assert [w.id for w in st.workflows()] == ["child"]
+        assert st.root_of("child") == "child"
+        assert [r["id"] for r in st.recent_roots()] == ["child"]

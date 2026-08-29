@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import os
 import re
 import sqlite3
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 from opentab.demo import demo_config, demo_title, scramble_node, scramble_workflow
 from opentab.formatting import worked_seconds
 from opentab.models import Workflow
-from opentab.util import git_root, safe_float, safe_int
+from opentab.util import git_root, safe_float, safe_int, tool_names, tool_rows_from_turns
 
 
 class HermesStore:
@@ -26,6 +27,9 @@ class HermesStore:
 
     combined = False
     source_name = "Hermes"
+
+    # Cycle guard for the recursive subtree walk; far deeper than any real nesting.
+    _MAX_TREE_DEPTH = 64
 
     # Columns read when present; absent ones fall back to a SQL default so the
     # SELECT never references a column this Hermes version doesn't have.
@@ -96,17 +100,36 @@ class HermesStore:
         # True iff any live session has a recorded (metered) cost. Cheap EXISTS
         # query so it's safe to call at construction, before _parse().
         cost_cols = [c for c in ("actual_cost_usd", "estimated_cost_usd") if c in self._cols]
-        if not cost_cols:
-            return False
-        clauses = ["archived = 0"] if "archived" in self._cols else []
-        clauses.append("(" + " OR ".join(f"COALESCE({c}, 0) > 0" for c in cost_cols) + ")")
-        sql = f"SELECT EXISTS(SELECT 1 FROM sessions WHERE {' AND '.join(clauses)})"
         try:
             conn = self._connect()
         except sqlite3.Error:
             return False
         try:
-            return bool(conn.execute(sql).fetchone()[0])
+            if cost_cols:
+                clauses = ["archived = 0"] if "archived" in self._cols else []
+                clauses.append("(" + " OR ".join(f"COALESCE({c}, 0) > 0" for c in cost_cols) + ")")
+                sql = f"SELECT EXISTS(SELECT 1 FROM sessions WHERE {' AND '.join(clauses)})"
+                if bool(conn.execute(sql).fetchone()[0]):
+                    return True
+            # Auxiliary spend never reaches the sessions row, so a corpus whose only
+            # metered dollars are aux would read as "no recorded cost" and flip the
+            # header to estimate wording. Ask the usage table too, but only for live
+            # sessions that can actually appear in the rollup.
+            usage_cols = {r[1] for r in conn.execute("PRAGMA table_info(session_model_usage)")}
+            usage_cost_cols = [
+                c for c in ("actual_cost_usd", "estimated_cost_usd") if c in usage_cols
+            ]
+            if not usage_cost_cols:
+                return False
+            live = " AND s.archived = 0" if "archived" in self._cols else ""
+            return bool(
+                conn.execute(
+                    "SELECT EXISTS(SELECT 1 FROM session_model_usage u "
+                    "JOIN sessions s ON s.id = u.session_id WHERE ("
+                    + " OR ".join(f"COALESCE(u.{c}, 0) > 0" for c in usage_cost_cols)
+                    + f"){live})"
+                ).fetchone()[0]
+            )
         except sqlite3.Error:
             return False
         finally:
@@ -116,6 +139,9 @@ class HermesStore:
         parts = ["id"]
         for name, default in self._COLS:
             parts.append(name if name in self._cols else f"{default} AS {name}")
+        # Only `archived` is excluded. Hermes' `hidden` flag (0.20.6) hides a session
+        # from its own sidebar and is NOT an accounting signal -- hidden spend is still
+        # spend, so it stays in the rollup. See test_hermes_hidden_sessions_still_count.
         where = " WHERE archived = 0" if "archived" in self._cols else ""
         order = " ORDER BY started_at" if "started_at" in self._cols else ""
         return f"SELECT {', '.join(parts)} FROM sessions{where}{order}"
@@ -140,6 +166,16 @@ class HermesStore:
             return ""
         try:
             return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        except (OSError, OverflowError, ValueError):
+            return ""
+
+    @staticmethod
+    def _ts_to_local_ms(ts: float) -> str:
+        # _ts_to_local at millisecond precision, the resolution the tool join needs.
+        if not ts:
+            return ""
+        try:
+            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         except (OSError, OverflowError, ValueError):
             return ""
 
@@ -185,6 +221,13 @@ class HermesStore:
         if "/" in model:
             return model  # already provider-qualified
         prov = (provider or "").strip().lower()
+        if prov == "auto":
+            # Hermes' auxiliary provider setting is the literal string "auto" until it
+            # resolves, and that placeholder is what lands in session_model_usage rows.
+            # It is not a provider: let the model name infer one, so an aux row merges
+            # into its model's bucket instead of splitting the same model off under a
+            # second "auto/..." name (which would also price against an unknown vendor).
+            prov = ""
         prefix = cls._PROVIDER_ALIASES.get(prov, prov or cls._infer_provider(model))
         return f"{prefix}/{model}" if prefix else model
 
@@ -211,9 +254,102 @@ class HermesStore:
                 return line.strip()[:80]  # the title fallback stays short (ClaudeStore)
         return ""
 
+    # Token classes compared when reconciling a session against its usage rows.
+    _RECONCILE = ("inp", "out", "cr", "cw")
+
+    def _load_usage_buckets(self, conn: sqlite3.Connection, flat: dict[str, dict]) -> None:
+        """Split each session's usage per model and fold in auxiliary-task spend.
+
+        Hermes 0.20.6 records every LLM call in `session_model_usage`, keyed by
+        (session, model, provider, billing mode, task). `task=''` is the main agent
+        loop -- the figures the `sessions` summary row already carries -- and the
+        other tasks are auxiliary calls (title_generation, approval, vision,
+        compression, ...) that Hermes deliberately keeps OUT of that row, because the
+        gateway overwrites it with absolute main-loop totals. So the summary row
+        understates a session by its auxiliary spend, and pins every token to one
+        model even when the session used several.
+
+        Applied per session and ONLY when its main rows reconcile with the summary
+        row exactly. A partially written, version-skewed, or mid-commit table would
+        otherwise be added on top of totals that already contain it. Failing closed
+        costs a session its (small) aux tokens; failing open would double-count its
+        (large) main ones, so the gate is the whole point.
+
+        `reasoning_tokens` is read but never added: on this backend reasoning is a
+        subset of `output_tokens`, so counting it would double-count -- the same rule
+        the log path follows.
+        """
+        try:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(session_model_usage)")}
+        except sqlite3.Error:
+            return
+        if not {"session_id", "model", "task", "input_tokens"} <= cols:
+            return  # no table, or too old to carry the task dimension
+        selected = []
+        for name, default in (
+            ("billing_provider", "''"),
+            ("api_call_count", "1"),
+            ("output_tokens", "0"),
+            ("cache_read_tokens", "0"),
+            ("cache_write_tokens", "0"),
+            ("actual_cost_usd", "0"),
+            ("estimated_cost_usd", "0"),
+        ):
+            selected.append(name if name in cols else f"{default} AS {name}")
+        try:
+            rows = conn.execute(
+                f"""SELECT session_id, model, task, input_tokens,
+                           {', '.join(selected)}
+                    FROM session_model_usage"""
+            ).fetchall()
+        except sqlite3.Error:
+            return
+
+        per: dict[str, dict[str, list]] = {}
+        for row in rows:
+            sid = row["session_id"]
+            if sid not in flat:
+                continue
+            per.setdefault(sid, {"main": [], "aux": []})
+            bucket = {
+                "model": self._prefix_model(row["model"] or "", row["billing_provider"] or ""),
+                "runs": safe_int(row["api_call_count"]),
+                "inp": safe_int(row["input_tokens"]),
+                "out": safe_int(row["output_tokens"]),
+                "cr": safe_int(row["cache_read_tokens"]),
+                "cw": safe_int(row["cache_write_tokens"]),
+                "cost": self._recorded_cost(row["actual_cost_usd"], row["estimated_cost_usd"]),
+            }
+            per[sid]["aux" if (row["task"] or "") else "main"].append(bucket)
+
+        for sid, split in per.items():
+            node, main, aux = flat[sid], split["main"], split["aux"]
+            if not main:
+                continue  # aux with no main rows: cannot prove the summary excludes it
+            if any(sum(b[k] for b in main) != node[k] for k in self._RECONCILE):
+                continue  # skewed against the summary row -- trust the summary alone
+            main_cost = sum(b["cost"] for b in main)
+            if {"actual_cost_usd", "estimated_cost_usd"} & self._cols:
+                if abs(main_cost - node["cost"]) > 1e-6:
+                    continue
+            else:
+                # Hermes 0.20.6 can keep the only cost truth in the usage table.
+                node["cost"] = main_cost
+            node["usage"] = main + aux
+            for b in aux:
+                for k in self._RECONCILE:
+                    node[k] += b[k]
+                node["cost"] += b["cost"]
+                node["tokens_total"] += b["inp"] + b["out"] + b["cr"] + b["cw"]
+            node["unpriced_tokens"] = sum(
+                b["inp"] + b["out"] + b["cr"] + b["cw"] for b in node["usage"] if b["cost"] <= 0
+            )
+
     def _fallback_titles(self, conn: sqlite3.Connection, ids: list[str]) -> dict[str, str]:
-        # First real user prompt for sessions Hermes left untitled (api_server /
-        # voice sessions never get one) -- the ClaudeStore title precedence. One
+        # First real user prompt for sessions Hermes left untitled -- the ClaudeStore
+        # title precedence. Hermes names its own sessions from 0.20.6 on, the
+        # api_server/voice path included, so this now covers older rows and any
+        # session whose own titling did not run rather than a whole platform. One
         # query over the untitled ids; per session the first usable prompt wins.
         out: dict[str, str] = {}
         if not ids:
@@ -286,7 +422,7 @@ class HermesStore:
                 cw = row["cache_write_tokens"] or 0
                 flat[row["id"]] = {
                     "id": row["id"],
-                    "title": row["title"] or "",
+                    "title": (row["title"] or "").strip(),
                     "model": self._prefix_model(row["model"] or "", row["billing_provider"] or ""),
                     "cwd": row["cwd"] or "",
                     "parent_id": row["parent_session_id"],
@@ -302,6 +438,10 @@ class HermesStore:
 
             # Untitled sessions (roots and subagent nodes alike) fall back to
             # their first real user prompt, while the connection is still open.
+            # Per-model / auxiliary usage first: it can give an otherwise empty
+            # session real tokens, and the roots pass below drops sessions with none.
+            self._load_usage_buckets(conn, flat)
+
             untitled = [sid for sid, s in flat.items() if not s["title"]]
             fallbacks = self._fallback_titles(conn, untitled)
             for sid in untitled:
@@ -395,8 +535,9 @@ class HermesStore:
                     tree_events.extend(node["msg_events"])
                 else:
                     tree_events.extend((e, False) for e, _u in node["msg_events"])
-                if node["cost"] <= 0:
-                    tot_unpriced += node["tokens_total"]
+                tot_unpriced += node.get(
+                    "unpriced_tokens", node["tokens_total"] if node["cost"] <= 0 else 0
+                )
                 self._add_model(model_acc, node, is_root)
                 if not is_root:
                     subagent_nodes.append(
@@ -491,9 +632,21 @@ class HermesStore:
         # totals (inp/out/cr/cw); $0 (subscription) tokens also land in the
         # unpriced (u_*) split so the "$" view reprices only those, and the
         # root's own contribution is mirrored into the root (ru_*) split.
-        m = model_acc.get(node["model"])
+        # A session reconciled against session_model_usage carries one bucket per
+        # (model, task); fold each into ITS model so a model-switched or aux-using
+        # session is attributed correctly. Buckets merge by model name here, which is
+        # what keeps model_count a count of models rather than of model-task pairs.
+        for b in node.get("usage") or ():
+            HermesStore._add_bucket(model_acc, b["model"], b, is_root)
+        if node.get("usage"):
+            return
+        HermesStore._add_bucket(model_acc, node["model"], node, is_root)
+
+    @staticmethod
+    def _add_bucket(model_acc: dict[str, dict], model_name: str, src: dict, is_root: bool) -> None:
+        m = model_acc.get(model_name)
         if m is None:
-            m = model_acc[node["model"]] = {
+            m = model_acc[model_name] = {
                 "runs": 0,
                 "cost": 0.0,
                 "r_cost": 0.0,
@@ -510,8 +663,8 @@ class HermesStore:
                 "ru_cr": 0,
                 "ru_cw": 0,
             }
-        i, o, cr, cw, cost = node["inp"], node["out"], node["cr"], node["cw"], node["cost"]
-        m["runs"] += 1
+        i, o, cr, cw, cost = src["inp"], src["out"], src["cr"], src["cw"], src["cost"]
+        m["runs"] += src.get("runs", 1)
         m["inp"] += i
         m["out"] += o
         m["cr"] += cr
@@ -590,7 +743,7 @@ class HermesStore:
     # is the shape the rest of this store already reports (input uncached, cache_read
     # separate). Getting that backwards would double-count the cached tokens under "$".
     _LOG_CALL_RE = re.compile(
-        r"^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[,.]\d+\s+\w+\s+"
+        r"^(?P<ts>\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)[,.](?P<ms>\d+)\s+\w+\s+"
         r"\[(?P<sid>[^\]]+)\]\s+agent\.conversation_loop:\s+API call #(?P<n>\d+):\s+"
         r"model=(?P<model>\S+)\s+provider=(?P<provider>\S+)\s+"
         r"in=(?P<in>\d+)\s+out=(?P<out>\d+)\s+total=(?P<total>\d+)"
@@ -656,6 +809,19 @@ class HermesStore:
             out.append((path, st.st_size, st.st_mtime_ns))
         return tuple(out)
 
+    def _db_stamp(self) -> tuple:
+        # Tool attribution joins log rows to the live SQLite state. Hermes writes the
+        # log first and the assistant message shortly afterward, so the DB half must
+        # invalidate independently even when no newer log line arrives.
+        out = []
+        for path in (self.db_path, self.db_path + "-wal"):
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            out.append((path, st.st_size, st.st_mtime_ns))
+        return tuple(out)
+
     @classmethod
     def _log_turn_row(cls, m: re.Match) -> dict:
         # Through util.safe_int like every other backend's usage fields, not bare int().
@@ -668,7 +834,11 @@ class HermesStore:
         cache_read = min(safe_int(m.group("cache") or 0), raw_in)  # a subset of `in`
         inp = max(0, raw_in - cache_read)  # ...so the uncached remainder is what's left
         return {
-            "ts": m.group("ts"),  # naive UTC; _log_local() converts at read time
+            "ts": m.group("ts"),  # local already -- _log_local() validates, never converts
+            # Same stamp at millisecond precision. The tool join needs it: an assistant
+            # message persists ~1 ms after its call's log line, so truncating to whole
+            # seconds makes the two indistinguishable and the causal order a coin flip.
+            "ts_ms": m.group("ts") + "." + (m.group("ms") + "000")[:3],
             "depth": 0,  # the tree is sessions, not turns -- a turn is never a subagent
             "agent": "-",
             "model_name": cls._prefix_model(m.group("model"), m.group("provider")),
@@ -792,16 +962,11 @@ class HermesStore:
         finally:
             conn.close()
         info = {r["id"]: r for r in rows}
+        parents = {sid: row["parent_session_id"] for sid, row in info.items()}
         best: dict[str, list] = {}  # root id -> [last_active ms, directory]
         for r in rows:
             active = max(self._epoch_ms(last_msg.get(r["id"])), self._epoch_ms(r["started_at"]))
-            cur, seen = r["id"], {r["id"]}
-            while True:  # walk to the root (cycle-guarded); a busy child bumps its root
-                parent = info[cur]["parent_session_id"]
-                if not parent or parent not in info or parent in seen:
-                    break
-                seen.add(parent)
-                cur = parent
+            cur = self._root_from_parents(r["id"], parents) or r["id"]
             row = best.setdefault(cur, [0, info[cur]["cwd"] or "(unknown)"])
             row[0] = max(row[0], active)
         out = [{"id": rid, "last_active": v[0], "directory": v[1]} for rid, v in best.items()]
@@ -822,24 +987,33 @@ class HermesStore:
         except sqlite3.Error:
             return None
         try:
-            cur, seen = session_id, set()
-            while cur not in seen:
-                seen.add(cur)
-                row = conn.execute(
-                    f"SELECT {parent_col} AS parent FROM sessions WHERE id = ?{where}", [cur]
-                ).fetchone()
-                if row is None:
-                    # unknown id -- or a parent pointer whose session is gone, in
-                    # which case the last session that did exist is the root
-                    return None if cur == session_id else cur
-                if not row["parent"]:
-                    return cur
-                cur = row["parent"]
-            return cur  # cyclic parent metadata: stop where the walk closed
+            rows = conn.execute(
+                f"SELECT id, {parent_col} AS parent FROM sessions WHERE 1 = 1{where}"
+            ).fetchall()
+            return self._root_from_parents(session_id, {r["id"]: r["parent"] for r in rows})
         except sqlite3.Error:
             return None
         finally:
             conn.close()
+
+    @staticmethod
+    def _root_from_parents(session_id: str, parents: dict[str, str | None]) -> str | None:
+        """Resolve a root consistently for normal, orphaned, and cyclic metadata."""
+        if session_id not in parents:
+            return None
+        path: list[str] = []
+        positions: dict[str, int] = {}
+        cur = session_id
+        while True:
+            if cur in positions:
+                # _parse promotes the lexically first member of an unreachable cycle.
+                return min(path[positions[cur] :])
+            positions[cur] = len(path)
+            path.append(cur)
+            parent = parents.get(cur)
+            if not parent or parent not in parents:
+                return cur
+            cur = parent
 
     def workflow_nodes(self, workflow_id: str) -> list[dict]:
         s = self._parse().get(workflow_id)
@@ -888,28 +1062,173 @@ class HermesStore:
             return [(workflow_id, 0, "-")]
         archived = "archived" in self._cols
         root_live = " AND archived = 0" if archived else ""
-        child_live = " WHERE c.archived = 0" if archived else ""
+        child_live = " AND c.archived = 0" if archived else ""
         try:
+            # The depth bound is a cycle guard, not a shape assumption. _parse() walks
+            # the child map with a visited set, but a parent cycle it breaks can still
+            # be promoted to a workflow root and arrive here, where UNION ALL has no
+            # such guard and would recurse until SQLite's own limit.
             rows = conn.execute(
                 f"""
                 WITH RECURSIVE tree(id, depth) AS (
                   SELECT id, 0 FROM sessions WHERE id = ?{root_live}
                   UNION ALL
                   SELECT c.id, tree.depth + 1 FROM sessions c
-                  JOIN tree ON c.parent_session_id = tree.id{child_live}
+                  JOIN tree ON c.parent_session_id = tree.id
+                  WHERE tree.depth < {self._MAX_TREE_DEPTH}{child_live}
                 )
                 SELECT tree.id, tree.depth, COALESCE(s.title, '') FROM tree
                 JOIN sessions s ON s.id = tree.id
                 """,
                 [workflow_id],
             ).fetchall()
+            # The depth bound prevents an infinite CTE, but a cycle still emits the
+            # same ids repeatedly at deeper levels. Keep the first occurrence so Turns
+            # and Tools never multiply one session's usage.
+            unique = []
+            seen = set()
+            for row in rows:
+                if row[0] not in seen:
+                    unique.append(row)
+                    seen.add(row[0])
+            rows = unique
+            # Subagent labels take the SAME precedence as the rollup: Hermes' own
+            # title first, else the session's first real user prompt. Reading the raw
+            # column here would label an untitled child "-" in the Turns agent column
+            # while the Subagents view shows it under its prompt-derived title.
+            untitled = [r[0] for r in rows if r[1] and not (r[2] or "").strip()]
+            fallbacks = self._fallback_titles(conn, untitled) if untitled else {}
         except sqlite3.Error:
             return [(workflow_id, 0, "-")]  # no parent column on an older schema
         finally:
             conn.close()
         if not rows:
             return [(workflow_id, 0, "-")]
-        return [(r[0], int(r[1]), (r[2] or "-") if r[1] else "-") for r in rows]
+        return [
+            (r[0], int(r[1]), ((r[2] or "").strip() or fallbacks.get(r[0]) or "-") if r[1] else "-")
+            for r in rows
+        ]
+
+    @staticmethod
+    def _parse_tool_calls(blob) -> list[str]:
+        """Tool names out of a Hermes `messages.tool_calls` blob, or nothing.
+
+        The stored shape is OpenAI's: a JSON list of
+        ``{"function": {"name": ..., "arguments": ...}}``. `arguments` is never
+        parsed -- it is irrelevant here and can be large or malformed.
+
+        ALL-OR-NOTHING on purpose. tool_names() would drop one bad entry and keep the
+        rest, but the attribution downstream splits a turn's tokens evenly across the
+        names returned: dropping one of three hands the survivors 50% each instead of
+        33%, silently overstating them. A blob we cannot fully trust yields no tools,
+        so the turn keeps its tokens and simply reports none -- the same fail-closed
+        rule the usage-row reconciliation uses.
+        """
+        if not blob:
+            return []
+        try:
+            data = json.loads(blob) if isinstance(blob, (str, bytes, bytearray)) else blob
+        except (ValueError, TypeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        names: list[str] = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                return []
+            fn = entry.get("function")
+            if not isinstance(fn, dict):
+                return []
+            name = fn.get("name")
+            if not isinstance(name, str) or not name:
+                return []
+            names.append(name)  # duplicates and order are kept: each is one real call
+        return tool_names(names)  # defence in depth; the shape is already validated
+
+    def _tool_events(self, ids: list[str]) -> dict[str, list[tuple[str, str, list[str]]]]:
+        # (local ms stamp, role, tool names) per session, in time order. EVERY message
+        # is returned, not just the tool-calling ones: the non-tool rows are the
+        # landmarks that stop a pending call from binding across an intervening event.
+        out: dict[str, list[tuple[str, str, list[str]]]] = {}
+        if not ids:
+            return out
+        try:
+            conn = self._connect()
+        except sqlite3.Error:
+            return out
+        try:
+            marks = ",".join("?" * len(ids))
+            rows = conn.execute(
+                f"SELECT session_id, role, tool_calls, timestamp FROM messages "
+                f"WHERE session_id IN ({marks}) ORDER BY timestamp",
+                ids,
+            ).fetchall()
+        except sqlite3.Error:
+            return out  # no messages table, or no tool_calls column: no tools, no error
+        finally:
+            conn.close()
+        for sid, role, blob, ts in rows:
+            stamp = self._ts_to_local_ms(safe_float(ts))
+            if stamp:
+                out.setdefault(sid, []).append((stamp, role or "", self._parse_tool_calls(blob)))
+        return out
+
+    def _enriched_turns(self, subtree: list[tuple]) -> dict[str, list[dict]]:
+        """Log turns with their tool names attached, by causal sequence.
+
+        The two halves of a Hermes turn live in different stores: the tokens in the
+        rotating log, the tool names in the DB. Hermes logs a call's usage BEFORE it
+        validates and persists the assistant response, so a call can be logged and then
+        rejected (invalid or truncated tool calls have their own retry path) leaving no
+        assistant row at all. Measured on a real corpus: 12 of 118 logged sessions have
+        more logged calls than assistant messages.
+
+        So this is NOT "each call takes the next assistant message" -- that hands the
+        rejected call's tokens to the retry's tools. It is a merge of both event streams
+        in time order where a newer call SUPERSEDES an older unmatched one, and any
+        non-assistant event in between cancels the pending match. A call that never
+        pairs keeps its tokens and reports no tools; it never shifts the rest.
+
+        Returns copies: _log_turns() memoizes on the LOG's fingerprint alone, and
+        writing DB-derived state into those rows would poison that cache.
+        """
+        ids = [sid for sid, _, _ in subtree]
+        # message_timeline, tool_breakdown and supports_tools all ask for the same
+        # subtree while one session is open. Both sources are fingerprinted: the log
+        # can grow, and its matching DB message can be persisted a moment later.
+        key = (self._log_stamp(), self._db_stamp(), tuple(ids))
+        hit = getattr(self, "_enriched_cache", None)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        turns = self._log_turns()
+        out = {sid: [dict(t) for t in turns.get(sid, ())] for sid in ids}
+        if not any(out.values()):
+            return out
+        events = self._tool_events(ids)
+        for sid, rows in out.items():
+            msgs = events.get(sid)
+            if not msgs or not rows:
+                continue
+            # Rank 0 before rank 1 on an equal stamp: the log line is written first.
+            merged = [(r.get("ts_ms") or r["ts"], 0, r) for r in rows]
+            merged += [(stamp, 1, (role, tools)) for stamp, role, tools in msgs]
+            merged.sort(key=lambda e: (e[0], e[1]))
+            pending: dict | None = None
+            for _, rank, payload in merged:
+                if rank == 0 and isinstance(payload, dict):
+                    pending = payload  # supersedes any earlier call still unmatched
+                    continue
+                if not isinstance(payload, tuple):
+                    continue
+                role, tools = payload
+                if role == "assistant":
+                    if pending is not None and tools:
+                        pending["tools"] = list(tools)
+                    pending = None
+                else:
+                    pending = None  # an intervening event breaks the association
+        self._enriched_cache = (key, out)
+        return out
 
     def supports_turns(self, workflow_id: str) -> bool:
         # PER SESSION, unlike every other backend's blanket True: the turns come from a
@@ -919,6 +1238,31 @@ class HermesStore:
         # that is what the tab draws.
         turns = self._log_turns()
         return any(turns.get(sid) for sid, _, _ in self._subtree_ids(workflow_id))
+
+    def tool_breakdown(self, workflow_id: str) -> list[dict]:
+        # Per-(tool, model) attribution over the whole SUBTREE, so the tab agrees with
+        # the root's descendant-inclusive rollup exactly as its Turns tab does. Tools
+        # are a strict projection of the very rows message_timeline draws -- both read
+        # _enriched_turns -- so no token can appear here that the Turns tab does not
+        # also show, and a turn that matched no assistant message contributes nothing.
+        rows = [
+            t
+            for turns in self._enriched_turns(self._subtree_ids(workflow_id)).values()
+            for t in turns
+        ]
+        return tool_rows_from_turns(rows)
+
+    def supports_tools(self, workflow_id: str) -> bool:
+        # PER SESSION, like supports_turns and unlike the blanket True other backends
+        # return: the names live in the DB but the TOKENS come from the rotating log,
+        # so a session aged out of the log has tool calls on record and nothing to
+        # attribute to them. Gate on a turn that actually matched, never on the DB
+        # alone -- otherwise the tab opens empty and reads as a parsing bug.
+        return any(
+            t.get("tools")
+            for turns in self._enriched_turns(self._subtree_ids(workflow_id)).values()
+            for t in turns
+        )
 
     def message_timeline(self, workflow_id: str) -> list[dict]:
         # One row per API call, chronological, each tagged with the prompt that
@@ -940,8 +1284,8 @@ class HermesStore:
         # child's own prompts listed nowhere. A session with no prompts of its own
         # leaves its rows headerless (the Copilot shape), which is honest -- better an
         # unlabelled group than a wrong label.
-        turns = self._log_turns()
         subtree = self._subtree_ids(workflow_id)
+        turns = self._enriched_turns(subtree)
         rows: list[dict] = []
         for sid, depth, agent in subtree:
             # Demo the AGENT here, where the child's session id is still in hand: the
@@ -961,19 +1305,21 @@ class HermesStore:
         state: dict[str, list] = {sid: [0, "", ""] for sid, _, _ in subtree}
         out: list[dict] = []
         # The stamps are local wall clock in a fixed-width format, so they sort
-        # lexicographically in time order -- and against the prompts' _ts_to_local
-        # strings, which are the same clock and the same format.
-        for r in sorted(rows, key=lambda x: x["ts"]):
+        # lexicographically in time order. Keep milliseconds for ownership: a prompt
+        # written later in the same second must not claim an earlier API call.
+        for r in sorted(rows, key=lambda x: x.get("ts_ms") or x["ts"]):
             local = self._log_local(r["ts"])
+            local_ms = r.get("ts_ms") or local + ".000"
             row = dict(r)
             sid = row.pop("sid", workflow_id)
-            own = prompts.get(sid, ())
+            own = prompts.get(sid, [])
             cur = state.setdefault(sid, [0, "", ""])
-            while cur[0] < len(own) and own[cur[0]]["time"] <= local:
+            while cur[0] < len(own) and own[cur[0]]["time_ms"] <= local_ms:
                 cur[1], cur[2] = own[cur[0]]["id"], own[cur[0]]["title"]
                 cur[0] += 1
             row["time"] = local
             row.pop("ts", None)
+            row.pop("ts_ms", None)
             row["prompt_id"] = cur[1]
             row["prompt_title"] = cur[2]
             row["prompt_full"] = cur[2]
@@ -1031,6 +1377,7 @@ class HermesStore:
                     # own headers instead of colliding with the root's ids.
                     "id": f"{sid}:{len(own)}",
                     "time": self._ts_to_local(safe_float(r["timestamp"])),
+                    "time_ms": self._ts_to_local_ms(safe_float(r["timestamp"])),
                     "title": title,
                 }
             )

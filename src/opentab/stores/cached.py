@@ -16,7 +16,7 @@ from dataclasses import asdict
 from opentab import paths
 from opentab.models import Workflow
 
-CACHE_VERSION = 9  # bump when the cached payload shape or meaning changes
+CACHE_VERSION = 10  # bump when the cached payload shape or meaning changes
 
 
 # Required because cache readers index these fields directly.

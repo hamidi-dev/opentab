@@ -40,7 +40,7 @@ trends. What each tool's records support on top:
 | OpenCode | real recorded | ✓ | ✓ | ✓ | ✓ |
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
 | Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | — ³ |
-| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ⁵ | — | — |
+| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ⁵ | ✓ ⁵ ⁶ | ✓ ⁵ |
 | GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — | ✓ |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | ✓ |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
@@ -61,7 +61,13 @@ synthetic per-day session interleaves unrelated conversations · ⁵ Hermes stor
 per-message usage, so its turns are read from the agent log (`~/.hermes/logs/agent.log*`)
 and joined to the session by id; because that log rotates, only sessions inside the
 retained window offer the tab, and a resumed session's turns can exceed the total Hermes
-itself accumulated.</sub>
+itself accumulated. · ⁶ Hermes splits a turn across two stores — tokens in the log,
+tool names in the database — so its tool attribution is a causal join of the two: a
+logged call is paired with the assistant message that answered it, and a call Hermes
+logged but never persisted an answer for (its tool-call retry path) reports no tools
+rather than borrowing the retry's. MCP tools register as `mcp_server_tool`, not the
+`mcp__server__tool` the shared namespace helper expects, so Hermes MCP tools group
+under one generic `mcp` namespace instead of per server.</sub>
 
 Every harness also derives when a session was last active (not just when it started),
 including activity from its subagent subtree where tracked. This timestamp
@@ -130,6 +136,15 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   sessions form a cost tree. Hermes stores no per-message usage in SQLite, so the Turns
   tab joins API calls from the agent log to prompts in the database. It is available only
   for sessions still covered by the rotating log.
+- **Auxiliary spend** (Hermes 0.20.6+): a session's summary row counts only the main
+  agent loop. Hermes records its auxiliary calls — session titling, approval, vision,
+  compression, web extraction — separately in `session_model_usage`, keyed by task, and
+  OpenTab folds those tokens into the session and attributes them to the model that
+  actually ran them. Applied per session only when the main rows reconcile exactly with
+  the summary row, so a partially written or version-skewed table costs a session its
+  auxiliary tokens rather than double-counting its main ones. Known limitation: a single
+  node mixing models is still repriced under its dominant model, so per-node `$` can be
+  slightly off where per-model and workflow figures are exact.
 
 ## [GitHub Copilot CLI](https://github.com/github/copilot-cli)
 

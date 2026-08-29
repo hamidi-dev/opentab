@@ -103,7 +103,7 @@ requests.csv`, `opentab path/to/opencode.db` — and the harness is inferred.
 | OpenCode | real recorded | ✓ | ✓ | ✓ | ✓ |
 | Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
 | Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | — |
-| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ | — | — |
+| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ |
 | GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ | — | ✓ |
 | Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | ✓ |
 | pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
