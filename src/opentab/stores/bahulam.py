@@ -69,6 +69,22 @@ class BahulamStore:
         except (TypeError, ValueError):
             return 0.0
 
+    @staticmethod
+    def _first_value(*values):
+        """Return the first non-empty value from *values*, or 0."""
+        for value in values:
+            if value not in (None, ""):
+                return value
+        return 0
+
+    def _primary_model(self, models_map: dict) -> str:
+        """Return the execution model from a session_info models map."""
+        for key in ("coder", "main", "executor", "orchestrator", "planning"):
+            model_name = models_map.get(key)
+            if model_name:
+                return self._qualified_model(model_name)
+        return ""
+
     @classmethod
     def _add_usage(cls, acc: dict, usage: dict) -> None:
         """Accumulate counters from a usage dict into *acc*.
@@ -82,7 +98,14 @@ class BahulamStore:
         cr = cls._int(usage.get("cache_read_input_tokens", 0))
         cw = cls._int(usage.get("cache_creation_input_tokens", 0))
         reasoning = cls._int(usage.get("reasoning_tokens", 0))
-        cost = cls._float(usage.get("cost", 0))
+        cost = cls._float(
+            cls._first_value(
+                usage.get("cost"),
+                usage.get("cost_usd"),
+                usage.get("total_cost"),
+                usage.get("total_cost_usd"),
+            )
+        )
         cc = usage.get("cache_creation")
         cw1h = cls._int(cc.get("ephemeral_1h_input_tokens", 0) or 0) if isinstance(cc, dict) else 0
         inp = max(0, total_in - cr - cw)
@@ -293,9 +316,9 @@ class BahulamStore:
         if event_type == "session_info":
             models_map = data.get("models")
             if isinstance(models_map, dict):
-                orch = models_map.get("orchestrator") or ""
-                if orch and not s["model"]:
-                    s["model"] = self._qualified_model(orch)
+                primary = self._primary_model(models_map)
+                if primary and not s["model"]:
+                    s["model"] = primary
                 for model_name in models_map.values():
                     qualified = self._qualified_model(model_name) if model_name else ""
                     if qualified and qualified not in s["models"]:
@@ -315,8 +338,10 @@ class BahulamStore:
             # Per-model token breakdown (the wire uses ``cache_read_tokens``
             # and ``cache_creation_tokens`` at per-model granularity).
             models_usage = usage.get("models")
-            if isinstance(models_usage, list):
+            if isinstance(models_usage, list) and models_usage:
                 for m in models_usage:
+                    if not isinstance(m, dict):
+                        continue
                     model_name = self._qualified_model(m.get("model", ""))
                     if not model_name:
                         continue
@@ -331,11 +356,24 @@ class BahulamStore:
                         "total_output_tokens": m.get("output_tokens", 0),
                         "cache_read_input_tokens": m.get("cache_read_tokens", 0),
                         "cache_creation_input_tokens": m.get("cache_creation_tokens", 0),
-                        "reasoning_tokens": 0,  # reasoning is top-level only
-                        "cost": m.get("cost", 0) or 0,
+                        "reasoning_tokens": m.get("reasoning_tokens", 0) or 0,
+                        "cost": self._first_value(m.get("cost"), m.get("cost_usd")),
                     }
                     self._add_usage(entry["total"], per_model)
                     self._add_usage(entry["root"], per_model)
+            else:
+                model_name = self._qualified_model(
+                    data.get("model") or usage.get("model") or s["model"] or ""
+                )
+                if model_name:
+                    entry = s["models"].get(model_name)
+                    if entry is None:
+                        entry = s["models"][model_name] = {
+                            "total": self._new_acc(),
+                            "root": self._new_acc(),
+                        }
+                    self._add_usage(entry["total"], usage)
+                    self._add_usage(entry["root"], usage)
 
             # Aggregate totals for the turn row
             total_in = self._int(usage.get("total_input_tokens", 0))
@@ -343,12 +381,22 @@ class BahulamStore:
             cr = self._int(usage.get("cache_read_input_tokens", 0))
             cw = self._int(usage.get("cache_creation_input_tokens", 0))
             inp = max(0, total_in - cr - cw)
-            total_cost = self._float(usage.get("total_cost", 0) or usage.get("cost", 0))
+            total_cost = self._float(
+                self._first_value(
+                    usage.get("total_cost"),
+                    usage.get("total_cost_usd"),
+                    usage.get("cost"),
+                    usage.get("cost_usd"),
+                )
+            )
 
             # Turn row for the Turns tab
             first_model = "unknown"
             if isinstance(models_usage, list) and models_usage:
-                first_model = self._qualified_model(models_usage[0].get("model", "unknown"))
+                first = models_usage[0] if isinstance(models_usage[0], dict) else {}
+                first_model = self._qualified_model(first.get("model", "unknown"))
+            elif s["model"]:
+                first_model = s["model"]
             turn_tools = list(s["pending_tools"])
             s["pending_tools"].clear()
             s["turns"].append(
@@ -370,9 +418,9 @@ class BahulamStore:
                 }
             )
 
-        # tool_call — queue the tool name for the next turn
-        elif event_type == "tool_call":
-            tool_name = data.get("tool", "")
+        # tool_call / tool_request — queue the tool name for the next turn
+        elif event_type in ("tool_call", "tool_request"):
+            tool_name = data.get("tool") or data.get("name") or ""
             if tool_name:
                 s["pending_tools"].append(tool_name)
 

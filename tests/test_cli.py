@@ -767,6 +767,9 @@ def test_verb_help_is_focused_but_globals_still_parse():
     # tui stays the full reference -- nothing hidden there.
     tui_help = _subparser_help("tui")
     assert "--claude-dir" in tui_help and "--theme" in tui_help and "--web" in tui_help
+    compact_tui_help = " ".join(tui_help.split())
+    assert "zaly · bahulam · all (merged)" in compact_tui_help
+    assert "Zaly, Bahulam Code" in compact_tui_help
     # Hidden != gone: a suppressed global still parses on that verb.
     assert _parse(["pull", "--no-cache", "host"]).no_cache is True
     assert _parse(["export", "--harness", "claude"]).source == "claude"

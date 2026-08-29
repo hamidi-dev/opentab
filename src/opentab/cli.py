@@ -106,9 +106,8 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         default="auto",
         help="which harness's spend to browse: opencode · claude · codex · hermes · csv · "
         "jsonl · copilot · vscode · pi · omp · openclaw · zaly · gemini · antigravity · "
-        "all (merged) · "
-        "remote "
-        "(other machines, via pull/export). Default auto merges every present local "
+        "bahulam · all (merged) · "
+        "remote (other machines, via pull/export). Default auto merges every present local "
         "harness. Or just pass a file path -- e.g. `opentab requests.csv`. (--source is a "
         "deprecated alias for --harness)",
     )
