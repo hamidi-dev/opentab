@@ -176,9 +176,9 @@ def test_codex_splits_cumulative_cache_writes_without_inflating_token_totals():
         assert tools["after_compaction"]["cache_write"] == 30
 
         # GPT-5.6 bills writes at their own rate; moving them out of fresh input changes
-        # dollars but never tokens. The bundled OpenAI rate is $5/$30/$0.50/$6.25 per M.
+        # dollars but never tokens. The bundled OpenAI rate is $4/$20/$0.40/$5 per M.
         estimated = ot.api_equivalent_cost("openai/gpt-5.6-sol", 190, 40, 0, 120, 90)
-        assert abs(estimated - 0.0027725) < 1e-12
+        assert abs(estimated - 0.002058) < 1e-12
 
 
 def test_codex_title_takes_any_user_message_kind_and_collapses_newlines():
