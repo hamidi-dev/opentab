@@ -15,6 +15,7 @@ from opentab.stores.codex import CodexStore
 from opentab.stores.combined import CombinedStore
 from opentab.stores.copilot import CopilotStore
 from opentab.stores.csv_source import CsvStore
+from opentab.stores.gemini import GeminiStore, default_gemini_dir
 from opentab.stores.hermes import HermesStore
 from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.omp import OmpStore
@@ -80,6 +81,12 @@ def _default_openclaw_dir() -> str:
     return env or os.path.expanduser("~/.openclaw")
 
 
+def _default_gemini_dir() -> str:
+    # Store-owned resolution: $GEMINI_CLI_HOME replaces the HOME directory, not the
+    # .gemini directory inside it.
+    return default_gemini_dir()
+
+
 def _default_zaly_dir() -> str:
     # Store-owned resolution keeps Zaly's data and auth-state conventions together.
     return default_zaly_data_dir()
@@ -98,6 +105,7 @@ _PATH_SLOT = {
     "omp": "omp_dir",
     "openclaw": "openclaw_dir",
     "zaly": "zaly_dir",
+    "gemini": "gemini_dir",
 }
 
 
@@ -213,6 +221,21 @@ def _zaly_available(root_dir: str) -> bool:
     )
 
 
+def _gemini_available(root_dir: str) -> bool:
+    if not root_dir or not os.path.isdir(root_dir):
+        return False
+    # Both layouts, and the nested subagent transcripts, live under tmp/*/chats. The
+    # suffix rule is the store's own (`GeminiStore._is_transcript`): a tree holding only
+    # the `.unreadable-<ms>` copies a rewrite leaves behind would otherwise advertise the
+    # source and then produce no sessions, and `--harness gemini` would pass validation
+    # only to open an empty browser.
+    for pattern in ("*.json*", os.path.join("*", "*.json*")):
+        for path in glob.iglob(os.path.join(root_dir, "tmp", "*", "chats", pattern)):
+            if GeminiStore._is_transcript(path):
+                return True
+    return False
+
+
 def _copilot_otel_available(args: argparse.Namespace) -> bool:
     if _jsonl_dir_available(getattr(args, "copilot_dir", "")):
         return True
@@ -255,6 +278,7 @@ SOURCE_LABELS = {
     "omp": "Omp",
     "openclaw": "OpenClaw",
     "zaly": "Zaly",
+    "gemini": "Gemini",
     "all": "all",
 }
 
@@ -267,6 +291,7 @@ RESUME_COMMANDS = {
     "Pi": "pi --session",
     "Omp": "omp --resume",
     "Zaly": "zaly --session",
+    "Gemini": "gemini --resume",
 }
 
 
@@ -287,6 +312,7 @@ def _detect_fingerprint(args: argparse.Namespace) -> tuple:
             "omp_dir",
             "openclaw_dir",
             "zaly_dir",
+            "gemini_dir",
         )
     ) + (os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH", ""),)
 
@@ -323,6 +349,8 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("openclaw")
     if _zaly_available(getattr(args, "zaly_dir", "")):
         keys.append("zaly")
+    if _gemini_available(getattr(args, "gemini_dir", "")):
+        keys.append("gemini")
     args._available_sources = (fp, keys)
     return list(keys)
 
@@ -459,6 +487,14 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
                 f"(looked in {getattr(args, 'zaly_dir', '')})."
             )
         return ZalyStore(args.zaly_dir, args), "OpenTab: loading Zaly sessions…\r"
+    if key == "gemini":
+        if not _gemini_available(getattr(args, "gemini_dir", "")):
+            raise SystemExit(
+                "No Gemini CLI sessions found. Point --gemini-dir at a .gemini directory "
+                "holding tmp/*/chats/ "
+                f"(looked in {getattr(args, 'gemini_dir', '')})."
+            )
+        return GeminiStore(args.gemini_dir, args), "OpenTab: loading Gemini sessions…\r"
     kind, problem = opencode_db_verdict(args.db)
     if kind:
         raise SystemExit(problem)

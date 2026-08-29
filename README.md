@@ -88,6 +88,7 @@ the rest of the reference in **[docs/](docs/README.md)**.
 VS Code) · [pi-agent](https://pi.dev) · [omp](https://omp.sh) ·
 [OpenClaw](https://github.com/openclaw/openclaw) ·
 [zaly](https://github.com/folke/zaly) ·
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) ·
 [Hermes](https://hermes-agent.nousresearch.com/) · and CSV/JSONL logs of your own API
 requests.
 
@@ -110,6 +111,7 @@ requests.csv`, `opentab path/to/opencode.db` — and the harness is inferred.
 | omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ |
 | OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
 | zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
+| Gemini CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
 | CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ | ✓ |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·

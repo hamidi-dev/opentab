@@ -155,6 +155,7 @@ from opentab.stores.codex import CodexStore
 from opentab.stores.combined import CombinedStore
 from opentab.stores.copilot import CopilotStore
 from opentab.stores.csv_source import CsvStore
+from opentab.stores.gemini import GeminiStore
 from opentab.stores.hermes import HermesStore
 from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.omp import OmpStore

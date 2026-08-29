@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sqlite3
@@ -963,3 +964,93 @@ def _zaly_write(root, slug, dir_id, rows):
     d = os.path.join(root, "sessions", slug, dir_id)
     os.makedirs(d, exist_ok=True)
     _write_jsonl(os.path.join(d, "session.jsonl"), rows)
+
+
+# --- Gemini CLI: chat recordings under tmp/<slug>/chats, subagents nested one deeper ---
+
+GEMINI_SID = "3f9a1c22-9e77-4b0a-9c5e-6a1d2f8b4c30"
+
+
+def _gemini_args():
+    return type("Args", (), {"demo": False})()
+
+
+def _gemini_meta(sid, project, start="2026-08-20T09:15:00.000Z", kind=None, summary=None):
+    # The metadata record is the transcript's first line. projectHash is sha256 of the
+    # project root -- one-way, but invertible against the registry's own paths.
+    meta = {
+        "sessionId": sid,
+        "projectHash": hashlib.sha256(project.encode("utf-8")).hexdigest(),
+        "startTime": start,
+        "lastUpdated": start,
+    }
+    if kind is not None:
+        meta["kind"] = kind
+    if summary is not None:
+        meta["summary"] = summary
+    return meta
+
+
+def _gemini_user(text, mid="u1", ts="2026-08-20T09:15:01.000Z"):
+    return {"id": mid, "timestamp": ts, "type": "user", "content": [{"text": text}]}
+
+
+def _gemini_turn(
+    model,
+    prompt,
+    output,
+    cached=0,
+    thoughts=0,
+    tool=0,
+    total=None,
+    mid="m1",
+    ts="2026-08-20T09:15:09.000Z",
+    tools=None,
+):
+    # usageMetadata as Gemini records it: promptTokenCount INCLUDES the cache read, while
+    # thoughts and toolUse are additive, so the default total sums all four.
+    rec = {
+        "id": mid,
+        "timestamp": ts,
+        "type": "gemini",
+        "model": model,
+        "content": [{"text": "ok"}],
+        "tokens": {
+            "input": prompt,
+            "output": output,
+            "cached": cached,
+            "thoughts": thoughts,
+            "tool": tool,
+            "total": prompt + output + thoughts + tool if total is None else total,
+        },
+    }
+    if tools:
+        rec["toolCalls"] = [
+            {"id": f"{mid}-t{i}", "name": t, "args": {}, "status": "success", "timestamp": ts}
+            for i, t in enumerate(tools)
+        ]
+    return rec
+
+
+def _gemini_write(root, slug, rows, name="session-2026-08-20T09-15-3f9a1c22.jsonl", project=None):
+    """Write a main-session transcript, plus the .project_root marker when asked."""
+    d = os.path.join(root, "tmp", slug, "chats")
+    os.makedirs(d, exist_ok=True)
+    _write_jsonl(os.path.join(d, name), rows)
+    if project is not None:
+        with open(os.path.join(root, "tmp", slug, ".project_root"), "w", encoding="utf-8") as fh:
+            fh.write(project)
+
+
+def _gemini_write_subagent(root, slug, parent_sid, child_sid, rows):
+    # Parentage is the directory name: chats/<parent session id>/<child>.jsonl.
+    d = os.path.join(root, "tmp", slug, "chats", parent_sid)
+    os.makedirs(d, exist_ok=True)
+    _write_jsonl(os.path.join(d, f"{child_sid}.jsonl"), rows)
+
+
+def _gemini_registry(root, projects):
+    # ~/.gemini/projects.json maps {project path -> slug}.
+    os.makedirs(root, exist_ok=True)
+    with open(os.path.join(root, "projects.json"), "w", encoding="utf-8") as fh:
+        json.dump({"projects": projects}, fh)

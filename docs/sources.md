@@ -21,6 +21,7 @@ opentab --harness pi                         # pi-agent (default ~/.pi/agent/ses
 opentab --harness omp                        # omp (Oh My Pi; pi-agent fork, default ~/.omp/agent/sessions)
 opentab --harness openclaw                   # OpenClaw gateway (default ~/.openclaw)
 opentab --harness zaly                       # zaly (default ~/.local/share/zaly)
+opentab --harness gemini                     # Gemini CLI (default ~/.gemini)
 opentab --csv requests.csv                   # a CSV of logged API requests (or --jsonl)
 opentab --harness all                        # all present harnesses, merged
 ```
@@ -47,6 +48,7 @@ trends. What each tool's records support on top:
 | omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ |
 | OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
 | zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
+| Gemini CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
 | CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² | ✓ ⁴ |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
@@ -78,7 +80,7 @@ Days pane (see [`docs/keys.md`](keys.md#scope--filter)).
 ### Token-only harnesses
 
 The whole TUI works the same everywhere — with two differences for the token-only
-tools (Claude Code, Codex, and Copilot, CLI and VS Code alike):
+tools (Claude Code, Codex, Gemini, and Copilot, CLI and VS Code alike):
 
 - Their sessions work like OpenCode subscription sessions: **$0 in normal mode** and an
   **estimate** (tokens × API list price) under the **`$`** view, which starts on by
@@ -242,6 +244,40 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   file, so nothing double-counts (abandoned regenerated branches *do* count — each was
   a real API call). Subagent transcripts are not persisted by zaly (they live in the
   temp dir), so their usage can't be shown.
+
+## [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+
+*Chat recordings · tokens only*
+
+- **Reads** `~/.gemini/tmp/*/chats/**/*.json[l]` (`--gemini-dir`, honors
+  `$GEMINI_CLI_HOME` — which overrides your **home** directory, so the store is
+  `$GEMINI_CLI_HOME/.gemini`). Both on-disk shapes are read: the current append-only
+  JSONL and the older single-document `.json` chat.
+- **Cost**: the CLI records tokens but no price, so sessions read **$0** in normal mode
+  and are **estimated** under `$`, exactly like Claude Code and Codex.
+- **Tokens**: Gemini reports the prompt count *including* the cache read, and counts
+  thinking and tool-use prompt tokens on top of it. OpenTab splits the cache read back
+  out of input, keeps **thinking tokens in the reasoning column** (they bill at the
+  output rate and are genuinely extra, not a slice of the answer), and folds tool-use
+  prompt tokens into input. A message that streams in under one id is counted once.
+- **Subagents**: a delegated agent writes its own transcript under
+  `chats/<parent session id>/`, so its cost rolls up under the session that spawned it
+  and appears in that session's Subagents tab, Turns and Tools.
+- **Projects**: Gemini names each project's directory with a short slug rather than the
+  path, so OpenTab resolves the real directory from the `.project_root` marker Gemini
+  writes beside the chats, from `~/.gemini/projects.json`, or by matching the session's
+  recorded project hash — then folds it to the git root. Sessions it cannot resolve
+  group under `(unknown)`.
+- **Subagents nest recursively**: an agent spawned by an agent writes under *its*
+  parent's directory, and OpenTab walks the whole chain, so `opentab cost` prices the
+  entire tree rather than one branch of it. A session that only delegated keeps its place
+  as the root even with no tokens of its own, and a subagent row is titled with the task
+  it was given (Gemini stores the agent's *result* in the field it uses for titles, so
+  that one is deliberately ignored for children).
+- **Notes**: a turn you rewound away still counts — the call was made and billed, even
+  though Gemini drops it from the resumed conversation. The `<session_context>` block
+  Gemini injects at the start of every session is skipped, so your first real prompt
+  titles the session (OpenTab uses Gemini's own rule for what counts as a typed prompt).
 
 ## CSV / JSONL request logs
 

@@ -36,6 +36,7 @@ from opentab.sources import (
     DEFAULT_CSV_PATH,
     DEFAULT_JSONL_PATH,
     SOURCE_LABELS,
+    _default_gemini_dir,
     _default_omp_dir,
     _default_openclaw_dir,
     _default_pi_dir,
@@ -82,12 +83,14 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
             "omp",
             "openclaw",
             "zaly",
+            "gemini",
             "all",
             "remote",
         ),
         default="auto",
         help="which harness's spend to browse: opencode · claude · codex · hermes · csv · "
-        "jsonl · copilot · vscode · pi · omp · openclaw · zaly · all (merged) · remote "
+        "jsonl · copilot · vscode · pi · omp · openclaw · zaly · gemini · all (merged) · "
+        "remote "
         "(other machines, via pull/export). Default auto merges every present local "
         "harness. Or just pass a file path -- e.g. `opentab requests.csv`. (--source is a "
         "deprecated alias for --harness)",
@@ -147,6 +150,12 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         default=_default_zaly_dir(),
         help="Zaly data directory holding sessions/ (for --harness zaly); honors "
         "$ZALY_DATA and $ZALY_ROOT, default ~/.local/share/zaly",
+    )
+    parser.add_argument(
+        "--gemini-dir",
+        default=_default_gemini_dir(),
+        help="Gemini CLI home directory holding tmp/*/chats/ (for --harness gemini); "
+        "honors $GEMINI_CLI_HOME, default ~/.gemini",
     )
     parser.add_argument(
         "--csv",
@@ -245,7 +254,8 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         metavar="DIR|SESSION",
         help="print the cost of the most recently active agent session (subagent "
         "subtree included) and exit, consulting every present harness backend "
-        "(OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, Zaly); with DIR only "
+        "(OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, Zaly, Gemini); with DIR "
+        "only "
         "sessions of that project count, with a session id (ses_... or a UUID -- the "
         "id is matched to its own backend) exactly that session is priced, and "
         "--harness pins one backend. Made for a tmux status line: set -g "
@@ -516,6 +526,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "omp_dir",
             "openclaw_dir",
             "zaly_dir",
+            "gemini_dir",
             "csv",
             "jsonl",
             "remotes",
@@ -1057,7 +1068,17 @@ def _project_key(directory: str) -> str:
 
 
 # Only interactive harnesses expose live session identity for cost/goto targets.
-_STATUS_SOURCES = ("opencode", "claude", "codex", "hermes", "pi", "omp", "openclaw", "zaly")
+_STATUS_SOURCES = (
+    "opencode",
+    "claude",
+    "codex",
+    "hermes",
+    "pi",
+    "omp",
+    "openclaw",
+    "zaly",
+    "gemini",
+)
 
 
 def _is_session_target(target: str) -> bool:
