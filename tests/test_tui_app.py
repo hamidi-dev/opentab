@@ -36,6 +36,63 @@ def test_terminal_resize_does_not_close_overlays():
     assert app.help
 
 
+def test_startup_warning_is_prominent_dismissible_and_prioritized_over_price_prompt():
+    app = app_with([])
+    warning = {
+        "id": "retention-v1",
+        "title": "History expires",
+        "headline": "Source data is temporary.",
+        "lines": ["OpenTab cannot rebuild deleted records."],
+    }
+    app.offer_startup_warning(warning)
+    app.price_prompt = True
+
+    # Unbound keys are swallowed; the modal cannot disappear by typo or operate the one below.
+    assert app.handle_key(None, ord("x")) is True
+    assert app.startup_warning is not None and app.price_prompt
+    screen = FakeScreen(24, 90)
+    real_pair = ot.curses.color_pair
+    ot.curses.color_pair = lambda _n: 0
+    try:
+        app.renderer.draw_startup_warning(screen, 24, 90)
+    finally:
+        ot.curses.color_pair = real_pair
+    text = screen_text(screen)
+    assert "History expires" in text and "DATA LOSS RISK" in text
+    for centered in (
+        "DATA LOSS RISK",
+        "Source data is temporary.",
+        "OpenTab cannot rebuild deleted records.",
+        "continue for now",
+        "don't warn again",
+    ):
+        row = next(line for line in text.splitlines() if centered in line)
+        inner = row[1:-1]
+        left = len(inner) - len(inner.lstrip())
+        right = len(inner) - len(inner.rstrip())
+        assert abs(left - right) <= 1
+    title_row = next(line for line in text.splitlines() if "History expires" in line)
+    left, right = title_row.split("History expires")
+    assert abs(len(left) - len(right)) <= 1
+
+    # Enter continues for this run; the warning is offered again next launch.
+    app.handle_key(None, 10)
+    assert app.startup_warning is None and not app.dismissed_startup_warnings
+    assert app.price_prompt  # the lower prompt was never touched
+
+    app.offer_startup_warning(warning)
+    app.handle_key(None, ord("d"))
+    assert app.startup_warning is None
+    assert app.dismissed_startup_warnings == {"retention-v1"}
+    app.offer_startup_warning(warning)
+    assert app.startup_warning is None
+
+    no_state = app_with([])
+    no_state.offer_startup_warning(warning, can_persist=False)
+    no_state.handle_key(None, ord("d"))
+    assert not no_state.dismissed_startup_warnings and "--no-state" in no_state.notice
+
+
 def test_frame_draws_the_heavy_box_without_hline():
     renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
     screen = FakeScreen(height=10, width=20)

@@ -25,6 +25,7 @@ _FLAGS = (
 # Anything in the ambient environment that would change a verdict.
 _ENV_KEYS = (
     "COPILOT_OTEL_FILE_EXPORTER_PATH",
+    "CLAUDE_CONFIG_DIR",
     "OPENTAB_NO_INIT_COLOR",
     "HERDR_ENV",
     "WSL_DISTRO_NAME",
@@ -308,6 +309,50 @@ def test_present_harnesses_are_exactly_what_available_sources_reports():
         assert present == {"claude", "zaly"}
         ok = {r.label for r in doctor.harness_rows(args) if r.status == doctor.OK}
         assert ok == {"Claude Code", "Zaly", "selection"}
+
+
+def test_claude_retention_warns_without_changing_the_presence_verdict():
+    with tempfile.TemporaryDirectory() as tmp:
+        claude = os.path.join(tmp, "claude")
+        config = os.path.join(tmp, "claude-config")
+        _touch(os.path.join(claude, "proj", "a.jsonl"), "{}\n")
+        os.makedirs(config)
+        args = _args(tmp, claude_dir=claude)
+
+        with _clean_env(CLAUDE_CONFIG_DIR=config):
+            rows = doctor.harness_rows(args)
+            harness = next(row for row in rows if row.label == "Claude Code")
+            retention = next(row for row in rows if row.label == "Claude retention")
+            assert harness.status == doctor.OK
+            assert retention.status == doctor.WARN
+            assert "default: 30 days" in retention.detail
+            assert '"cleanupPeriodDays": 3650' in retention.hint
+
+            with open(os.path.join(config, "settings.json"), "w") as fh:
+                json.dump({"cleanupPeriodDays": 3650}, fh)
+            rows = doctor.harness_rows(args)
+            assert not any(row.label == "Claude retention" for row in rows)
+
+            with open(os.path.join(config, "settings.json"), "w") as fh:
+                fh.write("{broken")
+            retention = next(
+                row for row in doctor.harness_rows(args) if row.label == "Claude retention"
+            )
+            assert retention.status == doctor.WARN and "invalid" in retention.detail
+
+
+def test_claude_retention_still_warns_after_the_last_transcript_is_gone():
+    with tempfile.TemporaryDirectory() as tmp:
+        claude = os.path.join(tmp, "empty-claude-projects")
+        config = os.path.join(tmp, "claude-config")
+        os.makedirs(claude)
+        os.makedirs(config)
+        with _clean_env(CLAUDE_CONFIG_DIR=config):
+            rows = doctor.harness_rows(_args(tmp, claude_dir=claude))
+        harness = next(row for row in rows if row.label == "Claude Code")
+        retention = next(row for row in rows if row.label == "Claude retention")
+        assert harness.status == doctor.INFO and "no sessions" in harness.detail
+        assert retention.status == doctor.WARN
 
 
 def test_a_missing_harness_is_neutral_and_carries_no_hint():

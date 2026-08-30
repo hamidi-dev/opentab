@@ -151,7 +151,16 @@ from opentab.sources import (
 from opentab.state import apply_state, load_state, save_state, state_path
 from opentab.stores.antigravity import AntigravityStore
 from opentab.stores.cached import CachedStore
-from opentab.stores.claude import ClaudeStore
+from opentab.stores.claude import (
+    CLAUDE_RETENTION_DEFAULT_DAYS,
+    CLAUDE_RETENTION_RECOMMENDED_DAYS,
+    CLAUDE_RETENTION_WARNING_ID,
+    ClaudeRetention,
+    ClaudeStore,
+    claude_config_dir,
+    claude_projects_dir,
+    claude_retention,
+)
 from opentab.stores.codex import CodexStore
 from opentab.stores.combined import CombinedStore
 from opentab.stores.copilot import CopilotStore

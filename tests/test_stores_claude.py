@@ -9,6 +9,38 @@ from opentab.formatting import iso_to_local
 from tests._support import _claude_msg, _usage, _write_jsonl
 
 
+def test_claude_retention_reads_the_user_setting_and_its_documented_default():
+    old = os.environ.get("CLAUDE_CONFIG_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["CLAUDE_CONFIG_DIR"] = tmp
+        try:
+            assert ot.claude_projects_dir() == os.path.join(tmp, "projects")
+            missing = ot.claude_retention()
+            assert (missing.days, missing.source, missing.needs_warning) == (30, "default", True)
+
+            path = os.path.join(tmp, "settings.json")
+            for value in (True, 0, -1, "30", []):
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump({"cleanupPeriodDays": value}, fh)
+                invalid = ot.claude_retention()
+                assert invalid.days is None and invalid.source == "invalid"
+
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"cleanupPeriodDays": 365}, fh)
+            short = ot.claude_retention()
+            assert short.days == 365 and short.needs_warning
+
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"cleanupPeriodDays": 3650}, fh)
+            safe = ot.claude_retention()
+            assert safe.days == 3650 and safe.source == "configured" and not safe.needs_warning
+        finally:
+            if old is None:
+                os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            else:
+                os.environ["CLAUDE_CONFIG_DIR"] = old
+
+
 def test_claude_workflow_ended_at_reflects_the_latest_sidechain_activity():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "projects", "slug")

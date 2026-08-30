@@ -6,6 +6,7 @@ import glob
 import json
 import os
 import re
+from typing import NamedTuple
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
@@ -21,6 +22,50 @@ from opentab.util import (
     safe_int,
     tool_rows_from_turns,
 )
+
+CLAUDE_RETENTION_DEFAULT_DAYS = 30
+# Claude's own settings reference recommends this value for long retention.
+CLAUDE_RETENTION_RECOMMENDED_DAYS = 3650
+CLAUDE_RETENTION_WARNING_ID = "claude-retention-v1"
+
+
+class ClaudeRetention(NamedTuple):
+    settings_path: str
+    days: int | None
+    source: str  # default, configured, or invalid
+
+    @property
+    def needs_warning(self) -> bool:
+        return self.days is None or self.days < CLAUDE_RETENTION_RECOMMENDED_DAYS
+
+
+def claude_config_dir() -> str:
+    root = os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
+    return os.path.abspath(os.path.expanduser(root))
+
+
+def claude_projects_dir() -> str:
+    return os.path.join(claude_config_dir(), "projects")
+
+
+def claude_retention() -> ClaudeRetention:
+    """Read Claude Code's user-level transcript retention without changing it."""
+    path = os.path.join(claude_config_dir(), "settings.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return ClaudeRetention(path, CLAUDE_RETENTION_DEFAULT_DAYS, "default")
+    except (OSError, ValueError):
+        return ClaudeRetention(path, None, "invalid")
+    if not isinstance(data, dict):
+        return ClaudeRetention(path, None, "invalid")
+    if "cleanupPeriodDays" not in data:
+        return ClaudeRetention(path, CLAUDE_RETENTION_DEFAULT_DAYS, "default")
+    days = data["cleanupPeriodDays"]
+    if isinstance(days, bool) or not isinstance(days, int) or days < 1:
+        return ClaudeRetention(path, None, "invalid")
+    return ClaudeRetention(path, days, "configured")
 
 
 class ClaudeStore:

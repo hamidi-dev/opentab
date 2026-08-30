@@ -109,6 +109,11 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 *JSONL transcripts · tokens only, `$` estimates*
 
 - **Reads** `~/.claude/projects/**/*.jsonl` (`--claude-dir`).
+- **Retention warning**: Claude Code deletes transcripts after 30 days by default. Once
+  the source file is gone, OpenTab cannot report or reconstruct its usage. The TUI warns
+  once and `opentab doctor` keeps reporting short retention; set
+  `"cleanupPeriodDays": 3650` in `$CLAUDE_CONFIG_DIR/settings.json` (default:
+  `~/.claude/settings.json`) for long history.
 - **Cost**: Claude Code records tokens but no per-message cost — sessions show `$0`
   recorded, and the `$` view (on by default here) estimates them at API list rates.
 - **Notes**: subagent (Task) work shows as a cost tree under its session; resumed and

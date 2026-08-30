@@ -363,6 +363,9 @@ class App:
         self._price_prompt_done = False
         self.prices_prompt_dismissed = False
         self.allow_price_prompt = True
+        self.startup_warning: dict | None = None
+        self.startup_warning_can_persist = True
+        self.dismissed_startup_warnings: set[str] = set()
         self.unknown_models: list[str] = []
         self.source_menu = False
         self.source_menu_index = 0
@@ -2203,6 +2206,32 @@ class App:
             return
         self.unknown_models = unknown
         self.price_prompt = True
+
+    def offer_startup_warning(self, warning: dict, can_persist: bool = True) -> None:
+        warning_id = warning.get("id")
+        if not isinstance(warning_id, str) or not warning_id:
+            return
+        if warning_id in self.dismissed_startup_warnings:
+            return
+        self.startup_warning = dict(warning)
+        self.startup_warning_can_persist = can_persist
+
+    def handle_startup_warning_key(self, key: int | str) -> bool:
+        if key == 3:  # Ctrl-C still quits
+            return False
+        act = self.keymap.action("prompt.warning", key)
+        if act == "continue":
+            self.startup_warning = None
+        elif act == "never":
+            warning = self.startup_warning or {}
+            warning_id = warning.get("id")
+            self.startup_warning = None
+            if self.startup_warning_can_persist and isinstance(warning_id, str):
+                self.dismissed_startup_warnings.add(warning_id)
+                self.notice = "warning dismissed — doctor will still report the retention"
+            else:
+                self.notice = "warning closed for this run — --no-state cannot remember dismissal"
+        return True
 
     def handle_price_prompt_key(self, key: int | str) -> bool:
         if key == 3:  # Ctrl-C still quits
@@ -4928,16 +4957,18 @@ class App:
             self.active_toasts()  # expire faded toasts before painting
             self.renderer.draw(stdscr)
             self._mark_toasts_shown()
-            if first:
+            if first and self.startup_warning is None:
                 # First frame is up off the fast session rollup; now do the one
                 # heavy message scan, then repaint so model_count / Models tabs are
-                # populated before the user's first keystroke is handled.
+                # populated before the user's first ordinary keystroke is handled.
+                # A startup warning gets input first; otherwise its visible modal would
+                # look frozen while this scan blocks on a large corpus.
                 first = False
                 self._ensure_models()
                 self.maybe_prompt_prices()  # offer a models.dev fetch if prices are missing
                 self.renderer.draw(stdscr)
                 self._mark_toasts_shown()
-            if self._session_loading is not None:
+            if self.startup_warning is None and self._session_loading is not None:
                 # draw_detail just painted its "loading" frame (a drilled-in session
                 # whose subagents/Turns/Tools aren't memoized yet -- on a warm start
                 # this is the whole backend parse). Same trick as the first frame:
@@ -5626,6 +5657,8 @@ class App:
         # routing as any key: the keymap can bind one ("ö = quit" works), the text
         # fields type it, and every handler resolves through the keymap rather than
         # arithmetic on the code, so a str never hits an int comparison.
+        if self.startup_warning is not None:
+            return self.handle_startup_warning_key(key)
         if self.price_prompt:
             return self.handle_price_prompt_key(key)
         # The C (Colours), H (source) and M (machine filter) pickers float above
@@ -6231,6 +6264,8 @@ class App:
         click = bool(bstate & curses.BUTTON1_CLICKED)
         double = bool(bstate & curses.BUTTON1_DOUBLE_CLICKED)
 
+        if self.startup_warning is not None:
+            return True  # a click cannot accidentally dismiss a data-loss warning
         if self.price_prompt:
             if click or double:
                 self.price_prompt = False  # click = not now

@@ -168,6 +168,7 @@ def test_every_registry_action_is_discoverable():
         "menu.whatif.filter",
         "filter",
         "input",
+        "prompt.warning",
         "prompt.prices",
     }
     missing = []

@@ -129,6 +129,13 @@ flags and env vars, how its cost is derived, the quirks (Copilot's opt-in export
 cumulative counters, the metered-vs-subscription split), the CSV/JSONL schema you can
 write against, and the merged view.
 
+> [!WARNING]
+> Claude Code deletes local transcripts after **30 days by default**. When one disappears,
+> its session and usage disappear from OpenTab too; “all time” can only mean what remains
+> on disk. OpenTab warns once and `opentab doctor` reports the setting. For long history,
+> add `"cleanupPeriodDays": 3650` to `$CLAUDE_CONFIG_DIR/settings.json` (default:
+> `~/.claude/settings.json`).
+
 ## Every machine, one tab
 
 Code on more than one box? **`opentab pull` gathers each machine's spend over SSH — all in

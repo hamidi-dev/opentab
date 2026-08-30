@@ -54,6 +54,7 @@ def save_state(app: App) -> None:
         "theme": app.theme_id,
         "cal_levels": app.cal_levels,
         "prices_prompt_dismissed": app.prices_prompt_dismissed,
+        "dismissed_startup_warnings": sorted(app.dismissed_startup_warnings),
     }
     path = state_path()
     try:
@@ -143,4 +144,9 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     if isinstance(saved_levels, int):
         app.cal_levels = max(HEAT_MIN_LEVELS, min(HEAT_MAX_LEVELS, saved_levels))
     app.prices_prompt_dismissed = bool(state.get("prices_prompt_dismissed", False))
+    dismissed_warnings = state.get("dismissed_startup_warnings")
+    if isinstance(dismissed_warnings, list):
+        app.dismissed_startup_warnings = {
+            item for item in dismissed_warnings if isinstance(item, str) and item
+        }
     app.notice = ""

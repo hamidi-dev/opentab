@@ -33,6 +33,28 @@ def test_prices_sort_is_persisted_in_state():
     assert restored.prices_sort == "cache_write" and restored.prices_sort_reverse
 
 
+def test_dismissed_startup_warnings_are_persisted_and_shape_checked():
+    app = app_with([])
+    app.dismissed_startup_warnings = {"claude-retention-v1", "future-warning-v2"}
+    old_xdg = os.environ.get("XDG_STATE_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_STATE_HOME"] = tmp
+        try:
+            ot.save_state(app)
+            restored = app_with([])
+            ot.apply_state(restored, restored.args, ot.load_state())
+            assert restored.dismissed_startup_warnings == app.dismissed_startup_warnings
+
+            malformed = app_with([])
+            ot.apply_state(malformed, malformed.args, {"dismissed_startup_warnings": "oops"})
+            assert malformed.dismissed_startup_warnings == set()
+        finally:
+            if old_xdg is None:
+                os.environ.pop("XDG_STATE_HOME", None)
+            else:
+                os.environ["XDG_STATE_HOME"] = old_xdg
+
+
 def test_trend_sort_is_persisted_in_state():
     # The Trends ranking column, like every other list's sort. Validated against the
     # UNION of the ranked tabs' vocabularies, not one tab's: the key is per-overlay and

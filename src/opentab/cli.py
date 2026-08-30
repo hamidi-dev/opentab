@@ -47,6 +47,12 @@ from opentab.sources import (
     resolve_source,
 )
 from opentab.state import apply_state, load_state, save_state
+from opentab.stores.claude import (
+    CLAUDE_RETENTION_RECOMMENDED_DAYS,
+    CLAUDE_RETENTION_WARNING_ID,
+    claude_projects_dir,
+    claude_retention,
+)
 from opentab.tui import bindings
 from opentab.tui.app import App
 from opentab.util import (
@@ -101,7 +107,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--db", default=os.path.expanduser("~/.local/share/opencode/opencode.db"))
     parser.add_argument(
         "--claude-dir",
-        default=os.path.expanduser("~/.claude/projects"),
+        default=claude_projects_dir(),
         help="Claude Code projects directory (for --harness claude)",
     )
     parser.add_argument(
@@ -1582,6 +1588,39 @@ def forget_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _offer_claude_retention_warning(app: App, can_persist: bool) -> None:
+    retention = claude_retention()
+    if not retention.needs_warning:
+        return
+    path = retention.settings_path
+    home = os.path.expanduser("~")
+    if path == home or path.startswith(home + os.sep):
+        path = "~" + path[len(home) :]
+    if retention.source == "default":
+        headline = "Claude Code will delete local transcripts after 30 days."
+    elif retention.days is not None:
+        headline = f"Claude Code deletes local transcripts after {retention.days} days."
+    else:
+        headline = "OpenTab cannot verify when Claude Code deletes local transcripts."
+    app.offer_startup_warning(
+        {
+            "id": CLAUDE_RETENTION_WARNING_ID,
+            "title": "WARNING · Claude Code history expires",
+            "headline": headline,
+            "lines": [
+                "When a transcript is deleted, its session, tokens, and cost",
+                "estimates disappear from OpenTab permanently.",
+                "OpenTab cannot recover them. 'All time' only covers files on disk.",
+                "",
+                "Keep long-term history:",
+                path,
+                f'"cleanupPeriodDays": {CLAUDE_RETENTION_RECOMMENDED_DAYS}',
+            ],
+        },
+        can_persist=can_persist,
+    )
+
+
 def web_command(args: argparse.Namespace) -> int:
     # Build the same headless App state as the TUI. Defer the web import from TUI startup.
     from opentab import web
@@ -1689,6 +1728,8 @@ def main() -> int:
     sys.stderr.flush()
     if use_state:
         apply_state(app, args, state)
+    if not args.demo and (source_key == "claude" or os.path.isdir(args.claude_dir)):
+        _offer_claude_retention_warning(app, can_persist=use_state)
     # Refresh after apply_state, which clears notices and would erase a notes warning.
     notes_ok = app.refresh_notes()
     app.announce_keymap_warnings()

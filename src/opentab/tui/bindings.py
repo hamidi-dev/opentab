@@ -428,6 +428,15 @@ REGISTRY: tuple[Context, ...] = (
         ),
     ),
     Context(
+        "prompt.warning",
+        "A startup warning about source data that can disappear (other keys are swallowed).",
+        None,
+        (
+            Action("continue", ("enter", "esc"), "continue; show again next run"),
+            Action("never", ("d", "D"), "don't show this warning again"),
+        ),
+    ),
+    Context(
         "prompt.prices",
         "The one-time 'fetch model prices?' prompt (any other key = not now).",
         None,

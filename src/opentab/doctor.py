@@ -33,6 +33,11 @@ except ImportError:  # native Windows has no stdlib curses
 from opentab import __version__, notes, paths, pricing, sources, state
 from opentab.formatting import human_bytes, relative_age
 from opentab.stores import cached
+from opentab.stores.claude import (
+    CLAUDE_RETENTION_RECOMMENDED_DAYS,
+    claude_config_dir,
+    claude_retention,
+)
 from opentab.tui import bindings
 from opentab.util import (
     env_flag,
@@ -487,6 +492,23 @@ def harness_rows(args: argparse.Namespace, full: bool = False) -> list[Row]:
     """Explain ``available_sources`` verbatim, ordered actionable-first."""
     present = sources.available_sources(args)
     rows = [_harness_row(args, spec, spec[0] in present, full) for spec in _HARNESSES]
+    if "claude" in present or os.path.isdir(args.claude_dir) or os.path.isdir(claude_config_dir()):
+        retention = claude_retention()
+        if retention.needs_warning:
+            if retention.source == "default":
+                detail = "cleanupPeriodDays unset → Claude Code default: 30 days"
+            elif retention.days is not None:
+                detail = f"cleanupPeriodDays: {retention.days} days"
+            else:
+                detail = "settings unreadable or cleanupPeriodDays invalid"
+            rows.append(
+                Row(
+                    WARN,
+                    "Claude retention",
+                    f"{_tilde(retention.settings_path, full)} · {detail}",
+                    f'add `"cleanupPeriodDays": {CLAUDE_RETENTION_RECOMMENDED_DAYS}`; once Claude deletes a transcript, opentab cannot reconstruct it',
+                )
+            )
     rank = {OK: 0, BAD: 1, WARN: 2, INFO: 3}
     rows.sort(key=lambda r: rank.get(r.status, 9))
     # Reading selection state must not migrate a pre-XDG state file.
@@ -898,6 +920,7 @@ _ENV_VARS = (
     "OPENTAB_LAUNCHER",
     "HERDR_ENV",
     "COPILOT_OTEL_FILE_EXPORTER_PATH",
+    "CLAUDE_CONFIG_DIR",
     "PI_AGENT_DIR",
     "OMP_AGENT_DIR",
     "OPENCLAW_DIR",

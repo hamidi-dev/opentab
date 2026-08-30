@@ -652,7 +652,9 @@ class Renderer:
         if self.toast_history:
             self.draw_toast_history(stdscr, top, bottom, width)
 
-        if self.price_prompt:
+        if self.startup_warning is not None:
+            self.draw_startup_warning(stdscr, height, width)
+        elif self.price_prompt:
             self.draw_price_prompt(stdscr, height, width)
         elif self.theme_menu:
             self.draw_theme_menu(stdscr, height, width)
@@ -4901,11 +4903,19 @@ class Renderer:
             )
 
     def draw_modal(
-        self, stdscr: curses.window, scr_h: int, scr_w: int, title: str, lines: list
+        self,
+        stdscr: curses.window,
+        scr_h: int,
+        scr_w: int,
+        title: str,
+        lines: list,
+        center: bool = False,
+        alert: bool = False,
     ) -> tuple[int, int, int, int]:
         # A small centered popup box floating over the current view (cleared interior so
         # the view doesn't bleed through). `lines` is a list of (text, attr); the caller
-        # styles each row (header tint, A_REVERSE for a selected entry). Sized to content.
+        # styles each row (header tint, A_REVERSE for a selected entry). Alert modals use
+        # the bad-role border; callers can center their rows instead of picker-aligning them.
         # Returns the box geometry (y, x, h, w) so a caller can post-paint richer rows --
         # the `w` picker lays its tier tab strip over a placeholder line this way.
         content = [(str(t), a) for t, a in lines]
@@ -4916,10 +4926,24 @@ class Renderer:
         x = max(1, (scr_w - w) // 2)
         for row in range(y, y + h):  # clear the footprint first
             self.write(stdscr, row, x, " " * w)
-        self.box(stdscr, y, x, h, w, title, active=True)
+        if alert:
+            border = curses.color_pair(5) | curses.A_BOLD
+            self.draw_frame(stdscr, y, x, h, w, border)
+            label = f" {shorten(title, w - 6)} "
+            self.write(stdscr, y, x + max(2, (w - display_width(label)) // 2), label, border)
+        else:
+            self.box(stdscr, y, x, h, w, title, active=True)
         field = w - 4
         for offset, (text, attr) in enumerate(content[: h - 4]):
-            self.write(stdscr, y + 2 + offset, x + 2, pad(shorten(text, field), field), attr)
+            drawn = shorten(text, field)
+            tx = x + 2 + max(0, (field - display_width(drawn)) // 2) if center else x + 2
+            self.write(
+                stdscr,
+                y + 2 + offset,
+                tx,
+                drawn if center else pad(drawn, field),
+                attr,
+            )
         return y, x, h, w
 
     def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
@@ -5236,6 +5260,41 @@ class Renderer:
             ),
         ]
         self.draw_modal(stdscr, scr_h, scr_w, "Unpriced models found", lines)
+
+    def draw_startup_warning(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
+        warning = self.startup_warning or {}
+        accent = curses.color_pair(6) | curses.A_BOLD
+        danger = curses.color_pair(5) | curses.A_BOLD
+        lines = [
+            (" DATA LOSS RISK ", danger | curses.A_REVERSE),
+            ("", 0),
+            (
+                warning.get("headline", "History may expire"),
+                danger,
+            ),
+            ("", 0),
+        ]
+        lines += [(text, curses.A_NORMAL) for text in warning.get("lines", [])]
+        lines += [
+            ("", 0),
+            (f"{self._keys('prompt.warning', 'continue')}  continue for now", accent),
+            (
+                f"{self._key('prompt.warning', 'never')}  "
+                + (
+                    "don't warn again" if self.startup_warning_can_persist else "close for this run"
+                ),
+                accent,
+            ),
+        ]
+        self.draw_modal(
+            stdscr,
+            scr_h,
+            scr_w,
+            warning.get("title", "WARNING · Data retention"),
+            lines,
+            center=True,
+            alert=True,
+        )
 
     # --- Trends overlay -------------------------------------------------------
     def draw_trends(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:

@@ -892,6 +892,31 @@ def test_goto_session_unknown_tab_keeps_overview_and_names_the_real_ones():
     assert "context" in app.notice and "overview" in app.notice
 
 
+def test_claude_config_dir_controls_the_default_source_and_startup_warning():
+    old = os.environ.get("CLAUDE_CONFIG_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["CLAUDE_CONFIG_DIR"] = tmp
+        try:
+            assert _parse([]).claude_dir == os.path.join(tmp, "projects")
+            app = app_with([])
+            ot.cli._offer_claude_retention_warning(app, can_persist=True)
+            assert app.startup_warning is not None
+            assert app.startup_warning["id"] == ot.CLAUDE_RETENTION_WARNING_ID
+            assert "after 30 days" in app.startup_warning["headline"]
+            assert "permanently" in app.startup_warning["lines"][1]
+
+            with open(os.path.join(tmp, "settings.json"), "w") as fh:
+                json.dump({"cleanupPeriodDays": 3650}, fh)
+            safe = app_with([])
+            ot.cli._offer_claude_retention_warning(safe, can_persist=True)
+            assert safe.startup_warning is None
+        finally:
+            if old is None:
+                os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            else:
+                os.environ["CLAUDE_CONFIG_DIR"] = old
+
+
 def test_goto_missing_tab_notice_survives_a_range_clear():
     # Regression: a target hidden by a restored range AND a tab its backend lacks --
     # the range-clear retry must not clobber the "no 'context' tab here" explanation.
