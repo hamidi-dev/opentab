@@ -17,8 +17,8 @@ class BahulamStore:
     """Read Bahulam Code transcripts from ``~/.bahulam/projects/**/*.jsonl``.
 
     Bahulam records per-turn token usage and total_cost in every ``complete``
-    event.  The wire format uses ``kepler_event`` or ``bahulam_event`` as the
-    top-level type; all payload fields live under ``event.data.*``.
+    event.  The wire format uses ``bahulam_event`` as the top-level type; all
+    payload fields live under ``event.data.*``.
     """
 
     records_cost = True  # Bahulam records total_cost in every usage block
@@ -54,6 +54,12 @@ class BahulamStore:
             "cache_write": 0,
             "cache_write_1h": 0,
             "tokens_total": 0,
+            "u_input": 0,
+            "u_output": 0,
+            "u_reasoning": 0,
+            "u_cache_read": 0,
+            "u_cache_write": 0,
+            "u_cache_write_1h": 0,
         }
 
     @staticmethod
@@ -86,29 +92,37 @@ class BahulamStore:
         return ""
 
     @classmethod
-    def _add_usage(cls, acc: dict, usage: dict) -> None:
+    def _reported_cost(cls, usage: dict) -> tuple[bool, float]:
+        """Return ``(has_reported_cost, cost)`` for a raw usage dict."""
+        for key in ("cost", "cost_usd", "total_cost", "total_cost_usd"):
+            value = usage.get(key)
+            if value in (None, ""):
+                continue
+            cost = cls._float(value)
+            if cost >= 0:
+                return True, cost
+        return False, 0.0
+
+    @classmethod
+    def _add_usage(cls, acc: dict, usage: dict, *, additive_input: bool = False) -> None:
         """Accumulate counters from a usage dict into *acc*.
 
         Args:
             acc: Mutable accumulator dict (see ``_new_acc``).
             usage: Raw usage record from a ``complete`` event.
+            additive_input: Bahulam ``usage.models[]`` records expose uncached
+                input beside cache-read/cache-write tokens. Flat aggregate
+                OpenRouter-style totals expose inclusive input.
         """
         total_in = cls._int(usage.get("total_input_tokens", 0))
         out = cls._int(usage.get("total_output_tokens", 0))
         cr = cls._int(usage.get("cache_read_input_tokens", 0))
         cw = cls._int(usage.get("cache_creation_input_tokens", 0))
         reasoning = cls._int(usage.get("reasoning_tokens", 0))
-        cost = cls._float(
-            cls._first_value(
-                usage.get("cost"),
-                usage.get("cost_usd"),
-                usage.get("total_cost"),
-                usage.get("total_cost_usd"),
-            )
-        )
+        has_cost, cost = cls._reported_cost(usage)
         cc = usage.get("cache_creation")
         cw1h = cls._int(cc.get("ephemeral_1h_input_tokens", 0) or 0) if isinstance(cc, dict) else 0
-        inp = max(0, total_in - cr - cw)
+        inp = max(0, total_in if additive_input else total_in - cr - cw)
         acc["runs"] += 1
         acc["cost"] += cost
         acc["input"] += inp
@@ -118,6 +132,13 @@ class BahulamStore:
         acc["cache_write"] += cw
         acc["cache_write_1h"] += min(cw1h, cw)
         acc["tokens_total"] += inp + out + reasoning + cr + cw
+        if not has_cost:
+            acc["u_input"] += inp
+            acc["u_output"] += out
+            acc["u_reasoning"] += reasoning
+            acc["u_cache_read"] += cr
+            acc["u_cache_write"] += cw
+            acc["u_cache_write_1h"] += min(cw1h, cw)
 
     @staticmethod
     def _price(model_name: str, acc: dict) -> float:
@@ -140,7 +161,7 @@ class BahulamStore:
         """
         fam = model_family(model_name)
         if not fam or fam == "unknown":
-            return "anthropic/"  # safest fallback for Claude-like naming
+            return ""
         return fam + "/"
 
     def _qualified_model(self, model_name: str) -> str:
@@ -242,8 +263,122 @@ class BahulamStore:
             "prompts": [],
             "event_ts": [],
             "pending_tools": [],  # tool names queued before the next complete event
+            "active_subagents": {},
+            "subagent_runs": [],
             "files": set(),
         }
+
+    @staticmethod
+    def _is_root_role(role: str) -> bool:
+        """Return ``True`` when a usage role belongs to the main/root agent."""
+        return role in ("", "coder", "main", "executor", "orchestrator")
+
+    def _model_usage(self, usage: dict) -> dict:
+        """Normalize a per-model or sub-agent usage dict for ``_add_usage``."""
+        return {
+            "total_input_tokens": usage.get("input_tokens", 0),
+            "total_output_tokens": usage.get("output_tokens", 0),
+            "cache_read_input_tokens": usage.get("cache_read_tokens", 0),
+            "cache_creation_input_tokens": usage.get("cache_creation_tokens", 0),
+            "reasoning_tokens": usage.get("reasoning_tokens", 0) or 0,
+        }
+
+    @staticmethod
+    def _usage_cost(usage: dict):
+        """Return a per-model cost value, preserving missing vs reported zero."""
+        return next(
+            (usage.get(key) for key in ("cost", "cost_usd") if usage.get(key) not in (None, "")),
+            None,
+        )
+
+    def _record_subagent_start(self, s: dict, data: dict, ts: str | None) -> None:
+        """Remember a sub-agent's start metadata until its complete event arrives."""
+        key = data.get("task_id") or f"{data.get('type') or 'subagent'}:{len(s['subagent_runs'])}"
+        s["active_subagents"][key] = {
+            "type": data.get("type") or "",
+            "model": data.get("model") or "",
+            "query": data.get("query") or "",
+            "ts": ts or "",
+        }
+
+    def _record_subagent_complete(self, s: dict, data: dict, ts: str | None) -> None:
+        """Record one completed Bahulam sub-agent for the Subagents tab."""
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+        key = data.get("task_id") or f"{data.get('type') or 'subagent'}:{len(s['subagent_runs'])}"
+        start = s["active_subagents"].pop(key, {})
+        role = str(usage.get("role") or data.get("type") or start.get("type") or "subagent")
+        model_name = self._qualified_model(
+            data.get("model") or usage.get("model") or start.get("model") or ""
+        )
+        acc = self._new_acc()
+        if usage:
+            normalized = self._model_usage(usage)
+            cost = self._usage_cost(usage)
+            if cost is not None:
+                normalized["cost"] = cost
+            self._add_usage(acc, normalized, additive_input=True)
+        title = (
+            data.get("result_summary")
+            or start.get("query")
+            or data.get("query")
+            or f"{role} sub-agent"
+        )
+        s["subagent_runs"].append(
+            {
+                "id": key,
+                "role": role,
+                "agent": role,
+                "model_name": model_name or "unknown",
+                "title": _clean_prompt(str(title)),
+                "ts": start.get("ts") or ts or "",
+                "acc": acc,
+                "cost_assigned": self._usage_cost(usage) is not None,
+            }
+        )
+
+    def _assign_subagent_cost(
+        self, s: dict, role: str, model_name: str, usage: dict, ts: str | None
+    ) -> None:
+        """Attach aggregate per-role cost from ``complete`` to matching sub-agent runs."""
+        has_cost, cost = self._reported_cost(usage)
+        if not has_cost:
+            return
+        matches = [
+            r
+            for r in s["subagent_runs"]
+            if not r.get("cost_assigned")
+            and r.get("role") == role
+            and r.get("model_name") == model_name
+        ]
+        if not matches:
+            already_recorded = any(
+                r.get("role") == role and r.get("model_name") == model_name
+                for r in s["subagent_runs"]
+            )
+            if already_recorded:
+                return
+            acc = self._new_acc()
+            self._add_usage(acc, usage, additive_input=True)
+            acc["cost"] = cost
+            matches = [
+                {
+                    "id": f"{role}:{len(s['subagent_runs'])}",
+                    "role": role,
+                    "agent": role,
+                    "model_name": model_name or "unknown",
+                    "title": f"{role} sub-agent",
+                    "ts": ts or "",
+                    "acc": acc,
+                    "cost_assigned": True,
+                }
+            ]
+            s["subagent_runs"].extend(matches)
+            return
+        denom = sum(r["acc"]["tokens_total"] for r in matches)
+        for r in matches:
+            share = cost / len(matches) if denom <= 0 else cost * r["acc"]["tokens_total"] / denom
+            r["acc"]["cost"] += share
+            r["cost_assigned"] = True
 
     def _parse_file(self, text: str, session_id: str, s: dict, path: str = "") -> None:
         """Decode a single JSONL file body and ingest every line into *s*."""
@@ -262,8 +397,8 @@ class BahulamStore:
     def _ingest(self, o: dict, s: dict, path: str = "") -> None:
         """Ingest a single JSON record *o* into the session dict *s*.
 
-        Handles user messages, ``bahulam_event`` / ``kepler_event`` records
-        (session_info, complete, tool_call), and extracts timestamps / cwd.
+        Handles user messages and ``bahulam_event`` records (session_info,
+        complete, tool_call), and extracts timestamps / cwd.
         """
         if path:
             s["files"].add(path)
@@ -301,9 +436,8 @@ class BahulamStore:
                 if text:
                     s["prompts"].append({"ts": ts or "", "title": text})
 
-        # Event records — both ``bahulam_event`` and ``kepler_event`` carry
-        # their payload under ``event.data.*``.
-        if typ not in ("bahulam_event", "kepler_event"):
+        # Event records carry their payload under ``event.data.*``.
+        if typ != "bahulam_event":
             return
         event = o.get("event")
         if not isinstance(event, dict):
@@ -326,6 +460,12 @@ class BahulamStore:
                             qualified,
                             {"total": self._new_acc(), "root": self._new_acc()},
                         )
+
+        elif event_type == "sub_agent_start":
+            self._record_subagent_start(s, data, ts)
+
+        elif event_type == "sub_agent_complete":
+            self._record_subagent_complete(s, data, ts)
 
         # complete — carries per-LLM-step token usage and cost
         elif event_type == "complete":
@@ -351,16 +491,16 @@ class BahulamStore:
                             "total": self._new_acc(),
                             "root": self._new_acc(),
                         }
-                    per_model = {
-                        "total_input_tokens": m.get("input_tokens", 0),
-                        "total_output_tokens": m.get("output_tokens", 0),
-                        "cache_read_input_tokens": m.get("cache_read_tokens", 0),
-                        "cache_creation_input_tokens": m.get("cache_creation_tokens", 0),
-                        "reasoning_tokens": m.get("reasoning_tokens", 0) or 0,
-                        "cost": self._first_value(m.get("cost"), m.get("cost_usd")),
-                    }
-                    self._add_usage(entry["total"], per_model)
-                    self._add_usage(entry["root"], per_model)
+                    per_model = self._model_usage(m)
+                    cost = self._usage_cost(m)
+                    if cost is not None:
+                        per_model["cost"] = cost
+                    self._add_usage(entry["total"], per_model, additive_input=True)
+                    role = str(m.get("role") or "")
+                    if self._is_root_role(role):
+                        self._add_usage(entry["root"], per_model, additive_input=True)
+                    else:
+                        self._assign_subagent_cost(s, role, model_name, per_model, ts)
             else:
                 model_name = self._qualified_model(
                     data.get("model") or usage.get("model") or s["model"] or ""
@@ -381,14 +521,7 @@ class BahulamStore:
             cr = self._int(usage.get("cache_read_input_tokens", 0))
             cw = self._int(usage.get("cache_creation_input_tokens", 0))
             inp = max(0, total_in - cr - cw)
-            total_cost = self._float(
-                self._first_value(
-                    usage.get("total_cost"),
-                    usage.get("total_cost_usd"),
-                    usage.get("cost"),
-                    usage.get("cost_usd"),
-                )
-            )
+            _has_total_cost, total_cost = self._reported_cost(usage)
 
             # Turn row for the Turns tab
             first_model = "unknown"
@@ -456,24 +589,51 @@ class BahulamStore:
                     "cache_write": tot["cache_write"],
                     "cache_write_1h": tot["cache_write_1h"],
                     "output": tot["output"],
-                    # 1h-TTL subset for API-equivalent estimation
-                    "unpriced_input": tot["input"],
-                    "unpriced_reasoning": tot["reasoning"],
-                    "unpriced_cache_read": tot["cache_read"],
-                    "unpriced_cache_write": tot["cache_write"],
-                    "unpriced_cache_write_1h": tot["cache_write_1h"],
-                    "unpriced_output": tot["output"],
-                    "root_unpriced_input": root["input"],
-                    "root_unpriced_reasoning": root["reasoning"],
-                    "root_unpriced_cache_read": root["cache_read"],
-                    "root_unpriced_cache_write": root["cache_write"],
-                    "root_unpriced_cache_write_1h": root["cache_write_1h"],
-                    "root_unpriced_output": root["output"],
+                    "unpriced_input": tot["u_input"],
+                    "unpriced_reasoning": tot["u_reasoning"],
+                    "unpriced_cache_read": tot["u_cache_read"],
+                    "unpriced_cache_write": tot["u_cache_write"],
+                    "unpriced_cache_write_1h": tot["u_cache_write_1h"],
+                    "unpriced_output": tot["u_output"],
+                    "root_unpriced_input": root["u_input"],
+                    "root_unpriced_reasoning": root["u_reasoning"],
+                    "root_unpriced_cache_read": root["u_cache_read"],
+                    "root_unpriced_cache_write": root["u_cache_write"],
+                    "root_unpriced_cache_write_1h": root["u_cache_write_1h"],
+                    "root_unpriced_output": root["u_output"],
                 }
             )
         s["model_rows"] = rows
-        s["unpriced_tokens"] = sum(r["tokens_total"] for r in rows)
-        s["subagents"] = []
+        s["unpriced_tokens"] = sum(
+            r["unpriced_input"]
+            + r["unpriced_output"]
+            + r["unpriced_reasoning"]
+            + r["unpriced_cache_read"]
+            + r["unpriced_cache_write"]
+            for r in rows
+        )
+        s["subagents"] = self._build_subagents(s)
+
+    def _build_subagents(self, s: dict) -> list[dict]:
+        """Build depth-1 nodes from Bahulam sub-agent completion events."""
+        nodes = []
+        for idx, run in enumerate(s["subagent_runs"], start=1):
+            acc = run["acc"]
+            if acc["tokens_total"] <= 0 and acc["cost"] <= 0:
+                continue
+            nodes.append(
+                self._node(
+                    str(run.get("id") or f"subagent-{idx}"),
+                    1,
+                    str(run.get("agent") or "subagent"),
+                    str(run.get("title") or "sub-agent run"),
+                    iso_to_local(run.get("ts")) if run.get("ts") else s["created_at"],
+                    str(run.get("model_name") or "unknown"),
+                    acc["cost"],
+                    acc,
+                )
+            )
+        return nodes
 
     @staticmethod
     def _node(

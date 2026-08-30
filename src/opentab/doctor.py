@@ -311,7 +311,7 @@ _HARNESSES = (
     ("zaly", "zaly_dir", _TREE, "sessions/*/*/session.jsonl", "**/session.jsonl", "--zaly-dir/$ZALY_DATA want the DATA directory holding sessions/, not sessions/ itself"),
     ("gemini", "gemini_dir", _TREE, "tmp/*/chats/**/*.json*", "**/*.json*", "--gemini-dir/$GEMINI_CLI_HOME want the .gemini HOME holding tmp/, not a chats directory"),
     ("antigravity", "antigravity_dir", _TREE, "antigravity*/conversations/*.db", "**/*.db", "--antigravity-dir wants the .gemini HOME holding antigravity/, not a conversations directory"),
-    ("bahulam", "bahulam_dir", _TREE, "**/*.jsonl", "", "Bahulam Code writes transcripts under ~/.bahulam/projects; it honors $BAHULAM_PROJECTS_DIR, or pass --bahulam-dir"),
+    ("bahulam", "bahulam_dir", _TREE, "**/*.jsonl", "", "Bahulam Code writes transcripts under ~/.bahulam/projects; it honors $BAHULAM_PROJECTS_DIR, $BAHULAM_HOME, or $KEPLER_HOME, or pass --bahulam-dir"),
 )  # fmt: skip
 
 

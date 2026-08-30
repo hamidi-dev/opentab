@@ -183,7 +183,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         "--bahulam-dir",
         default=_default_bahulam_dir(),
         help="Bahulam Code projects directory (for --harness bahulam); "
-        "honors $BAHULAM_PROJECTS_DIR, default ~/.bahulam/projects",
+        "honors $BAHULAM_PROJECTS_DIR, then $BAHULAM_HOME/projects; default ~/.bahulam/projects",
     )
     parser.add_argument(
         "--csv",

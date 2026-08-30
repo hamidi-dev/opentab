@@ -104,9 +104,16 @@ def _default_zaly_dir() -> str:
 
 
 def _default_bahulam_dir() -> str:
-    """Return the default Bahulam Code projects directory from env or ``~/.bahulam/projects``."""
+    """Return the default Bahulam Code projects directory."""
     env = (os.environ.get("BAHULAM_PROJECTS_DIR") or "").strip()
-    return env or os.path.expanduser("~/.bahulam/projects")
+    if env:
+        return env
+    home = (os.environ.get("BAHULAM_HOME") or "").strip()
+    return (
+        os.path.join(os.path.expanduser(home), "projects")
+        if home
+        else os.path.expanduser("~/.bahulam/projects")
+    )
 
 
 _PATH_SLOT = {
@@ -567,7 +574,8 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
     if key == "bahulam":
         if not _bahulam_available(getattr(args, "bahulam_dir", "")):
             raise SystemExit(
-                "No Bahulam Code sessions found. Point --bahulam-dir (or $BAHULAM_PROJECTS_DIR) "
+                "No Bahulam Code sessions found. Point --bahulam-dir (or $BAHULAM_PROJECTS_DIR / "
+                "$BAHULAM_HOME) "
                 f"at ~/.bahulam/projects (looked in {getattr(args, 'bahulam_dir', '')})."
             )
         return BahulamStore(args.bahulam_dir, args), "OpenTab: loading Bahulam Code sessions…\r"

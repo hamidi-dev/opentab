@@ -189,3 +189,12 @@ def test_a_real_opencode_db_is_still_detected_and_opened():
         assert "opencode" in ot.sources.available_sources(_parse(["--db", db]))
         store = ot.sources.make_store(_parse(["--db", db, "--source", "opencode"]), "opencode")[0]
         assert store.workflows() == []
+
+
+def test_bahulam_default_dir_honors_current_home_env(monkeypatch):
+    monkeypatch.delenv("BAHULAM_PROJECTS_DIR", raising=False)
+    monkeypatch.setenv("BAHULAM_HOME", "/tmp/bahulam-home")
+    assert ot.sources._default_bahulam_dir() == "/tmp/bahulam-home/projects"
+
+    monkeypatch.setenv("BAHULAM_PROJECTS_DIR", "/tmp/bahulam-projects")
+    assert ot.sources._default_bahulam_dir() == "/tmp/bahulam-projects"
