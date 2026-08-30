@@ -1,5 +1,5 @@
 {
- "fetched_at": "2026-08-29T10:48:51Z",
+ "fetched_at": "2026-08-30T07:40:05Z",
  "providers": {
   "302ai": {
    "models": {
@@ -1879,6 +1879,83 @@
    },
    "name": "abliteration.ai"
   },
+  "above": {
+   "models": {
+    "deepseek-v4-flash": {
+     "cost": [
+      0.242,
+      0.726,
+      0.0077,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "deepseek-v4-flash-vision-exp": {
+     "cost": [
+      0.242,
+      0.726,
+      0.0077,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "deepseek-v4-pro": {
+     "cost": [
+      0.726,
+      2.178,
+      0.0242,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "glm-5.2": {
+     "cost": [
+      1.54,
+      4.84,
+      0.154,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "glm-5.2-fast": {
+     "cost": [
+      2.31,
+      7.26,
+      0.231,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "mimo-v2.5-pro": {
+     "cost": [
+      0.5077,
+      1.0154,
+      0.0042,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "mimo-v2.5-pro-ultraspeed": {
+     "cost": [
+      1.5231,
+      3.0462,
+      0.0127,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "qwen3.8-max": {
+     "cost": [
+      2.2,
+      6.6,
+      0.275,
+      0.0
+     ],
+     "limit": 1000000
+    }
+   },
+   "name": "above.dev"
+  },
   "agnes": {
    "models": {
     "agnes-2.0-flash": {
@@ -2035,11 +2112,29 @@
      ],
      "limit": 262144
     },
+    "qwen/qwen3.8-27b": {
+     "cost": [
+      0.4,
+      3.0,
+      0.2,
+      0.0
+     ],
+     "limit": 262144
+    },
     "zai-org/glm-5.2": {
      "cost": [
       1.0,
       4.0,
       0.0,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "zai-org/glm-5.3": {
+     "cost": [
+      1.0,
+      4.0,
+      0.3,
       0.0
      ],
      "limit": 1048576
@@ -8117,6 +8212,29 @@
    },
    "name": "Berget.AI"
   },
+  "bothub": {
+   "models": {
+    "gemma-4-31b-it:free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "nemotron-3-ultra-550b-a55b:free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    }
+   },
+   "name": "Bothub"
+  },
   "cerebras": {
    "models": {
     "gemma-4-31b": {
@@ -10425,6 +10543,15 @@
      ],
      "limit": 1000000
     },
+    "glm-5.3": {
+     "cost": [
+      0.4,
+      1.4,
+      0.06,
+      0.0
+     ],
+     "limit": 1000000
+    },
     "glm-5.3-flash": {
      "cost": [
       0.07,
@@ -12403,6 +12530,15 @@
      ],
      "limit": 262144
     },
+    "glm-5.3": {
+     "cost": [
+      1.4,
+      4.4,
+      0.26,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "glm-5.3-flash": {
      "cost": [
       0.15,
@@ -13619,7 +13755,7 @@
     "flexai/Muse-Glimmer-30B": {
      "cost": [
       0.3,
-      1.2,
+      1.1,
       0.0,
       0.0
      ],
@@ -13899,7 +14035,7 @@
      "cost": [
       0.3,
       0.9,
-      0.0,
+      0.03,
       0.0
      ],
      "limit": 256000
@@ -13962,7 +14098,7 @@
      "cost": [
       1.5,
       7.5,
-      0.0,
+      0.15,
       0.0
      ],
      "limit": 262144
@@ -13971,7 +14107,7 @@
      "cost": [
       1.5,
       7.5,
-      0.0,
+      0.15,
       0.0
      ],
      "limit": 262144
@@ -13989,7 +14125,7 @@
      "cost": [
       0.15,
       0.6,
-      0.0,
+      0.015,
       0.0
      ],
      "limit": 262144
@@ -16183,6 +16319,15 @@
      ],
      "limit": 1000000
     },
+    "accounts/fireworks/models/glm-5p3-flash": {
+     "cost": [
+      0.15,
+      0.5,
+      0.029,
+      0.0
+     ],
+     "limit": 1000000
+    },
     "accounts/fireworks/models/gpt-oss-120b": {
      "cost": [
       0.15,
@@ -16444,6 +16589,15 @@
       0.0
      ],
      "limit": 1000000
+    },
+    "zai-org/GLM-5.3": {
+     "cost": [
+      1.4,
+      4.4,
+      0.26,
+      0.0
+     ],
+     "limit": 1048576
     }
    },
    "name": "Friendli"
@@ -23799,9 +23953,9 @@
     },
     "google/gemma-4-31b-it": {
      "cost": [
-      0.07,
-      0.35,
-      0.1,
+      0.09,
+      0.34,
+      0.05,
       0.0
      ],
      "limit": 262144
@@ -26190,7 +26344,7 @@
       0.26,
       0.0
      ],
-     "limit": 202752
+     "limit": 200000
     },
     "z-ai/glm-5.2": {
      "cost": [
@@ -26267,8 +26421,8 @@
     "~deepseek/deepseek-v4-flash-latest": {
      "cost": [
       0.03,
-      0.1,
-      0.007,
+      0.16,
+      0.01,
       0.0
      ],
      "limit": 1048576
@@ -26329,12 +26483,12 @@
     },
     "~z-ai/glm-latest": {
      "cost": [
-      1.2,
-      4.0,
-      0.24,
+      1.1875,
+      4.18,
+      0.247,
       0.0
      ],
-     "limit": 1048576
+     "limit": 262144
     }
    },
    "name": "Kilo Gateway"
@@ -26379,6 +26533,41 @@
     }
    },
    "name": "Kimi For Coding"
+  },
+  "klokintegration": {
+   "models": {
+    "Kloker": {
+     "cost": [
+      0.23,
+      1.16,
+      0.0,
+      0.0
+     ],
+     "limit": 200000,
+     "status": "beta"
+    },
+    "Kloker-Integration-Architect": {
+     "cost": [
+      0.23,
+      1.16,
+      0.0,
+      0.0
+     ],
+     "limit": 200000,
+     "status": "beta"
+    },
+    "Kloker-Integration-Developer": {
+     "cost": [
+      0.23,
+      1.16,
+      0.0,
+      0.0
+     ],
+     "limit": 200000,
+     "status": "beta"
+    }
+   },
+   "name": "klokintegration.se"
   },
   "kosmik": {
    "models": {
@@ -27009,9 +27198,9 @@
     },
     "glm-5.3": {
      "cost": [
-      1.4,
-      4.4,
-      0.26,
+      1.3,
+      4.0,
+      0.25,
       0.0
      ],
      "limit": 1048576
@@ -31149,6 +31338,15 @@
       1.99,
       6.16,
       0.4,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "scx-ai-gp/glm-5.3": {
+     "cost": [
+      1.3,
+      4.0,
+      0.25,
       0.0
      ],
      "limit": 1000000
@@ -35773,7 +35971,7 @@
      ],
      "limit": 16384
     },
-    "abliterated-model": {
+    "abliteration-ai/abliterated-model": {
      "cost": [
       3.0,
       3.0,
@@ -35782,7 +35980,7 @@
      ],
      "limit": 262144
     },
-    "abliterated-model-large": {
+    "abliteration-ai/abliterated-model-large": {
      "cost": [
       5.0,
       5.0,
@@ -36801,9 +36999,9 @@
     },
     "deepseek/deepseek-v4-flash-vision-exp": {
      "cost": [
-      0.22,
-      0.66,
-      0.007,
+      0.44,
+      1.32,
+      0.014,
       0.0
      ],
      "limit": 1048576
@@ -36852,15 +37050,6 @@
       0.0
      ],
      "limit": 1048576
-    },
-    "dmind/dmind-1-mini": {
-     "cost": [
-      0.2,
-      0.4,
-      0.1,
-      0.0
-     ],
-     "limit": 32768
     },
     "dots-studio/dots-3-note-preview": {
      "cost": [
@@ -37222,6 +37411,150 @@
      ],
      "limit": 262144
     },
+    "gemma-4-26b-a4b-it-chimerax": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-26b-a4b-it-darksoul": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-26b-a4b-it-luminous": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-26b-a4b-it-moonlight": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-26b-a4b-it-musica": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-26b-a4b-it-opusdistill": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-26b-a4b-it-shadowsiren": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-26b-a4b-uncensored": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-26b-a4b-uncensored:thinking": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-31b-it-darkidol": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-31b-it-fabled": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-31b-it-garnet": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-31b-it-gembrain": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-31b-it-gemsicle": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-31b-it-isometry": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
+    "gemma-4-31b-it-novelist": {
+     "cost": [
+      0.08,
+      0.33,
+      0.04,
+      0.0
+     ],
+     "limit": 262144
+    },
     "gemma-4-e2b-it": {
      "cost": [
       0.02,
@@ -37240,47 +37573,11 @@
      ],
      "limit": 131072
     },
-    "glm-4": {
-     "cost": [
-      14.994,
-      14.994,
-      7.497,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "glm-4-air": {
-     "cost": [
-      0.2006,
-      0.2006,
-      0.1003,
-      0.0
-     ],
-     "limit": 128000
-    },
     "glm-4-air-0111": {
      "cost": [
       0.1394,
       0.1394,
       0.0697,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "glm-4-airx": {
-     "cost": [
-      2.006,
-      2.006,
-      1.003,
-      0.0
-     ],
-     "limit": 8000
-    },
-    "glm-4-flash": {
-     "cost": [
-      0.1003,
-      0.1003,
-      0.05015,
       0.0
      ],
      "limit": 128000
@@ -37293,15 +37590,6 @@
       0.0
      ],
      "limit": 1000000
-    },
-    "glm-4-plus": {
-     "cost": [
-      7.497,
-      7.497,
-      3.7485,
-      0.0
-     ],
-     "limit": 128000
     },
     "glm-4-plus-0111": {
      "cost": [
@@ -37347,15 +37635,6 @@
       0.0
      ],
      "limit": 32000
-    },
-    "glm-zero-preview": {
-     "cost": [
-      1.802,
-      1.802,
-      0.901,
-      0.0
-     ],
-     "limit": 8000
     },
     "google/gemini-3-flash-preview": {
      "cost": [
@@ -37501,69 +37780,6 @@
      ],
      "limit": 262144
     },
-    "google/gemma-4-26b-a4b-it-chimerax": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-26b-a4b-it-darksoul": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-26b-a4b-it-luminous": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-26b-a4b-it-moonlight": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-26b-a4b-it-musica": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-26b-a4b-it-opusdistill": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-26b-a4b-it-shadowsiren": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
     "google/gemma-4-26b-a4b-it:thinking": {
      "cost": [
       0.13,
@@ -37573,88 +37789,7 @@
      ],
      "limit": 262144
     },
-    "google/gemma-4-26b-a4b-uncensored": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-26b-a4b-uncensored:thinking": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
     "google/gemma-4-31b-it": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-31b-it-darkidol": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-31b-it-fabled": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-31b-it-garnet": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-31b-it-gembrain": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-31b-it-gemsicle": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-31b-it-isometry": {
-     "cost": [
-      0.08,
-      0.33,
-      0.04,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "google/gemma-4-31b-it-novelist": {
      "cost": [
       0.08,
       0.33,
@@ -37753,15 +37888,6 @@
      ],
      "limit": 32768
     },
-    "hunyuan-turbos-20250226": {
-     "cost": [
-      0.187,
-      0.374,
-      0.0935,
-      0.0
-     ],
-     "limit": 24000
-    },
     "ibm-granite/granite-4.1-8b": {
      "cost": [
       0.05,
@@ -37798,69 +37924,6 @@
      ],
      "limit": 16384
     },
-    "inflection/inflection-3-productivity": {
-     "cost": [
-      2.499,
-      9.996,
-      1.2495,
-      0.0
-     ],
-     "limit": 8000
-    },
-    "jamba-large": {
-     "cost": [
-      1.989,
-      7.99,
-      0.9945,
-      0.0
-     ],
-     "limit": 256000
-    },
-    "jamba-large-1.6": {
-     "cost": [
-      1.989,
-      7.99,
-      0.9945,
-      0.0
-     ],
-     "limit": 256000
-    },
-    "jamba-large-1.7": {
-     "cost": [
-      1.989,
-      7.99,
-      0.9945,
-      0.0
-     ],
-     "limit": 256000
-    },
-    "jamba-mini": {
-     "cost": [
-      0.1989,
-      0.408,
-      0.09945,
-      0.0
-     ],
-     "limit": 256000
-    },
-    "jamba-mini-1.6": {
-     "cost": [
-      0.1989,
-      0.408,
-      0.09945,
-      0.0
-     ],
-     "limit": 256000
-    },
-    "jamba-mini-1.7": {
-     "cost": [
-      0.1989,
-      0.408,
-      0.09945,
-      0.0
-     ],
-     "limit": 256000
-    },
     "kimi-k2-instruct-fast": {
      "cost": [
       0.4,
@@ -37896,15 +37959,6 @@
       0.0
      ],
      "limit": 256000
-    },
-    "learnlm-1.5-pro-experimental": {
-     "cost": [
-      3.502,
-      10.506,
-      1.751,
-      0.0
-     ],
-     "limit": 32767
     },
     "liquid/lfm-2.5-2.6b": {
      "cost": [
@@ -38439,18 +38493,18 @@
     },
     "moonshotai/kimi-k3": {
      "cost": [
-      2.5,
-      13.5,
-      0.25,
+      2.0,
+      10.0,
+      0.2,
       0.0
      ],
      "limit": 1048576
     },
     "moonshotai/kimi-latest": {
      "cost": [
-      2.5,
-      13.5,
-      0.25,
+      2.0,
+      10.0,
+      0.2,
       0.0
      ],
      "limit": 1048576
@@ -39108,24 +39162,6 @@
       0.1,
       0.4,
       0.05,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "ornith-ai/ornith-1.5-397b": {
-     "cost": [
-      0.9,
-      3.6,
-      0.045,
-      0.0
-     ],
-     "limit": 262144
-    },
-    "ornith-ai/ornith-1.5-397b:thinking": {
-     "cost": [
-      0.9,
-      3.6,
-      0.045,
       0.0
      ],
      "limit": 262144
@@ -39798,8 +39834,8 @@
     },
     "qwen3.8-27b": {
      "cost": [
-      0.2,
-      1.4,
+      0.15,
+      0.7,
       0.04,
       0.0
      ],
@@ -39807,8 +39843,8 @@
     },
     "qwen3.8-27b:thinking": {
      "cost": [
-      0.2,
-      1.4,
+      0.15,
+      0.7,
       0.04,
       0.0
      ],
@@ -39948,15 +39984,6 @@
       0.0
      ],
      "limit": 32768
-    },
-    "step-r1-v-mini": {
-     "cost": [
-      2.5,
-      11.0,
-      1.25,
-      0.0
-     ],
-     "limit": 128000
     },
     "stepfun-ai/step-3.5-flash": {
      "cost": [
@@ -40264,6 +40291,60 @@
      ],
      "limit": 200000
     },
+    "z-ai/GLM-4.5-Air": {
+     "cost": [
+      0.12,
+      0.8,
+      0.06,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "z-ai/GLM-4.5-Air:thinking": {
+     "cost": [
+      0.12,
+      0.8,
+      0.06,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "z-ai/GLM-4.5:thinking": {
+     "cost": [
+      0.3,
+      1.3,
+      0.15,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "z-ai/GLM-4.6-turbo": {
+     "cost": [
+      1.0,
+      3.0,
+      0.5,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/GLM-4.6-turbo:thinking": {
+     "cost": [
+      1.0,
+      3.0,
+      0.5,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-4.5": {
+     "cost": [
+      0.3,
+      1.3,
+      0.15,
+      0.0
+     ],
+     "limit": 128000
+    },
     "z-ai/glm-4.5v": {
      "cost": [
       0.6,
@@ -40291,11 +40372,146 @@
      ],
      "limit": 200000
     },
+    "z-ai/glm-4.6-original": {
+     "cost": [
+      0.35,
+      1.4,
+      0.175,
+      0.0
+     ],
+     "limit": 256000
+    },
     "z-ai/glm-4.6:thinking": {
      "cost": [
       0.35,
       1.4,
       0.175,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-4.6v": {
+     "cost": [
+      0.3,
+      0.9,
+      0.15,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "z-ai/glm-4.6v-flash-original": {
+     "cost": [
+      0.1,
+      0.4,
+      0.05,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "z-ai/glm-4.6v-original": {
+     "cost": [
+      0.6,
+      0.9,
+      0.3,
+      0.0
+     ],
+     "limit": 128000
+    },
+    "z-ai/glm-4.7": {
+     "cost": [
+      0.2,
+      0.8,
+      0.1,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-4.7-flash": {
+     "cost": [
+      0.07,
+      0.4,
+      0.035,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-4.7-flash-original": {
+     "cost": [
+      0.07,
+      0.4,
+      0.035,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-4.7-flash-original:thinking": {
+     "cost": [
+      0.07,
+      0.4,
+      0.035,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-4.7-flash:thinking": {
+     "cost": [
+      0.07,
+      0.4,
+      0.035,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-4.7-original": {
+     "cost": [
+      0.6,
+      2.2,
+      0.11,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-4.7-original:thinking": {
+     "cost": [
+      0.6,
+      2.2,
+      0.11,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-4.7:thinking": {
+     "cost": [
+      0.2,
+      0.8,
+      0.1,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-5": {
+     "cost": [
+      0.5,
+      2.55,
+      0.13,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-5-original": {
+     "cost": [
+      1.0,
+      3.2,
+      0.2,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-5-original:thinking": {
+     "cost": [
+      1.0,
+      3.2,
+      0.2,
       0.0
      ],
      "limit": 200000
@@ -40308,6 +40524,51 @@
       0.0
      ],
      "limit": 202800
+    },
+    "z-ai/glm-5.1": {
+     "cost": [
+      0.75,
+      2.6,
+      0.15,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-5.1:thinking": {
+     "cost": [
+      0.75,
+      2.6,
+      0.15,
+      0.0
+     ],
+     "limit": 200000
+    },
+    "z-ai/glm-5.2": {
+     "cost": [
+      0.42,
+      1.32,
+      0.078,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "z-ai/glm-5.2:thinking": {
+     "cost": [
+      0.42,
+      1.32,
+      0.078,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "z-ai/glm-5.3": {
+     "cost": [
+      1.0,
+      3.2,
+      0.2,
+      0.0
+     ],
+     "limit": 1048576
     },
     "z-ai/glm-5.3-flash": {
      "cost": [
@@ -40327,6 +40588,24 @@
      ],
      "limit": 262144
     },
+    "z-ai/glm-5.3:thinking": {
+     "cost": [
+      1.0,
+      3.2,
+      0.2,
+      0.0
+     ],
+     "limit": 1048576
+    },
+    "z-ai/glm-5:thinking": {
+     "cost": [
+      0.5,
+      2.55,
+      0.13,
+      0.0
+     ],
+     "limit": 200000
+    },
     "z-ai/glm-5v-turbo": {
      "cost": [
       1.2,
@@ -40345,259 +40624,7 @@
      ],
      "limit": 202800
     },
-    "zai-org/GLM-4.5-Air": {
-     "cost": [
-      0.12,
-      0.8,
-      0.06,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "zai-org/GLM-4.5-Air:thinking": {
-     "cost": [
-      0.12,
-      0.8,
-      0.06,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "zai-org/GLM-4.5:thinking": {
-     "cost": [
-      0.3,
-      1.3,
-      0.15,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "zai-org/GLM-4.6-turbo": {
-     "cost": [
-      1.0,
-      3.0,
-      0.5,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/GLM-4.6-turbo:thinking": {
-     "cost": [
-      1.0,
-      3.0,
-      0.5,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-4.5": {
-     "cost": [
-      0.3,
-      1.3,
-      0.15,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "zai-org/glm-4.6-original": {
-     "cost": [
-      0.35,
-      1.4,
-      0.175,
-      0.0
-     ],
-     "limit": 256000
-    },
-    "zai-org/glm-4.6v": {
-     "cost": [
-      0.3,
-      0.9,
-      0.15,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "zai-org/glm-4.6v-flash-original": {
-     "cost": [
-      0.1,
-      0.4,
-      0.05,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "zai-org/glm-4.6v-original": {
-     "cost": [
-      0.6,
-      0.9,
-      0.3,
-      0.0
-     ],
-     "limit": 128000
-    },
-    "zai-org/glm-4.7": {
-     "cost": [
-      0.2,
-      0.8,
-      0.1,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-4.7-flash": {
-     "cost": [
-      0.07,
-      0.4,
-      0.035,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-4.7-flash-original": {
-     "cost": [
-      0.07,
-      0.4,
-      0.035,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-4.7-flash-original:thinking": {
-     "cost": [
-      0.07,
-      0.4,
-      0.035,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-4.7-flash:thinking": {
-     "cost": [
-      0.07,
-      0.4,
-      0.035,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-4.7-original": {
-     "cost": [
-      0.6,
-      2.2,
-      0.11,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-4.7-original:thinking": {
-     "cost": [
-      0.6,
-      2.2,
-      0.11,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-4.7:thinking": {
-     "cost": [
-      0.2,
-      0.8,
-      0.1,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-5": {
-     "cost": [
-      0.5,
-      2.55,
-      0.13,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-5-original": {
-     "cost": [
-      1.0,
-      3.2,
-      0.2,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-5-original:thinking": {
-     "cost": [
-      1.0,
-      3.2,
-      0.2,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-5.1": {
-     "cost": [
-      0.75,
-      2.6,
-      0.15,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-5.1:thinking": {
-     "cost": [
-      0.75,
-      2.6,
-      0.15,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-5.2": {
-     "cost": [
-      0.42,
-      1.32,
-      0.078,
-      0.0
-     ],
-     "limit": 1048576
-    },
-    "zai-org/glm-5.2:thinking": {
-     "cost": [
-      0.42,
-      1.32,
-      0.078,
-      0.0
-     ],
-     "limit": 1048576
-    },
-    "zai-org/glm-5.3": {
-     "cost": [
-      1.0,
-      3.2,
-      0.2,
-      0.0
-     ],
-     "limit": 1048576
-    },
-    "zai-org/glm-5.3:thinking": {
-     "cost": [
-      1.0,
-      3.2,
-      0.2,
-      0.0
-     ],
-     "limit": 1048576
-    },
-    "zai-org/glm-5:thinking": {
-     "cost": [
-      0.5,
-      2.55,
-      0.13,
-      0.0
-     ],
-     "limit": 200000
-    },
-    "zai-org/glm-latest": {
+    "z-ai/glm-latest": {
      "cost": [
       0.42,
       1.32,
@@ -45713,7 +45740,8 @@
       0.0,
       0.0
      ],
-     "limit": 190000
+     "limit": 190000,
+     "status": "deprecated"
     },
     "hy3-preview-free": {
      "cost": [
@@ -46188,9 +46216,9 @@
     },
     "hy3": {
      "cost": [
-      0.0175,
-      0.0725,
-      0.004375,
+      0.14,
+      0.58,
+      0.035,
       0.0
      ],
      "limit": 256000
@@ -46672,8 +46700,8 @@
     },
     "arcee-ai/trinity-large-thinking": {
      "cost": [
-      0.22,
-      0.85,
+      0.25,
+      0.8,
       0.06,
       0.0
      ],
@@ -46888,18 +46916,18 @@
     },
     "deepseek/deepseek-v4-flash": {
      "cost": [
-      0.08372,
-      0.16744,
-      0.016744,
+      0.08064,
+      0.16128,
+      0.016128,
       0.0
      ],
      "limit": 1048576
     },
     "deepseek/deepseek-v4-flash-0731": {
      "cost": [
-      0.045,
-      0.09,
-      0.009,
+      0.065,
+      0.18,
+      0.016,
       0.0
      ],
      "limit": 1310720
@@ -46915,9 +46943,9 @@
     },
     "deepseek/deepseek-v4-pro": {
      "cost": [
-      0.64032,
-      1.28064,
-      0.05336,
+      0.467886,
+      0.935772,
+      0.038991,
       0.0
      ],
      "limit": 1048576
@@ -48742,9 +48770,9 @@
     },
     "qwen/qwen3-next-80b-a3b-instruct": {
      "cost": [
-      0.1,
+      0.09,
       1.1,
-      0.07,
+      0.0,
       0.0
      ],
      "limit": 262144
@@ -49192,9 +49220,9 @@
     },
     "thinkingmachines/inkling": {
      "cost": [
-      0.95,
+      1.0,
       4.05,
-      0.16,
+      0.17,
       0.0
      ],
      "limit": 1048576
@@ -49417,9 +49445,9 @@
     },
     "z-ai/glm-5.1": {
      "cost": [
-      1.26,
-      3.96,
-      0.234,
+      0.966,
+      3.036,
+      0.1794,
       0.0
      ],
      "limit": 204800
@@ -49508,8 +49536,8 @@
     "~deepseek/deepseek-v4-flash-latest": {
      "cost": [
       0.03,
-      0.1,
-      0.007,
+      0.16,
+      0.01,
       0.0
      ],
      "limit": 1310720
@@ -49570,9 +49598,9 @@
     },
     "~z-ai/glm-latest": {
      "cost": [
-      1.2,
-      4.0,
-      0.24,
+      1.1875,
+      4.18,
+      0.247,
       0.0
      ],
      "limit": 1310720
@@ -50960,6 +50988,15 @@
       1.26,
       3.96,
       0.234,
+      0.0
+     ],
+     "limit": 1000000
+    },
+    "z-ai/glm-5.3-flash": {
+     "cost": [
+      0.075,
+      0.25,
+      0.0,
       0.0
      ],
      "limit": 1000000
@@ -54097,15 +54134,6 @@
      ],
      "limit": 1000000
     },
-    "glm-5.3-flash@eu": {
-     "cost": [
-      0.2,
-      0.5,
-      0.07,
-      0.0
-     ],
-     "limit": 1000000
-    },
     "glm-5.3@eu": {
      "cost": [
       1.75,
@@ -57158,6 +57186,15 @@
       0.0
      ],
      "limit": 524288
+    },
+    "hf:zai-org/GLM-5.3-Flash": {
+     "cost": [
+      0.15,
+      0.5,
+      0.04,
+      0.0
+     ],
+     "limit": 524288
     }
    },
    "name": "Synthetic"
@@ -57962,6 +57999,15 @@
      ],
      "limit": 512000
     },
+    "zai-org/GLM-5.3": {
+     "cost": [
+      1.4,
+      4.4,
+      0.26,
+      0.0
+     ],
+     "limit": 1048576
+    },
     "zai-org/GLM-5.3-Flash": {
      "cost": [
       0.15,
@@ -58095,6 +58141,20 @@
     }
    },
    "name": "TokenGo"
+  },
+  "tokenrouter": {
+   "models": {
+    "z-ai/glm-5.3-free": {
+     "cost": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+     ],
+     "limit": 1000000
+    }
+   },
+   "name": "TokenRouter"
   },
   "umans-ai": {
    "models": {
