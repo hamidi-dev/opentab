@@ -112,6 +112,26 @@ def test_web_payload_carries_both_cost_snapshots():
     assert payload["nodes"] == {}  # no subagents -> no per-session tree queries
 
 
+def test_web_payload_and_page_carry_the_blocking_startup_warning():
+    app = app_with([workflow("w1", "2026-05-01 10:00:00")])
+    warning = {
+        "id": "claude-retention-v1",
+        "title": "WARNING · Claude Code history expires",
+        "headline": "Claude Code will delete local transcripts after 30 days.",
+        "lines": ["OpenTab cannot recover them.", "", '"cleanupPeriodDays": 3650'],
+    }
+    app.offer_startup_warning(warning, can_persist=False)
+
+    payload = ot.build_payload(app)
+    assert payload["warning"] == warning
+    page = ot.render_html(payload)
+    assert 'id="startup-warning"' in page
+    assert "Data loss risk" in page
+    assert "function renderStartupWarning()" in page
+    assert "if (STARTUP_WARNING)" in page
+    assert "Claude Code will delete local transcripts after 30 days." in page
+
+
 def test_web_payload_embeds_nodes_and_reprices_unpriced_ones():
     w = workflow("w1", "2026-05-01 10:00:00", cost=2.0, directory="/tmp/alpha")
     w.subagents = 1

@@ -132,7 +132,8 @@ write against, and the merged view.
 > [!WARNING]
 > Claude Code deletes local transcripts after **30 days by default**. When one disappears,
 > its session and usage disappear from OpenTab too; “all time” can only mean what remains
-> on disk. OpenTab warns once and `opentab doctor` reports the setting. For long history,
+> on disk. The TUI warns once, web reports warn when opened, and `opentab doctor` reports
+> the setting. For long history,
 > add `"cleanupPeriodDays": 3650` to `$CLAUDE_CONFIG_DIR/settings.json` (default:
 > `~/.claude/settings.json`).
 

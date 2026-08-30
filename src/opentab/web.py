@@ -261,6 +261,7 @@ def build_payload(app: App) -> dict:
     }
     return {
         "meta": meta,
+        "warning": app.startup_warning,
         "workflows": workflows,
         "models": models,
         "nodes": nodes,

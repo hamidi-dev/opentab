@@ -1637,6 +1637,9 @@ def web_command(args: argparse.Namespace) -> int:
         app._refresh_backend = _make_refresh_fn(args)
     if use_state:
         apply_state(app, args, state)
+    if not args.demo and (source_key == "claude" or os.path.isdir(args.claude_dir)):
+        # The browser can close this report's modal but cannot write OpenTab's state.
+        _offer_claude_retention_warning(app, can_persist=False)
     app._ensure_models()
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()

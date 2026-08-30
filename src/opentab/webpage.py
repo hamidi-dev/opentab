@@ -50,6 +50,7 @@ _SHELL = """<!DOCTYPE html>
 <div id="rangepick" hidden></div>
 <div id="whatifpick" hidden></div>
 <div id="themepick" hidden></div>
+<div id="startup-warning" hidden role="dialog" aria-modal="true" aria-labelledby="startup-warning-title"></div>
 <div id="tip" hidden></div>
 <script type="application/json" id="opentab-data">__PAYLOAD__</script>
 <script>__JS__</script>
@@ -392,6 +393,26 @@ table.prices .tag{color:var(--mut);font-size:11px;margin-left:7px}
 .th-name{flex:1;overflow:hidden;text-overflow:ellipsis}
 .th-mode{color:var(--mut);font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;flex:none}
 
+#startup-warning{position:fixed;inset:0;z-index:300;background:var(--scrim);display:flex;
+  align-items:center;justify-content:center;padding:24px;overflow-y:auto}
+#startup-warning[hidden]{display:none}
+.sw-panel{width:min(680px,100%);text-align:center;background:var(--panel);border:2px solid var(--bad);
+  border-radius:10px;padding:28px 32px 26px;box-shadow:0 16px 60px rgba(0,0,0,.7),
+  0 0 34px color-mix(in srgb,var(--bad) 24%,transparent);animation:rise .18s ease both}
+.sw-risk{display:inline-block;padding:3px 12px;margin-bottom:14px;border-radius:3px;background:var(--bad);
+  color:var(--bg);font-size:10px;font-weight:800;letter-spacing:.18em;text-transform:uppercase}
+.sw-panel h2{color:var(--bad);font-size:16px;line-height:1.3;margin-bottom:12px;text-transform:uppercase;
+  letter-spacing:.06em}
+.sw-head{color:var(--ink);font-size:14px;font-weight:700;margin-bottom:16px}
+.sw-body{color:var(--ink2);font-size:12.5px}
+.sw-body p{overflow-wrap:anywhere}
+.sw-gap{height:12px}
+.sw-continue{font:inherit;font-size:12px;font-weight:700;margin-top:22px;padding:8px 18px;border:1px solid var(--bad);
+  border-radius:5px;background:var(--bad);color:var(--bg);cursor:pointer}
+.sw-continue:hover{filter:brightness(1.08)}
+.sw-key{display:block;color:var(--mut);font-size:10.5px;margin-top:9px}
+@media (max-width:600px){.sw-panel{padding:24px 18px 22px}.sw-panel h2{font-size:14px}}
+
 .meta{display:grid;grid-template-columns:auto 1fr;gap:2px 16px;font-size:12px;margin-bottom:2px}
 .meta dt{color:var(--mut);text-transform:uppercase;font-size:10px;letter-spacing:.1em;padding-top:2px}
 .meta dd{color:var(--ink2);overflow-wrap:anywhere}
@@ -403,6 +424,7 @@ _JS = r"""
 'use strict';
 const DATA = JSON.parse(document.getElementById('opentab-data').textContent);
 const META = DATA.meta;
+let STARTUP_WARNING = DATA.warning || null;
 // Range filtering must not hide a directly linked session.
 const ALL_W = DATA.workflows;
 let W = ALL_W;
@@ -453,6 +475,23 @@ function renderTheme() {
     h('div', { class: 'th-grid' }, rows));
   panel.addEventListener('click', e => e.stopPropagation());
   host.appendChild(panel);
+}
+
+function closeStartupWarning() { STARTUP_WARNING = null; renderStartupWarning(); }
+function renderStartupWarning() {
+  const host = document.getElementById('startup-warning');
+  if (!STARTUP_WARNING) { host.hidden = true; host.textContent = ''; return; }
+  const w = STARTUP_WARNING;
+  const body = (Array.isArray(w.lines) ? w.lines : []).map(line => line
+    ? h('p', null, String(line)) : h('div', { class: 'sw-gap' }));
+  host.hidden = false; host.textContent = '';
+  host.appendChild(h('div', { class: 'sw-panel' },
+    h('div', { class: 'sw-risk' }, 'Data loss risk'),
+    h('h2', { id: 'startup-warning-title' }, w.title || 'Data retention warning'),
+    h('p', { class: 'sw-head' }, w.headline || 'History may expire.'),
+    h('div', { class: 'sw-body' }, body),
+    h('button', { class: 'sw-continue', onclick: closeStartupWarning, autofocus: true }, 'Continue for now'),
+    h('span', { class: 'sw-key' }, 'Enter / Esc')));
 }
 
 let TAB = 'Overview';
@@ -2618,6 +2657,10 @@ document.addEventListener('keydown', e => {
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   // Keyboard dispatch must follow visual overlay stacking order.
+  if (STARTUP_WARNING) {
+    if (e.key === 'Enter' || e.key === 'Escape') closeStartupWarning();
+    e.preventDefault(); return;
+  }
   if (THEMEPICK) { if (e.key === 'Escape' || e.key === 'C') closeTheme(); e.preventDefault(); return; }
   if (WHATIF.open) {
     const rows = whatifShown();
@@ -2730,6 +2773,7 @@ function render(scrollTop = true) {
   renderRange();
   renderWhatif();
   renderTheme();
+  renderStartupWarning();
   if (scrollTop) window.scrollTo(0, 0);
 }
 document.getElementById('trends').addEventListener('click', closeTrends);

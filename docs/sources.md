@@ -111,7 +111,7 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 - **Reads** `~/.claude/projects/**/*.jsonl` (`--claude-dir`).
 - **Retention warning**: Claude Code deletes transcripts after 30 days by default. Once
   the source file is gone, OpenTab cannot report or reconstruct its usage. The TUI warns
-  once and `opentab doctor` keeps reporting short retention; set
+  once, web reports warn when opened, and `opentab doctor` keeps reporting short retention; set
   `"cleanupPeriodDays": 3650` in `$CLAUDE_CONFIG_DIR/settings.json` (default:
   `~/.claude/settings.json`) for long history.
 - **Cost**: Claude Code records tokens but no per-message cost — sessions show `$0`
