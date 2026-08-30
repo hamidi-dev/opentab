@@ -5275,9 +5275,14 @@ class Renderer:
             ("", 0),
         ]
         lines += [(text, curses.A_NORMAL) for text in warning.get("lines", [])]
+        queued = len(self.startup_warnings()) - 1
         lines += [
             ("", 0),
-            (f"{self._keys('prompt.warning', 'continue')}  continue for now", accent),
+            (
+                f"{self._keys('prompt.warning', 'continue')}  continue for now"
+                + (f"  ({queued} more warning{'s' if queued > 1 else ''})" if queued > 0 else ""),
+                accent,
+            ),
             (
                 f"{self._key('prompt.warning', 'never')}  "
                 + (

@@ -93,6 +93,39 @@ def test_startup_warning_is_prominent_dismissible_and_prioritized_over_price_pro
     assert not no_state.dismissed_startup_warnings and "--no-state" in no_state.notice
 
 
+def test_startup_warnings_queue_so_a_second_harness_is_never_hidden():
+    app = app_with([])
+    first = {"id": "claude-retention-v1", "title": "Claude", "headline": "a", "lines": []}
+    second = {"id": "gemini-retention-v1", "title": "Gemini", "headline": "b", "lines": []}
+    app.offer_startup_warning(first)
+    app.offer_startup_warning(second)
+    app.offer_startup_warning(dict(second))  # already queued -- never twice
+    assert app.startup_warnings() == [first, second]
+
+    screen = FakeScreen(24, 90)
+    real_pair = ot.curses.color_pair
+    ot.curses.color_pair = lambda _n: 0
+    try:
+        app.renderer.draw_startup_warning(screen, 24, 90)
+    finally:
+        ot.curses.color_pair = real_pair
+    assert "(1 more warning)" in screen_text(screen)
+
+    # "continue" advances rather than clearing the queue: it dismisses nothing.
+    app.handle_key(None, 10)
+    assert app.startup_warning == second and not app.dismissed_startup_warnings
+    app.handle_key(None, ord("d"))
+    assert app.startup_warning is None
+    assert app.dismissed_startup_warnings == {"gemini-retention-v1"}
+
+    # A dismissed id stays out of the queue while the other still shows.
+    later = app_with([])
+    later.dismissed_startup_warnings = {"gemini-retention-v1"}
+    later.offer_startup_warning(first)
+    later.offer_startup_warning(second)
+    assert later.startup_warnings() == [first]
+
+
 def test_frame_draws_the_heavy_box_without_hline():
     renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
     screen = FakeScreen(height=10, width=20)

@@ -424,7 +424,8 @@ _JS = r"""
 'use strict';
 const DATA = JSON.parse(document.getElementById('opentab-data').textContent);
 const META = DATA.meta;
-let STARTUP_WARNING = DATA.warning || null;
+// A queue: several harnesses can expire history at once. Shown one at a time.
+let STARTUP_WARNINGS = (DATA.warnings || []).slice();
 // Range filtering must not hide a directly linked session.
 const ALL_W = DATA.workflows;
 let W = ALL_W;
@@ -477,11 +478,12 @@ function renderTheme() {
   host.appendChild(panel);
 }
 
-function closeStartupWarning() { STARTUP_WARNING = null; renderStartupWarning(); }
+function closeStartupWarning() { STARTUP_WARNINGS.shift(); renderStartupWarning(); }
 function renderStartupWarning() {
   const host = document.getElementById('startup-warning');
-  if (!STARTUP_WARNING) { host.hidden = true; host.textContent = ''; return; }
-  const w = STARTUP_WARNING;
+  const w = STARTUP_WARNINGS[0];
+  if (!w) { host.hidden = true; host.textContent = ''; return; }
+  const more = STARTUP_WARNINGS.length - 1;
   const body = (Array.isArray(w.lines) ? w.lines : []).map(line => line
     ? h('p', null, String(line)) : h('div', { class: 'sw-gap' }));
   host.hidden = false; host.textContent = '';
@@ -490,7 +492,8 @@ function renderStartupWarning() {
     h('h2', { id: 'startup-warning-title' }, w.title || 'Data retention warning'),
     h('p', { class: 'sw-head' }, w.headline || 'History may expire.'),
     h('div', { class: 'sw-body' }, body),
-    h('button', { class: 'sw-continue', onclick: closeStartupWarning, autofocus: true }, 'Continue for now'),
+    h('button', { class: 'sw-continue', onclick: closeStartupWarning, autofocus: true },
+      more > 0 ? 'Continue (' + more + ' more)' : 'Continue for now'),
     h('span', { class: 'sw-key' }, 'Enter / Esc')));
 }
 
@@ -2657,7 +2660,7 @@ document.addEventListener('keydown', e => {
   }
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   // Keyboard dispatch must follow visual overlay stacking order.
-  if (STARTUP_WARNING) {
+  if (STARTUP_WARNINGS.length) {
     if (e.key === 'Enter' || e.key === 'Escape') closeStartupWarning();
     e.preventDefault(); return;
   }

@@ -120,16 +120,20 @@ def test_web_payload_and_page_carry_the_blocking_startup_warning():
         "headline": "Claude Code will delete local transcripts after 30 days.",
         "lines": ["OpenTab cannot recover them.", "", '"cleanupPeriodDays": 3650'],
     }
+    second = dict(warning, id="gemini-retention-v1", headline="Gemini CLI deletes after 30 days.")
     app.offer_startup_warning(warning, can_persist=False)
+    app.offer_startup_warning(second, can_persist=False)
 
     payload = ot.build_payload(app)
-    assert payload["warning"] == warning
+    # Both travel, in order: the page shows them one at a time, like the TUI queue.
+    assert payload["warnings"] == [warning, second]
     page = ot.render_html(payload)
     assert 'id="startup-warning"' in page
     assert "Data loss risk" in page
     assert "function renderStartupWarning()" in page
-    assert "if (STARTUP_WARNING)" in page
+    assert "if (STARTUP_WARNINGS.length)" in page
     assert "Claude Code will delete local transcripts after 30 days." in page
+    assert "Gemini CLI deletes after 30 days." in page
 
 
 def test_web_payload_embeds_nodes_and_reprices_unpriced_ones():

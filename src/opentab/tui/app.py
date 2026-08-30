@@ -364,6 +364,10 @@ class App:
         self.prices_prompt_dismissed = False
         self.allow_price_prompt = True
         self.startup_warning: dict | None = None
+        # Warnings queue rather than overwrite: two harnesses can expire history at
+        # once, and a single slot would hide the second until the first was dismissed
+        # for good -- which plain "continue" never does.
+        self._pending_warnings: list[dict] = []
         self.startup_warning_can_persist = True
         self.dismissed_startup_warnings: set[str] = set()
         self.unknown_models: list[str] = []
@@ -2207,25 +2211,40 @@ class App:
         self.unknown_models = unknown
         self.price_prompt = True
 
+    def startup_warnings(self) -> list[dict]:
+        """The warning on screen plus the ones queued behind it, in order."""
+        shown = [self.startup_warning] if self.startup_warning is not None else []
+        return shown + list(self._pending_warnings)
+
     def offer_startup_warning(self, warning: dict, can_persist: bool = True) -> None:
         warning_id = warning.get("id")
         if not isinstance(warning_id, str) or not warning_id:
             return
         if warning_id in self.dismissed_startup_warnings:
             return
-        self.startup_warning = dict(warning)
+        if any(queued.get("id") == warning_id for queued in self.startup_warnings()):
+            return
+        # Every offer in a launch shares one persistence rule (the state file is either
+        # writable or it isn't), so the flag is per-app rather than per-warning.
         self.startup_warning_can_persist = can_persist
+        if self.startup_warning is None:
+            self.startup_warning = dict(warning)
+        else:
+            self._pending_warnings.append(dict(warning))
+
+    def _next_startup_warning(self) -> None:
+        self.startup_warning = self._pending_warnings.pop(0) if self._pending_warnings else None
 
     def handle_startup_warning_key(self, key: int | str) -> bool:
         if key == 3:  # Ctrl-C still quits
             return False
         act = self.keymap.action("prompt.warning", key)
         if act == "continue":
-            self.startup_warning = None
+            self._next_startup_warning()
         elif act == "never":
             warning = self.startup_warning or {}
             warning_id = warning.get("id")
-            self.startup_warning = None
+            self._next_startup_warning()
             if self.startup_warning_can_persist and isinstance(warning_id, str):
                 self.dismissed_startup_warnings.add(warning_id)
                 self.notice = "warning dismissed — doctor will still report the retention"
