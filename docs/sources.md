@@ -125,7 +125,10 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 
 *Rollout JSONL · tokens only, `$` estimates*
 
-- **Reads** `~/.codex/sessions/**/rollout-*.jsonl` (`--codex-dir`).
+- **Reads** `~/.codex/sessions/**/rollout-*.jsonl` (`--codex-dir`), plus the sibling
+  `~/.codex/archived_sessions/` — archiving a thread *moves* its rollout there rather
+  than deleting it, so its spend stays in view (and an install whose threads are *all*
+  archived is still found). Codex itself expires nothing.
 - **Cost**: tokens only, like Claude Code — `$0` recorded, estimated under `$`.
 - **Notes**: Codex logs a *cumulative* token counter, twice per turn — OpenTab derives
   per-turn deltas from it, skips the duplicate echoes, and detects context-compaction

@@ -15,7 +15,7 @@ from opentab.stores.antigravity import (
 from opentab.stores.antigravity import AntigravityStore, default_antigravity_dir
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import ClaudeStore
-from opentab.stores.codex import CodexStore
+from opentab.stores.codex import CodexStore, codex_archive_dirs
 from opentab.stores.combined import CombinedStore
 from opentab.stores.copilot import CopilotStore
 from opentab.stores.csv_source import CsvStore
@@ -172,6 +172,15 @@ def _jsonl_dir_available(directory: str) -> bool:
         return False
     return (
         next(glob.iglob(os.path.join(directory, "**", "*.jsonl"), recursive=True), None) is not None
+    )
+
+
+def _codex_available(sessions_dir: str) -> bool:
+    # Archiving every live thread leaves sessions/ empty (or absent) while the rollouts
+    # sit in the sibling archive the store also reads, so ask about the same roots.
+    return any(
+        _jsonl_dir_available(directory)
+        for directory in [sessions_dir, *codex_archive_dirs(sessions_dir)]
     )
 
 
@@ -357,7 +366,7 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("opencode")
     if _jsonl_dir_available(args.claude_dir):
         keys.append("claude")
-    if _jsonl_dir_available(getattr(args, "codex_dir", "")):
+    if _codex_available(getattr(args, "codex_dir", "")):
         keys.append("codex")
     if os.path.exists(getattr(args, "hermes_db", "")):
         keys.append("hermes")
@@ -457,7 +466,8 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
             raise SystemExit(f"Claude Code projects directory not found: {args.claude_dir}")
         return ClaudeStore(args.claude_dir, args), "OpenTab: loading Claude Code sessions…\r"
     if key == "codex":
-        if not os.path.isdir(args.codex_dir):
+        # An all-archived install has no sessions/ at all; the store still reads it.
+        if not os.path.isdir(args.codex_dir) and not codex_archive_dirs(args.codex_dir):
             raise SystemExit(f"Codex sessions directory not found: {args.codex_dir}")
         return CodexStore(args.codex_dir, args), "OpenTab: loading Codex sessions…\r"
     if key == "hermes":

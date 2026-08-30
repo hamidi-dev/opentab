@@ -725,3 +725,103 @@ def test_codex_a_falsy_or_fractional_component_is_distrusted_too():
     # the rounding defeating the very guard it was being fed to.
     assert ot.CodexStore._cumulative(1 << 53) == 1 << 53
     assert ot.CodexStore._cumulative((1 << 53) + 1) is None
+
+
+def test_an_archived_thread_keeps_its_spend_because_codex_moved_it_not_deleted_it():
+    with tempfile.TemporaryDirectory() as tmp:
+        home = os.path.join(tmp, "codex")
+        live = os.path.join(home, "sessions", "2025", "10", "03")
+        # `codex archive` MOVES the rollout into the sibling archived_sessions/, flat.
+        archived = os.path.join(home, "archived_sessions")
+        os.makedirs(live)
+        os.makedirs(archived)
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        other = "0199aa8e-1b9e-7912-bcd4-9b00c8733eaa"
+        _codex_rollout(
+            live,
+            CODEX_SID,
+            [
+                _codex_meta(CODEX_SID, repo),
+                _codex_turn("gpt-5-codex", repo),
+                _codex_tokens(1000, 100, 800, 1100),
+            ],
+        )
+        _codex_rollout(
+            archived,
+            other,
+            [
+                _codex_meta(other, repo),
+                _codex_turn("gpt-5-codex", repo),
+                _codex_tokens(500, 50, 400, 550),
+            ],
+        )
+
+        args = type("Args", (), {"demo": False})()
+        store = ot.CodexStore(os.path.join(home, "sessions"), args)
+        workflows = {w.id: w for w in store.workflows()}
+        assert set(workflows) == {CODEX_SID, other}
+        assert workflows[other].total_tokens == 550
+        # The archive is fingerprinted too, so archiving invalidates the warm cache.
+        assert any(archived in path for path in store.cache_inputs())
+        # And the status trio resolves an archived id rather than pricing it at $0.
+        assert store.root_of(other) == other
+
+        # A rollout present in BOTH trees (a restored backup) is read once: per-turn
+        # usage is a delta off each file's own cumulative counter, so reading it twice
+        # would report 2200 tokens for 1100 of work.
+        _codex_rollout(
+            archived,
+            CODEX_SID,
+            [
+                _codex_meta(CODEX_SID, repo),
+                _codex_turn("gpt-5-codex", repo),
+                _codex_tokens(1000, 100, 800, 1100),
+            ],
+        )
+        doubled = ot.CodexStore(os.path.join(home, "sessions"), args)
+        assert {w.id: w.total_tokens for w in doubled.workflows()}[CODEX_SID] == 1100
+        assert len(doubled._session_files(CODEX_SID)) == 1
+
+        # An archive that does not exist adds no root, and a store pointed straight at
+        # one does not pair with itself.
+        bare = ot.CodexStore(os.path.join(tmp, "no-such", "sessions"), args)
+        assert bare._roots() == [os.path.join(tmp, "no-such", "sessions")]
+        assert ot.CodexStore(archived, args)._roots() == [archived]
+
+        # A relative --codex-dir still finds its sibling: dirname("sessions") is "".
+        cwd = os.getcwd()
+        os.chdir(home)
+        try:
+            # (getcwd, not `home`: macOS resolves /var to /private/var on chdir.)
+            assert ot.CodexStore("sessions", args)._roots()[1:] == [
+                os.path.join(os.getcwd(), "archived_sessions")
+            ]
+        finally:
+            os.chdir(cwd)
+
+
+def test_a_fully_archived_codex_install_is_still_discovered():
+    # Archiving the last live thread empties sessions/, and availability that looked
+    # only there would drop Codex out of auto/all and out of `opentab cost`.
+    with tempfile.TemporaryDirectory() as tmp:
+        home = os.path.join(tmp, "codex")
+        archived = os.path.join(home, "archived_sessions")
+        os.makedirs(archived)
+        repo = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(repo, ".git"))
+        _codex_rollout(
+            archived,
+            CODEX_SID,
+            [
+                _codex_meta(CODEX_SID, repo),
+                _codex_turn("gpt-5-codex", repo),
+                _codex_tokens(1000, 100, 800, 1100),
+            ],
+        )
+        sessions = os.path.join(home, "sessions")  # never created
+        args = type("Args", (), {"demo": False, "codex_dir": sessions})()
+        assert ot.sources._codex_available(sessions) is True
+        # ...and selecting it explicitly must not be refused for a missing sessions/.
+        store, _loading = ot.sources.make_store(args, "codex")
+        assert [w.id for w in store.workflows()] == [CODEX_SID]

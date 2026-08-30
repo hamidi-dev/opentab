@@ -19,6 +19,23 @@ from opentab.util import (
     tool_rows_from_turns,
 )
 
+# Codex's own ARCHIVED_SESSIONS_SUBDIR, a sibling of the sessions/ tree it moves into.
+ARCHIVED_SUBDIR = "archived_sessions"
+
+
+def codex_archive_dirs(sessions_dir: str) -> list[str]:
+    """The archive beside a Codex sessions tree, if it exists -- else nothing.
+
+    ``abspath`` first: ``--codex-dir sessions`` is a valid relative invocation from
+    ~/.codex, and ``dirname`` of it is "", which would silently drop the sibling.
+    Shared with ``sources`` so availability cannot disagree with what the store reads.
+    """
+    root = os.path.abspath(os.path.expanduser(sessions_dir or ""))
+    archived = os.path.join(os.path.dirname(root), ARCHIVED_SUBDIR)
+    if archived == root or not os.path.isdir(archived):
+        return []
+    return [archived]
+
 
 class CodexStore:
     """Read Codex CLI rollout transcripts.
@@ -105,14 +122,39 @@ class CodexStore:
     def cache_inputs(self) -> list[str]:
         return self._files()
 
+    def _roots(self) -> list[str]:
+        """The sessions tree, plus the sibling archive Codex moves a thread into.
+
+        Archiving a thread MOVES its rollout out of ``sessions/`` into
+        ``<codex home>/archived_sessions/`` (flat, same filename) rather than deleting
+        it, so scanning only the sessions tree drops an archived session's spend from
+        every view while Codex still has the file.
+        """
+        return [self.root_dir] + codex_archive_dirs(self.root_dir)
+
+    def _scan(self, pattern: str) -> list[str]:
+        """Glob every root, keeping one path per rollout FILENAME, live copy first.
+
+        Per-turn usage is a delta off each file's own cumulative counter, so the same
+        rollout read twice adds its tokens twice (measured: 1,100 -> 2,200). A copy in
+        both trees is not something Codex produces -- archiving is a rename, and its
+        rollback renames back -- but a restored backup is, and the filename carries the
+        timestamp and the session id, so it is an exact key. A resumed session's second
+        rollout has a different timestamp and is kept.
+        """
+        seen: dict[str, str] = {}
+        for root in self._roots():
+            for path in glob.glob(os.path.join(root, "**", pattern), recursive=True):
+                seen.setdefault(os.path.basename(path), path)
+        return list(seen.values())
+
     def _files(self) -> list[str]:
-        return glob.glob(os.path.join(self.root_dir, "**", "*.jsonl"), recursive=True)
+        return self._scan("*.jsonl")
 
     def _session_files(self, session_id: str) -> list[str]:
         # A session's rollout is rollout-<timestamp>-<uuid>.jsonl somewhere in the
         # YYYY/MM/DD tree; glob for the uuid so an id resolves without a parse.
-        pattern = os.path.join(self.root_dir, "**", "*" + glob.escape(session_id) + ".jsonl")
-        return glob.glob(pattern, recursive=True)
+        return self._scan("*" + glob.escape(session_id) + ".jsonl")
 
     def _head_meta(self, path: str) -> dict | None:
         # The session_meta at a rollout's head (or the rare legacy bare blob --
