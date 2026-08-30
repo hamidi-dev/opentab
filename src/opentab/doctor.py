@@ -38,6 +38,12 @@ from opentab.stores.claude import (
     claude_config_dir,
     claude_retention,
 )
+from opentab.stores.gemini import (
+    GEMINI_RETENTION_DEFAULT_DAYS,
+    default_gemini_dir,
+    gemini_max_count_label,
+    gemini_retention,
+)
 from opentab.tui import bindings
 from opentab.util import (
     env_flag,
@@ -507,6 +513,35 @@ def harness_rows(args: argparse.Namespace, full: bool = False) -> list[Row]:
                     "Claude retention",
                     f"{_tilde(retention.settings_path, full)} · {detail}",
                     f'add `"cleanupPeriodDays": {CLAUDE_RETENTION_RECOMMENDED_DAYS}`; once Claude deletes a transcript, opentab cannot reconstruct it',
+                )
+            )
+    gemini_dir = getattr(args, "gemini_dir", "") or default_gemini_dir()
+    if "gemini" in present or os.path.isdir(os.path.join(gemini_dir, "tmp")):
+        retention = gemini_retention()
+        if retention.needs_warning:
+            if retention.source == "unverifiable":
+                # Gemini raises FatalConfigError on a settings file it cannot parse, so
+                # the policy is not "the default" -- it is unknown until that is fixed.
+                detail = (
+                    "settings unreadable → Gemini CLI will not start, and the policy is unknown"
+                )
+            elif retention.source == "unknown":
+                detail = "sessionRetention holds a value only Gemini can resolve → cleanup may run"
+            elif retention.source == "workspace":
+                detail = "this project re-enables sessionRetention above your own settings"
+            elif retention.max_count is not None:
+                kept = gemini_max_count_label(retention.max_count)
+                detail = f"sessionRetention.maxCount: {kept} newest sessions per project"
+            elif retention.source == "configured":
+                detail = f"sessionRetention.maxAge: {retention.max_age}"
+            else:
+                detail = f"sessionRetention unset → Gemini CLI default: {GEMINI_RETENTION_DEFAULT_DAYS} days"
+            rows.append(
+                Row(
+                    WARN,
+                    "Gemini retention",
+                    f"{_tilde(retention.settings_path, full)} · {detail}",
+                    'set `"general": {"sessionRetention": {"enabled": false}}`; cleanup runs on every gemini launch and takes subagent transcripts with it',
                 )
             )
     rank = {OK: 0, BAD: 1, WARN: 2, INFO: 3}

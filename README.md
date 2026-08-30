@@ -130,12 +130,19 @@ cumulative counters, the metered-vs-subscription split), the CSV/JSONL schema yo
 write against, and the merged view.
 
 > [!WARNING]
-> Claude Code deletes local transcripts after **30 days by default**. When one disappears,
-> its session and usage disappear from OpenTab too; “all time” can only mean what remains
-> on disk. The TUI warns once, web reports warn when opened, and `opentab doctor` reports
-> the setting. For long history,
-> add `"cleanupPeriodDays": 3650` to `$CLAUDE_CONFIG_DIR/settings.json` (default:
-> `~/.claude/settings.json`).
+> **Two harnesses throw your history away by default.** Claude Code deletes local
+> transcripts after **30 days**, and Gemini CLI deletes chat recordings older than
+> **30 days** on every launch (subagent transcripts included). When one disappears, its
+> session and usage disappear from OpenTab too; “all time” can only mean what remains on
+> disk. The TUI warns once per harness, web reports warn when opened, and `opentab
+> doctor` reports both settings. For long history:
+>
+> - Claude Code — add `"cleanupPeriodDays": 3650` to `$CLAUDE_CONFIG_DIR/settings.json`
+>   (default: `~/.claude/settings.json`).
+> - Gemini CLI — add `"general": {"sessionRetention": {"enabled": false}}` to
+>   `~/.gemini/settings.json`.
+>
+> Every other harness OpenTab reads keeps its records until you delete them.
 
 ## Every machine, one tab
 

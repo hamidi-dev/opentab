@@ -53,6 +53,12 @@ from opentab.stores.claude import (
     claude_projects_dir,
     claude_retention,
 )
+from opentab.stores.gemini import (
+    GEMINI_RETENTION_DEFAULT_DAYS,
+    GEMINI_RETENTION_WARNING_ID,
+    gemini_max_count_label,
+    gemini_retention,
+)
 from opentab.tui import bindings
 from opentab.tui.app import App
 from opentab.util import (
@@ -1588,14 +1594,71 @@ def forget_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _home_path(path: str) -> str:
+    home = os.path.expanduser("~")
+    if path == home or path.startswith(home + os.sep):
+        return "~" + path[len(home) :]
+    return path
+
+
+def _offer_retention_warnings(
+    app: App, args: argparse.Namespace, source_key: str, can_persist: bool
+) -> None:
+    """Queue one warning per present harness that expires its own history.
+
+    Both frontends call this, so the TUI and the report page cannot end up warning
+    about different harnesses. Each harness is gated on its data root existing, not on
+    it having sessions today: the point is to warn while there is still history left.
+    """
+    if getattr(args, "demo", False):
+        return
+    if source_key == "claude" or os.path.isdir(args.claude_dir):
+        _offer_claude_retention_warning(app, can_persist)
+    if source_key == "gemini" or os.path.isdir(os.path.join(args.gemini_dir, "tmp")):
+        _offer_gemini_retention_warning(app, can_persist)
+
+
+def _offer_gemini_retention_warning(app: App, can_persist: bool) -> None:
+    retention = gemini_retention()
+    if not retention.needs_warning:
+        return
+    if retention.source in ("unverifiable", "unknown"):
+        headline = "OpenTab cannot verify when Gemini CLI deletes chat recordings."
+    elif retention.source == "workspace":
+        headline = "A project's Gemini settings switch chat cleanup back on."
+    elif retention.max_count is not None:
+        kept = gemini_max_count_label(retention.max_count)
+        headline = f"Gemini CLI keeps only the newest {kept} sessions per project."
+    elif retention.source == "configured" and retention.max_age:
+        headline = f"Gemini CLI deletes chat recordings after {retention.max_age}."
+    else:
+        headline = (
+            f"Gemini CLI will delete chat recordings after {GEMINI_RETENTION_DEFAULT_DAYS} days."
+        )
+    app.offer_startup_warning(
+        {
+            "id": GEMINI_RETENTION_WARNING_ID,
+            "title": "WARNING · Gemini CLI history expires",
+            "headline": headline,
+            "lines": [
+                "Cleanup runs on every launch and takes the session's subagent",
+                "transcripts with it. Its tokens and cost estimates then leave",
+                "OpenTab for good. 'All time' only covers files on disk.",
+                "",
+                "Keep long-term history:",
+                _home_path(retention.settings_path),
+                '"general": {"sessionRetention": {"enabled": false}}',
+            ],
+        },
+        can_persist=can_persist,
+    )
+
+
 def _offer_claude_retention_warning(app: App, can_persist: bool) -> None:
     retention = claude_retention()
     if not retention.needs_warning:
         return
-    path = retention.settings_path
-    home = os.path.expanduser("~")
-    if path == home or path.startswith(home + os.sep):
-        path = "~" + path[len(home) :]
+    path = _home_path(retention.settings_path)
     if retention.source == "default":
         headline = "Claude Code will delete local transcripts after 30 days."
     elif retention.days is not None:
@@ -1637,9 +1700,8 @@ def web_command(args: argparse.Namespace) -> int:
         app._refresh_backend = _make_refresh_fn(args)
     if use_state:
         apply_state(app, args, state)
-    if not args.demo and (source_key == "claude" or os.path.isdir(args.claude_dir)):
-        # The browser can close this report's modal but cannot write OpenTab's state.
-        _offer_claude_retention_warning(app, can_persist=False)
+    # The browser can close this report's modal but cannot write OpenTab's state.
+    _offer_retention_warnings(app, args, source_key, can_persist=False)
     app._ensure_models()
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()
@@ -1731,8 +1793,7 @@ def main() -> int:
     sys.stderr.flush()
     if use_state:
         apply_state(app, args, state)
-    if not args.demo and (source_key == "claude" or os.path.isdir(args.claude_dir)):
-        _offer_claude_retention_warning(app, can_persist=use_state)
+    _offer_retention_warnings(app, args, source_key, can_persist=use_state)
     # Refresh after apply_state, which clears notices and would erase a notes warning.
     notes_ok = app.refresh_notes()
     app.announce_keymap_warnings()

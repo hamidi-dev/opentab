@@ -1102,3 +1102,267 @@ def test_a_checkpoint_that_edits_the_opening_prompt_retitles_the_session():
         store = _store(root)
         assert store.workflows()[0].title == "new title"
         assert [r["prompt_title"] for r in store.message_timeline(GEMINI_SID)] == ["new title"]
+
+
+def SR(retention):
+    return {"general": {"sessionRetention": retention}}
+
+
+def test_gemini_retention_borrows_the_cli_defaults_and_its_own_validation():
+    old = os.environ.get("GEMINI_CLI_HOME")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["GEMINI_CLI_HOME"] = tmp
+        os.makedirs(os.path.join(tmp, ".gemini"))
+        path = os.path.join(tmp, ".gemini", "settings.json")
+        try:
+            assert ot.gemini_settings_path() == path
+
+            def write(obj):
+                with open(path, "w", encoding="utf-8") as fh:
+                    if isinstance(obj, str):
+                        fh.write(obj)
+                    else:
+                        json.dump(obj, fh)
+
+            def retention(obj=None):
+                if obj is not None:
+                    write(obj)
+                return ot.gemini_retention()
+
+            # getDefaultsFromSchema recurses into `properties`, so cleanup is on at 30d
+            # even when nothing in the file mentions it -- and when the file is missing.
+            missing = ot.gemini_retention()
+            assert (missing.max_age, missing.source) == ("30d", "default")
+            assert missing.deletes and missing.needs_warning
+            for silent in ({}, {"general": {}}, {"general": {"other": 1}}):
+                assert retention(silent).source == "default"
+
+            # A non-object REPLACES the default object, and `!undefined?.enabled` then
+            # disables cleanup -- so an explicit null keeps history rather than meaning
+            # "unset".
+            assert retention({"general": {"sessionRetention": None}}).source == "off"
+
+            # A file Gemini cannot parse is FATAL to it (FatalConfigError), so the
+            # policy is not "the default" -- it is unknown until the file is fixed.
+            broken = retention("{ not json")
+            assert broken.source == "unverifiable" and broken.needs_warning
+
+            # But Gemini strips JSON comments before parsing, so a commented file is
+            # perfectly valid to it and must not read as broken.
+            jsonc = retention(
+                '{ // keep my history\n "general": {"sessionRetention": {"enabled": false}} }'
+            )
+            assert jsonc.source == "off" and not jsonc.needs_warning
+
+            off = retention({"general": {"sessionRetention": {"enabled": False}}})
+            assert off.source == "off" and not off.deletes and not off.needs_warning
+
+            short = retention({"general": {"sessionRetention": {"maxAge": "2w"}}})
+            assert short.max_age_days == 14 and short.source == "configured"
+            assert short.needs_warning
+
+            safe = retention({"general": {"sessionRetention": {"maxAge": "3650d"}}})
+            assert not safe.needs_warning and safe.deletes
+
+            # A count cap deletes the oldest sessions whatever the age allows.
+            capped = retention(
+                {"general": {"sessionRetention": {"maxAge": "3650d", "maxCount": 50}}}
+            )
+            assert capped.max_count == 50 and capped.needs_warning
+
+            # validateRetentionConfig rejects these, which disables cleanup wholesale --
+            # history survives, so there is nothing to warn about.
+            for inert in (
+                {"maxAge": "nonsense"},  # a plain typo: Gemini rejects it too
+                {"maxAge": "0d"},
+                {"maxAge": "12h"},  # below the 1d minRetention floor
+                {"maxAge": None, "maxCount": 0},
+                {"maxAge": None},
+            ):
+                got = retention({"general": {"sessionRetention": inert}})
+                assert got.source == "inert" and not got.deletes and not got.needs_warning
+
+            # A raised floor is honoured the same way.
+            floored = retention(
+                {"general": {"sessionRetention": {"maxAge": "2d", "minRetention": "7d"}}}
+            )
+            assert floored.source == "inert" and not floored.needs_warning
+
+            # Gemini's schema PREPROCESSES strings before validating, so these are real
+            # policies rather than rejected ones -- reading them as Python types would
+            # report history as safe while Gemini deletes it.
+            assert retention(SR({"maxAge": "3650d", "maxCount": "50"})).max_count == 50
+            assert retention(SR({"maxCount": 1.5})).needs_warning  # a number, and >= 1
+            for spelling in ("false", "FALSE"):
+                assert retention(SR({"enabled": spelling})).source == "off"
+
+            # A value the schema REJECTS is only a warning to Gemini: it keeps the raw
+            # value, and the gate then reads it for JAVASCRIPT truthiness, where [] and
+            # {} are true. Python's bool() says the opposite of both.
+            for truthy in ([], {}, "yes"):
+                assert retention(SR({"enabled": truthy})).needs_warning
+            for falsy in (0, None, ""):
+                assert retention(SR({"enabled": falsy})).source == "off"
+
+            # Anything this cannot pin down exactly fails OPEN. `$` is the one thing
+            # Gemini rewrites before parsing, so it is the one string a typo check
+            # cannot dismiss -- ${KEEP:-30d} is a live 30-day policy there.
+            assert retention(SR({"maxAge": "${KEEP:-30d}"})).needs_warning
+            assert retention(SR({"maxCount": "abc"})).needs_warning
+            # ...and a safe-looking maxAge must not silence an unevaluable maxCount.
+            unsure = retention(SR({"maxAge": "3650d", "maxCount": "abc"}))
+            assert unsure.source == "unknown" and unsure.needs_warning
+
+            # But only what Gemini's OWN regex would rewrite is unevaluable: a trailing
+            # "$" is not a substitution, and a non-string maxAge throws in its parser.
+            assert retention(SR({"maxAge": "bogus$"})).source == "inert"
+            assert retention(SR({"maxAge": 30})).source == "inert"
+            # `null < 1` is true in JS, so an explicit null count is rejected there.
+            assert retention(SR({"maxCount": None})).source == "inert"
+
+            # Gemini's Number() is not float(): it reads 0x10 as a live cap of 16 and
+            # rejects Python's digit underscores.
+            assert retention(SR({"maxAge": "3650d", "maxCount": "0x10"})).max_count == 16
+            assert retention(SR({"maxAge": "3650d", "maxCount": "1_0"})).needs_warning
+
+            # Its retention regex is anchored and does NOT trim, so a spaced floor is
+            # rejected and falls back to 1d -- reading it as 7 days would make a live
+            # one-day policy look like a rejected one.
+            spaced = retention(SR({"maxAge": "1d", "minRetention": " 7d "}))
+            assert spaced.needs_warning and spaced.max_age == "1d"
+
+            # Validation is whole-object: one bad key un-coerces the WHOLE layer, so the
+            # raw "false" reaches a gate that reads it for JS truthiness.
+            assert retention(SR({"enabled": "false", "maxCount": "abc"})).needs_warning
+
+            # strip-json-comments blanks a comment out rather than deleting it, so
+            # `1/*x*/0` stays two tokens and Gemini fatals on the file.
+            joined = retention('{"general":{"sessionRetention":{"maxCount":1/*x*/0}}}')
+            assert joined.source == "unverifiable"
+
+            # A DEFINITIVE rejection settles the config whatever the unevaluable parts
+            # hold, so it is checked before anything fails open.
+            assert retention(SR({"maxAge": "$AGE", "maxCount": 0})).source == "inert"
+            # ...but an unevaluable floor is not definitive: $MIN could resolve below
+            # 12h, and then a twelve-hour policy is live rather than rejected.
+            assert retention(SR({"maxAge": "12h", "minRetention": "$MIN"})).source == "unknown"
+
+            # Coerced, accepted, and yet no cap at all: `i >= Infinity` never fires.
+            forever = retention(SR({"maxAge": "3650d", "maxCount": "Infinity"}))
+            assert forever.max_count is None and not forever.needs_warning
+
+            # JS String.trim() leaves the C0 separators in place, so this count is NOT a
+            # number there -- which un-coerces the layer and makes "false" truthy.
+            assert retention(SR({"enabled": "false", "maxCount": "\u001c1"})).needs_warning
+
+            # Neither a huge literal nor undecodable bytes may take the launch down:
+            # both are ordinary values to Gemini, and a crash here beats no warning.
+            assert retention(SR({"maxAge": "3650d", "maxCount": "0x" + "f" * 1000})) is not None
+            assert retention(SR({"maxAge": "9" * 400 + "d"})) is not None
+            # ...but only the oversized ones clamp: a period of 5,000 ZEROS is zero to
+            # parseInt, i.e. a rejected floor that leaves the 30-day default deleting.
+            zeros = retention(SR({"maxAge": "30d", "minRetention": "0" * 5000 + "d"}))
+            assert zeros.needs_warning
+            with open(path, "wb") as fh:
+                fh.write(b'{"general": "\xff\xfe"}')
+            assert ot.gemini_retention().source == "unverifiable"
+
+            # Python's \d matches Arabic-Indic digits; JavaScript's Number() does not,
+            # so this is NaN there and never the rejected zero it looks like here.
+            assert retention(SR({"maxCount": "\u0660"})).needs_warning
+        finally:
+            if old is None:
+                os.environ.pop("GEMINI_CLI_HOME", None)
+            else:
+                os.environ["GEMINI_CLI_HOME"] = old
+
+
+def test_gemini_system_settings_outrank_the_user_file():
+    saved = {k: os.environ.get(k) for k in ("GEMINI_CLI_HOME", "GEMINI_CLI_SYSTEM_SETTINGS_PATH")}
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, ".gemini"))
+        user = os.path.join(tmp, ".gemini", "settings.json")
+        system = os.path.join(tmp, "system.json")
+        os.environ["GEMINI_CLI_HOME"] = tmp
+        os.environ["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = system
+        os.environ["GEMINI_CLI_SYSTEM_DEFAULTS_PATH"] = os.path.join(tmp, "absent.json")
+        try:
+            with open(user, "w", encoding="utf-8") as fh:
+                json.dump(SR({"enabled": False}), fh)
+            assert not ot.gemini_retention().needs_warning
+
+            # Gemini merges the system file LAST, so it wins -- and the reported path is
+            # the file to edit, not the one the user already set and thinks is in force.
+            with open(system, "w", encoding="utf-8") as fh:
+                json.dump(SR({"enabled": True, "maxAge": "7d"}), fh)
+            enforced = ot.gemini_retention()
+            assert enforced.needs_warning and enforced.max_age == "7d"
+            assert enforced.settings_path == system
+        finally:
+            os.environ.pop("GEMINI_CLI_SYSTEM_DEFAULTS_PATH", None)
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
+def test_a_project_that_re_enables_gemini_cleanup_is_not_hidden_by_the_user_setting():
+    # Gemini merges a trusted project's .gemini/settings.json ABOVE the user's, so a
+    # machine-wide "off" is not proof the history is safe.
+    saved = {k: os.environ.get(k) for k in ("GEMINI_CLI_HOME", "GEMINI_CLI_SYSTEM_SETTINGS_PATH")}
+    with tempfile.TemporaryDirectory() as tmp:
+        os.makedirs(os.path.join(tmp, ".gemini"))
+        project = os.path.join(tmp, "repo")
+        os.makedirs(os.path.join(project, ".gemini"))
+        os.environ["GEMINI_CLI_HOME"] = tmp
+        os.environ["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = os.path.join(tmp, "system.json")
+        os.environ["GEMINI_CLI_SYSTEM_DEFAULTS_PATH"] = os.path.join(tmp, "absent2.json")
+        try:
+            with open(os.path.join(tmp, ".gemini", "settings.json"), "w", encoding="utf-8") as fh:
+                json.dump(SR({"enabled": False}), fh)
+            with open(os.path.join(tmp, ".gemini", "projects.json"), "w", encoding="utf-8") as fh:
+                json.dump({"projects": {project: "repo"}}, fh)
+            assert not ot.gemini_retention().needs_warning  # no project override yet
+
+            workspace = os.path.join(project, ".gemini", "settings.json")
+            # A project that agrees with the user changes nothing...
+            with open(workspace, "w", encoding="utf-8") as fh:
+                json.dump(SR({"enabled": False, "maxAge": "7d"}), fh)
+            assert not ot.gemini_retention().needs_warning
+            # ...one that switches cleanup back on is the warning, and names its file.
+            with open(workspace, "w", encoding="utf-8") as fh:
+                json.dump(SR({"enabled": True, "maxAge": "7d"}), fh)
+            override = ot.gemini_retention()
+            assert override.source == "workspace" and override.needs_warning
+            assert override.settings_path == workspace and override.max_age == "7d"
+
+            # The system layer still outranks the project's, so it must be applied ON
+            # TOP of it -- merging the project last reports the wrong policy, and can
+            # report a safe one for a machine that deletes weekly.
+            with open(workspace, "w", encoding="utf-8") as fh:
+                json.dump(SR({"enabled": True, "maxAge": "3650d"}), fh)
+            assert not ot.gemini_retention().needs_warning
+            system = os.environ["GEMINI_CLI_SYSTEM_SETTINGS_PATH"]
+            with open(system, "w", encoding="utf-8") as fh:
+                json.dump(SR({"maxAge": "7d"}), fh)
+            ranked = ot.gemini_retention()
+            assert ranked.needs_warning and ranked.max_age == "7d"
+
+            # Gemini validates each FILE before merging, so a higher layer fixing an
+            # unrelated key cannot restore the coercion the user's file lost -- the raw
+            # "false" still reaches the JS gate, still truthy, still deleting.
+            with open(workspace, "w", encoding="utf-8") as fh:
+                json.dump(SR({}), fh)
+            with open(os.path.join(tmp, ".gemini", "settings.json"), "w", encoding="utf-8") as fh:
+                json.dump(SR({"enabled": "false", "maxCount": "abc"}), fh)
+            with open(system, "w", encoding="utf-8") as fh:
+                json.dump(SR({"maxCount": 50}), fh)
+            assert ot.gemini_retention().needs_warning
+        finally:
+            os.environ.pop("GEMINI_CLI_SYSTEM_DEFAULTS_PATH", None)
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value

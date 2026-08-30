@@ -165,7 +165,19 @@ from opentab.stores.codex import CodexStore
 from opentab.stores.combined import CombinedStore
 from opentab.stores.copilot import CopilotStore
 from opentab.stores.csv_source import CsvStore
-from opentab.stores.gemini import GeminiStore
+from opentab.stores.gemini import (
+    GEMINI_RETENTION_DEFAULT_DAYS,
+    GEMINI_RETENTION_RECOMMENDED_DAYS,
+    GEMINI_RETENTION_WARNING_ID,
+    GeminiRetention,
+    GeminiStore,
+    default_gemini_dir,
+    gemini_max_count_label,
+    gemini_retention,
+    gemini_settings_path,
+    gemini_system_defaults_path,
+    gemini_system_settings_path,
+)
 from opentab.stores.hermes import HermesStore
 from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.omp import OmpStore

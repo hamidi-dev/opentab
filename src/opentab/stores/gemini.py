@@ -5,7 +5,11 @@ import argparse
 import glob
 import hashlib
 import json
+import math
 import os
+import re
+import sys
+from typing import NamedTuple
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
@@ -23,11 +27,448 @@ from opentab.util import (
 # <home>/.gemini.
 PROJECT_ROOT_FILE = ".project_root"
 REGISTRY_FILE = "projects.json"
+SETTINGS_FILE = "settings.json"
+
+# general.sessionRetention's schema defaults. Gemini's getDefaultsFromSchema() recurses
+# into `properties`, so these apply even though the object itself defaults to undefined.
+GEMINI_RETENTION_DEFAULT_MAX_AGE = "30d"
+GEMINI_RETENTION_DEFAULT_DAYS = 30
+GEMINI_RETENTION_MIN_RETENTION = "1d"
+GEMINI_RETENTION_MIN_MAX_COUNT = 1
+# No "keep forever" value exists, so the fix is enabled:false; this only decides whether
+# an explicit long maxAge is long enough to stop warning about.
+GEMINI_RETENTION_RECOMMENDED_DAYS = 3650
+GEMINI_RETENTION_WARNING_ID = "gemini-retention-v1"
+# Gemini's own parseRetentionPeriod units: <number><h|d|w|m>, "m" being 30 days.
+_RETENTION_UNIT_DAYS = {"h": 1.0 / 24.0, "d": 1.0, "w": 7.0, "m": 30.0}
+# resolveEnvVarsInString's regex: only a value matching THIS is rewritten before parsing,
+# so only this makes a literal unevaluable here. A bare "$" is not a substitution.
+_ENV_VAR_RE = re.compile(r"\$(?:(\w+)|\{([^}]+?)(?::-([^}]*))?\})")
+# String.prototype.trim's whitespace set, which is not str.strip()'s: JS leaves the
+# C0 separators (U+001C..U+001F) in place, and a count Python trims to a number is one
+# Gemini rejects -- taking the whole layer's coercion down with it.
+_JS_WHITESPACE = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_MISSING = object()
 
 
 def default_gemini_dir() -> str:
     home = (os.environ.get("GEMINI_CLI_HOME") or "").strip() or os.path.expanduser("~")
     return os.path.join(home, ".gemini")
+
+
+def gemini_settings_path() -> str:
+    """Gemini CLI's user-level settings.json (its ``Storage.getGlobalSettingsPath``)."""
+    return os.path.join(default_gemini_dir(), SETTINGS_FILE)
+
+
+def gemini_system_settings_path() -> str:
+    """Gemini's ``getSystemSettingsPath`` -- the layer that OVERRIDES the user's."""
+    override = (os.environ.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH") or "").strip()
+    if override:
+        return override
+    if sys.platform == "darwin":
+        return "/Library/Application Support/GeminiCli/settings.json"
+    if os.name == "nt":
+        return "C:\\ProgramData\\gemini-cli\\settings.json"
+    return "/etc/gemini-cli/settings.json"
+
+
+def gemini_system_defaults_path() -> str:
+    """Gemini's ``getSystemDefaultsPath`` -- a layer BELOW the user's."""
+    override = (os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH") or "").strip()
+    if override:
+        return override
+    return os.path.join(os.path.dirname(gemini_system_settings_path()), "system-defaults.json")
+
+
+def _strip_json_comments(text: str) -> str:
+    """Drop // and /* */ comments outside strings, as Gemini's loader does.
+
+    Gemini runs `strip-json-comments` before `JSON.parse`, so a commented settings file
+    is valid to it. Only tried after a strict parse fails, so a bug here can only affect
+    a file `json.loads` already rejected.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+    in_str = False
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out.append(ch)
+            if ch == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            while i < n and text[i] != "\n":
+                i += 1
+            out.append(" ")
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            # A SPACE, not nothing: strip-json-comments blanks a comment out, so
+            # `1/*x*/0` stays two tokens there and must not become 10 here.
+            end = text.find("*/", i + 2)
+            i = n if end < 0 else end + 2
+            out.append(" ")
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _js_truthy(value: object) -> bool:
+    """JavaScript truthiness for a JSON value -- `[]` and `{}` are TRUE in JS."""
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return value != ""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value != 0
+    return True
+
+
+def _zod_boolean(value: object) -> bool | None:
+    """Gemini's boolean preprocess, or None when the value survives it unvalidated.
+
+    A string spelling "true"/"false" is coerced; anything else fails validation, which
+    is only a WARNING -- the raw value is kept and the gate then reads it for JS
+    truthiness.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lower = value.lower()
+        if lower == "true":
+            return True
+        if lower == "false":
+            return False
+    return None
+
+
+# [0-9], never \d: Python's \d also matches e.g. Arabic-Indic digits, which are NaN
+# to JavaScript -- and a count that reads as 0 here but NaN there flips a live 30-day
+# policy into a rejected one.
+_JS_DECIMAL_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+_JS_RADIX_RE = re.compile(r"0[xX][0-9a-fA-F]+|0[oO][0-7]+|0[bB][01]+")
+
+
+def _js_number(text: str) -> float | None:
+    """JavaScript ``Number(str)``, which is not ``float(str)``.
+
+    It takes 0x/0o/0b literals and rejects Python's "nan", "infinity" spelling and
+    digit underscores -- so `maxCount: "0x10"` is a live cap of 16 in Gemini while
+    ``float`` raises, and `"1_0"` is NaN there while ``float`` reads ten.
+    """
+    body = text.strip(_JS_WHITESPACE)
+    if not body:
+        return 0.0
+    if body in ("Infinity", "+Infinity"):
+        return math.inf
+    if body == "-Infinity":
+        return -math.inf
+    try:
+        if _JS_RADIX_RE.fullmatch(body):
+            return float(int(body, 0))
+        if _JS_DECIMAL_RE.fullmatch(body):
+            return float(body)
+    except (ValueError, OverflowError):
+        # A literal too large for a float is Infinity in JS, never an exception.
+        return math.inf
+    return None
+
+
+def _zod_number(value: object) -> float | None:
+    """Gemini's number preprocess: a numeric string becomes a number, so "50" is 50."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip(_JS_WHITESPACE):
+        return _js_number(value)
+    return None
+
+
+def _parse_retention_period(period: object) -> float | None:
+    """Days in a Gemini retention string, or None for one Gemini itself rejects."""
+    if not isinstance(period, str):
+        return None
+    # No .strip(): Gemini's regex is /^(\d+)([dhwm])$/, so " 7d " throws there, and
+    # reading it as 7 days would make a 1-day maxAge look like a floor violation.
+    match = re.fullmatch(r"([0-9]+)([dhwm])", period)
+    if not match:
+        return None
+    digits = match.group(1).lstrip("0")
+    if not digits:  # all zeros: parseRetentionPeriod rejects zero outright
+        return None
+    try:
+        return int(digits) * _RETENTION_UNIT_DAYS[match.group(2)]
+    except (ValueError, OverflowError):
+        # Past CPython's int-from-string limit or past float range: both are ordinary
+        # large numbers to JS, so clamp rather than raise. The zeros are stripped FIRST,
+        # because a 5,000-zero period is zero there, not infinity -- and clamping it
+        # would turn a rejected floor (which leaves the 30-day default deleting) into a
+        # verdict that nothing is deleted at all.
+        return math.inf
+
+
+class GeminiRetention(NamedTuple):
+    settings_path: str  # the layer that decided, i.e. the file to edit
+    max_age: str | None  # as written, e.g. "30d"
+    max_age_days: float | None
+    max_count: float | None
+    # default / configured / unverifiable / unknown / workspace delete (or may);
+    # off / inert do not.
+    source: str
+
+    @property
+    def deletes(self) -> bool:
+        return self.source not in ("off", "inert")
+
+    @property
+    def needs_warning(self) -> bool:
+        if not self.deletes:
+            return False
+        # Any count cap deletes the oldest sessions; no value of it is safe.
+        if self.source in ("unverifiable", "unknown") or self.max_count is not None:
+            return True
+        return self.max_age_days is None or self.max_age_days < GEMINI_RETENTION_RECOMMENDED_DAYS
+
+
+def _read_settings(path: str) -> tuple[dict, bool]:
+    """One settings layer as a dict, plus whether Gemini would refuse to start on it."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except FileNotFoundError:
+        return {}, False
+    except (OSError, ValueError):
+        # ValueError too: a settings file that is not UTF-8 raises UnicodeDecodeError,
+        # which is NOT an OSError, and an embedded NUL in a path raises from open().
+        return {}, True
+    try:
+        data = json.loads(text)
+    except ValueError:
+        try:
+            data = json.loads(_strip_json_comments(text))
+        except ValueError:
+            return {}, True
+    if not isinstance(data, dict):
+        return {}, True
+    return data, False
+
+
+def gemini_max_count_label(value: float) -> str:
+    """A maxCount as Gemini would have read it -- 50, not 50.0 (its schema is a number)."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
+def _retention_layer(data: dict) -> object:
+    general = data.get("general")
+    if not isinstance(general, dict) or "sessionRetention" not in general:
+        return _MISSING
+    return general["sessionRetention"]
+
+
+def _layer_is_invalid(raw: dict) -> bool:
+    """True when a key here fails Gemini's schema, which un-coerces the WHOLE layer.
+
+    Zod validates the entire settings object at once, and a failure is only a warning:
+    Gemini then keeps the raw, *uncoerced* values. That flips `enabled: "false"` from
+    False to a JS-truthy string, i.e. from "keeps history" to "deletes". This can only
+    see the sessionRetention keys, so a bad key elsewhere in the file is invisible --
+    the documented residual, and the reason a value is otherwise read fail-open.
+    """
+    if "enabled" in raw and _zod_boolean(raw["enabled"]) is None:
+        return True
+    if "maxCount" in raw and _zod_number(raw["maxCount"]) is None:
+        return True
+    return any(key in raw and not isinstance(raw[key], str) for key in ("maxAge", "minRetention"))
+
+
+def _evaluate_retention(
+    merged: dict, deciding: str, source: str, coerce: bool = True
+) -> GeminiRetention:
+    """Gemini's own gate and validateRetentionConfig over one merged policy.
+
+    ``coerce`` is False when the layer that set ``enabled`` failed validation, which
+    Gemini decides per FILE and before merging -- so a later layer fixing an unrelated
+    key cannot restore the coercion this one lost.
+    """
+    # A missing key falls through to the schema default, which is what the merge does.
+    enabled_raw = merged.get("enabled", True)
+    max_age = merged.get("maxAge", GEMINI_RETENTION_DEFAULT_MAX_AGE)
+    max_count_raw = merged.get("maxCount", _MISSING)
+
+    max_age_label = max_age if isinstance(max_age, str) and max_age else None
+    max_age_days = _parse_retention_period(max_age)
+    max_count = None if max_count_raw is _MISSING else _zod_number(max_count_raw)
+    kept = GeminiRetention(deciding, max_age_label, max_age_days, max_count, "inert")
+
+    enabled = _zod_boolean(enabled_raw) if coerce else None
+    if enabled is None:  # uncoerced -> the raw value reaches the JS gate
+        enabled = _js_truthy(enabled_raw)
+    if not enabled:
+        return kept._replace(source="off")
+
+    # validateRetentionConfig: every rejection here disables cleanup entirely, so the
+    # history survives. Borrow that verdict -- and check the DEFINITIVE rejections
+    # first, since one of them settles the config whatever the unevaluable parts hold.
+    min_retention = merged.get("minRetention", GEMINI_RETENTION_MIN_RETENTION)
+    if max_count_raw is None:
+        return kept  # explicit null: `null < 1` is true in JS, so Gemini rejects it
+    if max_count is not None and max_count < GEMINI_RETENTION_MIN_MAX_COUNT:
+        return kept
+    age_is_string = isinstance(max_age, str) and max_age != ""
+    if age_is_string and not _ENV_VAR_RE.search(max_age) and max_age_days is None:
+        return kept  # Gemini's parseRetentionPeriod rejects it too -> cleanup off
+    if not age_is_string and max_age:
+        # A truthy non-string maxAge reaches parseRetentionPeriod, whose .match() throws
+        # on it -- caught, and the error disables cleanup.
+        return kept
+    if max_age_label is None and max_count_raw is _MISSING:
+        return kept  # "Either maxAge or maxCount must be specified"
+
+    # What is left is a live policy unless a value only Gemini can resolve says
+    # otherwise -- it expands $VAR before parsing, so those fail OPEN.
+    unknown = any(
+        _ENV_VAR_RE.search(value) is not None
+        for value in (max_age, min_retention)
+        if isinstance(value, str)
+    )
+    if max_count_raw is not _MISSING and max_count is None:
+        unknown = True  # a raw non-number still leaves the maxAge rule running
+    if unknown:
+        return kept._replace(source="unknown")
+    if max_age_days is not None:
+        floor = _parse_retention_period(min_retention)
+        if floor is None:  # Gemini falls back to its own default on an unparseable floor
+            floor = _parse_retention_period(GEMINI_RETENTION_MIN_RETENTION)
+        if floor is not None and max_age_days < floor:
+            return kept
+    if max_count is not None and not math.isfinite(max_count):
+        # Coerced and accepted, but `i >= Infinity` never fires: no cap at all.
+        max_count = None
+        kept = kept._replace(max_count=None)
+    return kept._replace(source=source)
+
+
+def gemini_workspace_layers() -> list[tuple[str, object]]:
+    """Each recorded project's own sessionRetention -- Gemini ranks these ABOVE the user's.
+
+    Only the projects Gemini itself listed in ``projects.json`` are consulted, and only
+    to answer "can the machine-wide verdict be trusted"; folder trust is not read, so an
+    untrusted project can produce a warning Gemini would ignore. That is the safe
+    direction, and far cheaper than mirroring ``trustedFolders.json``. The layer travels
+    with its path so evaluating it needs no second read.
+    """
+    registry, _broken = _read_settings(os.path.join(default_gemini_dir(), REGISTRY_FILE))
+    projects = registry.get("projects")
+    found: list[tuple[str, object]] = []
+    for project in projects if isinstance(projects, dict) else {}:
+        if not isinstance(project, str) or not project:
+            continue
+        path = os.path.join(project, ".gemini", SETTINGS_FILE)
+        data, broken = _read_settings(path)
+        raw = _MISSING if broken else _retention_layer(data)
+        if raw is not _MISSING:
+            found.append((path, raw))
+    return found
+
+
+def _merge_layers(layers: list[tuple[str, object]]) -> tuple[dict | None, str, bool, bool]:
+    """Merge sessionRetention layers low-to-high.
+
+    Returns (policy, deciding path, was any set?, may ``enabled`` be coerced?).
+    A non-object layer is not merged INTO -- it replaces the object outright, so the
+    accumulator is poisoned rather than updated, and a higher layer that is an object
+    starts over from it. ``None`` back means the effective value is not an object,
+    which makes Gemini's ``!settings...enabled`` gate false.
+
+    Coercion is tracked per LAYER because that is where Gemini validates: the file that
+    supplied ``enabled`` is the one whose validity decides whether the value was
+    coerced, and a higher layer fixing an unrelated key does not undo that.
+    """
+    merged: dict | None = {}
+    deciding = ""
+    configured = False
+    coerce = True
+    for path, raw in layers:
+        if raw is _MISSING:
+            continue
+        configured = True
+        deciding = path
+        if not isinstance(raw, dict):
+            merged = None
+            continue
+        if "enabled" in raw:
+            coerce = not _layer_is_invalid(raw)
+        merged = dict(raw) if merged is None else {**merged, **raw}
+    return merged, deciding, configured, coerce
+
+
+def gemini_retention() -> GeminiRetention:
+    """Read Gemini CLI's session retention policy without changing it.
+
+    Cleanup runs on every launch (``cleanupExpiredSessions``) and deletes each expired
+    session plus its subagent directory and artifacts -- the same files this backend
+    reads. It is ON by default: Gemini merges ``getDefaultsFromSchema()`` under the
+    settings files and that walk recurses into ``properties``, so a settings.json that
+    never mentions sessionRetention still resolves to
+    ``{enabled: true, maxAge: "30d", minRetention: "1d"}``.
+
+    Layers merge in Gemini's own precedence -- schema defaults, system defaults, user,
+    *workspace*, **system** -- and the reported path is the highest layer that actually
+    set a key, because naming a file a later layer overrides is useless advice. The
+    workspace layer outranks the user's, so when the machine-wide policy would keep
+    history the recorded projects are re-evaluated with their own settings slotted into
+    that position, **below** the system layer that still outranks them. It costs a
+    handful of small reads, and only on the path that would otherwise stay silent.
+
+    Everything else fails OPEN. Gemini coerces numeric and boolean *strings* but throws
+    the whole layer's coercion away if any key fails validation (which is only a
+    warning) and then reads the raw value for **JS** truthiness, and it expands ``$VAR``
+    in settings strings before any of that -- so a value this cannot pin down exactly is
+    reported as deleting rather than as safe. A warning nobody needed costs a keystroke;
+    a missing one costs the history.
+    """
+    user_path = gemini_settings_path()
+    below: list[tuple[str, object]] = []  # everything the workspace layer outranks
+    system: list[tuple[str, object]] = []  # ...and the one layer it does not
+    for path in (gemini_system_defaults_path(), user_path, gemini_system_settings_path()):
+        data, broken = _read_settings(path)
+        if broken:
+            # A file Gemini cannot parse is FATAL to it (FatalConfigError), so the
+            # policy is not "the default" -- it is unknown until the file is fixed.
+            return GeminiRetention(path, None, None, None, "unverifiable")
+        layer = (path, _retention_layer(data))
+        (system if path == gemini_system_settings_path() else below).append(layer)
+
+    def verdict_for(layers: list[tuple[str, object]], source: str) -> GeminiRetention:
+        merged, deciding, configured, coerce = _merge_layers(layers)
+        if merged is None:
+            return GeminiRetention(deciding, None, None, None, "off")
+        if source == "machine":
+            source = "configured" if configured else "default"
+        return _evaluate_retention(merged, deciding or user_path, source, coerce)
+
+    verdict = verdict_for([*below, *system], "machine")
+    if verdict.needs_warning:
+        return verdict
+    # A project sits between the two groups: above the user's file, below the system's.
+    for path, raw in gemini_workspace_layers():
+        project = verdict_for([*below, (path, raw), *system], "workspace")
+        if project.needs_warning:
+            return project._replace(settings_path=path)
+    return verdict
 
 
 class GeminiStore:

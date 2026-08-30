@@ -26,6 +26,7 @@ _FLAGS = (
 _ENV_KEYS = (
     "COPILOT_OTEL_FILE_EXPORTER_PATH",
     "CLAUDE_CONFIG_DIR",
+    "GEMINI_CLI_HOME",
     "OPENTAB_NO_INIT_COLOR",
     "HERDR_ENV",
     "WSL_DISTRO_NAME",
@@ -353,6 +354,44 @@ def test_claude_retention_still_warns_after_the_last_transcript_is_gone():
         retention = next(row for row in rows if row.label == "Claude retention")
         assert harness.status == doctor.INFO and "no sessions" in harness.detail
         assert retention.status == doctor.WARN
+
+
+def test_gemini_retention_warns_on_the_defaults_it_never_had_to_be_told():
+    with tempfile.TemporaryDirectory() as tmp:
+        home = os.path.join(tmp, "home")
+        gemini = os.path.join(home, ".gemini")
+        _touch(os.path.join(gemini, "tmp", "proj", "chats", "session-a.jsonl"), "{}\n")
+        args = _args(tmp, gemini_dir=gemini)
+
+        with _clean_env(GEMINI_CLI_HOME=home):
+            rows = doctor.harness_rows(args)
+            harness = next(row for row in rows if row.label == "Gemini")
+            retention = next(row for row in rows if row.label == "Gemini retention")
+            assert harness.status == doctor.OK
+            assert retention.status == doctor.WARN
+            assert "default: 30 days" in retention.detail
+            assert '"enabled": false' in retention.hint
+
+            settings = os.path.join(gemini, "settings.json")
+            with open(settings, "w") as fh:
+                json.dump({"general": {"sessionRetention": {"enabled": False}}}, fh)
+            assert not any(row.label == "Gemini retention" for row in doctor.harness_rows(args))
+
+            with open(settings, "w") as fh:
+                json.dump({"general": {"sessionRetention": {"maxCount": 50}}}, fh)
+            capped = next(
+                row for row in doctor.harness_rows(args) if row.label == "Gemini retention"
+            )
+            assert "maxCount: 50" in capped.detail
+
+            # Gemini refuses to start on a settings file it cannot parse, so the
+            # policy is unknown rather than "the 30-day default".
+            with open(settings, "w") as fh:
+                fh.write("{broken")
+            broken = next(
+                row for row in doctor.harness_rows(args) if row.label == "Gemini retention"
+            )
+            assert "unreadable" in broken.detail and "will not start" in broken.detail
 
 
 def test_a_missing_harness_is_neutral_and_carries_no_hint():

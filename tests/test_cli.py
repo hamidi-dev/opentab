@@ -917,6 +917,55 @@ def test_claude_config_dir_controls_the_default_source_and_startup_warning():
                 os.environ["CLAUDE_CONFIG_DIR"] = old
 
 
+def test_gemini_retention_warning_is_offered_beside_claude_and_gated_on_its_data_root():
+    old_home = os.environ.get("GEMINI_CLI_HOME")
+    old_claude = os.environ.get("CLAUDE_CONFIG_DIR")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["GEMINI_CLI_HOME"] = tmp
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(tmp, "claude")
+        try:
+            args = _parse([])
+            assert args.gemini_dir == os.path.join(tmp, ".gemini")
+
+            # No .gemini/tmp yet: nothing to lose, so nothing to warn about.
+            quiet = app_with([])
+            ot.cli._offer_retention_warnings(quiet, args, "all", can_persist=True)
+            assert [w["id"] for w in quiet.startup_warnings()] == []
+
+            os.makedirs(os.path.join(tmp, ".gemini", "tmp"))
+            os.makedirs(os.path.join(tmp, "claude", "projects"))
+            app = app_with([])
+            ot.cli._offer_retention_warnings(app, args, "all", can_persist=True)
+            assert [w["id"] for w in app.startup_warnings()] == [
+                ot.CLAUDE_RETENTION_WARNING_ID,
+                ot.GEMINI_RETENTION_WARNING_ID,
+            ]
+            gemini = app.startup_warnings()[1]
+            assert "after 30 days" in gemini["headline"]
+            assert "sessionRetention" in gemini["lines"][-1]
+            assert "subagent" in gemini["lines"][0]
+
+            # Demo mode anonymizes everything on screen; a real settings path must not
+            # be the one line that is not.
+            demo_args = _parse(["--demo"])
+            demo = app_with([])
+            ot.cli._offer_retention_warnings(demo, demo_args, "all", can_persist=False)
+            assert demo.startup_warnings() == []
+
+            settings = os.path.join(tmp, ".gemini", "settings.json")
+            with open(settings, "w") as fh:
+                json.dump({"general": {"sessionRetention": {"enabled": False}}}, fh)
+            safe = app_with([])
+            ot.cli._offer_retention_warnings(safe, args, "all", can_persist=True)
+            assert [w["id"] for w in safe.startup_warnings()] == [ot.CLAUDE_RETENTION_WARNING_ID]
+        finally:
+            for name, value in (("GEMINI_CLI_HOME", old_home), ("CLAUDE_CONFIG_DIR", old_claude)):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+
 def test_goto_missing_tab_notice_survives_a_range_clear():
     # Regression: a target hidden by a restored range AND a tab its backend lacks --
     # the range-clear retry must not clobber the "no 'context' tab here" explanation.

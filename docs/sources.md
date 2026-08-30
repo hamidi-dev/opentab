@@ -263,6 +263,14 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   `$GEMINI_CLI_HOME` — which overrides your **home** directory, so the store is
   `$GEMINI_CLI_HOME/.gemini`). Both on-disk shapes are read: the current append-only
   JSONL and the older single-document `.json` chat.
+- **Retention warning**: Gemini CLI deletes chat recordings **older than 30 days by
+  default**, and takes each session's subagent transcripts with it. Cleanup runs on
+  every launch, per project; once the file is gone OpenTab cannot report or reconstruct
+  its usage. The TUI warns once and `opentab doctor` keeps reporting the policy. For
+  long history, set `"general": {"sessionRetention": {"enabled": false}}` in
+  `~/.gemini/settings.json`. Gemini's system settings outrank your own, and a project's
+  `<project>/.gemini/settings.json` outranks both — OpenTab checks all of them, so a
+  single project that switches cleanup back on is still reported.
 - **Cost**: the CLI records tokens but no price, so sessions read **$0** in normal mode
   and are **estimated** under `$`, exactly like Claude Code and Codex.
 - **Tokens**: Gemini reports the prompt count *including* the cache read, and counts
