@@ -191,10 +191,78 @@ def test_a_real_opencode_db_is_still_detected_and_opened():
         assert store.workflows() == []
 
 
-def test_bahulam_default_dir_honors_current_home_env(monkeypatch):
-    monkeypatch.delenv("BAHULAM_PROJECTS_DIR", raising=False)
-    monkeypatch.setenv("BAHULAM_HOME", "/tmp/bahulam-home")
-    assert ot.sources._default_bahulam_dir() == "/tmp/bahulam-home/projects"
+def _env_snapshot(names):
+    """Save and clear the named env vars; return a restore callable.
 
-    monkeypatch.setenv("BAHULAM_PROJECTS_DIR", "/tmp/bahulam-projects")
-    assert ot.sources._default_bahulam_dir() == "/tmp/bahulam-projects"
+    Rewritten from a pytest-only ``monkeypatch`` fixture to a stdlib helper
+    so the project's custom ``run_tests.py`` (which does not inject
+    fixtures) picks the test up — previously it silently regressed the
+    suite to 1187/1188.
+    """
+    saved = {n: os.environ.get(n) for n in names}
+    for n in names:
+        os.environ.pop(n, None)
+
+    def restore():
+        for n, v in saved.items():
+            if v is None:
+                os.environ.pop(n, None)
+            else:
+                os.environ[n] = v
+
+    return restore
+
+
+def test_bahulam_default_dir_honors_current_home_env():
+    restore = _env_snapshot(["BAHULAM_PROJECTS_DIR", "BAHULAM_HOME", "KEPLER_HOME"])
+    try:
+        os.environ["BAHULAM_HOME"] = "/tmp/bahulam-home"
+        assert ot.sources._default_bahulam_dir() == "/tmp/bahulam-home/projects"
+
+        os.environ["BAHULAM_PROJECTS_DIR"] = "/tmp/bahulam-projects"
+        assert ot.sources._default_bahulam_dir() == "/tmp/bahulam-projects"
+    finally:
+        restore()
+
+
+def test_bahulam_default_dir_falls_back_to_kepler_home_env():
+    """Legacy Kepler-branded builds shipped with ``$KEPLER_HOME``; the
+    resolver honors it when the Bahulam-named vars are absent, since users
+    upgrading from Kepler frequently keep the older env exported."""
+    restore = _env_snapshot(["BAHULAM_PROJECTS_DIR", "BAHULAM_HOME", "KEPLER_HOME"])
+    try:
+        os.environ["KEPLER_HOME"] = "/tmp/kepler-home"
+        assert ot.sources._default_bahulam_dir() == "/tmp/kepler-home/projects"
+
+        # BAHULAM_HOME wins over KEPLER_HOME when both are set.
+        os.environ["BAHULAM_HOME"] = "/tmp/bahulam-home"
+        assert ot.sources._default_bahulam_dir() == "/tmp/bahulam-home/projects"
+    finally:
+        restore()
+
+
+def test_bahulam_default_dir_falls_back_to_legacy_kepler_projects_dir():
+    """When neither env is set and ``~/.bahulam/projects`` does not exist,
+    the resolver falls back to ``~/.kepler/projects`` if that directory is
+    present — smoothing the migration for users upgrading in place."""
+    restore = _env_snapshot(["BAHULAM_PROJECTS_DIR", "BAHULAM_HOME", "KEPLER_HOME"])
+    with tempfile.TemporaryDirectory() as tmp:
+        original_home = os.environ.get("HOME")
+        os.environ["HOME"] = tmp
+        try:
+            # Neither dir exists → default to Bahulam path (nonexistent is fine).
+            assert ot.sources._default_bahulam_dir() == os.path.join(tmp, ".bahulam", "projects")
+
+            # Only Kepler exists → resolver picks it up.
+            os.makedirs(os.path.join(tmp, ".kepler", "projects"))
+            assert ot.sources._default_bahulam_dir() == os.path.join(tmp, ".kepler", "projects")
+
+            # Once Bahulam exists too, Bahulam wins.
+            os.makedirs(os.path.join(tmp, ".bahulam", "projects"))
+            assert ot.sources._default_bahulam_dir() == os.path.join(tmp, ".bahulam", "projects")
+        finally:
+            if original_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = original_home
+            restore()

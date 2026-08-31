@@ -768,7 +768,10 @@ def test_verb_help_is_focused_but_globals_still_parse():
     tui_help = _subparser_help("tui")
     assert "--claude-dir" in tui_help and "--theme" in tui_help and "--web" in tui_help
     compact_tui_help = " ".join(tui_help.split())
-    assert "zaly · bahulam · all (merged)" in compact_tui_help
+    # Post-rebase onto main, gemini + antigravity land between zaly and
+    # bahulam in cli.py's argparse choices; keep the assertion aligned with
+    # that order so the help text doesn't drift out from under the test.
+    assert "zaly · gemini · antigravity · bahulam · all (merged)" in compact_tui_help
     assert "Zaly, Bahulam Code" in compact_tui_help
     # Hidden != gone: a suppressed global still parses on that verb.
     assert _parse(["pull", "--no-cache", "host"]).no_cache is True

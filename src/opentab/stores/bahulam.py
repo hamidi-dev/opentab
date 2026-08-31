@@ -104,15 +104,20 @@ class BahulamStore:
         return False, 0.0
 
     @classmethod
-    def _add_usage(cls, acc: dict, usage: dict, *, additive_input: bool = False) -> None:
+    def _add_usage(cls, acc: dict, usage: dict, *, hosted_unpriced: bool = False) -> None:
         """Accumulate counters from a usage dict into *acc*.
 
-        Args:
-            acc: Mutable accumulator dict (see ``_new_acc``).
-            usage: Raw usage record from a ``complete`` event.
-            additive_input: Bahulam ``usage.models[]`` records expose uncached
-                input beside cache-read/cache-write tokens. Flat aggregate
-                OpenRouter-style totals expose inclusive input.
+        Every Bahulam usage shape — top-level aggregate, per-model row, or
+        sub-agent rollup — reports ``input_tokens``/``total_input_tokens``
+        **inclusive of cache reads and cache creations**, matching the
+        anthropic-style convention. The previous ``additive_input`` flag
+        double-counted cache reads by ~2× on models[] rows; removed.
+
+        hosted_unpriced=True: the parent session is Bahulam-hosted and the
+        user was not charged (`is_byok=false` and `credits_charged=0`). The
+        provider list cost is still available on the raw event but is NOT
+        user spend, so we drop it into the unpriced buckets to keep the
+        cost column honest. Metered/BYOK sessions keep the provider cost.
         """
         total_in = cls._int(usage.get("total_input_tokens", 0))
         out = cls._int(usage.get("total_output_tokens", 0))
@@ -122,9 +127,8 @@ class BahulamStore:
         has_cost, cost = cls._reported_cost(usage)
         cc = usage.get("cache_creation")
         cw1h = cls._int(cc.get("ephemeral_1h_input_tokens", 0) or 0) if isinstance(cc, dict) else 0
-        inp = max(0, total_in if additive_input else total_in - cr - cw)
+        inp = max(0, total_in - cr - cw)
         acc["runs"] += 1
-        acc["cost"] += cost
         acc["input"] += inp
         acc["output"] += out
         acc["reasoning"] += reasoning
@@ -132,7 +136,10 @@ class BahulamStore:
         acc["cache_write"] += cw
         acc["cache_write_1h"] += min(cw1h, cw)
         acc["tokens_total"] += inp + out + reasoning + cr + cw
-        if not has_cost:
+        if has_cost and not hosted_unpriced:
+            acc["cost"] += cost
+        else:
+            # Missing cost OR hosted-unpriced: bucket tokens as unpriced.
             acc["u_input"] += inp
             acc["u_output"] += out
             acc["u_reasoning"] += reasoning
@@ -266,6 +273,20 @@ class BahulamStore:
             "active_subagents": {},
             "subagent_runs": [],
             "files": set(),
+            # Billing split — Bahulam ships two modes:
+            #   is_byok=True  (BYOK): user pays the LLM provider directly.
+            #                          provider `cost` == real user spend.
+            #   is_byok=False (hosted): Bahulam pays the provider and charges
+            #                          the user via `credits_charged` (often
+            #                          $0 on free-tier or promo). Provider
+            #                          `cost` is Bahulam's COGS, NOT user
+            #                          spend, and must be treated as unpriced
+            #                          in the normal cost column.
+            #   is_byok=None  (unknown / legacy transcripts): fall back to
+            #                          provider cost so old transcripts still
+            #                          render sensibly.
+            "is_byok": None,
+            "credits_charged": 0.0,
         }
 
     @staticmethod
@@ -311,12 +332,13 @@ class BahulamStore:
             data.get("model") or usage.get("model") or start.get("model") or ""
         )
         acc = self._new_acc()
+        hosted_unpriced = s["is_byok"] is False
         if usage:
             normalized = self._model_usage(usage)
             cost = self._usage_cost(usage)
             if cost is not None:
                 normalized["cost"] = cost
-            self._add_usage(acc, normalized, additive_input=True)
+            self._add_usage(acc, normalized, hosted_unpriced=hosted_unpriced)
         title = (
             data.get("result_summary")
             or start.get("query")
@@ -332,14 +354,24 @@ class BahulamStore:
                 "title": _clean_prompt(str(title)),
                 "ts": start.get("ts") or ts or "",
                 "acc": acc,
-                "cost_assigned": self._usage_cost(usage) is not None,
+                # Hosted sessions never have provider cost as user spend, so
+                # mark cost_assigned=True to short-circuit later distribution
+                # attempts even when the raw event carried a provider cost.
+                "cost_assigned": hosted_unpriced or self._usage_cost(usage) is not None,
             }
         )
 
     def _assign_subagent_cost(
-        self, s: dict, role: str, model_name: str, usage: dict, ts: str | None
+        self, s: dict, role: str, model_name: str, usage: dict, ts: str | None,
+        *, hosted_unpriced: bool = False,
     ) -> None:
-        """Attach aggregate per-role cost from ``complete`` to matching sub-agent runs."""
+        """Attach aggregate per-role cost from ``complete`` to matching sub-agent runs.
+
+        Skipped entirely for hosted sessions — provider cost is not user
+        spend, so there is nothing to distribute.
+        """
+        if hosted_unpriced:
+            return
         has_cost, cost = self._reported_cost(usage)
         if not has_cost:
             return
@@ -358,7 +390,7 @@ class BahulamStore:
             if already_recorded:
                 return
             acc = self._new_acc()
-            self._add_usage(acc, usage, additive_input=True)
+            self._add_usage(acc, usage)
             acc["cost"] = cost
             matches = [
                 {
@@ -446,8 +478,10 @@ class BahulamStore:
         event_type = event.get("type")
         data = event.get("data") if isinstance(event.get("data"), dict) else {}
 
-        # session_info — carries the model map
+        # session_info — carries the model map + billing mode
         if event_type == "session_info":
+            if "is_byok" in data and s["is_byok"] is None:
+                s["is_byok"] = bool(data.get("is_byok"))
             models_map = data.get("models")
             if isinstance(models_map, dict):
                 primary = self._primary_model(models_map)
@@ -473,10 +507,21 @@ class BahulamStore:
             if not usage:
                 return
 
+            # Hosted sessions expose provider list cost via `usage.cost*` but
+            # bill the user via `data.credits_charged` (often 0). Only when
+            # is_byok is EXPLICITLY False do we treat provider cost as
+            # unpriced — unknown/legacy transcripts keep prior behavior.
+            hosted_unpriced = s["is_byok"] is False
+            credits_charged = self._float(
+                data.get("credits_charged", usage.get("credits_charged", 0))
+            )
+            s["credits_charged"] += credits_charged
+
             reasoning = self._int(usage.get("reasoning_tokens", 0))
 
             # Per-model token breakdown (the wire uses ``cache_read_tokens``
-            # and ``cache_creation_tokens`` at per-model granularity).
+            # and ``cache_creation_tokens`` at per-model granularity, with
+            # ``input_tokens`` INCLUSIVE of cache — matches anthropic).
             models_usage = usage.get("models")
             if isinstance(models_usage, list) and models_usage:
                 for m in models_usage:
@@ -495,12 +540,14 @@ class BahulamStore:
                     cost = self._usage_cost(m)
                     if cost is not None:
                         per_model["cost"] = cost
-                    self._add_usage(entry["total"], per_model, additive_input=True)
+                    self._add_usage(entry["total"], per_model, hosted_unpriced=hosted_unpriced)
                     role = str(m.get("role") or "")
                     if self._is_root_role(role):
-                        self._add_usage(entry["root"], per_model, additive_input=True)
+                        self._add_usage(entry["root"], per_model, hosted_unpriced=hosted_unpriced)
                     else:
-                        self._assign_subagent_cost(s, role, model_name, per_model, ts)
+                        self._assign_subagent_cost(
+                            s, role, model_name, per_model, ts, hosted_unpriced=hosted_unpriced,
+                        )
             else:
                 model_name = self._qualified_model(
                     data.get("model") or usage.get("model") or s["model"] or ""
@@ -512,8 +559,8 @@ class BahulamStore:
                             "total": self._new_acc(),
                             "root": self._new_acc(),
                         }
-                    self._add_usage(entry["total"], usage)
-                    self._add_usage(entry["root"], usage)
+                    self._add_usage(entry["total"], usage, hosted_unpriced=hosted_unpriced)
+                    self._add_usage(entry["root"], usage, hosted_unpriced=hosted_unpriced)
 
             # Aggregate totals for the turn row
             total_in = self._int(usage.get("total_input_tokens", 0))
@@ -521,7 +568,10 @@ class BahulamStore:
             cr = self._int(usage.get("cache_read_input_tokens", 0))
             cw = self._int(usage.get("cache_creation_input_tokens", 0))
             inp = max(0, total_in - cr - cw)
-            _has_total_cost, total_cost = self._reported_cost(usage)
+            _has_total_cost, provider_cost = self._reported_cost(usage)
+            # Hosted turn: user paid credits_charged for THIS turn; provider
+            # cost is Bahulam COGS. BYOK / unknown: keep provider cost.
+            turn_cost = credits_charged if hosted_unpriced else provider_cost
 
             # Turn row for the Turns tab
             first_model = "unknown"
@@ -539,7 +589,7 @@ class BahulamStore:
                     "agent": "-",
                     "effort": "",
                     "model_name": first_model,
-                    "cost": float(total_cost),
+                    "cost": float(turn_cost),
                     "input": inp,
                     "output": out,
                     "reasoning": reasoning,
@@ -692,12 +742,19 @@ class BahulamStore:
         return rows
 
     def _workflow_rows(self, sessions: dict[str, dict]) -> list[Workflow]:
-        """Convert session dicts into a sorted list of ``Workflow`` rows."""
+        """Convert session dicts into a sorted list of ``Workflow`` rows.
+
+        Hosted sessions contribute their `credits_charged` sum as the user-
+        facing cost; BYOK/unknown sessions contribute the model_rows cost
+        (which is the provider cost). Both branches produce a single
+        `total_cost` column so the UI can display them uniformly.
+        """
         rows = []
         for sid, s in sessions.items():
             model_rows = s["model_rows"]
-            total_cost = sum(r["cost"] for r in model_rows)
+            model_cost = sum(r["cost"] for r in model_rows)
             root_cost = sum(r["root_cost"] for r in model_rows)
+            total_cost = model_cost + float(s.get("credits_charged", 0.0))
             rows.append(
                 Workflow(
                     id=sid,
@@ -806,6 +863,15 @@ class BahulamStore:
     def supports_turns(self, workflow_id: str) -> bool:
         """Indicate whether turn detail is available (always ``True``)."""
         return True
+
+    def supports_context_curve(self, workflow_id: str) -> bool:
+        """Bahulam ``complete`` events aggregate multiple internal LLM calls
+        (and often sub-agent rollups) into a single turn row. The
+        ``tokens_total`` on a turn is therefore not a per-request context
+        window snapshot, and rendering it as a context curve would mislead.
+        Opt out globally until Bahulam ships a per-request telemetry stream.
+        """
+        return False
 
     def tool_breakdown(self, workflow_id: str) -> list[dict]:
         """Return tool call rows for the tools tab."""

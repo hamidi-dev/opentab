@@ -104,16 +104,29 @@ def _default_zaly_dir() -> str:
 
 
 def _default_bahulam_dir() -> str:
-    """Return the default Bahulam Code projects directory."""
-    env = (os.environ.get("BAHULAM_PROJECTS_DIR") or "").strip()
-    if env:
-        return env
-    home = (os.environ.get("BAHULAM_HOME") or "").strip()
-    return (
-        os.path.join(os.path.expanduser(home), "projects")
-        if home
-        else os.path.expanduser("~/.bahulam/projects")
-    )
+    """Return the default Bahulam Code projects directory.
+
+    Resolution order (first match wins, empty values skipped):
+      1. ``$BAHULAM_PROJECTS_DIR`` — explicit override
+      2. ``$BAHULAM_HOME/projects`` — Bahulam home relocated
+      3. ``$KEPLER_HOME/projects`` — legacy alias from the Kepler-branded builds
+      4. ``~/.bahulam/projects``   — Bahulam default
+      5. ``~/.kepler/projects``    — legacy default, only if it exists on disk
+         (skipping this last-resort check would silently point at a phantom
+         path when neither install layout is present)
+    """
+    override = (os.environ.get("BAHULAM_PROJECTS_DIR") or "").strip()
+    if override:
+        return override
+    for env_name in ("BAHULAM_HOME", "KEPLER_HOME"):
+        home = (os.environ.get(env_name) or "").strip()
+        if home:
+            return os.path.join(os.path.expanduser(home), "projects")
+    bahulam_default = os.path.expanduser("~/.bahulam/projects")
+    kepler_legacy = os.path.expanduser("~/.kepler/projects")
+    if not os.path.isdir(bahulam_default) and os.path.isdir(kepler_legacy):
+        return kepler_legacy
+    return bahulam_default
 
 
 _PATH_SLOT = {
