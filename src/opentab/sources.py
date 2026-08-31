@@ -587,9 +587,10 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
     if key == "bahulam":
         if not _bahulam_available(getattr(args, "bahulam_dir", "")):
             raise SystemExit(
-                "No Bahulam Code sessions found. Point --bahulam-dir (or $BAHULAM_PROJECTS_DIR / "
-                "$BAHULAM_HOME) "
-                f"at ~/.bahulam/projects (looked in {getattr(args, 'bahulam_dir', '')})."
+                "No Bahulam Code sessions found. Point --bahulam-dir (or "
+                "$BAHULAM_PROJECTS_DIR / $BAHULAM_HOME / $KEPLER_HOME) at "
+                "~/.bahulam/projects (or ~/.kepler/projects if you migrated from "
+                f"Kepler) (looked in {getattr(args, 'bahulam_dir', '')})."
             )
         return BahulamStore(args.bahulam_dir, args), "OpenTab: loading Bahulam Code sessions…\r"
     kind, problem = opencode_db_verdict(args.db)

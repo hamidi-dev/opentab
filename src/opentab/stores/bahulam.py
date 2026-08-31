@@ -754,7 +754,14 @@ class BahulamStore:
             model_rows = s["model_rows"]
             model_cost = sum(r["cost"] for r in model_rows)
             root_cost = sum(r["root_cost"] for r in model_rows)
-            total_cost = model_cost + float(s.get("credits_charged", 0.0))
+            # Hosted (is_byok=false): model_cost is 0 (provider cost got
+            # routed to unpriced); credits_charged is what the user paid.
+            # BYOK / unknown: model_cost IS user spend; credits_charged
+            # should be 0 on the wire, but a stray non-zero would double-
+            # count against provider cost — refuse to add.
+            total_cost = model_cost
+            if s.get("is_byok") is False:
+                total_cost += float(s.get("credits_charged", 0.0))
             rows.append(
                 Workflow(
                     id=sid,
@@ -764,7 +771,7 @@ class BahulamStore:
                     root_cost=root_cost,
                     total_cost=total_cost,
                     subagents=len(s["subagents"]),
-                    model_count=0,
+                    model_count=0,  # filled by App._load_model_cache (matches every other store)
                     total_tokens=sum(r["tokens_total"] for r in model_rows),
                     unpriced_tokens=s["unpriced_tokens"],
                     source=self.source_name,

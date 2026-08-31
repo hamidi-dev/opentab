@@ -183,7 +183,8 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         "--bahulam-dir",
         default=_default_bahulam_dir(),
         help="Bahulam Code projects directory (for --harness bahulam); "
-        "honors $BAHULAM_PROJECTS_DIR, then $BAHULAM_HOME/projects; default ~/.bahulam/projects",
+        "honors $BAHULAM_PROJECTS_DIR, then $BAHULAM_HOME/projects, then $KEPLER_HOME/projects; "
+        "default ~/.bahulam/projects (falls back to ~/.kepler/projects if present)",
     )
     parser.add_argument(
         "--csv",
@@ -282,9 +283,8 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         metavar="DIR|SESSION",
         help="print the cost of the most recently active agent session (subagent "
         "subtree included) and exit, consulting every present harness backend "
-        "(OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, Zaly, Gemini); with DIR "
-        "only "
-        "(OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, Zaly, Bahulam Code); with DIR only "
+        "(OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, Zaly, Gemini, "
+        "Antigravity, Bahulam Code); with DIR only "
         "sessions of that project count, with a session id (ses_... or a UUID -- the "
         "id is matched to its own backend) exactly that session is priced, and "
         "--harness pins one backend. Made for a tmux status line: set -g "

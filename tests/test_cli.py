@@ -772,7 +772,10 @@ def test_verb_help_is_focused_but_globals_still_parse():
     # bahulam in cli.py's argparse choices; keep the assertion aligned with
     # that order so the help text doesn't drift out from under the test.
     assert "zaly · gemini · antigravity · bahulam · all (merged)" in compact_tui_help
-    assert "Zaly, Bahulam Code" in compact_tui_help
+    # The --status / cost help lists every backend in one clean parenthetical
+    # (previously two duplicated groups were smashed together by a bad
+    # conflict resolution, leaving "Zaly, Bahulam Code" as an artefact).
+    assert "Zaly, Gemini, Antigravity, Bahulam Code" in compact_tui_help
     # Hidden != gone: a suppressed global still parses on that verb.
     assert _parse(["pull", "--no-cache", "host"]).no_cache is True
     assert _parse(["export", "--harness", "claude"]).source == "claude"
