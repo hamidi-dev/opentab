@@ -20,6 +20,7 @@ _FLAGS = (
     "--db", "--claude-dir", "--codex-dir", "--hermes-db", "--copilot-dir",
     "--vscode-dir", "--pi-dir", "--omp-dir", "--openclaw-dir", "--zaly-dir",
     "--gemini-dir", "--antigravity-dir",
+    "--bahulam-dir",
 )  # fmt: skip
 
 # Anything in the ambient environment that would change a verdict.

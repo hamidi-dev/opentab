@@ -38,6 +38,7 @@ from opentab.sources import (
     SOURCE_LABELS,
     _default_antigravity_dir,
     _default_gemini_dir,
+    _default_bahulam_dir,
     _default_omp_dir,
     _default_openclaw_dir,
     _default_pi_dir,
@@ -98,15 +99,15 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
             "zaly",
             "gemini",
             "antigravity",
+            "bahulam",
             "all",
             "remote",
         ),
         default="auto",
         help="which harness's spend to browse: opencode · claude · codex · hermes · csv · "
         "jsonl · copilot · vscode · pi · omp · openclaw · zaly · gemini · antigravity · "
-        "all (merged) · "
-        "remote "
-        "(other machines, via pull/export). Default auto merges every present local "
+        "bahulam · all (merged) · "
+        "remote (other machines, via pull/export). Default auto merges every present local "
         "harness. Or just pass a file path -- e.g. `opentab requests.csv`. (--source is a "
         "deprecated alias for --harness)",
     )
@@ -177,6 +178,13 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         default=_default_antigravity_dir(),
         help="Gemini home directory holding antigravity/conversations/*.db (for "
         "--harness antigravity); honors $GEMINI_CLI_HOME, default ~/.gemini",
+    )
+    parser.add_argument(
+        "--bahulam-dir",
+        default=_default_bahulam_dir(),
+        help="Bahulam Code projects directory (for --harness bahulam); "
+        "honors $BAHULAM_PROJECTS_DIR, then $BAHULAM_HOME/projects, then $KEPLER_HOME/projects; "
+        "default ~/.bahulam/projects (falls back to ~/.kepler/projects if present)",
     )
     parser.add_argument(
         "--csv",
@@ -275,8 +283,8 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         metavar="DIR|SESSION",
         help="print the cost of the most recently active agent session (subagent "
         "subtree included) and exit, consulting every present harness backend "
-        "(OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, Zaly, Gemini); with DIR "
-        "only "
+        "(OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, Zaly, Gemini, "
+        "Antigravity, Bahulam Code); with DIR only "
         "sessions of that project count, with a session id (ses_... or a UUID -- the "
         "id is matched to its own backend) exactly that session is priced, and "
         "--harness pins one backend. Made for a tmux status line: set -g "
@@ -549,6 +557,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "zaly_dir",
             "gemini_dir",
             "antigravity_dir",
+            "bahulam_dir",
             "csv",
             "jsonl",
             "remotes",
@@ -1101,6 +1110,7 @@ _STATUS_SOURCES = (
     "zaly",
     "gemini",
     "antigravity",
+    "bahulam",
 )
 
 

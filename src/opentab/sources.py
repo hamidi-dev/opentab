@@ -13,6 +13,7 @@ from opentab.stores.antigravity import (
     CONVERSATION_DIRS as ANTIGRAVITY_DIRS,
 )
 from opentab.stores.antigravity import AntigravityStore, default_antigravity_dir
+from opentab.stores.bahulam import BahulamStore
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import ClaudeStore
 from opentab.stores.codex import CodexStore, codex_archive_dirs
@@ -102,6 +103,32 @@ def _default_zaly_dir() -> str:
     return default_zaly_data_dir()
 
 
+def _default_bahulam_dir() -> str:
+    """Return the default Bahulam Code projects directory.
+
+    Resolution order (first match wins, empty values skipped):
+      1. ``$BAHULAM_PROJECTS_DIR`` — explicit override
+      2. ``$BAHULAM_HOME/projects`` — Bahulam home relocated
+      3. ``$KEPLER_HOME/projects`` — legacy alias from the Kepler-branded builds
+      4. ``~/.bahulam/projects``   — Bahulam default
+      5. ``~/.kepler/projects``    — legacy default, only if it exists on disk
+         (skipping this last-resort check would silently point at a phantom
+         path when neither install layout is present)
+    """
+    override = (os.environ.get("BAHULAM_PROJECTS_DIR") or "").strip()
+    if override:
+        return override
+    for env_name in ("BAHULAM_HOME", "KEPLER_HOME"):
+        home = (os.environ.get(env_name) or "").strip()
+        if home:
+            return os.path.join(os.path.expanduser(home), "projects")
+    bahulam_default = os.path.expanduser("~/.bahulam/projects")
+    kepler_legacy = os.path.expanduser("~/.kepler/projects")
+    if not os.path.isdir(bahulam_default) and os.path.isdir(kepler_legacy):
+        return kepler_legacy
+    return bahulam_default
+
+
 _PATH_SLOT = {
     "csv": "csv",
     "jsonl": "jsonl",
@@ -117,6 +144,7 @@ _PATH_SLOT = {
     "zaly": "zaly_dir",
     "gemini": "gemini_dir",
     "antigravity": "antigravity_dir",
+    "bahulam": "bahulam_dir",
 }
 
 
@@ -270,6 +298,11 @@ def _antigravity_available(root_dir: str) -> bool:
     return False
 
 
+def _bahulam_available(root_dir: str) -> bool:
+    """Return ``True`` if *root_dir* contains at least one ``.jsonl`` file."""
+    return _jsonl_dir_available(root_dir)
+
+
 def _copilot_otel_available(args: argparse.Namespace) -> bool:
     if _jsonl_dir_available(getattr(args, "copilot_dir", "")):
         return True
@@ -314,6 +347,7 @@ SOURCE_LABELS = {
     "zaly": "Zaly",
     "gemini": "Gemini",
     "antigravity": "Antigravity",
+    "bahulam": "Bahulam Code",
     "all": "all",
 }
 
@@ -328,6 +362,7 @@ RESUME_COMMANDS = {
     "Zaly": "zaly --session",
     "Gemini": "gemini --resume",
     "Antigravity": "antigravity",
+    "Bahulam Code": "bahulam resume",
 }
 
 
@@ -350,6 +385,7 @@ def _detect_fingerprint(args: argparse.Namespace) -> tuple:
             "zaly_dir",
             "gemini_dir",
             "antigravity_dir",
+            "bahulam_dir",
         )
     ) + (os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH", ""),)
 
@@ -390,6 +426,8 @@ def available_sources(args: argparse.Namespace) -> list[str]:
         keys.append("gemini")
     if _antigravity_available(getattr(args, "antigravity_dir", "")):
         keys.append("antigravity")
+    if _bahulam_available(getattr(args, "bahulam_dir", "")):
+        keys.append("bahulam")
     args._available_sources = (fp, keys)
     return list(keys)
 
@@ -546,6 +584,15 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
             AntigravityStore(args.antigravity_dir, args),
             "OpenTab: loading Antigravity conversations…\r",
         )
+    if key == "bahulam":
+        if not _bahulam_available(getattr(args, "bahulam_dir", "")):
+            raise SystemExit(
+                "No Bahulam Code sessions found. Point --bahulam-dir (or "
+                "$BAHULAM_PROJECTS_DIR / $BAHULAM_HOME / $KEPLER_HOME) at "
+                "~/.bahulam/projects (or ~/.kepler/projects if you migrated from "
+                f"Kepler) (looked in {getattr(args, 'bahulam_dir', '')})."
+            )
+        return BahulamStore(args.bahulam_dir, args), "OpenTab: loading Bahulam Code sessions…\r"
     kind, problem = opencode_db_verdict(args.db)
     if kind:
         raise SystemExit(problem)
