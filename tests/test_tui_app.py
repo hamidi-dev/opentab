@@ -2923,7 +2923,8 @@ def test_machines_mode_models_tab_drills_into_sessions_using_a_model():
     assert set(keys) == {"opus", "haiku"}
     app.model_pick_index = keys.index("opus")
     app.drill_in()  # opus was used by both sessions
-    assert app.zoom_model == "opus" and app.on_sessions_tab
+    assert app.zoom_model == "opus" and app.current_tabs() == ("Economics", "Sessions")
+    assert app.current_tabs()[app.tab] == "Economics"
     assert {w.id for w in app.current_sessions()} == {"b", "c"}
     app.drill_out()
     assert app.zoom_model is None and app.on_models_tab
@@ -2954,11 +2955,53 @@ def test_month_models_tab_drills_into_sessions_using_a_model():
     assert keys == ["opus", "haiku"]  # cost-ranked, like the table
     app.model_pick_index = keys.index("haiku")
     app.drill_in()
-    assert app.zoom_model == "haiku" and app.on_sessions_tab
+    assert app.zoom_model == "haiku" and app.current_tabs()[app.tab] == "Economics"
     assert {w.id for w in app.current_sessions()} == {"c"}
+    app.tab = app.current_tabs().index("Sessions")
+    app.drill_in()
+    assert app.view == "session" and app.current_session().id == "c"
+    app.drill_out()
+    assert app.view == "zoom" and app.on_sessions_tab and app.zoom_model == "haiku"
     app.drill_out()
     assert app.zoom_model is None and app.on_models_tab
     assert {w.id for w in app.current_sessions()} == {"b", "c"}
+
+
+def test_the_renamed_metric_columns_keep_their_click_to_sort_zones():
+    # The header labels are the hit-test keys: a model scope renames Cost/Tokens, and a
+    # hard-coded label would leave the two columns it exists to rank by unclickable.
+    app = _month_app_with_models()
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.model_pick_index = [m for m, _ in app.zoom_model_rows()].index("opus")
+    app.drill_in()
+    app.tab = app.current_tabs().index("Sessions")
+    rnd = app.renderer
+
+    _models, proj_w, dur = rnd.session_columns(app.current_sessions(), 96)
+    header = rnd.session_header_text(_models, proj_w, dur)
+    rnd.sort_regions = []
+    rnd._register_sort_header(2, 1, header, rnd.session_sort_columns(proj_w, dur), "session", 96)
+
+    assert "Model list" in header and "Model tok" in header
+    assert rnd.sort_hit(2, 1 + header.index("Model list")) == ("cost", "session")
+    assert rnd.sort_hit(2, 1 + header.index("Model tok")) == ("tokens", "session")
+    assert rnd.sort_hit(2, 1 + header.index("Subagents")) == ("subagents", "session")
+
+
+def test_a_models_name_filter_does_not_become_a_session_filter_after_drilling():
+    app = _month_app_with_models()
+    app.focus = "months"
+    app.drill_in()
+    app.tab = app.current_tabs().index("Models")
+    app.query = "hai"
+
+    assert [m for m, _ in app.zoom_model_rows()] == ["haiku"]
+    app.drill_in()
+
+    assert app.zoom_model == "haiku" and app.query == ""
+    assert [w.id for w in app.current_sessions()] == ["c"]
 
 
 def test_a_model_drill_layers_on_another_drill_and_pops_first():
@@ -3049,6 +3092,7 @@ def test_a_model_drill_disarms_itself_when_its_data_moves_away():
     assert app.zoom_model is None and app.model_pick_index == 0
 
     app = armed()
+    app.tab = app.current_tabs().index("Sessions")
     app.toggle_ignore()  # ignoring the project drops the drill's sessions from view
     assert [w.id for w in app.current_sessions()] == ["j"]
     assert app.zoom_model is None
@@ -3347,7 +3391,7 @@ def test_the_breadcrumb_names_an_armed_model_drill():
     app.model_pick_index = [m for m, _ in app.zoom_model_rows()].index("opus")
     app.drill_in()
     crumb = app.renderer.breadcrumb()
-    assert crumb == "all time › 2026-05 › opus › Sessions"
+    assert crumb == "all time › 2026-05 › opus › Economics"
     app.drill_out()
     assert "opus" not in app.renderer.breadcrumb()
 

@@ -2,7 +2,7 @@ import os
 
 import opentab as ot
 
-from tests._support import FakeStore, app_with, workflow
+from tests._support import FakeStore, _model_row, app_with, workflow
 
 
 def test_export_dataset_follows_the_visible_view():
@@ -59,6 +59,26 @@ def test_export_follows_the_active_panel():
     assert scope == "models" and header[0] == "model"
     app.tab = app.month_tabs.index("Overview")
     assert app._export_dataset()[0] == "sessions"
+
+
+def test_model_scope_export_uses_the_model_values_visible_in_its_sessions_table():
+    w = workflow("a", "2026-06-01 12:00:00", cost=99, tokens=9_000_000)
+    app = app_with([w])
+    model = "anthropic/claude-opus-4.5"
+    row = _model_row(model, 4.0, 1_000_000, runs=3)
+    row["input"] = 1_000_000
+    app._model_by_root = {"a": [row]}
+    app.view = "zoom"
+    app.focus = "months"
+    app.zoom_model = model
+
+    scope, header, rows = app._export_dataset()
+
+    assert scope == "model-sessions"
+    assert rows[0][header.index("model")] == model
+    assert rows[0][header.index("model_tokens")] == 1_000_000
+    assert rows[0][header.index("model_list_cost")] != 99
+    assert rows[0][header.index("session_cost")] == 99
 
 
 def test_export_prices_overlay_exports_the_price_table():

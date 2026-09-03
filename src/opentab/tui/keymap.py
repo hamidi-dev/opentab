@@ -194,7 +194,9 @@ def _enter_opens_something(app: App) -> bool:
     if app.view == "browse":
         return True
     if app.view == "zoom":
-        return app.active_tab_name() in ("Sessions", "Projects", "Harnesses")
+        # Every pickerized tab, not just the three that shipped first: Models and
+        # Machines drill too, and a key the footer hides is a key nobody finds.
+        return app.active_tab_name() in ("Sessions", "Projects", "Harnesses", "Models", "Machines")
     if _on_turns(app):
         return True
     return False
@@ -209,6 +211,8 @@ def _enter_summary(app: App) -> str:
         return "open the selected session"
     if tab == "Turns":
         return "fold / unfold the selected ▸ prompt"
+    if tab == "Models":
+        return "this model's economics and sessions, within this scope"
     return "its sessions, within this scope"
 
 

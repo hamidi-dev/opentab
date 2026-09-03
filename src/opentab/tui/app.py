@@ -52,6 +52,7 @@ from opentab.pricing import (
     LOCAL_PROVIDERS,
     TOKEN_TYPES,
     api_equivalent_cost,
+    cache_write_1h_price,
     canonical_model,
     catalog_models,
     display_model,
@@ -1520,6 +1521,39 @@ class App:
         rows = self._model_by_root.get(workflow_id, [])
         return sorted(rows, key=lambda r: (r["cost"], r["tokens_total"]), reverse=True)
 
+    def model_session_usage(self, workflow_id: str, model: str) -> dict:
+        """Return one model's exact contribution to a session at list rates."""
+        runs = tokens = 0
+        list_cost = 0.0
+        estimated = False
+        for row in self._model_by_root.get(workflow_id, []):
+            if row.get("model_name") != model:
+                continue
+            split = model_row_split(row)
+            row_tokens = int(row.get("tokens_total") or sum(split))
+            runs += int(row.get("runs") or 0)
+            tokens += row_tokens
+            if not is_local_provider(model):
+                list_cost += api_equivalent_cost(model, *split, model_row_1h_write(row))
+                estimated = estimated or (row_tokens > 0 and not has_known_price(model))
+        return {
+            "runs": runs,
+            "tokens": tokens,
+            "list_cost": list_cost,
+            "estimated": estimated,
+        }
+
+    def model_scope_usage(self, workflows: list[Workflow], model: str) -> dict:
+        """Aggregate model_session_usage over the sessions in the active scope."""
+        total = {"runs": 0, "tokens": 0, "list_cost": 0.0, "estimated": False}
+        for workflow in workflows:
+            usage = self.model_session_usage(workflow.id, model)
+            total["runs"] += usage["runs"]
+            total["tokens"] += usage["tokens"]
+            total["list_cost"] += usage["list_cost"]
+            total["estimated"] = total["estimated"] or usage["estimated"]
+        return total
+
     def session_supports_tools(self, workflow_id: str) -> bool:
         # Capability is per session in a merged store; unsupported tabs stay absent.
         check = getattr(self.store, "supports_tools", None)
@@ -1839,7 +1873,9 @@ class App:
         # Preserve the 1h-write subset on both sides of the exact comparison.
         return baseline, api_equivalent_cost(target, *tokens, long_write)
 
-    def token_economics(self, workflows: list[Workflow]) -> TokenEconomics | None:
+    def token_economics(
+        self, workflows: list[Workflow], model: str | None = None
+    ) -> TokenEconomics | None:
         """Split priceable tokens and their list-rate cost by token type.
 
         Per-model rows preserve the producing rate card across model switches. Local
@@ -1853,6 +1889,8 @@ class App:
         for workflow in workflows:
             for row in self._model_by_root.get(workflow.id) or []:
                 name = str(row.get("model_name") or "")
+                if model is not None and name != model:
+                    continue
                 split = model_row_split(row)
                 if is_local_provider(name):
                     local_tokens += int(sum(split))
@@ -1865,7 +1903,10 @@ class App:
                 cost[1] += out * orr / 1e6
                 cost[2] += reasoning * orr / 1e6
                 cost[3] += cache_read * crr / 1e6
-                cost[4] += cache_write * cwr / 1e6
+                long_write = min(max(model_row_1h_write(row), 0.0), cache_write)
+                cost[4] += (
+                    (cache_write - long_write) * cwr + long_write * cache_write_1h_price(name)
+                ) / 1e6
                 if crr <= 0 and cache_read > 0 and ir > 0:
                     missing_cache_rate = True
                 if sum(split) > 0 and not has_known_price(name):
@@ -2697,6 +2738,42 @@ class App:
         ]
         return "sessions", header, rows
 
+    def _model_sessions_dataset(
+        self, sessions: list[Workflow], model: str
+    ) -> tuple[str, list[str], list[list]]:
+        header = [
+            "id",
+            "created_at",
+            "title",
+            "directory",
+            "model",
+            "model_list_cost",
+            "model_cost_estimated",
+            "model_tokens",
+            "model_messages",
+            "session_cost",
+            "session_tokens",
+        ]
+        rows = []
+        for workflow in sessions:
+            usage = self.model_session_usage(workflow.id, model)
+            rows.append(
+                [
+                    workflow.id,
+                    workflow.created_at,
+                    workflow.title,
+                    workflow.directory,
+                    model,
+                    usage["list_cost"],
+                    usage["estimated"],
+                    usage["tokens"],
+                    usage["runs"],
+                    workflow.total_cost,
+                    workflow.total_tokens,
+                ]
+            )
+        return "model-sessions", header, rows
+
     @staticmethod
     def _projects_dataset(projects: list[ProjectSummary]) -> tuple[str, list[str], list[list]]:
         header = ["directory", "cost", "tokens", "sessions", "subagents", "unpriced_tokens"]
@@ -3003,6 +3080,8 @@ class App:
 
     def _zoom_tab_dataset(self) -> tuple[str, list[str], list[list]]:
         tab = self._active_tab()
+        if self.zoom_model:
+            return self._model_sessions_dataset(self.current_sessions(), self.zoom_model)
         if tab == "Projects":
             return self._projects_dataset(self.zoom_projects())
         if tab == "Models":
@@ -3453,10 +3532,18 @@ class App:
     def sorted_workflows(self, rows: list[Workflow]) -> list[Workflow]:
         sort_by = self.session_sort_key()
         desc = self.sort_descending(sort_by, self.session_sort_reverse())
+        model = self.zoom_model
+
+        def model_values(item: Workflow) -> tuple[float, int]:
+            if not model:
+                return item.total_cost, item.total_tokens
+            usage = self.model_session_usage(item.id, model)
+            return float(usage["list_cost"]), int(usage["tokens"])
+
         if sort_by == "cost":
-            return sorted(rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=desc)
+            return sorted(rows, key=model_values, reverse=desc)
         if sort_by == "tokens":
-            return sorted(rows, key=lambda item: (item.total_tokens, item.total_cost), reverse=desc)
+            return sorted(rows, key=lambda item: tuple(reversed(model_values(item))), reverse=desc)
         if sort_by == "subagents":
             return sorted(rows, key=lambda item: (item.subagents, item.total_tokens), reverse=desc)
         if sort_by == "duration":
@@ -3474,9 +3561,7 @@ class App:
             # one project's sessions together. Costliest session stays first within
             # each group whichever way the project names run (the direction flip
             # reorders the groups, not their insides), hence the two stable passes.
-            by_cost = sorted(
-                rows, key=lambda item: (item.total_cost, item.total_tokens), reverse=True
-            )
+            by_cost = sorted(rows, key=model_values, reverse=True)
             return sorted(
                 by_cost, key=lambda item: self.project_root(item.directory).lower(), reverse=desc
             )
@@ -4367,11 +4452,10 @@ class App:
             model = self.zoom_selected_model()
             if model is not None:
                 self.zoom_model = model
+                self.query = ""  # the Models-name query must not become a session query
                 if self.browse_mode == "machines":  # a box's drills are mutually exclusive
                     self.zoom_source = self.zoom_project = None
-                tabs = self.current_tabs()
-                if "Sessions" in tabs:
-                    self.tab = tabs.index("Sessions")
+                self.tab = 0  # Economics is the model scope's landing page.
                 self.workflow_index = 0
                 self.scroll = 0
         elif self.view == "zoom" and self.on_machines_tab:
@@ -6802,6 +6886,11 @@ class App:
                 # per-backend opt-in (session_supports_context), absent not empty.
                 tabs += ("Context",)
             return tabs
+        if self.zoom_model:
+            # A model is a contribution scope, not merely a session membership filter.
+            # Keep its economics and attributed sessions together, with Esc returning to
+            # the model ranking that opened it.
+            return ("Economics", "Sessions")
         if self.browse_mode == "machines":
             base = self.machine_tabs
         elif self.browse_mode == "projects":

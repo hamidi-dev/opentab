@@ -1,6 +1,6 @@
 import opentab as ot
 
-from tests._support import AttrScreen, app_with, workflow
+from tests._support import AttrScreen, _model_row, app_with, workflow
 
 
 def test_jk_scrolls_the_help_overlay():
@@ -363,3 +363,23 @@ def test_the_footer_mode_chips_are_built_from_the_mode_table():
     app.set_browse_mode("machines")
     lit = [text for text, on in ot.tui.keymap._mode_segments(app) if on]
     assert lit == [app.keymap.label("main", "mode_machines")]
+
+
+def test_enter_is_offered_on_every_pickerized_zoom_tab():
+    # A drillable tab whose Enter the footer hides is a drill nobody finds: Models and
+    # Machines pick a row and open a scope exactly as Sessions/Projects/Harnesses do.
+    b = workflow("b", "2026-05-02 10:00:00", cost=9.0, directory="/work/alpha")
+    c = workflow("c", "2026-05-03 10:00:00", cost=1.0, directory="/work/beta")
+    app = app_with([b, c])
+    app._model_by_root = {"b": [_model_row("opus", 9.0, 900)], "c": [_model_row("haiku", 0.4, 40)]}
+    app.focus = "months"
+    app.drill_in()
+    enter = next(e for e in ot.keymap.KEYS if e.id == "enter")
+
+    for tab in ("Sessions", "Projects", "Models"):
+        app.tab = app.current_tabs().index(tab)
+        assert enter.shown(app), tab
+    app.tab = app.current_tabs().index("Models")
+    assert "economics" in enter.text(app)
+    app.tab = app.current_tabs().index("Overview")
+    assert not enter.shown(app)  # a static pane opens nothing

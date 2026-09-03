@@ -897,7 +897,7 @@ def test_web_context_points_carry_their_own_window():
     assert 100 * ctx["points"][peak_i]["v"] / windows[peak_i] < 100
 
 
-def _js_token_economics(payload, session_ids):
+def _js_token_economics(payload, session_ids, model=None):
     # The page's tokenEconomics(), transcribed: the same per-model rows and the same
     # per-type arithmetic the TUI's App.token_economics runs, so a drift between the two
     # implementations fails a test instead of quietly showing two different bills.
@@ -906,6 +906,8 @@ def _js_token_economics(payload, session_ids):
     tokens, cost, local_tokens = [0.0] * 5, [0.0] * 5, 0
     for sid in session_ids:
         for r in payload["models"].get(sid) or []:
+            if model is not None and r["model"] != model:
+                continue
             if r["model"] in local:
                 local_tokens += sum(r["tok"][:5])
                 continue
@@ -932,6 +934,11 @@ def test_web_token_economics_matches_the_tui_split_exactly():
         assert [round(v, 6) for v in tokens] == [round(v, 6) for v in econ.tokens]
         assert [round(v, 9) for v in cost] == [round(v, 9) for v in econ.cost]
         assert local_tokens == econ.local_tokens
+        model = "anthropic/claude-opus-4.5"
+        tokens, cost, _local = _js_token_economics(payload, ["root"], model)
+        model_econ = app.token_economics(app.loaded, model)
+        assert tokens == list(model_econ.tokens)
+        assert [round(v, 9) for v in cost] == [round(v, 9) for v in model_econ.cost]
     js = _js_source()
     # The pieces must stay pieces: summing them here would make the pane's TOTAL a second
     # implementation of the cost rather than a decomposition of the one on screen.
@@ -973,8 +980,21 @@ def test_web_models_tab_drills_in_place_in_every_scope():
     # the two that keep the gate, and the sessions list that reflects any armed drill
     assert "box ? (r => setMsub('project', r.project))" in body
     assert "box ? (r => setMsub('source', r.source))" in body
-    assert "sessionsTable('t-tab-sessions', msubFilter(ws))" in body
+    assert "'t-model-sessions' : 't-tab-sessions'" in body
     assert "if (MSUB) {" in js and "sc.kind === 'M' && MSUB" not in js
+    # A model opens a real two-tab contribution scope, not a list of sessions whose
+    # visible numbers still describe every model they used.
+    assert "TAB = dim === 'model' ? 'Economics' : 'Sessions'" in js
+    assert "return ['Economics', 'Sessions']" in js
+    assert "renderModelEconomics(root, ws)" in body
+    assert "label: 'Model list'" in js and "label: 'Model tok'" in js
+    assert "defaultSort: { key: model ? 'modelCost' : 'cost'" in js
+    assert "sessionsTable(MSUB && MSUB.dim === 'model' ? 't-model-sessions'" in body
+    assert "if (MSUB) { clearMsub();" in js  # Esc returns to the Models table
+    # `rates` carries a fallback card for EVERY used model so a mixed-model baseline
+    # drops no tokens -- so the attributed cost must exclude local models by name, the
+    # way App.model_session_usage does, rather than pricing them from that card.
+    assert "listCost: local ? 0 :" in js and "const local = WI_LOCAL.has(model);" in js
 
 
 def test_web_overview_closes_with_the_models_table():

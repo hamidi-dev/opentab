@@ -23,6 +23,16 @@ static host.
 - Combine with `--demo` for a page you can publish:
   `opentab --demo --html demo.html`.
 
+## Drilling a model
+
+Clicking a row of the **Models** tab drills into that model inside the scope you're
+looking at, exactly as the TUI does — the tab strip becomes **Economics** (what it cost
+here, split by token type) and **Sessions** (the sessions that used it, with **Model
+list** / **Model tok** columns carrying what *this model* accounts for, next to the
+session's own cost). Both are list rates: no harness records spend per model. The
+breadcrumb grows a `model: … ✕` chip, and `Esc` (or the chip) pops the drill before
+leaving the scope.
+
 ## `w` — the what-if model
 
 `w` opens a picker with two tiers — the models you've actually used (the ones with a

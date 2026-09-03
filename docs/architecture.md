@@ -140,8 +140,9 @@ which is what lets an open overlay act as the live preview behind them.
 
 `current_tabs()` is the source of truth for detail tabs (never index a class tab
 tuple directly): it appends Turns/Tools per the selected session's `supports_*`
-gates and injects Harnesses in the merged view, so `draw_detail` dispatches session
-tabs by name, not index.
+gates, injects Harnesses in the merged view, and replaces the scope's tabs with
+`("Economics", "Sessions")` while a Models-tab drill is armed (`zoom_model`) — so
+`draw_detail` dispatches session tabs by name, not index.
 
 ### Renderer
 

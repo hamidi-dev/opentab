@@ -61,6 +61,74 @@ def test_the_five_parts_sum_to_the_api_equivalent_total():
     assert econ.total_cost == sum(econ.cost)
 
 
+def test_a_model_scope_excludes_other_models_and_prices_long_writes_exactly():
+    target = _row(
+        "anthropic/claude-opus-4.5",
+        input=100_000,
+        output=20_000,
+        cache_write=80_000,
+    )
+    target["cache_write_1h"] = 60_000
+    other = _row("openai/gpt-5.5", input=9_000_000, output=1_000_000)
+    app = _app({"a": [target, other]})
+
+    econ = app.token_economics(app.loaded, "anthropic/claude-opus-4.5")
+
+    assert econ.tokens == (100_000, 20_000, 0, 0, 80_000)
+    assert (
+        abs(
+            econ.total_cost
+            - api_equivalent_cost(
+                target["model_name"],
+                target["input"],
+                target["output"],
+                0,
+                0,
+                target["cache_write"],
+                target["cache_write_1h"],
+            )
+        )
+        < 1e-9
+    )
+
+
+def test_the_model_scope_and_session_table_use_the_same_attributed_values():
+    model = "anthropic/claude-opus-4.5"
+    high_total = workflow("high", "2026-06-01 12:00:00", cost=99.0, tokens=9_000_000)
+    low_total = workflow("low", "2026-06-01 13:00:00", cost=1.0, tokens=2_000)
+    app = _app(
+        {
+            "high": [_row(model, input=1_000), _row("openai/gpt-5.5", output=8_999_000)],
+            "low": [_row(model, input=1_000_000), _row("openai/gpt-5.5", output=1_000)],
+        },
+        [high_total, low_total],
+    )
+    app.focus = "months"
+    app.view = "zoom"
+    app.zoom_model = model
+    app.sort_by = "cost"
+
+    # The cheap overall session leads because this list ranks the selected model's
+    # contribution, not the unrelated total session bill.
+    assert [w.id for w in app.current_sessions()] == ["low", "high"]
+    usage = app.model_scope_usage(app.current_sessions(), model)
+    assert usage["runs"] == 2 and usage["tokens"] == 1_001_000
+
+    lines = app.renderer.model_scope_overview(100)
+    text = "\n".join(lines)
+    assert "Model scope" in text and "Messages:   2" in text
+    assert "Token economics" in text and "9.0M" not in text
+
+    app.tab = app.current_tabs().index("Sessions")
+    models, project_w, duration = app.renderer.session_columns(app.current_sessions(), 100)
+    header = app.renderer.session_header_text(models, project_w, duration)
+    first = app.renderer.session_row_text(
+        app.current_sessions()[0], ">", models, project_w, duration
+    )
+    assert "Model list" in header and "Model tok" in header and "Models" not in header
+    assert "1.0M" in first and "$1.00" not in first
+
+
 def test_volume_and_spend_shares_disagree_which_is_the_point():
     rows = [_row("anthropic/claude-opus-4.5", output=50_000, cache_read=5_000_000)]
     econ = _app({"a": rows}).token_economics([workflow("a", "2026-06-01 12:00:00")])

@@ -20,7 +20,10 @@ sidebar, which stays clickable to re-scope in place; `+` maximizes/restores the
 detail pane (remembered between runs). The session view is full-screen.
 
 Detail tabs per scope: years/months get Overview · Models · Projects · Sessions;
-days drop Models. A session adds **Turns** (per-turn cost over time, every harness
+days drop Models. Drilling a row of the **Models** tab replaces them with that model's
+own two: **Economics** (what it cost here, split by token type) and **Sessions** (the
+sessions that used it, with the cost and tokens *it* accounts for) — see
+[Scope & filter](#scope--filter). A session adds **Turns** (per-turn cost over time, every harness
 that records per-step usage), **Tools** (per-tool / MCP spend) and **Context** (the
 context window's growth curve, % of the model's window, compaction markers, and —
 on harnesses whose logs carry content — an estimated breakdown of what filled it)
@@ -37,7 +40,7 @@ compaction.
 | `p` / `t` / `m` | Switch to the Projects / Time / Machines browse mode — Machines opens on `∑ all machines` (the whole fleet as one scope), then one row per box (just this one until you [`pull`](../README.md#fleet) another) |
 | `Tab` / `Shift-Tab` | Cycle focus Years → Months → Days (Time mode); Shift-Tab at the top steps back out |
 | `1` / `2` / `3` / `0` | Jump straight to a panel — **each panel wears its number in its title**, lazygit-style: the sidebar top to bottom (`[1] Years`, `[2] Months`, `[3] Days`; in Projects mode `[1] Projects`) and `[0]` the detail pane on the right, what `Enter` drills into. A digit jumps from anywhere: it steps out of a zoomed detail or an open session to get there |
-| `Enter` / `+` | Drill into the selection; on a Sessions / Projects / Harnesses / Models tab, open it in this scope; on the Turns tab, fold/unfold the selected `▸` prompt |
+| `Enter` / `+` | Drill into the selection; on a Sessions / Projects / Harnesses / Models / Machines tab, open it in this scope; on the Turns tab, fold/unfold the selected `▸` prompt |
 | `Esc` | Step back out — session → zoom → browse |
 | `h` / `l` | Switch detail tabs |
 | `j` / `k` | Move in the list (`↑`/`↓` too), or scroll the detail pane; on the Turns tab, move the `▸` prompt cursor |
@@ -66,6 +69,26 @@ the harness records cumulative-total deltas rather than per-request prompts
 | `f` or `/` | Live filter — fuzzy (fzf-style) over sessions (title/project/id/**note**) and projects; model lists (`P`, `w`) match word-anchored (letters may scatter inside a word, a new word only joins at its first letter — `opus48` works, `opus` no longer drags in `qwen3-c`**`o`**`der-`**`p`**`l`**`us`**), routes by substring. Non-ASCII (`ä`, `界`) can be typed. While filtering: `↑`/`↓` select · `Enter` keep · `Esc` cancel · `Ctrl-U` clear |
 | `x` | Clear the filter |
 
+### Drilling a model
+
+`Enter` on a row of the **Models** tab drills into that model *within the scope you're
+in* — the month, the year, the project, the box — which is the one thing Trends' and
+`P`'s model drills can't do (both are app-wide). It opens two tabs of its own:
+
+- **Economics** — how many sessions and messages used it here, its tokens, and its
+  spend split by token type (uncached input / output / reasoning / cache read / cache
+  write), the same chart every Overview carries.
+- **Sessions** — the sessions that used it, but with the two metric columns re-pointed
+  at the model: **Model list** and **Model tok** are what *this model* accounts for, not
+  the session's whole bill. So the list ranks by how much of the spend was really this
+  model's, and a cheap session that leaned on it sorts above an expensive one that
+  barely touched it. `e` exports those columns alongside the session totals.
+
+Both figures are **list rates** — no harness records recorded spend per model, so a
+per-model figure can only ever be priced from the catalog (hence the column name, a `~`
+where the rate is a guess, and no cost at all for a local model). `Esc` steps back to
+the Models table you came from.
+
 ## Sessions & projects
 
 Every session list carries a **Worked** column — how long the agent was *actually
@@ -85,7 +108,7 @@ worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock st
 | `n` | Note ✎ on the selected session — *why* it cost what it did, which no token count records. Opens a prompt seeded with the existing note (`Enter` saves · `Ctrl-U` clears · `Ctrl-W` kills a word · `Esc` cancels); saving an empty note removes it. An annotated session shows a `✎` in every list and the note in its **Overview**; `f`/`/` searches note text too, and `e` exports it as a `note` column. Notes live in their own `~/.local/share/opentab/notes.json` and are written the moment you save. Off under `--demo` / `--no-state` |
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the session in its own tool — `opencode --session` / `claude --resume` / `codex resume`. Then `w` window/tab · `s` right split · `v` lower split · `p` popup · `y` copy the command. tmux offers all spawn targets. Herdr offers a tab and both splits only when it provides a valid `HERDR_PANE_ID` for the current pane; otherwise it offers only the tab and copy. A [launcher hook](#custom-launchers) may offer all four. `y` copies anywhere. If tmux and Herdr are nested, OpenTab uses the innermost multiplexer. A session **pulled from another machine** reopens *there* only when its `remotes.json` entry has an SSH target: every available target wraps the command in `ssh -t <target> 'cd … && …'`, and `y` yanks that same line. A box reached by `url` (no SSH target) offers only the yank |
-| `e` | Export the current list to a CSV in the working directory |
+| `e` | Export the current list to a CSV in the working directory — whatever the pane is showing, including a model scope's attributed columns |
 
 ## Views & overlays
 

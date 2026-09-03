@@ -502,8 +502,17 @@ let BROWSE = 'time';
 let FOCUS = 'months';
 // In-place drills mirror TUI zoom drills. The single slot is transient and exclusive.
 let MSUB = null;
-function setMsub(dim, value) { MSUB = { dim, value }; TAB = 'Sessions'; render(false); }
-function clearMsub() { MSUB = null; render(false); }
+function setMsub(dim, value) {
+  MSUB = { dim, value };
+  TAB = dim === 'model' ? 'Economics' : 'Sessions';
+  render(false);
+}
+function clearMsub() {
+  const dim = MSUB && MSUB.dim;
+  MSUB = null;
+  if (dim === 'model') TAB = 'Models';
+  render(false);
+}
 // Navigation and range changes invalidate all state selected within the old scope.
 function resetScopeState() { FILTER = ''; EXPANDED.clear(); MSUB = null; }
 function msubFilter(ws) {
@@ -749,12 +758,30 @@ function whatifCost(tok, rates) {
   const write = (cw - long) * cwr + long * (cwr1h || cwr);
   return (inp * ir + (out + reason) * orr + cr * crr + write) / 1e6;
 }
+function modelSessionUsage(w, model) {
+  const rows = (DATA.models[w.id] || []).filter(r => r.model === model);
+  // A local model has no API rate, and `rates` carries a fallback for every used model:
+  // pricing one here would invent dollars the TUI's model_session_usage reports as none.
+  const local = WI_LOCAL.has(model);
+  return {
+    runs: sum(rows, r => r.runs),
+    tokens: sum(rows, r => r.tokens),
+    listCost: local ? 0 : sum(rows, r => whatifCost(r.tok, WI_PRICE.get(r.model))),
+    est: !local && rows.some(r => r.tokens > 0 && WI_UNPRICED.has(r.model)),
+  };
+}
+function modelScopeUsage(ws, model) {
+  const rows = ws.map(w => modelSessionUsage(w, model));
+  return { runs: sum(rows, r => r.runs), tokens: sum(rows, r => r.tokens),
+    listCost: sum(rows, r => r.listCost), est: rows.some(r => r.est) };
+}
 const TOK_TYPES = ['Uncached input', 'Output', 'Reasoning', 'Cache read', 'Cache write'];
 // Token economics always uses list rates: recorded spend has no per-token-type split.
-function tokenEconomics(ws) {
+function tokenEconomics(ws, model) {
   const tokens = [0, 0, 0, 0, 0], cost = [0, 0, 0, 0, 0];
   let local = 0, est = false, missingCache = false;
   ws.forEach(w => (DATA.models[w.id] || []).forEach(r => {
+    if (model && r.model !== model) return;
     // The sixth slot refines cache-write pricing and must not enter token totals.
     const tok = (r.tok || [0, 0, 0, 0, 0]).slice(0, 5);
     const long1h = Math.min(Math.max((r.tok || [])[5] || 0, 0), tok[4] || 0);
@@ -1021,6 +1048,7 @@ function tabsFor(sc) {
     }
     return t;
   }
+  if (MSUB && MSUB.dim === 'model') return ['Economics', 'Sessions'];
   const base = { all: ['Overview', 'Models', 'Projects', 'Sessions'],
     y: ['Overview', 'Models', 'Projects', 'Sessions'],
     m: ['Overview', 'Models', 'Projects', 'Sessions'],
@@ -1147,8 +1175,8 @@ function tokShare(v, tot) {
 }
 
 // Keep one token-type colour across both bars and the non-sortable detail table.
-function tokenEconomicsPane(ws, label) {
-  const e = tokenEconomics(ws);
+function tokenEconomicsPane(ws, label, model) {
+  const e = tokenEconomics(ws, model);
   if (!e) return null;
   const approx = e.est ? '~' : '';
   const SER = tokSeries();
@@ -1197,6 +1225,23 @@ function tokenEconomicsPane(ws, label) {
       + 'type your spend went to, so this is the only decomposition there is'),
     body,
     notes.map(n => h('div', { class: 'hint' }, n)));
+}
+
+function renderModelEconomics(root, ws) {
+  const model = MSUB && MSUB.dim === 'model' ? MSUB.value : null;
+  if (!model) return;
+  const rows = msubFilter(ws), usage = modelScopeUsage(rows, model);
+  const local = WI_LOCAL.has(model);
+  root.appendChild(pane('Model · ' + model, tiles([
+    ['sessions', rows.length.toLocaleString('en-US')],
+    ['messages', usage.runs.toLocaleString('en-US')],
+    ['tokens', hTok(usage.tokens)],
+    ['list cost', local ? 'local model' : (usage.est ? '~' : '') + money(usage.listCost), null, !local],
+  ])));
+  const econ = tokenEconomicsPane(rows, model, model);
+  if (econ) root.appendChild(econ);
+  else root.appendChild(pane('Token economics · ' + model,
+    h('div', { class: 'hint' }, 'No API list rate: token volume is shown above without inventing spend.')));
 }
 
 // Width follows the live Cost column. Nodes expose depth but not parentage, so all
@@ -1340,29 +1385,39 @@ function filterInput() {
     oninput: e => { FILTER = e.target.value; render(false); const el = document.getElementById('filter-input');
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } } });
 }
-function sessionCols() {
+function sessionCols(model) {
   const cols = [
     { key: 'date', label: 'Date', align: 'r', fmt: r => h('span', { class: 'dim' }, dt(r.date)) },
     { key: 'dur', label: 'Worked', align: 'r', sortVal: r => r.dur || 0,
       fmt: r => r.dur == null ? h('span', { class: 'mut' }, '·') : h('span', { class: 'dim' }, hDur(r.dur)) },
     { key: 'title', label: 'Title', asc: true, sortVal: r => r.title.toLowerCase(), cls: 'grow' },
     { key: 'project', label: 'Project', asc: true, sortVal: r => projName(r.project).toLowerCase(), fmt: r => h('span', { class: 'dim' }, projName(r.project)) },
-    { key: 'cost', label: 'Cost', align: 'r', sortVal: cost, fmt: r => moneyCell(cost(r)) },
-    { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
-    { key: 'subagents', label: 'Subagents', align: 'r', fmt: r => r.subagents || h('span', { class: 'mut' }, '·') },
   ];
+  if (model) cols.push(
+    { key: 'modelCost', label: 'Model list', align: 'r',
+      fmt: r => [r.modelEst ? '~' : null, moneyCell(r.modelCost)] },
+    { key: 'modelTokens', label: 'Model tok', align: 'r', fmt: r => hTok(r.modelTokens) },
+    { key: 'cost', label: 'Session cost', align: 'r', sortVal: cost, fmt: r => moneyCell(cost(r)) });
+  else cols.push(
+    { key: 'cost', label: 'Cost', align: 'r', sortVal: cost, fmt: r => moneyCell(cost(r)) },
+    { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) });
+  cols.push({ key: 'subagents', label: 'Subagents', align: 'r', fmt: r => r.subagents || h('span', { class: 'mut' }, '·') });
   if (META.combined) cols.push({ key: 'source', label: 'Hns', asc: true, fmt: r => h('span', { class: 'mut' }, r.source) });
   if (META.machines) cols.push({ key: 'machine', label: 'Machine', asc: true, fmt: r => h('span', { class: 'mut' }, r.machine || '?') });
   return cols;
 }
-function sessionsTable(id, ws) {
+function sessionsTable(id, ws, model) {
   let rows = ws;
   if (FILTER) {
     const q = FILTER.toLowerCase();
     rows = ws.filter(w => (w.title + ' ' + w.project + ' ' + w.id).toLowerCase().includes(q));
   }
+  if (model) rows = rows.map(w => {
+    const usage = modelSessionUsage(w, model);
+    return { ...w, modelCost: usage.listCost, modelTokens: usage.tokens, modelEst: usage.est };
+  });
   return h('div', null, filterInput(),
-    table(id, sessionCols(), rows, { defaultSort: { key: 'cost', desc: true }, collapse: 25,
+    table(id, sessionCols(model), rows, { defaultSort: { key: model ? 'modelCost' : 'cost', desc: true }, collapse: 25,
       onRow: r => { go('s', r.id); } }));
 }
 function topSessionsTable(id, ws, n) {
@@ -2071,7 +2126,8 @@ function renderDetail(sc, ws) {
   // Model drills stay in place everywhere; project/harness drills do so only inside a
   // machine scope, matching the TUI's partition axes.
   const box = sc.kind === 'M';
-  if (TAB === 'Overview') renderOverview(root, sc, ws);
+  if (TAB === 'Economics') renderModelEconomics(root, ws);
+  else if (TAB === 'Overview') renderOverview(root, sc, ws);
   else if (TAB === 'Models') {
     const rows = sc.kind === 's' ? (DATA.models[sc.id] || []).map(r => ({ ...r })) : modelAgg(ws);
     root.appendChild(pane('Models · ' + scopeLabel(sc),
@@ -2079,7 +2135,8 @@ function renderDetail(sc, ws) {
   } else if (TAB === 'Projects') root.appendChild(pane('Projects · ' + scopeLabel(sc),
     projectsTable('t-tab-projects', ws, undefined, box ? (r => setMsub('project', r.project)) : undefined)));
   else if (TAB === 'Sessions') root.appendChild(pane('Sessions · ' + scopeLabel(sc),
-    sessionsTable('t-tab-sessions', msubFilter(ws))));
+    sessionsTable(MSUB && MSUB.dim === 'model' ? 't-model-sessions' : 't-tab-sessions',
+      msubFilter(ws), MSUB && MSUB.dim === 'model' ? MSUB.value : null)));
   else if (TAB === 'Harnesses') root.appendChild(pane('Harnesses · ' + scopeLabel(sc),
     sourcesTable('t-tab-sources', ws, box ? (r => setMsub('source', r.source)) : null)));
   else if (TAB === 'Machines') root.appendChild(pane('Machines · ' + scopeLabel(sc), machinesTable('t-tab-machines', ws)));
@@ -2141,7 +2198,7 @@ function renderCrumbs(sc) {
     if (i) el.appendChild(h('span', { class: 'sep' }, '/'));
     el.appendChild(href ? h('a', { href }, label) : h('span', { class: 'here' }, label));
   });
-  // The chip is the browser's explicit exit from an in-place drill; Esc leaves the scope.
+  // The chip is the browser's explicit exit from an in-place drill; Esc pops it first.
   if (MSUB) {
     const lab = { source: 'harness', project: 'project', model: 'model' }[MSUB.dim];
     const val = MSUB.dim === 'project' ? projName(MSUB.value) : MSUB.value;
@@ -2734,6 +2791,7 @@ document.addEventListener('keydown', e => {
   } else if (e.key === 'Escape') {
     // Escape leaves a visible prompt drill before popping the route scope.
     if (TURN_DRILL != null && TAB === 'Turns') { TURN_DRILL = null; render(false); e.preventDefault(); return; }
+    if (MSUB) { clearMsub(); e.preventDefault(); return; }
     const multiYear = distinctYears(W).length > 1;
     if (sc.kind === 's') sc.day ? go('d', sc.day) : go('', '');
     else if (sc.kind === 'd') go('m', sc.month);
@@ -2764,7 +2822,7 @@ function render(scrollTop = true) {
   if (!order.includes(FOCUS)) FOCUS = order[0];
   ensureExtras(sc);
   const tabs = tabsFor(sc);
-  if (!tabs.includes(TAB)) TAB = 'Overview';
+  if (!tabs.includes(TAB)) TAB = tabs[0];
   const ws = scopeWorkflows(sc);
   chrome();
   renderSidebar(sc);

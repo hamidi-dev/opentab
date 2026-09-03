@@ -71,6 +71,7 @@ from opentab.pricing import (
     api_equivalent_cost,
     cache_misses,
     family_label,
+    is_local_provider,
     model_context_window,
     model_price,
     price_source_meta,
@@ -807,6 +808,8 @@ class Renderer:
             segs.append("machines")
             if machine:
                 segs.append(self.machine_crumb(machine))
+            if self.zoom_model:
+                segs.append(self.zoom_model)
             segs.append(tab_name)
             return sep.join(s for s in segs if s)
         if self.browse_mode == "projects" and self.view != "session":
@@ -814,7 +817,7 @@ class Renderer:
             segs.append("projects")
             if project:
                 segs.append(short_path(project.directory, 34))
-            segs.extend(self._drill_crumbs(self.on_sessions_tab))
+            segs.extend(self._drill_crumbs(self.on_sessions_tab or bool(self.zoom_model)))
             segs.append(tab_name)
             return sep.join(s for s in segs if s)
         if self.view == "session":
@@ -843,25 +846,25 @@ class Renderer:
         elif self.focus == "years":
             if self.focused_year:
                 segs.append(self.focused_year)
-            if self.zoom_project and self.on_sessions_tab:
+            if self.zoom_project and (self.on_sessions_tab or self.zoom_model):
                 segs.append(short_path(self.zoom_project, 24))
-            segs.extend(self._drill_crumbs(self.on_sessions_tab))
+            segs.extend(self._drill_crumbs(self.on_sessions_tab or bool(self.zoom_model)))
             segs.append(tab_name)
         elif self.focus == "months":
             if self.focused_month:
                 segs.append(self.focused_month)
-            if self.zoom_project and self.on_sessions_tab:
+            if self.zoom_project and (self.on_sessions_tab or self.zoom_model):
                 segs.append(short_path(self.zoom_project, 24))
-            segs.extend(self._drill_crumbs(self.on_sessions_tab))
+            segs.extend(self._drill_crumbs(self.on_sessions_tab or bool(self.zoom_model)))
             segs.append(tab_name)
         else:
             if self.focused_month:
                 segs.append(self.focused_month)
             if self.active_day:
                 segs.append(self.active_day)
-            if self.zoom_project and self.on_sessions_tab:
+            if self.zoom_project and (self.on_sessions_tab or self.zoom_model):
                 segs.append(short_path(self.zoom_project, 24))
-            segs.extend(self._drill_crumbs(self.on_sessions_tab))
+            segs.extend(self._drill_crumbs(self.on_sessions_tab or bool(self.zoom_model)))
             segs.append(tab_name)
         return sep.join(s for s in segs if s)
 
@@ -1062,18 +1065,46 @@ class Renderer:
             (False, 0, True),
             (False, 0, False),
         ):
+            if self.view == "zoom" and self.zoom_model:
+                # The selected model is already the scope; a Models-count column says
+                # nothing and is the first width the attributed session list should shed.
+                models = False
             prefix = len(self.session_header_text(models, proj, dur)) - len(title)
             if width - prefix >= self.SESSION_TITLE_MIN:
                 return models, proj, dur
         return False, 0, False
 
+    def session_metric_labels(self) -> tuple[str, str]:
+        # A model scope attributes the two metric columns to the selected model, so they
+        # are renamed. One source for the printed heading AND the click hit-test label:
+        # _register_sort_header finds a column by searching the DRAWN header for its
+        # label, so a renamed column whose SESSION_SORT_COLUMNS entry still said "Cost"
+        # silently lost its sort zone -- the header stayed clickable-looking and did
+        # nothing, on the two columns this scope exists to rank by.
+        if self.view == "zoom" and bool(self.zoom_model):
+            return "Model list", "Model tok"
+        return "Cost", "Tokens"
+
+    def session_metric_headings(self) -> tuple[str, str, int, int]:
+        model_scope = self.view == "zoom" and bool(self.zoom_model)
+        cost_label, token_label = self.session_metric_labels()
+        cost = self.sort_heading("cost", cost_label)
+        token = self.sort_heading("tokens", token_label)
+        return (
+            cost,
+            token,
+            max(10 if model_scope else 9, len(cost)),
+            max(9 if model_scope else 8, len(token)),
+        )
+
     def session_header_text(self, models: bool, proj_w: int, dur: bool = True) -> str:
+        cost, token, cost_w, token_w = self.session_metric_headings()
         header = f"  {self.sort_heading(*self.session_date_column()):<10} "
         if dur:
             header += f"{self.sort_heading('duration', 'Worked'):>8} "
         header += (
-            f"{self.sort_heading('cost', 'Cost'):>9} "
-            f"{self.sort_heading('tokens', 'Tokens'):>8} "
+            f"{cost:>{cost_w}} "
+            f"{token:>{token_w}} "
             f"{self.sort_heading('subagents', 'Subagents'):>11} "
         )
         if models:
@@ -1103,12 +1134,20 @@ class Renderer:
     def session_row_text(
         self, workflow: Workflow, marker: str, models: bool, proj_w: int, dur: bool = True
     ) -> str:
+        if self.view == "zoom" and self.zoom_model:
+            usage = self.model_session_usage(workflow.id, self.zoom_model)
+            cost, token_count = float(usage["list_cost"]), int(usage["tokens"])
+            cost_text = ("~" if usage["estimated"] else "") + money(cost)
+        else:
+            cost, token_count = workflow.total_cost, workflow.total_tokens
+            cost_text = money(cost)
+        _cost_head, _token_head, cost_w, token_w = self.session_metric_headings()
         text = f"{marker} {self.session_date_cell(workflow):<10} "
         if dur:
             text += f"{self.session_duration(workflow):>8} "
         text += (
-            f"{money(workflow.total_cost):>9} "
-            f"{human_tokens(workflow.total_tokens):>8} "
+            f"{cost_text:>{cost_w}} "
+            f"{human_tokens(token_count):>{token_w}} "
             f"{workflow.subagents:>11} "
         )
         if models:
@@ -1128,12 +1167,22 @@ class Renderer:
         # Sum only quantitative fields. Worked excludes unknown values and stays blank
         # when no backend supplied it.
         worked = [wf.worked_seconds for wf in sessions if wf.worked_seconds is not None]
+        if self.view == "zoom" and self.zoom_model:
+            usage = self.model_scope_usage(sessions, self.zoom_model)
+            total_cost = float(usage["list_cost"])
+            total_tokens = int(usage["tokens"])
+            cost_text = ("~" if usage["estimated"] else "") + money(total_cost)
+        else:
+            total_cost = sum(wf.total_cost for wf in sessions)
+            total_tokens = sum(wf.total_tokens for wf in sessions)
+            cost_text = money(total_cost)
+        _cost_head, _token_head, cost_w, token_w = self.session_metric_headings()
         text = f"  {pad('TOTAL', 10)} "
         if dur:
             text += f"{human_duration(sum(worked)) if worked else '':>8} "
         text += (
-            f"{money(sum(wf.total_cost for wf in sessions)):>9} "
-            f"{human_tokens(sum(wf.total_tokens for wf in sessions)):>8} "
+            f"{cost_text:>{cost_w}} "
+            f"{human_tokens(total_tokens):>{token_w}} "
             f"{sum(wf.subagents for wf in sessions):>11} "
         )
         if models:
@@ -1144,7 +1193,14 @@ class Renderer:
         return text
 
     def session_sort_columns(self, proj_w: int, dur: bool = True) -> tuple:
-        columns = [self.session_date_column(), *self.SESSION_SORT_COLUMNS]
+        # Take the two metric labels from the header builder rather than the constant:
+        # in a model scope they read "Model list"/"Model tok" and a hard-coded "Cost"
+        # is a label no drawn header contains.
+        metrics = dict(zip(("cost", "tokens"), self.session_metric_labels()))
+        columns = [
+            self.session_date_column(),
+            *((key, metrics.get(key, label)) for key, label in self.SESSION_SORT_COLUMNS),
+        ]
         if dur:
             columns.insert(1, ("duration", "Worked"))  # right after the date cell
         if proj_w:
@@ -1373,6 +1429,13 @@ class Renderer:
         self._add_rows_region("session", body_y, x, x + w - 1, start, len(shown))
         for off, wf in enumerate(shown):
             marker = ">" if start + off == idx else " "
+            if self.zoom_model:
+                usage = self.model_session_usage(wf.id, self.zoom_model)
+                cost_text = ("~" if usage["estimated"] else "") + money(float(usage["list_cost"]))
+                token_text = human_tokens(int(usage["tokens"]))
+            else:
+                cost_text = money(wf.total_cost)
+                token_text = human_tokens(wf.total_tokens)
             self.paint_picker_row(
                 stdscr,
                 body_y + off,
@@ -1381,8 +1444,8 @@ class Renderer:
                 inner,
                 self.session_row_text(wf, marker, models, proj_w, dur),
                 start + off == idx,
-                money(wf.total_cost),
-                human_tokens(wf.total_tokens),
+                cost_text,
+                token_text,
             )
 
     def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
@@ -1709,7 +1772,9 @@ class Renderer:
         if current == "Machines" and self.view == "zoom":
             self.draw_machines_picker(stdscr, y, x, h, w)
             return
-        if current == "Overview":
+        if current == "Economics":
+            lines = self.model_scope_overview(w - 4)
+        elif current == "Overview":
             lines = self.project_overview(project, w - 4)
         elif current == "Harnesses":
             lines = self.project_sources(project, w - 4)
@@ -1795,7 +1860,9 @@ class Renderer:
         if current == "Projects" and self.view == "zoom":
             self.draw_projects_picker(stdscr, y, x, h, w)
             return
-        if current == "Overview":
+        if current == "Economics":
+            lines = self.model_scope_overview(w - 4)
+        elif current == "Overview":
             lines = self.machine_overview(machine, w - 4)
         elif current == "Harnesses":
             lines = self.machine_sources(machine, w - 4)
@@ -1927,7 +1994,9 @@ class Renderer:
         if current == "Machines" and self.view == "zoom":
             self.draw_machines_picker(stdscr, y, x, h, w)
             return
-        if current == "Overview":
+        if current == "Economics":
+            lines = self.model_scope_overview(w - 4)
+        elif current == "Overview":
             lines = self.year_overview(year, w - 4)
         elif current == "Harnesses":
             lines = self.year_sources(year, w - 4)
@@ -1967,7 +2036,9 @@ class Renderer:
         if current == "Machines" and self.view == "zoom":
             self.draw_machines_picker(stdscr, y, x, h, w)
             return
-        if current == "Overview":
+        if current == "Economics":
+            lines = self.model_scope_overview(w - 4)
+        elif current == "Overview":
             lines = self.month_overview(month, w - 4)
         elif current == "Harnesses":
             lines = self.month_sources(month, w - 4)
@@ -2063,7 +2134,9 @@ class Renderer:
         if current == "Machines" and self.view == "zoom":
             self.draw_machines_picker(stdscr, y, x, h, w)
             return
-        if current == "Overview":
+        if current == "Economics":
+            lines = self.model_scope_overview(w - 4)
+        elif current == "Overview":
             lines = self.day_overview(day, w - 4)
         elif current == "Harnesses":
             lines = self.day_sources(day, w - 4)
@@ -2546,10 +2619,12 @@ class Renderer:
             lines.append(text)
         return lines
 
-    def _token_economics_box(self, workflows: list[Workflow], width: int) -> list[str]:
+    def _token_economics_box(
+        self, workflows: list[Workflow], width: int, model: str | None = None
+    ) -> list[str]:
         # Compare token volume with list-price spend using one color per token type.
         # Recorded cost is not decomposable, so this box always uses list rates.
-        econ = self.app.token_economics(workflows)
+        econ = self.app.token_economics(workflows, model)
         if econ is None:
             return self._ruled_box(
                 "# Token economics", "no priceable usage here", [], None, [], width
@@ -2626,6 +2701,34 @@ class Renderer:
         self._mark_box_header(table[0], width)
         title = f"# Token economics · {approx}{money(econ.total_cost)} at list rates"
         return self._sectioned_box(title, [chart, table, total_row], width, notes)
+
+    def model_scope_overview(self, width: int) -> list[str]:
+        """Show one selected model's contribution inside the current zoom scope."""
+        model = self.zoom_model
+        if not model:
+            return ["No model selected."]
+        workflows = self.current_sessions()
+        usage = self.model_scope_usage(workflows, model)
+        if is_local_provider(model):
+            list_cost = "- (local model)"
+        else:
+            approx = "~" if usage["estimated"] else ""
+            list_cost = approx + money(float(usage["list_cost"]))
+        card = min(width, self.CARD_WIDTH)
+        lines = self._stat_card(
+            "# Model scope",
+            [
+                f"Model:      {shorten(model, max(20, card - 16))}",
+                f"Sessions:   {len(workflows)}",
+                f"Messages:   {int(usage['runs'])}",
+                f"Tokens:     {human_tokens(int(usage['tokens']))}",
+                f"List cost:  {list_cost}",
+            ],
+            width,
+        )
+        lines.append("")
+        lines.extend(self._token_economics_box(workflows, width, model))
+        return lines
 
     def _top_sessions_box(
         self, workflows: list[Workflow], scope_cost: float, width: int

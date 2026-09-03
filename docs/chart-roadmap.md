@@ -65,7 +65,9 @@ is the gap between the bars, which is why they share a scale and a colour per ty
 - **What it showed** — cache reads are 94.8% of tokens and 59.2% of spend; output is
   0.49% of tokens and 15.5% of spend. An output token costs 50× a cache-read token.
   Cache reads billed at the input rate instead would have been **+$30,928**.
-- **Where** — Overview of every scope, plus the session Overview.
+- **Where** — Overview of every scope, the session Overview, and the **Economics** tab
+  of a model drill, where `App.token_economics` takes a `model` argument and the same
+  box answers "what did this one model cost in this scope".
 - **Effort** — medium. `App.token_economics` (shared) + a sectioned box with a paint
   side-channel (TUI) + a pane with its own bars (web).
 
