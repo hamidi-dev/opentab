@@ -31,7 +31,12 @@ here, split by token type) and **Sessions** (the sessions that used it, with **M
 list** / **Model tok** columns carrying what *this model* accounts for, next to the
 session's own cost). Both are list rates: no harness records spend per model. The
 breadcrumb grows a `model: … ✕` chip, and `Esc` (or the chip) pops the drill before
-leaving the scope.
+leaving the scope. Open one of those sessions and `Esc` (or the browser's Back button)
+steps back **into** the model, not out to the session's day — the one hop a drill
+survives. Anything else you navigate to drops it, like every other in-place drill.
+
+It isn't a deep link, though: a drill lives in the page, not the URL, so a link you copy
+from a model scope points at the scope, not at the model.
 
 ## `w` — the what-if model
 

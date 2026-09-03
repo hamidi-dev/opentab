@@ -997,6 +997,28 @@ def test_web_models_tab_drills_in_place_in_every_scope():
     assert "listCost: local ? 0 :" in js and "const local = WI_LOCAL.has(model);" in js
 
 
+def test_web_a_session_opened_from_a_drill_steps_back_into_it():
+    # The drill lives in a variable, not the hash, and Esc from a session routes to that
+    # session's DAY -- so without the one remembered hop, opening a session out of a model
+    # scope and coming back lands somewhere else with the drill silently gone (the TUI
+    # keeps it: test_month_models_tab_drills_into_sessions_using_a_model).
+    js = _js_source()
+    assert "onRow: r => { openSession(r.id); }" in js
+    assert "RETURN = MSUB ? { from: location.hash, to, msub: MSUB, tab: TAB } : null;" in js
+    # Restored inside resetScopeState, so the browser's Back button returns through the
+    # same check as Esc; the offer is dropped as soon as we are anywhere else.
+    assert "const back = !!RETURN && location.hash === RETURN.from;" in js
+    assert "MSUB = back ? RETURN.msub : null;" in js
+    assert "if (back || !RETURN || location.hash !== RETURN.to) RETURN = null;" in js
+    assert (
+        "if (sc.kind === 's' && RETURN && location.hash === RETURN.to) location.hash = RETURN.from;"
+        in js
+    )
+    # The Overview's Top sessions is NOT drill-scoped, so it keeps the plain navigation.
+    top = js.split("function topSessionsTable(", 1)[1].split("\nfunction ", 1)[0]
+    assert "go('s', r.id)" in top
+
+
 def test_web_overview_closes_with_the_models_table():
     js = _js_source()
     body = js.split("function renderOverview(", 1)[1].split("\nfunction ", 1)[0]
@@ -1418,8 +1440,11 @@ def test_web_prompt_rows_name_the_subagents_that_ran_them():
 
 def test_web_a_range_change_forgets_the_scope_state_itself():
     js = _js_source()
-    reset = "function resetScopeState() { FILTER = ''; EXPANDED.clear(); MSUB = null; }"
-    assert reset in js
+    reset = js.split("function resetScopeState() {", 1)[1].split("\n}", 1)[0]
+    assert "FILTER = '';" in reset and "EXPANDED.clear();" in reset
+    # A drill is per-scope too -- it survives exactly one hop, the way back into the
+    # scope it was armed in, and a range change is never that hop.
+    assert "MSUB = back ? RETURN.msub : null;" in reset
     body = js.split("function applyRange(", 1)[1].split("\nfunction ", 1)[0]
     assert "resetScopeState();" in body
     # ...and it happens BEFORE the render that paints the new range.

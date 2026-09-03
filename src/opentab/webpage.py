@@ -513,8 +513,27 @@ function clearMsub() {
   if (dim === 'model') TAB = 'Models';
   render(false);
 }
-// Navigation and range changes invalidate all state selected within the old scope.
-function resetScopeState() { FILTER = ''; EXPANDED.clear(); MSUB = null; }
+// A drill lives in a variable, not the hash, so opening a session out of a drilled scope
+// would silently drop it -- and Esc from a session routes to that session's DAY, not back
+// to the scope it was opened from, so nothing else can restore it. Remember the one hop.
+let RETURN = null;
+function openSession(id) {
+  const to = '#/s/' + encodeURIComponent(id);
+  RETURN = MSUB ? { from: location.hash, to, msub: MSUB, tab: TAB } : null;
+  location.hash = to;
+}
+// Navigation and range changes invalidate all state selected within the old scope -- the
+// one exception being the hop straight back into the scope a drill was armed in, which
+// both Esc and the browser's Back button make by restoring that exact hash.
+function resetScopeState() {
+  FILTER = '';
+  EXPANDED.clear();
+  const back = !!RETURN && location.hash === RETURN.from;
+  MSUB = back ? RETURN.msub : null;
+  if (back) TAB = RETURN.tab;
+  // The offer stands exactly as long as we are in the session it was made from.
+  if (back || !RETURN || location.hash !== RETURN.to) RETURN = null;
+}
 function msubFilter(ws) {
   if (!MSUB) return ws;
   // Filter against the same normalized key that sourceRows groups by.
@@ -1418,7 +1437,7 @@ function sessionsTable(id, ws, model) {
   });
   return h('div', null, filterInput(),
     table(id, sessionCols(model), rows, { defaultSort: { key: model ? 'modelCost' : 'cost', desc: true }, collapse: 25,
-      onRow: r => { go('s', r.id); } }));
+      onRow: r => { openSession(r.id); } }));
 }
 function topSessionsTable(id, ws, n) {
   return table(id, sessionCols(), ws, { defaultSort: { key: 'cost', desc: true }, collapse: n,
@@ -2793,7 +2812,9 @@ document.addEventListener('keydown', e => {
     if (TURN_DRILL != null && TAB === 'Turns') { TURN_DRILL = null; render(false); e.preventDefault(); return; }
     if (MSUB) { clearMsub(); e.preventDefault(); return; }
     const multiYear = distinctYears(W).length > 1;
-    if (sc.kind === 's') sc.day ? go('d', sc.day) : go('', '');
+    // A session opened out of a drill steps back INTO it, not to the session's day.
+    if (sc.kind === 's' && RETURN && location.hash === RETURN.to) location.hash = RETURN.from;
+    else if (sc.kind === 's') sc.day ? go('d', sc.day) : go('', '');
     else if (sc.kind === 'd') go('m', sc.month);
     else if (sc.kind === 'm') multiYear ? go('y', sc.year) : go('', '');
     else if (sc.kind === 'y' || sc.kind === 'p' || sc.kind === 'M') go('', '');
