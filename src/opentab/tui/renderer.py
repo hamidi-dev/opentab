@@ -84,12 +84,20 @@ from opentab.util import (
     context_compactions,
     context_size,
     fuzzy_score,
+    short_tool_name,
     tool_call_label,
     tool_mix_label,
     tool_names,
     tool_namespace,
     unicode_screen,
 )
+
+
+def _turn_read_mark(row) -> str:
+    # N narration, R reasoning, NR both -- letters rather than colour, because the row
+    # can be selected (reverse video), the terminal can be monochrome, and colour alone
+    # cannot say WHICH of the two a turn holds.
+    return ("N" if row.get("has_text") else "") + ("R" if row.get("has_reasoning") else "")
 
 
 def _turn_agent(row) -> str:
@@ -1273,6 +1281,14 @@ class Renderer:
         if line.startswith("❄ ") or line.startswith("⚙ "):
             # Cache repurchases are waste, distinct from informational compactions.
             return curses.color_pair(4) | curses.A_BOLD
+        if line.startswith("▸ "):
+            # A trace's tool call: it labels the block beneath it, so it reads like the
+            # box headers do rather than like the prose it introduces.
+            return curses.color_pair(6) | curses.A_BOLD
+        if line.startswith("✻ ") or line.startswith("→ "):
+            # Reasoning and tool output are secondary to the narration between them:
+            # bulk you skim, not the voice you read.
+            return curses.color_pair(1)
         if line.startswith("· "):
             return curses.color_pair(1)
         if line.startswith("TOTAL"):
@@ -3850,6 +3866,189 @@ class Renderer:
             out.append(cost)
         return out
 
+    # How much of one event the pane shows before it says how much it is holding back.
+    # The store already clipped the text; this is the SECOND cap, and it exists because
+    # a 2,000-character tool result is four screens of a pane whose job is to let you
+    # scan a turn -- the head is what identifies the output, the rest is why there is a
+    # cap at all.
+    _TRACE_OUTPUT_LINES = 12
+    _TRACE_PARAM_LINES = 6
+    _TRACE_VALUE_LINES = 10
+    _TRACE_PROSE_LINES = 40
+
+    def detail_turn_trace(self, workflow: Workflow, width: int) -> list[str]:
+        """Render one turn's own content: narration, reasoning, and the calls it made.
+
+        The third level under Turns. Turns answers when the money went, the drill which
+        calls made up one prompt, and this what one of those calls actually did -- the
+        exact arguments included, which is the part no token column can carry.
+        """
+        rows = self.session_turn_rows(workflow.id)
+        idx = self.app.active_trace_drill
+        if not rows or idx is None or not 0 <= idx < len(rows):
+            return []
+        siblings = self.app.drilled_turn_indices()
+        if idx not in siblings:
+            return []
+        row = rows[idx]
+        costs = self.turn_costs(rows)
+        pos = siblings.index(idx) + 1
+        wrap = max(20, width - 2)
+        head = (
+            f"# Turn {pos} of {len(siblings)} · {shorten(row.get('model_name', '-'), 40)} · "
+            f"{(row.get('time') or '--')[5:19]} · {human_tokens(row['tokens_total'])} · "
+            f"{money(costs[idx])}"
+        )
+        if row.get("depth"):
+            head += f" · {_turn_agent(row)}"
+        lines: list[str] = [head, ""]
+        events = self.app.turn_trace_events(workflow.id, row)
+        if not events:
+            # Distinguish "this turn recorded nothing" from an unsupported backend: the
+            # tab only offers this level where the store said it could answer.
+            lines.append("  No content recorded for this turn.")
+            lines += ["", f"· {self._key('main', 'back')} back to this prompt's turns."]
+            return lines
+        for event in events:
+            kind = event.get("kind")
+            if kind == "text":
+                lines += self._trace_prose(event, wrap - 2, indent="  ")
+            elif kind == "reasoning":
+                lines.append("✻ thinking")
+                lines += self._trace_prose(event, wrap - 2, indent="  ")
+            else:
+                lines += self._trace_call(event, wrap)
+            lines.append("")
+        while lines and not lines[-1]:
+            lines.pop()
+        lines += ["", f"· {self._key('main', 'back')} back to this prompt's turns."]
+        if not self.app.session_records_reasoning(workflow.id):
+            # Say WHY the thinking is missing. This harness writes its thinking blocks
+            # empty -- only the signed blob survives -- so silence here would read as a
+            # parsing bug on the one thing people most expect to find.
+            lines += self._trace_wrapped(
+                "· ",
+                "This harness records no reasoning text; its thinking blocks are empty.",
+                "  ",
+                width,
+            )
+        return lines
+
+    @staticmethod
+    def _trace_wrapped(prefix: str, text: str, cont: str, wrap: int) -> list[str]:
+        # One logical line: the prefix rides the first row, continuations are indented,
+        # and BOTH are charged against the pane. wrap_cells re-joins on single spaces, so
+        # the prefix is added here rather than baked into the string handed to it -- built
+        # in, an indent comes back stripped and the block loses its shape.
+        room = max(4, wrap - display_width(cont if len(cont) > len(prefix) else prefix))
+        parts = wrap_cells(text, room) or [""]
+        return [prefix + parts[0]] + [cont + p for p in parts[1:]]
+
+    @staticmethod
+    def _cell_chunks(text: str, width: int) -> list[str]:
+        # Hard-wrap at cell boundaries, preserving EVERY character. wrap_cells is a WORD
+        # wrapper: it splits on whitespace and rejoins on single spaces, which is right
+        # for prose and wrong for anything quoted -- `printf 'a  b'` comes back claiming
+        # to print one space, and a column-aligned table loses its alignment.
+        out: list[str] = []
+        while text:
+            head = clip(text, width) or text[0]
+            out.append(head)
+            text = text[len(head) :]
+        return out or [""]
+
+    def _trace_block(self, text: str, indent: str, wrap: int, limit: int) -> list[str]:
+        """Raw transcript lines, verbatim: every space, tab stop and blank line kept.
+
+        This is what makes a patch, a heredoc or an aligned table readable. Overlong
+        lines break at a cell boundary rather than being re-flowed, because a shell
+        command's characters are the thing the reader came for.
+        """
+        out: list[str] = []
+        lines = text.splitlines() or [""]
+        room = max(4, wrap - display_width(indent))
+        for raw in lines[:limit]:
+            raw = raw.replace("\t", "    ")
+            if not raw.strip():
+                out.append("")
+                continue
+            out += [indent + chunk for chunk in self._cell_chunks(raw, room)]
+        hidden = len(lines) - limit
+        if hidden > 0:
+            out.append(f"{indent}… {hidden:,} more line{'' if hidden == 1 else 's'}")
+        return out
+
+    def _trace_prose(self, event: dict, wrap: int, indent: str = "  ") -> list[str]:
+        out = self._trace_block(event.get("text") or "", indent, wrap, self._TRACE_PROSE_LINES)
+        dropped = event.get("dropped") or 0
+        if dropped:
+            out.append(f"{indent}… {dropped:,} more characters")
+        return out
+
+    def _trace_call(self, event: dict, wrap: int) -> list[str]:
+        name = short_tool_name(str(event.get("name") or "(unknown)"))
+        args = str(event.get("args") or "")
+        # Whitespace is NOT collapsed: 48% of real tool calls carry a multi-line argument
+        # and 25% a multi-line command (heredocs, patches, a Write's body), and "the exact
+        # command that ran" is this view's whole promise. Flattened, a patch becomes one
+        # unreadable line and `printf 'a  b'` starts lying about what it printed.
+        head = args.splitlines()
+        if len(head) == 1:
+            # A one-line command rides the marker row, where it reads as a command --
+            # broken at a cell boundary, never re-flowed, for the reason above.
+            lead = f"▸ {name}  "
+            chunks = self._cell_chunks(head[0], max(4, wrap - display_width(lead)))
+            out = [lead + chunks[0]] + ["    " + c for c in chunks[1:]]
+        else:
+            out = [f"▸ {name}"]
+            if args:
+                out += self._trace_block(args, "  ", wrap, self._TRACE_VALUE_LINES)
+        for key, value in (event.get("params") or [])[: self._TRACE_PARAM_LINES]:
+            text = str(value)
+            if "\n" in text:
+                out.append(f"  {key}:")
+                out += self._trace_block(text, "    ", wrap, self._TRACE_VALUE_LINES)
+            else:
+                lead = f"  {key}: "
+                chunks = self._cell_chunks(text, max(4, wrap - display_width(lead)))
+                out += [lead + chunks[0]] + ["      " + c for c in chunks[1:]]
+        extra = len(event.get("params") or []) - self._TRACE_PARAM_LINES
+        if extra > 0:
+            out.append(f"  … {extra} more argument{'' if extra == 1 else 's'}")
+        out += self._trace_output(event, wrap)
+        return out
+
+    def _trace_output(self, event: dict, wrap: int) -> list[str]:
+        output = event.get("output") or ""
+        if not output:
+            return []
+        # Collapse runs of blank lines before counting: many tools separate their results
+        # with them, and a budget of twelve lines spent on six blanks shows half the
+        # output it could.
+        shown: list[str] = []
+        for para in output.splitlines():
+            if para.strip() or (shown and shown[-1].strip()):
+                shown.append(para)
+        while shown and not shown[-1].strip():
+            shown.pop()
+        hidden = max(0, len(shown) - self._TRACE_OUTPUT_LINES)
+        # Only the first row carries the arrow: it marks where the result starts, and
+        # repeating it would fight the text it introduces.
+        body = self._trace_block("\n".join(shown), "  ", wrap, self._TRACE_OUTPUT_LINES)
+        out = [("→" + line[1:]) if line[:2] == "  " else line for line in body[:1]] + body[1:]
+        tail = []
+        if hidden:
+            tail.append(f"{hidden:,} more line{'' if hidden == 1 else 's'}")
+        if event.get("output_dropped"):
+            tail.append(f"{event['output_dropped']:,} more characters")
+        if tail:
+            # _trace_block already reports the line count when IT truncated; this one is
+            # the store's clip on top of that, so replace rather than print both.
+            if out and out[-1].lstrip().startswith("…"):
+                out.pop()
+            out.append("  … " + ", ".join(tail))
+        return out
+
     def detail_turn_drill(self, workflow: Workflow, width: int) -> list[str]:
         """Render one prompt's full text, totals, and turns."""
         rows = self.session_turn_rows(workflow.id)
@@ -3861,8 +4060,18 @@ class Renderer:
         if not isinstance(i, int) or not 0 <= i < len(groups):
             return []
         g = groups[i]
-        # Clear table-only maps: draw_detail still lays a turnline region over this drill,
-        # so stale rows would make prompt text clickable and highlighted incorrectly.
+        if self.app.active_trace_drill is not None:
+            # Clear FIRST: draw_detail lays a turnline region over whatever this returns,
+            # so keeping the drill's map would make the trace's prose clickable and
+            # highlight a line that is no longer a row.
+            self._turn_header_at = {}
+            self._turn_cursor_line = None
+            traced = self.detail_turn_trace(workflow, width)
+            if traced:
+                return traced
+            self.app.trace_drill = None
+        # Rebuilt below for THIS level's rows: draw_detail lays one turnline region over
+        # whatever the tab drew, and a stale map would make the prompt text clickable.
         self._turn_header_at = {}
         self._turn_cursor_line = None
         n = i + 1
@@ -3888,8 +4097,24 @@ class Renderer:
         efforts = {i: str(rows[i].get("effort") or "") for i in g["indices"]}
         eff_w = max((len(e) for e in efforts.values()), default=0)
         eff_w = min(7, max(len("Eff"), eff_w)) if any(efforts.values()) else 0
+        traceable = self.app.session_supports_trace(workflow.id)
+        # Which turns have something to READ. Gated on the ROWS, never on a capability
+        # flag, so a backend that records no narration shows no column instead of a
+        # stripe of dashes -- and gated on the trace being openable, since a marker
+        # pointing at a level you cannot enter is an advertisement for nothing.
+        reads = {i: _turn_read_mark(rows[i]) for i in g["indices"]} if traceable else {}
+        read_w = (
+            max(len("Read"), max(map(len, reads.values()), default=0)) if any(reads.values()) else 0
+        )
         fixed = idx_w + agent_w + 14 + 6 + 9 + 9 + 6 + (eff_w + 1 if eff_w else 0)
-        mw = max(12, min(30, inner - fixed))
+        # Budgeted against the model column's floor like every other optional cell: added
+        # unconditionally it pushed a narrow pane past its width, and the overflow lands
+        # on the RIGHT, so an 80-column terminal lost the Cost column to a marker.
+        MODEL_MIN = 12
+        if read_w and inner - fixed - read_w - 1 < MODEL_MIN:
+            read_w = 0
+        fixed += read_w + 1 if read_w else 0
+        mw = max(MODEL_MIN, min(30, inner - fixed))
         # Gate Tools on row data and a width floor. Tool lists are open-ended, so they use
         # space left after the capped model column and disappear rather than steal it.
         TOOLS_MIN = 10
@@ -3900,6 +4125,7 @@ class Renderer:
             f"  {'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} "
             + (f"{pad('Eff', eff_w)} " if eff_w else "")
             + f"{pad('Agent', agent_w)} "
+            + (f"{pad('Read', read_w)} " if read_w else "")
             + (f"{pad('Tools', tools_w)} " if tools_w else "")
             + f"{'Cached':>6} {'Tokens':>9} {'Cost':>9}"
         )
@@ -3912,6 +4138,7 @@ class Renderer:
                 f"{pad(shorten(r['model_name'], mw), mw)} "
                 + (f"{pad(shorten(efforts[i] or '-', eff_w), eff_w)} " if eff_w else "")
                 + f"{pad(shorten(_turn_agent(r), agent_w), agent_w)} "
+                + (f"{pad(reads.get(i) or '-', read_w)} " if read_w else "")
                 + (f"{pad(shorten(labels[i] or '-', tools_w), tools_w)} " if tools_w else "")
                 + f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
                 f"{human_tokens(r['tokens_total']):>9} {money(costs[i]):>9}"
@@ -3922,6 +4149,7 @@ class Renderer:
                 f"  {'':>{idx_w}} {pad('TOTAL', 14)} {pad('', mw)} "
                 + (f"{pad('', eff_w)} " if eff_w else "")
                 + f"{pad('', agent_w)} "
+                + (f"{pad(str(sum(1 for v in reads.values() if v)), read_w)} " if read_w else "")
                 # pad() does not truncate, so shorten the aggregate tool mix first.
                 + (
                     f"{pad(shorten(tool_mix_label([rows[i] for i in g['indices']]), tools_w), tools_w)} "
@@ -3930,8 +4158,36 @@ class Renderer:
                 )
                 + f"{'':>6} {human_tokens(g['tokens']):>9} {money(g['cost']):>9}"
             )
+        # _ruled_body_start indexes the BOX's own lines, and this pane prints the prompt
+        # text above it -- so the prologue is added, never assumed away. Left out, the
+        # cursor lit a blank line above the frame and the click map was off by its height.
+        prologue = len(lines)
         lines += self._ruled_box(f"# Turns of prompt {n}", header, body, totals_row, [], width)
+        if traceable:
+            # One body line per turn, so the offset IS the ordinal within this prompt.
+            start = prologue + (self._ruled_body_start or 0)
+            self._turn_header_at = {start + k: k for k in range(len(body))}
+            cur = self.app._trace_cursor
+            self._turn_cursor_line = start + cur if 0 <= cur < len(body) else None
         lines += ["", f"· {self._key('main', 'back')} back to the prompts."]
+        if read_w:
+            lines += self._trace_wrapped(
+                "· Read: ",
+                "N a turn that narrates, R one that reasons aloud — the turns with "
+                "something to read. The rest are tool calls, and the TOTAL counts the "
+                "marked ones.",
+                "  ",
+                width,
+            )
+        if traceable:
+            # The footnote wrapping the tab above uses: continuation is indented, and the
+            # indent is reserved inside the width rather than added past it.
+            hint = textwrap.wrap(
+                f"· {self._key('main', 'select')} (or a click) opens what a turn actually "
+                "did — its narration, its reasoning, and each call's arguments.",
+                max(20, width - 2),
+            )
+            lines += hint[:1] + ["  " + piece for piece in hint[1:]]
         return lines
 
     @staticmethod

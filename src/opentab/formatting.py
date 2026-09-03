@@ -226,31 +226,58 @@ def clip_tail(value: str, width: int) -> str:
     return "".join(reversed(out))
 
 
-def wrap_cells(value: str, width: int) -> list[str]:
+def wrap_cells(value: str, width: int, indent: str = "") -> list[str]:
     # ``textwrap`` counts codepoints rather than terminal cells.
+    # ``indent`` prefixes every continuation line and is charged against the width, so a
+    # caller that wants hanging indentation does not have to re-wrap what it just wrapped.
     if width <= 0:
         return []
+    lead = display_width(indent)
+    if lead >= width:
+        # An indent that leaves no room to write in is worse than no indent: it would
+        # push every continuation past the width the caller asked to fit inside.
+        indent, lead = "", 0
     lines: list[str] = []
     current = ""
-    for word in value.split():
-        while display_width(word) > width:
+
+    def room() -> int:
+        return width if not lines else max(1, width - lead)
+
+    def emit(text: str) -> None:
+        lines.append((indent if lines else "") + text)
+
+    pending = value.split()
+    while pending:
+        word = pending.pop(0)
+        free = room() - (display_width(current) + 1 if current else 0)
+        if display_width(word) > free:
             if current:
-                lines.append(current)
+                # Flush and RETRY rather than starting the next line with this word:
+                # measured against the first line's room it may not fit the continuation,
+                # whose width the indent has shrunk -- which is how an indented wrap came
+                # back wider than the caller asked for.
+                emit(current)
                 current = ""
+                pending.insert(0, word)
+                continue
+            head = clip(word, room())
+            if not head and lines and display_width(word[0]) <= width:
+                # The continuation room is narrower than one glyph but the full width
+                # would hold it: spend the indent rather than overflow the pane.
+                lines.append(clip(word, width))
+                word = word[len(lines[-1]) :]
+                if word:
+                    pending.insert(0, word)
+                continue
             # Preserve a single glyph wider than the pane rather than stalling or dropping it.
-            head = clip(word, width) or word[0]
-            lines.append(head)
-            word = word[len(head) :]
-        if not word:
+            head = head or word[0]
+            if len(head) < len(word):
+                pending.insert(0, word[len(head) :])
+            emit(head)
             continue
-        candidate = f"{current} {word}" if current else word
-        if display_width(candidate) > width:
-            lines.append(current)
-            current = word
-        else:
-            current = candidate
+        current = f"{current} {word}" if current else word
     if current:
-        lines.append(current)
+        emit(current)
     return lines
 
 

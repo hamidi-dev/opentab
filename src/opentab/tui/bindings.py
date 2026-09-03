@@ -161,7 +161,11 @@ REGISTRY: tuple[Context, ...] = (
         "The main views: browse -> zoom -> session. Everything outside an overlay.",
         None,
         (
-            Action("select", ("enter",), "drill into the selection / open a Turns prompt"),
+            Action(
+                "select",
+                ("enter",),
+                "drill in — a Turns prompt, then one turn's own trace",
+            ),
             Action("back", ("esc", "backspace"), "step back out — session → zoom → browse"),
             *_SCROLL,
             Action("tab_prev", ("h", "left"), "previous detail tab"),

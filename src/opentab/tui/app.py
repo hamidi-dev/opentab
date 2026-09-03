@@ -346,6 +346,10 @@ class App:
         self._models_loaded = False
         self._tool_by_session: dict[str, list[dict]] = {}
         self._turns_by_session: dict[str, list[dict]] = {}
+        # The trace is fetched only when a turn is opened, never by the drill-in
+        # prefetch: it is the one extra that re-reads a session's whole content stream,
+        # and most drill-ins never ask for it.
+        self._trace_by_session: dict[str, dict] = {}
         self._context_by_session: dict[str, list[dict]] = {}
         self._nodes_by_session: dict[str, list[dict]] = {}
         # Session extras load after a placeholder frame, never during drawing.
@@ -433,6 +437,11 @@ class App:
         self._turn_drill_session: str | None = None
         self._turn_cursor = 0
         self._turn_follow = False
+        # The third level: one turn's trace, addressed by its ABSOLUTE row index so it
+        # survives the group's own ordering. Its cursor is a position within the drilled
+        # prompt, cleared with the drill it belongs to.
+        self.trace_drill: int | None = None
+        self._trace_cursor = 0
         self.cal_levels = HEAT_DEFAULT_LEVELS
         self.has256 = False
         self.colors_ok = True
@@ -1599,6 +1608,103 @@ class App:
         self._turns_by_session[workflow_id] = rows
         return rows
 
+    # --- The turn trace: the third level under Turns ---------------------------
+    #
+    # Turns answers WHEN the money went (prompts), the drill answers which CALLS made up
+    # one prompt, and this answers WHAT one of those calls actually did. Fetched only
+    # when a turn is opened -- deliberately NOT in prefetch_session_data, which every
+    # drill-in runs: the trace re-reads a session's whole content stream, and most
+    # drill-ins never open one.
+
+    def session_supports_trace(self, workflow_id: str) -> bool:
+        # Off under demo, for the reason notes are off: demo fakes every title while the
+        # ids stay real, and there is no anonymizing a shell command, a path or a diff.
+        # The trace would be the one true thing left on a screen made to be shared.
+        if self.store.demo:
+            return False
+        check = getattr(self.store, "supports_turn_content", None)
+        return bool(check(workflow_id)) if check else False
+
+    # How many sessions' traces stay in memory. Unlike the other extras -- rows of
+    # numbers -- a trace is a session's content: ~1 MB for a 1,500-turn session, and
+    # browsing a project's worth of them would accumulate the corpus. It is read one
+    # session at a time, so a small ring costs nothing and bounds the total.
+    TRACE_MEMO_SESSIONS = 4
+
+    def session_trace(self, workflow_id: str) -> dict:
+        cached = self._trace_by_session.get(workflow_id)
+        if cached is not None:
+            return cached
+        fetch = getattr(self.store, "turn_content", None)
+        ok = fetch is not None and self.session_supports_trace(workflow_id)
+        content = dict(fetch(workflow_id)) if ok else {}
+        self._trace_by_session[workflow_id] = content
+        while len(self._trace_by_session) > self.TRACE_MEMO_SESSIONS:
+            # dicts keep insertion order, so the first key is the oldest fetch.
+            self._trace_by_session.pop(next(iter(self._trace_by_session)))
+        return content
+
+    def session_records_reasoning(self, workflow_id: str) -> bool:
+        # Whether this session's harness writes reasoning TEXT at all. Claude Code
+        # writes its thinking blocks empty (the signed blob is all that survives), so
+        # the trace says so rather than leaving a hole where the thinking should be.
+        check = getattr(self.store, "records_reasoning", None)
+        if callable(check):
+            return bool(check(workflow_id))
+        return bool(check)
+
+    def turn_trace_events(self, workflow_id: str, row: dict) -> list[dict]:
+        key = row.get("content_key") or ""
+        return list(self.session_trace(workflow_id).get(key) or []) if key else []
+
+    def drilled_turn_indices(self) -> list[int]:
+        """Absolute row indices of the turns the open prompt drill lists."""
+        wf = self.current_session()
+        i = self.active_turn_drill
+        if wf is None or i is None:
+            return []
+        runs = self.turn_runs(wf.id)
+        return list(runs[i]) if 0 <= i < len(runs) else []
+
+    @property
+    def active_trace_drill(self) -> int | None:
+        # A trace lives inside a prompt drill; when that closes, so does this. Gating on
+        # the drill rather than on a second session id keeps one ownership check.
+        if self.trace_drill is None or self.active_turn_drill is None:
+            return None
+        return self.trace_drill
+
+    def _move_trace_cursor(self, delta: int) -> bool:
+        rows = self.drilled_turn_indices()
+        if not rows:
+            return False
+        moved = max(0, min(self._trace_cursor + delta, len(rows) - 1))
+        if moved == self._trace_cursor:
+            return False  # let the pane scroll at the bounds, like the prompt cursor
+        self._trace_cursor = moved
+        # Ask the renderer to scroll it into view, exactly as the prompt cursor does.
+        # Without this a prompt with more turns than fit leaves the viewport at the top
+        # while the selection walks off the bottom -- j moves a row nobody can see, and
+        # Enter then opens a turn the reader never selected.
+        self._turn_follow = True
+        return True
+
+    def open_trace_drill(self) -> bool:
+        rows = self.drilled_turn_indices()
+        if not rows:
+            return False
+        self._trace_cursor = max(0, min(self._trace_cursor, len(rows) - 1))
+        self.trace_drill = rows[self._trace_cursor]
+        self.scroll = 0
+        return True
+
+    def close_trace_drill(self) -> bool:
+        if self.active_trace_drill is None:
+            return False
+        self.trace_drill = None
+        self.scroll = 0
+        return True
+
     def _scale_demo_turns(self, workflow_id: str, rows: list[dict]) -> list[dict]:
         k = self.store.demo_scale
         cats = self._demo_cats
@@ -1618,16 +1724,27 @@ class App:
             r["cost"] = round(r.get("cost", 0) * k, 4)
         return rows
 
-    def turn_groups(self, workflow_id: str) -> list[str]:
-        # Match the renderer's consecutive-run grouping so cursor ordinals stay aligned.
-        pids: list[str] = []
+    def turn_runs(self, workflow_id: str) -> list[list[int]]:
+        """Consecutive same-prompt runs, as absolute indices into the turn rows.
+
+        The renderer's grouping rule, in one place: a prompt ordinal indexes THIS
+        sequence everywhere -- the cursor, the drill, and the trace level under it --
+        so a second copy of the run rule would eventually open a different prompt's
+        turns than the header above them names.
+        """
+        runs: list[list[int]] = []
         last: object = object()
-        for r in self.session_turn_rows(workflow_id):
+        for n, r in enumerate(self.session_turn_rows(workflow_id)):
             pid = r.get("prompt_id", "")
             if pid != last:
-                pids.append(pid)
+                runs.append([])
                 last = pid
-        return pids
+            runs[-1].append(n)
+        return runs
+
+    def turn_groups(self, workflow_id: str) -> list[str]:
+        rows = self.session_turn_rows(workflow_id)
+        return [rows[run[0]].get("prompt_id", "") for run in self.turn_runs(workflow_id)]
 
     def _on_turns_tab(self) -> bool:
         return self.view == "session" and self.active_tab_name() == "Turns"
@@ -1647,7 +1764,15 @@ class App:
 
     def _toggle_turn_cursor(self) -> bool:
         wf = self.current_session()
-        groups = self.turn_groups(wf.id) if wf else []
+        if wf is None:
+            return False
+        # Inside a drilled prompt Enter opens the selected TURN's trace; a trace already
+        # open swallows it rather than re-opening itself, so the key never looks broken.
+        if self.active_turn_drill is not None:
+            if self.active_trace_drill is not None:
+                return True
+            return self.open_trace_drill() if self.session_supports_trace(wf.id) else False
+        groups = self.turn_groups(wf.id)
         if not groups:
             return False
         self._turn_cursor = max(0, min(self._turn_cursor, len(groups) - 1))
@@ -1671,6 +1796,8 @@ class App:
         wf = self.current_session()
         self._turn_drill_session = wf.id if wf else None
         self.turn_drill = ordinal
+        self.trace_drill = None  # a fresh drill opens on its turn list, never in a trace
+        self._trace_cursor = 0
         self.scroll = 0
         self._turn_follow = False
 
@@ -1681,6 +1808,8 @@ class App:
             return False
         self.turn_drill = None
         self._turn_drill_session = None
+        self.trace_drill = None
+        self._trace_cursor = 0
         self.scroll = 0
         self._turn_follow = True
         return True
@@ -2323,8 +2452,11 @@ class App:
         notes_ok = self.refresh_notes()
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._trace_by_session.clear()
         self.turn_drill = None
+        self.trace_drill = None
         self._turn_cursor = 0
+        self._trace_cursor = 0
         self._context_by_session.clear()
         self._nodes_by_session.clear()
         self._load_model_cache()
@@ -2636,8 +2768,11 @@ class App:
         self._models_loaded = False
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._trace_by_session.clear()
         self.turn_drill = None
+        self.trace_drill = None
         self._turn_cursor = 0
+        self._trace_cursor = 0
         self._context_by_session.clear()
         self._nodes_by_session.clear()
         self._load_model_cache()
@@ -4600,12 +4735,12 @@ class App:
 
     def move(self, delta: int) -> None:
         if self.view == "session":
-            if (
-                self.active_turn_drill is None
-                and self._on_turns_tab()
-                and self._move_turn_cursor(delta)
-            ):
-                return
+            if self._on_turns_tab():
+                if self.active_turn_drill is None:
+                    if self._move_turn_cursor(delta):
+                        return
+                elif self.active_trace_drill is None and self._move_trace_cursor(delta):
+                    return
             self.scroll = max(0, self.scroll + delta)
         elif self.view == "zoom":
             if self.on_sessions_tab:
@@ -6091,7 +6226,7 @@ class App:
             # before it starts popping the view stack -- but ONLY while that tab is the
             # one on screen. Left ungated, Esc on Tools or Context silently tore down an
             # invisible drill and was swallowed, so the key appeared to do nothing.
-            if self._on_turns_tab() and self.close_turn_drill():
+            if self._on_turns_tab() and (self.close_trace_drill() or self.close_turn_drill()):
                 return True
             self.drill_out()  # session -> zoom -> browse; no-op when browsing
             return True
@@ -6646,12 +6781,18 @@ class App:
             # turns); clicks on the ▼/❄ marker lines between rows are inert.
             headers = getattr(self.renderer, "_turn_header_at", {})
             ordinal = headers.get(value)
-            if ordinal is not None:
-                # Move the keyboard cursor onto the clicked row first, so j/k pick up
-                # from here. The map is empty while a prompt is drilled, so a click on
-                # drilled text lands nowhere instead of re-drilling a stale row.
-                self._turn_cursor = ordinal
-                self.open_turn_drill(ordinal)
+            if ordinal is None:
+                return
+            # Move the keyboard cursor onto the clicked row first, so j/k pick up from
+            # here. Inside a drilled prompt the SAME region carries that prompt's turns,
+            # so a click there opens the turn's trace; the map is emptied while a trace
+            # is open, so a click on its prose lands nowhere rather than on a stale row.
+            if self.active_turn_drill is not None:
+                self._trace_cursor = ordinal
+                self.open_trace_drill()
+                return
+            self._turn_cursor = ordinal
+            self.open_turn_drill(ordinal)
             return
         if kind in ("year", "month", "day"):
             # The time sidebar: live in browse, and still live behind a zoomed

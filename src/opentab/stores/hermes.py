@@ -12,7 +12,18 @@ from datetime import datetime, timezone
 from opentab.demo import demo_config, demo_title, scramble_node, scramble_workflow
 from opentab.formatting import worked_seconds
 from opentab.models import Workflow
-from opentab.util import git_root, safe_float, safe_int, tool_names, tool_rows_from_turns
+from opentab.util import (
+    TRACE_EVENTS_CAP,
+    TRACE_OUTPUT_CAP,
+    TRACE_TEXT_CAP,
+    clip_text,
+    git_root,
+    safe_float,
+    safe_int,
+    tool_call_detail,
+    tool_names,
+    tool_rows_from_turns,
+)
 
 
 class HermesStore:
@@ -27,6 +38,8 @@ class HermesStore:
 
     combined = False
     source_name = "Hermes"
+    # `reasoning_content` is real prose here: 769 of 1,572 assistant rows carry it.
+    records_reasoning = True
 
     # Cycle guard for the recursive subtree walk; far deeper than any real nesting.
     _MAX_TREE_DEPTH = 64
@@ -1145,11 +1158,28 @@ class HermesStore:
             names.append(name)  # duplicates and order are kept: each is one real call
         return tool_names(names)  # defence in depth; the shape is already validated
 
-    def _tool_events(self, ids: list[str]) -> dict[str, list[tuple[str, str, list[str]]]]:
-        # (local ms stamp, role, tool names) per session, in time order. EVERY message
-        # is returned, not just the tool-calling ones: the non-tool rows are the
-        # landmarks that stop a pending call from binding across an intervening event.
-        out: dict[str, list[tuple[str, str, list[str]]]] = {}
+    def _message_cols(self, conn) -> set[str]:
+        # The messages table is probed like sessions: this backend reads whatever the
+        # running Hermes version has, never a fixed column list.
+        try:
+            return {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+        except sqlite3.Error:
+            return set()
+
+    @staticmethod
+    def _message_key(cols: set[str]) -> str:
+        # `id` where it exists, else the implicit rowid -- one expression shared by the
+        # causal join and the trace, because a turn's key must name the same row in both.
+        return "id" if "id" in cols else "rowid"
+
+    def _tool_events(self, ids: list[str]) -> dict[str, list[tuple]]:
+        # (local ms stamp, role, tool names, message id, has narration, has reasoning)
+        # per session, in time order.
+        # EVERY message is returned, not just the tool-calling ones: the non-tool rows
+        # are the landmarks that stop a pending call from binding across an intervening
+        # event. The id rides along so the causal match below can also hand the turn the
+        # key to its own content -- the same join, not a second guess at it.
+        out: dict[str, list[tuple]] = {}
         if not ids:
             return out
         try:
@@ -1158,8 +1188,17 @@ class HermesStore:
             return out
         try:
             marks = ",".join("?" * len(ids))
+            cols = self._message_cols(conn)
+            key = self._message_key(cols)
+            # Two booleans for the Turns drill's marker, answered by the query that is
+            # already running: which turns have narration or reasoning worth opening.
+            # A column this Hermes version lacks reads as absent, never as an error.
+            reason = next((c for c in ("reasoning_content", "reasoning") if c in cols), None)
+            text_expr = "LENGTH(TRIM(COALESCE(content, '')))" if "content" in cols else "0"
+            reason_expr = f"LENGTH(TRIM(COALESCE({reason}, '')))" if reason else "0"
             rows = conn.execute(
-                f"SELECT session_id, role, tool_calls, timestamp FROM messages "
+                f"SELECT session_id, role, tool_calls, timestamp, {key}, "
+                f"{text_expr}, {reason_expr} FROM messages "
                 f"WHERE session_id IN ({marks}) ORDER BY timestamp",
                 ids,
             ).fetchall()
@@ -1167,10 +1206,19 @@ class HermesStore:
             return out  # no messages table, or no tool_calls column: no tools, no error
         finally:
             conn.close()
-        for sid, role, blob, ts in rows:
+        for sid, role, blob, ts, mid, has_text, has_reason in rows:
             stamp = self._ts_to_local_ms(safe_float(ts))
             if stamp:
-                out.setdefault(sid, []).append((stamp, role or "", self._parse_tool_calls(blob)))
+                out.setdefault(sid, []).append(
+                    (
+                        stamp,
+                        role or "",
+                        self._parse_tool_calls(blob),
+                        str(mid),
+                        bool(has_text),
+                        bool(has_reason),
+                    )
+                )
         return out
 
     def _enriched_turns(self, subtree: list[tuple]) -> dict[str, list[dict]]:
@@ -1201,7 +1249,16 @@ class HermesStore:
         if hit is not None and hit[0] == key:
             return hit[1]
         turns = self._log_turns()
-        out = {sid: [dict(t) for t in turns.get(sid, ())] for sid in ids}
+        # Every row carries the field, matched or not: a turn row's shape must not
+        # depend on whether its assistant message survived, or a reader has to know
+        # which backend it is holding to know whether the key is missing or empty.
+        out = {
+            sid: [
+                dict(t, content_key="", has_text=False, has_reasoning=False)
+                for t in turns.get(sid, ())
+            ]
+            for sid in ids
+        }
         if not any(out.values()):
             return out
         events = self._tool_events(ids)
@@ -1211,7 +1268,7 @@ class HermesStore:
                 continue
             # Rank 0 before rank 1 on an equal stamp: the log line is written first.
             merged = [(r.get("ts_ms") or r["ts"], 0, r) for r in rows]
-            merged += [(stamp, 1, (role, tools)) for stamp, role, tools in msgs]
+            merged += [(event[0], 1, event[1:]) for event in msgs]
             merged.sort(key=lambda e: (e[0], e[1]))
             pending: dict | None = None
             for _, rank, payload in merged:
@@ -1220,10 +1277,18 @@ class HermesStore:
                     continue
                 if not isinstance(payload, tuple):
                     continue
-                role, tools = payload
+                role, tools, mid, has_text, has_reason = payload
                 if role == "assistant":
-                    if pending is not None and tools:
-                        pending["tools"] = list(tools)
+                    if pending is not None:
+                        # The content key and the read markers ride on the SAME causal
+                        # match the tool names do: a call that never paired reports no
+                        # tools and, for the same reason, has no content to show -- its
+                        # assistant message was rejected and never persisted.
+                        pending["content_key"] = mid
+                        pending["has_text"] = has_text
+                        pending["has_reasoning"] = has_reason
+                        if tools:
+                            pending["tools"] = list(tools)
                     pending = None
                 else:
                     pending = None  # an intervening event breaks the association
@@ -1260,6 +1325,141 @@ class HermesStore:
         # alone -- otherwise the tab opens empty and reads as a parsing bug.
         return any(
             t.get("tools")
+            for turns in self._enriched_turns(self._subtree_ids(workflow_id)).values()
+            for t in turns
+        )
+
+    def turn_content(self, workflow_id: str) -> dict[str, list[dict]]:
+        """Trace events per turn, keyed by the assistant message id.
+
+        Hermes splits a turn across two stores -- tokens in the rotating log, content in
+        the DB -- so the key comes from the causal join in _enriched_turns rather than
+        from anything in this query. Reasoning is real prose here (measured 769 of 1,572
+        assistant rows carry it), and the tool RESULT is a separate role='tool' row
+        joined back by tool_call_id.
+        """
+        ids = [sid for sid, _, _ in self._subtree_ids(workflow_id)]
+        out: dict[str, list[dict]] = {}
+        if not ids:
+            return out
+        try:
+            conn = self._connect()
+        except sqlite3.Error:
+            return out
+        try:
+            cols = self._message_cols(conn)
+            if "role" not in cols:
+                return out
+            key_col = self._message_key(cols)
+            # Both reasoning spellings exist across Hermes versions; take whichever the
+            # schema has rather than assuming the newer one.
+            wanted = [c for c in ("content", "tool_calls", "tool_call_id") if c in cols]
+            reason = next((c for c in ("reasoning_content", "reasoning") if c in cols), None)
+            select = ", ".join(
+                [f"{key_col} AS trace_key", "role"] + wanted + ([reason] if reason else [])
+            )
+            marks = ",".join("?" * len(ids))
+            order = f"timestamp, {key_col}" if "timestamp" in cols else key_col
+            rows = conn.execute(
+                f"SELECT {select} FROM messages " f"WHERE session_id IN ({marks}) ORDER BY {order}",
+                ids,
+            ).fetchall()
+        except sqlite3.Error:
+            return out  # an older schema simply has no trace, never an error
+        finally:
+            conn.close()
+        at: dict[str, tuple[str, int]] = {}  # tool_call_id -> (message key, event index)
+        for row in rows:
+            key = str(row["trace_key"])
+            if (row["role"] or "") == "tool":
+                if "content" in wanted and "tool_call_id" in wanted:
+                    self._trace_result(row, at, out)
+                continue
+            if (row["role"] or "") != "assistant":
+                continue
+            events = out.setdefault(key, [])
+            if reason:
+                text, dropped = clip_text(row[reason], TRACE_TEXT_CAP)
+                if text:
+                    events.append({"kind": "reasoning", "text": text, "dropped": dropped})
+            if "content" in wanted:
+                text, dropped = clip_text(row["content"], TRACE_TEXT_CAP)
+                if text:
+                    events.append({"kind": "text", "text": text, "dropped": dropped})
+            for call in self._trace_calls(row["tool_calls"] if "tool_calls" in wanted else None):
+                if len(events) >= TRACE_EVENTS_CAP:
+                    break
+                events.append(call[0])
+                if call[1]:
+                    at[call[1]] = (key, len(events) - 1)
+        return out
+
+    @staticmethod
+    def _trace_calls(blob) -> list[tuple[dict, str]]:
+        """(event, call id) per tool call in one OpenAI-shaped tool_calls blob.
+
+        Unlike _parse_tool_calls this is NOT all-or-nothing: nothing downstream splits
+        tokens across what it returns, so a malformed entry costs its own line and the
+        calls beside it are still shown with the arguments they really ran.
+        """
+        if not blob:
+            return []
+        try:
+            data = json.loads(blob) if isinstance(blob, (str, bytes, bytearray)) else blob
+        except (ValueError, TypeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        calls = []
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            fn = entry.get("function")
+            fn = fn if isinstance(fn, dict) else {}
+            name = fn.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            head, params = tool_call_detail(fn.get("arguments"))
+            call_id = entry.get("call_id") or entry.get("id")
+            calls.append(
+                (
+                    {
+                        "kind": "tool",
+                        "name": name,
+                        "args": head,
+                        "params": params,
+                        "output": "",
+                        "output_dropped": 0,
+                    },
+                    str(call_id) if isinstance(call_id, (str, int)) else "",
+                )
+            )
+        return calls
+
+    @staticmethod
+    def _trace_result(row, at: dict, out: dict) -> None:
+        # A role='tool' row is one call's output, addressed by tool_call_id. Rows whose
+        # call is not in view (rotated away, or a resume joined mid-flight) are dropped:
+        # an output with no command above it names nothing. The caller checks that both
+        # columns exist -- sqlite3.Row raises IndexError, not KeyError, for a missing one.
+        call_id = row["tool_call_id"]
+        found = at.pop(str(call_id), None) if call_id else None
+        if found is None:
+            return
+        key, idx = found
+        events = out.get(key) or []
+        if idx >= len(events):
+            return
+        text, dropped = clip_text(row["content"], TRACE_OUTPUT_CAP)
+        events[idx]["output"] = text
+        events[idx]["output_dropped"] = dropped
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        # Gate on a turn that actually matched an assistant message, exactly like
+        # supports_tools: the content lives on that message, so a session whose log
+        # aged out has rows with nothing behind them.
+        return any(
+            t.get("content_key")
             for turns in self._enriched_turns(self._subtree_ids(workflow_id)).values()
             for t in turns
         )

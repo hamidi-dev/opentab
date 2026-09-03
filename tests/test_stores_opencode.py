@@ -603,3 +603,118 @@ def test_required_schema_is_exactly_what_every_query_path_needs():
                 pass  # what the verdict is standing in front of
             else:
                 raise AssertionError(f"{table}.{col} is required by nothing -- drop it")
+
+
+def _write_opencode_trace_db(path):
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        create table session (
+          id text primary key, parent_id text, title text, directory text, agent text,
+          time_created integer
+        );
+        create table message (id text primary key, session_id text, data text);
+        create table part (id text primary key, message_id text, session_id text, data text);
+        """
+    )
+    conn.execute(
+        "insert into session values (?,?,?,?,?,?)",
+        ("s1", None, "Root", "/work/repo", None, 1760000000000),
+    )
+    user = {"role": "user", "time": {"created": 500}}
+    turn = {
+        "role": "assistant",
+        "providerID": "anthropic",
+        "modelID": "claude-opus-4-8",
+        "cost": 2.0,
+        "time": {"created": 1000},
+        "tokens": {"input": 100, "output": 10},
+    }
+    conn.executemany(
+        "insert into message values (?,?,?)",
+        [("u1", "s1", json.dumps(user)), ("m1", "s1", json.dumps(turn))],
+    )
+    parts = [
+        ("p0", "u1", {"type": "text", "text": "fix the cache"}),
+        # OpenCode is the one backend of the three that keeps reasoning PROSE.
+        ("p1", "m1", {"type": "reasoning", "text": "**Planning** I should look first."}),
+        ("p2", "m1", {"type": "text", "text": "Checking the diff."}),
+        (
+            "p3",
+            "m1",
+            {
+                "type": "tool",
+                "tool": "bash",
+                "state": {
+                    "status": "completed",
+                    "input": {"command": "git diff --stat", "description": "the diff"},
+                    "output": "3 files changed",
+                },
+            },
+        ),
+        # step-start/step-finish parts carry no content and must not become events.
+        ("p4", "m1", {"type": "step-finish", "reason": "tool-calls"}),
+    ]
+    conn.executemany(
+        "insert into part values (?,?,?,?)",
+        [(pid, mid, "s1", json.dumps(data)) for pid, mid, data in parts],
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_opencode_turn_content_reads_narration_reasoning_and_each_calls_arguments():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_trace_db(db)
+        store = ot.Store(db, type("A", (), {"demo": False})())
+
+        assert store.supports_turn_content("s1") is True
+        assert store.records_reasoning is True
+        row = store.message_timeline("s1")[0]
+        # The message id is what the part table joins on, so it is the turn's identity.
+        assert row["content_key"] == "m1"
+        events = store.turn_content("s1")["m1"]
+
+        assert [e["kind"] for e in events] == ["reasoning", "text", "tool"]
+        assert events[0]["text"].startswith("**Planning**")
+        assert events[2]["name"] == "bash" and events[2]["args"] == "git diff --stat"
+        assert events[2]["params"] == [("description", "the diff")]
+        assert events[2]["output"] == "3 files changed"
+        # The user's own prompt part belongs to the prompt header, not to a turn.
+        assert "u1" not in store.turn_content("s1")
+
+
+def test_a_whitespace_only_part_never_marks_a_turn_as_readable():
+    # The Read column and the trace must agree: SQLite's one-argument trim() removes
+    # ASCII spaces only, so a part holding "\t\n" or a vertical tab marked the row
+    # readable and then opened onto nothing. The explicit set covers every ASCII
+    # whitespace character Python's str.strip() removes.
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_trace_db(db)
+        conn = sqlite3.connect(db)
+        turn = {
+            "role": "assistant",
+            "providerID": "anthropic",
+            "modelID": "claude-opus-4-8",
+            "cost": 1.0,
+            "time": {"created": 2000},
+            "tokens": {"input": 10, "output": 5},
+        }
+        conn.execute("insert into message values (?,?,?)", ("m2", "s1", json.dumps(turn)))
+        # Every ASCII whitespace character str.strip() removes, the four control
+        # SEPARATORS included -- verified against Python over the whole ASCII range.
+        for n, blank in enumerate(("   ", "\t\n", "\x0b\x0c", "\x1c\x1f", "\r", "")):
+            conn.execute(
+                "insert into part values (?,?,?,?)",
+                (f"w{n}", "m2", "s1", json.dumps({"type": "text", "text": blank})),
+            )
+        conn.commit()
+        conn.close()
+        store = ot.Store(db, type("A", (), {"demo": False})())
+
+        row = next(r for r in store.message_timeline("s1") if r["content_key"] == "m2")
+        assert row["has_text"] is False and row["has_reasoning"] is False
+        # ...and the trace agrees: nothing to show behind it.
+        assert store.turn_content("s1").get("m2", []) == []

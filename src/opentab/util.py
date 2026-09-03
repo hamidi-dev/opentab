@@ -262,6 +262,149 @@ def tool_mix_label(turns) -> str:
     return ", ".join(n if c == 1 else f"{n} ×{c}" for n, c in ordered)
 
 
+# --- The turn trace: what a turn actually did ---------------------------------
+#
+# The Turns tab answers WHEN the money went; the trace answers WHAT it bought --
+# the assistant's narration, its reasoning where the harness records any, and the
+# exact arguments every tool call ran with. Three caps, because the raw material is
+# unbounded and the pane shows a dozen lines of it: a Claude tool result averages
+# 26 KB and peaks at 682 KB (measured over the 15 largest transcripts), so an
+# uncapped walk would hold a whole session's output stream in memory to render a
+# head that never leaves the first screen. Clipping happens at PARSE time, not at
+# paint time, for that reason -- the store must never be the thing that grows.
+TRACE_TEXT_CAP = 4000  # one narration / reasoning block
+TRACE_ARG_CAP = 600  # one argument value
+TRACE_ARGS_CAP = 2000  # all of one call's arguments together
+TRACE_OUTPUT_CAP = 2000  # the head of one tool result
+TRACE_EVENTS_CAP = 200  # events kept for one turn
+
+# Ordered by how well the key answers "what did this call DO". The first one present
+# becomes the headline; everything else is listed under it. Both spellings of each
+# concept appear because the backends disagree (Claude's file_path, OpenCode's
+# filePath) and normalizing them away would lose the name the harness actually used.
+_ARG_HEADLINE = (
+    "command",
+    "cmd",
+    "script",
+    # Before the path keys deliberately: a search carries both, and it is the PATTERN
+    # that says what the call was looking for -- headlining its directory renders every
+    # grep in a session identically.
+    "pattern",
+    "query",
+    "url",
+    "file_path",
+    "filePath",
+    "path",
+    "notebook_path",
+    "prompt",
+    "content",
+    "description",
+    "name",
+)
+
+
+def clip_text(value, cap: int, strip: bool = True) -> tuple[str, int]:
+    """Return (kept, dropped) for one block of transcript text.
+
+    Dropped is a CHARACTER count, not a flag, so a caller can say how much it is not
+    showing. Non-strings answer ("", 0): a malformed record must cost its own line,
+    never the trace around it.
+
+    ``strip=False`` keeps the value's own leading whitespace, which is what a tool
+    ARGUMENT needs: the first line of a patch is indented, and stripping it silently
+    reshapes the thing this view exists to show exactly.
+    """
+    if not isinstance(value, str):
+        return "", 0
+    text = value.strip() if strip else value.rstrip()
+    if len(text) <= cap:
+        return text, 0
+    return text[:cap].rstrip(), len(text) - cap
+
+
+def _arg_text(value) -> str:
+    # Render one argument for a terminal line, UNCLIPPED: the caller decides how much
+    # room it has. Structured values are JSON so the shape survives. Trailing whitespace
+    # goes (it is a blank row on screen); LEADING whitespace stays, because the first
+    # line of a patch is indented and that indentation is the thing being shown.
+    if isinstance(value, str):
+        return value.rstrip()
+    if isinstance(value, bool) or value is None:
+        return json.dumps(value)
+    if isinstance(value, (int, float)):
+        return repr(value)
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _fit(text: str, cap: int) -> str:
+    """Clip to ``cap`` characters INCLUDING the marker naming what was dropped.
+
+    Empty when the cap cannot hold a truthful marker: a value shown without one claims
+    to be whole. The marker's own length depends on the count it prints, so the room is
+    solved for rather than assumed -- computing it from an already-clipped string is how
+    an omission count ends up naming a fraction of what it left out.
+    """
+    if cap <= 0:
+        return ""
+    if len(text) <= cap:
+        return text
+    keep = cap
+    for _ in range(4):  # converges immediately; the marker grows by at most a digit
+        room = cap - len(f" … +{len(text) - keep} chars")
+        if room == keep:
+            break
+        keep = room
+    if keep <= 0:
+        return ""
+    kept = text[:keep].rstrip()
+    return kept + f" … +{len(text) - len(kept)} chars"
+
+
+def tool_call_detail(args) -> tuple[str, list[tuple[str, str]]]:
+    """Split one call's arguments into its headline and the rest.
+
+    The headline is the answer to "what command was that" -- Bash's `command`, Read's
+    `file_path` -- and is what a one-line summary shows; the rest keeps every other
+    argument in the order the harness recorded it, so nothing a caller might need is
+    silently dropped. A non-dict (some harnesses log arguments as a JSON *string*, and
+    a broken one stays a string) degrades to a bare headline rather than raising.
+    """
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return clip_text(args, TRACE_ARG_CAP)[0], []
+    if not isinstance(args, dict) or not args:
+        return "", []
+    head = ""
+    used = None
+    for key in _ARG_HEADLINE:
+        if isinstance(args.get(key), (str, int, float)) and not isinstance(args[key], bool):
+            head, used = _fit(_arg_text(args[key]), TRACE_ARG_CAP), key
+            break
+    rest: list[tuple[str, str]] = []
+    budget = TRACE_ARGS_CAP
+    for key, value in args.items():
+        if key == used or budget <= 0:
+            continue
+        # Everything counts against the budget -- the key, the value, and the marker that
+        # says how much was dropped. Checking the budget and THEN appending whole strings
+        # made TRACE_ARGS_CAP advisory: three 600-character values followed by a
+        # 600-character key retained 2,414 characters against a 2,000 cap.
+        name = str(key)[: min(TRACE_ARG_CAP, budget)]
+        text = _fit(_arg_text(value), min(TRACE_ARG_CAP, budget - len(name)))
+        if not text:
+            # Nothing charged, so a smaller argument after this one can still fit: an
+            # entry that does not fit must not close the budget on its neighbours.
+            continue
+        rest.append((name, text))
+        budget -= len(name) + len(text)
+    return head, rest
+
+
 # Shared dull-name rule keeps flamegraph and Turns labels consistent.
 DULL_AGENT_NAMES = frozenset({"", "-", "subagent", "unknown", "(untitled)"})
 

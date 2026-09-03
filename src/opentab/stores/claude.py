@@ -14,12 +14,17 @@ from opentab.models import Workflow
 from opentab.pricing import api_equivalent_cost
 from opentab.util import (
     ATTACHMENT_EST_TOKENS,
+    TRACE_EVENTS_CAP,
+    TRACE_OUTPUT_CAP,
+    TRACE_TEXT_CAP,
+    clip_text,
     context_add,
     context_rows,
     est_tokens,
     git_root,
     read_files_parallel,
     safe_int,
+    tool_call_detail,
     tool_rows_from_turns,
 )
 
@@ -78,6 +83,10 @@ class ClaudeStore:
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
     combined = False
     source_name = "Claude Code"
+    # Claude Code writes its thinking blocks EMPTY -- measured 4,152 blocks and 0
+    # characters over the 15 largest transcripts, only the signature surviving. The
+    # trace says so rather than leaving a silent hole where the reasoning belongs.
+    records_reasoning = False
 
     def __init__(self, root_dir: str, args: argparse.Namespace):
         self.root_dir = root_dir
@@ -85,6 +94,11 @@ class ClaudeStore:
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._sessions: dict[str, dict] | None = None
         self._one: tuple[str, dict] | None = None
+        # The trace keeps its OWN single-entry memo and its own parse: content is
+        # collected only when _want_trace is armed, so the corpus parse and the status
+        # fast path never carry a session's narration or tool output at all.
+        self._trace_one: tuple[str, dict] | None = None
+        self._want_trace = False
         self._git_root_cache: dict[str, str] = {}
 
     @staticmethod
@@ -238,11 +252,28 @@ class ClaudeStore:
     # Background sessions replay parent history with identical dedup keys. sessionKind
     # appears after the replayed prefix, so detect it from the tail rather than the head.
     _SESSION_KIND_TAIL_BYTES = 8192
+    # How far the PARSE will widen chasing an unreadable marker line before it settles
+    # for the substring's verdict. A 116 MiB single record with a nested "sessionKind"
+    # near EOF otherwise reads 152 MiB at ~451 MiB peak RSS to answer a question the
+    # substring already answered. Measured: the real 116 MiB transcript needs one 8 KiB
+    # read, and no file in a 566-transcript corpus widens at all.
+    _REPLAY_PARSE_MAX_BYTES = 4 << 20
 
     def _replays_history(self, path: str) -> bool:
         # Widen until one complete tail record is visible: a final JSON line may exceed
         # the initial window. No byte ceiling is needed because the caller parses every
         # file in full next; the common case remains one 8 KiB read (~10 ms/364 files).
+        #
+        # The marker is a TOP-LEVEL field of a tail record, so a raw substring search is
+        # not enough: it also matches the string inside a tool RESULT -- a diff, a grep
+        # hit, this repo's own source quoted back -- and that false positive is silent
+        # (the transcript sorts last, _session widens to the corpus parse, and the trace
+        # disappears from an ordinary session for mentioning a word). But parsing alone
+        # is not enough EITHER, and in the more dangerous direction: a missed replay
+        # sorts before its source transcript and claims the duplicated API calls. So the
+        # substring stays the fast gate and the parse may only OVERRULE it when it
+        # positively read the line the string is on -- anything it cannot read
+        # (a straddling fragment, undecodable bytes) keeps the old verdict.
         try:
             size = os.path.getsize(path)
             window = self._SESSION_KIND_TAIL_BYTES
@@ -250,13 +281,73 @@ class ClaudeStore:
                 while True:
                     fh.seek(max(0, size - window))
                     chunk = fh.read()
-                    if b'"sessionKind"' in chunk:
+                    whole = window >= size
+                    verdict = self._tail_marks_replay(chunk, whole=whole)
+                    if verdict is True:
                         return True
-                    if b"\n" in chunk.rstrip(b"\n") or window >= size:
+                    if whole:
+                        # No more file to read: an unreadable marker line keeps the old
+                        # substring verdict, which is the safe direction (a session that
+                        # merely sorts last costs a corpus parse; a MISSED replay claims
+                        # another session's API calls).
+                        return verdict is None
+                    if verdict is None and window >= self._REPLAY_PARSE_MAX_BYTES:
+                        # The marker's own line is still unreadable this far in. Keep the
+                        # substring's answer rather than reading an arbitrarily large
+                        # record to confirm it: True is what the substring test always
+                        # said, and it is the safe direction. Only THIS path is bounded
+                        # -- the widening that looks for a record boundary stays
+                        # uncapped, because that is the oversized-final-record case a cap
+                        # once broke (see the 5 MiB regression test).
+                        return True
+                    if verdict is False and b"\n" in chunk.rstrip(b"\n"):
+                        # A complete record was visible and none of them is a marker.
+                        # Without this the widening rule is lost and an oversized final
+                        # record -- the case the widening exists for -- reads as "no".
                         return False
                     window *= 8
         except OSError:
             return False
+
+    @staticmethod
+    def _tail_marks_replay(chunk: bytes, whole: bool):
+        """True/False for the tail, or None when the marker's own line is unreadable."""
+        if b'"sessionKind"' not in chunk:
+            return False  # no marker anywhere in the window: nothing to parse
+        raw = chunk.split(b"\n")
+        if not whole:
+            # The window opened mid-record, so the first fragment is not JSON. If the
+            # marker is IN that fragment there is no verdict to give: judging on the
+            # complete lines after it would answer "no" for a file the substring test
+            # called a replay -- the direction that costs another session's API calls.
+            if b'"sessionKind"' in raw[0]:
+                return None
+            raw = raw[1:]
+        unreadable = False
+        for line in raw:
+            if b'"sessionKind"' not in line:
+                continue
+            try:
+                # Decoded STRICTLY: "replace" turns an undecodable byte into U+FFFD, and
+                # the line then parses as ordinary JSON -- silently clearing a marker the
+                # substring test found, which is exactly the case that must fail safe.
+                # A BOM is not a decode failure but json.loads refuses it, which would
+                # otherwise make an ordinary first line "unreadable" and fail safe into
+                # calling the whole transcript a replay.
+                text = line.decode("utf-8").strip().lstrip("\ufeff")
+                obj = json.loads(text, strict=False)
+            except (UnicodeDecodeError, ValueError):
+                unreadable = True  # a fragment or bad bytes: no verdict from this line
+                continue
+            # Key PRESENCE, not truthiness: the old substring test matched the key, and a
+            # falsy value is not evidence that this transcript replays nothing.
+            if isinstance(obj, dict) and "sessionKind" in obj:
+                return True
+        if unreadable:
+            return None
+        # Every line carrying the string parsed, and none of them declared the field:
+        # it is quoted content, not a marker.
+        return False
 
     def _parse(self) -> dict[str, dict]:
         if self._sessions is not None:
@@ -267,13 +358,23 @@ class ClaudeStore:
         self._sessions = self._parse_texts(read_files_parallel(files))
         return self._sessions
 
-    def _parse_one(self, workflow_id: str, paths: list[str] | None = None) -> dict | None:
+    def _parse_one(
+        self, workflow_id: str, paths: list[str] | None = None, trace: bool = False
+    ) -> dict | None:
         # Parse only this session and its sidecars for status/detail fast paths.
         if paths is None:
             paths = self._transcripts(workflow_id)
         if not paths:
             return None
-        return self._parse_texts(read_files_parallel(paths)).get(workflow_id)
+        # trace=True is the ONLY way content is ever collected. It is armed around one
+        # session's parse and disarmed in a finally, so a raise cannot leave the corpus
+        # parse (or parse_subset, which shares _parse_texts) collecting tool output for
+        # every session it touches.
+        self._want_trace = trace
+        try:
+            return self._parse_texts(read_files_parallel(paths)).get(workflow_id)
+        finally:
+            self._want_trace = False
 
     def _session(self, workflow_id: str, fallback: bool = True) -> dict | None:
         # Detail reads stay session-local (~5 ms versus ~2.2 s corpus-wide).
@@ -476,6 +577,8 @@ class ClaudeStore:
                 "pending_tools": {},  # tool_use id -> name, consumed by its tool_result
                 "ctx_seen": set(),  # record uuids already composed (replay dedup)
                 "turn_by_key": {},  # (message.id, requestId) -> index into turns
+                "content": {},  # content key -> the turn's trace events (trace parse only)
+                "trace_at": {},  # tool_use id -> (content key, event index) awaiting a result
                 "files": set(),  # transcripts that fed this session (cache provenance)
             }
         if path:
@@ -530,6 +633,10 @@ class ClaudeStore:
                 )
                 if not s["title_prompt"]:
                     s["title_prompt"] = text[:80]  # the session-title fallback stays short
+        if typ == "user" and self._want_trace:
+            # A tool RESULT arrives as a user record, sidechain ones included -- the
+            # only place the output of a call is written down.
+            self._trace_result(o, s)
         if typ == "user" and o.get("isSidechain") is not True:
             # Sidechain (Task) content runs in the subagent's own context window, so
             # only main-thread content counts toward this session's composition.
@@ -562,6 +669,14 @@ class ClaudeStore:
             s["ctx_seen"].add(uuid)
         if fresh and not side:
             self._ingest_assistant_context(msg, s)
+        # The trace covers SIDECHAIN turns too, unlike the composition walk above: a
+        # subagent's turns are rows in the same tab, and a row you can select must have
+        # something behind it. Collected per RECORD rather than per turn, for the reason
+        # the tool fold below exists -- a streamed message's blocks arrive spread over
+        # several records, and the narration is usually in an earlier one than the call.
+        ck = self._content_key(msg, o)
+        if self._want_trace and fresh:
+            self._trace_assistant(msg, ck, s)
         # The tool_use blocks this step invoked (duplicates kept: two Bash calls =
         # two calls, two shares) -- tool_breakdown splits the turn's tokens across
         # them, the Store.tool_breakdown attribution.
@@ -570,16 +685,27 @@ class ClaudeStore:
             for c in (msg.get("content") or [])
             if isinstance(c, dict) and c.get("type") == "tool_use" and c.get("name")
         ]
+        # Which turns have something to READ, computed on the walk that is already
+        # happening rather than from the trace: the flags are two booleans, so the Turns
+        # drill can mark the interesting rows without any session paying a content parse
+        # to find out. Measured on a real corpus: 60.2% of Claude turns are pure tool
+        # calls and 39.8% carry narration -- which is exactly why the marker earns a
+        # column. Folded across records like `tools`, because a streamed message's
+        # narration and its calls arrive in different ones.
+        reads = self._content_flags(msg)
         key = (msg.get("id"), o.get("requestId"))
         if all(key):
             if key in seen:
                 # A later content-block record of the same message: its usage is the
                 # echo (skip), but its tool calls belong to the turn the first record
                 # opened -- fold them in so the Tools tab sees the whole step.
-                if tools and fresh:
+                if fresh:
                     idx = s["turn_by_key"].get(key)
                     if idx is not None:
-                        s["turns"][idx]["tools"].extend(tools)
+                        if tools:
+                            s["turns"][idx]["tools"].extend(tools)
+                        for field, value in reads.items():
+                            s["turns"][idx][field] = s["turns"][idx][field] or value
                 return
             seen.add(key)
         # Claude Code models are bare ("claude-opus-4-8"); prefix the provider so
@@ -624,6 +750,12 @@ class ClaudeStore:
                 "cache_write_1h": cw1h,  # subset of cache_write; long-TTL rate under $
                 "tokens_total": i + out_t + cr + cw,
                 "tools": tools,
+                # Set on EVERY parse, not just a trace one: the rows a session already
+                # has may come from the corpus parse while the content comes from a
+                # later trace parse, and the two only meet if the key is derived from
+                # the record rather than from whichever walk happened to build it.
+                "content_key": ck,
+                **reads,
             }
         )
         if o.get("isSidechain") is True:
@@ -709,6 +841,138 @@ class ClaudeStore:
                 else:
                     total += est_tokens(x.get("text") or "")
         return total
+
+    @staticmethod
+    def _content_flags(msg: dict) -> dict:
+        """Does this record carry narration / reasoning text worth opening?
+
+        Two booleans off the content walk the caller is doing anyway -- never a reason to
+        parse a session's content just to mark a row. `has_reasoning` is False on every
+        real Claude turn (its thinking blocks are written empty), which is the same fact
+        `records_reasoning` states; it is computed rather than hard-coded so a future
+        transcript that does carry the text lights up without a code change.
+        """
+        text = reasoning = False
+        for c in msg.get("content") or []:
+            if not isinstance(c, dict):
+                continue
+            kind = c.get("type")
+            if kind == "text":
+                text = text or bool((c.get("text") or "").strip())
+            elif kind in ("thinking", "redacted_thinking"):
+                reasoning = reasoning or bool((c.get("thinking") or "").strip())
+        return {"has_text": text, "has_reasoning": reasoning}
+
+    @staticmethod
+    def _content_key(msg: dict, o: dict) -> str:
+        """Stable identity for the turn a record belongs to.
+
+        The same pair the usage dedup keys on, so a streamed message's records all name
+        one turn; the record uuid is the fallback for a transcript old enough to predate
+        requestId, which leaves each record its own turn exactly as the rows do.
+        """
+        mid, rid = msg.get("id"), o.get("requestId")
+        return f"{mid}|{rid}" if mid and rid else str(o.get("uuid") or "")
+
+    def _trace_assistant(self, msg: dict, ck: str, s: dict) -> None:
+        # One record's content blocks, appended to whatever the turn already holds.
+        if not ck:
+            return
+        events = s["content"].setdefault(ck, [])
+        for c in msg.get("content") or []:
+            if not isinstance(c, dict) or len(events) >= TRACE_EVENTS_CAP:
+                continue
+            ct = c.get("type")
+            if ct == "text":
+                text, dropped = clip_text(c.get("text"), TRACE_TEXT_CAP)
+                if text:
+                    events.append({"kind": "text", "text": text, "dropped": dropped})
+            elif ct in ("thinking", "redacted_thinking"):
+                # Claude Code writes these blocks EMPTY -- measured 4,152 blocks and 0
+                # characters over the 15 largest transcripts, the signed blob being all
+                # that survives. So this branch is real and almost never fires; it must
+                # not emit an empty row, or every Claude turn would show a reasoning
+                # heading with nothing under it and read as a rendering bug.
+                text, dropped = clip_text(c.get("thinking"), TRACE_TEXT_CAP)
+                if text:
+                    events.append({"kind": "reasoning", "text": text, "dropped": dropped})
+            elif ct == "tool_use":
+                head, params = tool_call_detail(c.get("input"))
+                events.append(
+                    {
+                        "kind": "tool",
+                        "name": c.get("name") or "(unknown)",
+                        "args": head,
+                        "params": params,
+                        "output": "",
+                        "output_dropped": 0,
+                    }
+                )
+                if c.get("id"):
+                    s["trace_at"][c["id"]] = (ck, len(events) - 1)
+
+    def _trace_result(self, o: dict, s: dict) -> None:
+        # Attach each tool_result to the call that asked for it. Unpaired results (a
+        # rotated-away call, a resumed transcript joined mid-flight) are dropped rather
+        # than shown loose: an output with no command above it names nothing.
+        msg = o.get("message")
+        if not isinstance(msg, dict):
+            return
+        for b in msg.get("content") or []:
+            if not isinstance(b, dict) or b.get("type") != "tool_result":
+                continue
+            at = s["trace_at"].pop(b.get("tool_use_id"), None)
+            if at is None:
+                continue
+            ck, idx = at
+            events = s["content"].get(ck) or []
+            if idx >= len(events):
+                continue
+            text, dropped = clip_text(self._result_text(b.get("content")), TRACE_OUTPUT_CAP)
+            events[idx]["output"] = text
+            events[idx]["output_dropped"] = dropped
+
+    @staticmethod
+    def _result_text(content) -> str:
+        # A tool_result's content is a bare string or a list of blocks; an image has no
+        # text to show and is named instead of being rendered as an empty result.
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return "" if content is None else str(content)
+        parts = []
+        for x in content:
+            if not isinstance(x, dict):
+                parts.append(str(x))
+            elif x.get("type") == "image":
+                parts.append("(image)")
+            else:
+                parts.append(x.get("text") or "")
+        return "\n".join(p for p in parts if p)
+
+    def turn_content(self, workflow_id: str) -> dict[str, list[dict]]:
+        """Trace events per turn, for the Turns tab's third level.
+
+        Its own parse and its own memo: the corpus parse never collects content, so this
+        re-reads the session's transcripts (~5 ms; the extras' _session parse pays the
+        same read) rather than making every drill-in carry a session's tool output.
+        """
+        if self._trace_one is not None and self._trace_one[0] == workflow_id:
+            return self._trace_one[1]
+        if not self.supports_turn_content(workflow_id):
+            return {}
+        s = self._parse_one(workflow_id, trace=True)
+        content = (s or {}).get("content") or {}
+        self._trace_one = (workflow_id, content)
+        return content
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        # A replay-capable transcript holds its parent's records verbatim and cannot be
+        # read alone (the _session rule), and the corpus parse this would otherwise need
+        # collects no content -- so those sessions have no trace rather than a trace
+        # showing another session's work.
+        paths = self._transcripts(workflow_id)
+        return bool(paths) and not any(self._replays_history(p) for p in paths)
 
     def context_breakdown(self, workflow_id: str) -> list[dict]:
         # Estimated composition rows for the Context tab (what filled the window),
@@ -854,6 +1118,7 @@ class ClaudeStore:
     def workflows(self) -> list[Workflow]:
         self._sessions = None  # reload (r) re-reads fresh; model methods reuse cache
         self._one = None  # ... and so must the single-transcript memo behind _session
+        self._trace_one = None  # ... and the trace, which is a parse of the same files
         return self._workflow_rows(self._parse())
 
     @staticmethod
@@ -987,6 +1252,7 @@ class ClaudeStore:
         # what a warm start already pays.
         self._one = None
         self._sessions = None
+        self._trace_one = None
         # Count what was actually READ, not just what was listed: read_files_parallel
         # skips a file that vanished or turned unreadable after the glob, and a full
         # parse merely under-reports for that run while a splice would WRITE the partial

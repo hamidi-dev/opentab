@@ -1717,3 +1717,90 @@ def test_hermes_live_child_of_archived_parent_is_its_own_root_everywhere():
         assert [w.id for w in st.workflows()] == ["child"]
         assert st.root_of("child") == "child"
         assert [r["id"] for r in st.recent_roots()] == ["child"]
+
+
+def _hermes_messages_trace(db, rows):
+    """`messages` with everything the trace reads: (sid, role, content, tc, tcid, reason, ts)."""
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS messages "
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT, "
+        "tool_calls TEXT, tool_call_id TEXT, reasoning_content TEXT, timestamp REAL)"
+    )
+    conn.executemany(
+        "INSERT INTO messages (session_id, role, content, tool_calls, tool_call_id, "
+        "reasoning_content, timestamp) VALUES (?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def _tc_id(call_id, name, arguments):
+    import json as _json
+
+    return _json.dumps([{"id": call_id, "function": {"name": name, "arguments": arguments}}])
+
+
+def test_hermes_trace_rides_the_same_causal_match_the_tool_names_do():
+    # The two halves of a Hermes turn live in different stores -- tokens in the rotating
+    # log, content in the DB -- so a turn's key comes from the causal join, never from a
+    # second guess at it. A call Hermes logged and then REJECTED has no assistant row,
+    # so it reports no tools and, for the same reason, has no content to show.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(
+            root,
+            [
+                _call_line("2026-08-24 14:00:00", "s1", 1, inp=900, out=90, ms=100),
+                _call_line("2026-08-24 14:00:02", "s1", 2, inp=100, out=10, ms=100),
+            ],
+        )
+        _hermes_messages_trace(
+            db,
+            [
+                (
+                    "s1",
+                    "assistant",
+                    "Looking now.",
+                    _tc_id("c1", "terminal", '{"command": "ls -la"}'),
+                    None,
+                    "**Checking** the directory first.",
+                    _at("2026-08-24 14:00:02.101"),
+                ),
+                ("s1", "tool", "total 24", None, "c1", None, _at("2026-08-24 14:00:02.400")),
+            ],
+        )
+        st = _store(db)
+        assert st.supports_turn_content("s1") is True
+        assert st.records_reasoning is True
+
+        rows = st.message_timeline("s1")
+        assert len(rows) == 2
+        assert not rows[0]["content_key"]  # the rejected call matched nothing
+        content = st.turn_content("s1")
+        events = content[rows[1]["content_key"]]
+
+        # reasoning_content is real prose on this backend, unlike Claude's empty blocks.
+        assert [e["kind"] for e in events] == ["reasoning", "text", "tool"]
+        assert events[0]["text"].startswith("**Checking**")
+        assert events[1]["text"] == "Looking now."
+        assert (events[2]["name"], events[2]["args"]) == ("terminal", "ls -la")
+        # The result is a separate role='tool' row, joined back by tool_call_id.
+        assert events[2]["output"] == "total 24"
+
+
+def test_hermes_trace_survives_a_messages_table_without_an_id_column():
+    # The messages table is probed like sessions: an older Hermes without an explicit
+    # `id` still keys its turns, off the implicit rowid, rather than losing tools too.
+    with tempfile.TemporaryDirectory() as root:
+        db = os.path.join(root, "state.db")
+        _hermes_db_full(db, [{"id": "s1", "inp": 10, "title": "t"}])
+        _hermes_log(root, [_call_line("2026-08-24 14:00:00", "s1", 1, inp=100, out=10, ms=100)])
+        _hermes_messages_tc(
+            db, [("s1", "assistant", _tc("terminal"), _at("2026-08-24 14:00:00.101"))]
+        )
+        st = _store(db)
+        assert [r["tool"] for r in st.tool_breakdown("s1")] == ["terminal"]
+        assert st.message_timeline("s1")[0]["content_key"]  # keyed off the rowid

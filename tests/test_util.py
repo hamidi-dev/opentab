@@ -954,3 +954,91 @@ def test_safe_int_and_safe_float_reject_every_number_a_log_can_hold_but_a_float_
     assert ot.CsvStore._to_int("1e308") == 0 and ot.CsvStore._to_float("1e308") == 0.0
     assert ot.CsvStore._to_int("12,345") == 12345 and ot.CsvStore._to_int("1e3") == 1000
     assert ot.CsvStore._to_float("$1,000.50") == 1000.5
+
+
+def test_tool_call_detail_headlines_what_the_call_did_not_where_it_ran():
+    # The headline is the answer to "what command was that". A search carries a path AND
+    # a pattern, and headlining the path renders every grep in a session identically --
+    # which is the failure that makes a trace useless to skim.
+    head, rest = ot.tool_call_detail({"path": "/repo/src", "pattern": "cache_write", "n": True})
+    assert head == "cache_write"
+    assert ("path", "/repo/src") in rest and ("n", "true") in rest  # JSON, not Python True
+    assert ("pattern", "cache_write") not in rest  # the headline is not repeated below it
+
+    # Bash reads by its command; the description rides underneath.
+    head, rest = ot.tool_call_detail({"command": "git diff --stat", "description": "the diff"})
+    assert head == "git diff --stat" and rest == [("description", "the diff")]
+
+    # Whitespace is PRESERVED: "the exact command that ran" is this feature's promise,
+    # and 48% of real tool calls carry a multi-line argument (heredocs, patches, a
+    # Write's body). Collapsing here made `printf 'a  b'` lie about what it printed and
+    # turned every patch into one unreadable line. The renderer decides the layout.
+    assert ot.tool_call_detail({"command": "a\n  b"})[0] == "a\n  b"
+    assert ot.tool_call_detail({"command": "printf 'a  b'"})[0] == "printf 'a  b'"
+
+    # Some harnesses log the arguments as a JSON *string*; a broken one stays a string
+    # and still names the call rather than raising.
+    assert ot.tool_call_detail('{"command": "ls -la"}')[0] == "ls -la"
+    assert ot.tool_call_detail("{not json") == ("{not json", [])
+    assert ot.tool_call_detail(None) == ("", [])
+    assert ot.tool_call_detail({}) == ("", [])
+
+    # No known key: nothing is promoted, but every argument is still listed.
+    head, rest = ot.tool_call_detail({"todos": [1, 2]})
+    assert head == "" and rest == [("todos", "[1, 2]")]
+
+
+def test_tool_call_detail_clips_a_huge_argument_and_says_so():
+    big = "x" * (ot.TRACE_ARG_CAP + 500)
+    head, _ = ot.tool_call_detail({"command": big})
+    assert len(head) <= ot.TRACE_ARG_CAP and head.startswith("x" * 50)
+    # The count is TRUTHFUL: shown + dropped is the original length. Computing it from
+    # an already-clipped, already-annotated string named a fraction of what was left out.
+    shown, _, tail = head.partition(" … +")
+    assert len(shown) + int(tail.split()[0]) == len(big)
+    # The aggregate cap is a real cap, keys included: checking the budget and THEN
+    # appending a whole value made it advisory (ten 600-char values kept 2,400 against
+    # a 2,000 cap), and a pathological key was kept in full.
+    _, rest = ot.tool_call_detail({str(k): "y" * 400 for k in range(20)})
+    assert sum(len(k) + len(v) for k, v in rest) <= ot.TRACE_ARGS_CAP + 40
+    _, rest = ot.tool_call_detail({"command": "x", "k" * 5000: "y"})
+    assert all(len(k) <= ot.TRACE_ARG_CAP for k, _ in rest)
+
+
+def test_clip_text_reports_how_much_it_dropped_not_merely_that_it_did():
+    # A character count, so the pane can say what it is holding back.
+    assert ot.clip_text("short", 50) == ("short", 0)
+    kept, dropped = ot.clip_text("z" * 120, 100)
+    assert len(kept) == 100 and dropped == 20
+    assert ot.clip_text("  padded  ", 50) == ("padded", 0)
+    # A malformed record costs its own line, never the trace around it.
+    assert ot.clip_text(None, 50) == ("", 0) and ot.clip_text(17, 50) == ("", 0)
+
+
+def test_trace_argument_caps_are_real_caps_not_advisory_ones():
+    # Everything counts against the budget -- the key, the value, and the marker saying
+    # how much was dropped. Checking the budget and THEN appending whole strings kept
+    # 2,414 characters against a 2,000 cap on three long values and one long key.
+    _, rest = ot.tool_call_detail({"a": "x" * 600, "b": "x" * 600, "c": "x" * 600, "k" * 600: "y"})
+    assert sum(len(k) + len(v) for k, v in rest) <= ot.TRACE_ARGS_CAP
+    _, rest = ot.tool_call_detail({str(i): "y" * 400 for i in range(20)})
+    assert sum(len(k) + len(v) for k, v in rest) <= ot.TRACE_ARGS_CAP
+    # The last entry's budget can be shorter than the " … +N chars" marker itself, and a
+    # value shown WITHOUT that marker claims to be whole -- so the entry is dropped.
+    _, rest = ot.tool_call_detail(
+        {"a": "x" * 600, "b": "x" * 600, "c": "x" * 600, "k" * 196: "abc"}
+    )
+    assert sum(len(k) + len(v) for k, v in rest) <= ot.TRACE_ARGS_CAP
+
+
+def test_a_tool_argument_keeps_its_own_leading_whitespace():
+    # clip_text strips by default, which is right for prose and wrong for an argument:
+    # the first line of a patch is indented, and stripping it silently reshapes the very
+    # thing this view exists to show exactly.
+    head, rest = ot.tool_call_detail({"command": "  python <<EOF\n\tpass\nEOF\n\n"})
+    assert head == "  python <<EOF\n\tpass\nEOF"
+    _, rest = ot.tool_call_detail({"replace_all": False, "old_string": "    if x:\n      go()"})
+    assert ("old_string", "    if x:\n      go()") in rest
+    # Prose still strips: a leading blank line is noise, not shape.
+    assert ot.clip_text("\n  hello  \n", 50) == ("hello", 0)
+    assert ot.clip_text("\n  hello  \n", 50, strip=False) == ("\n  hello", 0)

@@ -180,3 +180,27 @@ def test_human_tokens_never_exceeds_six_characters():
     # Nothing anywhere in the range outgrows the cell.
     for v in (0, 1, 999, 1_000, 12_345, 999_949, 999_950, 1_000_000, 123_456_789, 10**12):
         assert len(ot.human_tokens(v)) <= 6, (v, ot.human_tokens(v))
+
+
+def test_wrap_cells_indent_never_overflows_the_width_it_was_given():
+    # A word accepted against the FIRST line's room was then emitted on a continuation,
+    # whose width the indent has shrunk -- so an indented wrap came back wider than the
+    # caller asked for, and the painter clipped what it could not fit.
+    from opentab.formatting import display_width, wrap_cells
+
+    assert wrap_cells("12345 1234567", 10, "    ") == ["12345", "    123456", "    7"]
+    # A continuation narrower than one glyph spends the indent rather than the width.
+    assert wrap_cells("aaaa 界", 4, "   ") == ["aaaa", "界"]
+    for text in ("12345 1234567", "界" * 20, "a" * 45, "aaaa 界", "the quick brown fox"):
+        for width in (1, 2, 4, 7, 10, 20):
+            for indent in ("", "  ", "   ", "        "):
+                out = wrap_cells(text, width, indent)
+                # The one documented exception is a single glyph wider than the WHOLE
+                # pane, which the original preserves rather than stalling or dropping.
+                over = [ln for ln in out if display_width(ln) > width]
+                assert all(len(ln.strip()) == 1 for ln in over), (text, width, indent, over)
+                # ...and nothing is dropped on the way (a hard-broken word rejoins).
+                assert "".join(out).replace(indent, "").replace(" ", "") == text.replace(" ", "")
+    # Existing callers, which pass no indent, are untouched.
+    assert wrap_cells("the quick brown fox", 10) == ["the quick", "brown fox"]
+    assert wrap_cells("", 10) == [] and wrap_cells("x", 0) == []

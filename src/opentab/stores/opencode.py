@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sqlite3
@@ -10,7 +11,14 @@ from urllib.parse import quote
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import WORKED_BURST_GAP_SECONDS, _clean_prompt
 from opentab.models import Workflow
-from opentab.util import normalize_project_path
+from opentab.util import (
+    TRACE_EVENTS_CAP,
+    TRACE_OUTPUT_CAP,
+    TRACE_TEXT_CAP,
+    clip_text,
+    normalize_project_path,
+    tool_call_detail,
+)
 
 MODEL_EXPR = """
 case
@@ -48,7 +56,11 @@ REQUIRED_SCHEMA = {
 }
 
 
-def _process_timeline(rows: list[dict], tools: dict[str, list[str]] | None = None) -> list[dict]:
+def _process_timeline(
+    rows: list[dict],
+    tools: dict[str, list[str]] | None = None,
+    reads: dict[str, tuple[bool, bool]] | None = None,
+) -> list[dict]:
     # Assign each assistant row to the latest root user prompt. Tools arrive from the
     # separate grouped part-table scan; see _timeline_tools.
     out: list[dict] = []
@@ -71,6 +83,10 @@ def _process_timeline(rows: list[dict], tools: dict[str, list[str]] | None = Non
         d["prompt_title"] = cur_title
         d["prompt_full"] = cur_full
         d["tools"] = (tools or {}).get(d["mid"], [])
+        # The message id is what the part table joins on, so it is also the turn's
+        # identity for the trace. Set before mid is dropped below.
+        d["content_key"] = d["mid"] or ""
+        d["has_text"], d["has_reasoning"] = (reads or {}).get(d["mid"], (False, False))
         for k in ("role", "mid", "summary_title", "prompt_text"):
             del d[k]
         out.append(d)
@@ -81,6 +97,9 @@ class Store:
     records_cost = True
     combined = False
     source_name = "OpenCode"
+    # OpenCode is the one backend of the three that keeps reasoning PROSE rather
+    # than an empty block: 19,324 of 23,298 reasoning parts non-empty (measured).
+    records_reasoning = True
 
     def __init__(self, db: str, args: argparse.Namespace):
         self.db = db
@@ -656,7 +675,57 @@ class Store:
         order by {_TL_TS}, m.rowid
         """
         rows = [dict(r) for r in self.conn.execute(sql, [workflow_id])]
-        return _process_timeline(rows, self._timeline_tools(workflow_id))
+        return _process_timeline(
+            rows, self._timeline_tools(workflow_id), self._timeline_reads(workflow_id)
+        )
+
+    def _timeline_reads(self, workflow_id: str) -> dict[str, tuple[bool, bool]]:
+        """message id -> (has narration, has reasoning), for the Turns drill's marker.
+
+        A GROUPED aggregate, not a row scan: it answers one boolean pair per message
+        instead of materializing every text and reasoning part, which is what keeps the
+        marker free of a content fetch (28 ms on the largest real session, the same order
+        as _timeline_tools beside it). Deliberately NOT computed by message_timeline_all:
+        that feeds the fleet export, where the content itself never travels, and a marker
+        promising something to read that the remote machine cannot open is worse than no
+        marker at all.
+        """
+        if not self.supports_tool_breakdown:
+            return {}
+        sql = """
+        with recursive tree(id) as (
+          select id from session where id = ?
+          union all
+          select child.id from session child join tree on child.parent_id = tree.id
+        )
+        select p.message_id,
+               max(json_extract(p.data, '$.type') = 'text'),
+               max(json_extract(p.data, '$.type') = 'reasoning')
+        from part p
+        where p.session_id in (select id from tree)
+          and json_extract(p.data, '$.type') in ('text', 'reasoning')
+          -- Trimmed with an explicit character set, matching the trace's own strip():
+          -- SQLite's one-argument trim() removes ASCII SPACES only, so a part holding
+          -- "\t\n" would mark the row readable and then open onto nothing. The set is
+          -- every ASCII whitespace character Python strips; the residual is a part whose
+          -- entire content is a UNICODE space (NBSP, em space), which no writer emits as
+          -- a whole message and which SQLite cannot express without a LIKE-per-codepoint.
+          -- The set is verified against str.strip() over the whole ASCII range, the
+          -- four control SEPARATORS (28-31) included -- Python strips those too.
+          and length(
+              trim(
+                  coalesce(json_extract(p.data, '$.text'), ''),
+                  char(32) || char(9) || char(10) || char(11) || char(12) || char(13)
+                  || char(28) || char(29) || char(30) || char(31)
+              )
+          ) > 0
+        group by p.message_id
+        """
+        try:
+            rows = self.conn.execute(sql, [workflow_id]).fetchall()
+        except sqlite3.Error:
+            return {}  # an older schema simply shows no marker, never an error
+        return {mid: (bool(text), bool(reason)) for mid, text, reason in rows if mid}
 
     def _timeline_tools(self, workflow_id: str | None = None) -> dict[str, list[str]]:
         """message id -> the tool names that step called, in call order.
@@ -706,6 +775,72 @@ class Store:
             if tool:
                 out.setdefault(mid, []).append(tool)
         return out
+
+    def turn_content(self, workflow_id: str) -> dict[str, list[dict]]:
+        """Trace events per turn: narration, reasoning, and each call's arguments.
+
+        One grouped scan over the session subtree's parts -- the _timeline_tools shape,
+        for the same reason (a correlated subquery per turn is what made the export 12x
+        slower). OpenCode is the one backend of the three that records real reasoning
+        PROSE rather than an empty block: measured 19,324 of 23,298 reasoning parts
+        non-empty, averaging 224 characters.
+        """
+        if not self.supports_tool_breakdown:
+            return {}
+        sql = """
+        with recursive tree(id) as (
+          select id from session where id = ?
+          union all
+          select child.id from session child join tree on child.parent_id = tree.id
+        )
+        select p.message_id, p.data from part p
+        join message m on m.id = p.message_id
+        where p.session_id in (select id from tree)
+          and json_extract(m.data, '$.role') = 'assistant'
+          and json_extract(p.data, '$.type') in ('text', 'reasoning', 'tool')
+        order by p.rowid
+        """
+        out: dict[str, list[dict]] = {}
+        # Joined to the message rather than filtered afterwards: a USER message's text
+        # part is the prompt, which the tab already shows as the group header -- keyed
+        # here it would be content no turn claims, carried for the session's lifetime.
+        for mid, blob in self.conn.execute(sql, [workflow_id]):
+            if not mid:
+                continue
+            events = out.setdefault(mid, [])
+            if len(events) >= TRACE_EVENTS_CAP:
+                continue
+            try:
+                part = json.loads(blob)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("type")
+            if kind in ("text", "reasoning"):
+                text, dropped = clip_text(part.get("text"), TRACE_TEXT_CAP)
+                if text:
+                    events.append({"kind": kind, "text": text, "dropped": dropped})
+                continue
+            state = part.get("state")
+            state = state if isinstance(state, dict) else {}
+            head, params = tool_call_detail(state.get("input"))
+            output, out_dropped = clip_text(state.get("output"), TRACE_OUTPUT_CAP)
+            events.append(
+                {
+                    "kind": "tool",
+                    "name": part.get("tool") or "(unknown)",
+                    "args": head,
+                    "params": params,
+                    "output": output,
+                    "output_dropped": out_dropped,
+                }
+            )
+        return out
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        # Same gate as the tool breakdown: both read the part table.
+        return bool(self.supports_tool_breakdown)
 
     def message_timeline_all(self) -> dict[str, list[dict]]:
         # The whole-corpus Turns for `--export`: every root session's timeline in ONE

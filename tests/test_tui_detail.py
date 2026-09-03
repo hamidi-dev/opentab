@@ -1737,8 +1737,12 @@ def test_turns_drill_scrolls_the_pane_and_esc_steps_back_out():
     app._toggle_turn_cursor()
     assert app.turn_drill == 1 and app.scroll == 0
     app.move(1)
-    assert app.scroll == 1  # the pane, not a cursor
-    assert app._turn_cursor == 1  # which stayed put, ready for the step back
+    assert app._trace_cursor == 1  # the drill's OWN row cursor, one level in
+    assert app._turn_cursor == 1  # the prompt cursor stayed put, ready for the step back
+    assert app.scroll == 0
+    app._trace_cursor = len(app.drilled_turn_indices()) - 1
+    app.move(1)
+    assert app.scroll == 1  # at the last turn the key goes back to the pane
     assert app.handle_key(None, 27)  # Esc
     assert app.turn_drill is None and app.view == "session"  # back to the table, not out
     assert app.handle_key(None, 27) and app.view != "session"  # a second Esc leaves
@@ -2283,6 +2287,17 @@ def test_esc_only_leaves_a_drilled_prompt_while_the_turns_tab_is_showing():
     assert app.turn_drill == 1  # ...and the drill it could not see is untouched
 
 
+def test_drilled_prompt_footnotes_wrap_like_the_tab_above_them():
+    # Same rule as the tab's own notes: the trace hint is the longest line on the pane,
+    # and a clipped footnote is one that stops mid-word.
+    app = _trace_app()
+    wf = app.current_session()
+    for width in (72, 96, 140):
+        lines = app.renderer.detail_turn_drill(wf, width)
+        assert all(len(ln) <= width for ln in lines if ln.startswith(("· ", "  ")))
+    assert any("opens what a turn actually did" in ln for ln in lines)
+
+
 def test_turns_footnotes_wrap_instead_of_being_clipped_mid_sentence():
     # Everything else on the tab is width-budgeted; these were not, and ran ~50 characters
     # past a 100-column pane, where the paint clips rather than wraps.
@@ -2538,3 +2553,309 @@ def test_drilled_turns_show_the_agent_label_the_backend_gave_them():
     assert "↳ explore" in joined  # the subagent, marked
     # A backend that gives no label still shows "-", never a blank cell.
     assert any(ln.count("-") for ln in body)
+
+
+class _TraceStore(FakeStore):
+    """Two prompts, three turns, with content behind two of them."""
+
+    records_reasoning = False  # a Claude-shaped harness: empty thinking blocks
+
+    _TEMPLATE = {
+        "k0": [
+            {"kind": "text", "text": "I'll check the diff first."},
+            {
+                "kind": "tool",
+                "name": "Bash",
+                "args": "git diff --stat src/opentab/tui/renderer.py",
+                "params": [("description", "the diff")],
+                "output": "3 files changed\n\n\n42 insertions(+)\n" + "noise\n" * 40,
+                "output_dropped": 900,
+            },
+        ],
+        "k1": [
+            {
+                "kind": "reasoning",
+                "text": "**Planning** the next step.",
+                "dropped": 120,
+            }
+        ],
+    }
+
+    def __init__(self, workflows):
+        super().__init__(workflows)
+        # Per instance: a test that rewrites an event must not reach the next one.
+        self._CONTENT = {k: [dict(e) for e in v] for k, v in self._TEMPLATE.items()}
+
+    def supports_turns(self, wid):
+        return True
+
+    def supports_turn_content(self, wid):
+        return True
+
+    def turn_content(self, wid):
+        return {k: [dict(e) for e in v] for k, v in self._CONTENT.items()}
+
+    def message_timeline(self, wid):
+        return [
+            {
+                "depth": 0,
+                "agent": "-",
+                "model_name": "anthropic/claude-opus-4-8",
+                "cost": 1.0,
+                "input": 10,
+                "output": 10,
+                "reasoning": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "cache_write_1h": 0,
+                "tokens_total": 20,
+                "prompt_id": "p0" if i < 2 else "p1",
+                "prompt_title": "do the thing",
+                "prompt_full": "do the thing",
+                "time": f"2026-06-01 12:0{i}:00",
+                "content_key": f"k{i}" if i < 2 else "",
+                "has_text": i == 0,
+                "has_reasoning": i == 1,
+            }
+            for i in range(3)
+        ]
+
+
+def _trace_app():
+    app = _turns_app(_TraceStore)
+    app.open_turn_drill(0)  # the first prompt, whose two turns both have content
+    return app
+
+
+def test_turn_trace_shows_the_exact_command_its_arguments_and_its_output():
+    # The whole point of the level: a Cost column cannot say WHAT was bought, and the
+    # command a call ran with is the one thing no token count carries.
+    app = _trace_app()
+    wf = app.current_session()
+    assert app.open_trace_drill() is True
+    body = app.renderer.detail_turn_drill(wf, 96)
+    text = "\n".join(body)
+
+    assert body[0].startswith("# Turn 1 of 2 · anthropic/claude-opus-4-8")
+    assert "  I'll check the diff first." in body  # narration, the assistant's own voice
+    assert "▸ Bash  git diff --stat src/opentab/tui/renderer.py" in text
+    assert "  description: the diff" in body  # the rest of the arguments, beneath it
+    assert "→ 3 files changed" in body  # its result, marked where it starts
+    # Both caps are reported rather than silently applied: what is on screen is a head.
+    assert "… 31 more lines, 900 more characters" in text
+
+
+def test_turn_trace_says_when_the_harness_records_no_reasoning_text():
+    # Claude Code writes its thinking blocks EMPTY. Showing nothing would read as a
+    # parsing bug on the one thing people most expect a trace to hold.
+    app = _trace_app()
+    app.open_trace_drill()
+    text = "\n".join(app.renderer.detail_turn_drill(app.current_session(), 96))
+    assert "records no reasoning text" in text
+
+    app.store.records_reasoning = True
+    app._trace_cursor = 1  # the turn that does carry reasoning prose
+    app.open_trace_drill()
+    lines = app.renderer.detail_turn_drill(app.current_session(), 96)
+    assert "✻ thinking" in lines and "  **Planning** the next step." in lines
+    assert "  … 120 more characters" in lines
+    assert "records no reasoning text" not in "\n".join(lines)
+
+
+def test_a_turn_with_no_recorded_content_says_so_rather_than_rendering_empty():
+    app = _turns_app(_TraceStore)
+    app.open_turn_drill(1)  # the second prompt's turn carries no key
+    app.open_trace_drill()
+    lines = app.renderer.detail_turn_drill(app.current_session(), 96)
+    assert "  No content recorded for this turn." in lines
+
+
+def test_esc_leaves_the_trace_before_the_prompt_that_holds_it():
+    # Innermost first: three levels out, one Esc each, and none of them skipped.
+    app = _trace_app()
+    app.open_trace_drill()
+    assert app.handle_key(None, 27) and app.active_trace_drill is None
+    assert app.turn_drill == 0  # the prompt is still open
+    assert app.handle_key(None, 27) and app.turn_drill is None
+    assert app.view == "session"
+    assert app.handle_key(None, 27) and app.view != "session"
+
+
+def test_enter_inside_a_drilled_prompt_opens_the_selected_turn():
+    app = _trace_app()
+    app.move(1)  # the drill has its OWN row cursor, one level in
+    assert (app._trace_cursor, app._turn_cursor) == (1, 0)
+    assert app.handle_key(None, 10)  # Enter
+    assert app.active_trace_drill == 1
+    # A second Enter is swallowed rather than re-opening what is already open.
+    assert app.handle_key(None, 10) and app.active_trace_drill == 1
+
+
+def test_a_click_inside_a_drilled_prompt_opens_that_turns_trace():
+    app = _trace_app()
+    rnd = app.renderer
+    lines = rnd.detail_turn_drill(app.current_session(), 96)  # a paint records the rows
+    # Pin the cursor to the ROW, not merely to "some line": the map is rebased from the
+    # box's body start, and this pane prints the prompt above the frame -- so an
+    # unadded prologue lights a blank line above the table and every click is off by it.
+    app._trace_cursor = 1
+    lines = rnd.detail_turn_drill(app.current_session(), 96)
+    assert lines[rnd._turn_cursor_line].startswith("│    2 ")
+    line = next(k for k, v in rnd._turn_header_at.items() if v == 1)
+    assert line == rnd._turn_cursor_line
+    app._trace_cursor = 0
+    app._apply_click(("turnline", line), drill=False)
+    assert app.active_trace_drill == 1 and app._trace_cursor == 1
+    # While a trace is open the map is empty, so a click on its prose lands nowhere.
+    rnd.detail_turn_drill(app.current_session(), 96)
+    assert rnd._turn_header_at == {} and rnd._turn_cursor_line is None
+
+
+def test_demo_hides_the_trace_because_a_command_cannot_be_anonymized():
+    # Demo fakes every title while the ids stay real; a shell command, a path or a diff
+    # has no fake. The trace would be the one true thing on a screen made to be shared.
+    app = _trace_app()
+    app.store.demo = True
+    app.store.demo_scale = 1.0
+    assert app.session_supports_trace(app.current_session().id) is False
+    assert app.session_trace(app.current_session().id) == {}
+    assert app.open_trace_drill() is True  # navigation still works...
+    text = "\n".join(app.renderer.detail_turn_drill(app.current_session(), 96))
+    assert "git diff --stat" not in text  # ...but no content is ever rendered
+    assert "No content recorded for this turn." in text
+
+
+def test_the_drill_marks_which_turns_have_something_to_read():
+    # 60.2% of real Claude turns are pure tool calls. Without a marker, finding the ones
+    # that narrate or reason means opening them one at a time -- which is the whole
+    # reason the column exists. The flags ride on the turn ROW, computed by the parse
+    # that already happened, so nothing pays a content fetch to draw them.
+    app = _trace_app()
+    lines = app.renderer.detail_turn_drill(app.current_session(), 96)
+    header = next(ln for ln in lines if "Cached" in ln)
+    assert "Read" in header
+    body = [ln for ln in lines if "claude-opus" in ln]
+    assert [ln.split()[-5] for ln in body] == ["N", "R"]  # narration, then reasoning
+    assert any("· Read: N a turn that narrates" in ln for ln in lines)
+
+    # A backend that records neither shows NO column, not a stripe of dashes.
+    for row in app.session_turn_rows(app.current_session().id):
+        row["has_text"] = row["has_reasoning"] = False
+    header = next(
+        ln for ln in app.renderer.detail_turn_drill(app.current_session(), 96) if "Cached" in ln
+    )
+    assert "Read" not in header
+
+
+def test_the_read_column_is_gated_on_the_trace_being_openable():
+    # A marker pointing at a level you cannot enter advertises nothing. Demo turns the
+    # trace off, so the column goes with it.
+    app = _trace_app()
+    app.store.demo = True
+    app.store.demo_scale = 1.0
+    header = next(
+        ln for ln in app.renderer.detail_turn_drill(app.current_session(), 96) if "Cached" in ln
+    )
+    assert "Read" not in header
+
+
+def test_moving_the_drill_cursor_scrolls_it_into_view():
+    # Without the follow flag a prompt with more turns than fit leaves the viewport at
+    # the top while the selection walks off the bottom: j moves a row nobody can see,
+    # and Enter then opens a turn the reader never selected.
+    app = _trace_app()
+    app._turn_follow = False
+    assert app._move_trace_cursor(1) is True
+    assert app._turn_follow is True
+    app._turn_follow = False
+    assert app._move_trace_cursor(-5) is True  # clamped, but it still moved
+    assert app._turn_follow is True
+    app._turn_follow = False
+    assert app._move_trace_cursor(-1) is False  # already at the top: the pane takes it
+    assert app._turn_follow is False
+
+
+def test_the_trace_memo_does_not_accumulate_every_session_browsed():
+    # Unlike the other extras -- rows of numbers -- a trace is a session's content,
+    # ~1 MB for a long one. Browsing a project's worth would hold the corpus in memory.
+    app = _trace_app()
+    for n in range(app.TRACE_MEMO_SESSIONS + 3):
+        app.session_trace(f"other-{n}")
+    assert len(app._trace_by_session) <= app.TRACE_MEMO_SESSIONS
+
+
+def test_a_multiline_command_keeps_its_shape_instead_of_collapsing():
+    # 48% of real tool calls carry a multi-line argument and 25% a multi-line command.
+    # Flattened, a heredoc becomes one unreadable line and a patch loses the indentation
+    # that carries its meaning -- on the view whose whole promise is the exact command.
+    app = _trace_app()
+    app.store._CONTENT["k0"] = [
+        {
+            "kind": "tool",
+            "name": "Bash",
+            "args": "python3 - <<'PY'\nif x:\n    print('a  b')\nPY",
+            "params": [("patch", "line one\n    line two")],
+            "output": "",
+            "output_dropped": 0,
+        }
+    ]
+    app.open_trace_drill()
+    lines = app.renderer.detail_turn_drill(app.current_session(), 96)
+    assert "▸ Bash" in lines  # a multi-line command does NOT ride the marker row
+    assert "  python3 - <<'PY'" in lines
+    assert "      print('a  b')" in lines  # its own indentation, and its double space
+    assert "  patch:" in lines
+    assert "        line two" in lines
+
+
+def test_trace_lines_never_exceed_the_pane_in_terminal_cells():
+    # textwrap counts code points, so wide glyphs came back at twice the width asked for
+    # and the painter clipped them: characters vanished instead of flowing on.
+    from opentab.formatting import display_width
+
+    app = _trace_app()
+    app.store._CONTENT["k0"] = [
+        {"kind": "text", "text": "界" * 60},
+        {
+            "kind": "tool",
+            "name": "Bash",
+            "args": "echo " + "界" * 40,
+            "params": [("note", "界" * 40)],
+            "output": "界" * 80,
+            "output_dropped": 0,
+        },
+    ]
+    app.open_trace_drill()
+    for width in (40, 72, 96):
+        lines = app.renderer.detail_turn_drill(app.current_session(), width)
+        # The "# " heading is clipped by convention, like every other pane's; the
+        # content and the footnotes must fit, because clipping loses characters.
+        assert all(display_width(ln) <= width for ln in lines if not ln.startswith("# "))
+
+
+def test_the_read_column_gives_way_before_the_money_does():
+    # Every optional cell is budgeted against the model column's floor. Read was added
+    # unconditionally, and this table's overflow lands on the RIGHT -- so at 80 columns
+    # a marker cost the reader the Cost column, on an ordinary row carrying both an
+    # effort and narration. (Below 80 the table clips with or without this column; that
+    # is the pre-existing geometry of its eight fixed-width cells, not the marker.)
+    from opentab.formatting import display_width
+
+    app = _trace_app()
+    for row in app.session_turn_rows(app.current_session().id):
+        row["effort"] = "xhigh"
+        row["has_text"] = True
+
+    def table(width):
+        lines = app.renderer.detail_turn_drill(app.current_session(), width)
+        return [ln for ln in lines if ln.startswith(("┌", "│", "├", "└"))]
+
+    at80 = table(80)
+    assert all(display_width(ln) <= 80 for ln in at80)
+    assert not any(ln.rstrip().endswith("...") for ln in at80)
+    assert "Read" in at80[1] and all("$1.00" in ln for ln in at80 if "claude-opus" in ln)
+    # Narrower, the marker is what gives way -- never a column carrying a number.
+    for width in (60, 74):
+        rows = table(width)
+        assert all(display_width(ln) <= width for ln in rows)
+        assert "Read" not in rows[1]

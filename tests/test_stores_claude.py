@@ -1191,3 +1191,339 @@ def test_claude_parse_subset_refuses_when_a_file_vanishes_mid_read():
         os.remove(side)
         store._files = lambda: list(real_files)
         assert store.parse_subset([main, side]) is None
+
+
+def _trace_records(cwd, sid="s1"):
+    """A turn that narrates, calls two tools, and gets both results back."""
+    assistant = {
+        "type": "assistant",
+        "sessionId": sid,
+        "cwd": cwd,
+        "timestamp": "2026-06-10T18:46:00.000Z",
+        "uuid": "u1",
+        "requestId": "r1",
+        "message": {
+            "id": "m1",
+            "model": "claude-opus-4-8",
+            "role": "assistant",
+            "usage": _usage(100, 50, 0, 0),
+            "content": [
+                # Claude Code writes its thinking blocks EMPTY; only the signature survives.
+                {"type": "thinking", "thinking": "", "signature": "CAIS9ww"},
+                {"type": "text", "text": "I'll check the diff first."},
+                {
+                    "type": "tool_use",
+                    "id": "call_a",
+                    "name": "Bash",
+                    "input": {"command": "git diff --stat", "description": "the diff"},
+                },
+                {
+                    "type": "tool_use",
+                    "id": "call_b",
+                    "name": "Read",
+                    "input": {"file_path": "/repo/x.py", "limit": 20},
+                },
+            ],
+        },
+    }
+    results = {
+        "type": "user",
+        "sessionId": sid,
+        "cwd": cwd,
+        "timestamp": "2026-06-10T18:46:02.000Z",
+        "uuid": "u2",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_b", "content": "1  import os"},
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_a",
+                    "content": [{"type": "text", "text": "3 files changed"}],
+                },
+            ],
+        },
+    }
+    return assistant, results
+
+
+def test_claude_turn_content_pairs_each_call_with_its_own_result():
+    # The trace's whole point: the exact arguments a call ran with, and the output that
+    # came back -- matched by tool_use_id, never by position, since results arrive in
+    # whatever order they finished.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        _write_jsonl(os.path.join(root, "s1.jsonl"), list(_trace_records(cwd)))
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+
+        assert store.supports_turn_content("s1") is True
+        content = store.turn_content("s1")
+        # The rows and the content meet on a key derived from the RECORD, so a row built
+        # by the corpus parse still finds content produced by the (separate) trace parse.
+        row = store.message_timeline("s1")[0]
+        events = content[row["content_key"]]
+
+        # An empty thinking block emits nothing: a reasoning heading with no prose under
+        # it would read as a rendering bug on every Claude turn there is.
+        assert [e["kind"] for e in events] == ["text", "tool", "tool"]
+        assert events[0]["text"] == "I'll check the diff first."
+        assert (events[1]["name"], events[1]["args"]) == ("Bash", "git diff --stat")
+        assert events[1]["params"] == [("description", "the diff")]
+        assert events[1]["output"] == "3 files changed"  # its own result, logged second
+        assert (events[2]["name"], events[2]["args"]) == ("Read", "/repo/x.py")
+        assert events[2]["output"] == "1  import os"
+
+
+def test_claude_streamed_blocks_fold_into_the_one_turn_they_belong_to():
+    # A streamed message lands as SEVERAL records, one content block each, all echoing
+    # the same usage. The narration is usually in an earlier record than the call, so a
+    # trace that read only the first record would show a turn that called nothing.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        first, _ = _trace_records(cwd)
+        first["message"]["content"] = [{"type": "text", "text": "thinking about it"}]
+        second = json.loads(json.dumps(first))
+        second["uuid"] = "u1b"
+        second["message"]["content"] = [
+            {"type": "tool_use", "id": "call_a", "name": "Bash", "input": {"command": "ls"}}
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [first, second])
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+
+        rows = store.message_timeline("s1")
+        assert len(rows) == 1  # one turn, as the usage dedup already sees it
+        events = store.turn_content("s1")[rows[0]["content_key"]]
+        assert [e["kind"] for e in events] == ["text", "tool"]
+        assert events[1]["args"] == "ls"
+
+
+def test_claude_trace_covers_a_subagents_turns_too():
+    # Unlike the composition walk, which is main-thread only: a sidechain turn is a ROW
+    # in the same tab, and a row you can select must have something behind it.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        main, _ = _trace_records(cwd)
+        side = json.loads(json.dumps(main))
+        side.update(uuid="u9", requestId="r9", isSidechain=True, parentUuid="u1")
+        side["message"]["id"] = "m9"
+        side["message"]["content"] = [
+            {"type": "tool_use", "id": "c9", "name": "Grep", "input": {"pattern": "TODO"}}
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [main, side])
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+
+        content = store.turn_content("s1")
+        sub = next(r for r in store.message_timeline("s1") if r["depth"])
+        assert [e["args"] for e in content[sub["content_key"]]] == ["TODO"]
+
+
+def test_claude_corpus_parse_carries_no_content_at_all():
+    # Content is collected ONLY under the armed single-session parse. Left on, the
+    # corpus parse would hold every session's tool output in memory to render a rollup
+    # that shows none of it -- and parse_subset, which shares the same walk, would write
+    # it into the warm-start cache.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        _write_jsonl(os.path.join(root, "s1.jsonl"), list(_trace_records(cwd)))
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        store.workflows()  # the corpus parse
+
+        assert store._sessions is not None
+        assert store._sessions["s1"]["content"] == {}
+        # ...and the rows it produced still carry the key the trace parse will answer to.
+        assert store.message_timeline("s1")[0]["content_key"]
+        assert store.turn_content("s1")
+
+
+def test_claude_trace_is_refused_for_a_transcript_that_replays_its_parent():
+    # Such a file holds another session's records verbatim and cannot be read alone; the
+    # corpus parse that could disentangle it collects no content. So there is no trace,
+    # rather than a trace showing work this session never did.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        rows = list(_trace_records(cwd))
+        rows.append({"type": "summary", "sessionId": "s1", "sessionKind": "background"})
+        _write_jsonl(os.path.join(root, "s1.jsonl"), rows)
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+
+        assert store.supports_turn_content("s1") is False
+        assert store.turn_content("s1") == {}
+
+
+def test_claude_replay_marker_is_a_parsed_field_not_a_string_in_tool_output():
+    # The marker is a TOP-LEVEL field of a tail record. A raw substring search also
+    # matches it inside a tool RESULT -- a diff, a grep hit, this repo's own source
+    # quoted back -- and the false positive is silent: the transcript sorts last,
+    # _session widens to the corpus parse, and the trace disappears from a perfectly
+    # ordinary session for mentioning a word. Measured over 566 real transcripts,
+    # strict and loose agree exactly, so this removes a failure mode and no verdict.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        quoting = {
+            "type": "user",
+            "sessionId": "s1",
+            "cwd": cwd,
+            "uuid": "u9",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_a",
+                        "content": "grep -n '\"sessionKind\"' src/opentab/stores/claude.py",
+                    }
+                ],
+            },
+        }
+        assistant, results = _trace_records(cwd)
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [assistant, results, quoting])
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        assert store._replays_history(os.path.join(root, "s1.jsonl")) is False
+        assert store.supports_turn_content("s1") is True
+
+        # ...while a record that really carries the field is still caught.
+        real = dict(quoting, sessionKind="background")
+        _write_jsonl(os.path.join(root, "s2.jsonl"), [dict(assistant, sessionId="s2"), real])
+        assert store._replays_history(os.path.join(root, "s2.jsonl")) is True
+
+
+def test_claude_turn_rows_mark_which_turns_have_something_to_read():
+    # Two booleans off the content walk the parse already does -- never a content fetch
+    # just to mark a row. 60.2% of real Claude turns are pure tool calls, which is why
+    # the marker earns a column at all.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        narrating, _ = _trace_records(cwd)
+        # A second turn that only calls a tool: no narration, nothing to read.
+        silent = json.loads(json.dumps(narrating))
+        silent.update(uuid="u5", requestId="r5")
+        silent["message"]["id"] = "m5"
+        silent["message"]["content"] = [
+            {"type": "tool_use", "id": "c5", "name": "Read", "input": {"file_path": "/a"}}
+        ]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [narrating, silent])
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+
+        rows = store.message_timeline("s1")
+        assert [r["has_text"] for r in rows] == [True, False]
+        # Claude writes its thinking blocks empty, so this is False everywhere -- the
+        # same fact records_reasoning states, computed rather than assumed.
+        assert [r["has_reasoning"] for r in rows] == [False, False]
+
+
+def test_claude_narration_in_a_later_streamed_record_still_marks_the_turn():
+    # A streamed message spans records; the narration is often in a different one from
+    # the call. Marking off the first record alone reports a talking turn as silent.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        first, _ = _trace_records(cwd)
+        first["message"]["content"] = [{"type": "thinking", "thinking": "", "signature": "x"}]
+        second = json.loads(json.dumps(first))
+        second["uuid"] = "u1b"
+        second["message"]["content"] = [{"type": "text", "text": "here is what I found"}]
+        _write_jsonl(os.path.join(root, "s1.jsonl"), [first, second])
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+
+        rows = store.message_timeline("s1")
+        assert len(rows) == 1 and rows[0]["has_text"] is True
+
+
+def _kind_file(path, lines):
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+
+
+def test_replay_detection_never_answers_no_on_a_line_it_could_not_read():
+    # Parsing may only OVERRULE the substring when it positively read the line the
+    # string is on. A missed replay is the dangerous direction: it sorts before its
+    # source transcript and claims the duplicated API calls, so a fragment, a bad byte
+    # or an unreachable record keeps the old verdict rather than clearing it.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+
+        # 1. The marker record straddles the initial window and another record follows:
+        #    the fragment is dropped, so the scan must WIDEN rather than answer no.
+        straddle = os.path.join(root, "straddle.jsonl")
+        pad = json.dumps({"type": "assistant", "sessionId": "s", "pad": "y" * 9000})
+        marker = json.dumps({"type": "summary", "sessionId": "s", "sessionKind": "background"})
+        _kind_file(straddle, [pad, marker, json.dumps({"type": "assistant", "sessionId": "s"})])
+        assert store._replays_history(straddle) is True
+
+        # 2. A byte that will not decode, on the marker's own line.
+        bad = os.path.join(root, "bad.jsonl")
+        with open(bad, "wb") as fh:
+            fh.write(b'{"type":"summary","sessionKind":"background","x":"\xff\xfe"}\n')
+            fh.write(b'{"type":"assistant","sessionId":"s"}\n')
+        assert store._replays_history(bad) is True
+
+        # 3. A falsy value is still the field: the old test matched the KEY, and an
+        #    empty string is not evidence that this transcript replays nothing.
+        falsy = os.path.join(root, "falsy.jsonl")
+        _kind_file(falsy, [json.dumps({"type": "summary", "sessionKind": ""})])
+        assert store._replays_history(falsy) is True
+
+        # 4. The marker record begins BEFORE the window and only its key lands inside:
+        #    the dropped fragment carries the string, so there is no verdict to give.
+        boundary = os.path.join(root, "boundary.jsonl")
+        _kind_file(
+            boundary,
+            [
+                json.dumps({"type": "summary", "pad": "y" * 9000, "sessionKind": "background"}),
+                json.dumps({"type": "assistant", "sessionId": "s"}),
+            ],
+        )
+        assert store._replays_history(boundary) is True
+
+        # 5. An undecodable byte on the marker's line. "replace" would turn it into
+        #    U+FFFD, the line would parse as ordinary JSON, and a nested mention would
+        #    then read as "not a replay" -- clearing a verdict the substring found.
+        hidden = os.path.join(root, "hidden.jsonl")
+        with open(hidden, "wb") as fh:
+            fh.write(b'{"outer":{"sessionKind":"background"},"bad":"\xff"}\n')
+        assert store._replays_history(hidden) is True
+
+        # 6. ...but decodable and genuinely nested is still ordinary content.
+        nested = os.path.join(root, "nested.jsonl")
+        _kind_file(nested, [json.dumps({"outer": {"sessionKind": "background"}})])
+        assert store._replays_history(nested) is False
+
+        # 7. An unreadable marker line inside an ENORMOUS record settles for the
+        #    substring's own verdict rather than reading the record to confirm it: a
+        #    116 MiB single line otherwise cost 152 MiB of reads at ~451 MiB peak RSS.
+        #    Only this path is bounded -- the widening that hunts a record BOUNDARY
+        #    stays uncapped, which the oversized-final-record test above pins.
+        enormous = os.path.join(root, "enormous.jsonl")
+        with open(enormous, "w", encoding="utf-8") as fh:
+            pad = "y" * (store._REPLAY_PARSE_MAX_BYTES + (1 << 20))
+            fh.write(json.dumps({"type": "assistant", "pad": pad, "o": {"sessionKind": "x"}}))
+            fh.write("\n")
+        assert store._replays_history(enormous) is True
+
+        # 8. ...while a transcript that merely QUOTES the string still reads as ordinary.
+        quoted = os.path.join(root, "quoted.jsonl")
+        _kind_file(
+            quoted,
+            [
+                json.dumps({"type": "assistant", "sessionId": "s"}),
+                json.dumps({"type": "user", "text": "grep -n '\"sessionKind\"' claude.py"}),
+            ],
+        )
+        assert store._replays_history(quoted) is False

@@ -149,6 +149,23 @@ def _export_curve_ok(store, sid: str) -> bool:
         return True
 
 
+# Fields a turn row carries for LOCAL use only. The trace's content_key addresses a
+# session's narration and tool output, which never leave the machine that recorded them
+# (see web.session_extras and _clean_turn, both whitelists) -- so the key that would
+# address them is dead weight on the wire, and the inbound whitelist drops it anyway.
+# Measured on a real corpus: 33,332 occurrences, 2.47 MB of a 43.3 MB export. The read
+# markers go with it: a marker promising narration that the receiving machine has no way
+# to open is worse than no marker, so the fleet is told neither.
+_TURN_LOCAL_ONLY = ("content_key", "has_text", "has_reasoning")
+
+
+def _export_turn(row) -> dict:
+    out = dict(row)
+    for field in _TURN_LOCAL_ONLY:
+        out.pop(field, None)
+    return out
+
+
 def _export_rows(store, name: str, sid: str) -> list[dict]:
     fn = getattr(store, name, None)
     if not fn:
@@ -185,13 +202,13 @@ def _collect_timeline(store, wf_objs) -> dict[str, list[dict]]:
     for w in wf_objs:
         sid = w.id
         if sid in batched:
-            rows = [dict(r) for r in batched[sid]]
+            rows = [_export_turn(r) for r in batched[sid]]
             if rows:
                 out[sid] = rows
         elif batch_covers(sid):
             continue  # covered by a batch that yielded nothing for it -- don't re-query
         elif _export_supports(store, "supports_turns", sid):
-            rows = _export_rows(store, "message_timeline", sid)
+            rows = [_export_turn(r) for r in _export_rows(store, "message_timeline", sid)]
             if rows:
                 out[sid] = rows
     return out

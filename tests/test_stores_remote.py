@@ -785,3 +785,57 @@ def test_a_list_of_paths_expands_directories_and_drops_repeats():
         assert sorted(store.machines) == ["a", "b"]
         assert store.unreadable == []
         assert sorted(w.id for w in store.workflows()) == ["s1", "s2"]
+
+
+def test_the_fleet_export_carries_no_trace_fields():
+    # The trace never leaves the machine that recorded it, so the key that ADDRESSES it
+    # and the markers that PROMISE it are both dead weight on the wire -- and a marker
+    # the receiving machine cannot act on is worse than no marker. Measured before this
+    # was stripped: 33,332 content_key occurrences, 2.47 MB of a 43.3 MB export.
+    class Store:
+        demo = False
+        records_cost = True
+        source_name = "Claude Code"
+
+        def workflows(self):
+            return [workflow("s1", "2026-06-01 12:00:00")]
+
+        def model_breakdown(self):
+            return []
+
+        def supports_turns(self, wid):
+            return True
+
+        def message_timeline(self, wid):
+            return [
+                {
+                    "time": "2026-06-01 12:00:00",
+                    "model_name": "anthropic/claude-opus-4-8",
+                    "agent": "-",
+                    "depth": 0,
+                    "cost": 1.0,
+                    "input": 10,
+                    "output": 10,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "cache_write_1h": 0,
+                    "tokens_total": 20,
+                    "tools": ["Bash"],
+                    "prompt_id": "p0",
+                    "prompt_title": "do it",
+                    "prompt_full": "do it",
+                    "content_key": "m1|r1",
+                    "has_text": True,
+                    "has_reasoning": False,
+                }
+            ]
+
+    export = ot.build_export(Store(), "think")
+    blob = json.dumps(export)
+    for field in ("content_key", "has_text", "has_reasoning"):
+        assert field not in blob
+    # ...and everything the receiving side actually reads survives.
+    row = export["turns"]["s1"][0]
+    assert row["tools"] == ["Bash"] and row["prompt_full"] == "do it"
+    assert row["tokens_total"] == 20

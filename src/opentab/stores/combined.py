@@ -108,6 +108,21 @@ class CombinedStore:
         check = getattr(self._owner.get(workflow_id), "supports_turns", None)
         return bool(check(workflow_id)) if check else False
 
+    def turn_content(self, workflow_id: str) -> dict:
+        owner = self._owner.get(workflow_id)
+        fetch = getattr(owner, "turn_content", None)
+        return fetch(workflow_id) if fetch else {}
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        check = getattr(self._owner.get(workflow_id), "supports_turn_content", None)
+        return bool(check(workflow_id)) if check else False
+
+    def records_reasoning(self, workflow_id: str) -> bool:
+        # Per SESSION, not per merged view: the same tab can show a Claude turn with no
+        # reasoning beside an OpenCode one that has it, and one blanket answer would be
+        # wrong for whichever backend it did not describe.
+        return bool(getattr(self._owner.get(workflow_id), "records_reasoning", False))
+
     def message_timeline_all(self) -> dict:
         # Export merges available batch paths; its caller handles per-session fallbacks.
         out: dict = {}
