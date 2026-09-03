@@ -64,3 +64,40 @@ Per-harness paths, flags and env vars: [sources.md](sources.md).
 That's not a bug — it's usage recorded without a per-token price, normal on subscription
 and credit plans. Press **`$`** to reprice those tokens at API list rates, and **`P`** to
 see the rates behind the estimate. See [pricing.md](pricing.md).
+
+## `opentab pull` can't reach a machine
+
+The pull target is handed straight to `ssh`, so anything `ssh` understands works:
+
+```sh
+opentab pull box=ssh://user@host:2222      # a nonstandard port, inline
+```
+
+or give the box a `Host` block in `~/.ssh/config` (`Port`, `IdentityFile`, `ProxyJump`,
+a bastion — all of it applies) and pull it by that alias. If `opentab` isn't on the
+remote's non-interactive `PATH`, set that machine's `cmd` in `remotes.json` — `cmd` is
+the command run **on the far side**, so it cannot carry local `ssh` flags.
+
+## Moving a machine's spend across by hand
+
+When SSH from here isn't possible at all, export on the far side and open the file here.
+There is no `import` verb — the file *is* the machine:
+
+```sh
+ssh box opentab export - > box.json        # on the other box (or run it there directly)
+opentab remote box.json                    # here: opens it merged with this machine
+```
+
+`opentab remote` also takes several files or a directory. To keep a summary for later,
+drop it in the pull directory (`~/.cache/opentab/remotes/`, or `$XDG_CACHE_HOME/opentab/
+remotes`) — create it first, OpenTab only makes it when pulling — and a bare `opentab
+remote` finds it from then on.
+
+Two things to know:
+
+- **The machine's name comes from the export, not the filename.** If both boxes have the
+  same hostname, the imported sessions merge into your local machine — re-export the
+  other one with `opentab export --label NAME`. OpenTab says so on startup when it spots
+  the collision.
+- **A summary that won't parse is skipped**, not fatal, so a truncated copy shows as
+  "this machine only". OpenTab names the file it skipped; re-copy it if you see that.

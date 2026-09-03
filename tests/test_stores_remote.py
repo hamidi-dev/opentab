@@ -754,3 +754,34 @@ def test_remote_store_registers_a_zero_session_machine():
         store = ot.RemoteStore(d, _parse([]))
         assert store.machines == ["freshbox"]
         assert store.workflows() == []
+
+
+def test_a_summary_that_will_not_parse_is_named_rather_than_silently_skipped():
+    # A skip stays non-fatal (one corrupt file must not cost the fleet the others), but
+    # it is recorded: sources._fleet_warning is what turns it into a visible line.
+    with tempfile.TemporaryDirectory() as d:
+        _write(d, "good.json", _summary("good", [workflow("s1", "2026-07-15 10:00:00")]))
+        with open(os.path.join(d, "truncated.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"opentab_export": 2, "label": "half", "workfl')
+        with open(os.path.join(d, "notours.json"), "w", encoding="utf-8") as fh:
+            json.dump({"some": "other json"}, fh)
+        store = ot.RemoteStore(d, _parse([]))
+        assert store.machines == ["good"]
+        assert sorted(os.path.basename(p) for p in store.unreadable) == [
+            "notours.json",
+            "truncated.json",
+        ]
+
+
+def test_a_list_of_paths_expands_directories_and_drops_repeats():
+    # `opentab remote FILE...` hands the list straight through, so an element may be a
+    # directory. Opened as a file it would land in `unreadable` and warn about nothing.
+    with tempfile.TemporaryDirectory() as d:
+        sub = os.path.join(d, "sub")
+        os.makedirs(sub)
+        _write(sub, "a.json", _summary("a", [workflow("s1", "2026-07-15 10:00:00")]))
+        loose = _write(d, "b.json", _summary("b", [workflow("s2", "2026-07-16 10:00:00")]))
+        store = ot.RemoteStore([sub, loose, loose], _parse([]))
+        assert sorted(store.machines) == ["a", "b"]
+        assert store.unreadable == []
+        assert sorted(w.id for w in store.workflows()) == ["s1", "s2"]

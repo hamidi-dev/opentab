@@ -1,3 +1,6 @@
+import contextlib
+import io
+import json
 import os
 import sqlite3
 import tempfile
@@ -189,3 +192,78 @@ def test_a_real_opencode_db_is_still_detected_and_opened():
         assert "opencode" in ot.sources.available_sources(_parse(["--db", db]))
         store = ot.sources.make_store(_parse(["--db", db, "--source", "opencode"]), "opencode")[0]
         assert store.workflows() == []
+
+
+class _FakeRemote:
+    # Only the two fields _fleet_warning reads; building a real fleet would scan the
+    # developer's own harnesses (make_store's remote branch calls available_sources).
+    def __init__(self, machines=(), unreadable=()):
+        self.machines = list(machines)
+        self.unreadable = list(unreadable)
+
+
+def test_a_fleet_that_dropped_what_you_named_says_so():
+    warn = ot.sources._fleet_warning
+    # Nothing wrong: silence. A warning here would fire on every ordinary launch.
+    assert warn(_FakeRemote(["box"]), "/remotes", "laptop") == ""
+    # An unreadable summary is the most actionable of the three, so it wins.
+    both = _FakeRemote([], ["/tmp/box.json"])
+    assert "box.json" in warn(both, "/remotes", "laptop")
+    assert "unreadable" in warn(both, "/remotes", "laptop")
+    # Nothing loaded at all names the path it looked in.
+    assert "no machine summaries" in warn(_FakeRemote(), "/remotes", "laptop")
+    # A pulled label equal to this host's name is folded into the live machine by
+    # CombinedStore.machine_meta -- the quiet case, since its sessions still show.
+    collision = warn(_FakeRemote(["laptop"]), "/remotes", "laptop")
+    assert "laptop" in collision and "--label" in collision
+
+
+def test_the_unreadable_warning_stays_one_line_for_many_files():
+    bad = [f"/tmp/box{n}.json" for n in range(9)]
+    line = ot.sources._fleet_warning(_FakeRemote(["box"], bad), "/remotes", "laptop")
+    assert "+6" in line and "box8.json" not in line and "\n" not in line
+
+
+def test_a_summary_passed_as_a_bare_path_is_named_rather_than_called_ambiguous():
+    # `opentab box.json` is what you type after `opentab export - > box.json`. It cannot
+    # route (a summary is every harness on ANOTHER box, not a harness), but "can't tell
+    # which source" sends you to --source, which has no slot for it.
+    with tempfile.TemporaryDirectory() as d:
+        summary = os.path.join(d, "box.json")
+        with open(summary, "w", encoding="utf-8") as fh:
+            json.dump({"opentab_export": 2, "label": "box", "workflows": []}, fh)
+        plain = os.path.join(d, "plain.json")
+        with open(plain, "w", encoding="utf-8") as fh:
+            json.dump({"something": "else"}, fh)
+        assert ot.sources._is_machine_summary(summary)
+        assert not ot.sources._is_machine_summary(plain)
+        assert not ot.sources._is_machine_summary(os.path.join(d, "gone.json"))
+
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                _parse([summary])
+        except SystemExit:
+            pass
+        assert "opentab remote" in err.getvalue()
+
+
+def test_the_empty_fleet_line_stands_down_right_after_a_pull():
+    # `opentab pull box` that fails has ALREADY printed the ssh reason per machine.
+    # Repeating "run `opentab pull HOST`" under it is advice to redo what just failed,
+    # and it would displace that reason. The other two states still apply: a pull can
+    # land a truncated summary, and it can fetch a box named like this one.
+    warn = ot.sources._fleet_warning
+    assert warn(_FakeRemote(), "/remotes", "laptop", pulled=True) == ""
+    assert "no machine summaries" in warn(_FakeRemote(), "/remotes", "laptop", pulled=False)
+    assert "unreadable" in warn(_FakeRemote([], ["/r/b.json"]), "/r", "laptop", pulled=True)
+    assert "--label" in warn(_FakeRemote(["laptop"]), "/r", "laptop", pulled=True)
+
+
+def test_the_collision_line_needs_a_live_machine_to_merge_into():
+    # With no local harness RemoteStore is the only store, its metadata stays non-live,
+    # and CombinedStore.machine_meta has nothing to fold the same-named summary into --
+    # so the line would describe a merge that did not happen.
+    warn = ot.sources._fleet_warning
+    assert warn(_FakeRemote(["laptop"]), "/r", "laptop", live=True) != ""
+    assert warn(_FakeRemote(["laptop"]), "/r", "laptop", live=False) == ""

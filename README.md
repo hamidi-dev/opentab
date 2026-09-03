@@ -155,7 +155,16 @@ opentab pull                              # later: refresh every machine you've 
 ```
 
 **No agent, nothing to install, nothing listening** — the remote only needs `opentab` on
-its `PATH`.
+its `PATH`. A nonstandard port or a bastion is whatever `ssh` already does:
+`opentab pull box=ssh://user@host:2222`, or a `Host` block in `~/.ssh/config`.
+
+**Can't SSH here at all?** Export on the far side and open the file — there's no separate
+import step, the file *is* the machine:
+
+```sh
+ssh box opentab export - > box.json   # on the other box
+opentab remote box.json               # here — merged with this machine, same as a pull
+```
 
 <details>
 <summary><strong>How the pull works, and what the fleet adds</strong></summary>
@@ -170,6 +179,12 @@ Once pulled, the fleet is just another harness: **`M`** filters every view to on
 **`L`** reopens a session *on the box it ran on* over SSH, **`opentab remote`** reopens the
 last pull with no SSH round-trip, and **`opentab forget <machine>`** drops one. Pair any of
 it with `--demo` for a shareable fleet snapshot.
+
+`opentab remote FILE...` opens summaries you moved over yourself instead of the pulled
+ones (several files, or a directory). To keep one, drop it in `~/.cache/opentab/remotes/`
+and a bare `opentab remote` picks it up from then on. A box's name travels *inside* the
+export, not in the filename, so give it one with `opentab export --label NAME` when two
+machines share a hostname — otherwise its sessions merge into whichever is local.
 
 </details>
 

@@ -1673,3 +1673,159 @@ def test_init_color_env_overrides_the_detection_in_both_directions():
             os.environ.pop(key, None)
             if value is not None:
                 os.environ[key] = value
+
+
+def test_remote_takes_summary_files_positionally():
+    # The manual export -> import path: `opentab remote box.json` fills the same slot
+    # --remotes does, so RemoteStore sees the files with no new plumbing.
+    with tempfile.TemporaryDirectory() as d:
+        one = os.path.join(d, "box.json")
+        two = os.path.join(d, "other.json")
+        for path in (one, two):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(_fake_summary_text(os.path.basename(path), ["s1"]))
+        a = _parse(["remote", one, two])
+        assert a.remote is True and a.remotes == [one, two]
+        # Bare `opentab remote` keeps reading the pulled directory.
+        assert _parse(["remote"]).remotes is None
+
+
+def test_remote_rejects_a_missing_file_and_a_doubled_source():
+    # A named summary that is not there must fail HERE. Left to the soft path it opens
+    # a fleet of this machine alone, which is indistinguishable from "import did nothing".
+    with tempfile.TemporaryDirectory() as d:
+        real = os.path.join(d, "box.json")
+        with open(real, "w", encoding="utf-8") as fh:
+            fh.write(_fake_summary_text("box", ["s1"]))
+        for argv, want in (
+            (["remote", os.path.join(d, "nope.json")], "no such summary file"),
+            (["remote", real, "--remotes", d], "not both"),
+        ):
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    _parse(argv)
+            except SystemExit:
+                pass
+            assert want in err.getvalue()
+
+
+def test_remotes_write_dir_never_points_a_pull_at_a_summary_file():
+    # --remotes may name a FILE (the read side). Writers must not follow it there:
+    # os.makedirs on a file raises, and there is nothing to write into one anyway.
+    with tempfile.TemporaryDirectory() as d:
+        summary = os.path.join(d, "box.json")
+        with open(summary, "w", encoding="utf-8") as fh:
+            fh.write(_fake_summary_text("box", ["s1"]))
+        default = ot.sources.default_remotes_dir()
+        assert ot.cli._remotes_write_dir(_parse(["--remotes", summary])) == default
+        assert ot.cli._remotes_write_dir(_parse(["remote", summary])) == default
+        # A directory is still honoured -- that is what --remotes has always meant.
+        assert ot.cli._remotes_write_dir(_parse(["--remotes", d])) == d
+
+
+def test_pull_refuses_a_local_summary_before_saving_it_as_a_machine():
+    # `opentab pull box.json` used to parse as an ssh target, derive the key ".", SAVE
+    # it to remotes.json (persisted before the workers run) and only then fail on
+    # `ssh ./box.json` -- leaving a junk machine and no hint that the file has its own verb.
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        summary = os.path.join(d, "box.json")
+        with open(summary, "w", encoding="utf-8") as fh:
+            fh.write(_fake_summary_text("box", ["s1"]))
+        err = io.StringIO()
+        with _remotes_env(cfg), contextlib.redirect_stderr(err):
+            ot.cli.pull_command(_parse(["--pull", summary, "--remotes", d]))
+        assert "opentab remote" in err.getvalue()
+        assert not os.path.exists(cfg)  # nothing learned, nothing to clean up
+
+
+def test_pull_still_accepts_hosts_that_are_not_local_files():
+    # The guard keys on path syntax or an existing file, never on the `.json` suffix:
+    # a host may legitimately be spelled that way, and an ssh:// URL is a destination.
+    assert not ot.cli._looks_like_a_summary_path("box")
+    assert not ot.cli._looks_like_a_summary_path("mo@host.example.json")
+    assert not ot.cli._looks_like_a_summary_path("name=user@host")
+    assert not ot.cli._looks_like_a_summary_path("ssh://user@host:2222")
+    assert not ot.cli._looks_like_a_summary_path("http://host:8321")
+    assert ot.cli._looks_like_a_summary_path("./box.json")
+    assert ot.cli._looks_like_a_summary_path("/tmp/box.json")
+    assert ot.cli._looks_like_a_summary_path("box=../fleet/box.json")
+
+
+def test_a_file_sourced_fleet_gets_no_refresh_backend():
+    # `opentab remote box.json` reads somewhere a pull cannot write, so a re-pull would
+    # report success, land in the pull directory, and leave the screen on the stale copy.
+    # Withholding the backend makes `F` say so instead of lying.
+    with tempfile.TemporaryDirectory() as d:
+        summary = os.path.join(d, "box.json")
+        with open(summary, "w", encoding="utf-8") as fh:
+            fh.write(_fake_summary_text("box", ["s1"]))
+        assert ot.cli._make_refresh_fn(_parse(["remote", summary])) is None
+        assert ot.cli._make_refresh_fn(_parse(["--remotes", summary, "--remote"])) is None
+        # A directory reads and writes in the same place, so refresh stays available.
+        assert ot.cli._make_refresh_fn(_parse(["remote", "--remotes", d])) is not None
+        assert ot.cli._make_refresh_fn(_parse(["--remote"])) is not None
+
+
+def test_a_pull_refuses_to_write_beside_a_summary_file():
+    # --remotes FILE is the read side. A pull would land in the default directory while
+    # the screen that opens next still reads the file: a successful pull showing stale
+    # data, the split _make_refresh_fn already withholds itself for.
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        summary = os.path.join(d, "box.json")
+        with open(summary, "w", encoding="utf-8") as fh:
+            fh.write(_fake_summary_text("box", ["s1"]))
+        err = io.StringIO()
+        with _remotes_env(cfg), contextlib.redirect_stderr(err):
+            ot.cli.pull_command(_parse(["--pull", "server", "--remotes", summary]))
+        assert "needs a directory" in err.getvalue()
+        assert not os.path.exists(cfg)  # refused before _save_remotes learns the host
+
+
+def test_a_positional_directory_keeps_its_refresh():
+    # `opentab remote DIR` and `--remotes DIR` are the same request; the positional
+    # arrives as a one-element list, which must not cost it the F key.
+    with tempfile.TemporaryDirectory() as d:
+        assert ot.cli._remotes_write_dir(_parse(["remote", d])) == d
+        assert ot.cli._make_refresh_fn(_parse(["remote", d])) is not None
+
+
+def test_the_pull_refusal_names_the_target_not_the_whole_spec():
+    # `opentab remote office=box.json` would look for a file literally called that.
+    assert ot.cli._pull_target("office=./box.json") == "./box.json"
+    assert ot.cli._pull_target("./box.json") == "./box.json"
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "remotes.json")
+        summary = os.path.join(d, "box.json")
+        with open(summary, "w", encoding="utf-8") as fh:
+            fh.write(_fake_summary_text("box", ["s1"]))
+        err = io.StringIO()
+        with _remotes_env(cfg), contextlib.redirect_stderr(err):
+            ot.cli.pull_command(_parse(["--pull", f"office={summary}"]))
+        out = err.getvalue()
+        assert f"opentab remote {summary}" in out and "office=" not in out
+
+
+def test_a_summary_named_like_a_demo_category_is_not_swallowed_silently():
+    # --demo takes an optional value, so `opentab remote --demo titles` reads the file
+    # `titles` as the category and opens the pulled directory instead. Every other
+    # filename hits _validate_demo_cats; these four were silent.
+    with tempfile.TemporaryDirectory() as d:
+        cwd = os.getcwd()
+        os.chdir(d)
+        try:
+            with open("titles", "w", encoding="utf-8") as fh:
+                fh.write(_fake_summary_text("box", ["s1"]))
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    _parse(["remote", "--demo", "titles"])
+            except SystemExit:
+                pass
+            assert "as a category, not a file" in err.getvalue()
+            # A real category with no such file keeps working.
+            assert _parse(["remote", "--demo", "paths"]).demo == "paths"
+        finally:
+            os.chdir(cwd)

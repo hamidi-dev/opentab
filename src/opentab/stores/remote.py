@@ -280,6 +280,12 @@ class RemoteStore:
         self._curve_ok: set[str] = set()
         self._file_sizes: dict[str, int] = {}  # label -> summary file bytes (for --timings)
         self.machines: list[str] = []  # labels loaded, in file order
+        # Paths that were NOT loaded: unreadable, not JSON, or not an opentab summary.
+        # A skip is per file and never fatal (below), which is right -- one corrupt
+        # summary must not cost the fleet the others -- but it is silent, and a silent
+        # skip of a file the user NAMED reads exactly like the import doing nothing.
+        # sources._fleet_warning turns this into the one line that says so.
+        self.unreadable: list[str] = []
         # Per-machine niceties for the Machines mode: the label -> {exported_at,
         # opentab_version, key}. `key` is the remotes.json name (decoded from the summary
         # FILENAME, `_summary_filename`'s inverse) so an in-TUI refresh can re-pull exactly
@@ -290,8 +296,17 @@ class RemoteStore:
 
     @staticmethod
     def _resolve_paths(source) -> list[str]:
+        # A directory expands to its summaries, a file stands for itself, and a LIST
+        # (tests, and `opentab remote FILE...`) resolves element by element under the
+        # same two rules -- a directory named positionally would otherwise be opened as
+        # a file and counted as an unreadable summary.
         if isinstance(source, (list, tuple)):
-            return list(source)
+            out: list[str] = []
+            for item in source:
+                for path in RemoteStore._resolve_paths(item):
+                    if path not in out:  # `remote a.json a.json` must not double-count
+                        out.append(path)
+            return out
         if isinstance(source, str) and os.path.isdir(source):
             return sorted(glob.glob(os.path.join(source, "*.json")))
         if isinstance(source, str) and os.path.isfile(source):
@@ -312,6 +327,7 @@ class RemoteStore:
         info: dict[str, dict] = {}
         sizes: dict[str, int] = {}  # label -> summary file size on disk, for --timings
         records: list[bool] = []
+        unreadable: list[str] = []
         # Seed with the excluded (live-local) ids so a summary re-stating one is dropped,
         # then dedup ids across machines (a rotated/synced session) on top.
         seen: set[str] = set(self._exclude_ids)
@@ -320,8 +336,10 @@ class RemoteStore:
                 with open(path, encoding="utf-8") as fh:
                     data = json.load(fh)
             except (OSError, ValueError):
+                unreadable.append(path)
                 continue  # a broken file is skipped, never fatal (like notes.json)
             if not isinstance(data, dict) or not isinstance(data.get("workflows"), list):
+                unreadable.append(path)
                 continue
             stem = os.path.splitext(os.path.basename(path))[0]
             label = str(data.get("label") or stem)
@@ -416,6 +434,7 @@ class RemoteStore:
         self._file_sizes = sizes
         self.machines = machines
         self._machine_info = info
+        self.unreadable = unreadable
 
     @property
     def _demo_names(self) -> bool:

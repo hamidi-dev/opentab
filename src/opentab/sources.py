@@ -9,6 +9,7 @@ import sys
 from urllib.parse import quote
 
 from opentab import paths, util
+from opentab.formatting import short_path
 from opentab.stores.antigravity import (
     CONVERSATION_DIRS as ANTIGRAVITY_DIRS,
 )
@@ -132,6 +133,23 @@ def _infer_source_from_path(path: str) -> str | None:
     return None
 
 
+def _is_machine_summary(path: str) -> bool:
+    """Whether a path is an exported fleet summary, read from its HEAD alone.
+
+    `opentab box.json` is what someone types after `opentab export - > box.json`, and
+    the bare positional cannot route it: a summary is not a harness, it is every
+    harness on another box. Naming it in the error is the whole point, so the check
+    reads a prefix rather than parsing megabytes of workflows -- the marker
+    build_export writes first, and never a full json.load of a file we will not open.
+    """
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(512).decode("utf-8", "replace")
+    except OSError:
+        return False
+    return '"opentab_export"' in head
+
+
 def _route_path_arg(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     # An explicit source owns the positional path; otherwise infer file-backed sources.
     csv_explicit = args.csv is not None
@@ -143,6 +161,11 @@ def _route_path_arg(parser: argparse.ArgumentParser, args: argparse.Namespace) -
         if args.source in ("auto", "all"):
             target = _infer_source_from_path(path)
             if target is None:
+                if os.path.isfile(path) and _is_machine_summary(path):
+                    parser.error(
+                        f"{path} is an exported machine summary, not a harness -- open it "
+                        f"with `opentab remote {path}`"
+                    )
                 parser.error(f"can't tell which source {path!r} is -- pass --source explicitly")
             if args.source == "auto":
                 args.source = target
@@ -426,6 +449,49 @@ def _wrap_cache(store, key: str, args: argparse.Namespace):
     return CachedStore(store, f"{key}|{root}", args)
 
 
+def _fleet_warning(remote, remotes, hostname: str, pulled: bool = False, live: bool = True) -> str:
+    """One line naming what a fleet launch silently dropped, or "" when nothing did.
+
+    Three states look identical from the outside -- the fleet opens showing this
+    machine and nothing else -- and none of them raised before this: a summary that
+    would not parse is skipped file by file (RemoteStore.unreadable), an empty remotes
+    directory is only fatal when there is no local data either (make_store), and a
+    pulled label equal to this host's name is FOLDED INTO the live machine, because
+    CombinedStore.machine_meta lets `live` win. That last one is the quiet one: the
+    imported box's sessions still show, attributed to this laptop, and `L` then offers
+    to resume them here (App.machine_ssh_target bows out on the live flag).
+
+    First match wins -- this is a one-line toast, and an unreadable file is the most
+    actionable thing to say when several apply.
+
+    `pulled` says a pull ran THIS launch, which withdraws the empty-fleet line: it
+    would tell someone to run `opentab pull HOST` directly under the per-machine
+    report of that exact command failing, displacing the real reason (the ssh error)
+    with advice to repeat what just failed. The other two still apply -- a pull can
+    land a truncated summary, and it can pull a box named like this one.
+
+    `live` says this machine contributed a store of its own. Without one there is
+    nothing for a same-named summary to be folded INTO -- RemoteStore is the only
+    store and its metadata stays non-live -- so the collision line would describe a
+    merge that did not happen.
+    """
+    bad = list(getattr(remote, "unreadable", ()))
+    if bad:
+        names = ", ".join(os.path.basename(b) for b in bad[:3])
+        more = f" +{len(bad) - 3}" if len(bad) > 3 else ""
+        plural = "y" if len(bad) == 1 else "ies"
+        return f"fleet: skipped unreadable summar{plural} ({names}{more}) -- not an opentab export?"
+    if not remote.machines and not pulled:
+        where = short_path(remotes, 48) if isinstance(remotes, str) else "the given files"
+        return f"fleet: no machine summaries in {where} -- run `opentab pull HOST`"
+    if live and hostname in remote.machines:
+        return (
+            f"fleet: pulled machine '{hostname}' has this machine's name; its sessions "
+            "merge into this one -- re-export it with `opentab export --label NAME`"
+        )
+    return ""
+
+
 def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
     store, hint = _build_store(args, key)
     return _wrap_cache(store, key, args), hint
@@ -455,12 +521,34 @@ def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
         if not subs:
             raise SystemExit(
                 f"No machine summaries found in {remotes} and no local data on this "
-                "machine. On each other machine run `opentab --pull HOST` to fetch its "
-                "spend over SSH (or `opentab --export -` and gather the files there)."
+                "machine. Run `opentab pull HOST` to fetch another box's spend over SSH "
+                "(or, where SSH from here is not possible, `opentab export -` on that "
+                "box, copy the file over, and open it with `opentab remote FILE`)."
             )
+        # The bail above needs BOTH halves to be empty, so a fleet that found no summary
+        # opens on local data alone and says nothing. Carry the reason to the frontends.
+        # Never under --demo: every line here can name a real hostname, path or
+        # filename, and demo exists so the screen can be shared. A diagnostic that is
+        # the one un-anonymized string on it is the `notes` rule (see allow_notes).
+        warning = (
+            ""
+            if getattr(args, "demo", False)
+            else _fleet_warning(
+                remote,
+                remotes,
+                hostname,
+                pulled=getattr(args, "pull", None) is not None,
+                live=bool(local_subs),
+            )
+        )
         if len(subs) == 1:
-            return subs[0], "OpenTab: loading fleet…\r"
-        return CombinedStore(subs), "OpenTab: loading fleet (this machine + pulled)…\r"
+            store = subs[0]
+        else:
+            store = CombinedStore(subs)
+        store.fleet_warning = warning
+        if len(subs) == 1:
+            return store, "OpenTab: loading fleet…\r"
+        return store, "OpenTab: loading fleet (this machine + pulled)…\r"
     if key == "claude":
         if not os.path.isdir(args.claude_dir):
             raise SystemExit(f"Claude Code projects directory not found: {args.claude_dir}")

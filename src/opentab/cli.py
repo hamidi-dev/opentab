@@ -224,9 +224,11 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--remotes",
         default=None,
-        metavar="DIR",
-        help="directory of exported machine summaries for --source remote "
-        f"(default: {default_remotes_dir()}); one *.json per machine, from --export/--pull",
+        metavar="PATH",
+        help="where --harness remote reads machine summaries: a directory of them "
+        f"(default: {default_remotes_dir()}; one *.json per machine, from --export/"
+        "--pull), or a single exported *.json FILE -- which is how you open a summary "
+        "you copied over by hand. Pulls always WRITE into the default directory",
     )
     parser.add_argument(
         "--label",
@@ -318,8 +320,9 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
         help="write this machine's spend summary (every present harness, merged) as a "
         "portable JSON file and exit -- totals + per-model breakdown, no transcripts. "
         "Default FILE is stdout, so `ssh box opentab --export - > box.json` works. "
-        "Gather these from several machines and browse them merged with `opentab "
-        "--source remote` (see --remotes); pairs with --demo for a shareable summary",
+        "Copy the file to this machine and open it with `opentab remote box.json` "
+        "(several: `opentab remote a.json b.json`); pairs with --demo for a shareable "
+        "summary",
     )
     parser.add_argument(
         "--pull",
@@ -576,19 +579,31 @@ def _build_parser() -> argparse.ArgumentParser:
     _focus_help(pull, gdests, {"remotes", "demo"})
     remote = subs.add_parser(
         "remote",
-        help="open the already-pulled machines without re-fetching (offline)",
+        help="open pulled machines, or summary files copied over by hand",
         description="Open the machine summaries already gathered by `opentab pull`, "
         "merged into the fleet view, without re-fetching over SSH -- the offline twin of "
-        "`opentab pull`.",
+        "`opentab pull`. Name one or more exported *.json FILEs to open summaries you "
+        "moved here yourself (`opentab export -` on the far side, scp, then "
+        "`opentab remote box.json`) instead of the pulled ones.",
     )
     _add_global_args(remote)
+    remote.add_argument(
+        "files",
+        nargs="*",
+        metavar="FILE",
+        help="exported summaries to open instead of the pulled ones (from "
+        "`opentab export`); a directory works too. Without one, the machines already "
+        "pulled into --remotes are opened",
+    )
     _focus_help(remote, gdests, {"remotes", "demo"})
     export = subs.add_parser(
         "export",
         help="write this machine's spend summary as portable JSON",
         description="Write this machine's spend summary (every present harness, merged) "
-        "as a portable JSON file -- totals + per-model breakdown, no transcripts -- for "
-        "another box to `opentab pull`. Pairs with --demo for a shareable summary.",
+        "as a portable JSON file -- totals + per-model breakdown, no transcripts. Copy "
+        "it to another machine and open it there with `opentab remote box.json`; "
+        "`opentab pull` is the automatic twin and takes an SSH target, never a file. "
+        "Pairs with --demo for a shareable summary.",
     )
     _add_global_args(export)
     export.add_argument(
@@ -638,6 +653,11 @@ def _apply_subcommand(args: argparse.Namespace) -> None:
         args.pull = list(args.hosts)
     elif command == "remote":
         args.remote = True
+        # RemoteStore reads a path, a directory, or a LIST of paths, so the positional
+        # fills the same slot --remotes does. Writers (pull/refresh/forget) go through
+        # _remotes_write_dir, which never sees the list.
+        if args.files:
+            args.remotes = list(args.files)
     elif command == "cost":
         # Empty string means "cost the current directory"; None means no cost request.
         args.status = args.targets[0] if args.targets else ""
@@ -667,11 +687,38 @@ def _validate_demo_cats(parser: argparse.ArgumentParser, args: argparse.Namespac
         )
 
 
+def _validate_remote_files(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    # A named summary that is missing fails HERE rather than opening a fleet of this
+    # machine alone: the user pointed at a file, so "it showed nothing" is the one
+    # answer that cannot be acted on. A pulled-machines launch keeps its soft path.
+    if getattr(args, "command", None) != "remote":
+        return
+    files = list(getattr(args, "files", None) or ())
+    if not files:
+        # --demo takes an optional value, so `opentab remote --demo titles` reads a file
+        # named `titles` as the CATEGORY and opens the pulled directory instead. Every
+        # other swallowed filename hits _validate_demo_cats; these four are silent,
+        # which is worse than the error -- it looks like the import did nothing.
+        demo = getattr(args, "demo", None)
+        if isinstance(demo, str) and demo != "all" and os.path.isfile(demo):
+            parser.error(
+                f"remote: --demo read {demo!r} as a category, not a file. Put the file "
+                f"first (`opentab remote {demo} --demo`) or separate it (`--demo -- {demo}`)"
+            )
+        return
+    if getattr(args, "remotes", None):  # runs before _apply_subcommand: still the flag
+        parser.error("remote: pass summary files or --remotes, not both")
+    missing = [f for f in files if not os.path.exists(f)]
+    if missing:
+        parser.error(f"remote: no such summary file: {', '.join(missing)}")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     raw = list(sys.argv[1:] if argv is None else argv)
     parser = _build_parser()
     args = parser.parse_args(_normalize_argv(raw))
     _validate_demo_cats(parser, args)
+    _validate_remote_files(parser, args)
     _apply_subcommand(args)
     _route_path_arg(parser, args)
     return args
@@ -1398,6 +1445,49 @@ def _save_remotes(machines: dict) -> None:
         pass
 
 
+def _pull_target(spec: str) -> str:
+    # The destination half of a `name=target` pull spec, split as _remote_entry does.
+    _, sep, rest = spec.partition("=")
+    return rest if sep else spec
+
+
+def _looks_like_a_summary_path(spec: str) -> bool:
+    """Whether a `pull` target is really a local file, not an ssh destination.
+
+    `opentab pull box.json` otherwise parses as an ssh target, derives the machine key
+    `.` from `./box.json`, SAVES that into remotes.json (pull_command persists before
+    the workers run, deliberately, so a failed host can be retried) and only then fails
+    at `ssh ./box.json`. The user is left with a junk machine and no hint that the file
+    they exported has its own verb.
+
+    Keyed on an existing regular file or explicit path syntax, never on the `.json`
+    suffix: a hostname may legitimately end in one, and rejecting a real host is worse
+    than accepting a nonexistent file. A URL form -- `ssh://`, `http://` -- is a
+    destination and skips the check outright.
+    """
+    target = _pull_target(spec)
+    if "://" in target:
+        return False
+    return target.startswith(("./", "../", "/", "~")) or os.path.isfile(target)
+
+
+def _remotes_write_dir(args: argparse.Namespace) -> str:
+    """The directory pulls, refreshes and forgets act on.
+
+    `--remotes` (and `opentab remote FILE...`) may name summary FILES, which is the
+    read side only -- there is nothing to write into a file, and os.makedirs on one
+    raises FileExistsError. Fetched summaries then belong where they always did.
+    """
+    value = getattr(args, "remotes", None)
+    # `opentab remote /some/dir` arrives as a one-element LIST naming a directory, and
+    # must not behave differently from `--remotes /some/dir`, which is the same request.
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        value = value[0]
+    if isinstance(value, str) and value and not os.path.isfile(value):
+        return value
+    return default_remotes_dir()
+
+
 def _remote_entry(spec: str) -> tuple[str, dict]:
     name, sep, rest = spec.partition("=")
     if not sep:
@@ -1484,6 +1574,33 @@ def _pull_one(name: str, entry: dict, remotes_dir: str) -> tuple[int, str]:
 def pull_command(args: argparse.Namespace) -> None:
     machines = _load_remotes()
     tokens = args.pull or []
+    # A pull writes summaries into a DIRECTORY. With --remotes naming a file the fetch
+    # would land in the default directory while the screen that opens next still reads
+    # that file -- a successful pull showing stale data, the same split the in-app
+    # refresh withholds itself for (_make_refresh_fn).
+    named = getattr(args, "remotes", None)
+    if isinstance(named, str) and named and os.path.isfile(named):
+        sys.stderr.write(
+            f"opentab pull: --remotes {named} is a single summary file, and a pull needs "
+            "a directory to write into.\n  Drop --remotes to pull into "
+            f"{default_remotes_dir()}, or name a directory.\n"
+        )
+        return
+    # Refuse a local summary BEFORE _save_remotes below persists it as a machine.
+    files = [t for t in tokens if _looks_like_a_summary_path(t)]
+    if files:
+        # Both suggestions must name the TARGET, never the `name=target` spec: `opentab
+        # remote office=box.json` looks for a file literally called that.
+        paths = [_pull_target(f) for f in files]
+        # The ssh:// escape hatch only reads sensibly for a bare name that happens to
+        # be a local file; it is nonsense spelled over `./box.json`.
+        bare = [t for t in paths if not t.startswith(("./", "../", "/", "~"))]
+        hint = f"\n  (a host really named that: opentab pull ssh://{bare[0]})" if bare else ""
+        sys.stderr.write(
+            f"opentab pull: {', '.join(paths)} looks like an exported summary, not an "
+            f"ssh target.\n  Open it with: opentab remote {' '.join(paths)}{hint}\n"
+        )
+        return
     if tokens:
         targets: dict = {}
         for spec in tokens:
@@ -1510,7 +1627,7 @@ def pull_command(args: argparse.Namespace) -> None:
             "`opentab --pull user@host` (or name=user@host, or http://host:port).\n"
         )
         return
-    remotes_dir = args.remotes or default_remotes_dir()
+    remotes_dir = _remotes_write_dir(args)
     try:
         os.makedirs(remotes_dir, exist_ok=True)
     except OSError as exc:
@@ -1540,7 +1657,17 @@ def pull_command(args: argparse.Namespace) -> None:
 
 def _make_refresh_fn(args: argparse.Namespace):
     # Bind in-app refreshes to this run's remotes directory and the same pull workers.
-    remotes_dir = args.remotes or default_remotes_dir()
+    remotes_dir = _remotes_write_dir(args)
+    # A fleet opened from FILES (`opentab remote box.json`, or --remotes naming one)
+    # reads somewhere a pull cannot write, so a re-pull would report ✓, land in the
+    # pull directory, and leave the screen showing the same stale copy -- the one
+    # failure mode worse than no refresh at all. Withhold the backend instead; the
+    # `F` key then says so rather than lying.
+    read = getattr(args, "remotes", None)
+    if isinstance(read, (list, tuple)) and len(read) == 1:
+        read = read[0]
+    if read not in (None, remotes_dir):
+        return None
 
     def refresh(keys: list) -> list:
         machines = _load_remotes()
@@ -1582,7 +1709,7 @@ def _make_ssh_targets_fn():
 
 def forget_command(args: argparse.Namespace) -> int:
     machines = _load_remotes()
-    remotes_dir = args.remotes or default_remotes_dir()
+    remotes_dir = _remotes_write_dir(args)
     for name in args.forget:
         existed = machines.pop(name, None) is not None
         try:
@@ -1705,6 +1832,11 @@ def web_command(args: argparse.Namespace) -> int:
     app._ensure_models()
     sys.stderr.write(" " * 40 + "\r")
     sys.stderr.flush()
+    # The page has no toast, so a silently-dropped fleet import says so on stderr --
+    # beside the report line, which is the only output this command otherwise makes.
+    fleet_hint = getattr(store, "fleet_warning", "")
+    if fleet_hint:
+        sys.stderr.write(f"{fleet_hint}\n")
     if args.serve or args.web:
         return web.serve_command(app, args)
     return web.html_command(app, args)
@@ -1797,11 +1929,22 @@ def main() -> int:
     # Refresh after apply_state, which clears notices and would erase a notes warning.
     notes_ok = app.refresh_notes()
     app.announce_keymap_warnings()
+    # One notice can paint, so rank the three by what is unrecoverable: notes loss
+    # first, then a fleet import that silently dropped what the user named, then a
+    # goto that matched nothing (which still lands you in a usable TUI).
+    fleet_hint = getattr(store, "fleet_warning", "")
     if goto is not None:
         # goto_session clears a restored range that hides the target; no screen is needed.
         app.goto_session(goto[1], tab=getattr(args, "tab", None))
+        # Landing on the session is STATE, not a message, so it must not silence the
+        # fleet note -- but goto_session may have had to explain itself (a cleared
+        # range, a tab this session lacks), and that is about the thing the user
+        # actually asked for.
+        if fleet_hint and notes_ok and not app.notice:
+            app.notify(fleet_hint, "error")
+    elif fleet_hint and notes_ok:
+        app.notify(fleet_hint, "error")
     elif goto_hint and notes_ok:
-        # Notes loss risk outranks a goto miss when only one notice can paint.
         app.notify(goto_hint, "error")
     curses.wrapper(app.run)
     if use_state and not app.store.demo:
