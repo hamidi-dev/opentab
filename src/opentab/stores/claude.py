@@ -11,7 +11,7 @@ from typing import NamedTuple
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
-from opentab.pricing import api_equivalent_cost
+from opentab.pricing import api_equivalent_cost, has_catalog_row
 from opentab.util import (
     ATTACHMENT_EST_TOKENS,
     TRACE_EVENTS_CAP,
@@ -711,6 +711,14 @@ class ClaudeStore:
         # Claude Code models are bare ("claude-opus-4-8"); prefix the provider so
         # model_price strips it the same way and the Providers tab can roll up.
         model_name = model if "/" in model else "anthropic/" + model
+        # /fast keeps the same model and bills at its own 2x rate: Claude Code writes
+        # usage.speed "fast" (its own pricing branches on `speed==="fast"` for exactly
+        # claude-opus-4-8 and claude-opus-5), and models.dev files that as
+        # experimental.modes.fast, which the catalog carries as "<model>-fast". Rename
+        # only when such a row exists, so a model with no fast card keeps its own price
+        # instead of falling through to a family guess.
+        if usage.get("speed") == "fast" and has_catalog_row(model_name + "-fast"):
+            model_name += "-fast"
         entry = s["models"].get(model_name)
         if entry is None:
             entry = s["models"][model_name] = {"total": self._new_acc(), "root": self._new_acc()}

@@ -182,6 +182,54 @@ def price_cache_path() -> str:
     return os.path.join(paths.cache_dir(), "prices.json")
 
 
+def _catalog_entry(cost: dict, m: dict) -> dict | None:
+    # One models.dev cost card -> one snapshot row. Status and context window come off the
+    # model, which a mode shares with its base. No input/output rate means no row at all.
+    inp, out = cost.get("input"), cost.get("output")
+    if not isinstance(inp, (int, float)) or not isinstance(out, (int, float)):
+        return None
+    cr, cw = cost.get("cache_read"), cost.get("cache_write")
+    entry: dict = {
+        "cost": [
+            float(inp),
+            float(out),
+            float(cr) if isinstance(cr, (int, float)) else 0.0,
+            float(cw) if isinstance(cw, (int, float)) else 0.0,
+        ]
+    }
+    if m.get("status") in _MODEL_STATUSES:
+        entry["status"] = m["status"]
+    limit = m.get("limit")
+    ctx = limit.get("context") if isinstance(limit, dict) else None
+    if isinstance(ctx, (int, float)) and ctx > 0:
+        entry["limit"] = int(ctx)
+    return entry
+
+
+def _mode_rows(mid: str, m: dict, models: dict):
+    """Priority processing is a MODE on the base model in models.dev, a model of its own in
+    every harness that logs it. OpenAI files "GPT-5.6 Sol Fast" as
+    experimental.modes.fast -- a `service_tier: priority` request flag plus its own, 2x
+    rate card -- while OpenCode writes modelID "gpt-5.6-sol-fast". With no row of that
+    name the id fell through to whichever gateway happened to list the spelling (vercel,
+    at OpenAI's *base* rate), so every fast turn priced at half. Emit the priced modes as
+    real ids on the provider that owns them, so the vendor route wins the bare-id rank.
+    """
+    modes = (m.get("experimental") or {}).get("modes") if isinstance(m, dict) else None
+    if not isinstance(modes, dict):
+        return
+    for name in sorted(modes, key=str):
+        mode = modes[name]
+        cost = mode.get("cost") if isinstance(mode, dict) else None
+        # A mode that only flips a request flag (openai's "pro") bills at the base rate and
+        # needs no row; a spelling the provider already sells keeps its own card.
+        if not isinstance(cost, dict) or f"{mid}-{name}" in models:
+            continue
+        entry = _catalog_entry(cost, m)
+        if entry is not None:
+            yield f"{mid}-{name}", entry
+
+
 def prune_models_dev(data: dict) -> dict:
     # Keep numerically priced models, lifecycle status, and context limits. Sorted keys
     # keep generated release snapshots stable.
@@ -196,27 +244,18 @@ def prune_models_dev(data: dict) -> dict:
         kept: dict[str, dict] = {}
         for mid in sorted(models, key=str):
             m = models[mid]
-            cost = m.get("cost") if isinstance(m, dict) else None
+            if not isinstance(m, dict):
+                continue
+            # Modes are emitted even when the base card is unpriced: a gateway can quote a
+            # fast rate for a model it lists no base rate for.
+            for smid, sentry in _mode_rows(str(mid), m, models):
+                kept[smid] = sentry
+            cost = m.get("cost")
             if not isinstance(cost, dict):
                 continue
-            inp, out = cost.get("input"), cost.get("output")
-            if not isinstance(inp, (int, float)) or not isinstance(out, (int, float)):
+            entry = _catalog_entry(cost, m)
+            if entry is None:
                 continue
-            cr, cw = cost.get("cache_read"), cost.get("cache_write")
-            entry: dict = {
-                "cost": [
-                    float(inp),
-                    float(out),
-                    float(cr) if isinstance(cr, (int, float)) else 0.0,
-                    float(cw) if isinstance(cw, (int, float)) else 0.0,
-                ]
-            }
-            if m.get("status") in _MODEL_STATUSES:
-                entry["status"] = m["status"]
-            limit = m.get("limit")
-            ctx = limit.get("context") if isinstance(limit, dict) else None
-            if isinstance(ctx, (int, float)) and ctx > 0:
-                entry["limit"] = int(ctx)
             kept[str(mid)] = entry
         if kept:
             name = p.get("name")
@@ -419,6 +458,18 @@ def has_known_price(name: str) -> bool:
     if any(mid in prices or plain in prices for prices, _limits, _tree, _meta, _v in _layers()):
         return True
     return any(needle in mid for needle, *_p in MODEL_PRICE_FALLBACKS)
+
+
+def has_catalog_row(name: str) -> bool:
+    """Whether the catalog carries this EXACT id, not a family rule that merely reaches it.
+
+    has_known_price() answers "can this be priced at all", and its family fallbacks match
+    any spelling containing the needle -- "claude-haiku-4-5-fast" included, at the plain
+    model's rate. A caller asking whether an id genuinely EXISTS (a mode suffix worth
+    splitting a model row over) has to compare against the rows themselves.
+    """
+    mid = str(name).rsplit("/", 1)[-1].lower()
+    return any(mid in prices for prices, _limits, _tree, _meta, _vendor in _layers())
 
 
 def model_context_window(name: str) -> int:

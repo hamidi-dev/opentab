@@ -1527,3 +1527,48 @@ def test_replay_detection_never_answers_no_on_a_line_it_could_not_read():
             ],
         )
         assert store._replays_history(quoted) is False
+
+
+def test_claude_fast_mode_is_split_out_because_it_bills_at_its_own_rate():
+    """/fast keeps the very same model and doubles the rate: Claude Code records it as
+    usage.speed "fast" (its own pricing branches on `speed==="fast"` for exactly
+    claude-opus-4-8 and claude-opus-5), and models.dev files it as
+    experimental.modes.fast, priced 10/50/1/12.5 against the plain 5/25/0.5/6.25. Reading
+    only `message.model` folded fast turns into the standard row and repriced them at
+    half. The rename is gated on the catalog carrying the row, so a model with no fast
+    card keeps its own price rather than being split into two identical rows."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "projects", "slug")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+
+        def msg(uid, model, speed):
+            m = _claude_msg(
+                "s1", model, _usage(1000, 500, 2000, 300), uuid=uid, cwd=cwd, mid=uid, req=uid
+            )
+            m["message"]["usage"]["speed"] = speed
+            return m
+
+        _write_jsonl(
+            os.path.join(root, "s1.jsonl"),
+            [
+                msg("u1", "claude-opus-5", "standard"),
+                msg("u2", "claude-opus-5", "fast"),
+                # No fast rate card on record -> must NOT be renamed on the speed flag.
+                msg("u3", "claude-haiku-4-5", "fast"),
+            ],
+        )
+        store = ot.ClaudeStore(os.path.join(tmp, "projects"), type("A", (), {"demo": False})())
+        rows = {r["model_name"]: r for r in store.model_breakdown()}
+
+        assert set(rows) == {
+            "anthropic/claude-opus-5",
+            "anthropic/claude-opus-5-fast",
+            "anthropic/claude-haiku-4-5",
+        }
+        assert all(r["runs"] == 1 for r in rows.values())
+        # Same tokens on both Opus rows, so the "$" estimate differs by the rate alone.
+        plain = ot.api_equivalent_cost("anthropic/claude-opus-5", 1000, 500, 0, 2000, 300)
+        fast = ot.api_equivalent_cost("anthropic/claude-opus-5-fast", 1000, 500, 0, 2000, 300)
+        assert fast == 2 * plain > 0

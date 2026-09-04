@@ -844,3 +844,74 @@ def test_cache_miss_reads_the_ttl_off_the_entry_that_died_not_the_one_replacing_
         ]
     )
     assert dead[0].cause == "waited" and dead[0].ttl == ot.CACHE_TTL_SHORT
+
+
+def test_priority_processing_modes_become_priced_ids_of_their_own():
+    """models.dev files priority processing as a MODE on the base model
+    (experimental.modes.fast: a `service_tier: priority` flag plus its own 2x card), but
+    every harness logs it as a model -- OpenCode writes modelID "gpt-5.6-sol-fast". The
+    pruner read only `cost`, so that id matched no vendor row and fell through to the one
+    gateway listing the spelling (vercel, quoting OpenAI's BASE rate): fast sessions
+    priced at exactly half, with no gap to show for it."""
+    catalog = {
+        "openai": {
+            "name": "OpenAI",
+            "models": {
+                "gpt-5.6-sol": {
+                    "cost": {"input": 4, "output": 20, "cache_read": 0.4, "cache_write": 5},
+                    "limit": {"context": 1050000},
+                    "experimental": {
+                        "modes": {
+                            # Dearer rates AND a request flag: needs a row of its own.
+                            "fast": {
+                                "cost": {
+                                    "input": 8,
+                                    "output": 40,
+                                    "cache_read": 0.8,
+                                    "cache_write": 10,
+                                },
+                                "provider": {"body": {"service_tier": "priority"}},
+                            },
+                            # Only a request flag: bills at the base rate, so no row.
+                            "pro": {"provider": {"body": {"reasoning": {"mode": "pro"}}}},
+                        }
+                    },
+                },
+                "gpt-legacy": {
+                    "cost": {"input": 1, "output": 2},
+                    "status": "deprecated",
+                    "limit": {"context": 128000},
+                    # A provider that already sells the spelling keeps its own card.
+                    "experimental": {"modes": {"fast": {"cost": {"input": 99, "output": 99}}}},
+                },
+                "gpt-legacy-fast": {"cost": {"input": 3, "output": 6}},
+                # A gateway can quote a fast rate for a model it lists no base rate for.
+                "gpt-plan-only": {
+                    "cost": {"input": None, "output": None},
+                    "status": "beta",
+                    "experimental": {"modes": {"fast": {"cost": {"input": 7, "output": 21}}}},
+                },
+            },
+        }
+    }
+    models = ot.pricing.prune_models_dev(catalog)["openai"]["models"]
+
+    assert models["gpt-5.6-sol-fast"]["cost"] == [8.0, 40.0, 0.8, 10.0]
+    assert models["gpt-5.6-sol"]["cost"] == [4.0, 20.0, 0.4, 5.0]
+    # The mode shares the base model's context window and lifecycle status.
+    assert models["gpt-5.6-sol-fast"]["limit"] == 1050000
+    assert models["gpt-plan-only-fast"]["status"] == "beta"
+    assert "gpt-5.6-sol-pro" not in models
+    assert models["gpt-legacy-fast"]["cost"] == [3.0, 6.0, 0.0, 0.0]  # the real card, not 99
+    assert models["gpt-plan-only-fast"]["cost"] == [7.0, 21.0, 0.0, 0.0]
+    assert "gpt-plan-only" not in models
+
+    # End to end on the bundled snapshot: fast is exactly twice base, and the vendor row
+    # now outranks the gateway that used to answer for it.
+    base = ot.pricing.model_price("openai/gpt-5.6-sol")
+    fast = ot.pricing.model_price("openai/gpt-5.6-sol-fast")
+    assert fast == tuple(2 * x for x in base)
+    assert ot.pricing.model_price("gpt-5.6-sol-fast") == fast  # bare id, as harnesses log it
+    assert ot.pricing.model_price("anthropic/claude-opus-5-fast") == tuple(
+        2 * x for x in ot.pricing.model_price("anthropic/claude-opus-5")
+    )
