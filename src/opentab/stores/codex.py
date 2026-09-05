@@ -522,13 +522,27 @@ class CodexStore:
                             pending_events.append(
                                 {"kind": "reasoning", "text": text, "dropped": dropped}
                             )
-            elif typ == "event_msg" and item_type == "user_message":
-                # First user prompt = session title. Take any user_message (older
-                # rollouts omit kind; only "plain" appears on newer ones), and
-                # collapse whitespace since Codex prompts often span lines with
-                # @file mentions that would otherwise break the one-line title cell.
+            elif typ == "event_msg" and item_type in ("user_message", "item_completed"):
                 txt = p.get("message")
+                if item_type == "item_completed":
+                    # Newer Codex emits UserMessage items instead of user_message.
+                    # Do not use response_item user messages: they include injected
+                    # environment/plugin instructions as well as prompt echoes.
+                    item = p.get("item")
+                    if not isinstance(item, dict) or item.get("type") != "UserMessage":
+                        continue
+                    content = item.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    txt = "\n".join(
+                        block["text"]
+                        for block in content
+                        if isinstance(block, dict)
+                        and block.get("type") == "text"
+                        and isinstance(block.get("text"), str)
+                    )
                 if isinstance(txt, str) and txt.strip():
+                    # First user prompt = title, collapsed to fit one table line.
                     if not s["title_prompt"]:
                         s["title_prompt"] = " ".join(txt.split())[:80]
                     # Every prompt is kept (raw, line breaks intact) for the Turns

@@ -398,7 +398,7 @@ def test_every_boxed_column_header_is_found_and_lit_the_same_way():
     assert all("Type" in lines[i] or "Model" in lines[i] for i in heads)
     # The chart caption right below the Token economics title is NOT a header.
     top = next(i for i, ln in enumerate(lines) if ln.startswith("┌ Token economics"))
-    assert top + 1 not in heads and "share of tokens sent" in lines[top + 1]
+    assert top + 1 not in heads and "share of tokens used" in lines[top + 1]
     # Painted: the labels light up, the gutters stay in the frame's plain attribute.
     screen = AttrScreen(6, 120)
     orig_cp = ot.curses.color_pair

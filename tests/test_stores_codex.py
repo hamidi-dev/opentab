@@ -210,6 +210,69 @@ def test_codex_title_takes_any_user_message_kind_and_collapses_newlines():
         assert store.workflows()[0].title == "fix @a.py:1 the bug"
 
 
+def test_codex_completed_user_items_supply_titles_and_prompt_groups():
+    with tempfile.TemporaryDirectory() as tmp:
+
+        def completed(item, ts="2025-10-03T14:51:05.000Z"):
+            return {
+                "timestamp": ts,
+                "type": "event_msg",
+                "payload": {"type": "item_completed", "item": item},
+            }
+
+        prompt = "fix\n@a.py:1\nthe bug"
+        rows = [
+            _codex_meta(CODEX_SID, tmp),
+            _codex_item(
+                "message",
+                role="user",
+                content=[
+                    {
+                        "type": "input_text",
+                        "text": "<environment_context>injected</environment_context>",
+                    }
+                ],
+            ),
+            completed(None),
+            completed({"type": "UserMessage", "content": None}),
+            completed({"type": "UserMessage", "content": [None, {"type": "text", "text": 42}]}),
+            completed({"type": "UserMessage", "content": [{"type": "text", "text": "  "}]}),
+            completed(
+                {"type": "AgentMessage", "content": [{"type": "text", "text": "not a prompt"}]}
+            ),
+            # The Responses API echo must not create a second prompt group.
+            _codex_item("message", role="user", content=[{"type": "input_text", "text": prompt}]),
+            completed(
+                {
+                    "type": "UserMessage",
+                    "content": [
+                        {"type": "text", "text": "fix\n@a.py:1"},
+                        {"type": "image", "text": "not prompt text"},
+                        {"type": "text", "text": "the bug"},
+                    ],
+                }
+            ),
+            _codex_turn("gpt-5-codex", tmp),
+            _codex_tokens(10, 5, 0, 15),
+            completed(
+                {"type": "UserMessage", "content": [{"type": "text", "text": "then test it"}]},
+                ts="2025-10-03T14:51:25.000Z",
+            ),
+            _codex_tokens(20, 10, 0, 30, ts="2025-10-03T14:51:30.000Z"),
+        ]
+        _codex_rollout(tmp, CODEX_SID, rows)
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        assert store.workflows()[0].title == "fix @a.py:1 the bug"
+        assert [p["title"] for p in store._parse()[CODEX_SID]["prompts"]] == [
+            prompt,
+            "then test it",
+        ]
+        turns = store.message_timeline(CODEX_SID)
+        assert [t["prompt_full"] for t in turns] == [prompt, "then test it"]
+        assert turns[0]["prompt_id"] != turns[1]["prompt_id"]
+        assert [t["tokens_total"] for t in turns] == [15, 15]
+
+
 def test_codex_store_treats_a_shrinking_total_as_a_compaction_reset():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")

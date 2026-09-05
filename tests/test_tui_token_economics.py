@@ -219,7 +219,7 @@ def test_the_box_is_two_stacked_bars_that_sum_to_the_pane_width():
     ]
     app = _app({"a": rows})
     lines = app.renderer._token_economics_box(app.loaded, 100)
-    assert "share of tokens sent" in "\n".join(lines)
+    assert "share of tokens used" in "\n".join(lines)
     assert "share of dollars billed" in "\n".join(lines)
     bars = _bars(lines)
     assert len(bars) == 2

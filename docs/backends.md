@@ -164,6 +164,11 @@ Tools and readable trace items accumulate until an accepted usage delta. Such a
 delta can span multiple requests, so Codex deliberately offers no Context curve.
 Encrypted reasoning remains opaque; only recorded readable summaries can be shown.
 
+Session titles use the first nonblank user prompt. Both legacy `user_message`
+events and newer `item_completed` events containing a `UserMessage` supply titles
+and Turns prompt groups. User-role `response_item` records are not used for this:
+they also contain injected instructions and duplicate the actual prompt events.
+
 ## Hermes Agent
 
 Reader: [`stores/hermes.py`](../src/opentab/stores/hermes.py)

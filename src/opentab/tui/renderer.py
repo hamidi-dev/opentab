@@ -2808,7 +2808,7 @@ class Renderer:
         chart: list[str] = []
         if inner >= 34:
             for caption, index, total, fmt in (
-                ("share of tokens sent", 1, econ.total_tokens, lambda v: human_tokens(int(v))),
+                ("share of tokens used", 1, econ.total_tokens, lambda v: human_tokens(int(v))),
                 ("share of dollars billed", 2, econ.total_cost, money),
             ):
                 if chart:

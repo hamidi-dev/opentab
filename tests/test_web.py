@@ -966,7 +966,7 @@ def test_web_token_economics_pane_is_two_stacked_bars_over_a_fixed_order_table()
     js = _js_source()
     # Two 100% bars over the SAME five types, one above the other -- the reading is the
     # gap between them, which needs a shared scale and one colour per type.
-    assert "share of tokens sent" in js and "share of dollars billed" in js
+    assert "share of tokens used" in js and "share of dollars billed" in js
     # The detail table must NOT go through the sortable table(): its headers install
     # click handlers unconditionally, so a click would re-rank the five rows away from
     # cost order and keep that ranking for every later scope (one shared table id).

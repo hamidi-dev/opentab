@@ -1235,7 +1235,7 @@ function tokenEconomicsPane(ws, label, model) {
   const body = h('div', null,
     tiles([['spend · list rates', approx + money(e.totalCost), null, true],
       ['tokens', hTok(e.totalTokens)]]),
-    stack('share of tokens sent', e.totalTokens, r => r.tok, hTok),
+    stack('share of tokens used', e.totalTokens, r => r.tok, hTok),
     stack('share of dollars billed', e.totalCost, r => r.cost, money),
     h('div', { class: 'tk-legend' }, rows.map(r =>
       h('span', null, h('i', { style: 'background:' + SER[r.i] }), r.t))),
