@@ -704,7 +704,7 @@ class Store:
           and json_extract(p.data, '$.type') in ('text', 'reasoning')
           -- Trimmed with an explicit character set, matching the trace's own strip():
           -- SQLite's one-argument trim() removes ASCII SPACES only, so a part holding
-          -- "\t\n" would mark the row readable and then open onto nothing. The set is
+          -- A tab/newline-only part would mark the row readable and open onto nothing.
           -- every ASCII whitespace character Python strips; the residual is a part whose
           -- entire content is a UNICODE space (NBSP, em space), which no writer emits as
           -- a whole message and which SQLite cannot express without a LIKE-per-codepoint.

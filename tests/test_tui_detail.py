@@ -698,10 +698,17 @@ def test_detail_turns_cumulative_and_reprices_under_dollar():
         assert "Add feature X" in tj and "Fix the bug" in tj
         assert "Turns" in cells[0] and "Cached" in cells[0] and "Cumulative" in cells[0]
         assert "$3.00 · 100%" in tj  # the last prompt's cumulative cell
+        assert any(line.strip().startswith("cost│") for line in table)
+        assert any(line.strip().startswith("context│") for line in table)
+        cost_strip = next(line for line in table if line.strip().startswith("cost│"))
+        context_strip = next(line for line in table if line.strip().startswith("context│"))
+        assert len(cost_strip.split("│", 1)[1].split("peak", 1)[0].rstrip()) == len(
+            context_strip.split("│", 1)[1].split("peak", 1)[0].rstrip()
+        )
         # A prompt row is a moment (MM-DD HH:MM); the seconds belong to its turns, which
         # live in the popup, so no per-turn clock stamp reaches the table.
         assert not any(re.search(r"\d\d-\d\d \d\d:\d\d:\d\d", ln) for ln in table)
-        assert "One row per prompt" in tj and "opens it with its turns" in tj
+        assert "Cached is context reused" in tj
         # The turns themselves, with their seconds, are one Enter away.
         app.open_turn_drill(0)
         drilled = rnd.detail_turn_drill(wf, 90)
@@ -1590,7 +1597,6 @@ def test_turns_table_counts_the_calls_and_drops_the_column_without_them():
     assert [ln.split()[6] for ln in rows] == ["2", "2", "2"]  # Turns
     # p1 made 3 calls, p2 none ("-", never "0"), p3 two.
     assert [ln.split()[7] for ln in rows] == ["3", "-", "2"]
-    assert "· Calls: tool calls the prompt made" in "\n".join(lines)
     # The TOTAL row sums them: 6 turns, 3 + 0 + 2 calls.
     total = next(ln for ln in lines if "TOTAL" in ln).split()
     assert total[2] == "6" and total[3] == "5"
@@ -1639,10 +1645,9 @@ def test_turns_prompt_rows_show_which_subagents_ran_them():
     assert "↳ docs" in body[0]
     assert "-" in body[1].split("prompt p2")[1] and "↳" not in body[1]  # ran it itself
     assert "↳ subagent ×2" in body[2]  # two unnamed executions, one cell
-    # The TOTAL carries the session's whole mix, and a footnote explains the glyph.
+    # The TOTAL carries the session's whole mix.
     total = next(ln for ln in lines if "TOTAL" in ln)
     assert "↳" in total
-    assert any("subagents the prompt delegated to" in ln for ln in lines)
 
     # A session that delegated nothing shows no column at all -- gated on the ROWS, like
     # Calls, never on a backend flag (a stripe of dashes is worse than no column).
@@ -2007,7 +2012,7 @@ def test_detail_turns_prices_an_effort_switch_that_took_the_cache_with_it():
         ot.curses.color_pair = orig
     # ...and a footnote says WHY a level change costs anything (the notes wrap, so the
     # sentence is read off the joined text).
-    assert "drops the cached prefix" in " ".join(ln.strip() for ln in lines)
+    assert "invalidated the cached prefix" in " ".join(ln.strip() for ln in lines)
 
     # Same level on both sides: no marker at all, and the catch-all stays silent.
     rows[1]["effort"] = "high"
@@ -2045,6 +2050,8 @@ def test_detail_turns_stays_silent_when_the_backend_cannot_support_the_reading()
     lines = ot.Renderer(app).detail_turns(app.loaded[0], 96)
     assert not any(ln.startswith("❄") for ln in lines)
     assert "❄" not in lines[0]
+    assert any(ln.strip().startswith("cost│") for ln in lines)
+    assert not any(ln.strip().startswith("context│") for ln in lines)
 
 
 def test_turn_cursor_and_table_rows_split_the_prompts_the_same_way():
@@ -2095,7 +2102,7 @@ def test_turns_table_budgets_its_optional_columns_against_the_pane():
     mid = app.renderer.detail_turns(wf, 88)  # bar dropped, Cumulative kept
     assert all(len(ln) <= 88 for ln in mid)
     assert "Cumulative" in box_cells(mid)[0]
-    assert not any("█" in ln or "▏" in ln for ln in mid)
+    assert not any("█" in ln or "▏" in ln for ln in box_cells(mid))
 
     # 76, not 72: the ruled box takes four cells off the table's own budget, and below
     # ~76 the PROMPT_MIN floor starts overflowing the frame rather than yielding.
@@ -2287,15 +2294,15 @@ def test_esc_only_leaves_a_drilled_prompt_while_the_turns_tab_is_showing():
     assert app.turn_drill == 1  # ...and the drill it could not see is untouched
 
 
-def test_drilled_prompt_footnotes_wrap_like_the_tab_above_them():
-    # Same rule as the tab's own notes: the trace hint is the longest line on the pane,
-    # and a clipped footnote is one that stops mid-word.
+def test_trace_header_keeps_the_prompt_visible_while_the_content_scrolls():
     app = _trace_app()
     wf = app.current_session()
     for width in (72, 96, 140):
+        app.open_trace_drill()
         lines = app.renderer.detail_turn_drill(wf, width)
-        assert all(len(ln) <= width for ln in lines if ln.startswith(("· ", "  ")))
-    assert any("opens what a turn actually did" in ln for ln in lines)
+        assert lines[0].startswith("Turn 1 of 2 · do the thing")
+        assert len(lines[0]) <= width
+        app.close_trace_drill()
 
 
 def test_turns_footnotes_wrap_instead_of_being_clipped_mid_sentence():
@@ -2377,7 +2384,7 @@ def test_turns_footnotes_fit_an_eighty_column_terminal():
     app = _cache_miss_app()
     for width in (74, 80, 100):
         lines = app.renderer.detail_turns(app.loaded[0], width)
-        assert any("❄ the prompt cache expired" in ln for ln in lines), width
+        assert any("❄ idle time expired" in ln for ln in lines), width
         assert all(len(ln) <= width for ln in lines), width
 
 
@@ -2640,7 +2647,7 @@ def test_turn_trace_shows_the_exact_command_its_arguments_and_its_output():
     body = app.renderer.detail_turn_drill(wf, 96)
     text = "\n".join(body)
 
-    assert body[0] == "Turn 1 of 2"
+    assert body[0] == "Turn 1 of 2 · do the thing"
     assert "claude-opus-4-8" in text and "$1.00" in text
     assert "  I'll check the diff first." in body  # narration, the assistant's own voice
     assert "▸ Bash\n│  git diff --stat src/opentab/tui/renderer.py" in text
@@ -2717,18 +2724,22 @@ def test_a_click_inside_a_drilled_prompt_opens_that_turns_trace():
     assert rnd._turn_header_at == {} and rnd._turn_cursor_line is None
 
 
-def test_demo_hides_the_trace_because_a_command_cannot_be_anonymized():
-    # Demo fakes every title while the ids stay real; a shell command, a path or a diff
-    # has no fake. The trace would be the one true thing on a screen made to be shared.
+def test_demo_replaces_the_trace_without_reading_or_derived_anonymization():
+    # Demo content is authored fixture data, not transformed backend data. If this
+    # method is touched, even briefly, the test fails before anything can leak.
     app = _trace_app()
     app.store.demo = True
     app.store.demo_scale = 1.0
-    assert app.session_supports_trace(app.current_session().id) is False
-    assert app.session_trace(app.current_session().id) == {}
-    assert app.open_trace_drill() is True  # navigation still works...
+    app.store.demo_cats = ot.demo.DEMO_ALL
+    app.store.turn_content = lambda *a, **kw: (_ for _ in ()).throw(AssertionError("real read"))
+    app._turns_by_session.clear()  # actual demo toggling reloads and clears this cache
+    assert app.session_supports_trace(app.current_session().id) is True
+    content = app.session_trace(app.current_session().id)
+    assert list(content) == ["demo:0", "demo:1", "demo:2"]
+    assert app.open_trace_drill() is True
     text = "\n".join(app.renderer.detail_turn_drill(app.current_session(), 96))
-    assert "git diff --stat" not in text  # ...but no content is ever rendered
-    assert "No content recorded for this turn." in text
+    assert "git diff --stat" not in text and "src/opentab" not in text
+    assert "found the refresh path" in text and "src/cache.py" in text
 
 
 def test_the_drill_marks_which_turns_have_something_to_read():
@@ -2753,11 +2764,11 @@ def test_the_drill_marks_which_turns_have_something_to_read():
 
 
 def test_the_read_column_is_gated_on_the_trace_being_openable():
-    # A marker pointing at a level you cannot enter advertises nothing. Demo turns the
-    # trace off, so the column goes with it.
+    # A partial demo that leaves real prompts visible must not expose raw trace content.
     app = _trace_app()
     app.store.demo = True
     app.store.demo_scale = 1.0
+    app.store.demo_cats = frozenset({"titles", "spend"})
     header = next(
         ln for ln in app.renderer.detail_turn_drill(app.current_session(), 96) if "Cached" in ln
     )
@@ -3011,11 +3022,13 @@ def test_first_trace_read_paints_loading_before_fetching_and_respects_demo():
         app.load_trace_expansion()
         assert len(fetched) == 1
         app.handle_key(None, ord("z"))
-        # A demo toggle between request and read must not fetch or show real content.
+        # A demo toggle between request and read swaps in a fixture without fetching.
         app.store.demo = True
+        app.store.demo_cats = ot.demo.DEMO_ALL
         app.load_trace_expansion()
-        assert len(fetched) == 1 and app._trace_full is None
-        assert app.turn_trace_events(app.current_session().id, {"content_key": "k0"}) == []
+        assert len(fetched) == 1 and app._trace_full is not None
+        events = app.turn_trace_events(app.current_session().id, {"content_key": "k0"})
+        assert "src/cache.py" in str(events) and "git diff --stat" not in str(events)
     finally:
         ot.curses.color_pair = original
 

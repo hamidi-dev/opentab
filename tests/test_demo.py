@@ -189,6 +189,19 @@ def test_demo_cost_zero_and_deterministic():
     assert ot.demo_cost(1_000_000, "seed") != ot.demo_cost(1_000_000, "other")
 
 
+def test_demo_turn_content_is_fresh_static_data_and_respects_reasoning_capability():
+    first = ot.demo_turn_content("a")
+    assert [event["kind"] for event in first["a"]] == ["reasoning", "text", "tool"]
+    assert first["a"][-1]["args"] == "src/cache.py"
+    assert first["a"][-1]["output_dropped"] > 0
+    first["a"][0]["text"] = "mutated"
+
+    fresh = ot.demo_turn_content("b", records_reasoning=False, full=True)
+    assert [event["kind"] for event in fresh["b"]] == ["text", "tool"]
+    assert fresh["b"][-1]["output_dropped"] == 0
+    assert "mutated" not in str(fresh)
+
+
 def test_demo_model_remaps_local_only():
     assert ot.demo_model("ollama/llama3.1:70b") in ot.DEMO_MODEL_POOL
     assert ot.demo_model("lmstudio/whatever") in ot.DEMO_MODEL_POOL

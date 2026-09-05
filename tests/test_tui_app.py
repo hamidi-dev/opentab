@@ -4211,6 +4211,30 @@ def test_unpriced_tokens_are_restated_at_message_granularity():
     assert app.loaded[0].unpriced_tokens == 900  # the $0 message's tokens, visible again
 
 
+def test_deferred_model_scan_keeps_the_selected_session_when_estimates_reorder_rows():
+    class DeferredStore(FakeStore):
+        def model_breakdown(self):
+            return [
+                dict(
+                    _model_row("anthropic/claude-haiku-4-5", 0.0, 1_000_000_000),
+                    root_id="subscription",
+                    input=1_000_000_000,
+                )
+            ]
+
+    priced = workflow("priced", "2026-07-01 12:00:00", cost=5.0)
+    subscription = workflow("subscription", "2026-07-01 13:00:00", cost=0.0)
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(DeferredStore([priced, subscription]), args)
+    assert app.goto_session("priced") is True
+    assert app.current_session().id == "priced"
+
+    app._ensure_models()
+
+    assert app.current_session().id == "priced"
+    assert app.current_sessions()[0].id == "subscription"  # the list really did reorder
+
+
 def test_a_box_ranks_models_over_exactly_the_sessions_its_enter_opens():
     from tests._support import fleet_app
 

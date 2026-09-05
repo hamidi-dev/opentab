@@ -239,10 +239,23 @@ def test_web_turns_carry_the_context_size_and_mark_compactions():
     assert "if (isCompaction(vs[i - 1], vs[i])) comps.push(i)" in js
     table = js.split("function turnsTable(", 1)[1].split("\nfunction ", 1)[0]
     assert "turnCompactions(turns)" in table
+    assert "turnCostContextStrip(turns)" in table
     # NOT pushed into `body` (the per-group fold list): this table is folded to prompts by
     # default, so a marker inside a collapsed group would be a marker nobody sees.
     marker = next(ln for ln in table.splitlines() if "compact-row" in ln)
     assert "rows.push(" in marker and "body.push" not in marker
+
+    strip = js.split("function turnCostContextStrip(", 1)[1].split("\nfunction ", 1)[0]
+    assert "const costs = turns.map(mCost);" in strip
+    assert "const contexts = turns.map(t => t.ctx || 0);" in strip
+    assert "const costPeak" in strip and "const ctxPeak" in strip
+    assert strip.index("const costPeak") < strip.index("const ctxPeak")
+    assert "points[i].appendChild(s('rect'" in strip
+    assert "t.depth ? 'subagent context' : 'no context recorded'" in strip
+    assert "svg.appendChild(s('title'" in strip and "svg.appendChild(s('desc'" in strip
+    assert "turns.map(pointLabel).join('; ')" in strip
+    assert "tabindex" not in strip
+    assert table.index("turnCostContextStrip(turns)") < table.index("class: 'hint'")
 
 
 def test_web_session_extras_context_gated_by_curve_support():

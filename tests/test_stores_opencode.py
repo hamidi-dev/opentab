@@ -674,6 +674,7 @@ def test_opencode_turn_content_reads_narration_reasoning_and_each_calls_argument
         row = store.message_timeline("s1")[0]
         # The message id is what the part table joins on, so it is the turn's identity.
         assert row["content_key"] == "m1"
+        assert row["has_text"] is True and row["has_reasoning"] is True
         events = store.turn_content("s1")["m1"]
 
         assert [e["kind"] for e in events] == ["reasoning", "text", "tool"]

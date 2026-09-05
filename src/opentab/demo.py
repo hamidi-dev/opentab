@@ -207,3 +207,56 @@ def demo_machine(name: str) -> str:
         return name
     h = _seed(name)
     return f"{DEMO_MACHINES[h % len(DEMO_MACHINES)]}-{h:08x}"
+
+
+def demo_turn_content(
+    content_key: str, *, records_reasoning: bool = True, full: bool = False
+) -> dict[str, list[dict]]:
+    """Return a wholly synthetic trace without inspecting backend content."""
+    events = []
+    if records_reasoning:
+        events.append(
+            {
+                "kind": "reasoning",
+                "text": (
+                    "**Tracing the cache refresh**\n"
+                    "The selected row is stored by position, but repricing can reorder the list. "
+                    "I should preserve its stable session identity across the refresh."
+                ),
+                "dropped": 0,
+            }
+        )
+    events.append(
+        {
+            "kind": "text",
+            "text": "I found the refresh path. Checking the surrounding state transitions first.",
+            "dropped": 0,
+        }
+    )
+    output = (
+        "118 def refresh_cache(self):\n"
+        "119     self.rows = self.store.load_rows()\n"
+        "120     self.apply_prices()\n"
+        "121     self.rebuild_visible_rows()"
+    )
+    dropped = 386
+    if full:
+        output += (
+            "\n122     self.validate_filters()\n"
+            "123     self.redraw = True\n\n"
+            "The selected index is not restored after rebuild_visible_rows().\n"
+            "Callers can therefore land on a different session when prices change the order."
+        )
+        dropped = 0
+    events.append(
+        {
+            "kind": "tool",
+            "name": "Read",
+            "args": "src/cache.py",
+            "params": [("offset", "118"), ("limit", "24")],
+            "output": output,
+            "output_dropped": dropped,
+            "status": "completed",
+        }
+    )
+    return {content_key: events}

@@ -3973,7 +3973,10 @@ class Renderer:
         costs = self.turn_costs(rows)
         pos = siblings.index(idx) + 1
         wrap = max(20, width - 2)
-        head = f"Turn {pos} of {len(siblings)}"
+        prefix = f"Turn {pos} of {len(siblings)}"
+        prompt = " ".join(str(row.get("prompt_title") or "").split()) or "(no prompt)"
+        room = max(12, width - display_width(prefix) - 3)
+        head = f"{prefix} · {shorten(prompt, room)}"
         model = str(row.get("model_name") or "-").split("/", 1)[-1]
         meta = f"{model} · {human_tokens(row['tokens_total'])} tokens · {money(costs[idx])} · {(row.get('time') or '--')[5:19]}"
         if row.get("depth"):
@@ -4394,16 +4397,6 @@ class Renderer:
             self._turn_header_at = {start + k: k for k in range(len(body))}
             cur = self.app._trace_cursor
             self._turn_cursor_line = start + cur if 0 <= cur < len(body) else None
-        lines += ["", f"· {self._key('main', 'back')} back to the prompts."]
-        if traceable:
-            # The footnote wrapping the tab above uses: continuation is indented, and the
-            # indent is reserved inside the width rather than added past it.
-            hint = textwrap.wrap(
-                f"· {self._key('main', 'select')} (or a click) opens what a turn actually "
-                "did — its narration, its reasoning, and each call's arguments.",
-                max(20, width - 2),
-            )
-            lines += hint[:1] + ["  " + piece for piece in hint[1:]]
         return lines
 
     @staticmethod
@@ -4453,6 +4446,50 @@ class Renderer:
             g["tools"] = tool_mix_label(g["_rows"])
             g["agents"] = agent_mix_label(g.pop("_rows"))
         return groups
+
+    @staticmethod
+    def _turn_metric_strips(rows, costs, width: int, context_curve: bool) -> list[str]:
+        """Two sparklines sharing turn-index buckets but keeping separate scales."""
+        n = len(rows)
+        if not n:
+            return []
+        contexts = [None if r.get("depth") else context_size(r) or None for r in rows]
+        metrics = [("cost", list(costs), f"peak {money(max(costs, default=0.0))}")]
+        if context_curve and any(v is not None for v in contexts):
+            peak_context = max(v for v in contexts if v is not None)
+            metrics.append(("context", contexts, f"peak {human_tokens(peak_context)}"))
+
+        gutter = 9
+        tail_w = max(len(tail) for _label, _values, tail in metrics)
+        plot_w = max(8, width - gutter - tail_w - 3)
+        repeat = max(1, min(4, plot_w // n))
+        cols = min(plot_w, n * repeat)
+
+        def buckets(values) -> list[float | None]:
+            out = []
+            for c in range(cols):
+                lo = c * n // cols
+                hi = max(lo + 1, (c + 1) * n // cols)
+                present = [v for v in values[lo:hi] if v is not None]
+                out.append(max(present) if present else None)
+            return out
+
+        lines = []
+        for label, values, tail in metrics:
+            values = buckets(values)
+            peak = max((v for v in values if v is not None), default=0.0)
+            cells = []
+            for value in values:
+                level = round(value / peak * 8) if value is not None and peak > 0 else 0
+                cells.append("█" if level >= 8 else BLOCKS_UP[max(0, min(7, level))])
+            lines.append(f"{label:>{gutter}}│{''.join(cells)}  {tail:>{tail_w}}")
+        lines.append(" " * gutter + "└" + "─" * cols)
+        left, right = "turn 1", str(n)
+        if len(left) + len(right) + 1 > cols:
+            left = "1"
+        labels = left + " " * max(1, cols - len(left) - len(right)) + right
+        lines.append(" " * (gutter + 1) + labels[:cols])
+        return lines
 
     def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
         # Keep prompts chronological because this tab answers when cost accrued. Per-turn
@@ -4605,42 +4642,23 @@ class Renderer:
                 f"{human_tokens(sum(g['tokens'] for g in groups)):>{tok_w}} "
                 f"{money(total):>{cost_w}}"
             )
-        lines = self._ruled_box(head, header, body, totals_row, [], width)
+        strips = self._turn_metric_strips(rows, costs, width, curve)
+        lines = strips + [""] + self._ruled_box(head, header, body, totals_row, [], width)
         # Rebase click maps from the box's derived body start, never a counted prologue.
-        start = self._ruled_body_start or 0
+        start = len(strips) + 1 + (self._ruled_body_start or 0)
         self._turn_header_at = {start + row: n for n, row in enumerate(cursor_rows)}
         cur = self.app._turn_cursor
         self._turn_cursor_line = start + cursor_rows[cur] if 0 <= cur < len(cursor_rows) else None
-        notes = [
-            f"· One row per prompt, in time order — {self._key('main', 'select')} "
-            "(or a click) opens it with its turns.",
-            "· Cached: how much of the context came from the cache when that prompt STARTED "
-            "— near 100% is normal, and anything low re-bought what it was missing.",
-        ]
-        if calls_w:
-            notes.append(
-                "· Calls: tool calls the prompt made — which tools, and on which turn, "
-                "are in the prompt's own view."
-            )
-        if agents_w:
-            notes.append(
-                "· ↳ Agents: subagents the prompt delegated to — which turn ran under which "
-                "is in the prompt's own view. A prompt the main thread ran alone reads '-'."
-            )
+        notes = ["· Cached is context reused when the prompt started; low means it paid again."]
         if comps:
-            notes.append(
-                "· ▼ the context window was cleared before that turn — the Context tab charts it."
-            )
+            notes.append("· ▼ context was compacted before that turn; Context charts the drop.")
         if late:
             notes.append(
-                "· ❄ the prompt cache expired while the session sat idle, so that prompt paid "
-                "again for context it already had — a faster follow-up would have cost less."
+                "· ❄ idle time expired the prompt cache, so that turn paid for context again."
             )
         if switched:
             notes.append(
-                "· ⚙ the reasoning effort changed, which changes the request's thinking config "
-                "and so drops the cached prefix with it — the next turn re-bought its whole "
-                "context. Worth doing, worth doing early."
+                "· ⚙ changing reasoning effort invalidated the cached prefix before that turn."
             )
         # Paint clips, so wrap long notes and indent continuations under the bullet.
         lines.append("")

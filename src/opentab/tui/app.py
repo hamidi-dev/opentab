@@ -30,6 +30,7 @@ from opentab.demo import (
     demo_machine,
     demo_model,
     demo_title,
+    demo_turn_content,
 )
 from opentab.formatting import clip, clip_tail, display_width, short_path, shorten
 from opentab.heatmap import (
@@ -1438,7 +1439,11 @@ class App:
 
     def _ensure_models(self) -> None:
         if not self._models_loaded:
+            anchor = self.selection_anchor()
             self._load_model_cache()
+            # API estimates can reorder every cost-ranked session list. Keep the
+            # selected session under the cursor instead of silently switching rows.
+            self.restore_selection(anchor)
 
     @property
     def _demo_cats(self) -> frozenset:
@@ -1623,10 +1628,10 @@ class App:
     # drill-ins never open one.
 
     def session_supports_trace(self, workflow_id: str) -> bool:
-        # Off under demo, for the reason notes are off: demo fakes every title while the
-        # ids stay real, and there is no anonymizing a shell command, a path or a diff.
-        # The trace would be the one true thing left on a screen made to be shared.
-        if self.store.demo:
+        # Demo traces are static fixtures created above the store boundary. Keep them
+        # off unless prompt content is being hidden, and never invent the feature for a
+        # backend that cannot open real traces outside demo mode.
+        if self.store.demo and "turns" not in self._demo_cats:
             return False
         check = getattr(self.store, "supports_turn_content", None)
         return bool(check(workflow_id)) if check else False
@@ -1638,12 +1643,20 @@ class App:
     TRACE_MEMO_SESSIONS = 4
 
     def session_trace(self, workflow_id: str) -> dict:
-        cached = self._trace_by_session.get(workflow_id)
-        if cached is not None:
-            return cached
-        fetch = getattr(self.store, "turn_content", None)
-        ok = fetch is not None and self.session_supports_trace(workflow_id)
-        content = dict(fetch(workflow_id)) if ok else {}
+        if self.store.demo:
+            content = {}
+            if self.session_supports_trace(workflow_id):
+                reasoning = self.session_records_reasoning(workflow_id)
+                for row in self.session_turn_rows(workflow_id):
+                    if key := row.get("content_key"):
+                        content.update(demo_turn_content(key, records_reasoning=reasoning))
+        else:
+            cached = self._trace_by_session.get(workflow_id)
+            if cached is not None:
+                return cached
+            fetch = getattr(self.store, "turn_content", None)
+            ok = fetch is not None and self.session_supports_trace(workflow_id)
+            content = dict(fetch(workflow_id)) if ok else {}
         self._trace_by_session[workflow_id] = content
         while len(self._trace_by_session) > self.TRACE_MEMO_SESSIONS:
             # dicts keep insertion order, so the first key is the oldest fetch.
@@ -1742,7 +1755,12 @@ class App:
             if not key:
                 self.session_trace(wid)
                 return
-            content = self.store.turn_content(wid, content_key=key)
+            if self.store.demo:
+                content = demo_turn_content(
+                    key, records_reasoning=self.session_records_reasoning(wid), full=True
+                )
+            else:
+                content = self.store.turn_content(wid, content_key=key)
             self._trace_full = (wid, key, list(content.get(key) or []))
         except (OSError, ValueError, sqlite3.Error) as exc:
             if not key:
@@ -1822,6 +1840,7 @@ class App:
         k = self.store.demo_scale
         cats = self._demo_cats
         titles, turns, spend = "titles" in cats, "turns" in cats, "spend" in cats
+        synthetic_trace = turns and self.session_supports_trace(workflow_id)
         for n, r in enumerate(rows):
             if titles:
                 r["model_name"] = demo_model(r["model_name"])
@@ -1830,6 +1849,10 @@ class App:
                     r["prompt_title"] = demo_title(r.get("prompt_id") or "noprompt")
             if turns and "prompt_full" in r:
                 r["prompt_full"] = demo_title(r.get("prompt_id") or "noprompt")
+            if synthetic_trace:
+                r["content_key"] = f"demo:{n}"
+                r["has_text"] = True
+                r["has_reasoning"] = self.session_records_reasoning(workflow_id)
             if spend and r.get("cost", 0) == 0 and r.get("tokens_total", 0) > 0:
                 r["cost"] = demo_cost(r["tokens_total"], f"{workflow_id}:{n}")
             for f in ("tokens_total", "input", "output", "reasoning", "cache_read", "cache_write", "cache_write_1h"):  # fmt: skip

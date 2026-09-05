@@ -270,6 +270,12 @@ tr.compact-row td{color:var(--accent);font-size:11.5px;padding-top:5px;
   border-top:1px dashed color-mix(in srgb, var(--accent) 45%, transparent)}
 tr.expiry-row td{color:var(--bad);font-size:11.5px;padding-top:5px;
   border-top:1px dashed color-mix(in srgb, var(--bad) 45%, transparent)}
+.turn-strip{margin:2px 0 14px;padding:8px 10px 5px;border:1px solid var(--line2);
+  border-radius:5px;background:color-mix(in srgb,var(--panel2) 55%,transparent);overflow:hidden}
+.turn-strip svg{display:block;width:100%;height:auto;min-height:82px}
+.turn-strip .turn-point{cursor:crosshair}
+.turn-strip .turn-point:hover rect:not(.hit){filter:brightness(1.25)}
+@media (max-width:600px){.turn-strip{padding:6px 4px 3px}.turn-strip svg{min-height:96px}}
 
 #tip{position:fixed;z-index:100;pointer-events:none;background:var(--panel2);border:1px solid var(--line);
   border-radius:4px;padding:5px 10px;font-size:11.5px;color:var(--ink);white-space:pre-line;
@@ -1545,6 +1551,60 @@ function turnGroupRows(turns) {
   return groups;
 }
 
+function turnCostContextStrip(turns) {
+  if (!turns.length) return null;
+  const costs = turns.map(mCost);
+  const contexts = turns.map(t => t.ctx || 0);
+  const costPeak = Math.max(...costs, 0);
+  const ctxPeak = Math.max(...contexts, 0);
+  const hasContext = ctxPeak > 0;
+  const VW = 1000, left = 72, right = 8, plotW = VW - left - right;
+  const rowH = 35, gap = 18, top = 9, rows = hasContext ? 2 : 1;
+  const VH = top + rows * rowH + (rows - 1) * gap + 22;
+  const pointLabel = (t, i) => {
+    const context = contexts[i] ? hTok(contexts[i]) + ' context'
+      : (t.depth ? 'subagent context' : 'no context recorded');
+    return 'turn ' + (i + 1) + '\n' + money(costs[i])
+      + (hasContext ? ' · ' + context : '');
+  };
+  const svg = s('svg', { viewBox: '0 0 ' + VW + ' ' + VH, role: 'img' });
+  svg.appendChild(s('title', { text: 'Cost and context by turn' }));
+  svg.appendChild(s('desc', { text: turns.length + ' turns; peak cost ' + money(costPeak)
+    + (hasContext ? '; peak context ' + hTok(ctxPeak) + ' tokens' : '') + '. '
+    + turns.map(pointLabel).join('; ') }));
+  const step = plotW / turns.length, bw = Math.max(.7, step * .76);
+  const baseline = i => top + i * (rowH + gap) + rowH;
+  const points = turns.map((t, i) => s('g', { class: 'turn-point', tip: pointLabel(t, i) },
+    s('title', { text: pointLabel(t, i) })));
+  [['cost', costPeak, 0, thc('accent'), money],
+   ...(hasContext ? [['context', ctxPeak, 1, thc('good'), hTok]] : [])]
+    .forEach(([label, peak, row, color, fmt]) => {
+      const y = baseline(row);
+      svg.appendChild(s('text', { x: left - 9, y: y - rowH / 2 + 4, 'text-anchor': 'end',
+        'font-size': 11, fill: thc('mut'), text: label }));
+      svg.appendChild(s('line', { x1: left, y1: y, x2: VW - right, y2: y,
+        stroke: thc('line'), 'stroke-width': 1 }));
+      svg.appendChild(s('text', { x: VW - right, y: y - rowH + 9, 'text-anchor': 'end',
+        'font-size': 9.5, fill: thc('mut'), text: 'peak ' + fmt(peak) }));
+      turns.forEach((t, i) => {
+        const value = row ? contexts[i] : costs[i];
+        const height = peak > 0 && value > 0 ? Math.max(1, rowH * value / peak) : 0;
+        if (height) points[i].appendChild(s('rect', { x: left + i * step + (step - bw) / 2,
+          y: y - height, width: bw, height, rx: Math.min(1.5, bw / 3), fill: color }));
+      });
+    });
+  points.forEach((g, i) => {
+    g.appendChild(s('rect', { class: 'hit', x: left + i * step, y: top, width: Math.max(1, step),
+      height: VH - top - 16, fill: 'transparent' }));
+    svg.appendChild(g);
+  });
+  const axisY = VH - 3;
+  svg.appendChild(s('text', { x: left, y: axisY, 'font-size': 9.5, fill: thc('mut'), text: 'turn 1' }));
+  svg.appendChild(s('text', { x: VW - right, y: axisY, 'text-anchor': 'end', 'font-size': 9.5,
+    fill: thc('mut'), text: 'turn ' + turns.length }));
+  return h('div', { class: 'turn-strip' }, svg);
+}
+
 function turnsTable(turns, expiries) {
   const groups = turnGroupRows(turns);
   const comps = turnCompactions(turns);
@@ -1596,18 +1656,12 @@ function turnsTable(turns, expiries) {
       h('td', { class: 'r dim' }, money(cum))));
   });
   return h('div', null,
-    h('div', { class: 'hint' }, groups.length + ' prompts — click a row to open it with its turns'
-      + ' · Cached = how much of the context came from the cache when that prompt STARTED;'
-      + ' anything low re-bought what it was missing'
-      + (hasCalls ? ' · Calls = tool calls the prompt made; which tools, and on which turn,'
-        + ' are in the prompt’s own view' : '')
-      + (hasAgents ? ' · ↳ Agents = subagents the prompt delegated to; which turn ran under'
-        + ' which is in the prompt’s own view' : '')
+    turnCostContextStrip(turns),
+    h('div', { class: 'hint' }, groups.length + ' prompts · Cached is context reused at prompt start; low means it paid again'
       + (comps.size ? ' · ▼ ' + comps.size + ' compaction' + (comps.size > 1 ? 's' : '') + ', ~' + hTok(freed) + ' of context freed' : '')
       + (exp.size ? ' · ❄ ' + exp.size + ' cache expir' + (exp.size > 1 ? 'ies' : 'y') + ', ' + money(burnt) + ' spent re-buying context' : '')
       + (effSw.size ? ' · ⚙ ' + effSw.size + ' reasoning-effort switch' + (effSw.size > 1 ? 'es' : '')
-        + ' — changing the level changes the thinking config, which drops the cached prefix with it, '
-        + money(effBurnt) + ' spent buying it back' : '')),
+        + ', ' + money(effBurnt) + ' spent buying the invalidated cache back' : '')),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
         h('th', null, 'Prompt'), h('th', { class: 'r' }, 'Turns'),
