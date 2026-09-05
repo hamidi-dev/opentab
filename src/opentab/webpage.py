@@ -1025,6 +1025,7 @@ function applyRange(desc) {
   RANGE = desc;
   W = filterRange(ALL_W);
   closeRange();
+  RETURN = null; // A range change is not a Back hop into the previous model scope.
   // Reset before navigation because an unchanged root hash emits no hashchange event.
   resetScopeState();
   go('', '');

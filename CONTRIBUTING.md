@@ -36,6 +36,9 @@ python3 run_tests.py             # whole suite
 python3 run_tests.py pricing     # only modules/tests matching a substring
 ```
 
+With Node.js on `PATH`, the suite also executes the browser navigation regression
+against the shipped JavaScript. Without Node it prints an explicit skip; CI requires it.
+
 Add a test next to its module's other tests; the runner discovers `tests/test_*.py` by
 glob, so there is no list to register it in. A local `pytest tests -k NAME` also works.
 

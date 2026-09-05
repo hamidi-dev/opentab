@@ -289,7 +289,7 @@ def _machine_meta_payload(app: App) -> dict:
             "live": bool((meta or {}).get("live")),
             "exportedAt": str((meta or {}).get("exported_at") or ""),
             "version": str((meta or {}).get("opentab_version") or ""),
-            "refreshable": bool((meta or {}).get("key")),
+            "refreshable": app._refresh_backend is not None and bool((meta or {}).get("key")),
         }
     return out
 

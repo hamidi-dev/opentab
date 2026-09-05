@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import shutil
+import subprocess
 import tempfile
 
 import opentab as ot
@@ -396,8 +398,7 @@ def test_web_payload_embeds_the_price_reference():
 
 
 def _js_source():
-    # The page's script, read back from a rendered page: the JS can't be executed here,
-    # so the invariants that live in it are asserted against its source.
+    # Read the actual browser script back from a rendered page.
     page = ot.render_html(ot.build_payload(app_with([workflow("w1", "2026-05-01 10:00:00")])))
     return page.rsplit("<script>", 1)[1].split("</script>", 1)[0]
 
@@ -746,6 +747,7 @@ def test_web_payload_carries_machine_meta_for_the_machines_mode():
             "server": [workflow("b", "2026-05-02 10:00:00")],
         }
     )
+    app._refresh_backend = lambda keys: []
     mm = ot.build_payload(app)["machineMeta"]
     assert mm["laptop"]["live"] is True and mm["laptop"]["refreshable"] is False
     assert mm["server"]["live"] is False
@@ -779,10 +781,27 @@ def test_web_payload_carries_machine_meta_for_the_machines_mode():
             "key": "server",
         }
     }
+    one_pulled._refresh_backend = lambda keys: []
     mm = ot.build_payload(one_pulled)["machineMeta"]
     assert one_pulled.machines_present is False
     assert list(mm) == ["server"] and mm["server"]["refreshable"] is True
     assert mm["server"]["version"] == "1.6.0"
+
+
+def test_web_copied_summary_has_no_repull_control():
+    from tests._support import fleet_app
+
+    app = fleet_app({"server": [workflow("s1", "2026-09-01 12:00:00")]})
+    app.store.machine_meta = {"server": {"live": False, "key": "copied-box"}}
+    with tempfile.TemporaryDirectory() as tmp:
+        summary = os.path.join(tmp, "box.json")
+        with open(summary, "w", encoding="utf-8") as fh:
+            json.dump({"workflows": []}, fh)
+        args = ot.parse_args(["web", "--harness", "remote", "--remotes", summary])
+        app._refresh_backend = ot.cli._make_refresh_fn(args)
+        assert app._refresh_backend is None
+        assert ot.build_payload(app)["machineMeta"]["server"]["refreshable"] is False
+        assert app.refresh_machines_now("server") == []
 
 
 def test_web_page_has_the_per_scope_machines_tab_machinery():
@@ -1466,3 +1485,60 @@ def test_web_a_range_change_forgets_the_scope_state_itself():
     listener = next(ln for ln in js.splitlines() if "'hashchange'" in ln)
     assert "resetScopeState(); render();" in listener
     assert "MSUB = null" not in listener  # never a second, drifting copy
+
+
+def test_web_range_change_cannot_restore_a_sessions_model_return_hop():
+    node = shutil.which("node")
+    if node is None:
+        print("SKIP JavaScript navigation execution: Node.js is not installed (required in CI)")
+        return
+    js = _js_source()
+    functions = "\n".join(
+        re.search(r"function " + name + r"\([^)]*\) \{.*?\n\}", js, re.S)[0]
+        for name in ("openSession", "resetScopeState", "applyRange", "go")
+    )
+    result = subprocess.run(
+        [
+            node,
+            "-e",
+            """
+const assert = require('node:assert/strict');
+let location = {hash: '#/'}, MSUB, TAB, RETURN, FILTER;
+let RANGE, W = [], ALL_W = [], EXPANDED = new Set();
+function render() {}
+function closeRange() {}
+function filterRange(rows) { return rows; }
+"""
+            + functions
+            + """
+for (const origin of ['#/', '#/m/2026-09']) {
+  const model = {dim: 'model', value: 'openai/gpt-5'};
+  location.hash = origin;
+  MSUB = model; TAB = 'Sessions'; RETURN = null;
+  openSession('s1');
+  resetScopeState(); // hashchange after opening the session
+  assert.equal(MSUB, null);
+  location.hash = origin;
+  resetScopeState(); // an ordinary Back/Esc must still restore the drill
+  assert.deepEqual(MSUB, model);
+  assert.equal(TAB, 'Sessions');
+  assert.equal(RETURN, null);
+
+  openSession('s1');
+  resetScopeState();
+  FILTER = 'old query'; EXPANDED.add('old table');
+  applyRange({kind: 'days', n: 7});
+  resetScopeState(); // hashchange queued by go('', '')
+  assert.equal(location.hash, '#/');
+  assert.equal(MSUB, null);
+  assert.equal(RETURN, null);
+  assert.equal(FILTER, '');
+  assert.equal(EXPANDED.size, 0);
+}
+""",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr

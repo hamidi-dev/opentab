@@ -27,7 +27,9 @@ jobs:
           opentab --version
           python -m opentab --help
       - name: Unit tests
-        run: python run_tests.py
+        run: |
+          node --version  # ensure the browser navigation regression test runs
+          python run_tests.py
 
   # Prove the package installs (pulling in the windows-curses dependency) and
   # imports on native Windows Python, which ships no stdlib curses.
