@@ -22,13 +22,24 @@ opentab pull box=ssh://user@host:2222
 
 Pull runs `opentab export -` remotely and streams the summary back over SSH. It
 includes session metadata, totals, per-model breakdowns, and available
-Turns / Tools / Context data, but no full transcripts or turn traces. Summaries
-still contain prompt text and identifying metadata such as session titles and project paths.
-Use `--demo` when preparing a snapshot for sharing.
+Turns / Tools / Context data, but no raw turn traces or authored notes. Summaries
+can still contain **full user prompts**, session titles and project paths. They
+are private usage records, not anonymous statistics; inspect any snapshot before
+sharing it, even when using [demo mode](privacy.md#demo-mode).
 
-If a machine is already serving `opentab web` at an address you can reach, you can
-pull from its `http://host:port` URL instead. See [web server access](web.md#security)
-for binding beyond localhost.
+## Pull an exported URL
+
+HTTP(S) pulls fetch an **exported JSON file** hosted at a URL you can reach:
+
+```sh
+opentab pull workstation=https://private-host.example/usage.json
+```
+
+Generate that file with `opentab export usage.json` on the source machine and host
+it using your own access-controlled file server. The root of `opentab web` serves
+HTML, not a machine summary; OpenTab currently has **no fleet-export HTTP API**.
+Fetching the URL again gets whatever snapshot is hosted there, not a fresh scan
+of that machine's harnesses.
 
 ## Browse and resume
 
@@ -40,6 +51,51 @@ for binding beyond localhost.
 
 Saved connections live in `~/.config/opentab/remotes.json`; cached summaries live
 under `~/.cache/opentab/remotes/`. Both honor their corresponding XDG overrides.
+
+### Saved connections
+
+Pull remembers targets automatically. Edit `remotes.json` when you need a custom
+remote command, for example when OpenTab is not on the non-interactive SSH `PATH`:
+
+```json
+{
+  "version": 1,
+  "machines": {
+    "workstation": {
+      "ssh": "user@workstation",
+      "cmd": "/home/user/.local/bin/opentab export --label workstation -"
+    },
+    "archive": {
+      "url": "https://private-host.example/usage.json"
+    }
+  }
+}
+```
+
+Each entry uses `ssh` or `url`; optional `cmd` is a command run **on the SSH
+machine**, not a place for local SSH flags. Put ports, keys and bastions in SSH
+config or use an `ssh://` target. Pull uses batch mode, so test key-based login
+first; it will not prompt for a password. Configure only commands you trust.
+
+## Refresh and offline history
+
+Saved summaries are snapshots: Machines shows their export time and OpenTab
+version, while this machine is marked live. No background polling is involved.
+
+- `opentab pull` fetches all saved targets; naming targets fetches only those.
+  Fetches run in parallel and failures are reported per machine.
+- `opentab remote` opens cached summaries without connecting. Ordinary `r` reloads
+  local data, not remote harnesses.
+- In the TUI, `F` on a machine re-pulls that machine; on the fleet scope it
+  re-pulls the loaded machines with saved connections. On the live machine it
+  reloads locally. The live web report offers a per-machine refresh button too.
+- Files opened explicitly with `opentab remote FILE...` cannot be re-pulled in
+  place. Replace the files yourself and reopen them, or use the managed pull
+  directory and saved connections. Demo disables in-app fleet refresh.
+
+A failed fetch leaves the previous cached summary available; it does not turn
+old usage into zero. Check the export time when a machine looks stale. A URL
+refresh can still return an old file if its publisher has not regenerated it.
 
 ## Move an export yourself
 
@@ -67,8 +123,24 @@ ssh box opentab export - > box.json
 opentab remote box.json
 ```
 
-A machine's name travels **inside** the export, not in its filename. Give machines
-distinct labels with `opentab export --label NAME` when they share a hostname;
-otherwise their sessions can merge under the same machine identity.
+A machine's name travels **inside** the export, not in its filename. It defaults
+to the source hostname; give machines distinct labels with
+`opentab export --label NAME` when they share one, or their usage appears under
+the same machine identity. A `name=target` pull alias names the saved connection,
+not the label inside the export.
+
+## Contributing to transfers
+
+The portable format in `stores/remote.py` is separate from the local warm-start
+cache. Its `opentab_export` version is currently 2 (adding optional Turns / Tools /
+Context); `opentab_version` records the producing application's version. Older
+summaries still load without those tabs, and unknown fields are tolerated.
+
+Session IDs survive transfer so synced sessions are counted once, with live local
+records taking precedence. Keep model rows and extras attached only to sessions
+retained from the same file. The export label identifies the machine; the encoded
+cache filename identifies its saved connection for refresh. Preserve that
+distinction, normalize incoming detail rows before rendering, and keep raw traces,
+their local content keys and notes out of transfers.
 
 [Back to the README](../README.md#every-machine-one-tab)

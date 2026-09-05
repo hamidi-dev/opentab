@@ -13,7 +13,20 @@ These pages hold the full detail:
 | [Windows & WSL](windows.md) | Running natively on Windows, and reading Windows-side data from WSL |
 | [Privacy — what it touches](privacy.md) | Everything OpenTab reads, writes, and runs; network policy; demo mode |
 | [Troubleshooting](troubleshooting.md) | `opentab doctor`, colours that won't change, garbled frames, a harness that won't show up |
-| [Architecture](architecture.md) | For contributors — the package layout, the store contract, data flow, and the pricing model internals |
+| [Architecture](architecture.md) | For contributors: the package map, store contract, data flow and diagnostics |
 
-Everything is also discoverable in-app: press **`?`** for the full keymap with every
-panel and overlay documented.
+## Contributor guides
+
+Start with [Architecture](architecture.md), then follow the area you are changing:
+
+| Guide | What it explains |
+|-------|------------------|
+| [Backend accounting](backends.md) | Token conventions, deduplication, subagent ownership and format-specific limitations |
+| [Startup and caching](caching.md) | Deferred work, lazy detail, incremental rollups, invalidation and cost polling |
+| [TUI internals](tui.md) | Navigation state, shared tables, terminal geometry, colours and the trace reader |
+
+[Contributing](../CONTRIBUTING.md) covers setup, test organization and checks.
+The pricing, privacy and web guides also explain their implementation boundaries.
+
+In the TUI, press **`?`** for help with the current view; [Keys & navigation](keys.md)
+is the complete control reference.

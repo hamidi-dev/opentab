@@ -6,11 +6,13 @@ every harness backend (found, or not found and why, with the fix), the terminal'
 and glyph capabilities including any multiplexer in the way, the price catalog, and
 OpenTab's own files.
 
-It **reports and never repairs** — nothing is created, warmed or fetched — and it reads no
-transcript, so it cannot print a prompt, a session title or a project name. Paths fold to
-`~` and pulled machines are counted rather than named, which makes the output safe to
-paste into a public issue as-is; `--full` opts out for your own eyes. The exit code is `1`
-only when something is genuinely broken (a `WARN` never moves it).
+It **reports and never repairs**: nothing is created, migrated, warmed or fetched.
+Availability checks can inspect record contents, such as VS Code's token-usage
+markers, but the report does not display prompts or session content. Home paths
+fold to `~` and pulled machines are counted rather than named. Review paths and
+configuration hints before posting publicly; `opentab doctor --full` reveals full
+paths and machine names for local investigation, not a transcript dump. The exit
+code is `1` only when something is genuinely broken (a `WARN` never moves it).
 
 Anything it tells you to set is written in your own shell's syntax — `export FOO=bar`,
 `set -gx FOO bar`, or `$env:FOO = "bar"` — so the hint is a line you can run.
@@ -67,7 +69,9 @@ see the rates behind the estimate. See [pricing.md](pricing.md).
 
 ## `opentab pull` can't reach a machine
 
-The pull target is handed straight to `ssh`, so anything `ssh` understands works:
+For SSH pulls, test login with the same target first. OpenTab uses non-interactive
+batch mode, so a connection that needs a password prompt will fail. SSH targets
+can include a port:
 
 ```sh
 opentab pull box=ssh://user@host:2222      # a nonstandard port, inline
@@ -78,14 +82,17 @@ a bastion — all of it applies) and pull it by that alias. If `opentab` isn't o
 remote's non-interactive `PATH`, set that machine's `cmd` in `remotes.json` — `cmd` is
 the command run **on the far side**, so it cannot carry local `ssh` flags.
 
+For HTTP(S), the URL must return JSON produced by `opentab export`, not the
+`opentab web` home page. See [saved connections and URL pulls](machines.md).
+
 ## Moving a machine's spend across by hand
 
 When SSH from here isn't possible at all, export on the far side and open the file here.
 There is no `import` verb — the file *is* the machine:
 
 ```sh
-ssh box opentab export - > box.json        # on the other box (or run it there directly)
-opentab remote box.json                    # here: opens it merged with this machine
+opentab export --label workstation box.json  # there: then transfer the file here
+opentab remote box.json                      # here: merge it with local history
 ```
 
 `opentab remote` also takes several files or a directory. To keep a summary for later,
@@ -101,3 +108,22 @@ Two things to know:
   the collision.
 - **A summary that won't parse is skipped**, not fatal, so a truncated copy shows as
   "this machine only". OpenTab names the file it skipped; re-copy it if you see that.
+
+## Notes cannot be saved
+
+An unreadable or malformed `notes.json` blocks edits deliberately: OpenTab will
+not replace your authored notes with an empty file. `opentab doctor` reports the
+same readability check without moving or changing the file. Back it up, then
+check permissions and JSON structure (a top-level object with a `notes` object).
+Restore or repair it before retrying; deleting the cache cannot recover notes.
+Notes are also intentionally disabled under `--demo` and `--no-state`.
+See [note storage](privacy.md#notes-are-authored-data).
+
+## Browser session tabs are missing
+
+`opentab web --html FILE` produces a static snapshot without Turns, Tools or
+Context. Use `opentab web` or `opentab web --headless` for live details. Even live,
+tabs depend on the selected session's retained data; older fleet summaries may
+have only rollups. Re-export on the source machine if its records still exist.
+Raw turn traces and notes are local TUI features, not browser tabs.
+See [the live browser](web.md#served-live).

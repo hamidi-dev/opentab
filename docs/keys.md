@@ -37,11 +37,11 @@ compaction.
 
 | Key | Action |
 |-----|--------|
-| `p` / `t` / `m` | Switch to the Projects / Time / Machines browse mode — Machines opens on `∑ all machines` (the whole fleet as one scope), then one row per box (just this one until you [`pull`](../README.md#fleet) another) |
+| `p` / `t` / `m` | Switch to the Projects / Time / Machines browse mode — Machines opens on `∑ all machines` (the whole fleet as one scope), then one row per box (just this one until you [pull](machines.md) another) |
 | `Tab` / `Shift-Tab` | Cycle focus Years → Months → Days (Time mode); Shift-Tab at the top steps back out |
 | `1` / `2` / `3` / `0` | Jump straight to a panel — **each panel wears its number in its title**, lazygit-style: the sidebar top to bottom (`[1] Years`, `[2] Months`, `[3] Days`; in Projects mode `[1] Projects`) and `[0]` the detail pane on the right, what `Enter` drills into. A digit jumps from anywhere: it steps out of a zoomed detail or an open session to get there |
 | `Enter` | Drill into the selection; on Turns, open a prompt, then its selected turn. Inside a turn, expand / collapse the `▸` tool's output (at the top of the viewport, or the next below it) |
-| `+` | Focus the detail pane from browse; maximize / restore it in zoom or session |
+| `+` | Focus detail from browse; maximize / restore the zoom pane. Sessions stay full-screen; pressing it there changes the zoom layout on return |
 | `Esc` | Step back out — turn → prompt → session → zoom → browse; returning from a turn keeps the selected row visible |
 | `h` / `l` | Switch detail tabs |
 | `j` / `k` | Move in the list (`↑`/`↓` too), or scroll the detail pane; on the Turns tab, move the `▸` prompt cursor |
@@ -82,8 +82,8 @@ the harness records cumulative-total deltas rather than per-request prompts
 ### Drilling a model
 
 `Enter` on a row of the **Models** tab drills into that model *within the scope you're
-in* — the month, the year, the project, the box — which is the one thing Trends' and
-`P`'s model drills can't do (both are app-wide). It opens two tabs of its own:
+in*: the month, year, project or machine. By contrast, Trends follows the active
+date range and `P` uses app-wide model usage. The scope drill opens two tabs:
 
 - **Economics** — how many sessions and messages used it here, its tokens, and its
   spend split by token type (uncached input / output / reasoning / cache read / cache
@@ -94,10 +94,10 @@ in* — the month, the year, the project, the box — which is the one thing Tre
   model's, and a cheap session that leaned on it sorts above an expensive one that
   barely touched it. `e` exports those columns alongside the session totals.
 
-Both figures are **list rates** — no harness records recorded spend per model, so a
-per-model figure can only ever be priced from the catalog (hence the column name, a `~`
-where the rate is a guess, and no cost at all for a local model). `Esc` steps back to
-the Models table you came from.
+The cost figures deliberately use **list rates** for a consistent token-type
+decomposition, even when the harness records per-model spend. A `~` marks a guessed
+rate; a local model has no list-price cost. See [Token economics](pricing.md#token-economics).
+`Esc` steps back to the Models table you came from.
 
 ## Sessions & projects
 
@@ -127,7 +127,7 @@ worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock st
 | `T` | Trends — Daily · Weekly · Monthly · Calendar · Models · Providers · Projects · Harnesses. `h`/`l` tabs · `j`/`k` page months/weeks/years. On the charts and Calendar: `Enter` focuses, arrows pick a bar/day, `Enter` drills in, `Esc` back. On the ranked tabs: `j`/`k` pick a row · `s` sorts its visible columns · `Enter` its sessions · `Enter` again opens one |
 | `P` | Model prices — the table behind the `$` estimate; see [Pricing](pricing.md) for the views, sorting, and pinning |
 | `$` | Toggle what-if prices — what unpriced usage would cost at API list rates |
-| `w` | What-if **model** — arm one priced model as a comparison target (`j`/`k` move · `f` filter · `h`/`l` (or `Tab`, or a click) switch the tier tabs between the models **you've used** and the **whole models.dev catalog**, cheapest-for-your-mix first · `Enter` arm · `Esc` cancel): *"what if the expensive model had done the subagents' work too?"*. Used few models? The catalog tier is the point — it offers every model with a list price, and opens directly when nothing you've used is priceable. The selected session's **Subagents** tab then shows its whole tree (root included) with a **What-if** column — that node's tokens at the target's list rates — and a `TOTAL (list rates)  your models … → all at … …  saved …` line; its **Overview** carries the same session comparison (Your models / All at *target* / Change). **Both sides are priced at list rates** — the only apples-to-apples basis for a rate substitution — so a session that delegated nothing (no tree to show) still answers, and repricing a single-model session at the model it already used is exactly a $0 change. There is deliberately **no per-node Δ**: a node can mix models, so no honest per-node baseline exists; the exact comparison lives at session level, where the tokens are split per model. The Cost column keeps its ordinary meaning (recorded spend, `$`-estimated where nothing was recorded), so it does **not** add up to the TOTAL. A rate substitution, not a rerun. **Session-scoped** — the sessions list, the day/month/project rollups and Trends keep showing actual spend, and `$` keeps working as always. Works in demo too; `w` again clears it. The [web browser](web.md#w--the-what-if-model) mirrors all of it, on the same key |
+| `w` | Compare the current session at one model's list rates. Pick from used models or the catalog (`Tab` switches tiers, `f` filters, `Enter` selects, `Esc` cancels). Overview and Subagents show the comparison; other totals stay unchanged. Press `w` again to clear. See [Comparing models](pricing.md#comparing-models-with-w) for the arithmetic and limitations |
 | `H` | Harness picker (`j`/`k` move · `Enter` switch · `Esc` cancel) |
 | `M` | Machine filter (fleet only) — narrow **every** view to one box; the harness picker's twin (`j`/`k` move · `Enter` arm/clear · `Esc` cancel) |
 | `C` | Colour-theme picker — `j`/`k` live-preview · `Enter` keep · `Esc` revert (themes are shared with the web browser) |

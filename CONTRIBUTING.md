@@ -8,9 +8,9 @@ conventions keep it that way.
 - **Standard library only at runtime.** `curses` + `sqlite3` + the stdlib. The *only*
   third-party runtime dependency is `windows-curses` (Windows-only, for the missing stdlib
   `curses`). Don't add another; ruff and hatchling are dev/build tooling and fine.
-- **Read-only on user data.** OpenTab never writes to the sources it reads (the OpenCode
-  database, transcripts, …). The only files it writes are its own prefs/price cache under
-  `~/.config/opentab/` and the `opentab-*.csv` you ask for with `e`.
+- **Read-only on harness data.** OpenTab never writes to the sources it reads (the
+  OpenCode database, transcripts, auth files, etc.). Its own files and explicit
+  exports are listed in [Privacy](docs/privacy.md#everything-it-writes).
 - **Python 3.9+.** Don't reach for newer syntax (`target-version = py39`).
 
 See [`docs/architecture.md`](docs/architecture.md) for the architecture, layering rules, and the backend contract before making larger changes.
@@ -39,6 +39,18 @@ python3 run_tests.py pricing     # only modules/tests matching a substring
 Add a test next to its module's other tests; the runner discovers `tests/test_*.py` by
 glob, so there is no list to register it in. A local `pytest tests -k NAME` also works.
 
+Test ownership follows the code being exercised, not the feature that prompted it.
+A Context test that parses zaly records belongs in `test_stores_zaly.py`; a test of
+the curve's rendering belongs in `test_tui_detail.py`. TUI tests are split by screen
+because App and Renderer share one stateful surface. Fixtures used by one module
+stay there; move them to `_support.py` when a second module needs them.
+
+`tests/__init__.py` isolates all four XDG roots before importing OpenTab, so tests
+use the bundled price catalog rather than a developer's refreshed cache. It also
+clears ambient multiplexer markers. Keep this setup on every import path, not in
+a runner-only fixture. The runner treats import failures and modules contributing
+zero tests as errors; neither should silently reduce coverage while reporting success.
+
 The pre-push hook (and CI) run:
 
 ```sh
@@ -63,7 +75,8 @@ the history scannable and feeds the release-notes pass.
 - **Subject:** imperative mood, lowercase first word (`add`, not `adds`/`added`), no
   trailing period, ≤72 chars. Body is optional; wrap ~72 and explain *why*, not *what*.
 - **Releases** use `chore(release): vX.Y.Z` (and bump `__version__` in
-  `src/opentab/__init__.py`).
+  `src/opentab/__init__.py`; the version is not derived from a git tag).
+- **No AI attribution:** omit generated-by messages and AI co-author trailers.
 - **Scope** is optional but preferred: exactly one, lowercase, from the vocabulary below.
   Don't coin a synonym for an existing scope (`tui` not `ui`, `pricing` not `prices`,
   `sources` not `source`); a genuinely new area not yet listed is fine to add.

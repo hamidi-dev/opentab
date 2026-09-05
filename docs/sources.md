@@ -4,6 +4,9 @@ OpenTab reads the local records each AI coding tool keeps. This page covers ever
 harness in detail: where its data lives, how cost is derived, and the quirks of each
 tool's records.
 
+Contributing a reader or investigating its numbers? See [Backend accounting](backends.md)
+for parsing, deduplication and attribution rules.
+
 ## Picking a harness
 
 Pick one with `--harness`, point its flag at a non-default location, or just pass a
@@ -284,11 +287,13 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 - **Retention warning**: Gemini CLI deletes chat recordings **older than 30 days by
   default**, and takes each session's subagent transcripts with it. Cleanup runs on
   every launch, per project; once the file is gone OpenTab cannot report or reconstruct
-  its usage. The TUI warns once and `opentab doctor` keeps reporting the policy. For
-  long history, set `"general": {"sessionRetention": {"enabled": false}}` in
-  `~/.gemini/settings.json`. Gemini's system settings outrank your own, and a project's
-  `<project>/.gemini/settings.json` outranks both — OpenTab checks all of them, so a
-  single project that switches cleanup back on is still reported.
+  its usage. The TUI warns once, web reports warn when opened, and `opentab doctor`
+  keeps reporting the policy. For long history, set
+  `"general": {"sessionRetention": {"enabled": false}}` in
+  `~/.gemini/settings.json`. Precedence is **defaults < system-defaults < user <
+  workspace < system**: a project's `<project>/.gemini/settings.json` outranks your
+  user settings, but system settings still win. OpenTab checks registered projects
+  too, so a project that switches cleanup back on can still be reported.
 - **Cost**: the CLI records tokens but no price, so sessions read **$0** in normal mode
   and are **estimated** under `$`, exactly like Claude Code and Codex.
 - **Tokens**: Gemini reports the prompt count *including* the cache read, and counts
@@ -352,8 +357,8 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   per row/line — auto-discovered at `~/.local/share/opentab/requests.csv` /
   `requests.jsonl` if present (a file left in the old `~/.config/opentab/` is still
   found). Log your own gateway or proxy traffic and browse it like any other harness.
-- **Cost**: per row — a populated cost column is real spend; rows without one are
-  estimated under `$`.
+- **Cost**: per row — only a positive cost is real spend; missing, zero or negative
+  cost leaves that row's tokens estimated under `$`.
 - **Notes**: each request is one turn on the Turns tab, grouped under its `prompt`;
   a stable `request_id` deduplicates regenerated/appended files; without a
   `session_id`, requests group into one synthetic session per (date, project).
@@ -378,7 +383,7 @@ are a timestamp, a model, and input/output token counts; everything else is opti
 | tool | `tool` `tool_name` `tools` | tool call(s) the request made — `Bash;Read`, or a JSON list in JSONL → Tools tab |
 | project | `project` `repo` `repository` `workspace` `directory` `dir` `cwd` `folder` | a path folds to its git root; a bare name is used as-is |
 | title | `title` `name` `label` | session label (default: first prompt) |
-| cost | `cost_usd` `cost` (USD) · `credits` `credit` (× $0.01) | presence marks the row as metered, real spend |
+| cost | `cost_usd` `cost` (USD) · `credits` `credit` (× $0.01) | only a positive value marks the row as metered, real spend |
 
 Models are provider-prefixed by inferred family (`claude-*` → `anthropic/`, `gpt-*`/
 `o3` → `openai/`, `gemini-*` → `google/`) so they price and group like every other
