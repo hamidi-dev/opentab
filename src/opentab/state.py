@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import tempfile
 from typing import TYPE_CHECKING
 
 from opentab import paths, themes
@@ -12,6 +14,15 @@ from opentab.heatmap import HEAT_MAX_LEVELS, HEAT_MIN_LEVELS
 if TYPE_CHECKING:
     from opentab.tui.app import App
 
+try:
+    import fcntl  # POSIX advisory locks; native Windows has none
+except ImportError:
+    fcntl = None
+
+
+MUTABLE_SET_KEYS = frozenset({"bookmarks", "ignored_projects", "ignored_sessions", "pinned_models"})
+SET_OPERATIONS = frozenset({"set-add", "set-remove"})
+
 
 def state_path(migrate: bool = True) -> str:
     # migrate=False lets doctor inspect preferences without moving them.
@@ -19,13 +30,78 @@ def state_path(migrate: bool = True) -> str:
     return paths.migrated(target) if migrate else paths.resolved(target)
 
 
-def load_state(path: str | None = None) -> dict:
+@contextlib.contextmanager
+def _locked(path: str):
+    """Lock a read-modify-write using a stable sidecar inode when available."""
+    if fcntl is None:
+        yield
+        return
+    lock_path = path + ".lock"
     try:
-        with open(path or state_path()) as fh:
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        handle = open(lock_path, "w")
+    except OSError:
+        yield
+        return
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except OSError:
+            pass
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            handle.close()
+
+
+def read_state(path: str | None = None) -> tuple[dict, bool]:
+    """Return raw state and whether the file is safe to update.
+
+    A missing file is readable and empty. An existing unreadable, malformed, or
+    non-object file is not safe to replace.
+    """
+    path = path or state_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}, True
     except (OSError, ValueError):
-        return {}
+        return {}, False
+    return (data, True) if isinstance(data, dict) else ({}, False)
+
+
+def load_state(path: str | None = None) -> dict:
+    return read_state(path)[0]
+
+
+def _write_state(data: dict, path: str) -> bool:
+    tmp = ""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=os.path.dirname(path),
+            prefix=f".{os.path.basename(path)}.",
+            delete=False,
+        ) as fh:
+            tmp = fh.name
+            json.dump(data, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError):
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def save_state(app: App) -> None:
@@ -45,10 +121,6 @@ def save_state(app: App) -> None:
         "browse_mode": app.browse_mode,
         "focus": app.focus,
         "zoom_maximized": app.zoom_maximized,
-        "ignored_projects": sorted(app.ignored_projects),
-        "ignored_sessions": sorted(app.ignored_sessions),
-        "bookmarks": sorted(app.bookmarks),
-        "pinned_models": sorted(app.pinned_models),
         "show_api_prices": app.show_api_prices,
         "source": app.source_key,
         "theme": app.theme_id,
@@ -56,13 +128,77 @@ def save_state(app: App) -> None:
         "prices_prompt_dismissed": app.prices_prompt_dismissed,
         "dismissed_startup_warnings": sorted(app.dismissed_startup_warnings),
     }
+    local_sets = {key: set(getattr(app, key)) for key in MUTABLE_SET_KEYS}
+    # Apps saved without a restore start from empty sets, just like a missing file.
+    baseline = getattr(app, "_state_set_baseline", {})
     path = state_path()
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as fh:
-            json.dump(data, fh)
-    except OSError:
-        pass
+    with _locked(path):
+        current, readable = read_state(path)
+        if not readable:
+            return
+        for key, local in local_sets.items():
+            saved = current.get(key, [])
+            if not isinstance(saved, list) or any(
+                not isinstance(item, str) or not item for item in saved
+            ):
+                return  # Do not normalize away malformed authored data.
+            original = baseline.get(key, set())
+            data[key] = sorted((set(saved) - (original - local)) | (local - original))
+        current.update(data)
+        if _write_state(current, path):
+            # Track what this App saved, not the merged disk sets: importing external
+            # edits into the baseline alone would undo them on the next unchanged save.
+            app._state_set_baseline = local_sets
+
+
+def update_state(
+    operation: str,
+    key: str,
+    value: str,
+    path: str | None = None,
+    *,
+    qualified_value: str | None = None,
+) -> tuple[dict, str]:
+    """Apply one semantic set mutation without replacing unrelated state.
+
+    Supply qualified_value only when both values safely identify the same entry.
+    Prefer the qualified alias if present; removal clears both aliases under lock.
+    Errors are returned as ``unreadable``, ``unwritable``, or ``invalid operation``.
+    """
+    if (
+        not isinstance(operation, str)
+        or operation not in SET_OPERATIONS
+        or not isinstance(key, str)
+        or key not in MUTABLE_SET_KEYS
+        or not isinstance(value, str)
+        or not value
+        or (
+            qualified_value is not None
+            and (not isinstance(qualified_value, str) or not qualified_value)
+        )
+    ):
+        return {}, "invalid operation"
+    path = path or state_path()
+    with _locked(path):
+        data, readable = read_state(path)
+        if not readable:
+            return {}, "unreadable"
+        current = data.get(key, [])
+        if not isinstance(current, list) or any(
+            not isinstance(item, str) or not item for item in current
+        ):
+            return data, "invalid operation"
+        values = set(current)
+        if operation == "set-add":
+            values.add(qualified_value if qualified_value in values else value)
+        else:
+            values.discard(value)
+            if qualified_value is not None:
+                values.discard(qualified_value)
+        data[key] = sorted(values)
+        if not _write_state(data, path):
+            return data, "unwritable"
+        return data, ""
 
 
 def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
@@ -130,6 +266,7 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     marks = state.get("bookmarks")
     if isinstance(marks, list):
         app.bookmarks = {m for m in marks if isinstance(m, str) and m}
+    app._state_set_baseline = {key: set(getattr(app, key)) for key in MUTABLE_SET_KEYS}
     # Repricing remains deferred to the model scan; restore only an explicit saved flag.
     saved_api = state.get("show_api_prices")
     if saved_api is not None and not app.store.demo:

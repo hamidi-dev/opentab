@@ -1031,6 +1031,17 @@ def test_the_command_exits_nonzero_only_for_a_real_failure():
         assert code == 0 and "need attention" not in out.getvalue()
 
 
+def test_doctor_json_is_one_versioned_machine_readable_document():
+    with tempfile.TemporaryDirectory() as tmp, _clean_env():
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = doctor.doctor_command(_args(tmp, "--json"))
+        payload = json.loads(out.getvalue())
+        assert code == 1 and payload["schema_version"] == "1" and payload["ok"] is False
+        assert payload["data"]["problems"] > 0
+        assert payload["data"]["sections"][0]["name"] == "opentab"
+
+
 def test_a_warning_alone_never_moves_the_exit_code():
     # Warnings are "you probably didn't mean this", and failing on them trains everyone
     # to stop reading the exit code.

@@ -27,8 +27,9 @@ package and installed command are both `opentab`.
 
 | Module | Responsibility |
 |--------|----------------|
-| `cli.py`, `__main__.py` | Commands, argument routing, startup and one-shot operations |
-| `models.py` | Workflow and day/month/year/project summary records |
+| `cli.py`, `programmatic.py`, `__main__.py` | Commands, argument routing, startup, JSON envelopes and one-shot operations |
+| `service.py`, `mcp.py` | Headless accounting API and stdio MCP adapter |
+| `models.py` | Workflow, qualified session identity and summary records |
 | `stores/` | Harness readers, combined views, portable summaries and warm caches |
 | `tui/app.py` | Application state, accounting projections, keyboard/mouse navigation |
 | `tui/renderer.py` | Terminal layout and painting |
@@ -72,8 +73,10 @@ query; `supports_context_curve` can opt out when those rows do not describe
 individual request sizes. Capabilities are per session: Hermes may retain an old
 session summary after the log supplying its Turns and Tools has rotated away.
 
-`CombinedStore` concatenates rollups and routes session extras to their owning
-backend. `CachedStore` wraps eligible leaves independently, so a change to one
+`CombinedStore` concatenates rollups and routes session extras to their exact owning
+backend. Programmatic callers use a qualified session key containing machine,
+harness and native ID; a bare native ID is rejected when it is ambiguous.
+`CachedStore` wraps eligible leaves independently, so a change to one
 harness need not invalidate the others. UI code consumes these interfaces, not
 SQL columns or transcript records.
 
@@ -103,7 +106,7 @@ and detail memos. Range and ignore changes only invalidate the projections they
 affect. [Startup and caching](caching.md) explains these lifetimes, the incremental
 cache's safety conditions, and the separate `cost` / `--goto` fast paths.
 
-## The two frontends
+## Presentation adapters
 
 `App` owns state and navigation; `Renderer` owns drawing. The renderer delegates
 unknown attributes to its App, allowing drawing methods to consume shared state
@@ -121,6 +124,13 @@ The server is single-threaded because SQLite connections belong to their creatin
 thread. Raw traces and notes remain local to the TUI. See [Web](web.md) for
 serialization, browser state and security boundaries, and [Machines](machines.md)
 for portable summaries.
+
+The JSON CLI and MCP server instead use `OpenTabService`. It owns filtering,
+pagination, stable serialization, exact session routing, mutations to OpenTab's own
+state, and lazy detail reads without depending on curses or browser state. Adapters are
+thin: `programmatic.py` maps argparse actions to service calls and emits one versioned
+document; `mcp.py` validates tool inputs and maps the same calls to structured MCP
+results. See [Programmatic access](programmatic.md) for their public contract.
 
 ## Diagnostics that do not repair
 

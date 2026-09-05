@@ -62,6 +62,10 @@ Prefer a browser? Run **`opentab web`**. Showing someone your screen? **`opentab
 anonymizes your existing history in memory. If a tool is missing, **`opentab doctor`**
 explains what was found and what needs attention.
 
+Automating it? OpenTab also provides versioned JSON resource commands and a local
+stdio MCP server: `opentab usage summary --range 30d` and `opentab mcp`. See
+[Programmatic access](docs/programmatic.md) for commands, schemas, and privacy gates.
+
 ## Follow the work behind the numbers
 
 <a id="what-you-get"></a>

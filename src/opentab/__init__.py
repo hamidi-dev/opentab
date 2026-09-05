@@ -90,10 +90,12 @@ from opentab.heatmap import (
 from opentab.models import (
     ALL_MACHINES,
     ALL_YEARS,
+    API_SCHEMA_VERSION,
     DaySummary,
     MachineSummary,
     MonthSummary,
     ProjectSummary,
+    SessionRef,
     Workflow,
     YearSummary,
     year_label,
@@ -149,7 +151,7 @@ from opentab.sources import (
     resolve_source,
     source_cycle,
 )
-from opentab.state import apply_state, load_state, save_state, state_path
+from opentab.state import apply_state, load_state, read_state, save_state, state_path, update_state
 from opentab.stores.antigravity import AntigravityStore
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import (
@@ -256,6 +258,9 @@ from opentab.util import (
 # Keep http.server and doctor dependencies off the frequently polled cost import path.
 # PEP 562 preserves the package-level compatibility surface on first access.
 _LAZY_ATTRS = {
+    "OpenTabService": "opentab.service",
+    "ServiceError": "opentab.service",
+    "SessionQuery": "opentab.service",
     "build_payload": "opentab.web",
     "html_command": "opentab.web",
     "serve_command": "opentab.web",

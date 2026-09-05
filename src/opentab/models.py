@@ -1,7 +1,11 @@
 """Plain data records (sessions, day/month/year/project rollups)."""
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass
+
+API_SCHEMA_VERSION = "1"
 
 
 @dataclass
@@ -30,6 +34,43 @@ class Workflow:
     ended_at: str = ""
     # Agent working bursts excluding idle gaps; None when the backend lacks boundaries.
     worked_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class SessionRef:
+    """Globally address one native session without reserving delimiters in its fields."""
+
+    machine: str
+    harness: str
+    native_id: str
+
+    PREFIX = "ot1_"
+
+    def encode(self) -> str:
+        raw = json.dumps(
+            [self.machine, self.harness, self.native_id],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return self.PREFIX + base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @classmethod
+    def decode(cls, value: str) -> SessionRef:
+        if not isinstance(value, str) or not value.startswith(cls.PREFIX):
+            raise ValueError("not an OpenTab session reference")
+        token = value[len(cls.PREFIX) :]
+        try:
+            raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+            fields = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError) as exc:
+            raise ValueError("invalid OpenTab session reference") from exc
+        if (
+            not isinstance(fields, list)
+            or len(fields) != 3
+            or any(not isinstance(field, str) or not field for field in fields)
+        ):
+            raise ValueError("invalid OpenTab session reference")
+        return cls(*fields)
 
 
 @dataclass

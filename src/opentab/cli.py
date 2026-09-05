@@ -401,7 +401,24 @@ def _add_legacy_command_flags(parser: argparse.ArgumentParser) -> None:
 
 
 # Everything not named here is routed through the implicit `tui` command.
-_SUBCOMMANDS = ("tui", "web", "cost", "doctor", "pull", "remote", "export", "forget")
+_SUBCOMMANDS = (
+    "tui",
+    "web",
+    "cost",
+    "doctor",
+    "pull",
+    "remote",
+    "export",
+    "forget",
+    "usage",
+    "sessions",
+    "models",
+    "sources",
+    "notes",
+    "bookmarks",
+    "ignore",
+    "mcp",
+)
 
 
 def _focus_help(subparser: argparse.ArgumentParser, common_dests: set, keep: set) -> None:
@@ -534,6 +551,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="don't redact: print absolute paths and the names of pulled machines. For "
         "reading yourself, not for pasting into a public issue",
     )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="emit one versioned JSON document instead of the human-readable report",
+    )
     # Doctor must advertise every path override it can diagnose.
     _focus_help(
         doctor,
@@ -628,6 +650,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the machine name(s) to forget",
     )
     _focus_help(forget, gdests, {"remotes"})
+    # Keep the machine-facing command tree out of this already large compatibility parser.
+    from opentab.programmatic import add_parsers
+
+    add_parsers(subs, _add_global_args)
     return parser
 
 
@@ -1850,6 +1876,19 @@ def main() -> int:
         )
     enable_unicode_locale()
     args = parse_args()
+    if getattr(args, "command", None) in {
+        "usage",
+        "sessions",
+        "models",
+        "sources",
+        "notes",
+        "bookmarks",
+        "ignore",
+        "mcp",
+    }:
+        from opentab.programmatic import command
+
+        return command(args)
     if getattr(args, "command", None) == "doctor":
         # Doctor must run before migration: it reports the state that caused the problem
         # and promises no side effects. Keep its import off the status command's hot path.

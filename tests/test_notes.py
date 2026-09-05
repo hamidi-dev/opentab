@@ -1,7 +1,11 @@
 import json
 import os
+import tempfile
+from contextlib import contextmanager
+from unittest.mock import patch
 
 import opentab as ot
+import opentab.notes as notes_module
 
 from tests._support import FakeScreen, _app_on_session, app_with, box_cells, workflow
 
@@ -107,6 +111,76 @@ def test_concurrent_note_writers_do_not_lose_an_update():
 
     assert ot.load_notes() == {f"s{i}": f"note {i}" for i in range(8)}
     ot.save_notes({})
+
+
+def test_note_alias_updates_prefer_existing_qualified_text_and_clear_both_aliases():
+    for initial in (
+        {},
+        {"native": "old"},
+        {"qualified": "old"},
+        {"native": "legacy", "qualified": "old"},
+    ):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp}):
+            unrelated = {"other-owner": "keep", "future": {"unknown": True}, "vanished": None}
+            assert ot.save_notes({**unrelated, **initial})
+            target = "qualified" if "qualified" in initial else "native"
+            updated, error = ot.update_note("native", "new", qualified_id="qualified")
+            assert error == "" and updated[target] == "new"
+            expected = {**unrelated, **initial, target: "new"}
+            assert notes_module._read_raw() == (expected, True)
+            cleared, error = ot.update_note("native", "", qualified_id="qualified")
+            assert error == "" and cleared == {"other-owner": "keep"}
+            assert notes_module._read_raw() == (unrelated, True)
+
+
+def test_note_alias_mutations_preserve_unknown_shapes_at_the_other_alias():
+    for unknown in (None, 0, False, {}, ["future"]):
+        for target, other in (("native", "qualified"), ("qualified", "native")):
+            with tempfile.TemporaryDirectory() as tmp, patch.dict(
+                os.environ, {"XDG_DATA_HOME": tmp}
+            ):
+                assert ot.save_notes({target: "old", other: unknown})
+                assert ot.read_notes() == ({target: "old"}, True)
+                updated, error = ot.update_note("native", "new", qualified_id="qualified")
+                assert error == "" and updated == {target: "new"}
+                assert notes_module._read_raw() == ({target: "new", other: unknown}, True)
+                cleared, error = ot.update_note("native", "", qualified_id="qualified")
+                assert error == "" and cleared == {}
+                assert notes_module._read_raw() == ({other: unknown}, True)
+
+
+def test_note_alias_selection_and_removal_read_the_file_inside_the_lock():
+    for text in ("new", ""):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"XDG_DATA_HOME": tmp}):
+            assert ot.save_notes({"native": "legacy"})
+            original_lock, original_read = notes_module._locked, notes_module._read_raw
+            locked = [False]
+
+            @contextmanager
+            def alias_appears_before_lock(lock=original_lock, status=locked):
+                assert ot.save_notes(
+                    {"native": "legacy", "qualified": "concurrent", "other": "keep"}
+                )
+                with lock():
+                    status[0] = True
+                    try:
+                        yield
+                    finally:
+                        status[0] = False
+
+            def read_inside_lock(read=original_read, status=locked):
+                assert status[0]
+                return read()
+
+            with patch.object(notes_module, "_locked", alias_appears_before_lock), patch.object(
+                notes_module, "_read_raw", read_inside_lock
+            ):
+                updated, error = ot.update_note("native", text, qualified_id="qualified")
+            expected = {"other": "keep"}
+            if text:
+                expected.update(native="legacy", qualified="new")
+            assert error == "" and updated == expected
+            assert ot.read_notes() == (expected, True)
 
 
 def test_note_save_keeps_entries_it_does_not_understand():

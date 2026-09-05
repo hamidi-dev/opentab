@@ -1032,10 +1032,29 @@ def render(sections: list, uni: bool = True) -> list[str]:
 def doctor_command(args: argparse.Namespace) -> int:
     """Exit nonzero only for broken rows; warnings still describe working setups."""
     sections = build_report(args, full=bool(getattr(args, "full", False)))
-    for line in render(sections, unicode_screen()):
-        print(line)
     broken = [r for _t, rows in sections for r in rows if r.status == BAD]
-    if broken:
-        print()
-        print(f"{len(broken)} problem(s) above need attention.")
+    if getattr(args, "json", False):
+        from opentab.models import API_SCHEMA_VERSION
+
+        payload = {
+            "schema_version": API_SCHEMA_VERSION,
+            "ok": not broken,
+            "data": {
+                "sections": [
+                    {
+                        "name": title,
+                        "rows": [row._asdict() for row in rows],
+                    }
+                    for title, rows in sections
+                ],
+                "problems": len(broken),
+            },
+        }
+        print(json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")))
+    else:
+        for line in render(sections, unicode_screen()):
+            print(line)
+        if broken:
+            print()
+            print(f"{len(broken)} problem(s) above need attention.")
     return 1 if broken else 0

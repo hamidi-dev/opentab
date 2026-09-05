@@ -95,16 +95,32 @@ def load_notes() -> dict[str, str]:
     return read_notes()[0]
 
 
-def update_note(session_id: str, text: str) -> tuple[dict[str, str], str]:
-    """Merge one edit under lock so concurrent opentabs cannot erase each other's notes."""
+def update_note(
+    session_id: str, text: str, *, qualified_id: str | None = None
+) -> tuple[dict[str, str], str]:
+    """Merge one edit under lock so concurrent opentabs cannot erase each other's notes.
+
+    Supply qualified_id only when both IDs safely identify the same session. Prefer
+    its displayable note, matching read_notes; clearing also removes text at the
+    other alias, but preserves unknown shapes there. Without it, edit only session_id.
+    """
     with _locked():
         notes, readable = _read_raw()
         if not readable:
             return {}, "unreadable"
+        target = session_id
+        if qualified_id is not None:
+            qualified = notes.get(qualified_id)
+            if isinstance(qualified, str) and qualified:
+                target = qualified_id
         if text:
-            notes[session_id] = text
+            notes[target] = text
         else:
-            notes.pop(session_id, None)
+            notes.pop(target, None)
+            if qualified_id is not None:
+                other = session_id if target == qualified_id else qualified_id
+                if isinstance(notes.get(other), str):
+                    notes.pop(other)
         if not save_notes(notes):
             return _valid(notes), "unwritable"
         return _valid(notes), ""

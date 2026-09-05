@@ -1,7 +1,11 @@
+import json
 import os
 import tempfile
+from contextlib import contextmanager
+from unittest.mock import patch
 
 import opentab as ot
+import opentab.state as state_module
 
 from tests._support import (
     _claude_msg,
@@ -12,6 +16,338 @@ from tests._support import (
     app_with,
     workflow,
 )
+
+
+def test_read_state_distinguishes_missing_valid_and_malformed_files():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        assert state_module.read_state(path) == ({}, True)
+
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"range": "30d", "future": {"shape": 2}}, fh)
+        assert state_module.read_state(path) == (
+            {"range": "30d", "future": {"shape": 2}},
+            True,
+        )
+
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{truncated")
+        assert state_module.read_state(path) == ({}, False)
+        assert ot.load_state(path) == {}
+
+
+def test_save_state_is_atomic_and_refuses_to_overwrite_malformed_state():
+    app = app_with([])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"future": {"shape": 2}}, fh)
+        original_state_path = state_module.state_path
+        state_module.state_path = lambda migrate=True: path
+        try:
+            ot.save_state(app)
+        finally:
+            state_module.state_path = original_state_path
+        with open(path, encoding="utf-8") as fh:
+            assert json.load(fh)["future"] == {"shape": 2}
+
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{precious but malformed")
+        state_module.state_path = lambda migrate=True: path
+        try:
+            ot.save_state(app)
+        finally:
+            state_module.state_path = original_state_path
+
+        with open(path, encoding="utf-8") as fh:
+            assert fh.read() == "{precious but malformed"
+        assert not [name for name in os.listdir(tmp) if name.endswith(".tmp")]
+
+
+def test_first_tui_save_preserves_external_set_additions_and_removals():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        initial: dict = {key: ["keep", "removed"] for key in state_module.MUTABLE_SET_KEYS}
+        initial["future"] = {"unknown": [1, 2]}
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(initial, fh)
+        app = app_with([])
+        ot.apply_state(app, app.args, ot.load_state(path))
+        for key in state_module.MUTABLE_SET_KEYS:
+            assert state_module.update_state("set-add", key, "external", path)[1] == ""
+            assert state_module.update_state("set-remove", key, "removed", path)[1] == ""
+        with patch.object(state_module, "state_path", return_value=path):
+            ot.save_state(app)
+        saved = ot.load_state(path)
+        assert saved["future"] == initial["future"]
+        for key in state_module.MUTABLE_SET_KEYS:
+            assert saved[key] == ["external", "keep"]
+            assert getattr(app, key) == {"keep", "removed"}
+
+
+def test_tui_set_deltas_merge_with_external_edits_and_are_not_replayed():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        initial = {
+            key: ["keep", "local-remove", "external-remove"]
+            for key in state_module.MUTABLE_SET_KEYS
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(initial, fh)
+        app = app_with([])
+        ot.apply_state(app, app.args, ot.load_state(path))
+        local_sets = {key: getattr(app, key) for key in state_module.MUTABLE_SET_KEYS}
+        for key, local in local_sets.items():
+            local.remove("local-remove")
+            local.add("local-add")
+            assert state_module.update_state("set-add", key, "external-add", path)[1] == ""
+            assert state_module.update_state("set-remove", key, "external-remove", path)[1] == ""
+        with patch.object(state_module, "state_path", return_value=path):
+            ot.save_state(app)
+            for key in local_sets:
+                assert ot.load_state(path)[key] == ["external-add", "keep", "local-add"]
+                # Reverse the saved local changes externally; a later TUI save must
+                # neither replay those changes nor undo the earlier external edits.
+                assert state_module.update_state("set-add", key, "local-remove", path)[1] == ""
+                assert state_module.update_state("set-remove", key, "local-add", path)[1] == ""
+            for _ in range(2):
+                ot.save_state(app)
+                for key, local in local_sets.items():
+                    assert ot.load_state(path)[key] == ["external-add", "keep", "local-remove"]
+                    assert getattr(app, key) is local
+                    assert local == {"keep", "external-remove", "local-add"}
+            # New in-place local changes are measured against the successful save.
+            for local in local_sets.values():
+                local.remove("keep")
+                local.add("next-add")
+            ot.save_state(app)
+            for key in local_sets:
+                assert ot.load_state(path)[key] == ["external-add", "local-remove", "next-add"]
+
+
+def test_tui_set_merge_starts_empty_with_missing_state_or_without_apply_state():
+    for restore in (True, False):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "state.json")
+            app = app_with([])
+            if restore:
+                ot.apply_state(app, app.args, ot.load_state(path))
+            for key in state_module.MUTABLE_SET_KEYS:
+                getattr(app, key).add("local")
+                assert state_module.update_state("set-add", key, "external", path)[1] == ""
+            with patch.object(state_module, "state_path", return_value=path):
+                ot.save_state(app)
+                for key in state_module.MUTABLE_SET_KEYS:
+                    assert ot.load_state(path)[key] == ["external", "local"]
+                    assert state_module.update_state("set-remove", key, "local", path)[1] == ""
+                ot.save_state(app)
+            for key in state_module.MUTABLE_SET_KEYS:
+                assert ot.load_state(path)[key] == ["external"]
+
+
+def test_failed_tui_save_retains_pending_set_deltas_for_retry():
+    for restore in (True, False):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "state.json")
+            app = app_with([])
+            if restore:
+                initial = {key: ["remove"] for key in state_module.MUTABLE_SET_KEYS}
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(initial, fh)
+                ot.apply_state(app, app.args, ot.load_state(path))
+            for key in state_module.MUTABLE_SET_KEYS:
+                getattr(app, key).discard("remove")
+                getattr(app, key).add("local")
+            before = state_module.read_state(path)
+            with patch.object(state_module, "state_path", return_value=path):
+                with patch.object(state_module.os, "replace", side_effect=OSError("read-only")):
+                    ot.save_state(app)
+                assert state_module.read_state(path) == before
+                assert not [name for name in os.listdir(tmp) if name.startswith(".state.json.")]
+                for key in state_module.MUTABLE_SET_KEYS:
+                    assert state_module.update_state("set-add", key, "external", path)[1] == ""
+                ot.save_state(app)
+            for key in state_module.MUTABLE_SET_KEYS:
+                assert ot.load_state(path)[key] == ["external", "local"]
+
+
+def test_tui_save_preserves_malformed_authored_sets_and_retries_after_repair():
+    for key in state_module.MUTABLE_SET_KEYS:
+        for malformed in (None, "oops", {}, ["keep", ""], ["keep", 1], ["keep", {}]):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "state.json")
+                original = json.dumps({key: malformed, "future": {"unknown": True}})
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(original)
+                app = app_with([])
+                ot.apply_state(app, app.args, ot.load_state(path))
+                getattr(app, key).add("local")
+                with patch.object(state_module, "state_path", return_value=path):
+                    ot.save_state(app)
+                    with open(path, encoding="utf-8") as fh:
+                        assert fh.read() == original
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump({key: ["external"], "future": {"unknown": True}}, fh)
+                    ot.save_state(app)
+                saved = ot.load_state(path)
+                assert saved[key] == ["external", "local"]
+                assert saved["future"] == {"unknown": True}
+
+
+def test_update_state_adds_and_removes_values_without_losing_unknown_keys():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        original = {
+            "range": "30d",
+            "future": {"unknown": [1, 2]},
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(original, fh)
+
+        for key in ("bookmarks", "ignored_projects", "ignored_sessions", "pinned_models"):
+            updated, error = state_module.update_state("set-add", key, "new", path)
+            assert error == "" and updated[key] == ["new"]
+            updated, error = state_module.update_state("set-add", key, "old", path)
+            assert error == "" and updated[key] == ["new", "old"]
+            updated, error = state_module.update_state("set-remove", key, "old", path)
+            assert error == "" and updated[key] == ["new"]
+            assert updated["future"] == original["future"]
+        with open(path, encoding="utf-8") as fh:
+            assert json.load(fh) == updated
+
+
+def test_update_state_reports_invalid_unreadable_and_unwritable_mutations():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"bookmarks": ["keep"], "future": True}, fh)
+
+        for operation, key, value in (
+            ("replace", "bookmarks", "new"),
+            ("set-add", "range", "new"),
+            ("set-add", "bookmarks", ""),
+            ("set-add", "bookmarks", 1),
+        ):
+            assert state_module.update_state(operation, key, value, path) == (
+                {},
+                "invalid operation",
+            )
+        assert state_module.read_state(path)[0] == {"bookmarks": ["keep"], "future": True}
+        for alias in ("", 1, [], {}):
+            assert state_module.update_state(
+                "set-add", "bookmarks", "new", path, qualified_value=alias
+            ) == ({}, "invalid operation")
+        assert state_module.read_state(path)[0] == {"bookmarks": ["keep"], "future": True}
+
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{truncated")
+        assert state_module.update_state("set-add", "bookmarks", "new", path) == (
+            {},
+            "unreadable",
+        )
+
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"bookmarks": ["keep"]}, fh)
+        original_replace = state_module.os.replace
+        state_module.os.replace = lambda source, target: (_ for _ in ()).throw(
+            OSError("read-only filesystem")
+        )
+        try:
+            updated, error = state_module.update_state("set-add", "bookmarks", "new", path)
+        finally:
+            state_module.os.replace = original_replace
+        assert error == "unwritable"
+        assert updated == {"bookmarks": ["keep", "new"]}
+        assert not [name for name in os.listdir(tmp) if name.endswith(".tmp")]
+        with open(path, encoding="utf-8") as fh:
+            assert json.load(fh) == {"bookmarks": ["keep"]}
+
+
+def test_state_alias_mutations_preserve_unrelated_entries_and_tui_delta_baseline():
+    for key in ("bookmarks", "ignored_sessions"):
+        for aliases in ([], ["native"], ["qualified"], ["native", "qualified"]):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "state.json")
+                initial = {key: sorted(["other-owner", *aliases]), "future": {"unknown": True}}
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(initial, fh)
+                app = app_with([])
+                ot.apply_state(app, app.args, initial)
+                updated, error = state_module.update_state(
+                    "set-add", key, "native", path, qualified_value="qualified"
+                )
+                target = "qualified" if "qualified" in aliases else "native"
+                assert error == "" and updated[key] == sorted({"other-owner", *aliases, target})
+                removed, error = state_module.update_state(
+                    "set-remove", key, "native", path, qualified_value="qualified"
+                )
+                assert error == "" and removed[key] == ["other-owner"]
+                assert removed["future"] == initial["future"]
+                # An unchanged TUI save must not resurrect either external deletion.
+                with patch.object(state_module, "state_path", return_value=path):
+                    ot.save_state(app)
+                assert ot.load_state(path)[key] == ["other-owner"]
+
+
+def test_state_alias_selection_and_removal_read_the_file_inside_the_lock():
+    for key in ("bookmarks", "ignored_sessions"):
+        for operation in ("set-add", "set-remove"):
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "state.json")
+                original_lock, original_read = state_module._locked, state_module.read_state
+                locked = [False]
+
+                @contextmanager
+                def alias_appears_before_lock(
+                    lock_path, path=path, key=key, lock=original_lock, status=locked
+                ):
+                    assert lock_path == path
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump({key: ["qualified", "other-owner"], "future": {"shape": 2}}, fh)
+                    with lock(lock_path):
+                        status[0] = True
+                        try:
+                            yield
+                        finally:
+                            status[0] = False
+
+                def read_inside_lock(read_path=None, read=original_read, status=locked):
+                    assert status[0]
+                    return read(read_path)
+
+                with patch.object(state_module, "_locked", alias_appears_before_lock), patch.object(
+                    state_module, "read_state", read_inside_lock
+                ):
+                    updated, error = state_module.update_state(
+                        operation, key, "native", path, qualified_value="qualified"
+                    )
+                expected = (
+                    ["other-owner", "qualified"] if operation == "set-add" else ["other-owner"]
+                )
+                assert error == "" and updated == {key: expected, "future": {"shape": 2}}
+                assert ot.load_state(path) == updated
+
+
+def test_concurrent_state_mutations_do_not_lose_updates():
+    if state_module.fcntl is None or not hasattr(os, "fork"):
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        children = []
+        for index in range(8):
+            pid = os.fork()
+            if pid == 0:
+                _updated, error = state_module.update_state(
+                    "set-add", "bookmarks", f"session-{index}", path
+                )
+                os._exit(bool(error))
+            children.append(pid)
+        statuses = [os.waitpid(pid, 0)[1] for pid in children]
+
+        assert statuses == [0] * 8
+        state, readable = state_module.read_state(path)
+        assert readable
+        assert state["bookmarks"] == [f"session-{index}" for index in range(8)]
 
 
 def test_prices_sort_is_persisted_in_state():

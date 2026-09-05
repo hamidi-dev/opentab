@@ -39,7 +39,8 @@ are ignored, and the defaults are shown):
 - **Config** — `~/.config/opentab/`: `keymap.conf` (your key bindings), `remotes.json`
   (the saved machine list for `--pull`/`--remote`), and an optional `launcher` hook.
 - **State** — `~/.local/state/opentab/state.json`: a small preferences file (your last
-  harness, range, and sort; disable with `--no-state`).
+  harness, range, sort, bookmarks, ignores, and pins; disable with `--no-state`),
+  plus the `state.json.lock` sidecar used to coordinate writers.
 - **Data** — `~/.local/share/opentab/notes.json`: your session notes, saved on every
   edit, plus the `notes.json.lock` sidecar used to coordinate writers.
 - **Cache** — `~/.cache/opentab/`: `cache/` (a warm-start rollup, one JSON per backend,
@@ -86,6 +87,8 @@ No outbound requests by default. Network activity is explicitly requested:
   remote session can also invoke SSH. See [Multiple machines](machines.md).
 - `opentab web` starts a local HTTP server; browser requests load the report and
   session details. Binding beyond localhost exposes that service to other machines.
+- `opentab mcp` starts no listener. It exchanges local usage data with the parent MCP
+  client over stdin/stdout; what that client sends elsewhere is outside OpenTab's control.
 
 ## External programs
 
@@ -102,6 +105,19 @@ Only for the action you request:
 
 Launcher hooks, editors and custom remote commands are programs you choose, not
 sandboxed OpenTab operations. Configure only commands you trust.
+
+## Programmatic output
+
+JSON commands and MCP tools can expose the same titles, project paths, dates, usage,
+spend, and authored notes visible in the interactive application. They are local by
+default, not anonymous. Qualified session keys also contain encoded machine, harness,
+and native session identity; encoding is routing, not encryption.
+
+Full prompts and content keys are omitted by default. Reading them, or the reasoning,
+commands, arguments, and results behind a content key, requires starting the command
+or MCP server with `--allow-raw-content` and explicitly requesting those fields. MCP
+raw trace reads require a second `confirm_raw: true` argument. See
+[Programmatic access](programmatic.md#raw-content).
 
 ## Demo mode
 

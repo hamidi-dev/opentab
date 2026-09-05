@@ -10,6 +10,7 @@ These pages hold the full detail:
 | [Pricing & the `$` view](pricing.md) | How costs are attributed, the `$` what-if estimate, the `P` price table and models.dev catalog, pinning, and refreshing rates |
 | [The web browser](web.md) | `--html`, `--serve`, and `--web` — the self-contained page, the live server, deep links, and security notes |
 | [Multiple machines](machines.md) | SSH pulls, browsing and resuming remote sessions, portable exports, and saved machines |
+| [Programmatic access](programmatic.md) | Versioned JSON commands, the headless Python service, MCP tools, stable session keys, and raw-content gates |
 | [Windows & WSL](windows.md) | Running natively on Windows, and reading Windows-side data from WSL |
 | [Privacy — what it touches](privacy.md) | Everything OpenTab reads, writes, and runs; network policy; demo mode |
 | [Troubleshooting](troubleshooting.md) | `opentab doctor`, colours that won't change, garbled frames, a harness that won't show up |

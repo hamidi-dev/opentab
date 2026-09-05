@@ -44,6 +44,7 @@ class CombinedStore:
             getattr(s, "supports_tool_breakdown", False) for s in stores
         )
         self._owner: dict[str, object] = {}
+        self._owner_by_workflow: dict[int, object] = {}
 
     @cached_property
     def records_cost(self) -> bool:
@@ -63,13 +64,20 @@ class CombinedStore:
     def workflows(self) -> list[Workflow]:
         out: list[Workflow] = []
         owner: dict[str, object] = {}
+        owner_by_workflow: dict[int, object] = {}
         for store, workflows in zip(self.stores, _gather([s.workflows for s in self.stores])):
             for w in workflows:
                 owner[w.id] = store
+                owner_by_workflow[id(w)] = store
                 out.append(w)
         self._owner = owner
+        self._owner_by_workflow = owner_by_workflow
         out.sort(key=lambda w: (w.total_cost, w.total_tokens), reverse=True)
         return out
+
+    def owner_of(self, workflow: Workflow):
+        """Return the exact owner even when two harnesses reuse a native id."""
+        return self._owner_by_workflow.get(id(workflow), self._owner.get(workflow.id))
 
     def summary(self, workflows: list[Workflow]) -> dict[str, int | float]:
         return self.stores[0].summary(workflows)
