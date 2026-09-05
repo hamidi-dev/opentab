@@ -12,14 +12,32 @@ MODERN_VERSION = "2026-07-28"
 LEGACY_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26")
 
 _QUERY_PROPERTIES = {
-    "range": {"type": "string", "description": "all, 30d, 2m, YYYY, YYYY-MM, or START..END"},
+    "range": {
+        "type": "string",
+        "description": (
+            "Inclusive root-session start-date bounds, not individual call dates. "
+            "all (default), 30d, 2m, YYYY, YYYY-MM, or START..END; a single YYYY-MM-DD means since that date."
+        ),
+    },
     "project": {"type": "string"},
-    "harness": {"type": "string"},
-    "machine": {"type": "string"},
-    "model": {"type": "string"},
+    "harness": {
+        "type": "string",
+        "description": "Filter loaded records; does not load another harness.",
+    },
+    "machine": {
+        "type": "string",
+        "description": "Filter loaded records; does not pull another machine.",
+    },
+    "model": {
+        "type": "string",
+        "description": "Select sessions that used this model, retaining their other models' usage.",
+    },
     "search": {"type": "string"},
     "bookmarked": {"type": "boolean"},
-    "include_ignored": {"type": "boolean"},
+    "include_ignored": {
+        "type": "boolean",
+        "description": "Bypass saved project/session ignores (default false). No ignores apply with --no-state.",
+    },
     "sort": {
         "type": "string",
         "enum": ["cost", "tokens", "date", "last_activity", "title", "project"],
@@ -46,12 +64,35 @@ def _session_schema(extra=None, required=None) -> dict:
 TOOLS = (
     {
         "name": "opentab_usage_summary",
-        "description": "Summarize local AI coding usage and optionally group it.",
+        "description": (
+            "Summarize whole-session AI usage, including tracked subagents, from loaded records. "
+            "Range and calendar groups use session start dates, not individual call dates. "
+            "Returns token categories, effective scope, and accounting definitions. API-equivalent "
+            "cost preserves recorded dollars and estimates only unpriced usage; it is not your bill. "
+            "Saved ignores apply unless bypassed or state is disabled."
+        ),
         "inputSchema": _schema(
             {
                 **_QUERY_PROPERTIES,
+                "limit": {
+                    **_QUERY_PROPERTIES["limit"],
+                    "description": "Ignored for summaries; all matching sessions and groups are included.",
+                },
+                "offset": {
+                    **_QUERY_PROPERTIES["offset"],
+                    "description": "Ignored for summaries; groups are not paginated.",
+                },
+                "sort": {
+                    **_QUERY_PROPERTIES["sort"],
+                    "description": "Groups always sort by API-equivalent cost, then tokens, descending.",
+                },
+                "reverse": {
+                    **_QUERY_PROPERTIES["reverse"],
+                    "description": "Does not change summary group order.",
+                },
                 "group_by": {
                     "type": "string",
+                    "description": "Calendar groups use root-session start dates and include whole-session usage.",
                     "enum": [
                         "none",
                         "day",

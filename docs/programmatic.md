@@ -46,9 +46,13 @@ session filters, such as `--range` and `--project`, still scope used-model usage
 For `sessions list` and `usage summary`, `--search` fuzzy-matches session titles,
 projects, IDs, and notes instead.
 
-Recorded spend and API-equivalent list-price estimates are separate fields. The
-JSON API never applies the TUI's session-only what-if rate globally; model comparison
-is an explicit `models compare` operation.
+Recorded spend and API-equivalent costs are separate fields. API-equivalent cost
+preserves recorded dollars and adds list-rate estimates for the unpriced portion;
+it is not an all-token repricing or a subscription bill. `unpriced_tokens` means
+tokens without attributed recorded dollars, **not** tokens lacking a known model
+rate. Unknown models use fallback rates; recognized local providers price to zero.
+See [Pricing](pricing.md). The JSON API never applies the TUI's session-only what-if
+rate globally; model comparison is an explicit `models compare` operation.
 
 An aggregated Node or Tool row from an older backend can mix metered and unpriced
 calls without retaining their token split. In that case `api_equivalent_cost_usd`
@@ -57,6 +61,52 @@ reporting only the recorded portion. Session and model rollups retain exact spli
 Node labels can also name only the dominant model. Root nodes use exact per-model
 splits where available; other nodes return an incomplete result when their usage
 cannot be attributed to one known model, rather than pricing a model mix at one rate.
+
+### Reading a usage summary
+
+CLI and MCP summaries retain `range`, `totals`, `group_by`, and `groups`, and include
+three explanatory objects so callers do not need the source checkout:
+
+| Object | Meaning |
+|--------|---------|
+| `date_scope` | Resolved inclusive `since`/`until` bounds (`null` means unbounded), selection basis, usage basis, and date convention |
+| `accounting` | Definitions of cost fields, token categories, reconciliation, and whole-session filtering |
+| `scope` | Selected source, requested session filters, matching machines/harnesses, and effective state/ignore policy |
+
+**Ranges select sessions by their root start date, not calls occurring within the
+range.** Each selected session contributes its whole recorded usage, including
+tracked descendants and activity after the range ends. Day/month/year groups also
+use the root start date. A session started August 30 and resumed September 2 stays
+in the August 30 bucket, including the September activity; it is excluded by a
+September-only query. Dates are used as supplied by stores, without a service-level
+timezone conversion. Relative bounds are resolved once per request; a single date
+means *since* that date, not just that day.
+
+All filters select whole sessions. In particular, filtering by `model` retains
+other models used by those sessions. `scope.machines` and `scope.harnesses` are
+sorted identities present **after filtering**, not a list of all installed or
+configured sources. Empty results have empty identity lists. Harness/machine
+filters do not load extra sources or pull remote data. Saved project and session
+ignores apply when `saved_ignores_applied` is true; `include_ignored` or `--no-state`
+bypasses them. Summaries include all matching sessions and groups: MCP `limit` and
+`offset` are accepted but ignored, and groups always sort by API-equivalent cost,
+then tokens, descending regardless of `sort`/`reverse`.
+
+Totals and every group expose the same normalized token fields as session model
+usage: `input_tokens` (uncached), `output_tokens`, `reasoning_tokens`,
+`cache_read_tokens`, and `cache_write_tokens`. These five categories are additive;
+`cache_write_1h_tokens` is a **subset** of cache writes, not a sixth category.
+Repeated context and cache reads count toward usage, so `tokens` does not mean
+newly generated text. Reasoning already included in a source's output is not added
+again. See [Token conventions](backends.md#token-conventions).
+
+`token_breakdown_complete` indicates whether the normalized model categories
+reconcile with reported totals. Legacy uncached input may be inferred from the
+remaining token count. Missing or inconsistent model rows leave the original
+`tokens` total intact and set this flag to false; zero category counts in that case
+do not imply zero usage. True means reconciliation, not proof that every source
+record was retained. Model/provider groups describe available model rows, so their
+categories may reconcile even when the overall session totals do not.
 
 ## Python service
 

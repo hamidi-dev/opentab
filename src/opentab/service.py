@@ -40,6 +40,14 @@ DEFAULT_LIMIT = 100
 MAX_LIMIT = 1000
 
 _SOURCE_KEYS = {label.lower(): key for key, label in sources.SOURCE_LABELS.items()}
+_TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "cache_write_1h_tokens",
+)
 
 
 class ServiceError(Exception):
@@ -297,10 +305,16 @@ class OpenTabService:
             else item.workflow.id
         )
 
-    def _filtered(self, query: SessionQuery, *, paginate: bool = True) -> list[_Session]:
+    def _filtered(
+        self,
+        query: SessionQuery,
+        *,
+        paginate: bool = True,
+        date_bounds: tuple[str | None, str | None] | None = None,
+    ) -> list[_Session]:
         if paginate:
             limit, offset = self._bounded(query.limit, query.offset)
-        since, until = self._date_bounds(query.range)
+        since, until = date_bounds if date_bounds is not None else self._date_bounds(query.range)
         bookmarks, ignored_projects, ignored_sessions, _pins = self._state_sets()
         notes = read_notes()[0] if query.search and self.use_state else {}
         rows = list(self._sessions)
@@ -486,12 +500,7 @@ class OpenTabService:
                     "recorded_cost_usd": float(row.get("cost") or 0),
                     "api_equivalent_cost_usd": self._api_model_cost(row),
                     "tokens": int(row.get("tokens_total") or sum(split)),
-                    "input_tokens": int(split[0]),
-                    "output_tokens": int(split[1]),
-                    "reasoning_tokens": int(split[2]),
-                    "cache_read_tokens": int(split[3]),
-                    "cache_write_tokens": int(split[4]),
-                    "cache_write_1h_tokens": int(model_row_1h_write(row)),
+                    **self._token_breakdown([row], int(row.get("tokens_total") or sum(split))),
                     "known_price": has_known_price(name),
                     "local": is_local_provider(name),
                     "pinned": name in pinned_models or canonical_model(name) in pinned_models,
@@ -686,7 +695,8 @@ class OpenTabService:
 
     def summary(self, query: SessionQuery | None = None, *, group_by: str = "none") -> dict:
         query = query or SessionQuery(limit=MAX_LIMIT)
-        rows = self._filtered(query, paginate=False)
+        bounds = self._date_bounds(query.range)
+        rows = self._filtered(query, paginate=False, date_bounds=bounds)
         valid = {
             "none",
             "day",
@@ -722,10 +732,76 @@ class OpenTabService:
             )
         return {
             "range": query.range,
+            "date_scope": {
+                "basis": "root_session_created_at_date",
+                "since": bounds[0],
+                "until": bounds[1],
+                "bounds_inclusive": True,
+                "usage_basis": "whole_session_including_tracked_descendants",
+                "timezone_basis": "store_provided_dates",
+            },
+            "accounting": {
+                "recorded_cost_usd": "Source-attributed dollars, not a verified invoice.",
+                "api_equivalent_cost_usd": (
+                    "Recorded dollars plus list-rate estimates for unpriced usage, not "
+                    "all-token repricing or your subscription bill. Unknown models use "
+                    "fallback rates; recognized local providers price to zero."
+                ),
+                "unpriced_tokens": (
+                    "Tokens without attributed recorded dollars, not tokens lacking a model rate. "
+                    "Estimating their cost does not remove them from this count."
+                ),
+                "tokens": (
+                    "Input (uncached) + output + separate reasoning + cache reads + cache writes. "
+                    "Includes repeated context, not just new text. Reasoning already included "
+                    "in a source's output is not counted again. cache_write_1h_tokens is a "
+                    "subset of cache_write_tokens, not an additional category."
+                ),
+                "token_breakdown_complete": (
+                    "Whether normalized model categories reconcile with reported totals. "
+                    "Legacy input may be inferred; true does not guarantee source completeness."
+                ),
+                "filters": (
+                    "Filters select whole sessions; model selects sessions that used that model, "
+                    "retaining their other models' usage. Calendar groups use session start "
+                    "dates, not individual call dates. Summary groups are not paginated."
+                ),
+            },
+            "scope": {
+                "selected_source": self.source_key,
+                "filters": {
+                    name: getattr(query, name)
+                    for name in ("project", "harness", "machine", "model", "search", "bookmarked")
+                },
+                "machines": sorted({item.ref.machine for item in rows}),
+                "harnesses": sorted({item.ref.harness for item in rows}),
+                "coverage": "Identities in matching sessions, not all configured or discovered sources.",
+                "state_enabled": self.use_state,
+                "include_ignored": query.include_ignored,
+                "saved_ignores_applied": self.use_state and not query.include_ignored,
+            },
             "totals": self._aggregate(rows),
             "group_by": group_by,
             "groups": groups,
         }
+
+    @staticmethod
+    def _token_breakdown(rows: list[dict], total: int) -> dict:
+        data: dict = dict.fromkeys(_TOKEN_FIELDS, 0)
+        complete = True
+        for row in rows:
+            split = tuple(int(value) for value in model_row_split(row))
+            row_total = row.get("tokens_total")
+            complete = complete and sum(split) == (
+                int(row_total) if row_total is not None else sum(split)
+            )
+            for field, value in zip(_TOKEN_FIELDS, (*split, int(model_row_1h_write(row)))):
+                data[field] += value
+        # Check each model as well as the rollup so opposing discrepancies cannot cancel.
+        data["token_breakdown_complete"] = (
+            complete and sum(data[field] for field in _TOKEN_FIELDS[:5]) == total
+        )
+        return data
 
     def _aggregate(self, rows: list[_Session], key: str | None = None) -> dict:
         costs = [self._costs(item) for item in rows]
@@ -737,7 +813,16 @@ class OpenTabService:
             "unpriced_tokens": sum(cost[4] for cost in costs),
             "subagents": sum(int(item.workflow.subagents or 0) for item in rows),
             "worked_seconds": sum(float(item.workflow.worked_seconds or 0) for item in rows),
+            **dict.fromkeys(_TOKEN_FIELDS, 0),
+            "token_breakdown_complete": True,
         }
+        for item in rows:
+            split = self._token_breakdown(
+                self._model_rows(item), int(item.workflow.total_tokens or 0)
+            )
+            for field in _TOKEN_FIELDS:
+                data[field] += split[field]
+            data["token_breakdown_complete"] &= split["token_breakdown_complete"]
         if key is not None:
             data["key"] = key
         return data
@@ -749,6 +834,8 @@ class OpenTabService:
                 "recorded_cost_usd": 0.0,
                 "api_equivalent_cost_usd": 0.0,
                 "tokens": 0,
+                **dict.fromkeys(_TOKEN_FIELDS, 0),
+                "token_breakdown_complete": True,
             }
         )
         for item in sessions:
@@ -759,6 +846,9 @@ class OpenTabService:
                 group["recorded_cost_usd"] += row["recorded_cost_usd"]
                 group["api_equivalent_cost_usd"] += row["api_equivalent_cost_usd"]
                 group["tokens"] += row["tokens"]
+                for field in _TOKEN_FIELDS:
+                    group[field] += row[field]
+                group["token_breakdown_complete"] &= row["token_breakdown_complete"]
         out = [{"key": key, **value} for key, value in groups.items()]
         out.sort(key=lambda row: (row["api_equivalent_cost_usd"], row["tokens"]), reverse=True)
         return out

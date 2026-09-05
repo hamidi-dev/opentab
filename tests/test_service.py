@@ -177,6 +177,197 @@ def test_qualified_refs_route_same_native_id_to_the_exact_combined_owner():
         assert exc.code == "ambiguous_session" and len(exc.details["matches"]) == 2
 
 
+def test_summary_describes_start_date_bounds_and_keeps_whole_session_usage():
+    first = workflow("a", "2026-08-24 00:00:00", tokens=100)
+    first.subagents = 2
+    first.ended_at = "2026-09-05 12:00:00"
+    last = workflow("b", "2026-08-30 23:59:59", tokens=200)
+    earlier = workflow("c", "2026-08-23 12:00:00", tokens=300)
+    earlier.ended_at = first.ended_at
+    later = workflow("d", "2026-08-31 00:00:00", tokens=400)
+    service = ot.OpenTabService(DetailStore([first, last, earlier, later]), _args())
+    with patch.object(service, "_date_bounds", wraps=service._date_bounds) as bounds:
+        summary = service.summary(
+            ot.SessionQuery(range="2026-08-24..2026-08-30", limit=1, offset=99), group_by="day"
+        )
+        bounds.assert_called_once_with("2026-08-24..2026-08-30")
+    assert summary["date_scope"] == {
+        "basis": "root_session_created_at_date",
+        "since": "2026-08-24",
+        "until": "2026-08-30",
+        "bounds_inclusive": True,
+        "usage_basis": "whole_session_including_tracked_descendants",
+        "timezone_basis": "store_provided_dates",
+    }
+    assert summary["totals"]["tokens"] == 300
+    assert summary["totals"]["subagents"] == 2
+    assert {row["key"] for row in summary["groups"]} == {"2026-08-24", "2026-08-30"}
+    with patch.object(service, "_date_bounds", return_value=("2026-08-30", None)) as bounds:
+        relative = service.summary(ot.SessionQuery(range="7d"))
+        bounds.assert_called_once_with("7d")
+    assert relative["date_scope"]["since"] == "2026-08-30"
+    assert relative["date_scope"]["until"] is None
+    assert relative["totals"]["tokens"] == 600
+
+
+def test_summary_token_categories_reconcile_for_every_group_and_whole_session_model_filter():
+    class SplitStore(DetailStore):
+        def model_breakdown(self):
+            row = super().model_breakdown()[0]
+            row.update(
+                tokens_total=150,
+                input=10,
+                output=20,
+                reasoning=30,
+                cache_read=40,
+                cache_write=50,
+                cache_write_1h=25,
+                unpriced_input=10,
+            )
+            return [
+                row,
+                {
+                    "root_id": row["root_id"],
+                    "model_name": "openai/gpt-5",
+                    "runs": 1,
+                    "tokens_total": 50,
+                    "input": 50,
+                    "unpriced_input": 50,
+                },
+            ]
+
+    item = workflow("same", "2026-09-01 12:00:00", cost=2, tokens=200)
+    other = workflow("same", "2026-09-01 12:00:00", cost=0, tokens=999)
+    other.source = "Claude Code"
+    service = ot.OpenTabService(
+        ot.CombinedStore(
+            [
+                SplitStore([item]),
+                DetailStore([other], source="Claude Code", model="other/model"),
+            ]
+        ),
+        _args(),
+        "all",
+    )
+    query = ot.SessionQuery(model="anthropic/claude-opus-4-5")
+    expected = {
+        "input_tokens": 60,
+        "output_tokens": 20,
+        "reasoning_tokens": 30,
+        "cache_read_tokens": 40,
+        "cache_write_tokens": 50,
+        "cache_write_1h_tokens": 25,
+    }
+    for group_by in (
+        "none",
+        "day",
+        "month",
+        "year",
+        "project",
+        "harness",
+        "machine",
+        "model",
+        "provider",
+    ):
+        summary = service.summary(query, group_by=group_by)
+        totals = summary["totals"]
+        assert totals["sessions"] == 1 and totals["tokens"] == 200
+        assert totals["token_breakdown_complete"] is True
+        assert totals["recorded_cost_usd"] == 2
+        assert totals["unpriced_tokens"] == 60
+        assert (
+            abs(
+                totals["api_equivalent_cost_usd"]
+                - (
+                    2
+                    + ot.api_equivalent_cost("anthropic/claude-opus-4-5", 10, 0, 0, 0, 0)
+                    + ot.api_equivalent_cost("openai/gpt-5", 50, 0, 0, 0, 0)
+                )
+            )
+            < 1e-10
+        )
+        for field, value in expected.items():
+            assert totals[field] == value
+            if group_by != "none":
+                assert sum(row[field] for row in summary["groups"]) == value
+        assert all(row["token_breakdown_complete"] for row in summary["groups"])
+        assert summary["scope"]["filters"]["model"] == query.model
+        assert "not tokens lacking a model rate" in summary["accounting"]["unpriced_tokens"]
+
+
+def test_summary_scope_reports_matching_identities_and_effective_ignore_policy():
+    left = workflow("same", "2026-09-01 12:00:00", directory="/repo/left")
+    right = workflow("same", "2026-09-01 12:00:00", directory="/repo/right")
+    left.machine, right.machine = "one", "two"
+    left.source, right.source = "OpenCode", "Claude Code"
+    service = ot.OpenTabService(
+        ot.CombinedStore(
+            [
+                DetailStore([left]),
+                DetailStore([right], source="Claude Code"),
+            ]
+        ),
+        _args(),
+        "all",
+    )
+    ignored_key = ot.SessionRef("one", "opencode", "same").encode()
+    for state in ({"ignored_projects": ["/repo/left"]}, {"ignored_sessions": [ignored_key]}):
+        with patch("opentab.service.load_state", return_value=state):
+            result = service.summary()
+            scope = result["scope"]
+            assert scope["selected_source"] == "all"
+            assert scope["machines"] == ["two"] and scope["harnesses"] == ["claude"]
+            assert scope["state_enabled"] and scope["saved_ignores_applied"]
+            assert not scope["include_ignored"]
+            included = service.summary(ot.SessionQuery(include_ignored=True))
+            assert included["totals"]["sessions"] == 2
+            assert included["scope"]["machines"] == ["one", "two"]
+            assert included["scope"]["harnesses"] == ["claude", "opencode"]
+            assert not included["scope"]["saved_ignores_applied"]
+            empty = service.summary(ot.SessionQuery(machine="missing"))
+            assert empty["scope"]["filters"]["machine"] == "missing"
+            assert empty["scope"]["machines"] == empty["scope"]["harnesses"] == []
+            assert empty["totals"]["input_tokens"] == empty["totals"]["tokens"] == 0
+            assert empty["totals"]["token_breakdown_complete"] is True
+    service.use_state = False
+    with patch(
+        "opentab.service.load_state", side_effect=AssertionError("state must stay disabled")
+    ):
+        result = service.summary()
+    assert result["totals"]["sessions"] == 2
+    assert not result["scope"]["state_enabled"] and not result["scope"]["saved_ignores_applied"]
+    assert result["date_scope"]["since"] is None and result["date_scope"]["until"] is None
+
+
+def test_summary_flags_missing_or_inconsistent_model_breakdowns_without_changing_totals():
+    items = [
+        workflow("a", "2026-09-01 12:00:00", tokens=100),
+        workflow("b", "2026-09-01 12:00:00", tokens=100),
+    ]
+    service = ot.OpenTabService(DetailStore(items), _args())
+    for models in ([], [{"root_id": "a", "tokens_total": 100, "input": 50}]):
+        with patch.object(service.store, "model_breakdown", return_value=models):
+            service.reload()
+            summary = service.summary(group_by="model")
+        assert summary["totals"]["tokens"] == 200
+        assert summary["totals"]["token_breakdown_complete"] is False
+        assert all(not row["token_breakdown_complete"] for row in summary["groups"])
+    # Opposing workflow-level discrepancies must not cancel into a complete breakdown.
+    with patch.object(
+        service.store,
+        "model_breakdown",
+        return_value=[
+            {"root_id": "a", "tokens_total": 50, "input": 50},
+            {"root_id": "b", "tokens_total": 150, "input": 150},
+        ],
+    ):
+        service.reload()
+        assert service.summary()["totals"]["token_breakdown_complete"] is False
+    # Retain the shared legacy convention: infer uncached input from the remainder.
+    split = service._token_breakdown([{"tokens_total": 100, "output": 20, "cache_read": 30}], 100)
+    assert split["input_tokens"] == 50 and split["token_breakdown_complete"] is True
+
+
 def test_service_keeps_prompts_and_raw_trace_behind_separate_gates():
     item = workflow("a", "2026-09-01 12:00:00", cost=0)
     hidden = ot.OpenTabService(DetailStore([item]), _args())

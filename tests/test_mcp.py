@@ -44,6 +44,14 @@ def test_mcp_legacy_initialize_lists_tools_and_calls_the_shared_service():
     listed = server.handle(_request("tools/list"))
     names = {tool["name"] for tool in listed["result"]["tools"]}
     assert "opentab_usage_summary" in names and "opentab_get_session_content" in names
+    summary = next(
+        tool for tool in listed["result"]["tools"] if tool["name"] == "opentab_usage_summary"
+    )
+    assert "session start dates, not individual call dates" in summary["description"]
+    props = summary["inputSchema"]["properties"]
+    assert "since that date" in props["range"]["description"]
+    assert "other models' usage" in props["model"]["description"]
+    assert "Ignored for summaries" in props["limit"]["description"]
 
     called = server.handle(
         _request(
@@ -178,6 +186,7 @@ def test_mcp_stdio_queries_a_real_store_and_persists_authored_mutations():
             input="".join(json.dumps(request) + "\n" for request in requests),
             text=True,
             capture_output=True,
+            cwd=tmp,
             timeout=30,
             env={
                 **os.environ,
@@ -194,6 +203,13 @@ def test_mcp_stdio_queries_a_real_store_and_persists_authored_mutations():
         data = [response["structuredContent"]["data"] for response in results]
         assert data[0]["totals"]["unpriced_tokens"] == 1_000_000
         assert data[0]["totals"]["api_equivalent_cost_usd"] == 5
+        assert data[0]["totals"]["input_tokens"] == 1_000_000
+        assert data[0]["totals"]["token_breakdown_complete"] is True
+        assert data[0]["date_scope"]["basis"] == "root_session_created_at_date"
+        assert data[0]["scope"]["harnesses"] == ["jsonl"]
+        assert data[0]["scope"]["saved_ignores_applied"] is True
+        assert "not a verified invoice" in data[0]["accounting"]["recorded_cost_usd"]
+        assert json.loads(results[0]["content"][0]["text"])["data"] == data[0]
         assert data[1]["total"] == 1
         assert data[2]["values"] == ["s1"]
         assert data[4]["bookmarked"] is True
