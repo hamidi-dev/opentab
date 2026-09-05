@@ -348,6 +348,7 @@ class App:
         self._models_loaded = False
         self._tool_by_session: dict[str, list[dict]] = {}
         self._turns_by_session: dict[str, list[dict]] = {}
+        self._turn_runs_cache: tuple | None = None
         # The trace is fetched only when a turn is opened, never by the drill-in
         # prefetch: it is the one extra that re-reads a session's whole content stream,
         # and most drill-ins never ask for it.
@@ -1868,14 +1869,19 @@ class App:
         so a second copy of the run rule would eventually open a different prompt's
         turns than the header above them names.
         """
+        rows = self.session_turn_rows(workflow_id)
+        cached = self._turn_runs_cache
+        if cached is not None and cached[0] is rows and cached[1] == len(rows):
+            return cached[2]
         runs: list[list[int]] = []
         last: object = object()
-        for n, r in enumerate(self.session_turn_rows(workflow_id)):
+        for n, r in enumerate(rows):
             pid = r.get("prompt_id", "")
             if pid != last:
                 runs.append([])
                 last = pid
             runs[-1].append(n)
+        self._turn_runs_cache = (rows, len(rows), runs)
         return runs
 
     def turn_groups(self, workflow_id: str) -> list[str]:
@@ -1887,7 +1893,7 @@ class App:
 
     def _move_turn_cursor(self, delta: int) -> bool:
         wf = self.current_session()
-        groups = self.turn_groups(wf.id) if wf else []
+        groups = self.turn_runs(wf.id) if wf else []
         if not groups:
             return False
         moved = max(0, min(self._turn_cursor + delta, len(groups) - 1))
@@ -1909,7 +1915,7 @@ class App:
                 self.toggle_trace_output()
                 return True
             return self.open_trace_drill() if self.session_supports_trace(wf.id) else False
-        groups = self.turn_groups(wf.id)
+        groups = self.turn_runs(wf.id)
         if not groups:
             return False
         self._turn_cursor = max(0, min(self._turn_cursor, len(groups) - 1))
@@ -1918,7 +1924,7 @@ class App:
 
     def turn_cursor_ordinal(self) -> str:
         wf = self.current_session()
-        groups = self.turn_groups(wf.id) if wf else []
+        groups = self.turn_runs(wf.id) if wf else []
         return f"{min(self._turn_cursor + 1, len(groups))} of {len(groups)}" if groups else "-"
 
     @property
@@ -2478,6 +2484,7 @@ class App:
             self.notify(f"price refresh failed: {exc}", "error")
             return
         invalidate_price_cache()
+        self.renderer._turn_layout_cache = None
         self._whatif_catalog_rows = None
         self._ensure_models()
         self._compute_api_costs()
@@ -2591,6 +2598,8 @@ class App:
         notes_ok = self.refresh_notes()
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._turn_runs_cache = None
+        self.renderer._turn_layout_cache = None
         self._trace_by_session.clear()
         self._clear_trace_expansion()
         self.turn_drill = None
@@ -2908,6 +2917,8 @@ class App:
         self._models_loaded = False
         self._tool_by_session.clear()
         self._turns_by_session.clear()
+        self._turn_runs_cache = None
+        self.renderer._turn_layout_cache = None
         self._trace_by_session.clear()
         self._clear_trace_expansion()
         self.turn_drill = None
@@ -5124,7 +5135,7 @@ class App:
 
         if self._on_turns_tab() and self.active_turn_drill is None:
             wf = self.current_session()
-            groups = self.turn_groups(wf.id) if wf else []
+            groups = self.turn_runs(wf.id) if wf else []
             if groups:
                 self._turn_cursor = len(groups) - 1 if to_end else 0
                 self._turn_follow = True

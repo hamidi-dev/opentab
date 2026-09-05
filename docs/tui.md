@@ -267,6 +267,14 @@ on available row data; content flags advertise only an openable trace and never
 trigger a content fetch just to draw a marker. Tools attribution means usage in
 steps that invoked a tool, not the size of the tool's output.
 
+Turns retains one prompt/turn table layout and one session's prompt-run indices.
+Scrolling reuses the analysis, charts, formatted lines, and click map; only cursor
+highlight and viewport change. Layout keys include the turn snapshot, pane width,
+prompt drill, pricing mode, and capabilities. Reload and harness/demo changes
+clear both memos; a price refresh also clears the layout. Raw traces bypass this
+layout cache so expanded content keeps its separate lifetime and output markers
+continue to follow scrolling.
+
 Context's measured curve uses main-thread `input + cache_read + cache_write`.
 Subagents have their own windows. Curve support is separate from optional
 composition support; cumulative-delta backends such as Codex cannot provide

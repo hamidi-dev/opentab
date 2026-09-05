@@ -2,6 +2,7 @@ import os
 import re
 import sqlite3
 import tempfile
+from unittest.mock import patch
 
 import opentab as ot
 
@@ -1568,6 +1569,114 @@ def _turns_app(store_cls=_TurnNavStore):
     return app
 
 
+def test_turns_scroll_reuses_layout_and_runs_but_restores_paint_metadata():
+    class CountedRows(list):
+        scans = 0
+
+        def __iter__(self):
+            self.scans += 1
+            return super().__iter__()
+
+    app = _turns_app(_counting_turn_store(100))
+    wf = app.current_session()
+    rnd = app.renderer
+    rows = CountedRows(app.session_turn_rows(wf.id))
+    app._turns_by_session[wf.id] = rows
+    runs = app.turn_runs(wf.id)
+    lines = rnd.detail_turns(wf, 116)
+    headers = rnd.box_header_lines(lines)
+    row_map = dict(rnd._turn_header_at)
+    scans = rows.scans
+    assert headers and len(row_map) == 100
+    with patch.object(rnd, "_build_turns", side_effect=AssertionError("rebuilt while scrolling")):
+        for key in ("j", "j", "k", "G", "g"):
+            app.handle_key(None, ord(key))
+            # draw() clears header metadata; another tab can overwrite the row map.
+            rnd._box_headers.clear()
+            rnd._turn_header_at = {}
+            assert rnd.detail_turns(wf, 116) is lines
+            assert rnd.box_header_lines(lines) == headers
+            assert rnd._turn_header_at == row_map
+            assert row_map[rnd._turn_cursor_line] == app._turn_cursor
+            rnd._scroll_turn_cursor_into_view(15)
+            assert app.scroll <= rnd._turn_cursor_line < app.scroll + 15
+            assert app.turn_runs(wf.id) is runs
+            assert app.turn_cursor_ordinal() == f"{app._turn_cursor + 1} of 100"
+        app.scroll += 3  # wheel scrolling does not move the cursor
+        assert rnd.detail_turns(wf, 116) is lines
+    assert rows.scans == scans, "warm scrolling must not rescan the turn snapshot"
+
+
+def test_turns_layout_rebuilds_for_width_prices_snapshot_and_capabilities():
+    app = _turns_app()
+    wf = app.current_session()
+    rnd = app.renderer
+    rows = app.session_turn_rows(wf.id)
+    rows[0]["cost"] = 0
+    rows[0]["input"] = 1_000_000
+    rows[0]["tokens_total"] = 1_000_050
+    initial = rnd.detail_turns(wf, 116)
+    narrow = rnd.detail_turns(wf, 76)
+    assert narrow is not initial and narrow != initial
+    app.toggle_api_prices()
+    actual = rnd.detail_turns(wf, 76)
+    assert actual != narrow
+    runs = app.turn_runs(wf.id)
+    replacement = [dict(row, prompt_title="replacement prompt") for row in rows]
+    replacement[0]["prompt_id"] = "new run"
+    app._turns_by_session[wf.id] = replacement
+    updated = rnd.detail_turns(wf, 76)
+    assert "replacement prompt" in "\n".join(updated)
+    assert app.turn_runs(wf.id) is not runs and len(app.turn_runs(wf.id)) == 4
+    with patch.object(app, "session_supports_context_curve", return_value=False):
+        no_curve = rnd.detail_turns(wf, 76)
+        assert any("context│" in line for line in updated)
+        assert not any("context│" in line for line in no_curve)
+    with patch("opentab.tui.renderer.unicode_screen", return_value=False):
+        ascii_lines = rnd.detail_turns(wf, 76)
+        assert any(line.startswith("+") for line in ascii_lines)
+
+
+def test_turns_layout_and_runs_are_released_on_reload_and_source_change():
+    app = _turns_app()
+    wf = app.current_session()
+    for reload in (app.reload, app._reload_for_source):
+        lines = app.renderer.detail_turns(wf, 116)
+        runs = app.turn_runs(wf.id)
+        reload()
+        assert app.renderer._turn_layout_cache is None
+        assert app._turn_runs_cache is None
+        assert app.turn_runs(wf.id) is not runs
+        assert app.renderer.detail_turns(wf, 116) is not lines
+
+
+def test_turns_price_refresh_invalidates_layout_without_reloading_rows():
+    app = _turns_app()
+    wf = app.current_session()
+    rows = app.session_turn_rows(wf.id)
+    rows[0]["cost"] = 0
+    before = app.renderer.detail_turns(wf, 116)
+    with patch("opentab.tui.app.refresh_model_prices", return_value=(1, None)):
+        app.refresh_prices_action()
+    assert app.renderer._turn_layout_cache is None
+    assert app.session_turn_rows(wf.id) is rows
+    with patch("opentab.tui.renderer.api_equivalent_cost", return_value=123):
+        after = app.renderer.detail_turns(wf, 116)
+    assert after != before and "$123.50" in "\n".join(after)
+
+
+def test_turns_layout_never_fetches_an_unsupported_timeline():
+    app = _turns_app()
+    wf = app.current_session()
+    app.renderer.detail_turns(wf, 116)
+    with patch.object(app, "session_supports_turns", return_value=False), patch.object(
+        app, "session_turn_rows", side_effect=AssertionError("unsupported timeline fetched")
+    ):
+        assert "no per-turn usage" in "\n".join(app.renderer.detail_turns(wf, 116))
+    assert app.renderer._turn_header_at == {}
+    assert app.renderer._turn_cursor_line is None
+
+
 def test_turns_name_the_tools_each_step_called():
     app = _turns_app(_TurnToolStore)
     wf = app.current_session()
@@ -2637,6 +2746,38 @@ def _trace_app():
     app = _turns_app(_TraceStore)
     app.open_turn_drill(0)  # the first prompt, whose two turns both have content
     return app
+
+
+def test_turns_cache_reuses_prompt_drills_but_never_retains_trace_lines():
+    from opentab.tui.renderer import TraceLine
+
+    app = _trace_app()
+    wf = app.current_session()
+    rnd = app.renderer
+    drill = rnd.detail_turns(wf, 116)
+    cached = rnd._turn_layout_cache
+    app._move_trace_cursor(1)
+    assert rnd.detail_turns(wf, 116) is drill
+    assert rnd._turn_header_at[rnd._turn_cursor_line] == 1
+    app.open_trace_drill()
+    trace = rnd.detail_turns(wf, 116)
+    assert any(isinstance(line, TraceLine) for line in trace)
+    assert rnd._turn_layout_cache is cached
+    assert rnd._turn_header_at == {} and rnd._turn_cursor_line is None
+    app.close_trace_drill()
+    assert rnd.detail_turns(wf, 116) is drill
+    assert rnd._turn_header_at[rnd._turn_cursor_line] == 1
+    app.close_turn_drill()
+    prompts = rnd.detail_turns(wf, 116)
+    assert prompts is not drill
+    app.open_turn_drill(1)
+    other = rnd.detail_turns(wf, 116)
+    assert "prompt 2 of 2" in "\n".join(other)
+    assert other is not prompts and other is not drill
+    with patch.object(app, "session_supports_trace", return_value=False):
+        no_trace = rnd.detail_turns(wf, 116)
+        assert no_trace is not other
+        assert rnd._turn_header_at == {} and rnd._turn_cursor_line is None
 
 
 def test_turn_trace_shows_the_exact_command_its_arguments_and_its_output():

@@ -198,7 +198,8 @@ class Renderer:
         self._bar_slots: list[tuple[int, int, str]] | None = None
         self._bar_click_rows = 0
         self._trend_rows_at: tuple[int, int, int] | None = None
-        self._turn_header_at: dict[int, str] = {}
+        self._turn_header_at: dict[int, int] = {}
+        self._turn_layout_cache: tuple | None = None
         # Selected prompt header line, recomputed each paint for scroll/highlight.
         self._turn_cursor_line: int | None = None
         # Logical header lines become screen-coordinate sort regions during paint.
@@ -4551,6 +4552,46 @@ class Renderer:
         return lines
 
     def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
+        # Only the current table layout is retained. Turn rows are immutable snapshots
+        # until reload; keeping their reference also prevents id reuse after replacement.
+        # Traces have scroll-dependent output markers and their own content lifetime.
+        if not self.session_supports_turns(workflow.id) or self.app.active_trace_drill is not None:
+            self._turn_header_at = {}
+            self._turn_cursor_line = None
+            return self._build_turns(workflow, width)
+        rows = self.session_turn_rows(workflow.id)
+        drill = self.app.active_turn_drill
+        key = (
+            workflow.id,
+            id(rows),
+            len(rows),
+            width,
+            drill,
+            self.show_api_prices,
+            self.store.demo,
+            self.session_supports_context_curve(workflow.id),
+            self.session_supports_trace(workflow.id),
+            unicode_screen(),
+        )
+        cached = self._turn_layout_cache
+        if cached is None or cached[0] != key:
+            self._turn_header_at = {}
+            self._turn_cursor_line = None
+            lines = self._build_turns(workflow, width)
+            headers = {line for line in lines if line in self._box_headers}
+            cursor_lines = {ordinal: line for line, ordinal in self._turn_header_at.items()}
+            cached = (key, rows, lines, headers, self._turn_header_at, cursor_lines)
+            self._turn_layout_cache = cached
+        _, _, lines, headers, self._turn_header_at, cursor_lines = cached
+        # draw() clears paint metadata each frame; selection is deliberately not cached.
+        self._box_headers.update(headers)
+        cursor = (
+            self.app._turn_cursor if self.app.active_turn_drill is None else self.app._trace_cursor
+        )
+        self._turn_cursor_line = cursor_lines.get(cursor)
+        return lines
+
+    def _build_turns(self, workflow: Workflow, width: int) -> list[str]:
         # Keep prompts chronological because this tab answers when cost accrued. Per-turn
         # detail is drilled separately; `$` reprices wholly unpriced turns at list rates.
         if not self.session_supports_turns(workflow.id):
