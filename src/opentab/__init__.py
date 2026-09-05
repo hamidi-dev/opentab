@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # Hatchling and importing modules read this before the re-exports below.
-__version__ = "1.20.0"
+__version__ = "1.21.0"
 
 # Compatibility exports also keep package-level monkeypatches visible to submodules.
 import csv
