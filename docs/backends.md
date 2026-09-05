@@ -382,8 +382,9 @@ unsupported; unreadable blobs and unfamiliar schemas can leave usage unreported.
 Readers: [`stores/csv_source.py`](../src/opentab/stores/csv_source.py) and
 [`stores/jsonl_source.py`](../src/opentab/stores/jsonl_source.py)
 
-JSONL subclasses the CSV accounting pipeline. Input includes cached reads; output
-already includes reasoning. A **positive** cost is recorded spend (`credits` convert
+JSONL subclasses the CSV accounting pipeline. Input includes cache reads and writes,
+which are split into their disjoint categories; output already includes reasoning. A
+**positive** cost is recorded spend (`credits` convert
 at $0.01 each). Missing, zero or negative cost leaves usage unpriced, even when a
 cost column exists. Positive cost-only requests survive without token counts.
 

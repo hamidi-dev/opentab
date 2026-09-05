@@ -21,9 +21,10 @@ class CsvStore:
 
         timestamp  time|date|created_at|ts        ISO-8601 or epoch (s/ms/us)
         model      model_id|model_name            e.g. claude-sonnet-4, gpt-4o, gemini-2.5-pro
-        input      input_tokens|prompt_tokens     as logged (may include the cached read)
+        input      input_tokens|prompt_tokens     as logged (includes cache reads/writes)
         output     output_tokens|completion_tokens includes reasoning (priced once at output)
         cached     cached_tokens|cache_read        cached portion of input (default 0)
+        cache_write cache_write_tokens|cache_write written portion of input (default 0)
         session    session_id|conversation_id      groups requests into one session
         request    request_id|req_id|id            stable per-request id (dedup)
         prompt     prompt_text|user_prompt          the user message -> Turns grouping
@@ -34,8 +35,9 @@ class CsvStore:
 
     Positive per-row cost is recorded spend; zero-cost rows remain unpriced, even when
     mixed with metered rows of the same model. Input includes cache reads and is split
-    accordingly. Missing session ids create stable daily project buckets. Malformed rows
-    are skipped. JsonlStore inherits the accumulation and Turns/Tools behavior.
+    into uncached, cache-read, and cache-write portions accordingly. Missing session ids
+    create stable daily project buckets. Malformed rows are skipped. JsonlStore inherits
+    the accumulation and Turns/Tools behavior.
     """
 
     combined = False
@@ -62,6 +64,9 @@ class CsvStore:
         "cache_read": "cached",
         "cache_read_tokens": "cached",
         "cached": "cached",
+        "cache_write_tokens": "cache_write",
+        "cache_write_input_tokens": "cache_write",
+        "cache_write": "cache_write",
         "session_id": "session",
         "conversation_id": "session",
         "session": "session",
@@ -263,10 +268,10 @@ class CsvStore:
     def _new_acc() -> dict:
         return {
             "runs": 0,
-            "input": 0,  # uncached input (the logged input minus the cached read)
+            "input": 0,  # uncached input (the logged input minus cache reads/writes)
             "output": 0,
             "cache_read": 0,
-            "cache_write": 0,  # OpenAI-style: no separate cache-write bill
+            "cache_write": 0,
             "tokens_total": 0,
             "cost": 0.0,
             # The unpriced half of the split, accumulated per row (see _accumulate).
@@ -277,7 +282,9 @@ class CsvStore:
         }
 
     @staticmethod
-    def _accumulate(acc: dict, uncached: int, cached: int, out: int, cost: float) -> None:
+    def _accumulate(
+        acc: dict, uncached: int, cached: int, cache_write: int, out: int, cost: float
+    ) -> None:
         # Fold one request row into its (session, model) bucket. The priced/unpriced
         # split is decided PER ROW -- the PiStore pattern -- because a log legitimately
         # mixes routes: a row with a recorded cost is real spend, a $0 row leaves its
@@ -289,13 +296,15 @@ class CsvStore:
         acc["runs"] += 1
         acc["input"] += uncached
         acc["cache_read"] += cached
+        acc["cache_write"] += cache_write
         acc["output"] += out
-        acc["tokens_total"] += uncached + cached + out
+        acc["tokens_total"] += uncached + cached + cache_write + out
         if cost > 0:
             acc["cost"] += cost
         else:
             acc["u_input"] += uncached
             acc["u_cache_read"] += cached
+            acc["u_cache_write"] += cache_write
             acc["u_output"] += out
 
     @staticmethod
@@ -341,12 +350,15 @@ class CsvStore:
         inp = self._to_int(g("input"))
         out = self._to_int(g("output"))
         cached = self._to_int(g("cached"))
+        cache_write = self._to_int(g("cache_write"))
         cost = self._to_float(g("cost"))
         if cost_is_credits:
             cost *= 0.01
+        cached = min(cached, inp)
+        cache_write = min(cache_write, inp - cached)
         # A cost-only row (no token counts) is still real spend; only rows with neither
         # tokens nor cost are skipped (header echo, blank line, metadata-only row).
-        if inp == 0 and out == 0 and cached == 0 and cost <= 0:
+        if inp == 0 and out == 0 and cached == 0 and cache_write == 0 and cost <= 0:
             return
         ts = self._parse_ts(g("timestamp"))
         ts_epoch = self._parse_ts_epoch(g("timestamp"))  # absolute, for worked-time
@@ -388,8 +400,8 @@ class CsvStore:
         acc = s["models"].get(model)
         if acc is None:
             acc = s["models"][model] = self._new_acc()
-        uncached = max(0, inp - cached)
-        self._accumulate(acc, uncached, cached, out, cost)
+        uncached = inp - cached - cache_write
+        self._accumulate(acc, uncached, cached, cache_write, out, cost)
 
         s["turns"].append(
             {
@@ -403,8 +415,8 @@ class CsvStore:
                 "output": out,
                 "reasoning": 0,
                 "cache_read": cached,
-                "cache_write": 0,
-                "tokens_total": uncached + cached + out,
+                "cache_write": cache_write,
+                "tokens_total": uncached + cached + cache_write + out,
                 "prompt": prompt,
                 "prompt_full": full,  # uncapped; the Turns tab can expand it
                 "prompt_id": pid,

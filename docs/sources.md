@@ -373,9 +373,10 @@ are a timestamp, a model, and input/output token counts; everything else is opti
 |-------|----------------|-------|
 | timestamp | `timestamp` `time` `ts` `date` `created_at` `datetime` | ISO-8601 or epoch (s/ms/µs) — **required** |
 | model | `model` `model_id` `model_name` | e.g. `gpt-4o`, `claude-sonnet-4` — **required** |
-| input | `input_tokens` `input` `prompt_tokens` | as logged (may include the cached read) — **required** |
+| input | `input_tokens` `input` `prompt_tokens` | as logged (may include cache reads and writes) — **required** |
 | output | `output_tokens` `output` `completion_tokens` | includes reasoning (priced once) — **required** |
 | cached | `cached_tokens` `cached` `cache_read` `cache_read_tokens` | cached portion of input (default 0) |
+| cache write | `cache_write_tokens` `cache_write_input_tokens` `cache_write` | cache-written portion of input (default 0) |
 | session | `session_id` `session` `conversation_id` `conversation` | groups requests into one session |
 | request | `request_id` `id` `req_id` | stable per-request id — dedupes regenerated/appended files |
 | prompt | `prompt` `prompt_text` `user_prompt` | the user message → Turns grouping |

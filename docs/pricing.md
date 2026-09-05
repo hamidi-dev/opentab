@@ -86,6 +86,13 @@ as twice the input rate, never below the short rate; other model families retain
 their ordinary write rate. Claude records the TTL split, while most harnesses
 discard it. Those records cannot support an exact long-TTL adjustment.
 
+GPT-5.6 and later also report cache writes as a separate input category. OpenAI
+charges those writes at 1.25 times the ordinary input rate and guarantees the entry
+for at least 30 minutes after its latest write or reuse; cache reads cost one tenth of
+ordinary input. OpenTab uses the documented write multiplier if an otherwise valid
+catalog row omits that fourth rate. Because 30 minutes is a minimum rather than an exact
+expiry, cache-miss analysis does not claim that an OpenAI entry died at that boundary.
+
 ### Cache misses are estimates
 
 Cache-miss analysis compares consecutive main-thread turns for a previously cached

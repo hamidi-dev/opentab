@@ -26,12 +26,21 @@ def test_csv_store_splits_cache_prefixes_providers_and_stays_unpriced():
         path = os.path.join(tmp, "copilot.csv")
         _write_csv(
             path,
-            ["timestamp", "model", "input_tokens", "output_tokens", "cached_tokens", "session_id"],
+            [
+                "timestamp",
+                "model",
+                "input_tokens",
+                "output_tokens",
+                "cached_tokens",
+                "cache_write_tokens",
+                "session_id",
+            ],
             [
                 # input_tokens includes the cached read (OpenAI style) -> uncached 8000
-                ["2026-06-18T10:00:00Z", "claude-sonnet-4", 12000, 800, 4000, "s1"],
-                ["2026-06-18T10:05:00Z", "gpt-4o", 5000, 300, 0, "s1"],
-                ["2026-06-17T09:00:00Z", "gemini-2.5-pro", 2000, 150, 0, "s2"],
+                ["2026-06-18T10:00:00Z", "claude-sonnet-4", 12000, 800, 4000, 0, "s1"],
+                # GPT-5.6 input includes both disjoint cache categories.
+                ["2026-06-18T10:05:00Z", "gpt-5.6-sol", 5000, 300, 1000, 2000, "s1"],
+                ["2026-06-17T09:00:00Z", "gemini-2.5-pro", 2000, 150, 0, 0, "s2"],
             ],
         )
         store = ot.CsvStore(path, _csv_args())
@@ -46,10 +55,13 @@ def test_csv_store_splits_cache_prefixes_providers_and_stays_unpriced():
 
         rows = {r["model_name"]: r for r in store.model_breakdown() if r["root_id"] == "s1"}
         # mixed providers each get the right prefix so pricing + the Providers tab work
-        assert set(rows) == {"anthropic/claude-sonnet-4", "openai/gpt-4o"}
+        assert set(rows) == {"anthropic/claude-sonnet-4", "openai/gpt-5.6-sol"}
         cl = rows["anthropic/claude-sonnet-4"]
         assert cl["input"] == 8000 and cl["cache_read"] == 4000  # cached split out of input
         assert cl["unpriced_input"] == 8000 and cl["unpriced_cache_read"] == 4000
+        gpt = rows["openai/gpt-5.6-sol"]
+        assert (gpt["input"], gpt["cache_read"], gpt["cache_write"]) == (2000, 1000, 2000)
+        assert gpt["unpriced_cache_write"] == 2000
 
         # the "$" what-if reprices the unpriced tokens at list price (non-zero)
         est = ot.api_equivalent_cost(
@@ -65,7 +77,8 @@ def test_csv_store_splits_cache_prefixes_providers_and_stays_unpriced():
         # one flat depth-0 node aggregating both of s1's models
         nodes = store.workflow_nodes("s1")
         assert len(nodes) == 1 and nodes[0]["depth"] == 0
-        assert nodes[0]["tokens_input"] == 13000  # 8000 + 5000 uncached
+        assert nodes[0]["tokens_input"] == 10000  # 8000 + 2000 uncached
+        assert nodes[0]["tokens_cache_write"] == 2000
         assert nodes[0]["tokens_total"] == 18100
         assert nodes[0]["cost"] == 0.0  # _priced_nodes reprices a $0 node under "$"
 
@@ -89,6 +102,43 @@ def test_csv_groups_by_day_and_project_when_no_session_id():
         assert len(workflows) == 3
         alpha18 = next(w for w in workflows if w.directory == "alpha" and "06-18" in w.created_at)
         assert alpha18.total_tokens == 100 + 10 + 200 + 20  # both rows folded together
+
+
+def test_csv_and_jsonl_bound_cache_parts_to_the_inclusive_input_budget():
+    with tempfile.TemporaryDirectory() as tmp:
+        csv_path = os.path.join(tmp, "requests.csv")
+        _write_csv(
+            csv_path,
+            [
+                "timestamp",
+                "model",
+                "input_tokens",
+                "output_tokens",
+                "cached_tokens",
+                "cache_write_tokens",
+                "session_id",
+            ],
+            [["2026-06-18T10:00:00Z", "gpt-5.6-sol", 100, 10, 80, 80, "s1"]],
+        )
+        csv_row = ot.CsvStore(csv_path, _csv_args()).model_breakdown()[0]
+        assert (csv_row["input"], csv_row["cache_read"], csv_row["cache_write"]) == (0, 80, 20)
+        assert csv_row["tokens_total"] == 110
+
+        jsonl_path = os.path.join(tmp, "requests.jsonl")
+        _write_jsonl(
+            jsonl_path,
+            [
+                {
+                    "timestamp": "2026-06-18T10:00:00Z",
+                    "model": "gpt-6-astra",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_write_tokens": 100,
+                }
+            ],
+        )
+        # A cache counter with no inclusive input budget is malformed, not a workflow.
+        assert ot.JsonlStore(jsonl_path, _jsonl_args()).workflows() == []
 
 
 def test_csv_ended_at_tracks_the_latest_row_in_the_session():
@@ -260,9 +310,10 @@ def test_jsonl_store_splits_cache_prefixes_providers_and_supports_turns():
                     "timestamp": "2026-06-18T10:05:00Z",
                     "session_id": "s1",
                     "request_id": "r3",
-                    "model": "gpt-4o",
+                    "model": "gpt-6-astra",
                     "prompt": "add tests",
                     "input_tokens": 5000,
+                    "cache_write_tokens": 2000,
                     "output_tokens": 300,
                 },
                 {
@@ -288,14 +339,17 @@ def test_jsonl_store_splits_cache_prefixes_providers_and_supports_turns():
         assert s1.title == "refactor auth"  # title seeds from the first prompt
 
         rows = {r["model_name"]: r for r in store.model_breakdown() if r["root_id"] == "s1"}
-        assert set(rows) == {"anthropic/claude-sonnet-4", "openai/gpt-4o"}
+        assert set(rows) == {"anthropic/claude-sonnet-4", "openai/gpt-6-astra"}
         cl = rows["anthropic/claude-sonnet-4"]
         assert cl["input"] == 9000 and cl["cache_read"] == 12000  # cached split out of input
+        gpt = rows["openai/gpt-6-astra"]
+        assert (gpt["input"], gpt["cache_write"]) == (3000, 2000)
 
         # Turns: chronological, grouped by the owning prompt (consecutive same text)
         assert store.supports_turns("s1") is True
         turns = store.message_timeline("s1")
         assert [t["tokens_total"] for t in turns] == [12800, 9600, 5300]
+        assert [t["cache_write"] for t in turns] == [0, 0, 2000]
         assert [t["prompt_title"] for t in turns] == ["refactor auth", "refactor auth", "add tests"]
         assert turns[0]["prompt_id"] == turns[1]["prompt_id"] != turns[2]["prompt_id"]
         assert all(t["depth"] == 0 and t["agent"] == "-" for t in turns)

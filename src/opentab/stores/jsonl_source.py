@@ -18,9 +18,10 @@ class JsonlStore(CsvStore):
 
         timestamp   timestamp|time|ts|date|created_at   ISO-8601 or epoch (s/ms/us)
         model       model|model_id|model_name           e.g. gpt-4o, claude-sonnet-4
-        input       input_tokens|input|prompt_tokens    as logged (may include cached read)
+        input       input_tokens|input|prompt_tokens    as logged (includes cache reads/writes)
         output      output_tokens|output|completion_tokens  includes reasoning (priced once)
         cached      cached_tokens|cached|cache_read      cached portion of input (default 0)
+        cache_write cache_write_tokens|cache_write       written portion of input (default 0)
         session     session_id|session|conversation_id  groups requests into one session
         request     request_id|id|req_id                stable per-request id (dedup)
         prompt      prompt|prompt_text|user_prompt       the user message -> Turns grouping
@@ -47,6 +48,11 @@ class JsonlStore(CsvStore):
         "input": ("input_tokens", "input", "prompt_tokens"),
         "output": ("output_tokens", "output", "completion_tokens"),
         "cached": ("cached_tokens", "cached", "cache_read", "cache_read_tokens"),
+        "cache_write": (
+            "cache_write_tokens",
+            "cache_write_input_tokens",
+            "cache_write",
+        ),
         "session": ("session_id", "session", "conversation_id", "conversation"),
         "request": ("request_id", "id", "req_id"),
         "prompt": ("prompt", "prompt_text", "user_prompt"),
@@ -147,10 +153,13 @@ class JsonlStore(CsvStore):
         inp = self._to_int(self._get(obj, "input"))
         out = self._to_int(self._get(obj, "output"))
         cached = self._to_int(self._get(obj, "cached"))
+        cache_write = self._to_int(self._get(obj, "cache_write"))
         cost = self._row_cost(obj)
+        cached = min(cached, inp)
+        cache_write = min(cache_write, inp - cached)
         # A cost-only line (no token counts) is still real spend; only lines with
         # neither tokens nor cost are skipped (metadata-only / malformed line).
-        if inp == 0 and out == 0 and cached == 0 and cost <= 0:
+        if inp == 0 and out == 0 and cached == 0 and cache_write == 0 and cost <= 0:
             return
         ts = self._parse_ts(self._get(obj, "timestamp"))
         ts_epoch = self._parse_ts_epoch(self._get(obj, "timestamp"))  # absolute, for worked
@@ -183,8 +192,8 @@ class JsonlStore(CsvStore):
         acc = s["models"].get(model)
         if acc is None:
             acc = s["models"][model] = self._new_acc()
-        uncached = max(0, inp - cached)
-        self._accumulate(acc, uncached, cached, out, cost)
+        uncached = inp - cached - cache_write
+        self._accumulate(acc, uncached, cached, cache_write, out, cost)
 
         raw_prompt = self._get(obj, "prompt")
         full = raw_prompt.strip() if isinstance(raw_prompt, str) else ""
@@ -207,8 +216,8 @@ class JsonlStore(CsvStore):
                 "output": out,
                 "reasoning": 0,
                 "cache_read": cached,
-                "cache_write": 0,
-                "tokens_total": uncached + cached + out,
+                "cache_write": cache_write,
+                "tokens_total": uncached + cached + cache_write + out,
                 "prompt": prompt,
                 "prompt_full": full,  # uncapped; the Turns tab can expand it
                 "prompt_id": pid,

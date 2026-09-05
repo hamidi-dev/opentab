@@ -29,7 +29,11 @@ MODEL_PRICE_FALLBACKS = (
     ("haiku", 1.0, 5.0, 0.1, 1.25),
     ("sonnet", 3.0, 15.0, 0.3, 3.75),
     ("opus", 5.0, 25.0, 0.5, 6.25),
-    ("gpt-5.6", 5.0, 30.0, 0.5, 6.25),
+    ("gpt-6-astra", 10.0, 50.0, 1.0, 12.5),
+    ("gpt-6", 10.0, 50.0, 1.0, 12.5),
+    ("gpt-5.6-luna", 0.2, 1.2, 0.02, 0.25),
+    ("gpt-5.6-terra", 2.0, 12.0, 0.2, 2.5),
+    ("gpt-5.6", 4.0, 20.0, 0.4, 5.0),
     ("gpt-5.5", 5.0, 30.0, 0.5, 0.0),
     ("gpt-5.4", 2.5, 15.0, 0.25, 0.0),
     ("gpt-5.3", 1.75, 14.0, 0.175, 0.0),
@@ -111,6 +115,29 @@ def model_family(name: str) -> str:
     return ""
 
 
+def _openai_paid_cache_writes(name: str) -> bool:
+    """Whether OpenAI charges cache creation separately for this model generation."""
+    if model_family(name) != "openai":
+        return False
+    bare = str(name).rsplit("/", 1)[-1].lower()
+    match = re.match(r"^gpt-(\d+)(?:[.-](\d{1,2})(?=[.-]|$))?", bare)
+    if not match:
+        return False
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return major > 5 or (major == 5 and minor >= 6)
+
+
+def _with_openai_cache_write(
+    name: str, row: tuple[float, ...]
+) -> tuple[float, float, float, float]:
+    # GPT-5.6+ cache writes cost 1.25x input. Older catalogs and some resale cards
+    # omit the fourth rate; never turn recorded writes into free tokens because of it.
+    if row[0] > 0 and row[3] <= 0 and _openai_paid_cache_writes(name):
+        return (row[0], row[1], row[2], row[0] * 1.25)
+    return (row[0], row[1], row[2], row[3])
+
+
 def is_vendor_route(provider_id: str, name: str) -> bool:
     """Identify an unambiguous vendor-owned route over gateway resale cards."""
     fam = model_family(name)
@@ -135,6 +162,10 @@ def display_model(bare: str) -> str:
 
 def dots_to_dashes(text: str) -> str:
     return re.sub(r"(?<=\d)\.(?=\d)", "-", text)
+
+
+def _gpt_version_to_dots(text: str) -> str:
+    return re.sub(r"^(gpt-\d+)-(\d{1,2})(?=-|$)", r"\1.\2", text)
 
 
 def canonical_model(name: str) -> str:
@@ -379,7 +410,7 @@ def catalog_models() -> list[tuple[str, str, tuple[float, float, float, float], 
     for _prices, _limits, tree, _meta, _vendor in _layers():
         if tree:
             return [
-                (pid, mid, tuple(m["cost"]), m.get("status", ""))
+                (pid, mid, _with_openai_cache_write(mid, tuple(m["cost"])), m.get("status", ""))
                 for pid, p in tree.items()
                 for mid, m in p["models"].items()
             ]
@@ -422,7 +453,7 @@ def refresh_model_prices(url: str = MODELS_DEV_URL, dest: str | None = None) -> 
 def model_price(name: str) -> tuple[float, float, float, float]:
     if is_local_provider(name):
         return (0.0, 0.0, 0.0, 0.0)
-    mid = str(name).rsplit("/", 1)[-1].lower()
+    mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     plain = display_model(mid)
     for prices, _limits, _tree, _meta, vendor in _layers():
         row = prices.get(mid)
@@ -430,19 +461,23 @@ def model_price(name: str) -> tuple[float, float, float, float]:
             # Prefer a real unpinned catalog card before family guesses.
             row = prices.get(plain)
             if row is not None:
-                return row
+                return _with_openai_cache_write(mid, row)
             continue
         if plain == mid or vendor.get(mid) or not model_family(mid):
             # Preserve authoritative dated vendor cards; unknown vendors cannot be folded safely.
-            return row
+            return _with_openai_cache_write(mid, row)
         alt = prices.get(plain)
         if alt is None:
-            return row
+            return _with_openai_cache_write(mid, row)
         # Prefer vendor-owned or more complete plain cards over incomplete resale aliases.
         if vendor.get(plain) or sum(1 for v in alt if v > 0) > sum(1 for v in row if v > 0):
-            return alt
-        return row
-    return next((tuple(p) for needle, *p in MODEL_PRICE_FALLBACKS if needle in mid), FALLBACK_PRICE)
+            return _with_openai_cache_write(mid, alt)
+        return _with_openai_cache_write(mid, row)
+    row = next(
+        (tuple(p) for needle, *p in MODEL_PRICE_FALLBACKS if needle in mid),
+        FALLBACK_PRICE,
+    )
+    return _with_openai_cache_write(mid, row)
 
 
 def has_known_price(name: str) -> bool:
@@ -453,7 +488,7 @@ def has_known_price(name: str) -> bool:
     """
     if is_local_provider(name):
         return False
-    mid = str(name).rsplit("/", 1)[-1].lower()
+    mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     plain = display_model(mid)
     if any(mid in prices or plain in prices for prices, _limits, _tree, _meta, _v in _layers()):
         return True
@@ -468,13 +503,13 @@ def has_catalog_row(name: str) -> bool:
     model's rate. A caller asking whether an id genuinely EXISTS (a mode suffix worth
     splitting a model row over) has to compare against the rows themselves.
     """
-    mid = str(name).rsplit("/", 1)[-1].lower()
+    mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     return any(mid in prices for prices, _limits, _tree, _meta, _vendor in _layers())
 
 
 def model_context_window(name: str) -> int:
     # Local models still have context windows, so unlike price resolution they do not short-circuit.
-    mid = str(name).rsplit("/", 1)[-1].lower()
+    mid = _gpt_version_to_dots(str(name).rsplit("/", 1)[-1].lower())
     for _prices, limits, _tree, _meta, _vendor in _layers():
         if mid in limits:
             return limits[mid]
@@ -535,14 +570,14 @@ CACHE_MISS_KEPT_RATIO = 0.6
 
 
 def cache_ttl_seconds(name: str, cache_write_1h: float = 0.0, cache_write: float = 0.0):
-    """Return Anthropic's bought cache lifetime, or None for opportunistic providers.
+    """Return a documented cache lifetime, or None for opportunistic providers.
 
-    Gate by model family rather than access route so gateway-sold Claude keeps its TTL.
+    Gate by model family rather than access route so gateway-sold models keep their TTL.
     """
-    if model_family(name) != "anthropic":
-        return None
-    # Use the majority recorded tier; normalized-away splits imply the default short tier.
-    return CACHE_TTL_LONG if cache_write_1h > cache_write * 0.5 else CACHE_TTL_SHORT
+    if model_family(name) == "anthropic":
+        # Use the majority recorded tier; normalized-away splits imply the default short tier.
+        return CACHE_TTL_LONG if cache_write_1h > cache_write * 0.5 else CACHE_TTL_SHORT
+    return None
 
 
 @dataclass

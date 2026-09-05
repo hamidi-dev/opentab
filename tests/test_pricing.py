@@ -113,7 +113,15 @@ def test_api_price_helpers():
     assert ot.model_price("openai/gpt-5.2-xhigh")[:2] == (1.75, 14.0)
     # A future Codex spelling must retain GPT-5.6's separately billed write rate rather
     # than falling through to generic GPT-5, where the fourth component is zero.
-    assert ot.model_price("openai/gpt-5.6-codex") == (5.0, 30.0, 0.5, 6.25)
+    assert ot.model_price("openai/gpt-5.6-codex") == (4.0, 20.0, 0.4, 5.0)
+    assert ot.model_price("openai/gpt-6-astra-codex") == (10.0, 50.0, 1.0, 12.5)
+    assert ot.model_price("openai/gpt-5-6-codex") == ot.model_price("openai/gpt-5.6-codex")
+    assert ot.model_price("openai/gpt-5-6-sol-fast") == ot.model_price("openai/gpt-5.6-sol-fast")
+    assert ot.has_known_price("openai/gpt-5-6-sol-fast")
+    assert ot.model_price("openai/gpt-5-2025-08-07") == ot.model_price("openai/gpt-5")
+    assert ot.model_price("openai/gpt-5-20250807") == ot.model_price("openai/gpt-5")
+    assert ot.model_price("openai/gpt-5.6-sol")[3] == ot.model_price("openai/gpt-5.6-sol")[0] * 1.25
+    assert ot.model_price("openai/gpt-6-astra")[3] == ot.model_price("openai/gpt-6-astra")[0] * 1.25
     assert ot.model_price("unknown/future-model") == ot.FALLBACK_PRICE
     # 1M input + 1M output-equivalent: reasoning tokens bill as output.
     ir, orr, _cr, _cw = ot.model_price("x/claude-haiku-4.5")
@@ -366,6 +374,10 @@ def test_refresh_model_prices_writes_cache_and_overlays_table():
                 "moonshotai/kimi-k2.6": {"cost": {"input": 0.6, "output": 2.5, "cache_read": 0.1}}
             }
         },
+        # A valid but incomplete GPT-6 card must not make separately recorded writes free.
+        "openai": {
+            "models": {"gpt-6-astra": {"cost": {"input": 10.0, "output": 50.0, "cache_read": 1.0}}}
+        },
         "junk": "not a dict",  # tolerated, skipped
     }
     with tempfile.TemporaryDirectory() as tmp:
@@ -377,14 +389,17 @@ def test_refresh_model_prices_writes_cache_and_overlays_table():
         try:
             ot.invalidate_price_cache()
             count, path = ot.refresh_model_prices(url="file://" + src)
-            assert count == 2
+            assert count == 3
             assert path == ot.price_cache_path()
             # a refreshed price overlays the embedded table
             assert ot.model_price("anthropic/claude-opus-4-8") == (99.0, 88.0, 0.0, 0.0)
             # a resold open model (vendor/model id) now prices off the cache, by bare id
             assert ot.model_price("moonshotai/kimi-k2.6") == (0.6, 2.5, 0.1, 0.0)
+            assert ot.model_price("openai/gpt-6-astra") == (10.0, 50.0, 1.0, 12.5)
+            catalog = {(pid, mid): price for pid, mid, price, _status in ot.catalog_models()}
+            assert catalog[("openai", "gpt-6-astra")] == (10.0, 50.0, 1.0, 12.5)
             meta = ot.price_cache_meta()
-            assert meta and meta["count"] == 2 and meta["fetched_at"]
+            assert meta and meta["count"] == 3 and meta["fetched_at"]
         finally:
             ot.invalidate_price_cache()
             if old_xdg is None:
@@ -692,11 +707,11 @@ def test_cache_ttl_is_read_off_the_turn_not_off_a_provider_table():
     # Claude sold through a gateway keeps Anthropic's contract -- the FAMILY decides,
     # never the route (github-copilot also resells OpenAI, on different terms).
     assert ot.cache_ttl_seconds("github-copilot/claude-opus-4.5", 0, 1000) == ot.CACHE_TTL_SHORT
-    # None, not a number, for a provider that publishes no lifetime. Measured over 45k
-    # turn pairs, Anthropic's hit rate falls off a cliff at its TTL while OpenAI's decays
-    # smoothly (84% at 4-5 min, 61% at 10-30, 44% at 30-55) -- there is no deadline to
-    # have missed, so no gap may be called too long.
+    # OpenAI gives GPT-5.6+ a 30-minute MINIMUM lifetime, not an exact expiry. None keeps
+    # the analysis from claiming "it lived 30m" when OpenAI may retain the entry longer.
+    assert ot.cache_ttl_seconds("openai/gpt-5.5", 0, 1000) is None
     assert ot.cache_ttl_seconds("openai/gpt-5.6-sol", 0, 1000) is None
+    assert ot.cache_ttl_seconds("openai/gpt-6-astra", 0, 1000) is None
 
 
 def test_cache_miss_blames_the_wait_only_when_the_gap_was_the_users():
@@ -748,7 +763,7 @@ def test_cache_miss_separates_causes_it_must_not_blame_on_waiting():
     small = ot.cache_misses([prefix, _turn("2026-06-10 12:00:00", write=20000, prompt="b")])
     assert small[0].cause == "compacted"
 
-    # An OpenAI turn never earns a "waited" verdict, however long the gap (above).
+    # OpenAI publishes a minimum lifetime, not the exact point when this entry disappeared.
     oa = _turn("2026-06-10 10:00:00", model="openai/gpt-5.6-sol", read=200000, write=100000)
     late = _turn("2026-06-10 20:00:00", model="openai/gpt-5.6-sol", inp=300000, prompt="b")
     assert ot.cache_misses([oa, late])[0].cause == "invalidated"
