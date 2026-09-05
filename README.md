@@ -2,40 +2,47 @@
 
 <p align="center"><em>Your AI coding tools keep a tab. OpenTab opens it.</em></p>
 
-<p align="center"><sub>Anonymized demo data — click the reel for the full-quality video.</sub></p>
+<p align="center"><strong>See where your coding agents spent their tokens, time, and money.</strong></p>
+
+OpenTab brings the history your tools already keep into one interactive browser.
+Follow a busy month into a project, a session, its subagents, and individual turns.
+See what filled the context window. Compare the same token usage at another model's prices.
+
+Works with **Claude Code, Codex, OpenCode, Copilot, [and more](#the-tools-it-reads)**.
+Runs locally, in your **terminal or web browser**. No account, no telemetry, and your
+agents' history stays read-only.
 
 <p align="center">
-  <a href="https://github.com/user-attachments/assets/49531f8f-606d-4dea-9918-6588e3c3e69e"><img src="https://github.com/user-attachments/assets/2580e2ae-05ee-414a-98a6-a7005131dbc5" alt="OpenTab — trends, a calendar spend heatmap, drill-downs across OpenCode / Claude Code / Codex, and live theming" width="900"></a>
-  <br><sub><b>One reel, every view</b> — trends, a calendar spend heatmap, drill from a month down to a single session, and live theming</sub>
+  <a href="https://github.com/user-attachments/assets/49531f8f-606d-4dea-9918-6588e3c3e69e"><img src="https://github.com/user-attachments/assets/2580e2ae-05ee-414a-98a6-a7005131dbc5" alt="OpenTab — exploring spend trends, picking a day on the calendar, and drilling into sessions" width="900"></a>
+  <br><sub><b>Find the session behind the spike.</b> Explore the calendar and drill from a month into the work behind it. Anonymized demo data; click for the full-quality video.</sub>
 </p>
 
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=EsJPw4y5zgU"><img src="https://i.ytimg.com/vi/EsJPw4y5zgU/maxresdefault.jpg" alt="Watch the full OpenTab tour on YouTube" width="900"></a>
-  <br><sub><b>▶ The full tour on YouTube</b> — every view, walked through</sub>
-</p>
+## Try it on your own history
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/b497c617-8a6c-4132-b6e2-aaf5078b8a4e" alt="OpenTab web browser — the same data as a self-contained page" width="900">
-  <br><sub><b>Also a web browser</b> — <code>opentab --web</code> renders the same data as one self-contained, shareable page</sub>
-</p>
-
-A terminal browser for your AI coding spend. It reads the records your tools already keep
-on disk — a dozen of them, from OpenCode and Claude Code to Codex and Copilot — and shows
-where the tokens and the money went: by month, day, project, session, and model, all the
-way down the subagent tree. One tool at a time, or all of them merged.
-
-Plenty of things will print you a token total. This one is built to be *poked at*: drill
-in, filter as you type, rescope the dates, sort, keyboard or mouse. And it's just a
-reader — no backend, no telemetry, no account, every file opened **read-only**. The
-runtime is the Python standard library, so `pipx install opentab-ai` pulls in nothing else.
-
-## Install
-
-Python **3.9+** and a terminal — macOS, Linux, WSL, and native Windows. The PyPI package
-is **`opentab-ai`**; the command it installs is **`opentab`**.
+<a id="install"></a>
 
 ```sh
-pipx install opentab-ai                     # recommended
+pipx install opentab-ai
+opentab
+```
+
+OpenTab discovers supported tools' local records and brings them together automatically.
+Start with a recent day, open **Sessions**, and pick one you remember. Press **Enter** to
+drill in, **Esc** to step back, and **?** for the keys that work where you are. The mouse
+works too.
+
+On a subscription? You can still explore your usage: OpenTab starts with clearly labeled
+API-equivalent estimates for tokens that have no recorded cost. **`$`** switches to
+recorded spend. [How the money works](#about-the-money).
+
+Python **3.9+** · macOS · Linux · WSL · native Windows.
+
+<details>
+<summary><strong>More ways to install and upgrade</strong></summary>
+
+The PyPI package is **`opentab-ai`**; the command is **`opentab`**.
+
+```sh
 brew install hamidi-dev/tap/opentab         # Homebrew (macOS / Linux)
 pip install --user opentab-ai               # pip
 curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/install.sh | bash
@@ -44,61 +51,167 @@ curl -fsSL https://raw.githubusercontent.com/hamidi-dev/opentab/main/install.sh 
 Upgrade with `pipx upgrade opentab-ai`, `brew upgrade opentab`, or
 `pip install -U --user opentab-ai`.
 
-## Usage
+The runtime uses Python's standard library, with `windows-curses` added automatically
+on native Windows. [Windows & WSL setup](docs/windows.md).
+
+</details>
+
+<a id="usage"></a>
+
+Prefer a browser? Run **`opentab web`**. Showing someone your screen? **`opentab --demo`**
+anonymizes your existing history in memory. If a tool is missing, **`opentab doctor`**
+explains what was found and what needs attention.
+
+## Follow the work behind the numbers
+
+<a id="what-you-get"></a>
+
+### Follow an expensive session down to the turn
+
+Pick a day on the spend heatmap. Open its sessions, sort by cost, and follow the largest
+one. The **Subagents** view shows how the work's cost splits between the main agent and
+its delegates, including nested subagents. You can see whether one delegate accounts for
+most of the total or the cost is spread across the team.
+
+Then open **Turns**: prompts, the steps that followed, and their token usage and cost in
+order. On supported tools, inspect a turn's recorded narration, reasoning, and exact tool
+calls and results right in the terminal.
+Use **`[` / `]`** to move between turns and **`z`** to expand the full recorded
+arguments and output.
+
+The **Tools** view groups usage by tool and MCP server. Its treemap separates tools that
+ran often from those associated with expensive calls, with exact figures underneath.
+Attribution comes from the model turns that used each tool; calls in the same turn share
+that turn's usage.
+
+### Understand why token counts and costs tell different stories
+
+A large token count is only the beginning. **Token economics** puts each token type's
+share of the volume beside its share of the cost at API list rates: uncached input,
+output, reasoning, cache reads, and cache writes.
+
+See how much of your usage is cached, and which token types account for the money.
+Drill into a model within a month or project to see its own economics and the sessions
+that used it, ranked by that model's contribution.
+
+### See what filled the context window
+
+The **Context** view follows the window as it grows, marks compactions, and estimates
+what went into it: tool results, call arguments, assistant text, prompts, and more.
+See when the context shrank and what it grew back to.
+
+<p align="center">
+  <img src="docs/assets/context-tab.png" alt="Context growth over 684 turns, with two compactions and an estimated breakdown led by tool results" width="900">
+  <br><sub><b>Two compactions, and the context fills again.</b> The curve shows when; the breakdown shows what was sent. Anonymized demo data.</sub>
+</p>
+
+Session lists also show **Worked** time where the records support it: the agent's
+working bursts, with idle waits for your next prompt removed.
+
+### Put another model's prices against your actual usage
+
+Press **`w`**, choose a model, and open a session. Compare the list-price cost of the
+models it used with the cost of those same tokens at your chosen model's rates. Sessions
+with subagents also show the target price beside each agent's usage.
+
+Explore models you've used or the full bundled catalog. **`P`** compares model and
+provider rates using **your token mix**, including cache usage, and lets you pin a
+shortlist. Both sides of a session comparison use list rates; it holds token usage fixed
+and makes no prediction about another model's output quality or how many tokens it would use.
+
+Detail views depend on what each tool records. [Compare support below](#the-tools-it-reads).
+
+## Built to be poked at
+
+Move between daily, weekly, and monthly trends, a calendar heatmap, and rankings of
+models, providers, projects, and coding tools. Follow a chart or a ranking into the
+sessions behind it. Filter as you type, change the date range, and keep exploring.
+
+- **Find your way back.** Bookmark sessions, add searchable notes, and reopen supported
+  sessions in their original coding tool with **`L`**. Launch through tmux, Herdr, or a
+  custom launcher, or copy a ready-to-run resume command.
+- **Make it yours.** Keyboard and mouse navigation, 30 bundled themes, and remappable
+  keys. Your range, sort, selected tool, theme, bookmarks, and pricing view are remembered.
+- **Take a view with you.** Press **`e`** to export the current list to CSV, including
+  the filters and scope you've chosen.
+
+[Keys & navigation](docs/keys.md) · [Watch the full narrated tour on YouTube](https://www.youtube.com/watch?v=EsJPw4y5zgU)
+
+## In your terminal. In your browser. In one file.
 
 ```sh
-opentab                          # the browser, all time
-opentab web                      # the same browser, in your web browser
-opentab --demo                   # anonymized — safe for screenshots and live demos
-opentab doctor                   # what's found, what isn't, and why
-opentab pull laptop workstation  # every machine, merged into one tab
+opentab web                        # open the live browser on localhost
+opentab --html report.html          # write a self-contained report
+opentab --demo --html demo.html    # anonymize it for sharing
 ```
 
-`?` shows the full keymap in-app; it's also in **[docs/keys.md](docs/keys.md)**, along with
-the rest of the reference in **[docs/](docs/README.md)**.
+The web browser shares the TUI's navigation, themes, trends, and model comparisons.
+The live version fetches Turns, Tools, and Context on demand where supported. The HTML
+export packages the overview and comparison views into **one file you can open offline**,
+with no server or dependencies. Links to months, days, and sessions let someone open the
+part you want to show them.
 
-## What you get
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/b497c617-8a6c-4132-b6e2-aaf5078b8a4e" alt="OpenTab's web interface, with the time sidebar and session detail views" width="900">
+  <br><sub><b>Keep exploring in the browser.</b> The same history, with familiar keys and clickable tables.</sub>
+</p>
 
-- **Drill, don't scroll** — month → day → project → session → model, down the recursive
-  subagent tree, with a live fzf-style filter and live date-range scoping.
-- **Trends** — daily / weekly / monthly charts, a calendar spend heatmap, and model /
-  provider / harness rankings. Every one of them navigable down to a single session.
-- **Inside a session** — *Turns*: what each prompt cost, in order, with the tool calls it
-  made. *Tools*: token attribution per tool and MCP server, over a treemap where area is
-  total spend and shade is cost *per call*. *Context*: the window filling up over time,
-  compaction markers included, plus an estimate of what filled it. On OpenCode, Claude
-  Code, Codex, Hermes, pi, omp, OpenClaw, zaly and Gemini, open one turn again for its
-  narration, readable reasoning and tool calls. Use `[`/`]` for adjacent turns and
-  `z` to expand the full recorded arguments and output; this content stays local to the TUI.
-- **Honest money** — subscription usage shows its true `$0`; **`$`** reprices it at API
-  list rates and **`P`** shows the per-model table behind the estimate. **`w`** arms a
-  what-if model: *what if the expensive one had done the subagents' work too?*
-- **Every machine, one tab** — [`opentab pull`](#every-machine-one-tab) gathers each box's
-  spend over SSH and merges it into one browser you can filter by machine.
-- **A web twin** — `opentab web` serves the same browser live, `--html` writes it as one
-  self-contained file: same keys, same overlays, every view a shareable deep link.
-  [docs/web.md](docs/web.md)
-- **Yours to drive** — lazygit-style keyboard *and* mouse, 30 bundled themes shared by the
-  TUI and the web page, every key remappable, CSV export of any view, and your harness,
-  range, sort and `$` view remembered between runs.
-- **Private by construction** — local-only, read-only, no telemetry, no accounts.
+Turn traces and personal notes stay in the TUI. The static HTML report omits the live
+Turns, Tools, and Context tabs. [Web browser & exports](docs/web.md).
+
+<a id="fleet"></a>
+
+## Every machine, one tab
+
+Your laptop, workstation, and remote box can all contribute to the same view.
+**`opentab pull`** gathers their usage summaries over SSH and opens them together with
+this machine's history. Filter any view by machine, compare projects across boxes, or
+reopen a supported session on the machine where it ran.
+
+```sh
+opentab pull laptop workstation gpu-box
+opentab pull                              # refresh your saved machines next time
+opentab remote                            # browse the last pull without reconnecting
+```
+
+Each remote needs `opentab` on its `PATH`. **No background agent or listening service**
+is needed for SSH pulls. Summaries travel over your SSH connection; full transcripts
+stay on their original machine.
+
+[SSH setup, portable exports, and managing machines](docs/machines.md).
+
+## Live prices in your sidebar
+
+Keep an eye on a session while it runs. [**herdr-opentab**](https://github.com/hamidi-dev/herdr-opentab)
+puts each running agent's cost beside it in the [Herdr](https://herdr.dev) sidebar,
+subagents included.
+
+For your own status bar or script, **`opentab cost "$PWD"`** prints the latest session's
+cost for that project. **`opentab --goto "$PWD"`** opens that session for inspection.
+
+<details>
+<summary><strong>See the Herdr integration</strong></summary>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/hamidi-dev/herdr-opentab/main/docs/screenshot.png" alt="The Herdr sidebar with a price beside every agent" width="900">
+  <br><sub>Amounts synthetic, everything else real.</sub>
+</p>
+
+</details>
 
 ## The tools it reads
 
 [OpenCode](https://opencode.ai) · [Claude Code](https://claude.com/claude-code) ·
 [Codex CLI](https://developers.openai.com/codex) ·
-[GitHub Copilot](https://github.com/github/copilot-cli) (its CLI *and* Copilot Chat in
-VS Code) · [pi-agent](https://pi.dev) · [omp](https://omp.sh) ·
-[OpenClaw](https://github.com/openclaw/openclaw) ·
-[zaly](https://github.com/folke/zaly) ·
+[GitHub Copilot](https://github.com/github/copilot-cli) (CLI and Copilot Chat in VS Code) ·
+[pi-agent](https://pi.dev) · [omp](https://omp.sh) ·
+[OpenClaw](https://github.com/openclaw/openclaw) · [zaly](https://github.com/folke/zaly) ·
 [Gemini CLI](https://github.com/google-gemini/gemini-cli) ·
-[Antigravity](https://antigravity.google/) ·
-[Hermes](https://hermes-agent.nousresearch.com/) · and CSV/JSONL logs of your own API
-requests.
+[Antigravity](https://antigravity.google/) · [Hermes](https://hermes-agent.nousresearch.com/) ·
+and **CSV/JSONL logs** of your own API requests.
 
-Point it at nothing and `--harness auto` merges every tool it finds; `--harness NAME`
-narrows to one, `H` switches live. You can also just hand it a file — `opentab
-requests.csv`, `opentab path/to/opencode.db` — and the harness is inferred.
+Use **`H`** to switch tools live, or `opentab --harness NAME` to start with one.
+You can also hand it a file: `opentab requests.csv` or `opentab path/to/opencode.db`.
 
 <details>
 <summary><strong>What each tool's records support on top</strong> — cost, subagent tree, Turns, Trace, Tools, Context</summary>
@@ -119,190 +232,108 @@ requests.csv`, `opentab path/to/opencode.db` — and the harness is inferred.
 | Antigravity | tokens only — `$` estimates | ✓ | ✓ | — | ✓ | ✓ |
 | CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | — | ✓ | ✓ |
 
-<sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
+**Subagent tree** — recursive per-subagent cost under the session that delegated ·
 **Turns** — the per-turn cost timeline · **Trace** — one turn's recorded narration,
 reasoning and exact calls/results, local to the TUI · **Tools** — token attribution per
 tool call and MCP server · **Context** — the context-window growth curve (it rides on
 Turns). A `—` means the required data or a safe mapping is unavailable; sources.md says
-which, and why, for each one.</sub>
+which, and why, for each one.
 
 </details>
 
-**[docs/sources.md](docs/sources.md)** has the rest: where every tool's records live, its
-flags and env vars, how its cost is derived, the quirks (Copilot's opt-in export, Codex's
-cumulative counters, the metered-vs-subscription split), the CSV/JSONL schema you can
-write against, and the merged view.
 
-> [!WARNING]
-> **Two harnesses throw your history away by default.** Claude Code deletes local
-> transcripts after **30 days**, and Gemini CLI deletes chat recordings older than
-> **30 days** on every launch (subagent transcripts included). When one disappears, its
-> session and usage disappear from OpenTab too; “all time” can only mean what remains on
-> disk. The TUI warns once per harness, web reports warn when opened, and `opentab
-> doctor` reports both settings. For long history:
->
-> - Claude Code — add `"cleanupPeriodDays": 3650` to `$CLAUDE_CONFIG_DIR/settings.json`
->   (default: `~/.claude/settings.json`).
-> - Gemini CLI — add `"general": {"sessionRetention": {"enabled": false}}` to
->   `~/.gemini/settings.json`.
->
-> Every other harness OpenTab reads keeps its records until you delete them.
+[Data locations, setup, and the CSV/JSONL schema](docs/sources.md). Some tools need setup,
+such as Copilot CLI's opt-in telemetry export; `opentab doctor` helps you find the gaps.
 
-## Every machine, one tab
-
-Code on more than one box? **`opentab pull` gathers each machine's spend over SSH — all in
-parallel — and opens them merged into one browser**, filterable and drillable by machine.
-
-```sh
-opentab pull laptop workstation gpu-box   # fetch all three, open the fleet
-opentab pull                              # later: refresh every machine you've saved
-```
-
-**No agent, nothing to install, nothing listening** — the remote only needs `opentab` on
-its `PATH`. A nonstandard port or a bastion is whatever `ssh` already does:
-`opentab pull box=ssh://user@host:2222`, or a `Host` block in `~/.ssh/config`.
-
-**Can't SSH here at all?** Export on the far side and open the file — there's no separate
-import step, the file *is* the machine:
-
-```sh
-ssh box opentab export - > box.json   # on the other box
-opentab remote box.json               # here — merged with this machine, same as a pull
-```
-
-<details>
-<summary><strong>How the pull works, and what the fleet adds</strong></summary>
-
-Pull runs `opentab export -` on the far side, which prints that box's spend summary —
-totals, per-model breakdown, Turns / Tools / Context, but **no transcripts** — and streams
-it back over the SSH pipe. Each host is remembered, so a bare `opentab pull` refreshes the
-lot; a host is any ssh target (`box`, `user@host`, `name=user@host` to label it) or a
-`http://host:port` box already running `opentab web`.
-
-Once pulled, the fleet is just another harness: **`M`** filters every view to one machine,
-**`L`** reopens a session *on the box it ran on* over SSH, **`opentab remote`** reopens the
-last pull with no SSH round-trip, and **`opentab forget <machine>`** drops one. Pair any of
-it with `--demo` for a shareable fleet snapshot.
-
-`opentab remote FILE...` opens summaries you moved over yourself instead of the pulled
-ones (several files, or a directory). To keep one, drop it in `~/.cache/opentab/remotes/`
-and a bare `opentab remote` picks it up from then on. A box's name travels *inside* the
-export, not in the filename, so give it one with `opentab export --label NAME` when two
-machines share a hostname — otherwise its sessions merge into whichever is local.
-
-</details>
-
-## Live prices in your sidebar
-
-[**herdr-opentab**](https://github.com/hamidi-dev/herdr-opentab) puts what each running
-agent has spent right next to it in the [Herdr](https://herdr.dev) sidebar — that pane's
-own session, subagents included, kept up to date while it works.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/hamidi-dev/herdr-opentab/main/docs/screenshot.png" alt="The Herdr sidebar with a price beside every agent" width="900">
-  <br><sub>Amounts synthetic, everything else real.</sub>
-</p>
+> [!TIP]
+> **Keep the history you want to explore.** Claude Code and Gemini CLI can delete old
+> local records automatically. OpenTab can only show what remains on disk.
+> [Check your retention settings](#keep-your-history).
 
 ## About the money
 
-A session that shows tokens against `$0.00` isn't a bug: usage was recorded without a
-per-token price, which is what a subscription or credit plan looks like from the outside.
-That money isn't missing, it's billed elsewhere — so OpenTab reports **unpriced tokens**
-rather than guessing. Press **`$`** and it reprices them at published API list rates, from
-a models.dev snapshot bundled with each release (nothing is fetched at runtime); **`P`**
-shows the rates behind the estimate. **[docs/pricing.md](docs/pricing.md)**
+**Recorded spend** comes from your tools' own records. A subscription session can record
+millions of tokens and `$0.00` of per-token cost; your subscription is billed elsewhere.
 
-## Something looks off?
+**API-equivalent estimates** add list-price costs for that unpriced usage. This view is
+on by default and your choice is remembered; **`$`** toggles it. Model rates ship in a
+bundled models.dev catalog, so ordinary browsing works offline. Refresh them when you
+choose with **`r`** in the **`P`** price table or `opentab --refresh-models`.
 
-```sh
-opentab doctor
-```
-
-Which copy of OpenTab is talking, every harness (found — or not found **and why**, with
-the fix), your terminal's colour and glyph support, the price catalog, its own files. It
-reports and never repairs, and it reads no transcript, so the output is safe to paste into
-an issue as-is. **[docs/troubleshooting.md](docs/troubleshooting.md)**
+Estimates help you compare usage. Your provider's invoice may include subscriptions,
+discounts, credits, or markups that local records cannot tell OpenTab about.
+[Pricing explained](docs/pricing.md).
 
 ## FAQ
 
 <details>
 <summary><strong>Does any of this leave my machine?</strong></summary>
 
-No. No backend, no telemetry, no accounts, and nothing is fetched at runtime — the price
-catalog ships bundled with each release. OpenTab opens your tools' files **read-only** and
-writes only its own (prefs, notes, caches, plus the exports you ask for). External programs
-run only on the key you press. The full list of everything it reads, writes and runs:
-[docs/privacy.md](docs/privacy.md).
+Local browsing needs no cloud service or account and sends no telemetry. Your agents'
+files are opened read-only; OpenTab writes its own preferences, notes, caches, and the
+exports you request.
+
+You control transfers: remote pulls fetch summaries from machines you choose, a price
+refresh fetches the models.dev catalog, and exports go wherever you put them. The live
+web browser binds to localhost by default. [Privacy details](docs/privacy.md).
 
 </details>
 
 <details>
-<summary><strong>Will the numbers match my provider's invoice?</strong></summary>
+<summary><strong>Can I show it without exposing my project names and prompts?</strong></summary>
 
-Only where your tool recorded real metered cost. Everything else is *local attribution* —
-what your tools wrote down, rolled up per session — plus, under `$`, a list-price estimate
-for unpriced tokens. An estimate is a yardstick, not a bill: it knows nothing of whatever
-discount, plan or routing markup sits between you and the vendor.
-[docs/pricing.md](docs/pricing.md)
+Use `opentab --demo`, or **`D`** in-app, to anonymize titles, paths, prompt text, and
+absolute spend/token numbers in memory. The shape of the data stays real. Demo mode
+never writes those changes back to your history or saves your browsing state.
+
+`opentab --demo --html demo.html` creates an anonymized report. You can also choose
+which categories to scramble; [demo mode details](docs/privacy.md#demo-mode).
+
+</details>
+
+<a id="keep-your-history"></a>
+
+<details>
+<summary><strong>How do I keep a longer history?</strong></summary>
+
+Claude Code deletes local transcripts after **30 days** by default, and Gemini CLI's
+default retention removes chat recordings older than **30 days** on launch. Once the
+source record disappears, its usage disappears from OpenTab too. OpenTab warns about
+these settings; `opentab doctor` reports them.
+
+For long history:
+
+- Claude Code: add `"cleanupPeriodDays": 3650` to `$CLAUDE_CONFIG_DIR/settings.json`
+  (default `~/.claude/settings.json`).
+- Gemini CLI: set `"general": {"sessionRetention": {"enabled": false}}` in
+  `~/.gemini/settings.json`, merging it with any existing `general` settings.
 
 </details>
 
 <details>
-<summary><strong>Can it damage my agents' history?</strong></summary>
+<summary><strong>My tool isn't supported. Can I still use OpenTab?</strong></summary>
 
-It can't write to it. Every harness file — the OpenCode SQLite DB included — is opened
-read-only; the only things OpenTab writes are its own config, prefs, notes, warm-start
-cache and the CSV/HTML exports you explicitly ask for.
+If it can log API requests, point OpenTab at a CSV or JSONL of them. Turns, Tools, and
+Context become available when the log carries the relevant optional fields.
+[Request log schema](docs/sources.md#schema).
 
-</details>
-
-<details>
-<summary><strong>My tool isn't supported. Anything I can do?</strong></summary>
-
-If it can log its API requests, yes: point OpenTab at a CSV or JSONL of them
-(`opentab requests.csv`) and you get the whole browser — Turns and Tools included, if your
-log carries the optional columns. The schema is in
-[docs/sources.md](docs/sources.md#schema). Otherwise, open an issue with a sample
-transcript; each backend is one small parser against a fixed contract.
+For another native integration, open an issue describing the tool and its record format.
 
 </details>
 
-<details>
-<summary><strong>Can I screenshot it without leaking client work?</strong></summary>
+## Something looks off?
 
-`--demo` (or `D` in-app) replaces titles, paths and absolute numbers with deterministic
-fakes in memory, keeping the shape of the data real. Scramble only part of it with
-`--demo titles,spend` — project paths are their own scope, so `--demo titles,turns,spend`
-keeps your real project names on screen while everything else stays anonymous. Nothing is written back, and demo mode never persists state —
-`opentab --demo --html demo.html` gives you a shareable page.
+Run **`opentab doctor`**. It reports which tools it found, why others are missing, and
+what to fix, along with terminal support and the price catalog. It diagnoses without
+repairing or reading transcript content.
 
-</details>
-
-<details>
-<summary><strong>Does it work on Windows?</strong></summary>
-
-Yes. Native Windows Python doesn't bundle `curses`, so `opentab-ai` declares
-`windows-curses` as a Windows-only dependency and pipx pulls it in for you. Under WSL a
-plain `opentab` works — and it can read the Windows-side OpenCode database and VS Code
-store through `/mnt/c`. [docs/windows.md](docs/windows.md)
-
-</details>
-
-<details>
-<summary><strong>I switch themes with <code>C</code> and nothing changes.</strong></summary>
-
-Your terminal is accepting palette writes and quietly ignoring them. Known hosts are
-detected automatically; anywhere else, `export OPENTAB_NO_INIT_COLOR=1` for the nearest
-256-colour fallback (matched in CIE Lab, so hues survive). Why it's an env var and not a
-flag: [docs/troubleshooting.md](docs/troubleshooting.md#every-theme-looks-the-same).
-
-</details>
+[Full documentation](docs/README.md) · [Troubleshooting](docs/troubleshooting.md) ·
+[Windows & WSL](docs/windows.md)
 
 ## Development
 
-CI runs Ruff, unit tests, and ShellCheck. [CONTRIBUTING.md](CONTRIBUTING.md) has the local
-setup, test/lint commands, hooks and commit conventions;
-[docs/architecture.md](docs/architecture.md) has how the code is put together.
+CI runs Ruff, unit tests, and ShellCheck. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup,
+checks, and commit conventions; [Architecture](docs/architecture.md) explains the code.
 
 ## License
 
