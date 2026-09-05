@@ -76,8 +76,10 @@ most of the total or the cost is spread across the team.
 Then open **Turns**: prompts, the steps that followed, and their token usage and cost in
 order. On supported tools, inspect a turn's recorded narration, reasoning, and exact tool
 calls and results right in the terminal.
-Use **`[` / `]`** to move between turns and **`z`** to expand the full recorded
-arguments and output.
+Use **`[` / `]`** to move between turns. Tool results start as compact previews;
+click a result or press **Enter** to expand the output marked `▸` (the section at
+the top of the viewport, or the next below it). **`z`** expands the whole turn,
+including full arguments and output.
 
 The **Tools** view groups usage by tool and MCP server. Its treemap separates tools that
 ran often from those associated with expensive calls, with exact figures underneath.

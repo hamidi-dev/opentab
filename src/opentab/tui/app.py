@@ -445,6 +445,7 @@ class App:
         self._trace_cursor = 0
         self._trace_list_scroll = 0
         self.trace_expanded = False
+        self._trace_open_outputs: set[int] = set()
         self._trace_full: tuple[str, str, list[dict]] | None = None
         self._trace_loading: tuple[str, str] | None = None
         self.cal_levels = HEAT_DEFAULT_LEVELS
@@ -1670,8 +1671,46 @@ class App:
 
     def _clear_trace_expansion(self) -> None:
         self.trace_expanded = False
+        self._trace_open_outputs.clear()
         self._trace_full = None
         self._trace_loading = None
+
+    def toggle_trace_output(self, event_index: int | None = None) -> bool:
+        wf = self.current_session()
+        idx = self.active_trace_drill
+        if not self._on_turns_tab() or wf is None or idx is None or self.trace_expanded:
+            return False
+        if not self.session_supports_trace(wf.id) or self._trace_loading is not None:
+            return False
+        rows = self.session_turn_rows(wf.id)
+        if not 0 <= idx < len(rows):
+            return False
+        if event_index is None:
+            event_index = self.renderer.trace_output_target()
+        events = self.turn_trace_events(wf.id, rows[idx])
+        if event_index is None or not 0 <= event_index < len(events):
+            return False
+        event = events[event_index]
+        if event.get("kind") != "tool" or not (event.get("output") or event.get("output_dropped")):
+            return False
+        if event_index in self._trace_open_outputs:
+            self._trace_open_outputs.remove(event_index)
+        else:
+            key = rows[idx].get("content_key")
+            if not key:
+                return False
+            self._trace_open_outputs.add(event_index)
+            if self._trace_full is None:
+                self._trace_loading = (wf.id, key)
+        # Anchor the section when its height changes, including collapse midway through it.
+        anchors = [
+            line
+            for line, index in getattr(self.renderer, "_trace_tool_at", {}).items()
+            if index == event_index
+        ]
+        if anchors:
+            self.scroll = min(anchors)
+        return True
 
     def toggle_trace_expansion(self) -> bool:
         wf = self.current_session()
@@ -1840,10 +1879,11 @@ class App:
         wf = self.current_session()
         if wf is None:
             return False
-        # Inside a drilled prompt Enter opens the selected TURN's trace; a trace already
-        # open swallows it rather than re-opening itself, so the key never looks broken.
+        # Inside a prompt Enter opens the selected turn; inside the reader it toggles
+        # the output section at the viewport top (or the next below it).
         if self.active_turn_drill is not None:
             if self.active_trace_drill is not None:
+                self.toggle_trace_output()
                 return True
             return self.open_trace_drill() if self.session_supports_trace(wf.id) else False
         groups = self.turn_groups(wf.id)
@@ -6843,6 +6883,9 @@ class App:
 
     def _apply_click(self, target: tuple[str, int], drill: bool) -> None:
         kind, value = target
+        if kind == "trace-output":
+            self.toggle_trace_output(value)
+            return
         if kind == "modetab":
             # The top-level Time/Projects/Machines strip: switch mode (works from a
             # drilled session too, via switch_browse_mode).

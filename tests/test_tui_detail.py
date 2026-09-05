@@ -2640,14 +2640,15 @@ def test_turn_trace_shows_the_exact_command_its_arguments_and_its_output():
     body = app.renderer.detail_turn_drill(wf, 96)
     text = "\n".join(body)
 
-    assert body[0] == "# Prompt 1 · Turn 1/2 (#1) · $1.00"
-    assert "anthropic/claude-opus-4-8" in text
+    assert body[0] == "Turn 1 of 2"
+    assert "claude-opus-4-8" in text and "$1.00" in text
     assert "  I'll check the diff first." in body  # narration, the assistant's own voice
-    assert "▸ Bash  git diff --stat src/opentab/tui/renderer.py" in text
-    assert "  description: the diff" in body  # the rest of the arguments, beneath it
-    assert "→ 3 files changed" in body  # its result, marked where it starts
+    assert "▸ Bash\n│  git diff --stat src/opentab/tui/renderer.py" in text
+    assert "│  description: the diff" in body  # the rest of the arguments, beneath it
+    assert "│  3 files changed" in body
+    assert "Output · preview · Enter expand" in text
     # Both caps are reported rather than silently applied: what is on screen is a head.
-    assert "… 31 more lines, 900 more characters" in text
+    assert "… 37 more lines, 900 more characters" in text
 
 
 def test_turn_trace_says_when_the_harness_records_no_reasoning_text():
@@ -2662,7 +2663,7 @@ def test_turn_trace_says_when_the_harness_records_no_reasoning_text():
     app._trace_cursor = 1  # the turn that does carry reasoning prose
     app.open_trace_drill()
     lines = app.renderer.detail_turn_drill(app.current_session(), 96)
-    assert "✻ Thinking" in lines and "  **Planning** the next step." in lines
+    assert "✻ Thinking" in lines and "  Planning the next step." in lines
     assert "  … 120 more characters" in lines
     assert "records no reasoning text" not in "\n".join(lines)
 
@@ -2806,10 +2807,10 @@ def test_a_multiline_command_keeps_its_shape_instead_of_collapsing():
     app.open_trace_drill()
     lines = app.renderer.detail_turn_drill(app.current_session(), 96)
     assert "▸ Bash" in lines  # a multi-line command does NOT ride the marker row
-    assert "  python3 - <<'PY'" in lines
-    assert "      print('a  b')" in lines  # its own indentation, and its double space
-    assert "  patch:" in lines
-    assert "        line two" in lines
+    assert "│  python3 - <<'PY'" in lines
+    assert "│      print('a  b')" in lines  # its own indentation, and its double space
+    assert "│  patch:" in lines
+    assert "│        line two" in lines
 
 
 def test_trace_lines_never_exceed_the_pane_in_terminal_cells():
@@ -2950,8 +2951,8 @@ def test_trace_styles_cover_whole_blocks_and_stay_visible_while_scrolling():
         for text in (
             "  First thought",
             "  Second thought",
-            "→ Permission denied",
-            "  Second output line",
+            "│  Permission denied",
+            "│  Second output line",
         ):
             assert rnd.line_attr(next(ln for ln in lines if ln == text)) == 1 << 8
         assert rnd.line_attr(next(ln for ln in lines if "shell · Error" in ln)) == (
@@ -2964,7 +2965,7 @@ def test_trace_styles_cover_whole_blocks_and_stay_visible_while_scrolling():
         app.scroll = 4
         screen = AttrScreen(12, 100)
         rnd.draw_detail(screen, 0, 0, 12, 100)
-        assert "Prompt 1 · Turn 1/2 (#1)" in screen_text(screen)
+        assert "Turn 1 of 2" in screen_text(screen)
         # The shell parameter must keep the command's style, not become a green dollar amount.
         app.scroll = 0
         screen = AttrScreen(30, 100)
@@ -2974,7 +2975,7 @@ def test_trace_styles_cover_whole_blocks_and_stay_visible_while_scrolling():
             for (y, x), ch in screen.cells.items()
             if ch == "$" and screen.cells.get((y, x + 2)) != "."
         )
-        assert screen.attrs[dollar] == ((4 << 8) | ot.curses.A_BOLD)
+        assert screen.attrs[dollar] == ot.curses.A_NORMAL
     finally:
         ot.curses.color_pair = original
 
@@ -3017,3 +3018,129 @@ def test_first_trace_read_paints_loading_before_fetching_and_respects_demo():
         assert app.turn_trace_events(app.current_session().id, {"content_key": "k0"}) == []
     finally:
         ot.curses.color_pair = original
+
+
+def test_trace_outputs_expand_independently_with_keyboard_and_mouse():
+    app = _trace_app()
+    app.store._CONTENT["k0"] = [
+        {"kind": "tool", "name": "grep", "output": "\n".join(f"first {i}" for i in range(30))},
+        {"kind": "tool", "name": "grep", "output": "\n".join(f"second {i}" for i in range(30))},
+    ]
+    app.open_trace_drill()
+    wf = app.current_session()
+
+    def render():
+        return "\n".join(app.renderer.detail_turn_drill(wf, 80))
+
+    assert "first 29" not in render()
+    app.handle_key(None, 10)
+    assert app._trace_open_outputs == {0} and not app.trace_expanded
+    assert "Loading output" in render()
+    app.load_trace_expansion()
+    text = render()
+    assert "first 29" in text and "second 29" not in text
+    app._apply_click(("trace-output", 1), drill=False)
+    assert app._trace_loading is None  # the one-turn read is reused
+    assert "second 29" in render()
+    app.scroll = max(line for line, index in app.renderer._trace_tool_at.items() if index == 0)
+    app.handle_key(None, 10)
+    assert app._trace_open_outputs == {1}
+    text = render()
+    assert "first 29" not in text and "second 29" in text
+    assert "│  Output · full" in text
+    app.handle_key(None, ord("]"))
+    assert not app._trace_open_outputs and app._trace_full is None
+
+
+def test_trace_output_preview_budgets_screen_rows_and_full_output_is_faithful():
+    from opentab.formatting import display_width
+
+    app = _trace_app()
+    output = "  " + "界  $1 **raw** " * 60 + "\n\n    \nlast"
+    event = {"output": output, "output_dropped": 90000}
+    preview = app.renderer._trace_output(event, 40)
+    assert all(display_width(ln) <= 40 for ln in preview)
+    assert len(preview) < 10 and "90,000 more characters" in " ".join(
+        ln.removeprefix("│").strip() for ln in preview
+    )
+    full = app.renderer._trace_output({"output": " a  b\n\n    \n$1 **raw**"}, 80, True)
+    assert full == ["│   a  b", "│", "│      ", "│  $1 **raw**"]
+
+
+def test_trace_markdown_headings_are_readable_but_code_and_output_are_raw():
+    app = _trace_app()
+    event = {
+        "kind": "reasoning",
+        "text": "**Inspecting the renderer**\n## Next step\n```python\n    print('**raw**')\n```\nUse **tests** to verify.",
+    }
+    lines = app.renderer._trace_prose(event, 80)
+    assert lines[0] == "  Inspecting the renderer" and lines[0].role == "heading"
+    assert lines[1] == "  Next step" and lines[1].role == "heading"
+    assert "      print('**raw**')" in lines and "  Use tests to verify." in lines
+    assert "│  ## Raw **output**" in app.renderer._trace_output({"output": "## Raw **output**"}, 80)
+    # A shorter fence inside a longer one is code, not the end of the block.
+    lines = app.renderer._trace_prose({"text": "````\n```\n**literal**\n````"}, 80)
+    assert "  ```" in lines and "  **literal**" in lines
+
+
+def test_trace_output_click_regions_and_reader_chrome_are_contextual():
+    app = _trace_app()
+    app.open_trace_drill()
+    app._nodes_by_session[app.current_session().id] = []
+    app.session_trace(app.current_session().id)
+    rnd = app.renderer
+    original = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n << 8
+    try:
+        screen = AttrScreen(40, 120)
+        rnd.draw_detail(screen, 0, 0, 40, 120)
+        output = next(
+            (y, x)
+            for (y, x), ch in screen.cells.items()
+            if ch == "O" and screen.cells.get((y, x + 1)) == "u"
+        )
+        assert rnd.hit(*output) == ("trace-output", 1)
+        app._apply_click(rnd.hit(*output), drill=False)
+        assert app._trace_open_outputs == {1}
+        footer = str(ot.keymap.footer_parts(app))
+        assert "output" in footer and "ignore" not in footer and "note" not in footer
+    finally:
+        ot.curses.color_pair = original
+
+
+def test_trace_loading_keeps_the_output_anchor_and_failures_restore_preview():
+    app = _trace_app()
+    app.store._CONTENT["k0"] = [
+        {"kind": "text", "text": "Introductory paragraph.\n" * 15},
+        {"kind": "tool", "name": "Bash", "output": "result\n" * 60},
+    ]
+    app.open_trace_drill()
+    app._nodes_by_session[app.current_session().id] = []
+    rnd = app.renderer
+    rnd.detail_turn_drill(app.current_session(), 80)
+    app.toggle_trace_output(1)
+    anchor = app.scroll
+    assert anchor > 10
+    original = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n << 8
+    try:
+        screen = AttrScreen(24, 84)
+        rnd.draw_detail(screen, 0, 0, 24, 84)
+        assert "Loading output" in screen_text(screen)
+        assert app.scroll == anchor
+        app.load_trace_expansion()
+        rnd.draw_detail(screen, 0, 0, 24, 84)
+        assert app.scroll == anchor
+    finally:
+        ot.curses.color_pair = original
+    app._clear_trace_expansion()
+    rnd.detail_turn_drill(app.current_session(), 80)
+    app.toggle_trace_output(1)
+
+    def unreadable(*args, **kwargs):
+        raise OSError("recording was removed")
+
+    app.store.turn_content = unreadable
+    app.load_trace_expansion()
+    assert not app._trace_open_outputs and app._trace_full is None
+    assert "Output · preview" in "\n".join(rnd.detail_turn_drill(app.current_session(), 80))

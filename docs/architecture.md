@@ -159,7 +159,16 @@ that turn. All content readers use `TraceContent` to select the key and apply th
 preview limits. They still consume other records for deduplication and tool-result
 ownership; skipping an unselected call must invalidate any older binding with the
 same call id. The app retains at most one expanded turn, outside the preview cache,
-and releases it on collapse or navigation. Loading frames paint before either read.
+and releases it on whole-turn collapse or navigation. Individual output expansion
+reuses that one-turn read but substitutes only the selected event's output into the
+capped preview; other results and arguments stay compact. Loading frames paint before
+either read. Output previews budget six screen rows, including hard-wrapped lines.
+Tool sections carry a gutter and separate command / output labels; narration has a
+100-cell reading measure and basic Markdown heading / bold-delimiter presentation.
+Commands, fenced code, and results never pass through Markdown or numeric highlighting.
+The reader quiets aggregate chrome and uses a contextual footer; other views keep
+their existing navigation. The footer paints after the body so its output action
+matches the current layout.
 
 ## Data flow
 

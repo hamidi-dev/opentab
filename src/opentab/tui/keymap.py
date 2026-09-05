@@ -203,7 +203,7 @@ def _enter_opens_something(app: App) -> bool:
         return app.active_tab_name() in ("Sessions", "Projects", "Harnesses", "Models", "Machines")
     if _on_turns(app):
         if app.active_trace_drill is not None:
-            return False
+            return not app.trace_expanded and app.renderer.trace_output_target() is not None
         wf = app.current_session()
         return app.active_turn_drill is None or (
             wf is not None and app.session_supports_trace(wf.id)
@@ -219,6 +219,8 @@ def _enter_summary(app: App) -> str:
     if tab == "Sessions":
         return "open the selected session"
     if tab == "Turns":
+        if app.active_trace_drill is not None:
+            return "expand / collapse the output at the top of the viewport (or the next below)"
         return (
             "open the selected turn"
             if app.active_turn_drill is not None
@@ -284,6 +286,15 @@ def _tab_focus_segments(app: App) -> list:
 
 KEYS: tuple[Key, ...] = (
     Key(
+        id="trace-scroll",
+        ctx="main",
+        actions=("down", "up"),
+        summary="scroll this turn; the ▸ marker follows the next output section",
+        section="here",
+        when=_on_trace,
+        chip="scroll",
+    ),
+    Key(
         id="trace-siblings",
         ctx="main",
         actions=("trace_prev", "trace_next"),
@@ -308,7 +319,7 @@ KEYS: tuple[Key, ...] = (
         summary=_enter_summary,
         section="here",
         when=_enter_opens_something,
-        chip="in",
+        chip=lambda app: "output" if _on_trace(app) else "in",
     ),
     Key(
         id="max",
@@ -819,6 +830,7 @@ FOOTER_ORDER = (
     "prices-pin",
     "prices-enter",
     "trace-siblings",
+    "trace-scroll",
     "trace-expand",
     "enter",
     "esc",
@@ -867,6 +879,15 @@ def sections(app: App) -> list[tuple[str, list[Key]]]:
 def footer_parts(app: App) -> list:
     parts: list = []
     for key_id in FOOTER_ORDER:
+        if _on_trace(app) and key_id not in (
+            "trace-siblings",
+            "trace-scroll",
+            "trace-expand",
+            "enter",
+            "esc",
+            "help",
+        ):
+            continue
         entry = BY_ID[key_id]
         if entry.chip is None and entry.segments is None:
             continue
