@@ -12,10 +12,15 @@ from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
 from opentab.util import (
+    TRACE_EVENTS_CAP,
+    TRACE_OUTPUT_CAP,
+    TRACE_TEXT_CAP,
     LazyStatusRoot,
+    clip_text,
     git_root,
     read_files_parallel,
     safe_int,
+    tool_call_detail,
     tool_rows_from_turns,
 )
 
@@ -47,6 +52,7 @@ class CodexStore:
     """
 
     records_cost = False  # cost is $0 until "$" reprices the (all-unpriced) tokens
+    records_reasoning = True  # readable summaries when Codex does not leave them encrypted
     combined = False
     source_name = "Codex"
 
@@ -116,6 +122,7 @@ class CodexStore:
         parent = spawn.get("parent_thread_id") if isinstance(spawn, dict) else None
         if not parent:
             return None
+        spawn = cast(dict, spawn)
         agent = spawn.get("agent_nickname") or spawn.get("agent_role") or "subagent"
         return str(parent), str(agent)
 
@@ -331,7 +338,45 @@ class CodexStore:
         s["model_rows"] = rows
         s["unpriced_tokens"] = sum(r["tokens_total"] for r in rows)
 
-    def _parse_file(self, path: str, lines: list[str], sessions: dict[str, dict]) -> None:
+    @staticmethod
+    def _trace_output(value) -> str:
+        """Flatten one Responses API tool output without retaining binary payloads."""
+        if isinstance(value, str):
+            return value
+        if not isinstance(value, list):
+            if value is None:
+                return ""
+            try:
+                return json.dumps(value, ensure_ascii=False)
+            except (TypeError, ValueError):
+                return str(value)
+        parts = []
+        for item in value:
+            if not isinstance(item, dict):
+                parts.append(str(item))
+                continue
+            kind = item.get("type")
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+            elif kind in ("input_image", "image"):
+                parts.append("(image)")
+            elif kind in ("input_audio", "audio"):
+                parts.append("(audio)")
+            else:
+                try:
+                    parts.append(json.dumps(item, ensure_ascii=False))
+                except (TypeError, ValueError):
+                    parts.append(str(item))
+        return "\n".join(parts)
+
+    def _parse_file(
+        self,
+        path: str,
+        lines: list[str],
+        sessions: dict[str, dict],
+        trace: dict[str, list[dict]] | None = None,
+    ) -> None:
         sid = self._id_from_name(path)
         s = sessions.setdefault(sid, self._new_session()) if sid else None
         cur_model: str | None = None
@@ -339,6 +384,10 @@ class CodexStore:
         # cumulative (input, output, cache read, total, cache write) seen so far
         prev = (0, 0, 0, 0, 0)
         pending_tools: list[str] = []  # tool calls since the last accepted turn delta
+        pending_events: list[dict] = []
+        pending_has_text = pending_has_reasoning = False
+        trace_at: dict[str, dict] = {}
+        accepted_turns = 0
         for line in lines:
             line = line.strip()
             if not line:
@@ -378,6 +427,7 @@ class CodexStore:
                 s["event_ts"].append(ts)  # an activity point for worked_seconds
             if p is None:
                 continue
+            item_type = p.get("type")
             if typ == "turn_context":
                 if p.get("model"):
                     cur_model = p["model"]
@@ -387,17 +437,86 @@ class CodexStore:
                     cur_effort = p["effort"]
                 if p.get("cwd") and not s["cwd"]:
                     s["cwd"] = p["cwd"]
-            elif typ == "response_item" and p.get("type") in (
+            elif typ == "response_item" and item_type in (
                 "function_call",
                 "custom_tool_call",
                 "local_shell_call",
+                "tool_search_call",
             ):
                 # A tool call belongs to the turn whose token_count closes it; queue
                 # it for the next accepted delta (the duplicate echo doesn't consume).
-                pending_tools.append(
-                    p.get("name") or ("shell" if p["type"] == "local_shell_call" else p["type"])
-                )
-            elif typ == "event_msg" and p.get("type") == "user_message":
+                name = p.get("name") or {
+                    "local_shell_call": "shell",
+                    "tool_search_call": "tool_search",
+                }.get(item_type, item_type)
+                pending_tools.append(name)
+                if trace is not None and len(pending_events) < TRACE_EVENTS_CAP:
+                    args = {
+                        "function_call": p.get("arguments"),
+                        "custom_tool_call": p.get("input"),
+                        "local_shell_call": p.get("action"),
+                        "tool_search_call": p.get("arguments"),
+                    }.get(item_type)
+                    head, params = tool_call_detail(args)
+                    event = {
+                        "kind": "tool",
+                        "name": name,
+                        "args": head,
+                        "params": params,
+                        "output": "",
+                        "output_dropped": 0,
+                    }
+                    pending_events.append(event)
+                    if p.get("call_id"):
+                        trace_at[p["call_id"]] = event
+            elif typ == "response_item" and item_type in (
+                "function_call_output",
+                "custom_tool_call_output",
+                "tool_search_output",
+            ):
+                event = trace_at.pop(p.get("call_id"), None) if trace is not None else None
+                if event is not None:
+                    raw = p.get("tools") if item_type == "tool_search_output" else p.get("output")
+                    output, dropped = clip_text(self._trace_output(raw), TRACE_OUTPUT_CAP)
+                    event["output"] = output
+                    event["output_dropped"] = dropped
+            elif typ == "response_item" and item_type == "message" and p.get("role") == "assistant":
+                content = p.get("content")
+                for block in content if isinstance(content, list) else []:
+                    if not isinstance(block, dict) or block.get("type") != "output_text":
+                        continue
+                    raw = block.get("text")
+                    if isinstance(raw, str) and raw.strip():
+                        pending_has_text = True
+                    if trace is not None and len(pending_events) < TRACE_EVENTS_CAP:
+                        text, dropped = clip_text(raw, TRACE_TEXT_CAP)
+                        if text:
+                            pending_events.append(
+                                {"kind": "text", "text": text, "dropped": dropped}
+                            )
+            elif typ == "response_item" and item_type == "reasoning":
+                blocks = []
+                for field in ("summary", "content"):
+                    value = p.get(field)
+                    if isinstance(value, list):
+                        blocks.extend(value)
+                for block in blocks:
+                    if not isinstance(block, dict) or block.get("type") not in (
+                        "summary_text",
+                        "reasoning_text",
+                        "text",
+                    ):
+                        continue
+                    raw = block.get("text")
+                    if isinstance(raw, str) and raw.strip():
+                        pending_has_reasoning = True
+                    if trace is not None and len(pending_events) < TRACE_EVENTS_CAP:
+                        text, dropped = clip_text(raw, TRACE_TEXT_CAP)
+                        if text:
+                            pending_events.append(
+                                {"kind": "reasoning", "text": text, "dropped": dropped}
+                            )
+            elif typ == "event_msg" and item_type == "user_message":
                 # First user prompt = session title. Take any user_message (older
                 # rollouts omit kind; only "plain" appears on newer ones), and
                 # collapse whitespace since Codex prompts often span lines with
@@ -409,10 +528,24 @@ class CodexStore:
                     # Every prompt is kept (raw, line breaks intact) for the Turns
                     # tab's ▸ grouping; the record timestamp doubles as its id.
                     s["prompts"].append({"ts": ts or "", "id": ts or txt, "title": txt.strip()})
-            elif typ == "event_msg" and p.get("type") == "token_count":
-                prev = self._apply_token_count(
+            elif typ == "event_msg" and item_type == "token_count":
+                before = len(s["turns"])
+                next_prev = self._apply_token_count(
                     s, p.get("info"), cur_model, prev, ts, pending_tools, cur_effort
                 )
+                if len(s["turns"]) > before:
+                    accepted_turns += 1
+                    key = f"{os.path.basename(path)}:{accepted_turns}"
+                    s["turns"][-1].update(
+                        content_key=key,
+                        has_text=pending_has_text,
+                        has_reasoning=pending_has_reasoning,
+                    )
+                    if trace is not None and pending_events:
+                        trace[key] = pending_events
+                    pending_events = []
+                    pending_has_text = pending_has_reasoning = False
+                prev = next_prev
 
     @staticmethod
     def _int(value) -> int:
@@ -879,6 +1012,24 @@ class CodexStore:
             r["prompt_full"] = cur_full
             out.append(r)
         return out
+
+    def turn_content(self, workflow_id: str) -> dict[str, list[dict]]:
+        """Read one root's trace content lazily, including spawned descendants."""
+        sessions = self._parse()
+        if workflow_id not in sessions:
+            return {}
+        session_ids = [workflow_id] + [
+            sid for sid, _depth in self._descendants(sessions, workflow_id)
+        ]
+        paths = [path for sid in session_ids for path in self._session_files(sid)]
+        trace: dict[str, list[dict]] = {}
+        scratch: dict[str, dict] = {}
+        for path, text in read_files_parallel(list(dict.fromkeys(paths))):
+            self._parse_file(path, text.split("\n"), scratch, trace=trace)
+        return trace
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        return bool(self._session_files(workflow_id))
 
     def supports_turns(self, workflow_id: str) -> bool:
         return True

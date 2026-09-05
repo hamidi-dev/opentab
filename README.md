@@ -66,7 +66,9 @@ the rest of the reference in **[docs/](docs/README.md)**.
 - **Inside a session** — *Turns*: what each prompt cost, in order, with the tool calls it
   made. *Tools*: token attribution per tool and MCP server, over a treemap where area is
   total spend and shade is cost *per call*. *Context*: the window filling up over time,
-  compaction markers included, plus an estimate of what filled it.
+  compaction markers included, plus an estimate of what filled it. On OpenCode, Claude
+  Code, Codex and Hermes, open one turn again for its narration, readable reasoning and
+  exact tool calls; this content stays local to the TUI.
 - **Honest money** — subscription usage shows its true `$0`; **`$`** reprices it at API
   list rates and **`P`** shows the per-model table behind the estimate. **`w`** arms a
   what-if model: *what if the expensive one had done the subagents' work too?*

@@ -79,6 +79,10 @@ including activity from its subagent subtree where tracked. This timestamp
 to sorting by when a session started, offered everywhere except the Time overview's
 Days pane (see [`docs/keys.md`](keys.md#scope--filter)).
 
+OpenCode, Claude Code, Codex and Hermes also let the TUI open one timeline row into its
+recorded narration, readable reasoning and exact tool calls/results. Those traces are
+loaded only when opened and never embedded in web reports or remote summaries.
+
 ### Token-only harnesses
 
 The whole TUI works the same everywhere — with two differences for the token-only
@@ -134,7 +138,9 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   per-turn deltas from it, skips the duplicate echoes, and detects context-compaction
   resets, so turns sum exactly to the session total. Threads spawned by Codex's
   collab/multi-agent mode fold into a subagent cost tree under the session that
-  spawned them, labeled with each agent's nickname.
+  spawned them, labeled with each agent's nickname. A turn can be opened into Codex's
+  assistant text, readable reasoning summaries and exact function/custom-tool arguments
+  plus their recorded outputs; encrypted reasoning remains opaque.
 
 ## [Hermes Agent](https://hermes-agent.nousresearch.com/)
 

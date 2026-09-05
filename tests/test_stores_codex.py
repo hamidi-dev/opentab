@@ -4,6 +4,7 @@ import tempfile
 
 import opentab as ot
 from opentab.formatting import iso_to_local
+from opentab.util import TRACE_OUTPUT_CAP
 
 from tests._support import (
     FakeStore,
@@ -35,6 +36,10 @@ def _codex_call(name, ts="2025-10-03T14:51:15.000Z", kind="function_call"):
     if name is not None:
         payload["name"] = name
     return {"timestamp": ts, "type": "response_item", "payload": payload}
+
+
+def _codex_item(kind, ts="2025-10-03T14:51:15.000Z", **fields):
+    return {"timestamp": ts, "type": "response_item", "payload": {"type": kind, **fields}}
 
 
 def _codex_rollout(root, sid, rows):
@@ -382,6 +387,133 @@ def test_codex_tool_breakdown_attributes_turn_deltas_to_pending_calls():
         assert rows["update_plan"]["model_name"] == "openai/gpt-5-codex"
 
 
+def test_codex_turn_content_reads_narration_reasoning_calls_and_their_own_outputs():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        huge = "x" * (TRACE_OUTPUT_CAP + 17)
+        rows = [
+            _codex_meta(CODEX_SID, cwd),
+            _codex_turn("gpt-5.6-sol", cwd),
+            _codex_item(
+                "message",
+                role="assistant",
+                phase="commentary",
+                content=[{"type": "output_text", "text": "I'll inspect it first."}],
+            ),
+            _codex_item(
+                "reasoning",
+                summary=[{"type": "summary_text", "text": "Check the parser."}],
+                encrypted_content="opaque",
+            ),
+            _codex_item(
+                "function_call",
+                call_id="c1",
+                name="shell_command",
+                arguments=json.dumps({"command": "git diff --stat", "description": "the diff"}),
+            ),
+            _codex_item(
+                "custom_tool_call",
+                call_id="c2",
+                name="apply_patch",
+                input=json.dumps({"command": "apply it", "patch": "*** Begin Patch"}),
+            ),
+            _codex_item(
+                "tool_search_call",
+                call_id="c3",
+                arguments={"query": "browser tools"},
+            ),
+            # Results can finish in either order; call_id, never position, owns them.
+            _codex_item(
+                "custom_tool_call_output",
+                call_id="c2",
+                output=[
+                    {"type": "input_text", "text": "patch applied"},
+                    {"type": "input_image", "image_url": "not retained"},
+                ],
+            ),
+            _codex_item(
+                "tool_search_output",
+                call_id="c3",
+                tools=[{"name": "browser.search"}],
+            ),
+            _codex_item("function_call_output", call_id="c1", output=huge),
+            _codex_tokens(1000, 200, 100, 1200),
+        ]
+        _codex_rollout(root, CODEX_SID, rows)
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+
+        store.workflows()  # ordinary corpus parse: keys and flags, never raw content
+        (turn,) = store.message_timeline(CODEX_SID)
+        assert turn["content_key"]
+        assert turn["has_text"] is True and turn["has_reasoning"] is True
+        assert store._sessions is not None
+        assert "content" not in store._sessions[CODEX_SID]
+        assert store.supports_turn_content(CODEX_SID) is True
+        assert store.records_reasoning is True
+
+        events = store.turn_content(CODEX_SID)[turn["content_key"]]
+        assert [e["kind"] for e in events] == ["text", "reasoning", "tool", "tool", "tool"]
+        assert events[0]["text"] == "I'll inspect it first."
+        assert events[1]["text"] == "Check the parser."
+        assert (events[2]["name"], events[2]["args"]) == ("shell_command", "git diff --stat")
+        assert events[2]["params"] == [("description", "the diff")]
+        assert len(events[2]["output"]) == TRACE_OUTPUT_CAP
+        assert events[2]["output_dropped"] == 17
+        assert (events[3]["name"], events[3]["args"]) == ("apply_patch", "apply it")
+        assert events[3]["output"] == "patch applied\n(image)"
+        assert (events[4]["name"], events[4]["args"]) == ("tool_search", "browser tools")
+        assert events[4]["output"] == '{"name": "browser.search"}'
+
+
+def test_codex_an_echo_consumes_neither_trace_content_nor_its_call_output():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        os.makedirs(root)
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        rows = [
+            _codex_meta(CODEX_SID, cwd),
+            _codex_turn("gpt-5.6-sol", cwd),
+            _codex_tokens(100, 20, 0, 120),
+            _codex_item(
+                "message",
+                role="assistant",
+                content=[{"type": "output_text", "text": "Still working."}],
+            ),
+            _codex_item(
+                "function_call",
+                call_id="c1",
+                name="shell_command",
+                arguments='{"command":"ls"}',
+            ),
+            _codex_tokens(100, 20, 0, 120),  # equal-total echo: consumes nothing
+            _codex_item("function_call_output", call_id="c1", output="file.txt"),
+            _codex_tokens(250, 50, 0, 300),
+            _codex_item(
+                "reasoning",
+                summary=[{"type": "summary_text", "text": "Compacted."}],
+            ),
+            _codex_tokens(50, 10, 0, 60),  # shrinking total: a fresh accepted turn
+        ]
+        _codex_rollout(root, CODEX_SID, rows)
+        store = ot.CodexStore(root, type("Args", (), {"demo": False})())
+
+        turns = store.message_timeline(CODEX_SID)
+        assert len(turns) == 3
+        assert len({t["content_key"] for t in turns}) == 3
+        assert [(t["has_text"], t["has_reasoning"]) for t in turns] == [
+            (False, False),
+            (True, False),
+            (False, True),
+        ]
+        trace = store.turn_content(CODEX_SID)
+        assert trace[turns[1]["content_key"]][-1]["output"] == "file.txt"
+        assert trace[turns[2]["content_key"]][0]["text"] == "Compacted."
+
+
 def test_codex_spawned_threads_fold_into_a_subagent_tree():
     parent_sid = "11111111-1111-1111-1111-111111111111"
     child_sid = "22222222-2222-2222-2222-222222222222"
@@ -436,6 +568,14 @@ def test_codex_spawned_threads_fold_into_a_subagent_tree():
         # Turns interleave the child's turn (agent-tagged); Tools cover the subtree.
         t = store.message_timeline(parent_sid)
         assert [(r["agent"], r["tokens_total"]) for r in t] == [("-", 1200), ("researcher", 500)]
+        # Trace keys include the rollout filename, so the same call_id in parent and
+        # child cannot collide; the root fetch covers every row in the subtree.
+        trace = store.turn_content(parent_sid)
+        assert t[0]["content_key"] != t[1]["content_key"]
+        assert [trace[r["content_key"]][0]["name"] for r in t] == [
+            "update_plan",
+            "shell_command",
+        ]
         tools = {r["tool"]: r["tokens_total"] for r in store.tool_breakdown(parent_sid)}
         assert tools == {"update_plan": 1200, "shell_command": 500}
 
