@@ -1876,7 +1876,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No project selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+        self.draw_tabs(stdscr, y + 1, x + 1, w - 2, self.current_tabs(), self.tab, rule=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -1964,7 +1964,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No machine selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+        self.draw_tabs(stdscr, y + 1, x + 1, w - 2, self.current_tabs(), self.tab, rule=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -2095,7 +2095,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No year selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+        self.draw_tabs(stdscr, y + 1, x + 1, w - 2, self.current_tabs(), self.tab, rule=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -2137,7 +2137,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No month selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+        self.draw_tabs(stdscr, y + 1, x + 1, w - 2, self.current_tabs(), self.tab, rule=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -2235,7 +2235,7 @@ class Renderer:
             self.write(stdscr, y + 2, x + 2, "No day selected.", curses.color_pair(1))
             return
 
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, self.current_tabs(), self.tab, center=True)
+        self.draw_tabs(stdscr, y + 1, x + 1, w - 2, self.current_tabs(), self.tab, rule=True)
 
         current = self.current_tabs()[self.tab % len(self.current_tabs())]
         if current == "Sessions" and self.view == "zoom":
@@ -2296,7 +2296,7 @@ class Renderer:
             return
 
         tabs = self.current_tabs()
-        self.draw_tabs(stdscr, y + 1, x + 2, w - 4, tabs, self.tab, center=True)
+        self.draw_tabs(stdscr, y + 1, x + 1, w - 2, tabs, self.tab, rule=True)
 
         current = tabs[self.tab % len(tabs)]
         visible = h - 4
