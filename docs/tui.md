@@ -289,16 +289,39 @@ of the measured first-turn baseline.
 
 A trace is a third level under Turns: prompts explain **when**, their turns
 explain **which calls**, and a selected turn explains **what happened**. Its
-`content_key` comes from the source record, so separately loaded usage and content
-agree. Events contain narration, recorded reasoning, or tool arguments/results.
-Missing reasoning text is explained using the harness's `records_reasoning` flag.
+`content_key` comes from the source record for local sessions, or from a frozen
+summary identity for managed remote sessions. Separately loaded usage and content
+must agree. Events contain narration, recorded reasoning, or tool arguments/results.
+For local traces, missing reasoning text is explained using the harness's
+`records_reasoning` flag.
 
-Content is excluded from session prefetch. `turn_content(id)` returns capped
-session previews through `TraceContent`; supplying `content_key` requests full
+Content is excluded from session prefetch. For local stores, `turn_content(id)`
+returns capped session previews through `TraceContent`; supplying `content_key` requests full
 content for that turn only. Both reads paint a loading frame first. The app keeps
 at most four session previews and one full turn, separately from numeric memos
 and the warm-start cache. Full content is temporary, released on navigation,
 whole-turn collapse, reload, or harness changes.
+
+Remote traces follow a separate one-turn lifetime. `trace_owner()` resolves the
+selected workflow's exact backend; `remote_trace_request(id, key)` builds a
+network-free request from frozen snapshot/configuration data. Opening a turn queues
+it, paints the SSH loading state, then starts a `TraceJob` worker. Rendering,
+session prefetch, capability checks and content-key listing never fetch remote
+content; unkeyed `RemoteStore.turn_content(id)` returns `{}`.
+
+The input loop polls completed jobs while remaining responsive. `Esc` closes the
+trace and cancels its worker; leaving, stepping, reloading or changing harness also
+cancels pending work and drops retained content. `poll_remote_trace()` adopts a
+result only if the store, turn key and reader context still match. A failed read
+shows a safe error; closing and reopening retries. One selected remote turn's full
+events and derived preview remain in memory, reused by `z` and individual output
+expansion even after collapse, until navigation or reload. No disk cache is written.
+
+The transport resolves the snapshot turn against live identity/accounting fields,
+not row ordinals, then fetches its unique live content key. Stale or ambiguous
+matches require summary refresh. Both SSH commands share a 30-second deadline and
+bounded response sizes. See [Machines](machines.md#read-a-remote-turn) for managed
+directory eligibility, remote CLI compatibility and `trace_cmd` configuration.
 
 Individual tool outputs expand independently using that same one-turn read.
 Only opened outputs substitute their full event content; neighboring outputs
@@ -318,8 +341,9 @@ Commands and results never undergo Markdown or numeric highlighting.
 from labeled output, recorded errors are explicit, and reader chrome quiets the
 aggregate totals while retaining prompt/turn identity. The footer paints after
 the body because its expansion action depends on the output sections just laid
-out. Trace content stays local to the TUI, unavailable in demo or remote
-summaries and absent from web payloads; see [Privacy](privacy.md).
+out. Real trace content is unavailable in demo and absent from web payloads and
+fleet summaries. Explicit SSH reads in the TUI and gated CLI/MCP keyed reads do not
+change those export boundaries; see [Privacy](privacy.md).
 
 ## Launching a Session
 

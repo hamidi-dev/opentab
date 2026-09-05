@@ -450,6 +450,9 @@ class App:
         self._trace_open_outputs: set[int] = set()
         self._trace_full: tuple[str, str, list[dict]] | None = None
         self._trace_loading: tuple[str, str] | None = None
+        self._remote_trace_job = None
+        self._remote_trace_content = None  # one turn: (session, key, full, preview)
+        self._remote_trace_error = ""
         self.cal_levels = HEAT_DEFAULT_LEVELS
         self.has256 = False
         self.colors_ok = True
@@ -1613,7 +1616,7 @@ class App:
         cached = self._turns_by_session.get(workflow_id)
         if cached is not None:
             return cached
-        fetch = getattr(self.store, "message_timeline", None)
+        fetch = getattr(self.trace_owner(workflow_id), "message_timeline", None)
         rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
         if self.store.demo:
             rows = self._scale_demo_turns(workflow_id, rows)
@@ -1634,8 +1637,66 @@ class App:
         # backend that cannot open real traces outside demo mode.
         if self.store.demo and "turns" not in self._demo_cats:
             return False
-        check = getattr(self.store, "supports_turn_content", None)
+        check = getattr(self.trace_owner(workflow_id), "supports_turn_content", None)
         return bool(check(workflow_id)) if check else False
+
+    def trace_owner(self, workflow_id: str):
+        owner = self.store
+        wf = self.current_session()
+        if wf is None or wf.id != workflow_id:
+            matches = [w for w in self.loaded if w.id == workflow_id]
+            wf = matches[0] if len(matches) == 1 else None
+        while wf is not None and callable(getattr(owner, "owner_of", None)):
+            child = owner.owner_of(wf)
+            if child is None or child is owner:
+                break
+            owner = child
+        return owner
+
+    def remote_trace_reader(self, workflow_id: str):
+        return getattr(self.trace_owner(workflow_id), "remote_trace_request", None)
+
+    def _queue_remote_trace(self) -> None:
+        wf = self.current_session()
+        idx = self.active_trace_drill
+        if wf is None or idx is None or not self.remote_trace_reader(wf.id):
+            return
+        if self.store.demo or not self.session_supports_trace(wf.id):
+            return
+        rows = self.session_turn_rows(wf.id)
+        if 0 <= idx < len(rows) and (key := rows[idx].get("content_key")):
+            self._trace_loading = (wf.id, key)
+
+    def poll_remote_trace(self) -> None:
+        pending = self._remote_trace_job
+        if pending is None:
+            return
+        store, wid, key, job = pending
+        wf = self.current_session()
+        idx = self.active_trace_drill
+        rows = self.session_turn_rows(wid) if wf is not None and wf.id == wid else []
+        if (
+            self.store is not store
+            or self.store.demo
+            or not self._on_turns_tab()
+            or idx is None
+            or not 0 <= idx < len(rows)
+            or rows[idx].get("content_key") != key
+        ):
+            self._clear_trace_expansion()
+            return
+        if not job.done.is_set():
+            return
+        self._remote_trace_job = None
+        self._trace_loading = None
+        self._remote_trace_error = job.error
+        if job.error:
+            self.notify(job.error, "error")
+            return
+        from opentab.remote_content import trace_preview
+
+        events = list(job.content.get(key) or [])
+        self._remote_trace_content = (wid, key, events, trace_preview(events))
 
     # How many sessions' traces stay in memory. Unlike the other extras -- rows of
     # numbers -- a trace is a session's content: ~1 MB for a 1,500-turn session, and
@@ -1644,6 +1705,8 @@ class App:
     TRACE_MEMO_SESSIONS = 4
 
     def session_trace(self, workflow_id: str) -> dict:
+        if self.remote_trace_reader(workflow_id):
+            return {}  # Remote content is keyed, explicit, and never read from rendering.
         if self.store.demo:
             content = {}
             if self.session_supports_trace(workflow_id):
@@ -1655,7 +1718,7 @@ class App:
             cached = self._trace_by_session.get(workflow_id)
             if cached is not None:
                 return cached
-            fetch = getattr(self.store, "turn_content", None)
+            fetch = getattr(self.trace_owner(workflow_id), "turn_content", None)
             ok = fetch is not None and self.session_supports_trace(workflow_id)
             content = dict(fetch(workflow_id)) if ok else {}
         self._trace_by_session[workflow_id] = content
@@ -1677,13 +1740,24 @@ class App:
         key = row.get("content_key") or ""
         if not self.session_supports_trace(workflow_id):
             return []
+        if self.remote_trace_reader(workflow_id):
+            loaded = self._remote_trace_content
+            if loaded is not None and loaded[:2] == (workflow_id, key):
+                return loaded[2] if self.trace_expanded else loaded[3]
+            return []
         if self.trace_expanded and self._trace_full is not None:
             wid, loaded_key, events = self._trace_full
             if (wid, loaded_key) == (workflow_id, key):
                 return events
         return list(self.session_trace(workflow_id).get(key) or []) if key else []
 
-    def _clear_trace_expansion(self) -> None:
+    def _clear_trace_expansion(self, *, keep_remote: bool = False) -> None:
+        if self._remote_trace_job is not None:
+            self._remote_trace_job[3].cancel()
+            self._remote_trace_job = None
+        if not keep_remote:
+            self._remote_trace_content = None
+            self._remote_trace_error = ""
         self.trace_expanded = False
         self._trace_open_outputs.clear()
         self._trace_full = None
@@ -1715,7 +1789,10 @@ class App:
                 return False
             self._trace_open_outputs.add(event_index)
             if self._trace_full is None:
-                self._trace_loading = (wf.id, key)
+                if self._remote_trace_content is not None:
+                    self._trace_full = self._remote_trace_content[:3]
+                else:
+                    self._trace_loading = (wf.id, key)
         # Anchor the section when its height changes, including collapse midway through it.
         anchors = [
             line
@@ -1731,20 +1808,29 @@ class App:
         idx = self.active_trace_drill
         if not self._on_turns_tab() or wf is None or idx is None:
             return False
+        if self._remote_trace_job is not None or (
+            self.remote_trace_reader(wf.id) and self._remote_trace_content is None
+        ):
+            return False
         if self.trace_expanded:
-            self._clear_trace_expansion()
+            self._clear_trace_expansion(keep_remote=True)
         elif self.session_supports_trace(wf.id):
             rows = self.session_turn_rows(wf.id)
             key = rows[idx].get("content_key") if 0 <= idx < len(rows) else None
             if not key:
                 return False
             self.trace_expanded = True
-            self._trace_loading = (wf.id, key)
+            if self._remote_trace_content is not None:
+                self._trace_full = self._remote_trace_content[:3]
+            else:
+                self._trace_loading = (wf.id, key)
         self.scroll = 0
         return True
 
     def load_trace_expansion(self) -> None:
         """Resolve the queued read after painting: an empty key requests the preview."""
+        if self._remote_trace_job is not None:
+            return
         request, self._trace_loading = self._trace_loading, None
         if request is None:
             return
@@ -1753,6 +1839,15 @@ class App:
             self._clear_trace_expansion()
             return
         try:
+            reader = self.remote_trace_reader(wid)
+            if reader is not None:
+                if not self.store.demo and key:
+                    from opentab.remote_content import TraceJob
+
+                    job = TraceJob(reader(wid, key))
+                    self._remote_trace_job = (self.store, wid, key, job)
+                    self._trace_loading = request
+                return
             if not key:
                 self.session_trace(wid)
                 return
@@ -1761,12 +1856,14 @@ class App:
                     key, records_reasoning=self.session_records_reasoning(wid), full=True
                 )
             else:
-                content = self.store.turn_content(wid, content_key=key)
+                content = self.trace_owner(wid).turn_content(wid, content_key=key)
             self._trace_full = (wid, key, list(content.get(key) or []))
         except (OSError, ValueError, sqlite3.Error) as exc:
             if not key:
                 self._trace_by_session[wid] = {}
             self._clear_trace_expansion()
+            if self.remote_trace_reader(wid):
+                self._remote_trace_error = str(exc)
             self.notify(f"Could not read this turn: {exc}", "error")
 
     def step_trace(self, delta: int) -> bool:
@@ -1782,6 +1879,7 @@ class App:
             self.trace_drill = rows[target]
             self._clear_trace_expansion()
             self.scroll = 0
+            self._queue_remote_trace()
         return True
 
     def drilled_turn_indices(self) -> list[int]:
@@ -1826,6 +1924,7 @@ class App:
         self._clear_trace_expansion()
         self.trace_drill = rows[self._trace_cursor]
         self.scroll = 0
+        self._queue_remote_trace()
         return True
 
     def close_trace_drill(self) -> bool:
@@ -2592,6 +2691,7 @@ class App:
         )
 
     def reload(self) -> None:
+        self._clear_trace_expansion()
         self.loaded = self.store.workflows()
         self._snapshot_real_costs()
         self._resolve_project_roots()
@@ -2677,6 +2777,7 @@ class App:
         return results
 
     def _do_refresh(self, keys: list[str]) -> None:
+        self._clear_trace_expansion()
         try:
             results = self._refresh_backend(keys) or []
         except Exception as exc:  # noqa: BLE001 -- a refresh must never crash the TUI
@@ -2910,6 +3011,7 @@ class App:
         }
 
     def _reload_for_source(self, restore: dict | None = None) -> None:
+        self._clear_trace_expansion()
         self.loaded = self.store.workflows()
         self._snapshot_real_costs()
         self._resolve_project_roots()
@@ -5296,11 +5398,19 @@ class App:
         self._toast_shown = True
 
     def _input_timeout_ms(self) -> int:
-        # Block on input when nothing is showing; poll while a toast is fading so it
-        # can expire on time without a keystroke.
-        return self.TOAST_POLL_MS if self.toasts else -1
+        # Poll for worker completion and fading toasts without requiring a keystroke.
+        return self.TOAST_POLL_MS if self.toasts or self._remote_trace_job is not None else -1
 
     def run(self, stdscr: curses.window) -> None:
+        try:
+            self._run(stdscr)
+        finally:
+            pending = self._remote_trace_job
+            self._clear_trace_expansion()
+            if pending is not None:
+                pending[3].thread.join(timeout=2.0)
+
+    def _run(self, stdscr: curses.window) -> None:
         if hasattr(curses, "set_escdelay"):
             curses.set_escdelay(25)
         try:
@@ -5345,6 +5455,7 @@ class App:
 
         first = True
         while True:
+            self.poll_remote_trace()
             self.active_toasts()  # expire faded toasts before painting
             self.renderer.draw(stdscr)
             self._mark_toasts_shown()
@@ -5377,7 +5488,11 @@ class App:
                 stdscr.refresh()
                 self._do_refresh(keys)
                 continue
-            if self.startup_warning is None and self._trace_loading is not None:
+            if (
+                self.startup_warning is None
+                and self._trace_loading is not None
+                and self._remote_trace_job is None
+            ):
                 stdscr.refresh()
                 self.load_trace_expansion()
                 continue

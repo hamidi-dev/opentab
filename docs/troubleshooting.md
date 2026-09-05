@@ -125,5 +125,7 @@ See [note storage](privacy.md#notes-are-authored-data).
 Context. Use `opentab web` or `opentab web --headless` for live details. Even live,
 tabs depend on the selected session's retained data; older fleet summaries may
 have only rollups. Re-export on the source machine if its records still exist.
-Raw turn traces and notes are local TUI features, not browser tabs.
+Raw turn traces and notes are available in the TUI and gated CLI/MCP API, not
+browser tabs. [Remote traces](machines.md#read-a-remote-turn) require an explicit
+SSH read; ordinary fleet snapshots do not contain them.
 See [the live browser](web.md#served-live).

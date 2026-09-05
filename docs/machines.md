@@ -1,8 +1,8 @@
 # Every machine, one tab
 
 `opentab pull` gathers usage summaries from your machines and opens them alongside
-your local history. Each SSH remote needs `opentab` on its `PATH`; no background
-agent or listening service is required.
+your local history. Each SSH remote needs `opentab` on its `PATH` or a configured
+command path; no background agent or listening service is required.
 
 ## Pull over SSH
 
@@ -63,7 +63,8 @@ remote command, for example when OpenTab is not on the non-interactive SSH `PATH
   "machines": {
     "workstation": {
       "ssh": "user@workstation",
-      "cmd": "/home/user/.local/bin/opentab export --label workstation -"
+      "cmd": "/home/user/.local/bin/opentab export --label workstation -",
+      "trace_cmd": ["/home/user/.local/bin/opentab"]
     },
     "archive": {
       "url": "https://private-host.example/usage.json"
@@ -76,6 +77,57 @@ Each entry uses `ssh` or `url`; optional `cmd` is a command run **on the SSH
 machine**, not a place for local SSH flags. Put ports, keys and bastions in SSH
 config or use an `ssh://` target. Pull uses batch mode, so test key-based login
 first; it will not prompt for a password. Configure only commands you trust.
+
+`trace_cmd` is a separate **argv prefix** for the remote OpenTab CLI, not an export
+command or a shell string. OpenTab appends the `sessions turns` / `sessions content`
+arguments and quotes each argument for SSH. Use `["/home/user/.local/bin/opentab"]`
+for an explicit path, or `["env", "NAME=value", "opentab"]` for an environment
+override, not `"NAME=value opentab"`. Without `cmd` or `trace_cmd`, trace reads use
+`["opentab"]`. If a custom export `cmd` is present, **traces require an explicit
+`trace_cmd`**; OpenTab does not try to derive it from the export command.
+
+## Read a remote turn
+
+Ordinary fleet browsing, including Turns / Tools / Context and trace capability
+checks, stays offline. In the TUI, opening a selected turn explicitly fetches that
+turn's trace over SSH. The reader shows the machine and loading state; **`Esc`
+closes the trace and cancels an in-flight request**. After a failure, close and
+reopen the trace to retry. `[` / `]` steps to another turn and requests that turn.
+
+Remote traces require all of the following:
+
+- The managed default cache directory, `~/.cache/opentab/remotes/` (honoring XDG),
+  opened as a directory through the fleet view, such as bare `opentab remote`.
+- A saved SSH connection for the summary's encoded cache filename, not its display
+  label, plus a valid trace command as described above.
+- A compatible remote OpenTab CLI supporting JSON `sessions turns` with content
+  keys and gated `sessions content`, and retained content in a supported harness.
+
+URL entries, arbitrary snapshot files/directories, and explicit file/list imports
+are unsupported for traces, even when a named file is inside the managed directory.
+Symlinked summary files and demo mode cannot enable remote trace reads. Older
+summaries remain browsable without promising that live content can be resolved.
+
+The reader keeps **one selected remote turn in memory**, both its capped preview
+and fetched full content. `z` and individual output expansion reuse that content;
+collapsing does not fetch again. Leaving the turn, stepping, reloading, or changing
+harness clears it. There is **no raw-content disk cache** and no bulk session fetch.
+
+Each read first resolves the snapshot turn against the live remote timeline using
+its recorded identity and accounting fields, then reads its unique live content
+key. It never matches by ordinal or guesses the nearest turn. Stale, missing, or
+ambiguous matches fail closed: refresh the summary with `F` or `opentab pull`, then
+reopen the turn. Refresh cannot recover content that the harness no longer retains.
+
+Both SSH commands share one **30-second per-turn deadline**. Each response is
+limited to 16 MiB stdout and 64 KiB stderr; timelines are capped at 100,000 turns
+and content at 10,000 events. Oversized or invalid responses fail rather than being
+partially displayed. Errors do not echo remote stderr, payloads, or command arguments.
+
+The same one-turn reads are available through explicitly gated
+[CLI/MCP content requests](programmatic.md#raw-content). Raw traces and their
+content keys remain absent from web payloads and fleet exports; SSH trace reads
+are a separate opt-in channel, not an extension of the summary format.
 
 ## Refresh and offline history
 
@@ -139,8 +191,9 @@ summaries still load without those tabs, and unknown fields are tolerated.
 Session IDs survive transfer so synced sessions are counted once, with live local
 records taking precedence. Keep model rows and extras attached only to sessions
 retained from the same file. The export label identifies the machine; the encoded
-cache filename identifies its saved connection for refresh. Preserve that
-distinction, normalize incoming detail rows before rendering, and keep raw traces,
-their local content keys and notes out of transfers.
+cache filename identifies its saved connection for refresh and opt-in traces.
+Trace routing retains the winning file's provenance per session, even if labels
+collide. Preserve that distinction, normalize incoming detail rows before rendering,
+and keep raw traces, their content keys and notes out of portable summaries.
 
 [Back to the README](../README.md#every-machine-one-tab)

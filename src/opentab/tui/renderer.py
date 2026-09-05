@@ -2312,6 +2312,7 @@ class Renderer:
             and workflow.id not in self.app._trace_by_session
             and not self.app.trace_expanded
             and self.app.session_supports_trace(workflow.id)
+            and not self.app.remote_trace_reader(workflow.id)
         ):
             self.app._trace_loading = (workflow.id, "")
         if current == "Subagents":
@@ -4041,8 +4042,16 @@ class Renderer:
         meta = f"{model} · {human_tokens(row['tokens_total'])} tokens · {money(costs[idx])} · {(row.get('time') or '--')[5:19]}"
         if row.get("depth"):
             meta += f" · {_turn_agent(row)}"
+        remote = self.app.remote_trace_reader(workflow.id) is not None
+        if remote:
+            meta += f" · SSH: {workflow.machine}"
         lines: list[str] = [head, ""]
         if self.app._trace_loading is not None:
+            if remote:
+                return lines + [
+                    TraceLine(f"  Fetching turn over SSH: {workflow.machine}", "meta"),
+                    TraceLine("  Close the trace to cancel.", "meta"),
+                ]
             label = (
                 "full turn"
                 if self.app.trace_expanded
@@ -4052,6 +4061,11 @@ class Renderer:
             )
             return lines + [TraceLine(f"  Loading {label} — reading recorded content…", "meta")]
         lines += [TraceLine(ln, "meta") for ln in self._trace_wrapped("", meta, "  ", width)] + [""]
+        if remote and self.app._remote_trace_error:
+            return lines + [
+                TraceLine(f"  {self.app._remote_trace_error}", "meta"),
+                TraceLine("  Close and reopen the trace to retry.", "meta"),
+            ]
         events = self.app.turn_trace_events(workflow.id, row)
         if not events:
             # Distinguish "this turn recorded nothing" from an unsupported backend: the
@@ -4098,8 +4112,10 @@ class Renderer:
                     f"· Preview limited to {TRACE_EVENTS_CAP} events; expand to read all.", "meta"
                 ),
             ]
-        if not self.app.session_records_reasoning(workflow.id) and not any(
-            e.get("kind") == "reasoning" for e in events
+        if (
+            not remote
+            and not self.app.session_records_reasoning(workflow.id)
+            and not any(e.get("kind") == "reasoning" for e in events)
         ):
             # Say WHY the thinking is missing. This harness writes its thinking blocks
             # empty -- only the signed blob survives -- so silence here would read as a

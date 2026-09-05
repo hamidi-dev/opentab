@@ -179,9 +179,48 @@ for them and the process was explicitly started with `--allow-raw-content`:
 
 ```sh
 opentab sessions turns SESSION_KEY --include-prompts --allow-raw-content
+opentab sessions turns SESSION_KEY --include-content-keys --allow-raw-content
 opentab sessions content SESSION_KEY CONTENT_KEY --allow-raw-content
 opentab mcp --allow-raw-content
 ```
 
-The MCP raw-content tool additionally requires `confirm_raw: true`. Raw traces are
-never inserted into rollup caches or fleet exports.
+The MCP raw-content tool additionally requires `confirm_raw: true`. Permission is
+checked before reading raw content, including before any remote trace transport.
+`--include-content-keys` (MCP: `include_content_keys: true`) lists opaque keys without
+fetching traces, even when raw-content permission is enabled. Requesting full
+prompts is separate from requesting keys.
+
+### Remote content
+
+Load the managed fleet with `--source remote` to address its sessions through the
+same qualified session keys. For example, after pulling a machine:
+
+```sh
+opentab sessions list --source remote
+opentab sessions turns SESSION_KEY --source remote --include-content-keys --allow-raw-content
+opentab sessions content SESSION_KEY CONTENT_KEY --source remote --allow-raw-content
+opentab mcp --source remote --allow-raw-content
+```
+
+Listing sessions, capabilities and turn keys stays offline. Only the keyed content
+call connects over SSH, routed to the exact owning store. There is no remote bulk
+content read: `RemoteStore.turn_content(id)` without a key returns an empty mapping.
+Raw-content permission does not make URL entries or arbitrary snapshot imports
+trace-capable. The summary must be loaded through the managed default cache
+directory and associated with a saved SSH entry and compatible remote OpenTab CLI.
+A custom export `cmd` needs an explicit `trace_cmd` argv prefix, not a shell string;
+see [remote setup](machines.md#saved-connections).
+
+Remote content keys identify a frozen snapshot, not a remote row ordinal. OpenTab
+compares the selected turn's identity and accounting fields against the live remote
+timeline and requests its unique live key. Stale or ambiguous matches fail; refresh
+the summary and obtain new keys rather than retrying with guessed indices. The
+timeline lookup and content read share a 30-second deadline, with per-response caps
+of 16 MiB stdout and 64 KiB stderr, 100,000 timeline rows and 10,000 content events.
+CLI/MCP transport failures use an `operation_failed` envelope with a safe message,
+not remote stderr or response payloads.
+
+Remote reads have no raw-content disk cache. The TUI separately retains only one
+selected remote turn's preview and full content until navigation or reload. Raw
+traces never enter rollup caches; traces and content keys never enter web payloads
+or fleet exports. Callers remain responsible for any CLI/MCP output they capture.

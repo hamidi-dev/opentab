@@ -11,9 +11,11 @@ import copy
 import glob
 import json
 import os
+import threading
 from dataclasses import asdict, fields
 from urllib.parse import unquote
 
+from opentab import paths, remote_content
 from opentab.demo import DEMO_ALL, demo_config, demo_machine, scramble_node, scramble_workflow
 from opentab.models import Workflow
 from opentab.util import tool_names
@@ -149,13 +151,9 @@ def _export_curve_ok(store, sid: str) -> bool:
         return True
 
 
-# Fields a turn row carries for LOCAL use only. The trace's content_key addresses a
-# session's narration and tool output, which never leave the machine that recorded them
-# (see web.session_extras and _clean_turn, both whitelists) -- so the key that would
-# address them is dead weight on the wire, and the inbound whitelist drops it anyway.
-# Measured on a real corpus: 33,332 occurrences, 2.47 MB of a 43.3 MB export. The read
-# markers go with it: a marker promising narration that the receiving machine has no way
-# to open is worse than no marker, so the fleet is told neither.
+# Summary exports carry neither trace addresses nor promises of retained content.
+# The receiving store creates its own snapshot locators for eligible SSH sessions;
+# live content keys and raw traces travel only through explicit per-turn requests.
 _TURN_LOCAL_ONLY = ("content_key", "has_text", "has_reasoning")
 
 
@@ -283,6 +281,19 @@ class RemoteStore:
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
         self._exclude_ids = set(exclude_ids or ())
         self._paths = self._resolve_paths(source)
+        # Only opening the managed directory opts into saved connections. An
+        # explicit file/list (even inside that directory) is an offline import.
+        managed = os.path.join(paths.cache_dir(), "remotes")
+        self._managed_traces = (
+            isinstance(source, str)
+            and os.path.isdir(source)
+            and os.path.abspath(source) == os.path.abspath(managed)
+        )
+        self._trace_connections = (
+            remote_content.saved_connections() if self._managed_traces and not self.demo else {}
+        )
+        self._provenance: dict[str, tuple[str, str, str]] = {}
+        self._trace_snapshots: dict[str, remote_content.TraceSnapshot | None] = {}
         self._wf: list[Workflow] = []
         self._models: list[dict] = []
         # session id -> its subagent tree (workflow_nodes rows), for the sessions that
@@ -345,6 +356,7 @@ class RemoteStore:
         sizes: dict[str, int] = {}  # label -> summary file size on disk, for --timings
         records: list[bool] = []
         unreadable: list[str] = []
+        provenance = {}
         # Seed with the excluded (live-local) ids so a summary re-stating one is dropped,
         # then dedup ids across machines (a rotated/synced session) on top.
         seen: set[str] = set(self._exclude_ids)
@@ -394,6 +406,7 @@ class RemoteStore:
                     continue
                 seen.add(w.id)
                 kept.add(w.id)
+                provenance[w.id] = (os.path.abspath(path), unquote(stem), w.source)
                 w.machine = label
                 wfs.append(w)
             mb = data.get("model_breakdown")
@@ -452,6 +465,8 @@ class RemoteStore:
         self.machines = machines
         self._machine_info = info
         self.unreadable = unreadable
+        self._provenance = provenance
+        self._trace_snapshots = {}
 
     @property
     def _demo_names(self) -> bool:
@@ -534,10 +549,7 @@ class RemoteStore:
     def model_breakdown(self) -> list[dict]:
         return [dict(row) for row in self._models]
 
-    # The subagent TREE IS exported (for sessions that delegated) -- so the Subagents tab
-    # and the $/w what-if work on remote sessions. The other drill-in extras
-    # (Turns/Tools/Context) are transcript-scale and stay out; their empty results +
-    # supports_* False hide those tabs.
+    # Subagent trees and accounting extras remain offline snapshot data.
     def workflow_nodes(self, workflow_id: str) -> list:
         rows = [dict(r) for r in self._nodes.get(workflow_id, ())]  # fresh copies each call
         if self.demo:
@@ -560,7 +572,54 @@ class RemoteStore:
         return [dict(r) for r in self._tools.get(workflow_id, ())]
 
     def message_timeline(self, workflow_id: str) -> list:
-        return [dict(r) for r in self._turns.get(workflow_id, ())]
+        rows = copy.deepcopy(self._turns.get(workflow_id, []))
+        if self.supports_turn_content(workflow_id):
+            snapshot = self._trace_snapshot(workflow_id)
+            if snapshot is not None:
+                for index, row in enumerate(rows):
+                    row["content_key"] = snapshot.content_key(index)
+        return rows
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        path, connection_key, source = self._provenance.get(workflow_id, ("", "", ""))
+        return bool(
+            not self.demo
+            and self._managed_traces
+            and connection_key in self._trace_connections
+            and str(source).lower() in remote_content.TRACE_HARNESSES
+            and self._turns.get(workflow_id)
+            # A symlinked arbitrary file is not a managed cached summary.
+            and os.path.realpath(path)
+            == os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
+        )
+
+    def _trace_snapshot(self, workflow_id: str):
+        # Hash only a requested timeline, never every remote session at startup.
+        if workflow_id not in self._trace_snapshots:
+            path, connection_key, source = self._provenance[workflow_id]
+            self._trace_snapshots[workflow_id] = remote_content.trace_snapshot(
+                path, connection_key, source, workflow_id, self._turns.get(workflow_id, ())
+            )
+            while len(self._trace_snapshots) > 4:
+                self._trace_snapshots.pop(next(iter(self._trace_snapshots)))
+        return self._trace_snapshots[workflow_id]
+
+    def remote_trace_request(self, workflow_id: str, content_key: str):
+        """Return request(cancel_event) without doing network I/O or capturing this store."""
+        if not self.supports_turn_content(workflow_id):
+            raise remote_content.RemoteTraceError("Remote trace is unavailable for this session.")
+        snapshot = self._trace_snapshot(workflow_id)
+        if snapshot is None:
+            raise remote_content.RemoteTraceError("Remote trace timeline is invalid.")
+        return remote_content.trace_request(
+            snapshot, self._trace_connections[snapshot.connection_key], content_key
+        )
+
+    def turn_content(self, workflow_id: str, content_key: str | None = None) -> dict:
+        # Never bulk-fetch a remote session, including the TUI's preview read.
+        if content_key is None:
+            return {}
+        return self.remote_trace_request(workflow_id, content_key)(threading.Event())
 
     def context_breakdown(self, workflow_id: str) -> list:
         return [dict(r) for r in self._context.get(workflow_id, ())]

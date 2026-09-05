@@ -31,6 +31,7 @@ package and installed command are both `opentab`.
 | `service.py`, `mcp.py` | Headless accounting API and stdio MCP adapter |
 | `models.py` | Workflow, qualified session identity and summary records |
 | `stores/` | Harness readers, combined views, portable summaries and warm caches |
+| `remote_content.py` | Opt-in keyed SSH traces, snapshot/live identity validation, bounded transport and cancelable jobs |
 | `tui/app.py` | Application state, accounting projections, keyboard/mouse navigation |
 | `tui/renderer.py` | Terminal layout and painting |
 | `tui/bindings.py`, `tui/keymap.py` | Configurable bindings, contextual actions and help |
@@ -93,13 +94,24 @@ root rollups -> App -> range, project and machine projections
                    -> recorded / API-equivalent cost snapshots
                    -> Renderer or web report payload
 
-selected turn -> lazy content reader -> local TUI trace
+selected turn -> lazy local reader or explicit SSH request -> TUI trace
 ```
 
 The TUI starts with workflow rollups. Its heavier per-model load runs after the
 first paint and is reused for every scope, rather than queried once per row.
 Opening a session paints a loading frame before fetching its extras. Raw traces
 are a further opt-in read and never part of the rollup cache.
+
+`RemoteStore` keeps ordinary fleet reads offline. Only the managed default summary
+directory can associate a session's winning source file with a saved SSH connection.
+It generates snapshot-bound content keys without transport; URL entries and arbitrary
+imports cannot enable traces. `remote_content.py` freezes provenance, configuration
+and turn identities into a keyed request, resolves an exact unique live turn (never
+an ordinal), then fetches its content through a compatible remote OpenTab JSON CLI.
+The two commands share a 30-second deadline and enforce response caps. The TUI runs
+that request in a cancelable worker and adopts results only for the current selection;
+it retains one remote turn's preview/full content in memory, never on disk. See
+[Machines](machines.md#read-a-remote-turn) for setup and failure semantics.
 
 Reload has two jobs: refresh backend data and invalidate App's derived projections
 and detail memos. Range and ignore changes only invalidate the projections they
@@ -121,9 +133,10 @@ session without changing global rollups; see [Pricing](pricing.md).
 
 Static HTML carries rollups; the live server supplies session extras on demand.
 The server is single-threaded because SQLite connections belong to their creating
-thread. Raw traces and notes remain local to the TUI. See [Web](web.md) for
-serialization, browser state and security boundaries, and [Machines](machines.md)
-for portable summaries.
+thread. Raw traces, content keys and notes are absent from web/fleet payloads;
+the TUI and explicitly gated CLI/MCP reads are separate content paths. See
+[Web](web.md) for serialization, browser state and security boundaries, and
+[Machines](machines.md) for portable summaries.
 
 The JSON CLI and MCP server instead use `OpenTabService`. It owns filtering,
 pagination, stable serialization, exact session routing, mutations to OpenTab's own

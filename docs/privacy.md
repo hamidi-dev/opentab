@@ -85,6 +85,11 @@ No outbound requests by default. Network activity is explicitly requested:
   [Pricing](pricing.md#refreshing-rates).
 - `opentab pull` and fleet refresh fetch summaries over SSH or HTTP(S). Resuming a
   remote session can also invoke SSH. See [Multiple machines](machines.md).
+- Opening a supported remote turn in the TUI, or explicitly requesting its keyed
+  content through the gated CLI/MCP API, reads that turn over SSH. Browsing cached
+  summaries and listing content keys do not connect. Only managed cached summaries
+  with saved SSH connections qualify; URL entries and arbitrary imports do not.
+  See [Remote turns](machines.md#read-a-remote-turn) for setup, cancellation and limits.
 - `opentab web` starts a local HTTP server; browser requests load the report and
   session details. Binding beyond localhost exposes that service to other machines.
 - `opentab mcp` starts no listener. It exchanges local usage data with the parent MCP
@@ -101,6 +106,9 @@ Only for the action you request:
 - `K` opens `keymap.conf` using `$VISUAL` or `$EDITOR`, falling back to `vi`, and
   reloads bindings on return. This is a configuration edit, not a session launch.
 - SSH pulls run the saved remote export command, including a custom `cmd` if set.
+- SSH trace reads run the remote OpenTab CLI using the saved `trace_cmd` argv
+  prefix, or `opentab` when no custom command is configured. A custom export `cmd`
+  requires a separate `trace_cmd`; shell strings are not accepted for trace prefixes.
 - `opentab web` asks the default browser to open the report; `web --headless` does not.
 
 Launcher hooks, editors and custom remote commands are programs you choose, not
@@ -118,6 +126,14 @@ commands, arguments, and results behind a content key, requires starting the com
 or MCP server with `--allow-raw-content` and explicitly requesting those fields. MCP
 raw trace reads require a second `confirm_raw: true` argument. See
 [Programmatic access](programmatic.md#raw-content).
+
+Remote reads fetch only the requested turn, after checking its snapshot identity
+against the live timeline; there is no ordinal fallback. The TUI retains one remote
+turn's preview and full content in memory until you leave, step, reload, or change
+harness. Collapsing and expanding reuse that turn. No raw trace is cached on disk
+or added to web/fleet exports. The SSH timeline and content requests share a
+30-second deadline and have bounded response sizes; failure messages exclude remote
+stderr and payloads. CLI/MCP clients can of course retain the responses they request.
 
 ## Demo mode
 

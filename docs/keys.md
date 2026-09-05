@@ -57,10 +57,20 @@ text and per-turn rows; `g`/`G` jump to the first/last prompt. Inside a prompt,
 shows text, thinking and tool names where space allows. Inside a turn, `j`/`k`
 scroll while `[`/`]` step between turns. The prompt and turn identity stay visible
 above the transcript. `z` reads the selected turn's full arguments, reasoning and
-output from the local records; a second `z` returns to the capped preview.
+output; a second `z` returns to the capped preview.
 Expansion is temporary and is released when you leave the turn. Recorded tool
 errors are labeled explicitly. Sources that do not support content have no turn
-detail; content is also unavailable in demo mode and remote summaries.
+detail; real content is also unavailable in demo mode.
+
+For [managed SSH remotes](machines.md#read-a-remote-turn), opening a turn explicitly
+fetches that turn and shows the remote machine and loading state. `Esc` closes the
+trace and cancels an in-flight read; after an error, close and reopen to retry.
+`[`/`]` discards the previous turn and fetches the selected one. Its preview and
+full content stay only in memory while that turn is open, so `z` and tool-output
+expansion reuse the fetched content. Leaving or reloading releases it. Ordinary
+snapshot browsing stays offline; URL entries and arbitrary imports cannot fetch
+traces. Raw content remains absent from web and fleet exports.
+
 A `▼` line marks each **context compaction** — where the window was cleared
 between two turns, with what it dropped from and to. The tab's title counts them
 and the tokens they freed, and the lines stay visible while the prompts are

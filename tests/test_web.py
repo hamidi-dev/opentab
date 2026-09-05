@@ -172,6 +172,31 @@ def test_web_session_extras_reports_turns_with_both_costs():
     assert ctx["mixedWindows"] is False and ctx["comp"] == []
 
 
+def test_web_never_fetches_or_serializes_remote_trace_content():
+    from unittest.mock import patch
+
+    from opentab import remote_content
+    from opentab.stores.remote import build_export
+
+    from tests._support import _parse
+    from tests.test_remote_content import _managed, _replies
+
+    with _managed() as (store, *_):
+        app = ot.App(store, _parse([]), "remote")
+        key = app.session_turn_rows("s1")[0]["content_key"]
+        with patch.object(remote_content, "_ssh_json", side_effect=_replies()):
+            events = store.turn_content("s1", key)[key]
+        app._remote_trace_content = ("s1", key, events, events)
+        with patch.object(remote_content, "_ssh_json") as transport:
+            payload = json.dumps(ot.build_payload(app))
+            extras = json.dumps(ot.session_extras(app, "s1"))
+            exported = json.dumps(build_export(store, "another-export"))
+            for text in (payload, extras, exported):
+                assert "private narration" not in text
+                assert "content_key" not in text and key not in text
+            transport.assert_not_called()
+
+
 def test_web_turns_ship_the_tools_each_step_called():
     class Working(TurnsFakeStore):
         def message_timeline(self, workflow_id):

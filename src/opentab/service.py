@@ -20,6 +20,7 @@ from opentab.pricing import (
     model_context_window,
     model_price,
 )
+from opentab.remote_content import RemoteTraceError
 from opentab.state import load_state, update_state
 from opentab.util import (
     cached_share,
@@ -686,7 +687,10 @@ class OpenTabService:
         supports = getattr(item.owner, "supports_turn_content", None)
         if not supports or not supports(item.workflow.id):
             raise ServiceError("content_unavailable", "this session has no recorded raw content")
-        content = item.owner.turn_content(item.workflow.id, content_key=content_key)
+        try:
+            content = item.owner.turn_content(item.workflow.id, content_key=content_key)
+        except RemoteTraceError as exc:
+            raise ServiceError("operation_failed", str(exc)) from None
         return {
             "session_key": item.ref.encode(),
             "content_key": content_key,

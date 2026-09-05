@@ -3299,3 +3299,191 @@ def test_trace_loading_keeps_the_output_anchor_and_failures_restore_preview():
     app.load_trace_expansion()
     assert not app._trace_open_outputs and app._trace_full is None
     assert "Output · preview" in "\n".join(rnd.detail_turn_drill(app.current_session(), 80))
+
+
+class _ManualTraceJob:
+    def __init__(self, request):
+        import threading
+
+        self.request = request
+        self.cancelled = threading.Event()
+        self.done = threading.Event()
+        self.content = {}
+        self.error = ""
+
+    def cancel(self):
+        self.cancelled.set()
+
+    def complete(self, error=""):
+        self.error = error
+        self.content = {} if error else self.request(self.cancelled)
+        self.done.set()
+
+
+def _remote_trace_app():
+    app = _trace_app()
+    app.current_session().machine = "workstation"
+    app._nodes_by_session[app.current_session().id] = []
+    requests = []
+
+    def request(wid, key):
+        requests.append((wid, key))
+        return lambda cancel: {key: app.store._CONTENT.get(key, [])}
+
+    def no_sync_read(*args, **kwargs):
+        raise AssertionError("remote trace used a synchronous content reader")
+
+    app.store.remote_trace_request = request
+    app.store.turn_content = no_sync_read
+    return app, requests
+
+
+def test_remote_trace_opens_only_on_explicit_action_and_expands_without_refetch():
+    app, requests = _remote_trace_app()
+    wf = app.current_session()
+    app.store._CONTENT["k0"][1]["output"] = "a line\n" * 1000 + "END OF OUTPUT"
+    app.prefetch_session_data(wf.id)
+    app.renderer.detail_turns(wf, 100)
+    assert app.session_supports_trace(wf.id)
+    assert app.session_trace(wf.id) == {} and not requests
+    assert app.turn_trace_events(wf.id, {"content_key": "k0"}) == []
+    app.open_trace_drill()
+    with patch("opentab.remote_content.TraceJob", _ManualTraceJob), patch.object(
+        ot.curses, "color_pair", lambda n: n << 8
+    ):
+        screen = AttrScreen(24, 100)
+        app.renderer.draw_detail(screen, 0, 0, 24, 100)
+        assert "Fetching turn over SSH" in screen_text(screen) and not requests
+        app.load_trace_expansion()
+        job = app._remote_trace_job[3]
+        assert len(requests) == 1 and app._input_timeout_ms() > 0
+        app.renderer.draw_detail(screen, 0, 0, 24, 100)
+        app.poll_remote_trace()
+        assert len(requests) == 1 and app._trace_loading == (wf.id, "k0")
+        assert not app.toggle_trace_expansion()
+        job.complete()
+        app.poll_remote_trace()
+        assert app._trace_loading is None and app._remote_trace_job is None
+        text = "\n".join(app.renderer.detail_turn_trace(wf, 100))
+        assert "SSH: workstation" in text and "END OF OUTPUT" not in text
+        assert "records no reasoning" not in text
+        app.toggle_trace_output(1)
+        text = "\n".join(app.renderer.detail_turn_trace(wf, 100))
+        assert "END OF OUTPUT" in text
+        app.toggle_trace_expansion()
+        app.toggle_trace_expansion()
+        assert len(requests) == 1 and app._trace_loading is None
+        assert app._remote_trace_content is not None  # collapse reuses the current turn
+        assert not app._trace_by_session
+        app.step_trace(1)
+        assert app._remote_trace_content is None and app._trace_full is None
+        assert app._trace_loading == (wf.id, "k1")
+
+
+def test_remote_trace_esc_cancels_and_discards_late_results_without_retry():
+    app, requests = _remote_trace_app()
+    with patch("opentab.remote_content.TraceJob", _ManualTraceJob):
+        app.open_trace_drill()
+        app.load_trace_expansion()
+        job = app._remote_trace_job[3]
+        app.handle_key(None, 27)
+        assert job.cancelled.is_set()
+        assert app.active_trace_drill is None and app.active_turn_drill == 0
+        job.complete()  # a completion racing with cancellation must not be adopted
+        app.poll_remote_trace()
+        app.renderer.detail_turns(app.current_session(), 100)
+        assert app._remote_trace_content is None and app._trace_loading is None
+        assert len(requests) == 1
+        assert app._input_timeout_ms() == -1
+
+
+def test_remote_trace_failure_stays_visible_until_explicit_retry():
+    app, requests = _remote_trace_app()
+    with patch("opentab.remote_content.TraceJob", _ManualTraceJob), patch.object(
+        ot.curses, "color_pair", lambda n: n << 8
+    ):
+        app.open_trace_drill()
+        app.load_trace_expansion()
+        app._remote_trace_job[3].complete("Remote trace timed out.")
+        app.poll_remote_trace()
+        screen = AttrScreen(24, 100)
+        app.renderer.draw_detail(screen, 0, 0, 24, 100)
+        assert "timed out" in screen_text(screen) and "reopen" in screen_text(screen)
+        assert app._trace_loading is None and len(requests) == 1
+        app.close_trace_drill()
+        app.open_trace_drill()
+        app.load_trace_expansion()
+        assert not app._remote_trace_error and len(requests) == 2
+        app._remote_trace_job[3].complete()
+        app.poll_remote_trace()
+        assert app._remote_trace_content is not None
+
+
+def test_remote_trace_navigation_reload_and_demo_discard_pending_content():
+    for action in ("step", "tab", "reload", "source", "demo", "replace"):
+        app, _ = _remote_trace_app()
+        with patch("opentab.remote_content.TraceJob", _ManualTraceJob):
+            app.open_trace_drill()
+            app.load_trace_expansion()
+            job = app._remote_trace_job[3]
+            job.complete()
+            if action == "step":
+                app.step_trace(1)
+            elif action == "tab":
+                app.handle_key(None, ord("l"))
+            elif action == "reload":
+                app.reload()
+            elif action == "source":
+                app._reload_for_source()
+            elif action == "demo":
+                app.store.demo = True
+            else:
+                app.store = _TraceStore(app.loaded)
+            app.poll_remote_trace()
+            assert job.cancelled.is_set(), action
+            assert app._remote_trace_content is None, action
+            assert not app._trace_by_session, action
+
+
+def test_remote_trace_demo_between_queue_and_start_never_constructs_a_request():
+    app, requests = _remote_trace_app()
+    app.open_trace_drill()
+    app.store.demo = True
+    app.load_trace_expansion()
+    assert not requests and app._remote_trace_job is None
+
+
+def test_remote_trace_run_polls_while_fetching_and_cleans_up_on_exit():
+    app, _ = _remote_trace_app()
+    jobs = []
+
+    def read_key(screen):
+        job = app._remote_trace_job[3]
+        jobs.append(job)
+        # Input is reached while the worker is still unfinished, not after a join.
+        assert not job.done.is_set() and app._input_timeout_ms() > 0
+        return ord("q")
+
+    with patch("opentab.remote_content.TraceJob", _ManualTraceJob), patch.object(
+        ot.curses, "curs_set", lambda n: None
+    ), patch.object(ot.curses, "mousemask", lambda n: None), patch.object(
+        ot.curses, "mouseinterval", lambda n: None
+    ), patch.object(app.renderer, "init_theme_colors"), patch.object(
+        app.renderer, "draw"
+    ), patch.object(app, "_ensure_models"), patch.object(app, "maybe_prompt_prices"), patch.object(
+        app, "_read_key", read_key
+    ):
+        from unittest.mock import Mock
+
+        # The fake job has no actual thread, but exit must still wait for cleanup.
+        def job(request):
+            instance = _ManualTraceJob(request)
+            instance.thread = Mock()
+            return instance
+
+        with patch("opentab.remote_content.TraceJob", job):
+            app.open_trace_drill()
+            app.run(Mock())
+        assert len(jobs) == 1 and jobs[0].cancelled.is_set()
+        jobs[0].thread.join.assert_called_once()
+        assert app._remote_trace_job is None

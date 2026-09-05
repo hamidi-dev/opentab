@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import sqlite3
@@ -7,8 +9,10 @@ from unittest.mock import patch
 import opentab as ot
 import opentab.notes as notes_module
 import opentab.state as state_module
+from opentab import programmatic, remote_content
 
-from tests._support import FakeStore, _claude_msg, _usage, _write_jsonl, workflow
+from tests._support import FakeStore, _claude_msg, _parse, _usage, _write_jsonl, workflow
+from tests.test_remote_content import _managed, _replies
 
 
 class DetailStore(FakeStore):
@@ -389,6 +393,113 @@ def test_service_keeps_prompts_and_raw_trace_behind_separate_gates():
     assert turns[0]["prompt"] == "the whole secret prompt"
     assert turns[0]["content_key"] == "turn-1"
     assert allowed.session_content("a", "turn-1")["content"][0]["text"] == "raw secret"
+
+
+def test_service_remote_browsing_and_content_keys_do_not_request_traces():
+    with _managed() as (store, *_), patch.object(
+        remote_content, "_ssh_json"
+    ) as transport, patch.object(
+        store, "remote_trace_request", wraps=store.remote_trace_request
+    ) as request, patch.object(store, "turn_content", wraps=store.turn_content) as content:
+        service = ot.OpenTabService(store, _args(), "remote", allow_raw_content=True)
+        session = service.list_sessions()["sessions"][0]["session_key"]
+        service.get_session(session)
+        service.session_nodes(session)
+        service.session_tools(session)
+        service.session_context(session)
+        ordinary = service.session_turns(session)["turns"][0]
+        assert "content_key" not in ordinary and "prompt" not in ordinary
+        keyed = service.session_turns(session, include_content_keys=True)["turns"][0]
+        assert keyed["content_key"] == store.message_timeline("s1")[0]["content_key"]
+        assert keyed["content_key"].startswith("remote:")
+        assert "prompt" not in keyed and "content" not in keyed
+        content.assert_not_called()
+        request.assert_not_called()
+        transport.assert_not_called()
+
+
+def test_service_remote_raw_denial_precedes_owner_reads_and_transport():
+    with _managed() as (store, *_):
+        service = ot.OpenTabService(store, _args(), "remote")
+        key = store.message_timeline("s1")[0]["content_key"]
+        with patch.object(remote_content, "_ssh_json") as transport, patch.object(
+            store, "message_timeline", wraps=store.message_timeline
+        ) as timeline, patch.object(store, "turn_content", wraps=store.turn_content) as content:
+            for operation in (
+                lambda: service.session_content("s1", key),
+                lambda: service.session_turns("s1", include_content_keys=True),
+                lambda: service.session_turns("s1", include_prompts=True),
+            ):
+                try:
+                    operation()
+                    raise AssertionError("expected raw-content privacy gate")
+                except ot.ServiceError as exc:
+                    assert exc.code == "raw_content_disabled"
+            timeline.assert_not_called()
+            content.assert_not_called()
+            transport.assert_not_called()
+
+
+def test_service_permitted_remote_content_routes_to_exact_owner_with_colliding_id():
+    local = workflow("s1", "2026-09-01 12:00:00")
+    local.machine, local.source = "local-machine", "OpenCode"
+    local_store = DetailStore([local])
+    with _managed() as (remote, *_), patch.object(
+        remote_content, "_ssh_json", side_effect=_replies()
+    ) as transport, patch.object(
+        local_store, "turn_content", wraps=local_store.turn_content
+    ) as local_content, patch.object(remote, "turn_content", wraps=remote.turn_content) as content:
+        service = ot.OpenTabService(
+            ot.CombinedStore([local_store, remote]), _args(), "remote", allow_raw_content=True
+        )
+        session = ot.SessionRef("display-not-ssh", "opencode", "s1").encode()
+        key = service.session_turns(session, include_content_keys=True)["turns"][0]["content_key"]
+        try:
+            service.session_content("s1", key)
+            raise AssertionError("expected ambiguous native id")
+        except ot.ServiceError as exc:
+            assert exc.code == "ambiguous_session"
+        transport.assert_not_called()
+        result = service.session_content(session, key)
+        assert result == {
+            "session_key": session,
+            "content_key": key,
+            "content": [{"kind": "text", "text": "private narration", "dropped": 0}],
+        }
+        content.assert_called_once_with("s1", content_key=key)
+        local_content.assert_not_called()
+        assert transport.call_count == 2
+        assert all(call.args[0].target == "user@actual-host" for call in transport.call_args_list)
+        assert transport.call_args_list[1].args[1][-1] == "native-turn-key"
+
+
+def test_service_remote_transport_failure_has_safe_cli_envelope():
+    with _managed() as (store, *_):
+        service = ot.OpenTabService(store, _args(), "remote", allow_raw_content=True)
+        key = service.session_turns("s1", include_content_keys=True)["turns"][0]["content_key"]
+        args = _parse(["sessions", "content", "s1", key, "--allow-raw-content"])
+        output = io.StringIO()
+        with patch.object(ot.OpenTabService, "open", return_value=service), patch.object(
+            remote_content.subprocess, "Popen", side_effect=OSError("SECRET command arguments")
+        ) as process, contextlib.redirect_stdout(output):
+            assert programmatic.command(args) == 1
+        process.assert_called_once()
+        assert json.loads(output.getvalue()) == {
+            "schema_version": programmatic.SCHEMA_VERSION,
+            "ok": False,
+            "error": {
+                "code": "operation_failed",
+                "message": "Could not start SSH for remote trace.",
+            },
+        }
+        assert "SECRET" not in output.getvalue() and key not in output.getvalue()
+        with patch.object(remote_content.subprocess, "Popen", side_effect=OSError("SECRET")):
+            try:
+                service.session_content("s1", key)
+            except ot.ServiceError as exc:
+                assert exc.code == "operation_failed" and "SECRET" not in str(exc)
+            else:
+                raise AssertionError("expected ServiceError for Python callers too")
 
 
 def test_service_note_and_preference_mutations_use_authored_xdg_files():

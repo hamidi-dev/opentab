@@ -162,8 +162,10 @@ part you want to show them.
   <br><sub><b>Keep exploring in the browser.</b> The same history, with familiar keys and clickable tables.</sub>
 </p>
 
-Turn traces and personal notes stay in the TUI. The static HTML report omits the live
-Turns, Tools, and Context tabs. [Web browser & exports](docs/web.md).
+Turn traces and personal notes are absent from web reports; the TUI and gated
+[CLI/MCP API](docs/programmatic.md#raw-content) provide separate access. The static
+HTML report omits the live Turns, Tools, and Context tabs.
+[Web browser & exports](docs/web.md).
 
 <a id="fleet"></a>
 
@@ -181,8 +183,10 @@ opentab remote                            # browse the last pull without reconne
 ```
 
 Each remote needs `opentab` on its `PATH`. **No background agent or listening service**
-is needed for SSH pulls. Summaries travel over your SSH connection; full transcripts
-stay on their original machine.
+is needed for SSH pulls. Summaries contain no raw traces. Opening a supported remote
+turn in the TUI explicitly fetches just that turn over SSH; `Esc` cancels, and closing
+and reopening retries a failed read. Ordinary browsing stays offline. Remote traces
+need a managed cached summary, saved SSH connection and compatible remote OpenTab CLI.
 
 [SSH setup, portable exports, and managing machines](docs/machines.md).
 
