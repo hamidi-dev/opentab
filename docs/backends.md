@@ -89,6 +89,11 @@ fold descendants into root workflows and expose their own usage as nodes.
   separately in `part`; grouped scans join them by message id. A per-row correlated
   lookup is particularly costly on the corpus-wide timeline export.
 - The database is read-only; message/part table availability gates session extras.
+- OpenCode can persist OpenAI cache writes, but some ChatGPT OAuth responses omit the
+  `cache_write_tokens` detail. Those tokens then remain in OpenCode's uncached-input
+  bucket and `tokens.cache.write` is zero. OpenTab cannot reconstruct the split from
+  the database, so affected historical API-equivalent estimates price that residual
+  as ordinary input rather than inventing a write count.
 
 ## Claude Code
 
