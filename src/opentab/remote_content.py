@@ -152,14 +152,100 @@ def _json(raw):
         raise RemoteTraceError("Remote trace returned invalid JSON.") from None
 
 
+# The export `cmd` and a trace prefix name the same remote OpenTab. Deriving one
+# from the other is what stops a fleet that pulls fine from silently having no
+# traces -- but only for the plain `<opentab> [export flags]` shape. A pipeline, a
+# chained command, or an unrecognized flag is not guessed at: it keeps needing an
+# explicit `trace_cmd`, because appending `sessions turns` to half of it would run
+# something the user never wrote.
+_EXPORT_SUBCOMMAND = "export"
+_EXPORT_FLAGS = frozenset(
+    ("--export", "--export=-", "-", "--no-state", "--no-cache", "--no-worktrees")
+)
+_EXPORT_FLAG_PAIRS = frozenset(("--label", "--days", "--since", "--until", "--remotes"))
+_SHELL_META = set("|&;<>()`\n\r*?[]{}!#~")
+
+
 @dataclass(frozen=True)
 class TraceConnection:
     target: str
-    command: tuple[str, ...]
+    # A remote shell prefix, already quoted where it came from an argv list. The
+    # transport appends its own quoted arguments; see _ssh_json.
+    command: str
+
+
+def _argv_prefix(command) -> str:
+    """Quote an explicit trace_cmd argv list, which never reaches the remote shell."""
+    if (
+        not isinstance(command, list)
+        or not 1 <= len(command) <= 64
+        or any(not isinstance(arg, str) or not arg or "\0" in arg for arg in command)
+        or sum(len(arg) for arg in command) > MAX_KEY
+        or command[0].startswith("-")
+    ):
+        return ""
+    return shlex.join(command)
+
+
+def _derived_prefix(command) -> str:
+    """Strip the export tail off a pull `cmd`, keeping its shell text verbatim.
+
+    Returned unquoted on purpose: `cmd` is the string pulls already hand to the
+    remote shell, so `$HOME/.local/bin/opentab` has to keep expanding the way it
+    does there. Only words that survive that round trip unchanged are accepted.
+    """
+    if not isinstance(command, str) or not command or len(command) > MAX_KEY:
+        return ""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return ""
+    words: list[str] = []
+    for index, token in enumerate(tokens):
+        if token.startswith("-") or token == _EXPORT_SUBCOMMAND:
+            tokens = tokens[index:]
+            break
+        words.append(token)
+    else:
+        tokens = []
+    if (
+        not 1 <= len(words) <= 64
+        or "opentab" not in os.path.basename(words[-1])
+        or any(
+            not word
+            or "\0" in word
+            or any(c.isspace() or c in _SHELL_META or ord(c) < 32 for c in word)
+            or "$(" in word
+            for word in words
+        )
+    ):
+        return ""
+    if tokens[:1] == [_EXPORT_SUBCOMMAND]:
+        tokens = tokens[1:]
+    skip = False
+    for token in tokens:
+        if skip:
+            skip = False
+        elif token in _EXPORT_FLAG_PAIRS:
+            skip = True
+        elif token not in _EXPORT_FLAGS and not token.startswith(
+            tuple(f"{flag}=" for flag in _EXPORT_FLAG_PAIRS)
+        ):
+            return ""
+    return " ".join(words)
 
 
 def saved_connections() -> dict[str, TraceConnection]:
-    """Read only OpenTab's own config, without importing CLI or migrating files."""
+    return scan_connections()[0]
+
+
+def scan_connections() -> tuple[dict[str, TraceConnection], set[str]]:
+    """Read only OpenTab's own config, without importing CLI or migrating files.
+
+    The second set names SSH machines whose command could not be turned into a
+    trace prefix, so the UI can say that instead of silently doing nothing. A URL
+    machine is never in it: it has no SSH channel to configure.
+    """
     try:
         with open(os.path.join(paths.config_dir(), "remotes.json"), "rb") as stream:
             raw = stream.read(1024 * 1024 + 1)
@@ -167,13 +253,13 @@ def saved_connections() -> dict[str, TraceConnection]:
             return {}
         data = _json(raw)
     except (OSError, ValueError):
-        return {}
+        return {}, set()
     if not isinstance(data, dict) or data.get("version", 1) != 1:
-        return {}
+        return {}, set()
     machines = data.get("machines")
     if not isinstance(machines, dict):
-        return {}
-    out = {}
+        return {}, set()
+    out, unconfigured = {}, set()
     for name, entry in machines.items():
         if not isinstance(entry, dict) or "url" in entry:
             continue
@@ -187,19 +273,17 @@ def saved_connections() -> dict[str, TraceConnection]:
             or ("://" in target and not target.startswith("ssh://"))
         ):
             continue
-        command = entry.get("trace_cmd")
-        if command is None and "trace_cmd" not in entry and "cmd" not in entry:
-            command = ["opentab"]
-        if (
-            not isinstance(command, list)
-            or not 1 <= len(command) <= 64
-            or any(not isinstance(arg, str) or not arg or "\0" in arg for arg in command)
-            or sum(len(arg) for arg in command) > MAX_KEY
-            or command[0].startswith("-")
-        ):
+        if "trace_cmd" in entry:
+            prefix = _argv_prefix(entry.get("trace_cmd"))
+        elif "cmd" in entry:
+            prefix = _derived_prefix(entry.get("cmd"))
+        else:
+            prefix = "opentab"
+        if not prefix:
+            unconfigured.add(name)
             continue
-        out[name] = TraceConnection(target, tuple(command))
-    return out
+        out[name] = TraceConnection(target, prefix)
+    return out, unconfigured
 
 
 def turn_identity(row: dict, *, service: bool = False) -> tuple:
@@ -290,7 +374,7 @@ def _ssh_json(connection: TraceConnection, arguments, cancel_event, deadline):
         "ConnectionAttempts=1",
         "--",
         connection.target,
-        shlex.join((*connection.command, *arguments)),
+        f"{connection.command} {shlex.join(arguments)}",
     ]
     try:
         process = subprocess.Popen(
@@ -341,7 +425,7 @@ def _ssh_json(connection: TraceConnection, arguments, cancel_event, deadline):
             cancel_event.wait(0.025)
         if process.returncode != 0:
             raise RemoteTraceError(
-                "Remote trace command failed; check SSH and remote OpenTab setup."
+                "Remote trace command failed; check SSH and the remote OpenTab version."
             )
         payload = bytes(buffers[0])
     finally:

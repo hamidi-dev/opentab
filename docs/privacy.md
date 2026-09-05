@@ -107,8 +107,9 @@ Only for the action you request:
   reloads bindings on return. This is a configuration edit, not a session launch.
 - SSH pulls run the saved remote export command, including a custom `cmd` if set.
 - SSH trace reads run the remote OpenTab CLI using the saved `trace_cmd` argv
-  prefix, or `opentab` when no custom command is configured. A custom export `cmd`
-  requires a separate `trace_cmd`; shell strings are not accepted for trace prefixes.
+  prefix, the export `cmd` with its export tail stripped, or `opentab` when neither
+  is configured. A derived prefix runs through the remote shell exactly as the pull
+  command it came from does; the arguments OpenTab appends are always quoted.
 - `opentab web` asks the default browser to open the report; `web --headless` does not.
 
 Launcher hooks, editors and custom remote commands are programs you choose, not

@@ -128,7 +128,7 @@ def test_remote_request_captures_snapshot_and_connection_and_uses_native_key():
         with patch.object(rc, "_ssh_json", side_effect=replies) as transport:
             assert request(threading.Event())[key][0]["text"] == "private narration"
         first, second = transport.call_args_list
-        assert first.args[0] == rc.TraceConnection("user@actual-host", ("opentab",))
+        assert first.args[0] == rc.TraceConnection("user@actual-host", "opentab")
         assert first.args[1][-1] == "s1"
         assert "--include-content-keys" in first.args[1]
         assert "--include-prompts" not in first.args[1]
@@ -333,15 +333,14 @@ class _Process:
 
 
 def test_ssh_transport_quotes_argv_and_bounds_both_pipes():
-    connection = rc.TraceConnection(
-        "ssh://user@host:2222", ("/path with spaces/opentab", "--db", "/data/db")
-    )
+    argv = ["/path with spaces/opentab", "--db", "/data/db"]
+    connection = rc.TraceConnection("ssh://user@host:2222", rc._argv_prefix(argv))
     args = ("sessions", "content", "--", "id;bad", "$(bad)")
     with patch.object(rc.subprocess, "Popen", return_value=_Process()) as popen:
         assert rc._ssh_json(connection, args, threading.Event(), time.monotonic() + 1) == {}
         command = popen.call_args.args[0]
         assert command[-2] == connection.target and command[-3] == "--"
-        assert shlex.split(command[-1]) == [*connection.command, *args]
+        assert shlex.split(command[-1]) == [*argv, *args]
         assert popen.call_args.kwargs["stdin"] == subprocess.DEVNULL
     for process in (
         _Process(stdout=b"x" * 101, running=True),
@@ -437,7 +436,76 @@ def test_remote_custom_trace_command_prefix_is_explicit_and_immutable():
         {"ssh": "host", "cmd": "custom export", "trace_cmd": ["uv", "run", "opentab"]}
     ) as (store, *_):
         assert store.supports_turn_content("s1")
-        assert store._trace_connections["saved/box"].command == ("uv", "run", "opentab")
+        assert store._trace_connections["saved/box"].command == "uv run opentab"
+
+
+def test_remote_trace_prefix_derives_from_the_pull_command():
+    # The shapes `opentab pull` saves and users hand-write must not need a second copy.
+    for command, prefix in (
+        ("opentab --export -", "opentab"),
+        ("$HOME/.local/bin/opentab --export -", "$HOME/.local/bin/opentab"),
+        ("/usr/bin/opentab export --label box -", "/usr/bin/opentab"),
+        ("uv run opentab --export - --days 30", "uv run opentab"),
+        ("NAME=value opentab --export=-", "NAME=value opentab"),
+        ("opentab-ai --export -", "opentab-ai"),
+        ("  opentab   --export   -  ", "opentab"),
+    ):
+        assert rc._derived_prefix(command) == prefix, command
+    # A shell string OpenTab cannot take apart keeps needing an explicit trace_cmd,
+    # and nothing may be spliced out of the middle of a compound command.
+    for command in (
+        "opentab --export - | gzip",
+        "cd /srv && opentab --export -",
+        "opentab --export -; rm -rf /tmp/x",
+        "opentab --db /data/db --export -",  # an unrecognized flag is not dropped
+        "custom export -",
+        "bash -lc 'opentab --export -'",
+        "$(which opentab) --export -",
+        "'/opt/my apps/opentab' --export -",
+        "opentab --export - > /tmp/out",
+        "--export -",
+        "opentab --export - &",
+        "",
+        None,
+        ["opentab"],
+        "x" * (rc.MAX_KEY + 1) + " opentab --export -",
+    ):
+        assert rc._derived_prefix(command) == "", command
+
+
+def test_remote_derived_prefix_runs_and_keeps_arguments_quoted():
+    with _managed({"ssh": "host", "cmd": "$HOME/.local/bin/opentab --export -"}) as (store, *_):
+        assert store.supports_turn_content("s1")
+        connection = store._trace_connections["saved/box"]
+        assert connection.command == "$HOME/.local/bin/opentab"
+        args = ("sessions", "turns", "--", "id;bad")
+        with patch.object(rc.subprocess, "Popen", return_value=_Process()) as popen:
+            rc._ssh_json(connection, args, threading.Event(), time.monotonic() + 1)
+        # The prefix reaches the remote shell verbatim so $HOME still expands there,
+        # while every argument OpenTab appends stays quoted.
+        remote = popen.call_args.args[0][-1]
+        assert remote.startswith("$HOME/.local/bin/opentab ")
+        assert shlex.split(remote)[1:] == list(args)
+
+
+def test_remote_unconfigured_ssh_machine_reports_a_cause_instead_of_nothing():
+    # A cmd OpenTab will not take apart is the one denial the user can fix, so it
+    # must name itself rather than leaving Enter as a silent no-op.
+    with _managed({"ssh": "host", "cmd": "bash -lc 'opentab --export -'"}) as (store, *_):
+        assert not store.supports_turn_content("s1")
+        assert "trace_cmd" in store.trace_unavailable("s1")
+    # Everything unavailable by design stays quiet: there is nothing to configure.
+    for entry, sid in (
+        ({"url": "https://example.test/summary"}, "s1"),
+        ({"ssh": "host"}, "s1"),
+        ({"ssh": "host", "cmd": "bash -lc 'opentab --export -'"}, "missing"),
+    ):
+        with _managed(entry) as (store, *_):
+            assert store.trace_unavailable(sid) == "", entry
+    with _managed({"ssh": "host", "cmd": "weird"}) as (store, *_):
+        path, key, _ = store._provenance["s1"]
+        store._provenance["s1"] = (path, key, "Copilot")  # a harness with no trace reader
+        assert store.trace_unavailable("s1") == ""
 
 
 def test_remote_keys_survive_service_reopen_but_not_changed_snapshots():

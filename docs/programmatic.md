@@ -208,7 +208,8 @@ content read: `RemoteStore.turn_content(id)` without a key returns an empty mapp
 Raw-content permission does not make URL entries or arbitrary snapshot imports
 trace-capable. The summary must be loaded through the managed default cache
 directory and associated with a saved SSH entry and compatible remote OpenTab CLI.
-A custom export `cmd` needs an explicit `trace_cmd` argv prefix, not a shell string;
+The trace command is derived from the export `cmd` where that is a plain OpenTab
+invocation, and configured as an explicit `trace_cmd` argv prefix where it is not;
 see [remote setup](machines.md#saved-connections).
 
 Remote content keys identify a frozen snapshot, not a remote row ordinal. OpenTab

@@ -63,8 +63,7 @@ remote command, for example when OpenTab is not on the non-interactive SSH `PATH
   "machines": {
     "workstation": {
       "ssh": "user@workstation",
-      "cmd": "/home/user/.local/bin/opentab export --label workstation -",
-      "trace_cmd": ["/home/user/.local/bin/opentab"]
+      "cmd": "/home/user/.local/bin/opentab export --label workstation -"
     },
     "archive": {
       "url": "https://private-host.example/usage.json"
@@ -78,13 +77,22 @@ machine**, not a place for local SSH flags. Put ports, keys and bastions in SSH
 config or use an `ssh://` target. Pull uses batch mode, so test key-based login
 first; it will not prompt for a password. Configure only commands you trust.
 
-`trace_cmd` is a separate **argv prefix** for the remote OpenTab CLI, not an export
-command or a shell string. OpenTab appends the `sessions turns` / `sessions content`
-arguments and quotes each argument for SSH. Use `["/home/user/.local/bin/opentab"]`
-for an explicit path, or `["env", "NAME=value", "opentab"]` for an environment
-override, not `"NAME=value opentab"`. Without `cmd` or `trace_cmd`, trace reads use
-`["opentab"]`. If a custom export `cmd` is present, **traces require an explicit
-`trace_cmd`**; OpenTab does not try to derive it from the export command.
+Trace reads reuse `cmd`. OpenTab strips its export tail (an `export` subcommand,
+`--export -`, `--label`, a date range) and runs what is left as the command prefix,
+so the entry above traces through `/home/user/.local/bin/opentab` with nothing
+further to configure. That prefix reaches the remote shell exactly as a pull's does,
+variables included, so `$HOME/.local/bin/opentab` still expands; the `sessions turns`
+and `sessions content` arguments OpenTab appends are quoted. With no `cmd` at all,
+trace reads use `opentab`.
+
+Add an optional `trace_cmd` only when `cmd` is not a plain OpenTab invocation OpenTab
+can take apart: a pipeline, `cd x && ...`, a `bash -lc` wrapper, an unrecognized flag,
+or a path containing spaces. So `"cmd": "bash -lc 'opentab --export -'"` needs
+`"trace_cmd": ["/opt/tools/opentab"]` beside it. It is an **argv prefix**, not a shell
+string: write `["env", "NAME=value", "opentab"]`, not `"NAME=value opentab"`. Every
+argument in it is quoted, so a `trace_cmd` cannot expand `$HOME`; give a real path.
+When neither the derived prefix nor a `trace_cmd` is usable, the Turns reader says so
+on that machine's sessions instead of doing nothing.
 
 ## Read a remote turn
 

@@ -321,7 +321,7 @@ The transport resolves the snapshot turn against live identity/accounting fields
 not row ordinals, then fetches its unique live content key. Stale or ambiguous
 matches require summary refresh. Both SSH commands share a 30-second deadline and
 bounded response sizes. See [Machines](machines.md#read-a-remote-turn) for managed
-directory eligibility, remote CLI compatibility and `trace_cmd` configuration.
+directory eligibility, remote CLI compatibility and trace command configuration.
 
 Individual tool outputs expand independently using that same one-turn read.
 Only opened outputs substitute their full event content; neighboring outputs

@@ -3380,6 +3380,20 @@ def test_remote_trace_opens_only_on_explicit_action_and_expands_without_refetch(
         assert app._trace_loading == (wf.id, "k1")
 
 
+def test_remote_trace_unconfigured_machine_says_so_on_enter():
+    app, requests = _remote_trace_app()
+    wf = app.current_session()
+    app.store.supports_turn_content = lambda wid: False
+    app.store.trace_unavailable = lambda wid: "needs an SSH trace_cmd in remotes.json"
+    app.prefetch_session_data(wf.id)
+    app.open_turn_drill(0)
+    assert not app._toggle_turn_cursor()
+    assert "trace_cmd" in app.toasts[-1].text and not requests
+    app.toasts.clear()
+    app.store.trace_unavailable = lambda wid: ""
+    assert not app._toggle_turn_cursor() and not app.toasts
+
+
 def test_remote_trace_esc_cancels_and_discards_late_results_without_retry():
     app, requests = _remote_trace_app()
     with patch("opentab.remote_content.TraceJob", _ManualTraceJob):

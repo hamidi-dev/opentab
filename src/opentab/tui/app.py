@@ -1656,6 +1656,11 @@ class App:
     def remote_trace_reader(self, workflow_id: str):
         return getattr(self.trace_owner(workflow_id), "remote_trace_request", None)
 
+    def trace_unavailable_reason(self, workflow_id: str) -> str:
+        """A configuration cause worth reporting, so Enter is never a silent no-op."""
+        reason = getattr(self.trace_owner(workflow_id), "trace_unavailable", None)
+        return reason(workflow_id) if reason and not self.store.demo else ""
+
     def _queue_remote_trace(self) -> None:
         wf = self.current_session()
         idx = self.active_trace_drill
@@ -2013,7 +2018,11 @@ class App:
             if self.active_trace_drill is not None:
                 self.toggle_trace_output()
                 return True
-            return self.open_trace_drill() if self.session_supports_trace(wf.id) else False
+            if self.session_supports_trace(wf.id):
+                return self.open_trace_drill()
+            if reason := self.trace_unavailable_reason(wf.id):
+                self.notify(reason, "warn")
+            return False
         groups = self.turn_runs(wf.id)
         if not groups:
             return False

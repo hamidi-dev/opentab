@@ -289,8 +289,10 @@ class RemoteStore:
             and os.path.isdir(source)
             and os.path.abspath(source) == os.path.abspath(managed)
         )
-        self._trace_connections = (
-            remote_content.saved_connections() if self._managed_traces and not self.demo else {}
+        self._trace_connections, self._trace_unconfigured = (
+            remote_content.scan_connections()
+            if self._managed_traces and not self.demo
+            else ({}, set())
         )
         self._provenance: dict[str, tuple[str, str, str]] = {}
         self._trace_snapshots: dict[str, remote_content.TraceSnapshot | None] = {}
@@ -592,6 +594,23 @@ class RemoteStore:
             and os.path.realpath(path)
             == os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))
         )
+
+    def trace_unavailable(self, workflow_id: str) -> str:
+        """Why an otherwise eligible remote session cannot open a trace, for the UI.
+
+        Only the one cause the user can act on: a saved machine whose export `cmd`
+        OpenTab refused to derive a trace prefix from. Everything else (URL machines,
+        imported files, unsupported harnesses) is unavailable by design and says so
+        by simply not offering the reader.
+        """
+        _, connection_key, source = self._provenance.get(workflow_id, ("", "", ""))
+        if (
+            connection_key not in self._trace_unconfigured
+            or str(source).lower() not in remote_content.TRACE_HARNESSES
+            or not self._turns.get(workflow_id)
+        ):
+            return ""
+        return "This machine needs an SSH trace_cmd in remotes.json to read traces."
 
     def _trace_snapshot(self, workflow_id: str):
         # Hash only a requested timeline, never every remote session at startup.
