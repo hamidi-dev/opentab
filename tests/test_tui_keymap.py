@@ -132,16 +132,13 @@ def test_every_registry_action_is_discoverable():
         for token in entry.actions:
             surfaced.add(token.rstrip("*"))
     # Named in a summary/hint (computed off the live keymap there), not as an entry
-    # of their own: the pager-bracket aliases, the focused-chart cursor keys, the
-    # panel digits and browse-mode letters (their entries print literal labels
-    # derived from the same bindings), and the overlays' floating D toggle.
+    # of their own: the pager-bracket aliases, the panel digits and browse-mode letters
+    # (their entries print literal labels derived from the same bindings), and the
+    # overlays' floating D toggle. The focused-chart cursor keys used to live here too,
+    # back when the Trends tab row carried a hint; they are a keybar entry now.
     prose = {
         "older",
         "newer",
-        "cursor_left",
-        "cursor_right",
-        "cursor_up",
-        "cursor_down",
         "panel_1",
         "panel_2",
         "panel_3",
@@ -383,3 +380,26 @@ def test_enter_is_offered_on_every_pickerized_zoom_tab():
     assert "economics" in enter.text(app)
     app.tab = app.current_tabs().index("Overview")
     assert not enter.shown(app)  # a static pane opens nothing
+
+
+def test_the_focused_chart_and_calendar_shades_keep_their_own_keybar_chips():
+    # The Trends tab row carries no key hint any more, so the keybar is the only place
+    # the focused chart's arrows and the Calendar's shade keys are advertised. Both were
+    # help-only (the arrows not even that, once focused) while that hint existed.
+    app = _keymap_app()
+    app.trends = True
+    arrows = next(e for e in ot.keymap.KEYS if e.id == "trends-chart-cursor")
+    shades = next(e for e in ot.keymap.KEYS if e.id == "trends-shades")
+    assert not arrows.shown(app)  # nothing to walk until Enter focuses a chart
+    app.trend_focus = True
+    assert arrows.shown(app) and arrows.chip_segments(app) == [("← ↑ ↓ → move", False)]
+    app.trend_focus = False
+
+    app.trend_tab = app.trend_tabs.index("Calendar")
+    assert shades.chip_segments(app) == [("+/- shades", False)]
+    assert {"trends-chart-cursor", "trends-shades"} <= set(ot.keymap.FOOTER_ORDER)
+
+    # Both must reach the keybar, not just the table: footer_parts is what paints it.
+    app.trend_focus = True
+    painted = {seg[0] for part in ot.keymap.footer_parts(app) for seg in part}
+    assert {"← ↑ ↓ → move", "+/- shades"} <= painted

@@ -1097,3 +1097,27 @@ def test_dollar_is_a_reprice_in_place_not_a_navigation():
     app.scroll = 7
     app.handle_key(None, ord("$"))
     assert app.scroll == 7
+
+
+def test_the_trends_tab_row_is_a_full_width_rule_with_no_key_hint():
+    # The hint used to reserve ~49 cells beside the tabs, which clipped the right-hand
+    # ones off any terminal under ~143 columns. The row is the browse-mode bar's shape
+    # now: chips centered in a rule, every tab drawn and clickable at 120 columns.
+    app = _projects_app()
+    app.handle_key(None, ord("T"))
+    screen = FakeScreen(40, 120)
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair = lambda n: 0
+    ot.curses.init_pair = lambda *a: None
+    try:
+        app.renderer.draw_trends(screen, 0, 39, 120)
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
+    row = "".join(screen.cells.get((1, x), " ") for x in range(120))
+    for tab in app.trend_tabs:
+        assert tab in row, f"{tab} clipped out of the tab row"
+    assert "tabs ·" not in row and "closes" not in row  # the hint is gone
+    clicks = [r for r in app.renderer.regions if r[0] == "trend"]
+    assert [r[-1] for r in clicks] == list(range(len(app.trend_tabs)))
+    # Centered: the leading rule cells sit left of the first chip.
+    assert clicks[0][2] > 2

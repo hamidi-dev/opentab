@@ -485,6 +485,21 @@ KEYS: tuple[Key, ...] = (
         summary="more / fewer heat shades",
         section="here",
         when=lambda app: in_trends(app) and trend_tab(app) == "Calendar",
+        chip="shades",
+    ),
+    Key(
+        # The focused chart's own movement keys. Only the keybar advertises these now
+        # that the tab row carries no hint, so they need a chip of their own -- the
+        # arrows read as one unit, hence segments rather than a "/"-joined chip.
+        id="trends-chart-cursor",
+        ctx="trends.chart",
+        actions=("cursor_left", "cursor_up", "cursor_down", "cursor_right"),
+        summary="walk the bar / day cursor",
+        section="here",
+        when=lambda app: in_trends(app) and app.trend_focus,
+        segments=lambda app: (
+            [(f"{_chart_arrows(app)} move", False)] if _chart_arrows(app) else []
+        ),
     ),
     Key(
         id="trends-close",
@@ -504,7 +519,9 @@ KEYS: tuple[Key, ...] = (
         section="here",
         when=in_price_list,
         chip="view",
-        chip_actions=("cycle_view",),
+        # h/l and the clickable tabs switch views too; the removed tab-row hint used to
+        # be where that was said, so the chip carries all three now.
+        chip_actions=("cycle_view", "tab_prev", "tab_next"),
     ),
     Key(
         id="prices-pin",
@@ -824,8 +841,10 @@ FOOTER_ORDER = (
     "price-drill-close",
     "trends-tabs",
     "trends-page",
+    "trends-chart-cursor",
     "trends-enter",
     "trends-sort",
+    "trends-shades",
     "prices-view",
     "prices-pin",
     "prices-enter",

@@ -858,31 +858,16 @@ class Renderer:
         tabs = self.mode_tab_list()
         modes = [m for _lbl, m in tabs]
         active_index = modes.index(self.browse_mode) if self.browse_mode in modes else 0
-        labels = [
-            f"[{lbl}]" if i == active_index else f" {lbl} " for i, (lbl, _m) in enumerate(tabs)
-        ]
-        gap = 1
-        total = sum(len(lbl) for lbl in labels) + gap * (len(labels) - 1)
-        start = max(0, (width - total) // 2)
-        if start >= 2:
-            self.hline(stdscr, y, 0, start - 1)  # left rule, a blank cell before the chips
-        cx = start
-        for i, label in enumerate(labels):
-            if i > 0:
-                cx += gap
-            if cx >= width:
-                break
-            attr = (
-                curses.color_pair(7) | curses.A_BOLD
-                if i == active_index
-                else curses.color_pair(self._TAB_PAIR)
-            )
-            text = shorten(label, width - cx)
-            self.write(stdscr, y, cx, text, attr)
-            self.regions.append(("modetab", y, cx, cx + len(text) - 1, i))
-            cx += len(text)
-        if cx + 2 <= width:
-            self.hline(stdscr, y, cx + 1, width - cx - 1)  # right rule after the chips
+        self.draw_tabs(
+            stdscr,
+            y,
+            0,
+            width,
+            tuple(lbl for lbl, _m in tabs),
+            active_index,
+            kind="modetab",
+            rule=True,
+        )
 
     def write_seg(
         self, stdscr: curses.window, y: int, x: int, text: str, attr: int, width: int
@@ -1691,15 +1676,21 @@ class Renderer:
         active_index: int,
         kind: str = "tab",
         center: bool = False,
+        rule: bool = False,
     ) -> None:
         # Brackets preserve active-tab state in monochrome or pair-starved terminals.
+        # `rule` is the browse-mode bar's shape -- chips centered in a horizontal rule,
+        # which fills the row instead of leaving it to a key hint. It implies centering
+        # and the tighter one-cell gap, so the chips read as one band.
         if width <= 0 or not tabs:
             return
         active_index %= len(tabs)
         labels = [f"[{t}]" if i == active_index else f" {t} " for i, t in enumerate(tabs)]
-        sep = "  "
+        sep = " " if rule else "  "
         total = sum(len(lbl) for lbl in labels) + len(sep) * (len(labels) - 1)
-        cx = x + max(0, (width - total) // 2) if center and total <= width else x
+        cx = x + max(0, (width - total) // 2) if (center or rule) and total <= width else x
+        if rule and cx - x >= 2:
+            self.hline(stdscr, y, x, cx - x - 1)  # left rule, a blank cell before the chips
         remaining = max(0, width - (cx - x))
         for i, label in enumerate(labels):
             if i > 0:
@@ -1707,7 +1698,7 @@ class Renderer:
                 cx += min(len(sep), remaining)
                 remaining -= min(len(sep), remaining)
             if remaining <= 0:
-                return
+                break
             attr = (
                 curses.color_pair(7) | curses.A_BOLD
                 if i == active_index
@@ -1718,6 +1709,8 @@ class Renderer:
             self.regions.append((kind, y, cx, cx + len(text) - 1, i))  # clickable tab
             cx += len(text)
             remaining -= len(text)
+        if rule and cx + 2 <= x + width:
+            self.hline(stdscr, y, cx + 1, x + width - cx - 1)  # right rule after the chips
 
     @staticmethod
     def panel_title(number: int, title: str, active: bool = False) -> str:
@@ -5327,22 +5320,13 @@ class Renderer:
             self.draw_price_sessions(stdscr, y, bottom, width)
             return
         # Trends-style chrome: a plain box title, the view modes as clickable tabs
-        # (h/l or a click switches, p still cycles), a short right-aligned hint, and
-        # one dim context line -- everything else is table.
+        # (h/l or a click switches, p still cycles) centered in a rule, and one dim
+        # context line -- everything else is table. The keys live in the keybar.
         self.box(stdscr, y, 0, bottom - y, width, "Model prices", active=True)
-        hint = (
-            f"{self._keys('prices', 'tab_prev', 'tab_next')} views · "
-            f"{self._keys('prices', 'down', 'up')} · "
-            f"{self._key('prices', 'pin')} pin · "
-            f"{self._key('prices', 'select')} sessions · "
-            f"{self._key('prices', 'filter')} filter · "
-            f"{self._key('prices', 'close')} closes"
-        )
         labels = tuple(label for _key, label in self.app.prices_views)
         keys = [key for key, _label in self.app.prices_views]
         active = keys.index(self.app.prices_view) if self.app.prices_view in keys else 0
-        self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, labels, active, kind="pricetab")
-        self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
+        self.draw_tabs(stdscr, y + 1, 1, width - 2, labels, active, kind="pricetab", rule=True)
         inner_w = width - 4
         intro = self.price_intro_lines()
         top = y + 3
@@ -6022,50 +6006,12 @@ class Renderer:
         current = tabs[self.trend_tab % len(tabs)]
         self.app._trend_bar_geom = None  # rebuilt below when a bar chart draws
         self._trend_rows_at = None  # rebuilt below when a selectable list draws
-        arrows = "".join(
-            self.app.keymap.label("trends.chart", a)
-            for a in ("cursor_up", "cursor_down", "cursor_left", "cursor_right")
-        )
-        tabkeys = self._keys("trends", "tab_prev", "tab_next")
-        jk = self._keys("trends", "down", "up")
-        if self.trend_drill is not None:
-            hint = (
-                f"{self._keys('trends.drill', 'down', 'up')} move · "
-                f"{self._key('trends.drill', 'select')} opens session · "
-                f"{self._key('trends.drill', 'back')} back"
-            )
-        elif current == "Calendar":
-            if self.trend_focus:
-                hint = (
-                    f"{arrows} day · "
-                    f"{self._keys('trends', 'shades_more', 'shades_less')} shades · "
-                    f"{self._key('trends.chart', 'select')} open · "
-                    f"{self._key('trends.chart', 'back')} back"
-                )
-            else:
-                hint = (
-                    f"{tabkeys} tabs · {self._key('trends', 'select')} pick days · "
-                    f"{self._key('trends', 'back')} closes"
-                )
-        elif current in ("Daily", "Weekly", "Monthly"):
-            if self.trend_focus:
-                hint = (
-                    f"{arrows} bar · {self._key('trends.chart', 'select')} open · "
-                    f"{self._key('trends.chart', 'back')} back"
-                )
-            else:
-                unit = {"Daily": f"{jk} month · ", "Weekly": f"{jk} week · "}.get(current, "")
-                hint = (
-                    f"{tabkeys} tabs · {unit}{self._key('trends', 'select')} pick bars · "
-                    f"{self._key('trends', 'back')} closes"
-                )
-        else:
-            hint = (
-                f"{tabkeys} tabs · {jk} rows · {self._key('trends', 'select')} sessions · "
-                f"{self._key('trends', 'back')} closes"
-            )
-        self.draw_tabs(stdscr, y + 1, 2, width - len(hint) - 4, tabs, self.trend_tab, kind="trend")
-        self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
+        # The tabs get the whole row, in the browse-mode bar's shape. There is no key
+        # hint beside them: the keybar two rows below is painted from the same keymap
+        # table and already says what h/l, j/k, Enter and Esc do here, per tab and per
+        # focus/drill state. Reserving ~49 cells for a second copy of that clipped the
+        # right-hand tabs off every terminal under ~143 columns.
+        self.draw_tabs(stdscr, y + 1, 1, width - 2, tabs, self.trend_tab, kind="trend", rule=True)
         inner_w = width - 4
         content_h = h - 4
         if self.trend_drill is not None:
@@ -7343,7 +7289,10 @@ class Renderer:
         # A light rule across w content cells (the header/footer separators). Inside the
         # app frame the last content column is an ordinary cell, so the rule runs the
         # full width and meets the border instead of stopping a column short of it.
-        stdscr.hline(y + self.oy, x + self.ox, curses.ACS_HLINE, max(0, w))
+        # ACS_* exist only after initscr(), and a narrow build may not carry them at
+        # all -- fall back to ASCII rather than raising mid-paint (as _paint_scrollbar does).
+        glyph = getattr(curses, "ACS_HLINE", "-")
+        stdscr.hline(y + self.oy, x + self.ox, glyph, max(0, w))
 
     def write(self, stdscr: curses.window, y: int, x: int, text: str, attr: int = 0) -> None:
         height, width = stdscr.getmaxyx()
