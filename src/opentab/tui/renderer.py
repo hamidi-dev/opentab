@@ -991,26 +991,40 @@ class Renderer:
         # Active toggle segments use the accent; less common actions remain help-only.
         parts: list = keymap.footer_parts(self.app)
         self.hline(stdscr, height - 2, 0, width)
-        # Reserve the version slot before drawing the keybar, then paint it last.
+        # Reserve the version slot before drawing the keybar, then paint it last. The bar
+        # centres on the whole row, not on what the version leaves, so it lines up with
+        # the centred mode tabs above it.
         ver = f" v{__version__} "
         if len(ver) + 4 < width:
-            self.draw_keybar(stdscr, height - 1, width - len(ver), parts)
+            self.draw_keybar(stdscr, height - 1, width, parts, limit=width - len(ver))
             self.write(stdscr, height - 1, width - len(ver), ver, curses.color_pair(1))
         else:
             self.draw_keybar(stdscr, height - 1, width, parts)
 
-    def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts) -> None:
+    def draw_keybar(self, stdscr: curses.window, y: int, width: int, parts, limit: int = 0) -> None:
         # Entries may contain contiguous sub-segments so only the active token is accented.
         base = curses.color_pair(4)
         active = curses.color_pair(6) | curses.A_BOLD
-        x = 0
-        self.write(stdscr, y, x, " ", base)
-        x += 1
-        for i, part in enumerate(parts):
+        limit = limit or width  # right edge the hints may reach; `width` is what they centre in
+        # Two passes: drop the hints that cannot fit, then centre the ones that survive --
+        # the bar's own width has to be known before the first cell is painted.
+        shown: list[list] = []
+        total = 0
+        for part in parts:
             segs = part if isinstance(part, list) else [part]
-            # Never draw a partial hint.
-            if x + (2 if i else 0) + sum(len(t) for t, _ in segs) > width - 1:
+            span = (2 if shown else 0) + sum(len(t) for t, _ in segs)
+            if total + span > limit - 2:  # never draw a partial hint
                 break
+            shown.append(segs)
+            total += span
+        if not shown:
+            return
+        # A bar too wide to sit centred clear of the version slot re-centres in the room
+        # it does have, which reads as centred without crowding the version.
+        x = max(1, (width - total) // 2)
+        if x + total > limit - 1:
+            x = max(1, (limit - total) // 2)
+        for i, segs in enumerate(shown):
             if i:
                 self.write(stdscr, y, x, "  ", base)
                 x += 2

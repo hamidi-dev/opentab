@@ -413,3 +413,28 @@ def test_the_focused_chart_and_calendar_shades_keep_their_own_keybar_chips():
     app.trend_focus = True
     painted = {seg[0] for part in ot.keymap.footer_parts(app) for seg in part}
     assert {"← ↑ ↓ → move", "+/- shades"} <= painted
+
+
+def test_the_keybar_is_centred_and_never_crowds_the_version():
+    # The hints sit centred under the centred mode tabs; where the row is too narrow to
+    # do that clear of the version tag, they re-centre in the room left of it.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.can_switch_source = lambda: False
+    app.renderer.hline = lambda *a: None  # ACS_HLINE needs initscr
+    orig_cp, orig_ip = ot.curses.color_pair, ot.curses.init_pair
+    ot.curses.color_pair, ot.curses.init_pair = (lambda n: 0), (lambda *a: None)
+    try:
+
+        def margins(width):
+            scr = AttrScreen(24, width)
+            app.renderer.draw_footer(scr, 24, width)
+            line = "".join(scr.cells.get((23, x), " ") for x in range(width))
+            hints, ver = line[: line.index(" v")], line[line.index(" v") :]
+            return len(hints) - len(hints.rstrip()), hints.index(hints.strip()[0]), ver
+
+        right, left, ver = margins(200)  # room to centre on the whole row
+        assert abs(left - (right + len(ver))) <= 1 and left > 1
+        right, left, _ = margins(80)  # version in the way: centred in what is left
+        assert abs(left - right) <= 1 and left > 0
+    finally:
+        ot.curses.color_pair, ot.curses.init_pair = orig_cp, orig_ip
