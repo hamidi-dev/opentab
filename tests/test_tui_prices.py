@@ -496,7 +496,7 @@ def test_prices_overlay_close_only_on_esc_q_or_P():
     app._model_by_root = {"a": [_model_row("claude-opus-4-8", 5.0, 10)]}
     app._models_loaded = True  # keep $'s deferred scan from wiping the fixture rows
     app.handle_key(None, ord("P"))
-    for key in (ord("x"), ord("T"), ord("b")):
+    for key in (ord("x"), ord("b")):  # T opens Trends over it now, so it is not unbound
         app.handle_key(None, key)
         assert app.show_prices, f"key {chr(key)!r} closed the P overlay"
     app.handle_key(None, ord("?"))  # help floats above...
@@ -723,3 +723,27 @@ def test_price_prompt_keys_fetch_dismiss_and_skip():
                 os.environ.pop("XDG_CACHE_HOME", None)
             else:
                 os.environ["XDG_CACHE_HOME"] = old
+
+
+def test_trends_and_prices_stack_over_each_other_in_either_order():
+    # P over T worked from the start; T over P was swallowed, so the pair was one-way.
+    # Both directions stack now: the last one opened owns the keyboard and the paint,
+    # and closing it falls back to the one it covered rather than to the browse view.
+    app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
+    app.handle_key(None, ord("P"))
+    assert app.overlay_top == "prices"
+    app.handle_key(None, ord("T"))  # T over P -- this used to do nothing
+    assert app.trends and app.show_prices and app.overlay_top == "trends"
+    app.handle_key(None, ord("P"))  # P raises the table back over the charts
+    assert app.overlay_top == "prices"
+    app.handle_key(None, ord("P"))  # and P closes it, landing back on Trends
+    assert not app.show_prices and app.overlay_top == "trends"
+    app.handle_key(None, ord("T"))
+    assert not app.trends and app.overlay_top == ""
+
+    # The other order still behaves the same way it always did.
+    app.handle_key(None, ord("T"))
+    app.handle_key(None, ord("P"))
+    assert app.overlay_top == "prices"
+    app.handle_key(None, 27)  # Esc closes the table, not the charts under it
+    assert app.trends and not app.show_prices and app.overlay_top == "trends"

@@ -304,6 +304,7 @@ REGISTRY: tuple[Context, ...] = (
             Action("export", ("e",), "export the price table to CSV"),
             Action("back", ("esc",), "close (from the model list)"),
             Action("close", ("q", "P"), "close the overlay"),
+            Action("trends", ("T",), "trends, floating above"),
             Action("help", ("?",), "the cheat sheet, floating above"),
             Action("theme", ("C",), "colour theme picker"),
             Action("harness", ("H",), "harness picker / fleet filter"),

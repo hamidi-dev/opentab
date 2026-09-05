@@ -77,10 +77,11 @@ class Key(NamedTuple):
         return [(label, bool(self.active(app)) if self.active else False)]
 
 
-# Context follows handle_key precedence, not visible stacked flags. Prices can open over
-# Trends and then own the keyboard; advertising the covered overlay's keys would be wrong.
+# Context follows handle_key precedence, not the raw open flags. Trends and Prices cover
+# each other -- whichever was opened last owns the keyboard, and advertising the covered
+# overlay's keys would be wrong -- so both read the top of App's overlay stack.
 def in_prices(app: App) -> bool:
-    return bool(app.show_prices)
+    return app.overlay_top == "prices"
 
 
 def in_price_list(app: App) -> bool:
@@ -92,11 +93,11 @@ def in_price_drill(app: App) -> bool:
 
 
 def in_trends(app: App) -> bool:
-    return bool(app.trends) and not in_prices(app)
+    return app.overlay_top == "trends"
 
 
 def in_main(app: App) -> bool:
-    return not app.trends and not app.show_prices
+    return not app.overlay_top
 
 
 def in_zoom(app: App) -> bool:
@@ -114,9 +115,9 @@ def _sort_ctx(app: App) -> str:
 def context_label(app: App) -> str:
     if in_price_drill(app):
         return "Prices · sessions"
-    if app.show_prices:
+    if in_prices(app):
         return "Prices"
-    if app.trends:
+    if in_trends(app):
         return f"Trends · {trend_tab(app)}"
     tab = app.active_tab_name()
     if app.view == "session":
@@ -753,7 +754,6 @@ KEYS: tuple[Key, ...] = (
         actions=("trends",),
         summary="trends — charts, calendar heatmap, rankings",
         section="global",
-        when=lambda app: in_main(app) or in_trends(app),
         chip="trends",
         active=lambda app: app.trends,
     ),

@@ -680,9 +680,10 @@ class Renderer:
         bottom = height - 2
         avail = bottom - top
         # Help floats over the body so its key context remains visible.
-        if self.show_prices:
+        # Whichever overlay was opened last paints; the other stays open underneath.
+        if self.app.overlay_top == "prices":
             self.draw_prices(stdscr, top, bottom, width)
-        elif self.trends:
+        elif self.app.overlay_top == "trends":
             self.draw_trends(stdscr, top, bottom, width)
         elif self.view == "session":
             self.draw_detail(stdscr, top, 0, avail, width)

@@ -116,12 +116,22 @@ def test_help_lists_the_keys_that_work_where_you_are():
     )
     app.prices_model = None
 
-    # P opens from INSIDE Trends and owns the keyboard (handle_key checks it first), so
-    # the context is Prices even though both flags are set.
-    app.trends = True
+    # The two overlays cover each other: whichever was opened LAST owns the keyboard,
+    # so that is the context, and the covered one's keys must not be advertised.
+    app.trend_tab = 0  # the earlier block left the cursor on Calendar
+    app.trends = True  # T over the already-open P
+    assert [t for t, _ in app.renderer.help_sections()][0] == "Here — Trends · Daily"
+    ids = here(app)
+    assert "trends-page" in ids and "prices-view" not in ids
+    app.show_prices = True  # P raised back over T
     assert [t for t, _ in app.renderer.help_sections()][0] == "Here — Prices"
     ids = here(app)
     assert "trends-page" not in ids and "prices-view" in ids
+    # Closing the top one falls back to the one it covered, not to the browse view.
+    app.show_prices = False
+    assert app.trends and app.overlay_top == "trends"
+    assert [t for t, _ in app.renderer.help_sections()][0] == "Here — Trends · Daily"
+    app.trends = False
 
 
 def test_every_registry_action_is_discoverable():

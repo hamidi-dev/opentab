@@ -422,6 +422,7 @@ class App:
         self.help_scroll = 0
         self.toast_history = False
         self.toast_history_scroll = 0
+        self._overlays: list[str] = []  # T/P open order; the last one is on top
         self.trends = False
         self.trend_tab = 0
         self.trend_month_index = 0
@@ -571,6 +572,60 @@ class App:
         self._aw_key = key
         self._aw_cache = list(rows)
         return self._aw_cache
+
+    # --- The T/P overlay stack ------------------------------------------------
+    # Trends and Prices each cover the other, whichever was opened last, so `trends`
+    # and `show_prices` are membership in an ordered list rather than two independent
+    # flags. Assignment still reads as a flag everywhere it already did -- the setter
+    # keeps the order -- and `overlay_top` is what decides who owns the keyboard, the
+    # paint and the key context. Closing the top one falls back to what it covered.
+
+    @property
+    def trends(self) -> bool:
+        return "trends" in self._overlays
+
+    @trends.setter
+    def trends(self, on: bool) -> None:
+        self._set_overlay("trends", on)
+
+    @property
+    def show_prices(self) -> bool:
+        return "prices" in self._overlays
+
+    @show_prices.setter
+    def show_prices(self, on: bool) -> None:
+        self._set_overlay("prices", on)
+
+    @property
+    def overlay_top(self) -> str:
+        # "" when neither is open. Re-opening the one already on top is a no-op; opening
+        # the one underneath raises it, which is what P-from-Trends and T-from-Prices do.
+        return self._overlays[-1] if self._overlays else ""
+
+    def _set_overlay(self, name: str, on: bool) -> None:
+        if name in self._overlays:
+            self._overlays.remove(name)
+        if on:
+            self._overlays.append(name)
+
+    def open_trends(self) -> None:
+        # Lands unfocused on the most recent period, whether it opens from the browse
+        # view or over the P table -- one entry point so the two cannot drift.
+        self.trends = True
+        self.trend_month_index = 0  # start at the most recent month
+        self.trend_week_index = 0  # and the most recent week
+        self.trend_year_index = 0  # and the most recent year
+        self.cal_cursor = None  # Calendar cursor defaults to that year's peak day
+        self.trend_cursor = None  # bar cursors default to each chart's peak
+        self.trend_row_index = 0
+        self.trend_drill = None
+        self.trend_focus = False  # land unfocused (arrows pick tabs)
+
+    def open_prices(self) -> None:
+        self.show_prices = True
+        self.prices_scroll = 0
+        self.prices_index = 0
+        self.prices_model = None
 
     def range_cost_total(self) -> float:
         return sum(w.total_cost for w in self.all_workflows)
@@ -3206,7 +3261,7 @@ class App:
 
     def _export_dataset(self) -> tuple[str, list[str], list[list]]:
         # Export the active panel at full precision under the active price mode.
-        if self.show_prices:
+        if self.overlay_top == "prices":
             return self._prices_dataset()
         if self.view == "session":
             return self._session_tab_dataset()
@@ -4312,7 +4367,8 @@ class App:
     def in_prices_sort_context(self) -> bool:
         # The P overlay's model list (not its per-model session drill-in) is sortable
         # by column, so it gets its own sort state (prices_sort/prices_sort_reverse).
-        return self.show_prices and self.prices_model is None
+        # Only while it is the visible overlay: Trends opened over it sorts its own rows.
+        return self.overlay_top == "prices" and self.prices_model is None
 
     def in_subagent_sort_context(self) -> bool:
         # The session view's Subagents tab; its own sort pair, like project lists.
@@ -6130,10 +6186,7 @@ class App:
             self.help_scroll = 0
             return True
         if act == "prices":
-            self.show_prices = True
-            self.prices_scroll = 0
-            self.prices_index = 0
-            self.prices_model = None
+            self.open_prices()  # floats over the charts; closing it lands back here
             return True
         if act == "theme":
             self.open_theme_menu()  # live-previews with the charts as the swatch
@@ -6252,7 +6305,7 @@ class App:
             elif act == "close":
                 self.toast_history = False
             return True
-        if self.show_prices:
+        if self.overlay_top == "prices":
             if self.sort_menu:  # the `s` picker floats over the price table
                 return self.handle_sort_menu_key(key)
             if self.filter_active:
@@ -6260,7 +6313,7 @@ class App:
             if self.prices_model is not None:
                 return self._handle_price_sessions_key(key, stdscr)
             return self._handle_price_models_key(key, stdscr)
-        if self.trends:
+        if self.overlay_top == "trends":
             if self.sort_menu:  # the `s` picker floats over the ranked tables
                 return self.handle_sort_menu_key(key)
             current = self.trend_tabs[self.trend_tab % len(self.trend_tabs)]
@@ -6363,21 +6416,10 @@ class App:
             self.open_notices()  # the notices scrollback: read a toast that faded
             return True
         if act == "trends":
-            self.trends = True
-            self.trend_month_index = 0  # start at the most recent month
-            self.trend_week_index = 0  # and the most recent week
-            self.trend_year_index = 0  # and the most recent year
-            self.cal_cursor = None  # Calendar cursor defaults to that year's peak day
-            self.trend_cursor = None  # bar cursors default to each chart's peak
-            self.trend_row_index = 0
-            self.trend_drill = None
-            self.trend_focus = False  # land unfocused (arrows pick tabs)
+            self.open_trends()
             return True
         if act == "prices":
-            self.show_prices = True
-            self.prices_scroll = 0
-            self.prices_index = 0
-            self.prices_model = None
+            self.open_prices()
             return True
         if act == "reload":
             self.reload()
@@ -6668,6 +6710,9 @@ class App:
             self.show_prices = False
             self.prices_model = None
             return True
+        if act == "trends":
+            self.open_trends()  # floats over the table; closing it lands back here
+            return True
         if act == "help":
             self.help = True
             self.help_scroll = 0
@@ -6745,7 +6790,7 @@ class App:
             self.query = ""
             self._filter_edited()
         elif act in ("down", "up"):
-            if self.show_prices:
+            if self.overlay_top == "prices":
                 # The move keys walk the P model cursor so you can land on a match.
                 self.prices_index += 1 if act == "down" else -1
                 self.prices_index = max(0, self.prices_index)
@@ -6898,7 +6943,7 @@ class App:
             elif click or double:
                 self.help = False
             return True
-        if self.show_prices:
+        if self.overlay_top == "prices":
             if self.prices_model is None:
                 if up:
                     self.prices_index = max(0, self.prices_index - 1)
@@ -6925,7 +6970,7 @@ class App:
                     self.prices_model = None  # back to the model list
                     self.prices_scroll = 0
             return True
-        if self.trends:
+        if self.overlay_top == "trends":
             return self._mouse_trends(my, mx, up, down, click, double)
         if up or down:
             self._wheel(my, mx, -3 if up else 3)
