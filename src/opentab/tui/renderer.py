@@ -79,6 +79,7 @@ from opentab.pricing import (
 from opentab.util import (
     CONTEXT_COMPACT_FLOOR,
     CONTEXT_COMPACT_RATIO,
+    TRACE_EVENTS_CAP,
     agent_mix_label,
     cached_share,
     context_compactions,
@@ -93,11 +94,26 @@ from opentab.util import (
 )
 
 
+class TraceLine(str):
+    """Transcript styling belongs to its event, never to text found inside it."""
+
+    def __new__(cls, text: str, role: str):
+        line = super().__new__(cls, text)
+        line.role = role
+        return line
+
+
 def _turn_read_mark(row) -> str:
-    # N narration, R reasoning, NR both -- letters rather than colour, because the row
-    # can be selected (reverse video), the terminal can be monochrome, and colour alone
-    # cannot say WHICH of the two a turn holds.
-    return ("N" if row.get("has_text") else "") + ("R" if row.get("has_reasoning") else "")
+    # Plain labels remain useful on a selected row and in monochrome.
+    kinds = []
+    if row.get("has_reasoning"):
+        kinds.append("Thinking")
+    if row.get("has_text"):
+        kinds.append("Text")
+    calls = tool_call_label(row.get("tools"))
+    if calls:
+        kinds.append(calls)
+    return " · ".join(kinds)
 
 
 def _turn_agent(row) -> str:
@@ -484,7 +500,8 @@ class Renderer:
             if current == "Subagents":
                 return self.detail_subagents(workflow, content_width)
             if current == "Turns":
-                return self.detail_turns(workflow, content_width)
+                lines = self.detail_turns(workflow, content_width)
+                return lines[2:] if self.app.active_trace_drill is not None else lines
             if current == "Tools":
                 return self.detail_tools(workflow, content_width)
             if current == "Context":
@@ -574,6 +591,8 @@ class Renderer:
     def draw(self, stdscr: curses.window) -> None:
         # Settle before painting so breadcrumbs cannot name a drill the session list drops.
         self.app.settle_drills()
+        if not self.app._on_turns_tab() or self.app.active_trace_drill is None:
+            self.app._clear_trace_expansion()
         self.apply_background(stdscr)  # theme bg fills the screen (before erase reads it)
         stdscr.erase()
         self.regions = []  # rebuilt for this frame's clicks
@@ -1270,6 +1289,14 @@ class Renderer:
         )
 
     def line_attr(self, line: str) -> int:
+        if isinstance(line, TraceLine):
+            if line.role == "error":
+                return curses.color_pair(4) | curses.A_BOLD
+            if line.role == "tool":
+                return curses.color_pair(6) | curses.A_BOLD
+            if line.role in ("reasoning", "output", "meta"):
+                return curses.color_pair(1)
+            return curses.A_NORMAL
         # Prefixes carry semantic styling: headings, caveats, and dim explanations.
         if line.startswith("# "):
             return curses.color_pair(2) | curses.A_BOLD
@@ -2195,6 +2222,14 @@ class Renderer:
 
         current = tabs[self.tab % len(tabs)]
         visible = h - 4
+        if (
+            current == "Turns"
+            and self.app.active_trace_drill is not None
+            and workflow.id not in self.app._trace_by_session
+            and not self.app.trace_expanded
+            and self.app.session_supports_trace(workflow.id)
+        ):
+            self.app._trace_loading = (workflow.id, "")
         if current == "Subagents":
             lines = self.detail_subagents(workflow, w - 4)
         elif current == "Turns":
@@ -2206,6 +2241,14 @@ class Renderer:
             lines = self.detail_context(workflow, w - 4)
         else:
             lines = self.detail_overview(workflow, w - 4)
+
+        tracing = current == "Turns" and self.app.active_trace_drill is not None
+        if tracing and lines:
+            # The turn's identity stays above the scrolling transcript, below the tabs.
+            self.write(
+                stdscr, y + 2, x + 2, shorten(lines[0], w - 4), curses.color_pair(2) | curses.A_BOLD
+            )
+            lines = lines[2:]
 
         if current == "Turns" and self.app._turn_follow:
             # Follow is one-shot and must run before the scroll clamp.
@@ -2221,7 +2264,7 @@ class Renderer:
                 # gutters and prevents rich number colors from shredding the highlight.
                 self.paint_cursor_row(stdscr, y + 3 + offset, x + 2, line, w - 4)
                 continue
-            if self.scroll + offset in headers:
+            if not tracing and self.scroll + offset in headers:
                 self._paint_box_header(stdscr, y + 3 + offset, x + 2, line, w - 4)
                 self._register_line_sort_header(
                     y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
@@ -2234,6 +2277,10 @@ class Renderer:
                     attr = curses.color_pair(2) | curses.A_BOLD
                 elif lvl is not None:
                     attr = curses.color_pair(PRICE_HEAT_BASE_PAIR + lvl) | curses.A_BOLD
+            if tracing:
+                # $1 in a shell script is not money, and 1.0M in output is not a token count.
+                self.write(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+                continue
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
             self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
             if current == "Tools":
@@ -3895,13 +3942,19 @@ class Renderer:
         pos = siblings.index(idx) + 1
         wrap = max(20, width - 2)
         head = (
-            f"# Turn {pos} of {len(siblings)} · {shorten(row.get('model_name', '-'), 40)} · "
-            f"{(row.get('time') or '--')[5:19]} · {human_tokens(row['tokens_total'])} · "
+            f"# Prompt {self.app.active_turn_drill + 1} · Turn {pos}/{len(siblings)} (#{idx + 1}) · "
             f"{money(costs[idx])}"
         )
+        meta = f"{row.get('model_name', '-')} · {(row.get('time') or '--')[5:19]} · {human_tokens(row['tokens_total'])} tokens"
         if row.get("depth"):
-            head += f" · {_turn_agent(row)}"
+            meta += f" · {_turn_agent(row)}"
         lines: list[str] = [head, ""]
+        if self.app._trace_loading is not None:
+            label = "full turn" if self.app.trace_expanded else "turn"
+            return lines + [TraceLine(f"  Loading {label} — reading recorded content…", "meta")]
+        lines += [TraceLine(ln, "meta") for ln in self._trace_wrapped("· ", meta, "  ", width)] + [
+            ""
+        ]
         events = self.app.turn_trace_events(workflow.id, row)
         if not events:
             # Distinguish "this turn recorded nothing" from an unsupported backend: the
@@ -3912,17 +3965,30 @@ class Renderer:
         for event in events:
             kind = event.get("kind")
             if kind == "text":
-                lines += self._trace_prose(event, wrap - 2, indent="  ")
+                lines += [
+                    TraceLine(ln, "text") for ln in self._trace_prose(event, wrap, indent="  ")
+                ]
             elif kind == "reasoning":
-                lines.append("✻ thinking")
-                lines += self._trace_prose(event, wrap - 2, indent="  ")
+                lines.append(TraceLine("✻ Thinking", "reasoning"))
+                lines += [
+                    TraceLine(ln, "reasoning") for ln in self._trace_prose(event, wrap, indent="  ")
+                ]
             else:
                 lines += self._trace_call(event, wrap)
             lines.append("")
         while lines and not lines[-1]:
             lines.pop()
+        if not self.app.trace_expanded and len(events) >= TRACE_EVENTS_CAP:
+            lines += [
+                "",
+                TraceLine(
+                    f"· Preview limited to {TRACE_EVENTS_CAP} events; expand to read all.", "meta"
+                ),
+            ]
         lines += ["", f"· {self._key('main', 'back')} back to this prompt's turns."]
-        if not self.app.session_records_reasoning(workflow.id):
+        if not self.app.session_records_reasoning(workflow.id) and not any(
+            e.get("kind") == "reasoning" for e in events
+        ):
             # Say WHY the thinking is missing. This harness writes its thinking blocks
             # empty -- only the signed blob survives -- so silence here would read as a
             # parsing bug on the one thing people most expect to find.
@@ -3950,12 +4016,18 @@ class Renderer:
         # wrapper: it splits on whitespace and rejoins on single spaces, which is right
         # for prose and wrong for anything quoted -- `printf 'a  b'` comes back claiming
         # to print one space, and a column-aligned table loses its alignment.
+        width = max(1, width)
+        if text.isascii():
+            return [text[i : i + width] for i in range(0, len(text), width)] or [""]
         out: list[str] = []
-        while text:
-            head = clip(text, width) or text[0]
-            out.append(head)
-            text = text[len(head) :]
-        return out or [""]
+        start = used = 0
+        for i, ch in enumerate(text):
+            cells = display_width(ch)
+            if used + cells > width and i > start:
+                out.append(text[start:i])
+                start, used = i, 0
+            used += cells
+        return out + [text[start:]]
 
     def _trace_block(self, text: str, indent: str, wrap: int, limit: int) -> list[str]:
         """Raw transcript lines, verbatim: every space, tab stop and blank line kept.
@@ -3979,7 +4051,24 @@ class Renderer:
         return out
 
     def _trace_prose(self, event: dict, wrap: int, indent: str = "  ") -> list[str]:
-        out = self._trace_block(event.get("text") or "", indent, wrap, self._TRACE_PROSE_LINES)
+        raw_lines = (event.get("text") or "").splitlines()
+        limit = len(raw_lines) if self.app.trace_expanded else self._TRACE_PROSE_LINES
+        out = []
+        fenced = False
+        for raw in raw_lines[:limit]:
+            code = fenced or raw.lstrip().startswith("```") or raw.startswith(("    ", "\t"))
+            if raw.lstrip().startswith("```"):
+                fenced = not fenced
+            if code:
+                out += self._trace_block(raw, indent, wrap, 1)
+            elif raw.strip():
+                out += [
+                    indent + part for part in wrap_cells(raw, max(4, wrap - display_width(indent)))
+                ]
+            else:
+                out.append("")
+        if len(raw_lines) > limit:
+            out.append(f"{indent}… {len(raw_lines) - limit:,} more lines")
         dropped = event.get("dropped") or 0
         if dropped:
             out.append(f"{indent}… {dropped:,} more characters")
@@ -3987,7 +4076,11 @@ class Renderer:
 
     def _trace_call(self, event: dict, wrap: int) -> list[str]:
         name = short_tool_name(str(event.get("name") or "(unknown)"))
+        status = event.get("status")
+        if status in ("error", "pending", "running"):
+            name += f" · {str(status).capitalize()}"
         args = str(event.get("args") or "")
+        limit = len(args.splitlines()) if self.app.trace_expanded else self._TRACE_VALUE_LINES
         # Whitespace is NOT collapsed: 48% of real tool calls carry a multi-line argument
         # and 25% a multi-line command (heredocs, patches, a Write's body), and "the exact
         # command that ran" is this view's whole promise. Flattened, a patch becomes one
@@ -3996,32 +4089,54 @@ class Renderer:
         if len(head) == 1:
             # A one-line command rides the marker row, where it reads as a command --
             # broken at a cell boundary, never re-flowed, for the reason above.
-            lead = f"▸ {name}  "
-            chunks = self._cell_chunks(head[0], max(4, wrap - display_width(lead)))
-            out = [lead + chunks[0]] + ["    " + c for c in chunks[1:]]
+            value = f"▸ {name}  {head[0]}"
+            first = clip(value, wrap)
+            out = [first]
+            if len(first) < len(value):
+                out += self._trace_block(value[len(first) :], "    ", wrap, 1)
         else:
-            out = [f"▸ {name}"]
+            out = self._trace_block(f"▸ {name}", "", wrap, 1)
             if args:
-                out += self._trace_block(args, "  ", wrap, self._TRACE_VALUE_LINES)
-        for key, value in (event.get("params") or [])[: self._TRACE_PARAM_LINES]:
+                out += self._trace_block(args, "  ", wrap, limit)
+        out = [
+            TraceLine(ln, "error" if status == "error" else "tool")
+            if i == 0
+            else TraceLine(ln, "text")
+            for i, ln in enumerate(out)
+        ]
+        params = event.get("params") or []
+        param_limit = len(params) if self.app.trace_expanded else self._TRACE_PARAM_LINES
+        for key, value in params[:param_limit]:
+            if key == "…":
+                out.append(TraceLine(f"  … {value}", "meta"))
+                continue
             text = str(value)
             if "\n" in text:
-                out.append(f"  {key}:")
-                out += self._trace_block(text, "    ", wrap, self._TRACE_VALUE_LINES)
+                out += self._trace_block(f"{key}:", "  ", wrap, 1)
+                out += self._trace_block(
+                    text,
+                    "    ",
+                    wrap,
+                    len(text.splitlines()) if self.app.trace_expanded else self._TRACE_VALUE_LINES,
+                )
             else:
-                lead = f"  {key}: "
-                chunks = self._cell_chunks(text, max(4, wrap - display_width(lead)))
-                out += [lead + chunks[0]] + ["      " + c for c in chunks[1:]]
-        extra = len(event.get("params") or []) - self._TRACE_PARAM_LINES
+                out += self._trace_block(f"{key}: {text}", "  ", wrap, 1)
+        extra = len(params) - param_limit
         if extra > 0:
             out.append(f"  … {extra} more argument{'' if extra == 1 else 's'}")
-        out += self._trace_output(event, wrap)
+        out = [ln if isinstance(ln, TraceLine) else TraceLine(ln, "text") for ln in out]
+        out += [TraceLine(ln, "output") for ln in self._trace_output(event, wrap)]
         return out
 
     def _trace_output(self, event: dict, wrap: int) -> list[str]:
         output = event.get("output") or ""
         if not output:
             return []
+        if self.app.trace_expanded:
+            body = self._trace_block(output, "  ", wrap, len(output.splitlines()))
+            return [
+                ("→" + line[1:]) if line.startswith("  ") else line for line in body[:1]
+            ] + body[1:]
         # Collapse runs of blank lines before counting: many tools separate their results
         # with them, and a budget of twelve lines spent on six blanks shows half the
         # output it could.
@@ -4031,10 +4146,11 @@ class Renderer:
                 shown.append(para)
         while shown and not shown[-1].strip():
             shown.pop()
-        hidden = max(0, len(shown) - self._TRACE_OUTPUT_LINES)
+        limit = len(shown) if self.app.trace_expanded else self._TRACE_OUTPUT_LINES
+        hidden = max(0, len(shown) - limit)
         # Only the first row carries the arrow: it marks where the result starts, and
         # repeating it would fight the text it introduces.
-        body = self._trace_block("\n".join(shown), "  ", wrap, self._TRACE_OUTPUT_LINES)
+        body = self._trace_block("\n".join(shown), "  ", wrap, limit)
         out = [("→" + line[1:]) if line[:2] == "  " else line for line in body[:1]] + body[1:]
         tail = []
         if hidden:
@@ -4104,15 +4220,31 @@ class Renderer:
         # pointing at a level you cannot enter is an advertisement for nothing.
         reads = {i: _turn_read_mark(rows[i]) for i in g["indices"]} if traceable else {}
         read_w = (
-            max(len("Read"), max(map(len, reads.values()), default=0)) if any(reads.values()) else 0
+            max(7, max(map(display_width, reads.values()), default=0)) if any(reads.values()) else 0
         )
         fixed = idx_w + agent_w + 14 + 6 + 9 + 9 + 6 + (eff_w + 1 if eff_w else 0)
         # Budgeted against the model column's floor like every other optional cell: added
         # unconditionally it pushed a narrow pane past its width, and the overflow lands
         # on the RIGHT, so an 80-column terminal lost the Cost column to a marker.
         MODEL_MIN = 12
-        if read_w and inner - fixed - read_w - 1 < MODEL_MIN:
-            read_w = 0
+        if read_w:
+            read_w = min(read_w, 30, inner - fixed - MODEL_MIN - 1)
+            if read_w < 5:
+                read_w = 0
+        read_heading = "Content" if read_w >= 7 else "Read"
+        if 0 < read_w < 8:
+            reads = {
+                i: "Both"
+                if rows[i].get("has_text") and rows[i].get("has_reasoning")
+                else "Think"
+                if rows[i].get("has_reasoning")
+                else "Text"
+                if rows[i].get("has_text")
+                else "Tools"
+                if rows[i].get("tools")
+                else ""
+                for i in g["indices"]
+            }
         fixed += read_w + 1 if read_w else 0
         mw = max(MODEL_MIN, min(30, inner - fixed))
         # Gate Tools on row data and a width floor. Tool lists are open-ended, so they use
@@ -4120,12 +4252,12 @@ class Renderer:
         TOOLS_MIN = 10
         labels = {i: tool_call_label(rows[i].get("tools")) for i in g["indices"]}
         tools_w = inner - fixed - mw - 1
-        tools_w = tools_w if any(labels.values()) and tools_w >= TOOLS_MIN else 0
+        tools_w = tools_w if not traceable and any(labels.values()) and tools_w >= TOOLS_MIN else 0
         header = (
             f"  {'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} "
             + (f"{pad('Eff', eff_w)} " if eff_w else "")
             + f"{pad('Agent', agent_w)} "
-            + (f"{pad('Read', read_w)} " if read_w else "")
+            + (f"{pad(read_heading, read_w)} " if read_w else "")
             + (f"{pad('Tools', tools_w)} " if tools_w else "")
             + f"{'Cached':>6} {'Tokens':>9} {'Cost':>9}"
         )
@@ -4133,12 +4265,15 @@ class Renderer:
         for i in g["indices"]:
             r = rows[i]
             sh = cached_share(r)
+            model_label = r["model_name"]
+            if display_width(model_label) > mw:
+                model_label = model_label.rsplit("/", 1)[-1]
             body.append(
                 f"  {i + 1:>{idx_w}} {(r.get('time') or '--')[5:19]:<14} "
-                f"{pad(shorten(r['model_name'], mw), mw)} "
+                f"{pad(shorten(model_label, mw), mw)} "
                 + (f"{pad(shorten(efforts[i] or '-', eff_w), eff_w)} " if eff_w else "")
                 + f"{pad(shorten(_turn_agent(r), agent_w), agent_w)} "
-                + (f"{pad(reads.get(i) or '-', read_w)} " if read_w else "")
+                + (f"{pad(shorten(reads.get(i) or '-', read_w), read_w)} " if read_w else "")
                 + (f"{pad(shorten(labels[i] or '-', tools_w), tools_w)} " if tools_w else "")
                 + f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
                 f"{human_tokens(r['tokens_total']):>9} {money(costs[i]):>9}"
@@ -4149,7 +4284,7 @@ class Renderer:
                 f"  {'':>{idx_w}} {pad('TOTAL', 14)} {pad('', mw)} "
                 + (f"{pad('', eff_w)} " if eff_w else "")
                 + f"{pad('', agent_w)} "
-                + (f"{pad(str(sum(1 for v in reads.values() if v)), read_w)} " if read_w else "")
+                + (f"{pad('', read_w)} " if read_w else "")
                 # pad() does not truncate, so shorten the aggregate tool mix first.
                 + (
                     f"{pad(shorten(tool_mix_label([rows[i] for i in g['indices']]), tools_w), tools_w)} "
@@ -4170,15 +4305,6 @@ class Renderer:
             cur = self.app._trace_cursor
             self._turn_cursor_line = start + cur if 0 <= cur < len(body) else None
         lines += ["", f"· {self._key('main', 'back')} back to the prompts."]
-        if read_w:
-            lines += self._trace_wrapped(
-                "· Read: ",
-                "N a turn that narrates, R one that reasons aloud — the turns with "
-                "something to read. The rest are tool calls, and the TOTAL counts the "
-                "marked ones.",
-                "  ",
-                width,
-            )
         if traceable:
             # The footnote wrapping the tab above uses: continuation is indented, and the
             # indent is reserved inside the width rather than added past it.

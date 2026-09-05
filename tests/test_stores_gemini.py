@@ -161,13 +161,17 @@ def test_a_superseded_turn_is_unwound_from_the_model_it_was_recorded_under():
     # model is what keeps the per-model totals equal to the turns on record.
     with tempfile.TemporaryDirectory() as tmp:
         root, repo = os.path.join(tmp, ".gemini"), _repo(tmp)
+        old = _gemini_turn("gemini-2.5-flash", 500, 100, mid="m1")
+        old["content"] = [{"text": "old narration"}]
+        new = _gemini_turn("gemini-2.5-pro", 1000, 200, mid="m1")
+        new["content"] = [{"text": "new narration"}]
         _gemini_write(
             root,
             "repo",
             [
                 _gemini_meta(GEMINI_SID, repo),
-                _gemini_turn("gemini-2.5-flash", 500, 100, mid="m1"),
-                _gemini_turn("gemini-2.5-pro", 1000, 200, mid="m1"),
+                old,
+                new,
             ],
             project=repo,
         )
@@ -176,6 +180,8 @@ def test_a_superseded_turn_is_unwound_from_the_model_it_was_recorded_under():
         rows = store.model_breakdown()
         assert [r["model_name"] for r in rows] == ["google/gemini-2.5-pro"]
         assert rows[0]["tokens_total"] == 1200
+        turn = store.message_timeline(GEMINI_SID)[0]
+        assert store.turn_content(GEMINI_SID)[turn["content_key"]][0]["text"] == "new narration"
 
 
 def test_models_are_provider_prefixed_so_the_providers_rollup_sees_a_route():
@@ -784,6 +790,88 @@ def test_a_tool_result_user_record_is_not_treated_as_a_human_prompt():
         assert [r["prompt_title"] for r in rows] == ["read the file", "read the file"]
 
 
+def test_gemini_turn_content_reads_thought_summaries_exact_calls_and_results():
+    with tempfile.TemporaryDirectory() as tmp:
+        root, repo = os.path.join(tmp, ".gemini"), _repo(tmp)
+        turn = _gemini_turn("gemini-2.5-pro", 1000, 200, mid="m1")
+        turn["content"] = [{"text": "I'll inspect both files."}]
+        turn["thoughts"] = [
+            {
+                "subject": "Plan",
+                "description": "Read before editing.",
+                "timestamp": "2026-08-20T09:15:08.000Z",
+            }
+        ]
+        sibling_results = [
+            {
+                "functionResponse": {
+                    "id": "c1",
+                    "name": "read_file",
+                    "response": {"output": "direct result"},
+                }
+            },
+            {
+                "functionResponse": {
+                    "id": "c2",
+                    "name": "read_file",
+                    "response": {"output": "stale sibling result"},
+                }
+            },
+        ]
+        turn["toolCalls"] = [
+            {
+                "id": "c1",
+                "name": "read_file",
+                "args": {"file_path": "/repo/a.py", "limit": 20},
+                # Gemini deliberately stores the WHOLE user-turn part list on each
+                # ToolCallRecord, so the trace must select only this call's response.
+                "result": sibling_results,
+                "status": "success",
+                "timestamp": "2026-08-20T09:15:08.000Z",
+            },
+            {
+                "id": "c2",
+                "name": "read_file",
+                "args": {"file_path": "/repo/b.py"},
+                "result": None,
+                "status": "success",
+                "timestamp": "2026-08-20T09:15:08.000Z",
+            },
+        ]
+        result = _gemini_user("", mid="u2")
+        result["content"] = [
+            {
+                "functionResponse": {
+                    "id": "c2",
+                    "name": "read_file",
+                    "response": {"output": "later result"},
+                }
+            }
+        ]
+        _gemini_write(
+            root,
+            "repo",
+            [_gemini_meta(GEMINI_SID, repo), _gemini_user("go"), turn, result],
+            project=repo,
+        )
+        store = _store(root)
+
+        (row,) = store.message_timeline(GEMINI_SID)
+        assert row["content_key"] == f"{GEMINI_SID}:m1"
+        assert row["has_text"] is True and row["has_reasoning"] is True
+        assert store.supports_turn_content(GEMINI_SID) is True
+        events = store.turn_content(GEMINI_SID)[row["content_key"]]
+        assert [event["kind"] for event in events] == ["text", "reasoning", "tool", "tool"]
+        assert events[0]["text"] == "I'll inspect both files."
+        assert events[1]["text"] == "**Plan**\n\nRead before editing."
+        assert (events[2]["args"], events[2]["output"]) == ("/repo/a.py", "direct result")
+        assert events[2]["params"] == [("limit", "20")]
+        assert (events[3]["args"], events[3]["output"]) == ("/repo/b.py", "later result")
+        assert store.turn_content(GEMINI_SID, content_key=row["content_key"]) == {
+            row["content_key"]: events
+        }
+
+
 def test_a_repeated_user_id_replaces_rather_than_opening_a_second_group():
     with tempfile.TemporaryDirectory() as tmp:
         root, repo = os.path.join(tmp, ".gemini"), _repo(tmp)
@@ -877,10 +965,15 @@ def test_a_grandchild_subagent_folds_all_the_way_up_to_the_root():
     with tempfile.TemporaryDirectory() as tmp:
         root, repo = os.path.join(tmp, ".gemini"), _repo(tmp)
         _grandchild_corpus(root, repo)
-        rows = _store(root).workflows()
+        store = _store(root)
+        rows = store.workflows()
         assert len(rows) == 1
         assert rows[0].subagents == 2
         assert rows[0].total_tokens == 330
+        turns = store.message_timeline(GEMINI_SID)
+        trace = store.turn_content(GEMINI_SID)
+        assert len(turns) == 3
+        assert all(trace[turn["content_key"]][0]["text"] == "ok" for turn in turns)
 
 
 def test_the_status_trio_agrees_with_the_full_parse_across_two_levels():

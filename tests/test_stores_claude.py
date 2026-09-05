@@ -1274,6 +1274,10 @@ def test_claude_turn_content_pairs_each_call_with_its_own_result():
         assert events[1]["output"] == "3 files changed"  # its own result, logged second
         assert (events[2]["name"], events[2]["args"]) == ("Read", "/repo/x.py")
         assert events[2]["output"] == "1  import os"
+        assert store.turn_content("s1", content_key=row["content_key"]) == {
+            row["content_key"]: events
+        }
+        assert store.turn_content("s1") is content  # expansion never replaces the preview memo
 
 
 def test_claude_streamed_blocks_fold_into_the_one_turn_they_belong_to():
@@ -1321,6 +1325,8 @@ def test_claude_trace_covers_a_subagents_turns_too():
         content = store.turn_content("s1")
         sub = next(r for r in store.message_timeline("s1") if r["depth"])
         assert [e["args"] for e in content[sub["content_key"]]] == ["TODO"]
+        key = sub["content_key"]
+        assert store.turn_content("s1", content_key=key) == {key: content[key]}
 
 
 def test_claude_corpus_parse_carries_no_content_at_all():

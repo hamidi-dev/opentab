@@ -479,7 +479,7 @@ def test_omp_turns_and_tools_tag_subagent_rows_with_depth_and_agent_name():
                     30,
                     provider="openai-codex",
                     cost=0.05,
-                    mid="c1",
+                    mid="a1",  # same as the root: trace identity must stay session-qualified
                     ts="2026-07-27T19:12:10.000Z",
                     tools=["grep"],
                 ),
@@ -490,6 +490,11 @@ def test_omp_turns_and_tools_tag_subagent_rows_with_depth_and_agent_name():
         assert store.supports_turns(OMP_SID) and store.supports_tools(OMP_SID)
         turns = store.message_timeline(OMP_SID)
         assert [(t["depth"], t["agent"]) for t in turns] == [(0, "-"), (1, "RepoPurposeScout")]
+        assert turns[0]["content_key"] != turns[1]["content_key"]
+        trace = store.turn_content(OMP_SID)
+        assert [trace[t["content_key"]][0]["name"] for t in turns] == ["task", "grep"]
+        key = turns[1]["content_key"]
+        assert store.turn_content(OMP_SID, content_key=key) == {key: trace[key]}
         tools = {r["tool"]: r for r in store.tool_breakdown(OMP_SID)}
         assert set(tools) == {"task", "grep"}
         assert tools["grep"]["tokens_total"] == 530  # the subagent's own step

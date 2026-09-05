@@ -363,7 +363,7 @@ def _fit(text: str, cap: int) -> str:
     return kept + f" … +{len(text) - len(kept)} chars"
 
 
-def tool_call_detail(args) -> tuple[str, list[tuple[str, str]]]:
+def tool_call_detail(args, full: bool = False) -> tuple[str, list[tuple[str, str]]]:
     """Split one call's arguments into its headline and the rest.
 
     The headline is the answer to "what command was that" -- Bash's `command`, Read's
@@ -376,33 +376,82 @@ def tool_call_detail(args) -> tuple[str, list[tuple[str, str]]]:
         try:
             args = json.loads(args)
         except ValueError:
-            return clip_text(args, TRACE_ARG_CAP)[0], []
-    if not isinstance(args, dict) or not args:
+            return (args if full else _fit(args, TRACE_ARG_CAP)), []
+    if args is None:
+        return "", []
+    if not isinstance(args, dict):
+        text = _arg_text(args)
+        return (text if full else _fit(text, TRACE_ARG_CAP)), []
+    if not args:
         return "", []
     head = ""
     used = None
     for key in _ARG_HEADLINE:
         if isinstance(args.get(key), (str, int, float)) and not isinstance(args[key], bool):
-            head, used = _fit(_arg_text(args[key]), TRACE_ARG_CAP), key
+            text = args[key] if isinstance(args[key], str) else _arg_text(args[key])
+            head, used = (text if full else _fit(text.rstrip(), TRACE_ARG_CAP)), key
             break
     rest: list[tuple[str, str]] = []
     budget = TRACE_ARGS_CAP
+    omitted = 0
     for key, value in args.items():
-        if key == used or budget <= 0:
+        if key == used:
+            continue
+        raw = value if isinstance(value, str) else _arg_text(value)
+        if full:
+            rest.append((str(key), raw))
+            continue
+        if budget <= 0:
+            omitted += 1
             continue
         # Everything counts against the budget -- the key, the value, and the marker that
         # says how much was dropped. Checking the budget and THEN appending whole strings
         # made TRACE_ARGS_CAP advisory: three 600-character values followed by a
         # 600-character key retained 2,414 characters against a 2,000 cap.
         name = str(key)[: min(TRACE_ARG_CAP, budget)]
-        text = _fit(_arg_text(value), min(TRACE_ARG_CAP, budget - len(name)))
-        if not text:
+        text = _fit(raw, min(TRACE_ARG_CAP, budget - len(name)))
+        if not text and raw:
             # Nothing charged, so a smaller argument after this one can still fit: an
             # entry that does not fit must not close the budget on its neighbours.
+            omitted += 1
             continue
         rest.append((name, text))
         budget -= len(name) + len(text)
+    if omitted:
+        marker = f"{omitted} more arguments"
+        while rest and budget < len(marker) + 1:
+            name, value = rest.pop()
+            budget += len(name) + len(value)
+            omitted += 1
+            marker = f"{omitted} more arguments"
+        rest.append(("…", marker))
     return head, rest
+
+
+class TraceContent(dict):
+    """Capped session previews, or a full read of exactly one selected turn.
+
+    Readers must check accepts() before collecting an assistant's content. Results
+    are joined only to collected calls, so expanding never retains every turn's output.
+    This object is local to a read; no global caps or ordinary turn rows are changed.
+    """
+
+    def __init__(self, content_key: str | None = None):
+        super().__init__()
+        self.content_key = content_key
+        self.full = content_key is not None
+        self.event_limit = sys.maxsize if self.full else TRACE_EVENTS_CAP
+
+    def accepts(self, key: str) -> bool:
+        return not self.full or key == self.content_key
+
+    def clip(self, value, cap: int) -> tuple[str, int]:
+        if self.full:
+            return (value, 0) if isinstance(value, str) else ("", 0)
+        return clip_text(value, cap, strip=False)
+
+    def arguments(self, args) -> tuple[str, list[tuple[str, str]]]:
+        return tool_call_detail(args, full=self.full)
 
 
 # Shared dull-name rule keeps flamegraph and Turns labels consistent.

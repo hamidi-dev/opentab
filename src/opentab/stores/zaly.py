@@ -13,7 +13,10 @@ from opentab.formatting import _clean_prompt, worked_seconds
 from opentab.models import Workflow
 from opentab.util import (
     ATTACHMENT_EST_TOKENS,
+    TRACE_OUTPUT_CAP,
+    TRACE_TEXT_CAP,
     LazyStatusRoot,
+    TraceContent,
     context_add,
     context_rows,
     est_tokens,
@@ -69,6 +72,7 @@ class ZalyStore:
     """
 
     combined = False
+    records_reasoning = True
     source_name = "Zaly"
 
     # Provider/api substrings that mark a subscription (plan-included) or local/free route
@@ -237,6 +241,7 @@ class ZalyStore:
             "turns": [],  # one per assistant message, for the Turns/Tools tabs
             "prompts": [],  # user messages, for the Turns tab's ▸ grouping
             "context": {},  # (category, kind) -> [count, est_tokens], Context tab
+            "path": None,
         }
 
     def cache_inputs(self) -> list[str]:
@@ -404,6 +409,7 @@ class ZalyStore:
         # One file per session (resume appends in place), keyed by the <uuid> dir name.
         dir_id = os.path.basename(os.path.dirname(path))
         s = sessions.setdefault(dir_id, self._new_session(dir_id))
+        s["path"] = path
         for line in lines:
             if '"type"' not in line:
                 continue
@@ -476,9 +482,9 @@ class ZalyStore:
                 if mid in s["seen_msgs"]:
                     continue  # same assistant step re-read (defensive; one file per session)
                 s["seen_msgs"].add(mid)
-            self._apply_usage(s, msg, meta, rts)
+            self._apply_usage(s, msg, meta, rts, str(mid or o.get("uuid") or ""))
 
-    def _apply_usage(self, s: dict, msg: dict, meta: dict, ts=None) -> None:
+    def _apply_usage(self, s: dict, msg: dict, meta: dict, ts=None, content_key: str = "") -> None:
         usage = meta["usage"]
         inp = self._int(usage.get("input"))
         out = self._int(usage.get("output"))
@@ -515,12 +521,14 @@ class ZalyStore:
         # "$" view reprices it from the token columns (as the rollups do). The step's
         # tool-call content parts feed tool_breakdown (duplicates kept: two bash calls =
         # two calls, two shares).
+        content = msg.get("content")
+        parts = content if isinstance(content, list) else []
         tools = [
             c.get("name")
-            for c in (msg.get("content") or [])
+            for c in parts
             if isinstance(c, dict) and c.get("type") == "tool-call" and c.get("name")
         ]
-        self._ctx_content(s["context"], msg.get("content"), "assistant")
+        self._ctx_content(s["context"], content, "assistant")
         s["turns"].append(
             {
                 "ts": ts or 0.0,  # epoch seconds; sorts numerically
@@ -536,8 +544,139 @@ class ZalyStore:
                 "cache_write": cw,
                 "tokens_total": inp + out + cr + cw,
                 "tools": tools,
+                "content_key": content_key,
+                "has_text": any(
+                    isinstance(p, dict)
+                    and p.get("type") == "text"
+                    and isinstance(p.get("text"), str)
+                    and bool(p["text"].strip())
+                    for p in parts
+                ),
+                "has_reasoning": any(
+                    isinstance(p, dict)
+                    and p.get("type") == "reasoning"
+                    and isinstance(p.get("text"), str)
+                    and bool(p["text"].strip())
+                    for p in parts
+                ),
             }
         )
+
+    @staticmethod
+    def _trace_result(value) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts = []
+            for item in value:
+                if not isinstance(item, dict):
+                    parts.append(str(item))
+                elif item.get("type") in ATTACHMENT_EST_TOKENS:
+                    parts.append(f"({item['type']})")
+                elif isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            return "\n".join(parts)
+        if value is None:
+            return ""
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+
+    def turn_content(
+        self, workflow_id: str, content_key: str | None = None
+    ) -> dict[str, list[dict]]:
+        """Read one session's narration, reasoning, and exact calls lazily."""
+        session = self._parse().get(workflow_id)
+        path = (session or {}).get("path")
+        if not path:
+            return {}
+        trace = TraceContent(content_key)
+        calls: dict[str, dict] = {}
+        seen = set()
+        for _path, text in read_files_parallel([path]):
+            for line in text.split("\n"):
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                msg = (
+                    o.get("message") if isinstance(o, dict) and o.get("type") == "message" else None
+                )
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role")
+                mid = msg.get("id")
+                content = msg.get("content")
+                parts = content if isinstance(content, list) else []
+                if role == "tool":
+                    for part in parts:
+                        if not isinstance(part, dict) or part.get("type") != "tool-result":
+                            continue
+                        event = calls.pop(str(part.get("id") or ""), None)
+                        if event is None:
+                            continue
+                        raw = part.get("content")
+                        if raw is None:
+                            raw = part.get("result")
+                        output, dropped = trace.clip(self._trace_result(raw), TRACE_OUTPUT_CAP)
+                        event["output"] = output
+                        event["output_dropped"] = dropped
+                    continue
+                if role in ("user", "system"):
+                    if mid is not None:
+                        seen.add(mid)
+                    continue
+                meta = msg.get("meta")
+                usage = meta.get("usage") if isinstance(meta, dict) else None
+                if role != "assistant" or not isinstance(usage, dict):
+                    continue
+                if mid is not None:
+                    if mid in seen:
+                        continue
+                    seen.add(mid)
+                if (
+                    sum(
+                        self._int(usage.get(k))
+                        for k in ("input", "output", "cacheRead", "cacheWrite")
+                    )
+                    == 0
+                ):
+                    continue
+                key = str(mid or o.get("uuid") or "")
+                if not key or not trace.accepts(key):
+                    for part in parts:
+                        if isinstance(part, dict) and part.get("type") == "tool-call":
+                            calls.pop(str(part.get("id") or ""), None)
+                    continue
+                events: list[dict] = []
+                for part in parts:
+                    if not isinstance(part, dict) or len(events) >= trace.event_limit:
+                        continue
+                    kind = part.get("type")
+                    if kind in ("text", "reasoning"):
+                        value, dropped = trace.clip(part.get("text"), TRACE_TEXT_CAP)
+                        if value:
+                            events.append({"kind": kind, "text": value, "dropped": dropped})
+                    elif kind == "tool-call":
+                        head, params = trace.arguments(part.get("params"))
+                        event = {
+                            "kind": "tool",
+                            "name": part.get("name") or "(unknown)",
+                            "args": head,
+                            "params": params,
+                            "output": "",
+                            "output_dropped": 0,
+                        }
+                        events.append(event)
+                        if part.get("id"):
+                            calls[str(part["id"])] = event
+                if events:
+                    trace[key] = events
+        return trace
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        return bool((self._parse().get(workflow_id) or {}).get("path"))
 
     # Estimated at chars/4, mirroring zaly's own /context command (its
     # estimatePart walks the same part types with the same flat attachment

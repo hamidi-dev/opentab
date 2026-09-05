@@ -91,6 +91,27 @@ def test_pi_store_dedupes_assistant_messages_by_id():
         assert abs(row["cost"] - 0.01) < 1e-9
 
 
+def test_pi_trace_obeys_a_zero_usage_messages_earlier_dedup_claim():
+    with tempfile.TemporaryDirectory() as tmp:
+        root, cwd = os.path.join(tmp, "sessions"), os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _pi_write(
+            root,
+            "--proj--",
+            PI_SID,
+            [
+                _pi_session(PI_SID, cwd),
+                _pi_assistant("model-x", 0, 0, mid="same"),
+                _pi_assistant("model-x", 100, 10, mid="same"),
+                _pi_assistant("model-x", 50, 5, mid="kept", tools=["read"]),
+            ],
+        )
+        store = ot.PiStore(root, _pi_args())
+        turns = store.message_timeline(PI_SID)
+        assert [turn["content_key"] for turn in turns] == [f"{PI_SID}:kept"]
+        assert set(store.turn_content(PI_SID)) == {f"{PI_SID}:kept"}
+
+
 def test_pi_store_unpriced_session_estimates_under_dollar():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "sessions")
@@ -277,6 +298,66 @@ def test_pi_tool_breakdown_splits_metered_cost_across_tool_calls():
         assert rows["bash"]["tokens_total"] == 75 and rows["read"]["tokens_total"] == 75
         assert abs(rows["bash"]["cost"] - 0.005) < 1e-9  # the metered cost, split
         assert rows["edit"]["cost"] == 0.0  # plan route: estimate, not spend
+
+
+def test_pi_turn_content_reads_thinking_narration_exact_calls_and_results():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "sessions")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        assistant = _pi_assistant(
+            "anthropic/claude-sonnet-4", 100, 50, cost=0.01, mid="a1", tools=["read"]
+        )
+        assistant["message"]["content"] = [
+            {
+                "type": "thinking",
+                "thinking": "Inspect the file first.",
+                "thinkingSignature": "opaque",
+            },
+            {"type": "text", "text": "I'll read it."},
+            {
+                "type": "toolCall",
+                "id": "call-1",
+                "name": "read",
+                "arguments": {"file_path": "/repo/a.py", "limit": 20},
+            },
+        ]
+        result = {
+            "type": "message",
+            "id": "r1",
+            "parentId": "a1",
+            "timestamp": "2026-05-15T07:32:37.000Z",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": "call-1",
+                "toolName": "read",
+                "content": [
+                    {"type": "text", "text": "1  import os"},
+                    {"type": "image", "data": "not retained", "mimeType": "image/png"},
+                ],
+                "isError": False,
+                "timestamp": 0,
+            },
+        }
+        _pi_write(
+            root, "--proj--", PI_SID, [_pi_session(PI_SID, cwd), _pi_user("go"), assistant, result]
+        )
+        store = ot.PiStore(root, _pi_args())
+
+        (turn,) = store.message_timeline(PI_SID)
+        assert turn["content_key"] == f"{PI_SID}:a1"
+        assert turn["has_text"] is True and turn["has_reasoning"] is True
+        assert store.supports_turn_content(PI_SID) is True
+        events = store.turn_content(PI_SID)[turn["content_key"]]
+        assert [e["kind"] for e in events] == ["reasoning", "text", "tool"]
+        assert events[0]["text"] == "Inspect the file first."
+        assert events[1]["text"] == "I'll read it."
+        assert (events[2]["name"], events[2]["args"]) == ("read", "/repo/a.py")
+        assert events[2]["params"] == [("limit", "20")]
+        assert events[2]["output"] == "1  import os\n(image)"
+        assert store.turn_content(PI_SID, content_key=turn["content_key"]) == {
+            turn["content_key"]: events
+        }
 
 
 def test_pi_auth_json_is_fingerprinted_so_a_login_change_invalidates_the_warm_cache():

@@ -685,6 +685,54 @@ def test_opencode_turn_content_reads_narration_reasoning_and_each_calls_argument
         assert "u1" not in store.turn_content("s1")
 
 
+def test_expanding_one_opencode_turn_recovers_errors_arguments_and_all_events():
+    from opentab.util import TRACE_EVENTS_CAP, TRACE_OUTPUT_CAP
+
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_trace_db(db)
+        command = "    python <<'PY'\n" + "print('a  b')\n" * 100 + "PY\n"
+        failure = "Permission denied\n" + "details\n" * 800
+        params = {f"arg{i}": "x" * 600 for i in range(8)}
+        with sqlite3.connect(db) as conn:
+            data = {
+                "type": "tool",
+                "tool": "bash",
+                "state": {
+                    "status": "error",
+                    "error": failure,
+                    "input": dict(params, command=command),
+                },
+            }
+            conn.execute("UPDATE part SET data=? WHERE id='p3'", (json.dumps(data),))
+            conn.execute(
+                "INSERT INTO message SELECT 'm2', session_id, data FROM message WHERE id='m1'"
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('other', 'm2', 's1', ?)",
+                (json.dumps({"type": "text", "text": "other turn"}),),
+            )
+            conn.executemany(
+                "INSERT INTO part VALUES (?, 'm1', 's1', ?)",
+                [
+                    (f"extra{i}", json.dumps({"type": "text", "text": f"event {i}"}))
+                    for i in range(TRACE_EVENTS_CAP)
+                ],
+            )
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        preview = store.turn_content("s1")
+        assert preview["m1"][2]["status"] == "error"
+        assert preview["m1"][2]["output"].startswith("Permission denied")
+        assert len(preview["m1"][2]["output"]) <= TRACE_OUTPUT_CAP
+        assert len(preview["m1"]) == TRACE_EVENTS_CAP
+        full = store.turn_content("s1", content_key="m1")
+        assert list(full) == ["m1"] and len(full["m1"]) == TRACE_EVENTS_CAP + 3
+        call = full["m1"][2]
+        assert call["args"] == command and dict(call["params"]) == params
+        assert call["output"] == failure and call["output_dropped"] == 0
+        assert store.turn_content("s1") == preview
+
+
 def test_a_whitespace_only_part_never_marks_a_turn_as_readable():
     # The Read column and the trace must agree: SQLite's one-argument trim() removes
     # ASCII spaces only, so a part holding "\t\n" or a vertical tab marked the row

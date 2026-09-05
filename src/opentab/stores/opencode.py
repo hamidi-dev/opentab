@@ -12,12 +12,10 @@ from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import WORKED_BURST_GAP_SECONDS, _clean_prompt
 from opentab.models import Workflow
 from opentab.util import (
-    TRACE_EVENTS_CAP,
     TRACE_OUTPUT_CAP,
     TRACE_TEXT_CAP,
-    clip_text,
+    TraceContent,
     normalize_project_path,
-    tool_call_detail,
 )
 
 MODEL_EXPR = """
@@ -776,7 +774,9 @@ class Store:
                 out.setdefault(mid, []).append(tool)
         return out
 
-    def turn_content(self, workflow_id: str) -> dict[str, list[dict]]:
+    def turn_content(
+        self, workflow_id: str, content_key: str | None = None
+    ) -> dict[str, list[dict]]:
         """Trace events per turn: narration, reasoning, and each call's arguments.
 
         One grouped scan over the session subtree's parts -- the _timeline_tools shape,
@@ -800,15 +800,15 @@ class Store:
           and json_extract(p.data, '$.type') in ('text', 'reasoning', 'tool')
         order by p.rowid
         """
-        out: dict[str, list[dict]] = {}
+        out = TraceContent(content_key)
         # Joined to the message rather than filtered afterwards: a USER message's text
         # part is the prompt, which the tab already shows as the group header -- keyed
         # here it would be content no turn claims, carried for the session's lifetime.
         for mid, blob in self.conn.execute(sql, [workflow_id]):
-            if not mid:
+            if not mid or not out.accepts(mid):
                 continue
             events = out.setdefault(mid, [])
-            if len(events) >= TRACE_EVENTS_CAP:
+            if len(events) >= out.event_limit:
                 continue
             try:
                 part = json.loads(blob)
@@ -818,14 +818,16 @@ class Store:
                 continue
             kind = part.get("type")
             if kind in ("text", "reasoning"):
-                text, dropped = clip_text(part.get("text"), TRACE_TEXT_CAP)
+                text, dropped = out.clip(part.get("text"), TRACE_TEXT_CAP)
                 if text:
                     events.append({"kind": kind, "text": text, "dropped": dropped})
                 continue
             state = part.get("state")
             state = state if isinstance(state, dict) else {}
-            head, params = tool_call_detail(state.get("input"))
-            output, out_dropped = clip_text(state.get("output"), TRACE_OUTPUT_CAP)
+            head, params = out.arguments(state.get("input"))
+            status = state.get("status") or ""
+            raw = state.get("error") if status == "error" else state.get("output")
+            output, out_dropped = out.clip(raw, TRACE_OUTPUT_CAP)
             events.append(
                 {
                     "kind": "tool",
@@ -834,6 +836,7 @@ class Store:
                     "params": params,
                     "output": output,
                     "output_dropped": out_dropped,
+                    "status": status,
                 }
             )
         return out

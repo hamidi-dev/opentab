@@ -188,6 +188,10 @@ def _on_turns(app: App) -> bool:
     return in_session(app) and app.active_tab_name() == "Turns"
 
 
+def _on_trace(app: App) -> bool:
+    return in_main(app) and _on_turns(app) and app.active_trace_drill is not None
+
+
 def _enter_opens_something(app: App) -> bool:
     if not in_main(app):
         return False
@@ -198,7 +202,12 @@ def _enter_opens_something(app: App) -> bool:
         # Machines drill too, and a key the footer hides is a key nobody finds.
         return app.active_tab_name() in ("Sessions", "Projects", "Harnesses", "Models", "Machines")
     if _on_turns(app):
-        return True
+        if app.active_trace_drill is not None:
+            return False
+        wf = app.current_session()
+        return app.active_turn_drill is None or (
+            wf is not None and app.session_supports_trace(wf.id)
+        )
     return False
 
 
@@ -210,7 +219,11 @@ def _enter_summary(app: App) -> str:
     if tab == "Sessions":
         return "open the selected session"
     if tab == "Turns":
-        return "fold / unfold the selected ▸ prompt"
+        return (
+            "open the selected turn"
+            if app.active_turn_drill is not None
+            else "open the selected prompt"
+        )
     if tab == "Models":
         return "this model's economics and sessions, within this scope"
     return "its sessions, within this scope"
@@ -270,6 +283,24 @@ def _tab_focus_segments(app: App) -> list:
 # Help and footer use different orderings over the same entries.
 
 KEYS: tuple[Key, ...] = (
+    Key(
+        id="trace-siblings",
+        ctx="main",
+        actions=("trace_prev", "trace_next"),
+        summary="previous / next turn in this prompt",
+        section="here",
+        when=_on_trace,
+        chip="turn",
+    ),
+    Key(
+        id="trace-expand",
+        ctx="main",
+        actions=("trace_expand",),
+        summary="expand the full recorded content / return to preview",
+        section="here",
+        when=_on_trace,
+        chip=lambda app: "collapse" if app.trace_expanded else "expand",
+    ),
     Key(
         id="enter",
         ctx="main",
@@ -562,7 +593,11 @@ KEYS: tuple[Key, ...] = (
         id="esc",
         ctx="main",
         actions=("back", "cycle_panel_back"),
-        summary="step back out — session → zoom → browse",
+        summary=lambda app: "back to this prompt's turns"
+        if _on_trace(app)
+        else "back to the prompts"
+        if _on_turns(app) and app.active_turn_drill is not None
+        else "step back out — session → zoom → browse",
         section="nav",
         when=lambda app: in_main(app) and app.view != "browse",
         chip="out",
@@ -576,7 +611,13 @@ KEYS: tuple[Key, ...] = (
             app,
             "main",
             ("down", "up"),
-            "pick a ▸ prompt" if _on_turns(app) else "move / scroll",
+            "scroll this turn"
+            if _on_trace(app)
+            else "pick a turn"
+            if _on_turns(app) and app.active_turn_drill is not None
+            else "pick a prompt"
+            if _on_turns(app)
+            else "move / scroll",
         ),
         section="nav",
         when=lambda app: not in_trends(app),
@@ -593,7 +634,9 @@ KEYS: tuple[Key, ...] = (
         id="ends",
         ctx="main",
         actions=("top", "bottom"),
-        summary=lambda app: "first / last prompt" if _on_turns(app) else "top / bottom",
+        summary=lambda app: "first / last prompt"
+        if _on_turns(app) and app.active_turn_drill is None
+        else "top / bottom",
         section="nav",
         when=lambda app: not in_trends(app) or app.trend_drill is not None,
     ),
@@ -775,6 +818,8 @@ FOOTER_ORDER = (
     "prices-view",
     "prices-pin",
     "prices-enter",
+    "trace-siblings",
+    "trace-expand",
     "enter",
     "esc",
     "max",

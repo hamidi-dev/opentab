@@ -15,7 +15,10 @@ from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
 from opentab.util import (
+    TRACE_OUTPUT_CAP,
+    TRACE_TEXT_CAP,
     LazyStatusRoot,
+    TraceContent,
     git_root,
     read_files_parallel,
     safe_int,
@@ -485,6 +488,7 @@ class GeminiStore:
     # Gemini CLI records tokens but never a price -- a subscription-style backend, like
     # Claude Code and Codex: $0 in normal mode, a list-price estimate under "$".
     records_cost = False
+    records_reasoning = True
 
     def __init__(self, root_dir: str, args: argparse.Namespace):
         self.root_dir = root_dir
@@ -1049,6 +1053,18 @@ class GeminiStore:
             "cache_write": 0,
             "tokens_total": inp + out + reasoning + cache_read,
             "tools": tools,
+            "content_key": f"{s['sid']}:{mid}" if isinstance(mid, str) else "",
+            "has_text": bool(self._text_of(rec.get("content")).strip()),
+            "has_reasoning": any(
+                isinstance(thought, dict)
+                and any(
+                    isinstance(thought.get(field), str) and bool(thought[field].strip())
+                    for field in ("subject", "description")
+                )
+                for thought in (
+                    rec.get("thoughts") if isinstance(rec.get("thoughts"), list) else []
+                )
+            ),
         }
         # A streamed message is appended repeatedly under one id as it fills in (the
         # tokens arrive last), so the id is an UPDATE key, not a duplicate marker:
@@ -1126,6 +1142,195 @@ class GeminiStore:
                     parts.append(p["text"])
             return " ".join(p for p in parts if p.strip())
         return ""
+
+    @staticmethod
+    def _trace_text(content) -> str:
+        if isinstance(content, str):
+            return content
+        values = content if isinstance(content, list) else [content]
+        out = []
+        for part in values:
+            if isinstance(part, str):
+                out.append(part)
+            elif not isinstance(part, dict):
+                continue
+            elif isinstance(part.get("text"), str):
+                out.append(part["text"])
+            elif "inlineData" in part or "fileData" in part:
+                out.append("(attachment)")
+            elif isinstance(part.get("functionResponse"), dict):
+                response = part["functionResponse"].get("response")
+                if isinstance(response, dict) and "output" in response:
+                    response = response["output"]
+                text = GeminiStore._trace_text(response)
+                if text:
+                    out.append(text)
+            else:
+                try:
+                    out.append(json.dumps(part, ensure_ascii=False))
+                except (TypeError, ValueError):
+                    out.append(str(part))
+        return "\n".join(out)
+
+    @classmethod
+    def _trace_tool_result(cls, content, call_id: str) -> str:
+        """Extract only this call's response from Gemini's sibling-preserving result."""
+        values = content if isinstance(content, list) else [content]
+        matched = []
+        generic = []
+        for part in values:
+            response = part.get("functionResponse") if isinstance(part, dict) else None
+            if not isinstance(response, dict):
+                generic.append(part)
+                continue
+            if str(response.get("id") or "") != call_id:
+                continue
+            raw = response.get("response")
+            if isinstance(raw, dict) and "output" in raw:
+                raw = raw["output"]
+            matched.append(raw)
+        return cls._trace_text(matched if matched else generic)
+
+    def _trace_records(
+        self,
+        sid: str,
+        records: list,
+        trace: TraceContent,
+        calls: dict[tuple[str, str], dict],
+        results: dict[tuple[str, str], tuple[str, int]],
+    ) -> None:
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            patch = rec.get("$set")
+            if isinstance(patch, dict):
+                messages = patch.get("messages")
+                if isinstance(messages, list):
+                    self._trace_records(sid, messages, trace, calls, results)
+                continue
+            if "$rewindTo" in rec:
+                continue
+            typ = rec.get("type")
+            if typ == "user":
+                content = rec.get("content")
+                parts = content if isinstance(content, list) else [content]
+                for part in parts:
+                    response = part.get("functionResponse") if isinstance(part, dict) else None
+                    if not isinstance(response, dict):
+                        continue
+                    call_id = str(response.get("id") or "")
+                    if not call_id:
+                        continue
+                    if trace.full and (sid, call_id) not in calls:
+                        continue
+                    raw = response.get("response")
+                    if isinstance(raw, dict) and "output" in raw:
+                        raw = raw["output"]
+                    value, dropped = trace.clip(self._trace_text(raw), TRACE_OUTPUT_CAP)
+                    results[(sid, call_id)] = (value, dropped)
+                    event = calls.get((sid, call_id))
+                    if event is not None:
+                        event["output"] = value
+                        event["output_dropped"] = dropped
+                continue
+            if typ != "gemini" or not isinstance(rec.get("id"), str):
+                continue
+            mid = rec["id"]
+            key = f"{sid}:{mid}"
+            if not trace.accepts(key):
+                for call in rec.get("toolCalls") if isinstance(rec.get("toolCalls"), list) else []:
+                    if isinstance(call, dict):
+                        calls.pop((sid, str(call.get("id") or "")), None)
+                continue
+            # A re-append replaces the whole message. Remove its old call bindings before
+            # rebuilding them, or a later result can mutate an event no longer on screen.
+            for call_key, event in list(calls.items()):
+                if event.get("content_key") == key:
+                    del calls[call_key]
+            tok = rec.get("tokens")
+            split = self._split_tokens(tok) if isinstance(tok, dict) else (0, 0, 0, 0)
+            if sum(split) == 0:
+                trace.pop(key, None)
+                continue
+            events: list[dict] = []
+            narration, dropped = trace.clip(self._trace_text(rec.get("content")), TRACE_TEXT_CAP)
+            if narration:
+                events.append({"kind": "text", "text": narration, "dropped": dropped})
+            thoughts = rec.get("thoughts")
+            for thought in thoughts if isinstance(thoughts, list) else []:
+                if not isinstance(thought, dict) or len(events) >= trace.event_limit:
+                    continue
+                subject = thought.get("subject") if isinstance(thought.get("subject"), str) else ""
+                description = (
+                    thought.get("description")
+                    if isinstance(thought.get("description"), str)
+                    else ""
+                )
+                text = (
+                    f"**{subject.strip()}**\n\n" if subject.strip() else ""
+                ) + description.strip()
+                value, dropped = trace.clip(text, TRACE_TEXT_CAP)
+                if value:
+                    events.append({"kind": "reasoning", "text": value, "dropped": dropped})
+            tool_calls = rec.get("toolCalls")
+            for call in tool_calls if isinstance(tool_calls, list) else []:
+                if not isinstance(call, dict) or len(events) >= trace.event_limit:
+                    continue
+                head, params = trace.arguments(call.get("args"))
+                call_id = str(call.get("id") or "")
+                raw = call.get("result")
+                output, output_dropped = trace.clip(
+                    self._trace_tool_result(raw, call_id), TRACE_OUTPUT_CAP
+                )
+                prior = results.get((sid, call_id))
+                if not output and prior is not None:
+                    output, output_dropped = prior
+                event = {
+                    "kind": "tool",
+                    "name": call.get("name") or "(unknown)",
+                    "args": head,
+                    "params": params,
+                    "output": output,
+                    "output_dropped": output_dropped,
+                    "content_key": key,
+                    "status": {
+                        "success": "completed",
+                        "error": "error",
+                        "executing": "running",
+                        "pending": "pending",
+                    }.get(str(call.get("status") or ""), ""),
+                }
+                events.append(event)
+                if call_id:
+                    calls[(sid, call_id)] = event
+            if events:
+                trace[key] = events
+            else:
+                trace.pop(key, None)
+
+    def turn_content(
+        self, workflow_id: str, content_key: str | None = None
+    ) -> dict[str, list[dict]]:
+        trace = TraceContent(content_key)
+        calls: dict[tuple[str, str], dict] = {}
+        results: dict[tuple[str, str], tuple[str, int]] = {}
+        for path, text in read_files_parallel(self._subtree_files(workflow_id)):
+            records = self._records(path, text)
+            if not records:
+                continue
+            meta = records[0] if isinstance(records[0], dict) else {}
+            parent = self._parent_id_from_path(path)
+            stem = os.path.splitext(os.path.basename(path))[0]
+            sid = stem if parent else (str(meta.get("sessionId") or "") or stem)
+            self._trace_records(sid, records, trace, calls, results)
+        # content_key is internal bookkeeping for replacement; never expose it as an event.
+        for events in trace.values():
+            for event in events:
+                event.pop("content_key", None)
+        return trace
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        return bool(self._subtree_files(workflow_id))
 
     # ---- tree ----------------------------------------------------------------
 

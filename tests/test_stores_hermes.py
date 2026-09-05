@@ -1789,6 +1789,8 @@ def test_hermes_trace_rides_the_same_causal_match_the_tool_names_do():
         assert (events[2]["name"], events[2]["args"]) == ("terminal", "ls -la")
         # The result is a separate role='tool' row, joined back by tool_call_id.
         assert events[2]["output"] == "total 24"
+        key = rows[1]["content_key"]
+        assert st.turn_content("s1", content_key=key) == {key: events}
 
 
 def test_hermes_trace_survives_a_messages_table_without_an_id_column():

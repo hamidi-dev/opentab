@@ -14,17 +14,15 @@ from opentab.models import Workflow
 from opentab.pricing import api_equivalent_cost, has_catalog_row
 from opentab.util import (
     ATTACHMENT_EST_TOKENS,
-    TRACE_EVENTS_CAP,
     TRACE_OUTPUT_CAP,
     TRACE_TEXT_CAP,
-    clip_text,
+    TraceContent,
     context_add,
     context_rows,
     est_tokens,
     git_root,
     read_files_parallel,
     safe_int,
-    tool_call_detail,
     tool_rows_from_turns,
 )
 
@@ -99,6 +97,7 @@ class ClaudeStore:
         # fast path never carry a session's narration or tool output at all.
         self._trace_one: tuple[str, dict] | None = None
         self._want_trace = False
+        self._trace_key: str | None = None
         self._git_root_cache: dict[str, str] = {}
 
     @staticmethod
@@ -359,7 +358,11 @@ class ClaudeStore:
         return self._sessions
 
     def _parse_one(
-        self, workflow_id: str, paths: list[str] | None = None, trace: bool = False
+        self,
+        workflow_id: str,
+        paths: list[str] | None = None,
+        trace: bool = False,
+        content_key: str | None = None,
     ) -> dict | None:
         # Parse only this session and its sidecars for status/detail fast paths.
         if paths is None:
@@ -371,10 +374,12 @@ class ClaudeStore:
         # parse (or parse_subset, which shares _parse_texts) collecting tool output for
         # every session it touches.
         self._want_trace = trace
+        self._trace_key = content_key
         try:
             return self._parse_texts(read_files_parallel(paths)).get(workflow_id)
         finally:
             self._want_trace = False
+            self._trace_key = None
 
     def _session(self, workflow_id: str, fallback: bool = True) -> dict | None:
         # Detail reads stay session-local (~5 ms versus ~2.2 s corpus-wide).
@@ -577,7 +582,7 @@ class ClaudeStore:
                 "pending_tools": {},  # tool_use id -> name, consumed by its tool_result
                 "ctx_seen": set(),  # record uuids already composed (replay dedup)
                 "turn_by_key": {},  # (message.id, requestId) -> index into turns
-                "content": {},  # content key -> the turn's trace events (trace parse only)
+                "content": TraceContent(self._trace_key),
                 "trace_at": {},  # tool_use id -> (content key, event index) awaiting a result
                 "files": set(),  # transcripts that fed this session (cache provenance)
             }
@@ -884,15 +889,18 @@ class ClaudeStore:
 
     def _trace_assistant(self, msg: dict, ck: str, s: dict) -> None:
         # One record's content blocks, appended to whatever the turn already holds.
-        if not ck:
+        if not ck or not s["content"].accepts(ck):
+            for block in msg.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    s["trace_at"].pop(block.get("id"), None)
             return
         events = s["content"].setdefault(ck, [])
         for c in msg.get("content") or []:
-            if not isinstance(c, dict) or len(events) >= TRACE_EVENTS_CAP:
+            if not isinstance(c, dict) or len(events) >= s["content"].event_limit:
                 continue
             ct = c.get("type")
             if ct == "text":
-                text, dropped = clip_text(c.get("text"), TRACE_TEXT_CAP)
+                text, dropped = s["content"].clip(c.get("text"), TRACE_TEXT_CAP)
                 if text:
                     events.append({"kind": "text", "text": text, "dropped": dropped})
             elif ct in ("thinking", "redacted_thinking"):
@@ -901,11 +909,11 @@ class ClaudeStore:
                 # that survives. So this branch is real and almost never fires; it must
                 # not emit an empty row, or every Claude turn would show a reasoning
                 # heading with nothing under it and read as a rendering bug.
-                text, dropped = clip_text(c.get("thinking"), TRACE_TEXT_CAP)
+                text, dropped = s["content"].clip(c.get("thinking"), TRACE_TEXT_CAP)
                 if text:
                     events.append({"kind": "reasoning", "text": text, "dropped": dropped})
             elif ct == "tool_use":
-                head, params = tool_call_detail(c.get("input"))
+                head, params = s["content"].arguments(c.get("input"))
                 events.append(
                     {
                         "kind": "tool",
@@ -936,9 +944,10 @@ class ClaudeStore:
             events = s["content"].get(ck) or []
             if idx >= len(events):
                 continue
-            text, dropped = clip_text(self._result_text(b.get("content")), TRACE_OUTPUT_CAP)
+            text, dropped = s["content"].clip(self._result_text(b.get("content")), TRACE_OUTPUT_CAP)
             events[idx]["output"] = text
             events[idx]["output_dropped"] = dropped
+            events[idx]["status"] = "error" if b.get("is_error") else "completed"
 
     @staticmethod
     def _result_text(content) -> str:
@@ -958,20 +967,27 @@ class ClaudeStore:
                 parts.append(x.get("text") or "")
         return "\n".join(p for p in parts if p)
 
-    def turn_content(self, workflow_id: str) -> dict[str, list[dict]]:
+    def turn_content(
+        self, workflow_id: str, content_key: str | None = None
+    ) -> dict[str, list[dict]]:
         """Trace events per turn, for the Turns tab's third level.
 
         Its own parse and its own memo: the corpus parse never collects content, so this
         re-reads the session's transcripts (~5 ms; the extras' _session parse pays the
         same read) rather than making every drill-in carry a session's tool output.
         """
-        if self._trace_one is not None and self._trace_one[0] == workflow_id:
+        if (
+            content_key is None
+            and self._trace_one is not None
+            and self._trace_one[0] == workflow_id
+        ):
             return self._trace_one[1]
         if not self.supports_turn_content(workflow_id):
             return {}
-        s = self._parse_one(workflow_id, trace=True)
+        s = self._parse_one(workflow_id, trace=True, content_key=content_key)
         content = (s or {}).get("content") or {}
-        self._trace_one = (workflow_id, content)
+        if content_key is None:
+            self._trace_one = (workflow_id, content)
         return content
 
     def supports_turn_content(self, workflow_id: str) -> bool:

@@ -466,6 +466,10 @@ def test_codex_turn_content_reads_narration_reasoning_calls_and_their_own_output
         assert events[3]["output"] == "patch applied\n(image)"
         assert (events[4]["name"], events[4]["args"]) == ("tool_search", "browser tools")
         assert events[4]["output"] == '{"name": "browser.search"}'
+        full = store.turn_content(CODEX_SID, content_key=turn["content_key"])
+        assert list(full) == [turn["content_key"]]
+        assert full[turn["content_key"]][2]["output"] == huge
+        assert full[turn["content_key"]][2]["output_dropped"] == 0
 
 
 def test_codex_an_echo_consumes_neither_trace_content_nor_its_call_output():
@@ -512,6 +516,8 @@ def test_codex_an_echo_consumes_neither_trace_content_nor_its_call_output():
         trace = store.turn_content(CODEX_SID)
         assert trace[turns[1]["content_key"]][-1]["output"] == "file.txt"
         assert trace[turns[2]["content_key"]][0]["text"] == "Compacted."
+        key = turns[1]["content_key"]
+        assert store.turn_content(CODEX_SID, content_key=key) == {key: trace[key]}
 
 
 def test_codex_spawned_threads_fold_into_a_subagent_tree():

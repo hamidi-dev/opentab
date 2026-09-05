@@ -117,6 +117,7 @@ class OmpStore(PiStore):
                 return  # not a session transcript -- drop rather than guess an id
             agent = os.path.splitext(os.path.basename(path))[0]
         s = sessions.setdefault(sid, self._new_session())
+        s["sid"] = sid
         # A RESUMED session legitimately spans several files under one id (pi's
         # _session_files globs for exactly that), and each of them can have spawned
         # its own children -- so every path is kept. Keying the parent lookup off a
@@ -126,7 +127,7 @@ class OmpStore(PiStore):
         s["parent_paths"].add(self._parent_path(path))
         if agent:
             s["agent"] = agent
-        self._parse_lines(s, lines)
+        self._parse_lines(s, lines, os.path.basename(path))
 
     @staticmethod
     def _resolve_parents(sessions: dict[str, dict]) -> None:
@@ -565,6 +566,15 @@ class OmpStore(PiStore):
             for t in cs["turns"]:
                 turns.append({**t, "depth": depth, "agent": agent})
         return turns
+
+    def _trace_sessions(self, workflow_id: str) -> list[tuple[str, dict]]:
+        sessions = self._parse()
+        root = sessions.get(workflow_id)
+        if not root:
+            return []
+        return [(workflow_id, root)] + [
+            (child, sessions[child]) for child, _depth in self._descendants(sessions, workflow_id)
+        ]
 
     def message_timeline(self, workflow_id: str) -> list[dict]:
         s = self._parse().get(workflow_id)

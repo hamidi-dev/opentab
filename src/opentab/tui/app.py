@@ -7,6 +7,7 @@ import csv
 import os
 import re
 import shlex
+import sqlite3
 import sys
 import time
 from collections import defaultdict
@@ -442,6 +443,10 @@ class App:
         # prompt, cleared with the drill it belongs to.
         self.trace_drill: int | None = None
         self._trace_cursor = 0
+        self._trace_list_scroll = 0
+        self.trace_expanded = False
+        self._trace_full: tuple[str, str, list[dict]] | None = None
+        self._trace_loading: tuple[str, str] | None = None
         self.cal_levels = HEAT_DEFAULT_LEVELS
         self.has256 = False
         self.colors_ok = True
@@ -1655,7 +1660,71 @@ class App:
 
     def turn_trace_events(self, workflow_id: str, row: dict) -> list[dict]:
         key = row.get("content_key") or ""
+        if not self.session_supports_trace(workflow_id):
+            return []
+        if self.trace_expanded and self._trace_full is not None:
+            wid, loaded_key, events = self._trace_full
+            if (wid, loaded_key) == (workflow_id, key):
+                return events
         return list(self.session_trace(workflow_id).get(key) or []) if key else []
+
+    def _clear_trace_expansion(self) -> None:
+        self.trace_expanded = False
+        self._trace_full = None
+        self._trace_loading = None
+
+    def toggle_trace_expansion(self) -> bool:
+        wf = self.current_session()
+        idx = self.active_trace_drill
+        if not self._on_turns_tab() or wf is None or idx is None:
+            return False
+        if self.trace_expanded:
+            self._clear_trace_expansion()
+        elif self.session_supports_trace(wf.id):
+            rows = self.session_turn_rows(wf.id)
+            key = rows[idx].get("content_key") if 0 <= idx < len(rows) else None
+            if not key:
+                return False
+            self.trace_expanded = True
+            self._trace_loading = (wf.id, key)
+        self.scroll = 0
+        return True
+
+    def load_trace_expansion(self) -> None:
+        """Resolve the queued read after painting: an empty key requests the preview."""
+        request, self._trace_loading = self._trace_loading, None
+        if request is None:
+            return
+        wid, key = request
+        if not self.session_supports_trace(wid):
+            self._clear_trace_expansion()
+            return
+        try:
+            if not key:
+                self.session_trace(wid)
+                return
+            content = self.store.turn_content(wid, content_key=key)
+            self._trace_full = (wid, key, list(content.get(key) or []))
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            if not key:
+                self._trace_by_session[wid] = {}
+            self._clear_trace_expansion()
+            self.notify(f"Could not read this turn: {exc}", "error")
+
+    def step_trace(self, delta: int) -> bool:
+        if not self._on_turns_tab() or self.active_trace_drill is None:
+            return False
+        rows = self.drilled_turn_indices()
+        if self.active_trace_drill not in rows:
+            return False
+        pos = rows.index(self.active_trace_drill)
+        target = max(0, min(pos + delta, len(rows) - 1))
+        if target != pos:
+            self._trace_cursor = target
+            self.trace_drill = rows[target]
+            self._clear_trace_expansion()
+            self.scroll = 0
+        return True
 
     def drilled_turn_indices(self) -> list[int]:
         """Absolute row indices of the turns the open prompt drill lists."""
@@ -1694,6 +1763,9 @@ class App:
         if not rows:
             return False
         self._trace_cursor = max(0, min(self._trace_cursor, len(rows) - 1))
+        if self.active_trace_drill is None:
+            self._trace_list_scroll = self.scroll
+        self._clear_trace_expansion()
         self.trace_drill = rows[self._trace_cursor]
         self.scroll = 0
         return True
@@ -1702,7 +1774,9 @@ class App:
         if self.active_trace_drill is None:
             return False
         self.trace_drill = None
-        self.scroll = 0
+        self._clear_trace_expansion()
+        self.scroll = self._trace_list_scroll
+        self._turn_follow = True
         return True
 
     def _scale_demo_turns(self, workflow_id: str, rows: list[dict]) -> list[dict]:
@@ -1796,6 +1870,7 @@ class App:
         wf = self.current_session()
         self._turn_drill_session = wf.id if wf else None
         self.turn_drill = ordinal
+        self._clear_trace_expansion()
         self.trace_drill = None  # a fresh drill opens on its turn list, never in a trace
         self._trace_cursor = 0
         self.scroll = 0
@@ -1808,6 +1883,7 @@ class App:
             return False
         self.turn_drill = None
         self._turn_drill_session = None
+        self._clear_trace_expansion()
         self.trace_drill = None
         self._trace_cursor = 0
         self.scroll = 0
@@ -2453,6 +2529,7 @@ class App:
         self._tool_by_session.clear()
         self._turns_by_session.clear()
         self._trace_by_session.clear()
+        self._clear_trace_expansion()
         self.turn_drill = None
         self.trace_drill = None
         self._turn_cursor = 0
@@ -2769,6 +2846,7 @@ class App:
         self._tool_by_session.clear()
         self._turns_by_session.clear()
         self._trace_by_session.clear()
+        self._clear_trace_expansion()
         self.turn_drill = None
         self.trace_drill = None
         self._turn_cursor = 0
@@ -4628,6 +4706,7 @@ class App:
 
     def drill_out(self) -> None:
         if self.view == "session":
+            self._clear_trace_expansion()
             self.view = "zoom"
             tabs = self.current_tabs()  # land back on the Sessions tab we came from
             self.tab = tabs.index("Sessions") if "Sessions" in tabs else 0
@@ -5223,6 +5302,10 @@ class App:
                 keys, self._refresh_request = self._refresh_request, None
                 stdscr.refresh()
                 self._do_refresh(keys)
+                continue
+            if self.startup_warning is None and self._trace_loading is not None:
+                stdscr.refresh()
+                self.load_trace_expansion()
                 continue
             stdscr.timeout(self._input_timeout_ms())
             key = self._read_key(stdscr)
@@ -6221,6 +6304,12 @@ class App:
                 return True
             self.drill_in()
             return True
+        if act in ("trace_prev", "trace_next"):
+            self.step_trace(-1 if act == "trace_prev" else 1)
+            return True
+        if act == "trace_expand":
+            self.toggle_trace_expansion()
+            return True
         if act == "back":
             # A drilled prompt is the innermost scope on the Turns tab, so Esc leaves it
             # before it starts popping the view stack -- but ONLY while that tab is the
@@ -6237,10 +6326,12 @@ class App:
                 self.drill_out()
             return True
         if act == "tab_prev":
+            self._clear_trace_expansion()
             self.tab = (self.tab - 1) % len(self.current_tabs())
             self.scroll = 0
             return True
         if act == "tab_next":
+            self._clear_trace_expansion()
             self.tab = (self.tab + 1) % len(self.current_tabs())
             self.scroll = 0
             return True

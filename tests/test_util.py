@@ -981,6 +981,8 @@ def test_tool_call_detail_headlines_what_the_call_did_not_where_it_ran():
     assert ot.tool_call_detail('{"command": "ls -la"}')[0] == "ls -la"
     assert ot.tool_call_detail("{not json") == ("{not json", [])
     assert ot.tool_call_detail(None) == ("", [])
+    assert ot.tool_call_detail(42) == ("42", [])
+    assert ot.tool_call_detail(["one", "two"]) == ('["one", "two"]', [])
     assert ot.tool_call_detail({}) == ("", [])
 
     # No known key: nothing is promoted, but every argument is still listed.
@@ -1042,3 +1044,16 @@ def test_a_tool_argument_keeps_its_own_leading_whitespace():
     # Prose still strips: a leading blank line is noise, not shape.
     assert ot.clip_text("\n  hello  \n", 50) == ("hello", 0)
     assert ot.clip_text("\n  hello  \n", 50, strip=False) == ("\n  hello", 0)
+
+
+def test_raw_patch_preview_names_omissions_and_full_arguments_are_lossless():
+    raw = "    *** Begin Patch\n" + "x" * 900 + "\n\n"
+    head, _ = ot.tool_call_detail(raw)
+    assert head.startswith("    *** Begin Patch") and "chars" in head
+    assert len(head) <= ot.TRACE_ARG_CAP
+    assert ot.tool_call_detail(raw, full=True) == (raw, [])
+    args = {f"arg{i}": "x" * 600 for i in range(8)}
+    _, params = ot.tool_call_detail(args)
+    assert params[-1] == ("…", f"{len(args) - len(params) + 1} more arguments")
+    assert sum(len(k) + len(v) for k, v in params) <= ot.TRACE_ARGS_CAP
+    assert ot.tool_call_detail(args, full=True) == ("", list(args.items()))

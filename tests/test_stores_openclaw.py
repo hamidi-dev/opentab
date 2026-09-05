@@ -28,6 +28,22 @@ def _ocl_oauth(root, profiles):
         json.dump(data, fh)
 
 
+def _ocl_result(call_id, text, mid, ts):
+    return {
+        "type": "message",
+        "id": mid,
+        "timestamp": ts,
+        "message": {
+            "role": "toolResult",
+            "toolCallId": call_id,
+            "toolName": "read",
+            "content": [{"type": "text", "text": text}],
+            "isError": False,
+            "timestamp": 0,
+        },
+    }
+
+
 def test_openclaw_store_ended_at_reflects_the_latest_assistant_reply():
     with tempfile.TemporaryDirectory() as root:
         rows = [
@@ -368,6 +384,65 @@ def test_openclaw_turns_name_the_tools_each_step_called():
         assert round(sum(r["tokens_total"] for r in tools.values())) == 330
 
 
+def test_openclaw_turn_content_pairs_reused_call_ids_causally():
+    with tempfile.TemporaryDirectory() as root:
+        first = _ocl_msg("model-x", 100, 10, mid="a1")
+        first["message"]["content"] = [
+            {"type": "thinking", "thinking": "Inspect the first file."},
+            {"type": "text", "text": "Reading one."},
+            {
+                "type": "toolCall",
+                "id": "call-1",
+                "name": "read",
+                "arguments": {"file_path": "/repo/one.py", "limit": 20},
+            },
+        ]
+        second = _ocl_msg("model-x", 200, 20, mid="a2", ts="2026-04-27T16:01:00.000Z")
+        second["message"]["content"] = [
+            {
+                "type": "toolCall",
+                "id": "call-1",  # OpenClaw permits ids to repeat in later turns
+                "name": "read",
+                "arguments": {"file_path": "/repo/two.py"},
+            }
+        ]
+        _ocl_write(
+            root,
+            "clawd",
+            OCL_SID,
+            [
+                _ocl_user("go"),
+                first,
+                _ocl_result("call-1", "first output", "r1", "2026-04-27T16:00:20.000Z"),
+                second,
+                _ocl_result("call-1", "second output", "r2", "2026-04-27T16:01:10.000Z"),
+            ],
+        )
+        store = ot.OpenClawStore(root, _ocl_args())
+
+        turns = store.message_timeline(OCL_SID)
+        assert [turn["content_key"] for turn in turns] == [f"{OCL_SID}:a1", f"{OCL_SID}:a2"]
+        assert (turns[0]["has_text"], turns[0]["has_reasoning"]) == (True, True)
+        assert (turns[1]["has_text"], turns[1]["has_reasoning"]) == (False, False)
+        assert store.supports_turn_content(OCL_SID) is True
+        trace = store.turn_content(OCL_SID)
+        first_events = trace[turns[0]["content_key"]]
+        second_events = trace[turns[1]["content_key"]]
+        assert [event["kind"] for event in first_events] == ["reasoning", "text", "tool"]
+        assert (first_events[2]["args"], first_events[2]["output"]) == (
+            "/repo/one.py",
+            "first output",
+        )
+        assert first_events[2]["params"] == [("limit", "20")]
+        assert (second_events[0]["args"], second_events[0]["output"]) == (
+            "/repo/two.py",
+            "second output",
+        )
+        for turn in turns:
+            key = turn["content_key"]
+            assert store.turn_content(OCL_SID, content_key=key) == {key: trace[key]}
+
+
 def test_openclaw_tool_blocks_survive_a_malformed_name():
     with tempfile.TemporaryDirectory() as root:
         msg = _ocl_msg("model-x", 100, 10, mid="a1")
@@ -384,3 +459,33 @@ def test_openclaw_tool_blocks_survive_a_malformed_name():
         _ocl_write(root, "clawd", OCL_SID, [_ocl_user("go"), msg, bad])
         rows = ot.OpenClawStore(root, _ocl_args()).message_timeline(OCL_SID)
         assert [r["tools"] for r in rows] == [["bash"], []]
+
+
+def test_expanding_an_unfinished_call_does_not_claim_a_later_reused_ids_result():
+    with tempfile.TemporaryDirectory() as root:
+        first = _ocl_msg("model-x", 100, 10, mid="a1")
+        second = _ocl_msg("model-x", 200, 20, mid="a2", ts="2026-04-27T16:01:00.000Z")
+        for record in (first, second):
+            record["message"]["content"] = [
+                {
+                    "type": "toolCall",
+                    "id": "shared",
+                    "name": "read",
+                    "arguments": {"path": record["id"]},
+                }
+            ]
+        _ocl_write(
+            root,
+            "clawd",
+            OCL_SID,
+            [
+                _ocl_user("go"),
+                first,
+                second,
+                _ocl_result("shared", "second call only", "r2", "2026-04-27T16:01:10.000Z"),
+            ],
+        )
+        store = ot.OpenClawStore(root, _ocl_args())
+        key = f"{OCL_SID}:a1"
+        full = store.turn_content(OCL_SID, content_key=key)
+        assert list(full) == [key] and full[key][0]["output"] == ""

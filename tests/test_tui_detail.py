@@ -2592,8 +2592,12 @@ class _TraceStore(FakeStore):
     def supports_turn_content(self, wid):
         return True
 
-    def turn_content(self, wid):
-        return {k: [dict(e) for e in v] for k, v in self._CONTENT.items()}
+    def turn_content(self, wid, content_key=None):
+        return {
+            k: [dict(e) for e in v]
+            for k, v in self._CONTENT.items()
+            if content_key is None or k == content_key
+        }
 
     def message_timeline(self, wid):
         return [
@@ -2636,7 +2640,8 @@ def test_turn_trace_shows_the_exact_command_its_arguments_and_its_output():
     body = app.renderer.detail_turn_drill(wf, 96)
     text = "\n".join(body)
 
-    assert body[0].startswith("# Turn 1 of 2 · anthropic/claude-opus-4-8")
+    assert body[0] == "# Prompt 1 · Turn 1/2 (#1) · $1.00"
+    assert "anthropic/claude-opus-4-8" in text
     assert "  I'll check the diff first." in body  # narration, the assistant's own voice
     assert "▸ Bash  git diff --stat src/opentab/tui/renderer.py" in text
     assert "  description: the diff" in body  # the rest of the arguments, beneath it
@@ -2657,7 +2662,7 @@ def test_turn_trace_says_when_the_harness_records_no_reasoning_text():
     app._trace_cursor = 1  # the turn that does carry reasoning prose
     app.open_trace_drill()
     lines = app.renderer.detail_turn_drill(app.current_session(), 96)
-    assert "✻ thinking" in lines and "  **Planning** the next step." in lines
+    assert "✻ Thinking" in lines and "  **Planning** the next step." in lines
     assert "  … 120 more characters" in lines
     assert "records no reasoning text" not in "\n".join(lines)
 
@@ -2733,10 +2738,9 @@ def test_the_drill_marks_which_turns_have_something_to_read():
     app = _trace_app()
     lines = app.renderer.detail_turn_drill(app.current_session(), 96)
     header = next(ln for ln in lines if "Cached" in ln)
-    assert "Read" in header
+    assert "Content" in header
     body = [ln for ln in lines if "claude-opus" in ln]
-    assert [ln.split()[-5] for ln in body] == ["N", "R"]  # narration, then reasoning
-    assert any("· Read: N a turn that narrates" in ln for ln in lines)
+    assert [ln.split()[-5] for ln in body] == ["Text", "Thinking"]
 
     # A backend that records neither shows NO column, not a stripe of dashes.
     for row in app.session_turn_rows(app.current_session().id):
@@ -2744,7 +2748,7 @@ def test_the_drill_marks_which_turns_have_something_to_read():
     header = next(
         ln for ln in app.renderer.detail_turn_drill(app.current_session(), 96) if "Cached" in ln
     )
-    assert "Read" not in header
+    assert "Read" not in header and "Content" not in header
 
 
 def test_the_read_column_is_gated_on_the_trace_being_openable():
@@ -2853,9 +2857,163 @@ def test_the_read_column_gives_way_before_the_money_does():
     at80 = table(80)
     assert all(display_width(ln) <= 80 for ln in at80)
     assert not any(ln.rstrip().endswith("...") for ln in at80)
-    assert "Read" in at80[1] and all("$1.00" in ln for ln in at80 if "claude-opus" in ln)
+    assert all("$1.00" in ln for ln in at80 if "claude-opus" in ln)
     # Narrower, the marker is what gives way -- never a column carrying a number.
     for width in (60, 74):
         rows = table(width)
         assert all(display_width(ln) <= width for ln in rows)
         assert "Read" not in rows[1]
+
+
+def test_return_from_a_late_turn_restores_the_list_and_selected_row():
+    app = _trace_app()
+    wf = app.current_session()
+    base = app.session_turn_rows(wf.id)[0]
+    app._turns_by_session[wf.id] = [dict(base) for _ in range(40)]
+    app._trace_cursor = 30
+    rnd = app.renderer
+    rnd.detail_turn_drill(wf, 96)
+    rnd._scroll_turn_cursor_into_view(20)
+    previous = app.scroll
+    app._turn_follow = False
+    app.open_trace_drill()
+    rnd.detail_turn_drill(wf, 96)
+    app.handle_key(None, 27)
+    rnd.detail_turn_drill(wf, 96)
+    assert app.scroll == previous and app._turn_follow
+    rnd._scroll_turn_cursor_into_view(20)
+    assert app.scroll <= rnd._turn_cursor_line < app.scroll + 20
+
+
+def test_trace_keys_step_siblings_expand_on_demand_and_release_full_content():
+    app = _trace_app()
+    app.store._CONTENT["k0"] = [
+        {
+            "kind": "tool",
+            "name": "shell",
+            "args": "cat log",
+            "output": "\n".join(f"line {i}" for i in range(60)),
+        }
+    ]
+    app.open_trace_drill()
+    wf = app.current_session()
+    preview = app.renderer.detail_turn_drill(wf, 96)
+    assert "line 59" not in "\n".join(preview)
+    app.handle_key(None, ord("z"))
+    assert app._trace_full is None  # first paint can show loading before I/O
+    assert "Loading full turn" in "\n".join(app.renderer.detail_turn_drill(wf, 96))
+    app.load_trace_expansion()
+    assert "line 59" in "\n".join(app.renderer.detail_turn_drill(wf, 96))
+    app.handle_key(None, ord("]"))
+    assert app.active_trace_drill == 1 and app._trace_cursor == 1
+    assert app._trace_full is None and not app.trace_expanded
+    app.handle_key(None, ord("]"))  # stop at this prompt's boundary
+    assert app.active_trace_drill == 1
+    app.handle_key(None, ord("["))
+    assert app.active_trace_drill == 0
+    app.handle_key(None, ord("z"))
+    app.load_trace_expansion()
+    app.handle_key(None, ord("z"))
+    assert app._trace_full is None and not app.trace_expanded
+    assert "line 59" not in "\n".join(app.renderer.detail_turn_drill(wf, 96))
+
+
+def test_trace_prose_wraps_words_but_fenced_code_keeps_spaces():
+    app = _trace_app()
+    prose = "alpha beta gamma delta " * 8
+    lines = app.renderer._trace_prose({"text": prose}, 36)
+    assert " ".join(ln.strip() for ln in lines) == prose.strip()
+    code = "```python\n    print('a  b')\n```"
+    lines = app.renderer._trace_prose({"text": code}, 36)
+    assert "      print('a  b')" in lines
+
+
+def test_trace_styles_cover_whole_blocks_and_stay_visible_while_scrolling():
+    app = _trace_app()
+    app.store._CONTENT["k0"] = [
+        {"kind": "reasoning", "text": "First thought\nSecond thought"},
+        {"kind": "text", "text": "Now run it."},
+        {
+            "kind": "tool",
+            "name": "shell",
+            "args": "echo $1",
+            "status": "error",
+            "output": "Permission denied\nSecond output line",
+        },
+    ]
+    app.open_trace_drill()
+    rnd = app.renderer
+    lines = rnd.detail_turn_drill(app.current_session(), 96)
+    original = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n << 8
+    try:
+        for text in (
+            "  First thought",
+            "  Second thought",
+            "→ Permission denied",
+            "  Second output line",
+        ):
+            assert rnd.line_attr(next(ln for ln in lines if ln == text)) == 1 << 8
+        assert rnd.line_attr(next(ln for ln in lines if "shell · Error" in ln)) == (
+            (4 << 8) | ot.curses.A_BOLD
+        )
+        assert (
+            rnd.line_attr(next(ln for ln in lines if ln == "  Now run it.")) == ot.curses.A_NORMAL
+        )
+        app._nodes_by_session[app.current_session().id] = []
+        app.scroll = 4
+        screen = AttrScreen(12, 100)
+        rnd.draw_detail(screen, 0, 0, 12, 100)
+        assert "Prompt 1 · Turn 1/2 (#1)" in screen_text(screen)
+        # The shell parameter must keep the command's style, not become a green dollar amount.
+        app.scroll = 0
+        screen = AttrScreen(30, 100)
+        rnd.draw_detail(screen, 0, 0, 30, 100)
+        dollar = next(
+            (y, x)
+            for (y, x), ch in screen.cells.items()
+            if ch == "$" and screen.cells.get((y, x + 2)) != "."
+        )
+        assert screen.attrs[dollar] == ((4 << 8) | ot.curses.A_BOLD)
+    finally:
+        ot.curses.color_pair = original
+
+
+def test_trace_footer_and_help_describe_the_current_level_and_bindings():
+    app = _trace_app()
+    app.can_switch_source = lambda: False
+    assert ot.keymap.BY_ID["enter"].text(app) == "open the selected turn"
+    app.open_trace_drill()
+    assert not ot.keymap.BY_ID["enter"].shown(app)
+    assert ot.keymap.BY_ID["move"].text(app).startswith("scroll this turn")
+    footer = " ".join(
+        text
+        for segments in ot.keymap.footer_parts(app)
+        for text, _active in (segments if isinstance(segments, list) else [segments])
+    )
+    assert "[/] turn" in footer and "z expand" in footer
+
+
+def test_first_trace_read_paints_loading_before_fetching_and_respects_demo():
+    app = _trace_app()
+    app.open_trace_drill()
+    app._nodes_by_session[app.current_session().id] = []
+    fetched = []
+    fetch = app.store.turn_content
+    app.store.turn_content = lambda wid, **kw: (fetched.append((wid, kw)) or fetch(wid, **kw))
+    original = ot.curses.color_pair
+    ot.curses.color_pair = lambda n: n << 8
+    try:
+        screen = AttrScreen(24, 100)
+        app.renderer.draw_detail(screen, 0, 0, 24, 100)
+        assert "Loading turn" in screen_text(screen) and not fetched
+        app.load_trace_expansion()
+        assert len(fetched) == 1
+        app.handle_key(None, ord("z"))
+        # A demo toggle between request and read must not fetch or show real content.
+        app.store.demo = True
+        app.load_trace_expansion()
+        assert len(fetched) == 1 and app._trace_full is None
+        assert app.turn_trace_events(app.current_session().id, {"content_key": "k0"}) == []
+    finally:
+        ot.curses.color_pair = original

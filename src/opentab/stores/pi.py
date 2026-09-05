@@ -11,7 +11,10 @@ from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
 from opentab.util import (
+    TRACE_OUTPUT_CAP,
+    TRACE_TEXT_CAP,
     LazyStatusRoot,
+    TraceContent,
     git_root,
     read_files_parallel,
     safe_float,
@@ -30,6 +33,7 @@ class PiStore:
     """
 
     combined = False
+    records_reasoning = True
     source_name = "Pi"
 
     def __init__(self, root_dir: str, args: argparse.Namespace):
@@ -143,6 +147,7 @@ class PiStore:
     @staticmethod
     def _new_session() -> dict:
         return {
+            "sid": None,
             "cwd": None,
             "ts_min": None,
             "ts_max": None,
@@ -152,6 +157,7 @@ class PiStore:
             "seen_msgs": set(),  # assistant ids already counted (resume/fork dedup)
             "turns": [],  # one per assistant message, for the Turns tab
             "prompts": [],  # user messages, for the Turns tab's ▸ grouping
+            "paths": [],
         }
 
     def cache_inputs(self) -> list[str]:
@@ -311,14 +317,20 @@ class PiStore:
         if not sid:
             return
         s = sessions.setdefault(sid, self._new_session())
-        self._parse_lines(s, lines)
+        s["sid"] = sid
+        s["paths"].append(path)
+        self._parse_lines(s, lines, os.path.basename(path))
 
-    def _parse_lines(self, s: dict, lines: list[str]) -> None:
+    @staticmethod
+    def _content_key(s: dict, prefix: str, ordinal: int, mid) -> str:
+        return f"{s.get('sid')}:{mid}" if mid is not None else f"{prefix}:{ordinal}"
+
+    def _parse_lines(self, s: dict, lines: list[str], key_prefix: str = "message") -> None:
         # Factored out of _parse_file so OmpStore can feed it a session dict keyed
         # by content (a subagent transcript's id lives in its own `session` record,
         # never its filename) instead of one keyed by the caller's filename-derived
         # id -- the loop body itself is untouched.
-        for line in lines:
+        for ordinal, line in enumerate(lines):
             if '"type"' not in line:
                 continue
             try:
@@ -366,7 +378,7 @@ class PiStore:
                 if mid in s["seen_msgs"]:
                     continue  # same assistant step in a resumed/forked file
                 s["seen_msgs"].add(mid)
-            self._apply_usage(s, msg, ts)
+            self._apply_usage(s, msg, ts, self._content_key(s, key_prefix, ordinal, mid))
 
     def _extra_record(self, typ: str, o: dict, s: dict) -> None:
         # Hook for a subclass that reacts to a record type PiStore itself has
@@ -383,7 +395,7 @@ class PiStore:
         model = msg.get("model")
         return model if isinstance(model, str) and model else "unknown"
 
-    def _apply_usage(self, s: dict, msg: dict, ts=None) -> None:
+    def _apply_usage(self, s: dict, msg: dict, ts=None, content_key: str = "") -> None:
         usage = msg["usage"]
         inp = self._int(usage.get("input"))
         out = self._int(usage.get("output"))
@@ -419,9 +431,11 @@ class PiStore:
         # reprices it from the token columns, exactly like the session rollups.
         # The toolCall blocks this step invoked feed tool_breakdown (duplicates
         # kept: two bash calls = two calls, two shares).
+        content = msg.get("content")
+        parts = content if isinstance(content, list) else []
         tools = [
             c.get("name")
-            for c in (msg.get("content") or [])
+            for c in parts
             if isinstance(c, dict) and c.get("type") == "toolCall" and c.get("name")
         ]
         s["turns"].append(
@@ -444,8 +458,146 @@ class PiStore:
                 "cache_write": cw,
                 "tokens_total": inp + out + cr + cw,
                 "tools": tools,
+                "content_key": content_key,
+                "has_text": any(
+                    isinstance(p, dict)
+                    and p.get("type") == "text"
+                    and isinstance(p.get("text"), str)
+                    and bool(p["text"].strip())
+                    for p in parts
+                ),
+                "has_reasoning": any(
+                    isinstance(p, dict)
+                    and p.get("type") == "thinking"
+                    and isinstance(p.get("thinking"), str)
+                    and bool(p["thinking"].strip())
+                    for p in parts
+                ),
             }
         )
+
+    @staticmethod
+    def _trace_result(content) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return "" if content is None else str(content)
+        parts = []
+        for item in content:
+            if not isinstance(item, dict):
+                parts.append(str(item))
+            elif item.get("type") == "image":
+                parts.append("(image)")
+            elif isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "\n".join(parts)
+
+    def _trace_sessions(self, workflow_id: str) -> list[tuple[str, dict]]:
+        session = self._parse().get(workflow_id)
+        return [(workflow_id, session)] if session else []
+
+    def _trace_lines(
+        self,
+        sid: str,
+        path: str,
+        lines: list[str],
+        trace: TraceContent,
+        seen: set,
+        calls: dict[tuple[str, str], dict],
+    ) -> None:
+        session = {"sid": sid}
+        prefix = os.path.basename(path)
+        for ordinal, line in enumerate(lines):
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            msg = o.get("message") if isinstance(o, dict) and o.get("type") == "message" else None
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            mid = o.get("id")
+            if role == "user":
+                if self._user_text(msg.get("content")).strip() and mid is not None:
+                    seen.add((sid, mid))
+                continue
+            if role == "toolResult":
+                event = calls.pop((sid, str(msg.get("toolCallId") or "")), None)
+                if event is not None:
+                    output, dropped = trace.clip(
+                        self._trace_result(msg.get("content")), TRACE_OUTPUT_CAP
+                    )
+                    event["output"] = output
+                    event["output_dropped"] = dropped
+                    event["status"] = "error" if msg.get("isError") else "completed"
+                continue
+            usage = msg.get("usage")
+            if role != "assistant" or not isinstance(usage, dict):
+                continue
+            if mid is not None:
+                marker = (sid, mid)
+                if marker in seen:
+                    continue
+                seen.add(marker)
+            total = sum(
+                self._int(usage.get(k)) for k in ("input", "output", "cacheRead", "cacheWrite")
+            )
+            total = max(total, self._int(usage.get("totalTokens")))
+            if total == 0:
+                continue
+            key = self._content_key(session, prefix, ordinal, mid)
+            if not trace.accepts(key):
+                for block in msg.get("content") if isinstance(msg.get("content"), list) else []:
+                    if isinstance(block, dict) and block.get("type") == "toolCall":
+                        calls.pop((sid, str(block.get("id") or "")), None)
+                continue
+            content = msg.get("content")
+            blocks = content if isinstance(content, list) else []
+            events: list[dict] = []
+            for block in blocks:
+                if not isinstance(block, dict) or len(events) >= trace.event_limit:
+                    continue
+                kind = block.get("type")
+                if kind in ("text", "thinking"):
+                    field = "text" if kind == "text" else "thinking"
+                    value, dropped = trace.clip(block.get(field), TRACE_TEXT_CAP)
+                    if value:
+                        events.append(
+                            {
+                                "kind": "text" if kind == "text" else "reasoning",
+                                "text": value,
+                                "dropped": dropped,
+                            }
+                        )
+                elif kind == "toolCall":
+                    head, params = trace.arguments(block.get("arguments"))
+                    event = {
+                        "kind": "tool",
+                        "name": block.get("name") or "(unknown)",
+                        "args": head,
+                        "params": params,
+                        "output": "",
+                        "output_dropped": 0,
+                    }
+                    events.append(event)
+                    if block.get("id"):
+                        calls[(sid, str(block["id"]))] = event
+            if events:
+                trace[key] = events
+
+    def turn_content(
+        self, workflow_id: str, content_key: str | None = None
+    ) -> dict[str, list[dict]]:
+        trace = TraceContent(content_key)
+        seen = set()
+        calls: dict[tuple[str, str], dict] = {}
+        for sid, session in self._trace_sessions(workflow_id):
+            for path, text in read_files_parallel(session.get("paths") or []):
+                self._trace_lines(sid, path, text.split("\n"), trace, seen, calls)
+        return trace
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        return bool(self._trace_sessions(workflow_id))
 
     def _finalize(self, sid: str, s: dict) -> None:
         s["title"] = s["title_prompt"] or "(untitled)"

@@ -10,7 +10,15 @@ from datetime import datetime, timezone
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, worked_seconds
 from opentab.models import Workflow
-from opentab.util import read_files_parallel, safe_float, safe_int, tool_rows_from_turns
+from opentab.util import (
+    TRACE_OUTPUT_CAP,
+    TRACE_TEXT_CAP,
+    TraceContent,
+    read_files_parallel,
+    safe_float,
+    safe_int,
+    tool_rows_from_turns,
+)
 
 
 class OpenClawStore:
@@ -23,6 +31,7 @@ class OpenClawStore:
     """
 
     combined = False
+    records_reasoning = True
     source_name = "OpenClaw"
 
     # Provider/api substrings that mark a subscription (plan-included) route even when
@@ -229,6 +238,7 @@ class OpenClawStore:
             "seen_msgs": set(),  # record ids already counted (resume/archive dedup)
             "turns": [],  # one per assistant message, for the Turns tab
             "prompts": [],  # user messages, for the Turns tab's ▸ grouping
+            "paths": [],
         }
 
     def cache_inputs(self) -> list[str]:
@@ -387,6 +397,8 @@ class OpenClawStore:
         sid = self._session_id(path)
         agent = os.path.basename(os.path.dirname(os.path.dirname(path)))
         s = sessions.setdefault(sid, self._new_session())
+        if path not in s["paths"]:
+            s["paths"].append(path)
         if not s["agent"]:
             s["agent"] = agent
         current_model = None
@@ -450,9 +462,18 @@ class OpenClawStore:
                 if mid in s["seen_msgs"]:
                     continue  # same assistant step in a resumed/archived file
                 s["seen_msgs"].add(mid)
-            self._apply_usage(s, msg, current_model, current_provider, rts)
+            key = f"{sid}:{mid}" if mid is not None else ""
+            self._apply_usage(s, msg, current_model, current_provider, rts, key)
 
-    def _apply_usage(self, s: dict, msg: dict, current_model, current_provider, ts=None) -> None:
+    def _apply_usage(
+        self,
+        s: dict,
+        msg: dict,
+        current_model,
+        current_provider,
+        ts=None,
+        content_key: str = "",
+    ) -> None:
         usage = msg["usage"]
         inp = self._int(usage.get("input"))
         out = self._int(usage.get("output"))
@@ -504,8 +525,136 @@ class OpenClawStore:
                 "cache_write": cw,
                 "tokens_total": inp + out + cr + cw,
                 "tools": tools,
+                "content_key": content_key,
+                "has_text": self._has_content(msg, "text", "text"),
+                "has_reasoning": self._has_content(msg, "thinking", "thinking"),
             }
         )
+
+    @staticmethod
+    def _has_content(msg: dict, kind: str, field: str) -> bool:
+        content = msg.get("content")
+        return isinstance(content, list) and any(
+            isinstance(block, dict)
+            and block.get("type") == kind
+            and isinstance(block.get(field), str)
+            and bool(block[field].strip())
+            for block in content
+        )
+
+    @staticmethod
+    def _trace_result(content) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return "" if content is None else str(content)
+        parts = []
+        for block in content:
+            if not isinstance(block, dict):
+                parts.append(str(block))
+            elif block.get("type") == "image":
+                parts.append("(image)")
+            elif isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        return "\n".join(parts)
+
+    def turn_content(
+        self, workflow_id: str, content_key: str | None = None
+    ) -> dict[str, list[dict]]:
+        session = self._parse().get(workflow_id)
+        if not session:
+            return {}
+        trace = TraceContent(content_key)
+        seen = set()
+        calls: dict[str, dict] = {}
+        for _path, text in read_files_parallel(session.get("paths") or []):
+            for line in text.split("\n"):
+                try:
+                    o = json.loads(line)
+                except ValueError:
+                    continue
+                msg = (
+                    o.get("message") if isinstance(o, dict) and o.get("type") == "message" else None
+                )
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role")
+                mid = o.get("id") or msg.get("idempotencyKey")
+                if role == "user":
+                    if self._user_text(msg.get("content")).strip() and mid is not None:
+                        seen.add(mid)
+                    continue
+                if role == "toolResult":
+                    event = calls.pop(str(msg.get("toolCallId") or ""), None)
+                    if event is not None:
+                        output, dropped = trace.clip(
+                            self._trace_result(msg.get("content")), TRACE_OUTPUT_CAP
+                        )
+                        event["output"] = output
+                        event["output_dropped"] = dropped
+                        event["status"] = "error" if msg.get("isError") else "completed"
+                    continue
+                usage = msg.get("usage")
+                if role != "assistant" or not isinstance(usage, dict):
+                    continue
+                if mid is not None:
+                    if mid in seen:
+                        continue
+                    seen.add(mid)
+                total = sum(
+                    self._int(usage.get(k)) for k in ("input", "output", "cacheRead", "cacheWrite")
+                )
+                total = max(total, self._int(usage.get("totalTokens")))
+                if total == 0:
+                    continue
+                key = f"{workflow_id}:{mid}" if mid is not None else ""
+                if not key or not trace.accepts(key):
+                    for block in msg.get("content") if isinstance(msg.get("content"), list) else []:
+                        if isinstance(block, dict) and block.get("type") == "toolCall":
+                            calls.pop(str(block.get("id") or ""), None)
+                    continue
+                content = msg.get("content")
+                blocks = content if isinstance(content, list) else []
+                events: list[dict] = []
+                for block in blocks:
+                    if not isinstance(block, dict) or len(events) >= trace.event_limit:
+                        continue
+                    kind = block.get("type")
+                    if kind in ("text", "thinking"):
+                        field = "text" if kind == "text" else "thinking"
+                        value, dropped = trace.clip(block.get(field), TRACE_TEXT_CAP)
+                        if value:
+                            events.append(
+                                {
+                                    "kind": "text" if kind == "text" else "reasoning",
+                                    "text": value,
+                                    "dropped": dropped,
+                                }
+                            )
+                    elif kind == "toolCall":
+                        args = block.get("arguments")
+                        if args is None:
+                            args = block.get("input")
+                        head, params = trace.arguments(args)
+                        event = {
+                            "kind": "tool",
+                            "name": block.get("name") or "(unknown)",
+                            "args": head,
+                            "params": params,
+                            "output": "",
+                            "output_dropped": 0,
+                        }
+                        events.append(event)
+                        if block.get("id"):
+                            # Reused ids are legal. The newest still-open call owns the
+                            # next result; an unmatched older occurrence remains outputless.
+                            calls[str(block["id"])] = event
+                if events:
+                    trace[key] = events
+        return trace
+
+    def supports_turn_content(self, workflow_id: str) -> bool:
+        return bool((self._parse().get(workflow_id) or {}).get("paths"))
 
     @staticmethod
     def _tool_names(msg: dict) -> list[str]:

@@ -37,25 +37,26 @@ deprecated alias.)
 Every harness feeds the same browser — months, days, projects, sessions, models,
 trends. What each tool's records support on top:
 
-| Harness | Cost | Subagent tree | Turns | Tools | Context |
-|--------|------|:---:|:---:|:---:|:---:|
-| OpenCode | real recorded | ✓ | ✓ | ✓ | ✓ |
-| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
-| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | — ³ |
-| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ⁵ | ✓ ⁵ ⁶ | ✓ ⁵ |
-| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — | ✓ |
-| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | ✓ |
-| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
-| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ |
-| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
-| zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
-| Gemini CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
-| Antigravity | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
-| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ ² | ✓ ⁴ |
+| Harness | Cost | Subagent tree | Turns | Trace | Tools | Context |
+|--------|------|:---:|:---:|:---:|:---:|:---:|
+| OpenCode | real recorded | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | — ³ |
+| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ ⁵ | ✓ ⁵ | ✓ ⁵ ⁶ | ✓ ⁵ |
+| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ ¹ | — | — | ✓ |
+| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | — | ✓ |
+| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
+| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ | ✓ |
+| OpenClaw | mixed — metered real, plan routes estimated | — | ✓ | ✓ | ✓ | ✓ |
+| zaly | mixed — metered real, plan routes estimated | — | ✓ | ✓ | ✓ | ✓ |
+| Gemini CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Antigravity | tokens only — `$` estimates | ✓ | ✓ | — | ✓ | ✓ |
+| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | — | ✓ ² | ✓ ⁴ |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
-**Turns** — the per-turn cost timeline inside a session · **Tools** — token attribution
-per tool call and MCP server · **Context** — the context-window growth curve, measured
+**Turns** — the per-turn cost timeline inside a session · **Trace** — one turn's recorded
+narration, readable reasoning and exact calls/results, loaded locally in the TUI only ·
+**Tools** — token attribution per tool call and MCP server · **Context** — the context-window growth curve, measured
 from recorded usage (it rides on Turns); Claude Code and zaly log full message content,
 so they add the estimated breakdown of what filled it ·
 ¹ headerless: the OTEL export captures no prompt text · ² with the optional `tool`
@@ -79,9 +80,10 @@ including activity from its subagent subtree where tracked. This timestamp
 to sorting by when a session started, offered everywhere except the Time overview's
 Days pane (see [`docs/keys.md`](keys.md#scope--filter)).
 
-OpenCode, Claude Code, Codex and Hermes also let the TUI open one timeline row into its
-recorded narration, readable reasoning and exact tool calls/results. Those traces are
-loaded only when opened and never embedded in web reports or remote summaries.
+OpenCode, Claude Code, Codex, Hermes, pi, omp, OpenClaw, zaly and Gemini also let the TUI
+open one timeline row into its recorded narration, readable reasoning and exact tool
+calls/results. Those traces are loaded only when opened and never embedded in web reports
+or remote summaries.
 
 ### Token-only harnesses
 
@@ -209,6 +211,8 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   **metered** routes (OpenRouter, a direct API key) as real spend; OAuth/subscription
   routes stay `$0` and are estimated under `$`. The split is read from pi's
   `auth.json`, read-only.
+- **Trace**: assistant text/thinking, exact `toolCall.arguments`, and later
+  `toolResult` content paired by `toolCallId`.
 
 ## [omp](https://omp.sh)
 
@@ -231,6 +235,8 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   with a separate provider field; OpenTab qualifies them (`provider/model`) so they
   group correctly under Trends' Providers tab. Session titles come from omp's own title
   records when set, else the first real user prompt.
+- **Trace**: inherited from pi and extended across every recursively nested subagent
+  transcript; session-qualified keys prevent child messages and calls from colliding.
 
 ## [OpenClaw](https://github.com/openclaw/openclaw)
 
@@ -244,6 +250,9 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   `openclaw.json`, read-only.
 - **Notes**: one project per agent; archived sessions are included and deduplicated.
   Recorded `toolCall` blocks feed both per-turn tool names and the Tools tab.
+- **Trace**: assistant text/thinking and exact finalized tool arguments/results. Live,
+  reset and deleted files use the same first-claimer dedup as accounting; a reused
+  `toolCallId` is paired causally with the newest still-open call.
 
 ## [zaly](https://github.com/folke/zaly)
 
@@ -260,6 +269,9 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
   file, so nothing double-counts (abandoned regenerated branches *do* count — each was
   a real API call). Subagent transcripts are not persisted by zaly (they live in the
   temp dir), so their usage can't be shown.
+- **Trace**: assistant text/reasoning plus exact `tool-call.params`; later `role:"tool"`
+  results join by call id. The canonical settings id may differ from the directory id,
+  so the lazy read uses the path retained by the parsed session.
 
 ## [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 
@@ -287,6 +299,10 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 - **Subagents**: a delegated agent writes its own transcript under
   `chats/<parent session id>/`, so its cost rolls up under the session that spawned it
   and appears in that session's Subagents tab, Turns and Tools.
+- **Trace**: narration, persisted thought summaries, and exact `toolCalls[].args/result`
+  across the whole subtree. Re-appended message ids replace their earlier trace and Read
+  flags exactly as they replace token usage; `$set.messages` merges and `$rewindTo`
+  remains ignored because those calls were still made.
 - **Projects**: Gemini names each project's directory with a short slug rather than the
   path, so OpenTab resolves the real directory from the `.project_root` marker Gemini
   writes beside the chats, from `~/.gemini/projects.json`, or by matching the session's

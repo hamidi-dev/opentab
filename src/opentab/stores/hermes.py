@@ -13,14 +13,12 @@ from opentab.demo import demo_config, demo_title, scramble_node, scramble_workfl
 from opentab.formatting import worked_seconds
 from opentab.models import Workflow
 from opentab.util import (
-    TRACE_EVENTS_CAP,
     TRACE_OUTPUT_CAP,
     TRACE_TEXT_CAP,
-    clip_text,
+    TraceContent,
     git_root,
     safe_float,
     safe_int,
-    tool_call_detail,
     tool_names,
     tool_rows_from_turns,
 )
@@ -1329,7 +1327,9 @@ class HermesStore:
             for t in turns
         )
 
-    def turn_content(self, workflow_id: str) -> dict[str, list[dict]]:
+    def turn_content(
+        self, workflow_id: str, content_key: str | None = None
+    ) -> dict[str, list[dict]]:
         """Trace events per turn, keyed by the assistant message id.
 
         Hermes splits a turn across two stores -- tokens in the rotating log, content in
@@ -1339,7 +1339,7 @@ class HermesStore:
         joined back by tool_call_id.
         """
         ids = [sid for sid, _, _ in self._subtree_ids(workflow_id)]
-        out: dict[str, list[dict]] = {}
+        out = TraceContent(content_key)
         if not ids:
             return out
         try:
@@ -1377,17 +1377,25 @@ class HermesStore:
                 continue
             if (row["role"] or "") != "assistant":
                 continue
+            if not out.accepts(key):
+                for _event, call_id in self._trace_calls(
+                    row["tool_calls"] if "tool_calls" in wanted else None
+                ):
+                    at.pop(call_id, None)
+                continue
             events = out.setdefault(key, [])
             if reason:
-                text, dropped = clip_text(row[reason], TRACE_TEXT_CAP)
+                text, dropped = out.clip(row[reason], TRACE_TEXT_CAP)
                 if text:
                     events.append({"kind": "reasoning", "text": text, "dropped": dropped})
             if "content" in wanted:
-                text, dropped = clip_text(row["content"], TRACE_TEXT_CAP)
+                text, dropped = out.clip(row["content"], TRACE_TEXT_CAP)
                 if text:
                     events.append({"kind": "text", "text": text, "dropped": dropped})
-            for call in self._trace_calls(row["tool_calls"] if "tool_calls" in wanted else None):
-                if len(events) >= TRACE_EVENTS_CAP:
+            for call in self._trace_calls(
+                row["tool_calls"] if "tool_calls" in wanted else None, out
+            ):
+                if len(events) >= out.event_limit:
                     break
                 events.append(call[0])
                 if call[1]:
@@ -1395,7 +1403,7 @@ class HermesStore:
         return out
 
     @staticmethod
-    def _trace_calls(blob) -> list[tuple[dict, str]]:
+    def _trace_calls(blob, trace: TraceContent | None = None) -> list[tuple[dict, str]]:
         """(event, call id) per tool call in one OpenAI-shaped tool_calls blob.
 
         Unlike _parse_tool_calls this is NOT all-or-nothing: nothing downstream splits
@@ -1419,7 +1427,9 @@ class HermesStore:
             name = fn.get("name")
             if not isinstance(name, str) or not name:
                 continue
-            head, params = tool_call_detail(fn.get("arguments"))
+            head, params = (trace if trace is not None else TraceContent()).arguments(
+                fn.get("arguments")
+            )
             call_id = entry.get("call_id") or entry.get("id")
             calls.append(
                 (
@@ -1437,7 +1447,7 @@ class HermesStore:
         return calls
 
     @staticmethod
-    def _trace_result(row, at: dict, out: dict) -> None:
+    def _trace_result(row, at: dict, out: TraceContent) -> None:
         # A role='tool' row is one call's output, addressed by tool_call_id. Rows whose
         # call is not in view (rotated away, or a resume joined mid-flight) are dropped:
         # an output with no command above it names nothing. The caller checks that both
@@ -1450,7 +1460,7 @@ class HermesStore:
         events = out.get(key) or []
         if idx >= len(events):
             return
-        text, dropped = clip_text(row["content"], TRACE_OUTPUT_CAP)
+        text, dropped = out.clip(row["content"], TRACE_OUTPUT_CAP)
         events[idx]["output"] = text
         events[idx]["output_dropped"] = dropped
 

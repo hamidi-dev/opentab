@@ -40,17 +40,27 @@ compaction.
 | `p` / `t` / `m` | Switch to the Projects / Time / Machines browse mode — Machines opens on `∑ all machines` (the whole fleet as one scope), then one row per box (just this one until you [`pull`](../README.md#fleet) another) |
 | `Tab` / `Shift-Tab` | Cycle focus Years → Months → Days (Time mode); Shift-Tab at the top steps back out |
 | `1` / `2` / `3` / `0` | Jump straight to a panel — **each panel wears its number in its title**, lazygit-style: the sidebar top to bottom (`[1] Years`, `[2] Months`, `[3] Days`; in Projects mode `[1] Projects`) and `[0]` the detail pane on the right, what `Enter` drills into. A digit jumps from anywhere: it steps out of a zoomed detail or an open session to get there |
-| `Enter` / `+` | Drill into the selection; on a Sessions / Projects / Harnesses / Models / Machines tab, open it in this scope; on the Turns tab, fold/unfold the selected `▸` prompt |
-| `Esc` | Step back out — session → zoom → browse |
+| `Enter` | Drill into the selection; on Turns, open a prompt, then its selected turn |
+| `+` | Focus the detail pane from browse; maximize / restore it in zoom or session |
+| `Esc` | Step back out — turn → prompt → session → zoom → browse; returning from a turn keeps the selected row visible |
 | `h` / `l` | Switch detail tabs |
 | `j` / `k` | Move in the list (`↑`/`↓` too), or scroll the detail pane; on the Turns tab, move the `▸` prompt cursor |
 | `PgDn` / `PgUp` | Half a page (`Ctrl-D` / `Ctrl-U` too) |
 | `g` / `G` | Jump to the top / bottom |
+| `[` / `]` | Inside a turn, read the previous / next turn of the same prompt |
+| `z` | Inside a turn, expand its full recorded content / collapse to the preview |
 | Mouse | Wheel scrolls · click selects (anywhere in the preview pane focuses it) · double-click drills · click a tab, or a column header to sort (again to reverse) |
 
-On the Turns tab, `j`/`k` move a cursor over the `▸` prompt headers and `Enter`
-(or a click) folds/unfolds the selected one — its full prompt text and per-turn
-rows; `g`/`G` jump to the first/last prompt. `z` unfolds every prompt at once.
+On the Turns tab, `j`/`k` select a prompt and `Enter` (or a click) opens its full
+text and per-turn rows; `g`/`G` jump to the first/last prompt. Inside a prompt,
+`j`/`k` select a turn and `Enter` opens its recorded content. The Content column
+shows text, thinking and tool names where space allows. Inside a turn, `j`/`k`
+scroll while `[`/`]` step between turns. The prompt and turn identity stay visible
+above the transcript. `z` reads the selected turn's full arguments, reasoning and
+output from the local records; a second `z` returns to the capped preview.
+Expansion is temporary and is released when you leave the turn. Recorded tool
+errors are labeled explicitly. Sources that do not support content have no turn
+detail; content is also unavailable in demo mode and remote summaries.
 A `▼` line marks each **context compaction** — where the window was cleared
 between two turns, with what it dropped from and to. The tab's title counts them
 and the tokens they freed, and the lines stay visible while the prompts are

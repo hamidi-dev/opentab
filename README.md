@@ -67,8 +67,9 @@ the rest of the reference in **[docs/](docs/README.md)**.
   made. *Tools*: token attribution per tool and MCP server, over a treemap where area is
   total spend and shade is cost *per call*. *Context*: the window filling up over time,
   compaction markers included, plus an estimate of what filled it. On OpenCode, Claude
-  Code, Codex and Hermes, open one turn again for its narration, readable reasoning and
-  exact tool calls; this content stays local to the TUI.
+  Code, Codex, Hermes, pi, omp, OpenClaw, zaly and Gemini, open one turn again for its
+  narration, readable reasoning and tool calls. Use `[`/`]` for adjacent turns and
+  `z` to expand the full recorded arguments and output; this content stays local to the TUI.
 - **Honest money** — subscription usage shows its true `$0`; **`$`** reprices it at API
   list rates and **`P`** shows the per-model table behind the estimate. **`w`** arms a
   what-if model: *what if the expensive one had done the subagents' work too?*
@@ -100,29 +101,30 @@ narrows to one, `H` switches live. You can also just hand it a file — `opentab
 requests.csv`, `opentab path/to/opencode.db` — and the harness is inferred.
 
 <details>
-<summary><strong>What each tool's records support on top</strong> — cost, subagent tree, Turns, Tools, Context</summary>
+<summary><strong>What each tool's records support on top</strong> — cost, subagent tree, Turns, Trace, Tools, Context</summary>
 
-| Harness | Cost | Subagent tree | Turns | Tools | Context |
-|--------|------|:---:|:---:|:---:|:---:|
-| OpenCode | real recorded | ✓ | ✓ | ✓ | ✓ |
-| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
-| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | — |
-| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ |
-| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ | — | ✓ |
-| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | ✓ |
-| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
-| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ |
-| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
-| zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ |
-| Gemini CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
-| Antigravity | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ |
-| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | ✓ | ✓ |
+| Harness | Cost | Subagent tree | Turns | Trace | Tools | Context |
+|--------|------|:---:|:---:|:---:|:---:|:---:|
+| OpenCode | real recorded | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Claude Code | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Codex CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | — |
+| Hermes Agent | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ | ✓ |
+| GitHub Copilot CLI | tokens only — `$` estimates | — | ✓ | — | — | ✓ |
+| Copilot Chat in VS Code | tokens only — `$` estimates | — | ✓ | — | — | ✓ |
+| pi-agent | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
+| omp | mixed — metered real, rest estimated | ✓ | ✓ | ✓ | ✓ | ✓ |
+| OpenClaw | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
+| zaly | mixed — metered real, rest estimated | — | ✓ | ✓ | ✓ | ✓ |
+| Gemini CLI | tokens only — `$` estimates | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Antigravity | tokens only — `$` estimates | ✓ | ✓ | — | ✓ | ✓ |
+| CSV / JSONL request logs | mixed — per-row cost column | — | ✓ | — | ✓ | ✓ |
 
 <sub>**Subagent tree** — recursive per-subagent cost under the session that delegated ·
-**Turns** — the per-turn cost timeline · **Tools** — token attribution per tool call and
-MCP server · **Context** — the context-window growth curve (it rides on Turns). A `—` is
-data the tool itself doesn't record, never a feature skipped; sources.md says which, and
-why, for each one.</sub>
+**Turns** — the per-turn cost timeline · **Trace** — one turn's recorded narration,
+reasoning and exact calls/results, local to the TUI · **Tools** — token attribution per
+tool call and MCP server · **Context** — the context-window growth curve (it rides on
+Turns). A `—` means the required data or a safe mapping is unavailable; sources.md says
+which, and why, for each one.</sub>
 
 </details>
 

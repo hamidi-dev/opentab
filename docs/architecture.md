@@ -148,8 +148,18 @@ gates, injects Harnesses in the merged view, and replaces the scope's tabs with
 
 `tui/renderer.py` — all drawing. `Renderer.__getattr__` delegates unknown
 attributes to its `App`, so renderer methods read app state as if it were `self`.
-Drawing methods return plain `list[str]`; `write_rich` re-colors money/token spans
-by regex at paint time.
+Drawing methods return `list[str]`; `write_rich` re-colors money/token spans
+by regex at paint time. Turn transcripts use `TraceLine`, a string with an event
+role, so reasoning and output keep their styling across wrapped lines. They bypass
+numeric highlighting: `$1` in a shell command is not a cost.
+
+Turn content is a lazy local read: `turn_content(workflow_id)` returns capped session
+previews; `turn_content(workflow_id, content_key=key)` returns full content for only
+that turn. All content readers use `TraceContent` to select the key and apply the
+preview limits. They still consume other records for deduplication and tool-result
+ownership; skipping an unselected call must invalidate any older binding with the
+same call id. The app retains at most one expanded turn, outside the preview cache,
+and releases it on collapse or navigation. Loading frames paint before either read.
 
 ## Data flow
 

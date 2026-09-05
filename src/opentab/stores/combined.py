@@ -108,10 +108,16 @@ class CombinedStore:
         check = getattr(self._owner.get(workflow_id), "supports_turns", None)
         return bool(check(workflow_id)) if check else False
 
-    def turn_content(self, workflow_id: str) -> dict:
+    def turn_content(self, workflow_id: str, content_key: str | None = None) -> dict:
         owner = self._owner.get(workflow_id)
         fetch = getattr(owner, "turn_content", None)
-        return fetch(workflow_id) if fetch else {}
+        if not fetch:
+            return {}
+        return (
+            fetch(workflow_id, content_key=content_key)
+            if content_key is not None
+            else fetch(workflow_id)
+        )
 
     def supports_turn_content(self, workflow_id: str) -> bool:
         check = getattr(self._owner.get(workflow_id), "supports_turn_content", None)

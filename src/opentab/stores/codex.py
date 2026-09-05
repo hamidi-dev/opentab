@@ -12,15 +12,13 @@ from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
 from opentab.util import (
-    TRACE_EVENTS_CAP,
     TRACE_OUTPUT_CAP,
     TRACE_TEXT_CAP,
     LazyStatusRoot,
-    clip_text,
+    TraceContent,
     git_root,
     read_files_parallel,
     safe_int,
-    tool_call_detail,
     tool_rows_from_turns,
 )
 
@@ -375,7 +373,7 @@ class CodexStore:
         path: str,
         lines: list[str],
         sessions: dict[str, dict],
-        trace: dict[str, list[dict]] | None = None,
+        trace: TraceContent | None = None,
     ) -> None:
         sid = self._id_from_name(path)
         s = sessions.setdefault(sid, self._new_session()) if sid else None
@@ -388,6 +386,7 @@ class CodexStore:
         pending_has_text = pending_has_reasoning = False
         trace_at: dict[str, dict] = {}
         accepted_turns = 0
+        trace_prefix = os.path.basename(path)
         for line in lines:
             line = line.strip()
             if not line:
@@ -428,6 +427,11 @@ class CodexStore:
             if p is None:
                 continue
             item_type = p.get("type")
+            collect = (
+                trace is not None
+                and trace.accepts(f"{trace_prefix}:{accepted_turns + 1}")
+                and len(pending_events) < trace.event_limit
+            )
             if typ == "turn_context":
                 if p.get("model"):
                     cur_model = p["model"]
@@ -450,14 +454,16 @@ class CodexStore:
                     "tool_search_call": "tool_search",
                 }.get(item_type, item_type)
                 pending_tools.append(name)
-                if trace is not None and len(pending_events) < TRACE_EVENTS_CAP:
+                if trace is not None:
+                    trace_at.pop(p.get("call_id"), None)
+                if collect:
                     args = {
                         "function_call": p.get("arguments"),
                         "custom_tool_call": p.get("input"),
                         "local_shell_call": p.get("action"),
                         "tool_search_call": p.get("arguments"),
                     }.get(item_type)
-                    head, params = tool_call_detail(args)
+                    head, params = trace.arguments(args)
                     event = {
                         "kind": "tool",
                         "name": name,
@@ -477,7 +483,7 @@ class CodexStore:
                 event = trace_at.pop(p.get("call_id"), None) if trace is not None else None
                 if event is not None:
                     raw = p.get("tools") if item_type == "tool_search_output" else p.get("output")
-                    output, dropped = clip_text(self._trace_output(raw), TRACE_OUTPUT_CAP)
+                    output, dropped = trace.clip(self._trace_output(raw), TRACE_OUTPUT_CAP)
                     event["output"] = output
                     event["output_dropped"] = dropped
             elif typ == "response_item" and item_type == "message" and p.get("role") == "assistant":
@@ -488,8 +494,8 @@ class CodexStore:
                     raw = block.get("text")
                     if isinstance(raw, str) and raw.strip():
                         pending_has_text = True
-                    if trace is not None and len(pending_events) < TRACE_EVENTS_CAP:
-                        text, dropped = clip_text(raw, TRACE_TEXT_CAP)
+                    if collect and len(pending_events) < trace.event_limit:
+                        text, dropped = trace.clip(raw, TRACE_TEXT_CAP)
                         if text:
                             pending_events.append(
                                 {"kind": "text", "text": text, "dropped": dropped}
@@ -510,8 +516,8 @@ class CodexStore:
                     raw = block.get("text")
                     if isinstance(raw, str) and raw.strip():
                         pending_has_reasoning = True
-                    if trace is not None and len(pending_events) < TRACE_EVENTS_CAP:
-                        text, dropped = clip_text(raw, TRACE_TEXT_CAP)
+                    if collect and len(pending_events) < trace.event_limit:
+                        text, dropped = trace.clip(raw, TRACE_TEXT_CAP)
                         if text:
                             pending_events.append(
                                 {"kind": "reasoning", "text": text, "dropped": dropped}
@@ -1013,7 +1019,9 @@ class CodexStore:
             out.append(r)
         return out
 
-    def turn_content(self, workflow_id: str) -> dict[str, list[dict]]:
+    def turn_content(
+        self, workflow_id: str, content_key: str | None = None
+    ) -> dict[str, list[dict]]:
         """Read one root's trace content lazily, including spawned descendants."""
         sessions = self._parse()
         if workflow_id not in sessions:
@@ -1022,7 +1030,7 @@ class CodexStore:
             sid for sid, _depth in self._descendants(sessions, workflow_id)
         ]
         paths = [path for sid in session_ids for path in self._session_files(sid)]
-        trace: dict[str, list[dict]] = {}
+        trace = TraceContent(content_key)
         scratch: dict[str, dict] = {}
         for path, text in read_files_parallel(list(dict.fromkeys(paths))):
             self._parse_file(path, text.split("\n"), scratch, trace=trace)

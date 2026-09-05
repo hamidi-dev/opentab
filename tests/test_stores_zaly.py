@@ -172,6 +172,27 @@ def test_zaly_store_dedupes_by_message_id_and_drops_settings_only_sessions():
         assert abs(row["cost"] - 0.01) < 1e-9
 
 
+def test_zaly_trace_obeys_a_zero_usage_messages_earlier_dedup_claim():
+    with tempfile.TemporaryDirectory() as tmp:
+        root, cwd = os.path.join(tmp, "zaly"), os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        _zaly_write(
+            root,
+            "+tmp+repo",
+            ZALY_SID,
+            [
+                _zaly_settings(ZALY_SID, cwd),
+                _zaly_assistant("model-x", 0, 0, mid="same"),
+                _zaly_assistant("model-x", 100, 10, mid="same"),
+                _zaly_assistant("model-x", 50, 5, mid="kept"),
+            ],
+        )
+        store = _zaly_store(root)
+        turns = store.message_timeline(ZALY_SID)
+        assert [turn["content_key"] for turn in turns] == ["kept"]
+        assert set(store.turn_content(ZALY_SID)) == {"kept"}
+
+
 def test_zaly_store_reasoning_stays_inside_output():
     with tempfile.TemporaryDirectory() as tmp:
         root = os.path.join(tmp, "zaly")
@@ -263,6 +284,68 @@ def test_zaly_turns_timeline_groups_by_prompt_and_feeds_tools():
         assert set(tools) == {"bash", "read"}  # only the tool-using turn contributes
         assert tools["bash"]["calls"] == 1
         assert tools["bash"]["tokens_total"] == tools["read"]["tokens_total"] == 15363 / 2
+
+
+def test_zaly_turn_content_pairs_exact_calls_with_later_tool_messages():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, "zaly")
+        cwd = os.path.join(tmp, "repo")
+        os.makedirs(cwd)
+        assistant = _zaly_assistant("openai-codex/gpt-5.6-sol", 100, 20, mid="a1", ts=1783696394242)
+        assistant["message"]["content"] = [
+            {"type": "reasoning", "text": "Inspect the cache first."},
+            {"type": "text", "text": "I'll read the file."},
+            {
+                "type": "tool-call",
+                "id": "call-1",
+                "name": "read",
+                "params": {"file_path": "/repo/cache.py", "limit": 20},
+            },
+        ]
+        result = {
+            "type": "message",
+            "uuid": "n-result",
+            "ts": 1783696395000,
+            "message": {
+                "role": "tool",
+                "content": [
+                    {
+                        "type": "tool-result",
+                        "id": "call-1",
+                        "name": "read",
+                        "content": [
+                            {"type": "text", "text": "1  import os"},
+                            {"type": "image", "data": "not retained"},
+                        ],
+                    }
+                ],
+                "id": "tool-1",
+            },
+        }
+        # The directory id differs from settings.sessionId; trace lookup must use the
+        # parsed session path rather than guessing a directory from the canonical id.
+        _zaly_write(
+            root,
+            "+tmp+repo",
+            "different-dir-id",
+            [_zaly_settings(ZALY_SID, cwd), _zaly_user("go"), assistant, result],
+        )
+        store = _zaly_store(root)
+
+        (turn,) = store.message_timeline(ZALY_SID)
+        assert turn["content_key"] == "a1"
+        assert turn["has_text"] is True and turn["has_reasoning"] is True
+        assert store.supports_turn_content(ZALY_SID) is True
+        events = store.turn_content(ZALY_SID)[turn["content_key"]]
+        assert [e["kind"] for e in events] == ["reasoning", "text", "tool"]
+        assert events[0]["text"] == "Inspect the cache first."
+        assert events[1]["text"] == "I'll read the file."
+        assert (events[2]["name"], events[2]["args"]) == ("read", "/repo/cache.py")
+        assert events[2]["params"] == [("limit", "20")]
+        assert events[2]["output"] == "1  import os\n(image)"
+        assert store.turn_content(ZALY_SID, content_key=turn["content_key"]) == {
+            turn["content_key"]: events
+        }
 
 
 def test_zaly_joins_the_source_cycle_and_builds_a_resume_command():
