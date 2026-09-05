@@ -184,6 +184,13 @@ cannot overwrite the highlight. Headers paint bold accent text, not filled bands
 `_mark_box_header` records framed header text rather than a fragile line offset;
 selectable row maps use the derived `_ruled_body_start` when locating table bodies.
 
+Scrollable detail panes, picker tables, and pager overlays reuse their right border
+as a proportional scrollbar. The muted track and accent thumb appear only when the
+content overflows, so the indicator costs neither a content column nor permanent chrome.
+Inactive preview panes keep a neutral thumb so the focus border remains unambiguous. Each
+bar paints as at most three vertical runs; per-cell drawing can make key-repeat outrun a
+terminal renderer and leave navigation draining queued input after the key is released.
+
 Multi-row tables normally close with a rule and TOTAL row. A single row needs no
 duplicate total, and a Top-N slice must not pretend to total the whole scope.
 The what-if Subagents footer is a session-level comparison, not a sum of its

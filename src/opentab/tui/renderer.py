@@ -286,7 +286,14 @@ class Renderer:
             self._register_sort_header(sy, sx, line, meta[0], meta[1], max_w)
 
     def _paint_detail_lines(
-        self, stdscr: curses.window, y: int, x: int, h: int, w: int, lines: list[str]
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        h: int,
+        w: int,
+        lines: list[str],
+        active: bool,
     ) -> None:
         visible = h - 4
         # Gate model cursor state on the active tab; its line map persists until the
@@ -314,6 +321,9 @@ class Renderer:
             self._register_line_sort_header(y + 3 + offset, x + 2, index, line, w - 4)
         if models:
             self._add_rows_region("zoommodel", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
+        self._paint_scrollbar(
+            stdscr, y + 3, x + w - 1, len(lines), visible, self.scroll, active=active
+        )
 
     def paint_cursor_row(
         self,
@@ -489,6 +499,50 @@ class Renderer:
         _height, width = stdscr.getmaxyx()
         lines = self.current_pager_lines(width - self.CHROME_COLS)
         return max(0, len(lines) - self.pager_height(stdscr))
+
+    @staticmethod
+    def _scrollbar_thumb(total: int, visible: int, offset: int) -> tuple[int, int] | None:
+        """Return the thumb's row and height within a viewport-sized track."""
+        if total <= visible or visible <= 0:
+            return None
+        max_scroll = total - visible
+        offset = max(0, min(offset, max_scroll))
+        max_thumb = max(1, visible - 1)  # leave a track cell for even one-line overflow
+        thumb_h = min(max_thumb, max(min(2, visible), math.ceil(visible * visible / total)))
+        travel = visible - thumb_h
+        thumb_y = (travel * offset + max_scroll // 2) // max_scroll
+        return thumb_y, thumb_h
+
+    def _paint_scrollbar(
+        self,
+        stdscr: curses.window,
+        y: int,
+        x: int,
+        total: int,
+        visible: int,
+        offset: int,
+        active: bool = True,
+    ) -> None:
+        """Turn a pane's right border into a scrollbar without costing content width."""
+        thumb = self._scrollbar_thumb(total, visible, offset)
+        if thumb is None:
+            return
+        thumb_y, thumb_h = thumb
+        track_glyph = getattr(curses, "ACS_VLINE", "|")
+        thumb_glyph = getattr(curses, "ACS_BLOCK", getattr(curses, "ACS_CKBOARD", "#"))
+        track_attr = curses.color_pair(4)
+        thumb_attr = curses.color_pair(6 if active else 1) | curses.A_BOLD
+        sy, sx = y + self.oy, x + self.ox
+        try:
+            # Keep this to three native runs; per-cell addch lets key-repeat outrun paint.
+            if thumb_y:
+                stdscr.vline(sy, sx, track_glyph, thumb_y, track_attr)
+            stdscr.vline(sy + thumb_y, sx, thumb_glyph, thumb_h, thumb_attr)
+            below = visible - thumb_y - thumb_h
+            if below:
+                stdscr.vline(sy + thumb_y + thumb_h, sx, track_glyph, below, track_attr)
+        except curses.error:
+            pass
 
     def current_pager_lines(self, width: int) -> list[str]:
         content_width = max(1, width - 4)
@@ -1511,6 +1565,7 @@ class Renderer:
                 cost_text,
                 token_text,
             )
+        self._paint_scrollbar(stdscr, body_y, x + w - 3, len(sessions), len(shown), start)
 
     def draw_projects_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         projects = self.zoom_projects()
@@ -1545,6 +1600,7 @@ class Renderer:
                 money(project.cost),
                 human_tokens(project.tokens),
             )
+        self._paint_scrollbar(stdscr, body_y, x + w - 3, len(projects), len(shown), start)
 
     def draw_sources_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         self._draw_dimension_picker(
@@ -1612,6 +1668,7 @@ class Renderer:
                 tok,
                 bars=True,
             )
+        self._paint_scrollbar(stdscr, body_y, x + w - 3, len(rows), len(shown), start)
         if not self.show_api_prices and any(
             float(it["cost"]) == 0 and int(it["tokens"]) for _, it in rows
         ):
@@ -1849,7 +1906,7 @@ class Renderer:
         else:
             lines = self.project_workflows(project, w - 4)
 
-        self._paint_detail_lines(stdscr, y, x, h, w, lines)
+        self._paint_detail_lines(stdscr, y, x, h, w, lines, active)
 
     def draw_machine_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -1937,7 +1994,7 @@ class Renderer:
         else:
             lines = self.machine_workflows(machine, w - 4)
 
-        self._paint_detail_lines(stdscr, y, x, h, w, lines)
+        self._paint_detail_lines(stdscr, y, x, h, w, lines, active)
 
     def machine_overview(self, machine: MachineSummary, width: int) -> list[str]:
         workflows = self.machine_scope(machine)
@@ -2073,7 +2130,7 @@ class Renderer:
         else:
             lines = self.year_workflows(year, w - 4)
 
-        self._paint_detail_lines(stdscr, y, x, h, w, lines)
+        self._paint_detail_lines(stdscr, y, x, h, w, lines, active)
 
     def draw_month_detail(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -2115,7 +2172,7 @@ class Renderer:
         else:
             lines = self.month_workflows(month, w - 4)
 
-        self._paint_detail_lines(stdscr, y, x, h, w, lines)
+        self._paint_detail_lines(stdscr, y, x, h, w, lines, active)
 
     def draw_day_list(
         self, stdscr: curses.window, y: int, x: int, h: int, w: int, active: bool = True
@@ -2211,7 +2268,7 @@ class Renderer:
         else:
             lines = self.day_workflows(day, w - 4)
 
-        self._paint_detail_lines(stdscr, y, x, h, w, lines)
+        self._paint_detail_lines(stdscr, y, x, h, w, lines, active)
 
     def draw_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         workflow = self.current_session()
@@ -2323,6 +2380,8 @@ class Renderer:
             )
         if current == "Turns":
             self._add_rows_region("turnline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
+        if not loading_trace:
+            self._paint_scrollbar(stdscr, y + 3, x + w - 1, len(lines), visible, self.scroll)
 
     def _scroll_turn_cursor_into_view(self, visible: int) -> None:
         self._scroll_line_into_view(self._turn_cursor_line, visible)
@@ -4966,6 +5025,7 @@ class Renderer:
             row_y = box_y + 1 + offset
             for dx, text, attr in segments:
                 self.write(stdscr, row_y, box_x + 2 + dx, text, attr)
+        self._paint_scrollbar(stdscr, box_y + 1, box_x + box_w - 1, len(lines), visible, scroll)
         if len(lines) > visible:  # only then is there anything to scroll
             hint = f" {self._keys('help', 'down', 'up')} scroll "
             self.write(
@@ -5316,6 +5376,7 @@ class Renderer:
                     f"{cell:>{w}}",
                     self._price_heat_attr(entry.price[j], ranges[j + 1]),
                 )
+        self._paint_scrollbar(stdscr, list_top, width - 1, len(render), visible, scroll)
 
     def price_session_lines(self, model: str, width: int) -> list[str]:
         # Pure-text body for the P overlay's per-model drill-in: every root session
@@ -5371,6 +5432,7 @@ class Renderer:
         self.app.prices_scroll = scroll
         for offset, line in enumerate(body[scroll : scroll + visible]):
             self.write_rich(stdscr, list_top + offset, 2, shorten(line, inner_w))
+        self._paint_scrollbar(stdscr, list_top, width - 1, len(body), visible, scroll)
 
     # Per-kind toast styling: (colour pair, sigil, header word). Reuses the one
     # restrained palette -- slate info, green success, amber warn, red error -- so a
@@ -5485,6 +5547,7 @@ class Renderer:
         for offset, (text, kind) in enumerate(rows[scroll : scroll + visible]):
             pair = self.TOAST_STYLE.get(kind, self.TOAST_STYLE["info"])[0]
             self.write(stdscr, box_y + 1 + offset, box_x + 2, text, curses.color_pair(pair))
+        self._paint_scrollbar(stdscr, box_y + 1, box_x + box_w - 1, len(rows), visible, scroll)
         if len(rows) > visible:  # only then is there anything to scroll
             hint = f" {self._keys('notices', 'down', 'up')} scroll "
             self.write(

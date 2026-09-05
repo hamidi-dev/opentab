@@ -138,12 +138,83 @@ def test_frame_draws_the_heavy_box_without_hline():
     ]
 
 
+def test_scrollbar_thumb_is_proportional_and_reaches_both_ends():
+    thumb = ot.Renderer._scrollbar_thumb
+    assert thumb(10, 10, 0) is None  # no overflow, no permanent decoration
+    assert thumb(11, 10, 0) == (0, 9)  # even one hidden row leaves a visible track cell
+    assert thumb(11, 10, 1) == (1, 9)
+    assert thumb(20, 10, 0) == (0, 5)
+    assert thumb(20, 10, 5) == (3, 5)
+    assert thumb(20, 10, 10) == (5, 5)
+    assert thumb(1_000, 10, 990) == (8, 2)  # tiny documents still get a visible thumb
+
+
+def test_scrollbar_reuses_the_right_border_without_touching_content_width():
+    renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
+
+    class RunScreen(FakeScreen):
+        def __init__(self, height, width):
+            super().__init__(height, width)
+            self.runs = []
+
+        def vline(self, y, x, ch, n, attr=0):
+            self.runs.append((y, x, ch, n, attr))
+            super().vline(y, x, ch, n, attr)
+
+    screen = RunScreen(height=12, width=40)
+    saved_heavy = ot.Renderer._heavy_frame
+    real_pair = ot.curses.color_pair
+    try:
+        ot.Renderer._heavy_frame = True
+        ot.curses.color_pair = lambda n: n * 100
+        renderer.box(screen, 0, 0, 10, 40, "Detail", active=True)
+        renderer._paint_scrollbar(screen, 3, 39, total=20, visible=6, offset=14)
+    finally:
+        ot.Renderer._heavy_frame = saved_heavy
+        ot.curses.color_pair = real_pair
+
+    assert [screen.cells[(y, 39)] for y in range(3, 9)] == ["|", "|", "|", "|", "#", "#"]
+    assert screen.cells.get((8, 38)) is None  # the neighboring content cell remains untouched
+    assert screen.runs == [
+        (3, 39, "|", 4, 400),
+        (7, 39, "#", 2, 600 | ot.curses.A_BOLD),
+    ]
+    assert len(screen.runs) <= 3  # constant draw calls, regardless of viewport height
+
+    inactive = RunScreen(height=12, width=40)
+    saved_heavy = ot.Renderer._heavy_frame
+    real_pair = ot.curses.color_pair
+    try:
+        ot.Renderer._heavy_frame = True
+        ot.curses.color_pair = lambda n: n * 100
+        renderer._paint_scrollbar(inactive, 3, 39, total=20, visible=6, offset=14, active=False)
+    finally:
+        ot.Renderer._heavy_frame = saved_heavy
+        ot.curses.color_pair = real_pair
+    assert inactive.runs[-1][-1] == 100 | ot.curses.A_BOLD
+
+
+def test_scrollbar_uses_the_terminals_native_line_glyphs():
+    renderer = app_with([workflow("a", "2026-06-01 12:00:00")]).renderer
+    screen = FakeScreen(height=12, width=40)
+    real_pair = ot.curses.color_pair
+    try:
+        ot.curses.color_pair = lambda _n: 0
+        with _acs_constants() as acs:
+            ot.Renderer._heavy_frame = False
+            renderer._paint_scrollbar(screen, 3, 39, total=20, visible=6, offset=14)
+            assert screen.cells[(3, 39)] == acs["VLINE"]
+            assert screen.cells[(8, 39)] == acs["BLOCK"]
+    finally:
+        ot.curses.color_pair = real_pair
+
+
 @contextlib.contextmanager
 def _acs_constants():
     # curses defines the ACS_* line constants only after initscr(), so a headless test of
     # the fallback frame has to supply them. Yields {name: value} to assert against, and
     # resets the tri-state _heavy_frame so one test's verdict can't leak into the next.
-    names = ("ULCORNER", "URCORNER", "LLCORNER", "LRCORNER", "HLINE", "VLINE")
+    names = ("ULCORNER", "URCORNER", "LLCORNER", "LRCORNER", "HLINE", "VLINE", "BLOCK")
     saved_curses = {n: getattr(ot.curses, f"ACS_{n}", None) for n in names}
     saved_heavy = ot.Renderer._heavy_frame
     for i, name in enumerate(names):

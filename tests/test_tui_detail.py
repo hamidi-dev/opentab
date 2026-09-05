@@ -364,7 +364,8 @@ def test_a_picker_is_a_ruled_box_and_pays_the_frame_out_of_its_row_budget():
     rows = [ln for ln in painted if re.search(r"\bt\d+\b", ln)]
     # 24-row screen: 3 chrome rows above the box, the box's own 4, one bottom border.
     assert len(rows) == 24 - 5 - ot.Renderer.PICKER_CHROME
-    assert all(ln[:1] == "│" and ln[-1:] == "│" for ln in rows)  # every row inside the frame
+    assert all(ln[:1] == "│" and ln[-1:] in ("│", "┃", "|", "#") for ln in rows)
+    assert any(ln.endswith(("┃", "#")) for ln in rows)  # overflow adds a thumb to the border
 
 
 def test_the_picker_cursor_reverses_only_the_cells_between_the_gutters():
