@@ -9,7 +9,7 @@ import sqlite3
 from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
 from opentab.models import Workflow
 from opentab.stores.pi import PiStore
-from opentab.util import LazyStatusRoot, read_files_parallel, tool_rows_from_turns
+from opentab.util import LazyStatusRoot, TraceContent, read_files_parallel, tool_rows_from_turns
 
 
 class OmpStore(PiStore):
@@ -381,32 +381,16 @@ class OmpStore(PiStore):
         """Read the native-UUID child's own prompt, not its nickname or title hint."""
         if self.demo or node_id == workflow_id:
             return None
-        sessions = self._sessions
-        if sessions is None or workflow_id not in sessions or node_id not in sessions:
-            sessions = self._parse(include_empty=True)
-        if workflow_id not in sessions or not any(
-            sid == node_id for sid, _depth in self._descendants(sessions, workflow_id)
-        ):
+        session = self._node_session(workflow_id, node_id)
+        if session is None:
             return None
-        by_path = {path: sid for sid, s in sessions.items() for path in s["paths"]}
-        current = node_id
-        seen = set()
-        while current != workflow_id:
-            if current in seen or current not in sessions:
-                return None
-            seen.add(current)
-            parents = {by_path.get(path) for path in sessions[current]["parent_paths"]}
-            if len(parents) != 1 or None in parents:
-                return None  # same UUID under different roots cannot own one received prompt
-            current = next(iter(parents))
-        prompts = sorted(sessions[node_id]["prompts"], key=lambda p: p["ts"])
+        prompts = sorted(session["prompts"], key=lambda p: p["ts"])
         if not prompts:
             return None
         first = prompts[0]
         result = None
-        # Pi trims the prompt's edges. Read only this child's files on demand to
-        # recover its verbatim text, rather than reparsing every file at startup.
-        for _path, raw in read_files_parallel(sessions[node_id]["paths"]):
+        # Pi trims prompt edges; recover the verbatim text only on this lazy read.
+        for _path, raw in read_files_parallel(session["paths"]):
             for line in raw.splitlines():
                 try:
                     record = json.loads(line)
@@ -426,6 +410,56 @@ class OmpStore(PiStore):
                     return None
                 result = text
         return result
+
+    def _node_session(self, workflow_id: str, node_id: str) -> dict | None:
+        if self.demo or not workflow_id or not node_id:
+            return None
+        sessions = self._sessions
+        if sessions is None or workflow_id not in sessions or node_id not in sessions:
+            sessions = self._parse(include_empty=True)
+        if workflow_id not in sessions or node_id not in sessions:
+            return None
+        by_path = {path: sid for sid, s in sessions.items() for path in s["paths"]}
+        current = node_id
+        seen = set()
+        while current != workflow_id:
+            if current in seen or current not in sessions:
+                return None
+            parents = {by_path.get(path) for path in sessions[current]["parent_paths"]}
+            if None in parents and sessions is self._sessions:
+                # Rollups splice usage-less routers out. Resolve the native chain once
+                # per rollup snapshot without putting those routers back in the cache.
+                full = getattr(self, "_node_full", None)
+                if full is None or full[0] is not sessions:
+                    full = self._node_full = (sessions, self._parse(include_empty=True))
+                sessions = full[1]
+                by_path = {path: sid for sid, s in sessions.items() for path in s["paths"]}
+                current, seen = node_id, set()
+                continue
+            if len(parents) != 1 or None in parents:
+                return None  # same UUID under different roots cannot own one received prompt
+            seen.add(current)
+            current = next(iter(parents))
+        return sessions[node_id]
+
+    def node_timeline(self, root_id: str, node_id: str) -> list[dict] | None:
+        """Own execution turns, not the descendant-inclusive session timeline."""
+        session = self._node_session(root_id, node_id)
+        return self._timeline(session, session["turns"]) if session is not None else None
+
+    def node_turn_content(self, root_id: str, node_id: str, content_key: str | None = None) -> dict:
+        session = self._node_session(root_id, node_id)
+        if session is None:
+            return {}
+        keys = {t["content_key"] for t in session["turns"] if t.get("content_key")}
+        if content_key is not None and content_key not in keys:
+            return {}
+        trace = TraceContent(content_key)
+        seen: set = set()
+        calls: dict[tuple[str, str], dict] = {}
+        for path, text in read_files_parallel(session["paths"]):
+            self._trace_lines(node_id, path, text.split("\n"), trace, seen, calls)
+        return {key: events for key, events in trace.items() if key in keys}
 
     def _session_acc(self, s: dict) -> tuple[dict, str]:
         # A session's OWN usage rolled across its models (never the folded
@@ -634,10 +668,14 @@ class OmpStore(PiStore):
         s = self._parse().get(workflow_id)
         if not s:
             return []
+        return self._timeline(s, self._subtree_turns(workflow_id))
+
+    @staticmethod
+    def _timeline(s: dict, turns: list[dict]) -> list[dict]:
         prompts = sorted(s["prompts"], key=lambda p: p["ts"])
         out = []
         pi_, cur_id, cur_title, cur_full = 0, "", "", ""
-        for t in sorted(self._subtree_turns(workflow_id), key=lambda r: r["ts"]):
+        for t in sorted(turns, key=lambda r: r["ts"]):
             while pi_ < len(prompts) and prompts[pi_]["ts"] <= t["ts"]:
                 cur_id, cur_full = prompts[pi_]["id"], prompts[pi_]["title"]
                 cur_title = _clean_prompt(cur_full)

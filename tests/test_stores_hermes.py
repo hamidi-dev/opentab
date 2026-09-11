@@ -110,9 +110,17 @@ def test_hermes_node_prompt_reads_full_user_content_without_logs_or_assistant_ro
             ("child", "sibling"),
         ):
             assert store.node_prompt(workflow_id, node_id) is None
+        assert store.node_timeline("root", "empty") == []
+        assert store.node_turn_content("root", "empty") == {}
+        for node in ("outside", "archived", "behind-archived", "missing"):
+            assert store.node_timeline("root", node) is None
+            assert store.node_turn_content("root", node) == {}
+        assert store.node_timeline("missing", "missing") is None
         store.demo = True
         with patch.object(store, "_connect", side_effect=AssertionError("demo read DB")):
             assert store.node_prompt("root", "child") is None
+            assert store.node_timeline("root", "child") is None
+            assert store.node_turn_content("root", "child") == {}
 
 
 def test_hermes_node_prompt_missing_messages_returns_none():
@@ -1811,6 +1819,80 @@ def _tc_id(call_id, name, arguments):
     import json as _json
 
     return _json.dumps([{"id": call_id, "function": {"name": name, "arguments": arguments}}])
+
+
+def test_hermes_node_turns_pair_tools_only_with_the_selected_execution():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "state.db")
+        nodes = (
+            ("root", None),
+            ("child", "root"),
+            ("sibling", "root"),
+            ("nested", "child"),
+            ("outside", None),
+        )
+        _hermes_db_full(db, [{"id": sid, "parent_id": parent, "inp": 10} for sid, parent in nodes])
+        _hermes_log(
+            tmp,
+            [_call_line("2026-08-24 14:00:02", sid, 1, inp=10, out=1, ms=100) for sid, _ in nodes],
+        )
+        # Deliberately overlap the same call id across all executions.
+        _hermes_messages_trace(
+            db,
+            [
+                (sid, "user", sid, None, None, None, _at("2026-08-24 14:00:01.000"))
+                for sid, _ in nodes
+            ]
+            + [
+                (
+                    sid,
+                    "assistant",
+                    "answer " + sid,
+                    _tc_id("reused", "terminal", "{}"),
+                    None,
+                    None,
+                    _at(f"2026-08-24 14:00:02.{101 + i:03}"),
+                )
+                for i, (sid, _) in enumerate(nodes)
+            ]
+            + [
+                (sid, "tool", "output " + sid, None, "reused", None, _at("2026-08-24 14:00:02.400"))
+                for sid, _ in reversed(nodes)
+            ]
+            + [
+                (
+                    "child",
+                    "assistant",
+                    "unlogged answer",
+                    None,
+                    None,
+                    None,
+                    _at("2026-08-24 14:00:03.000"),
+                )
+            ],
+        )
+        store = _store(db)
+        before = store.message_timeline("root")
+        for sid in ("root", "child", "sibling", "nested"):
+            rows = store.node_timeline("root", sid)
+            assert len(rows) == 1 and rows[0]["depth"] == 0
+            assert rows[0]["prompt_full"] == sid
+            key = rows[0]["content_key"]
+            assert key in {r["content_key"] for r in before}
+            trace = store.node_turn_content("root", sid)
+            assert set(trace) == {key}
+            assert trace[key][0]["text"] == "answer " + sid
+            assert trace[key][1]["output"] == "output " + sid
+            assert store.node_turn_content("root", sid, key) == trace
+        for sid in ("root", "sibling", "nested", "outside"):
+            key = store.node_timeline(sid, sid)[0]["content_key"]
+            assert store.node_turn_content("root", "child", key) == {}
+        assert store.node_turn_content("root", "child", "16") == {}  # unlogged assistant
+        assert store.node_turn_content("root", "child", "") == {}
+        for owner, node in (("root", "outside"), ("child", "sibling"), ("missing", "child")):
+            assert store.node_timeline(owner, node) is None
+            assert store.node_turn_content(owner, node) == {}
+        assert store.message_timeline("root") == before
 
 
 def test_hermes_trace_rides_the_same_causal_match_the_tool_names_do():

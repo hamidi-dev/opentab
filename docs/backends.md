@@ -26,6 +26,24 @@ The core methods are `workflows`, `summary`, `model_breakdown` and `workflow_nod
 Optional methods supply session extras, with per-session `supports_*` checks.
 The frontends need not know the record format; see [Architecture](architecture.md).
 
+The optional execution readers support the TUI's nested Subagents drill:
+
+- `node_timeline(root_id, node_id)` returns only that execution's own usage rows
+  and prompts, normalized to `depth=0` with original content keys unchanged.
+  `None` means unavailable; `[]` means a valid execution with no turn rows.
+- `node_turn_content(root_id, node_id, content_key=None)` returns owned previews
+  without a key, or full content for the selected owned key. It must not expose
+  another execution's content, even when a key or agent name is reused.
+
+Both resolve exact root/node IDs through the root's owning leaf store and verify
+membership there. Never join by sibling or agent name; missing or ambiguous
+ownership fails closed. Local OpenCode, Claude Code, Codex, OMP and Hermes support
+these methods; Gemini, Antigravity and Remote do not. Demo blocks the drill before
+reads. Prompt/trace content stays lazy and its scoped cache is released on leaving.
+Existing root timelines and accounting are unchanged. Session Turns/Context, web
+and ordinary exports remain root scoped; explicitly requested nested CSV exports
+use the execution's numeric turn rows. There is no new raw web/fleet/CLI/MCP path.
+
 Recorded dollars and list-price estimates remain separate. Token-only harnesses
 return zero cost and keep their tokens in `unpriced_*` fields. Mixed harnesses make
 that decision at the smallest reliable billing boundary, before aggregation: one

@@ -94,9 +94,91 @@ def test_opencode_node_prompt_never_falls_back_to_summary_or_title():
         _write_opencode_db_with_turns(db)
         store = ot.Store(db, type("A", (), {"demo": False})())
         assert store.node_prompt("s1", "s2") is None
+        assert len(store.node_timeline("s1", "s2")) == 1  # no user prompt required
         store.supports_tool_breakdown = False
         store.conn.close()
         assert store.node_prompt("s1", "s2") is None
+
+
+def test_opencode_node_turns_and_content_are_exact_execution_only():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_turns(db)
+        conn = sqlite3.connect(db)
+        conn.executemany(
+            "insert into session values (?,?,?,?,?,?)",
+            [
+                (sid, parent, sid, "/repo", "same-agent", 1)
+                for sid, parent in (
+                    ("sibling", "s1"),
+                    ("nested", "s2"),
+                    ("outside", None),
+                    ("empty", "s1"),
+                )
+            ],
+        )
+        for sid in ("s1", "s2", "sibling", "nested", "outside"):
+            for role, ts in (("user", 900), ("assistant", 1600)):
+                mid = sid + role
+                conn.execute(
+                    "insert into message values (?,?,?)",
+                    (
+                        mid,
+                        sid,
+                        json.dumps(
+                            {"role": role, "time": {"created": ts}, "tokens": {"input": 10}}
+                        ),
+                    ),
+                )
+                conn.execute(
+                    "insert into part values (?,?,?,?)",
+                    (
+                        mid,
+                        mid,
+                        sid,
+                        json.dumps({"type": "text", "text": mid}),
+                    ),
+                )
+        # A corrupt part claims the child but names a sibling's assistant message.
+        conn.execute(
+            "insert into part values (?,?,?,?)",
+            (
+                "wrong-owner",
+                "siblingassistant",
+                "s2",
+                json.dumps({"type": "text", "text": "must not leak"}),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        store = ot.Store(db, type("Args", (), {"demo": False})())
+        before = store.message_timeline("s1")
+        rows = store.node_timeline("s1", "s2")
+        assert [r["content_key"] for r in rows] == ["m3", "s2assistant"]
+        assert all(r["depth"] == 0 and r["prompt_full"] == "s2user" for r in rows)
+        assert len(store.node_timeline("s1", "s1")) == 3
+        assert store.node_timeline("s1", "empty") == []
+        assert store.node_timeline("s1", "nested")[0]["content_key"] == "nestedassistant"
+        content = store.node_turn_content("s1", "s2")
+        assert set(content) == {"s2assistant"}
+        assert content["s2assistant"][0]["text"] == "s2assistant"
+        assert store.node_turn_content("s1", "s2", "s2assistant") == content
+        for key in ("m1", "siblingassistant", "nestedassistant", "s2user", "missing", ""):
+            assert store.node_turn_content("s1", "s2", key) == {}
+        for root, child in (
+            ("s1", "outside"),
+            ("s2", "sibling"),
+            ("missing", "s2"),
+            ("s1", "missing"),
+            ("missing", "missing"),
+        ):
+            assert store.node_timeline(root, child) is None
+            assert store.node_turn_content(root, child) == {}
+        assert store.message_timeline("s1") == before
+        store.demo = True
+        store.conn.close()
+        assert store.node_timeline("s1", "s2") is None
+        assert store.node_turn_content("s1", "s2") == {}
 
 
 def test_reconcile_makes_models_sum_to_session_total():

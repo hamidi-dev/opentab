@@ -53,11 +53,24 @@ compaction.
 
 On **Subagents**, `j`/`k` select an execution, `g`/`G` jump to the first/last,
 and `Enter` or a click opens its full title, received prompt, metadata, contribution
-and exact token/cache breakdown. `Esc` returns to the execution list. The overview adds
+and exact token/cache breakdown. Where supported, further `Enter` presses drill from
+execution detail into its prompts overview, the selected prompt's turns, then a
+selected turn's trace. `Esc` reverses each step, restoring the execution detail and
+list selection and scroll. The execution detail's select hint follows your remapped
+binding. The overview adds
 delegation counts and shares, plus summaries by agent and representative model.
 Narrow terminals hide optional table columns; the execution detail retains them.
 Shares use summed node metrics, which can differ from session rollups. Models
 are representative, not proof that an execution used only one model.
+
+The nested reader stays inside **Subagents** and shows only that execution's own
+prompts and turns, not its descendants or siblings. `j`/`k` select prompts in the
+overview and turns inside a prompt, then scroll the trace. `g`/`G` select the
+first/last prompt in the overview but scroll the pane inside a prompt or trace;
+`[`/`]` step between sibling turns of the same prompt, and `z` toggles full content.
+Local OpenCode, Claude Code, Codex, OMP and Hermes support this drill when exact
+records survive. Gemini, Antigravity and Remote do not; demo blocks it. Missing or
+ambiguous ownership is unavailable, while a valid execution with no turns is empty.
 
 **Received prompt** reads the selected child's first recorded user message, separately
 from its generated title. OpenCode, Claude Code, Codex, OMP and Hermes support this
@@ -65,8 +78,12 @@ when the message and exact child identity are retained. It is not the complete
 system instructions or inherited context. Missing/ambiguous records and unsupported
 harnesses are labeled explicitly; demo hides real prompts. The read happens only
 after opening the execution, and its text is released when you leave the detail.
-Subagent turns remain interleaved in the session's **Turns** tab; there is not yet
-an execution-specific Turns drill inside Subagents.
+Nested prompt and trace reads are also lazy, with scoped content released on leaving
+the drill. The session's **Turns** and **Context** tabs keep their existing root
+scope, including the existing interleaved subagent rows in Turns. Web views and
+ordinary exports are unchanged; an explicit `e` export inside the nested reader
+uses that execution's numeric turn rows, not raw prompt or trace content. This
+drill adds no raw-content support to web, fleet, CLI or MCP.
 
 On the Turns tab, `j`/`k` select a prompt and `Enter` (or a click) opens its full
 text and per-turn rows; `g`/`G` jump to the first/last prompt. Inside a prompt,

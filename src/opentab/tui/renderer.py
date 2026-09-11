@@ -622,11 +622,17 @@ class Renderer:
             # Optional session tabs make name-based dispatch mandatory.
             tabs = self.current_tabs()
             current = tabs[self.tab % len(tabs)]
-            if current == "Subagents":
-                return self.detail_subagents(workflow, content_width)
-            if current == "Turns":
-                lines = self.detail_turns(workflow, content_width)
-                return lines[2:] if self.app.active_trace_drill is not None else lines
+            if current == "Subagents" or self.app._on_turns_tab():
+                lines = (
+                    self.detail_subagents(workflow, content_width)
+                    if current == "Subagents"
+                    else self.detail_turns(workflow, content_width)
+                )
+                return (
+                    lines[2:]
+                    if self.app._on_turns_tab() and self.app.active_trace_drill is not None
+                    else lines
+                )
             if current == "Tools":
                 return self.detail_tools(workflow, content_width)
             if current == "Context":
@@ -736,7 +742,7 @@ class Renderer:
     def _draw(self, stdscr: curses.window) -> None:
         if not self.app._on_turns_tab() or self.app.active_trace_drill is None:
             self.app._clear_trace_expansion()
-        if not self.app._on_subagents_tab() or self.app.active_subagent_drill is None:
+        if not self.app._on_subagents_tab():
             self.app._clear_subagent_prompt()
         self.apply_background(stdscr)  # theme bg fills the screen (before erase reads it)
         stdscr.erase()
@@ -934,7 +940,7 @@ class Renderer:
         range_lbl = self.range_label()
         bc = self.breadcrumb()  # always starts with range_lbl (its root segment)
         rest_bc = bc[len(range_lbl) :] if bc.startswith(range_lbl) else bc
-        if reading:
+        if reading and not self.app.active_subagent_turns:
             rest_bc = f" › Turns › Prompt {self.app.active_turn_drill + 1}"
         segs = [(range_lbl, active if range_lbl != "all time" else base), (rest_bc, base)]
         if sort_by:
@@ -989,6 +995,12 @@ class Renderer:
         tabs = self.current_tabs()
         tab_name = tabs[self.tab % len(tabs)]
         segs = [self.range_label()]
+        if self.app.active_subagent_turns:
+            # Keep execution identity ahead of inherited scope so narrow readers retain it.
+            segs += ["Subagents", shorten(self.app.subagent_turns_title(), 28), "Turns"]
+            if self.app.active_turn_drill is not None:
+                segs.append(f"Prompt {self.app.active_turn_drill + 1}")
+            return sep.join(segs)
         # Machine drills are mutually exclusive and need no additional crumb.
         if self.browse_mode == "machines" and self.view != "session":
             machine = self.selected_machine_summary
@@ -2601,9 +2613,9 @@ class Renderer:
         current = tabs[self.tab % len(tabs)]
         visible = h - 4
         if (
-            current == "Turns"
+            self.app._on_turns_tab()
             and self.app.active_trace_drill is not None
-            and workflow.id not in self.app._trace_by_session
+            and not self.app.trace_data_ready(workflow.id)
             and not self.app.trace_expanded
             and self.app.session_supports_trace(workflow.id)
             and not self.app.remote_trace_reader(workflow.id)
@@ -2611,7 +2623,7 @@ class Renderer:
             self.app._trace_loading = (workflow.id, "")
         if current == "Subagents":
             lines = self.detail_subagents(workflow, w - 4)
-        elif current == "Turns":
+        elif self.app._on_turns_tab():
             lines = self.detail_turns(workflow, w - 4)
         elif current == "Tools":
             # Budget the treemap's largest chrome form so the first exact row stays visible.
@@ -2621,32 +2633,38 @@ class Renderer:
         else:
             lines = self.detail_overview(workflow, w - 4)
 
-        tracing = current == "Turns" and self.app.active_trace_drill is not None
+        turns = self.app._on_turns_tab()
+        tracing = turns and self.app.active_trace_drill is not None
         body_start = 0
         if tracing and lines:
             # The turn's identity stays above the scrolling transcript, below the tabs.
             self.write(stdscr, y + 2, x + 2, shorten(lines[0], w - 4), curses.A_BOLD)
             body_start = 2
 
-        if current == "Turns" and self.app._turn_follow:
+        if turns and self.app._turn_follow:
             # Follow is one-shot and must run before the scroll clamp.
             self._scroll_turn_cursor_into_view(visible)
             self.app._turn_follow = False
-        if current == "Subagents" and self.app._subagent_follow:
+        if current == "Subagents" and not turns and self.app._subagent_follow:
             self._scroll_line_into_view(self._subagent_cursor_line, visible)
             self.app._subagent_follow = False
-        loading_trace = tracing and self.app._trace_loading is not None
-        if not loading_trace:
+        loading_content = (tracing and self.app._trace_loading is not None) or (
+            current == "Subagents" and not turns and self.app._subagent_prompt_loading is not None
+        )
+        # A temporary prompt placeholder must not clamp the restored detail scroll.
+        if not loading_content:
             self.app.scroll = max(
                 0, min(self.app.scroll, max(0, len(lines) - body_start - visible))
             )
-        paint_scroll = 0 if loading_trace else self.scroll
+        paint_scroll = 0 if loading_content else self.scroll
         drawn = lines[body_start + paint_scroll : body_start + paint_scroll + visible]
         target = self.trace_output_target() if tracing else None
         for offset, line in enumerate(drawn):
             attr = self.line_attr(line)
-            if (current == "Turns" and self.scroll + offset == self._turn_cursor_line) or (
-                current == "Subagents" and self.scroll + offset == self._subagent_cursor_line
+            if (turns and self.scroll + offset == self._turn_cursor_line) or (
+                current == "Subagents"
+                and not turns
+                and self.scroll + offset == self._subagent_cursor_line
             ):
                 # Select by line index, not a display glyph. paint_cursor_row preserves
                 # gutters and prevents rich number colors from shredding the highlight.
@@ -2694,11 +2712,11 @@ class Renderer:
             self._register_line_sort_header(
                 y + 3 + offset, x + 2, self.scroll + offset, line, w - 4
             )
-        if current == "Turns":
+        if turns:
             self._add_rows_region("turnline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
-        if current == "Subagents":
+        if current == "Subagents" and not turns:
             self._add_rows_region("subagentline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
-        if not loading_trace:
+        if not loading_content:
             self._paint_scrollbar(
                 stdscr, y + 3, x + w - 1, len(lines) - body_start, visible, self.scroll
             )
@@ -3825,6 +3843,8 @@ class Renderer:
         self._subagent_cursor_line = None
         nodes = self.session_node_rows(workflow.id)
         rows = self.app.subagent_rows(workflow)
+        if self.app.active_subagent_turns:
+            return self.detail_turns(workflow, width)
         if not any(row["depth"] > 0 for row in nodes):
             return ["# Subagents", "No subagents used in this workflow."]
         selected = next((r for r in rows if r["_node_index"] == self.subagent_drill), None)
@@ -4011,6 +4031,12 @@ class Renderer:
         lines = self._subagent_wrap(
             [f"# Subagent execution   {back}: back to executions", ""], width
         )
+        unavailable = self.app.subagent_turns_unavailable()
+        enter = self.keymap.label("main", "select")
+        if unavailable:
+            lines += self._subagent_wrap([unavailable, ""], width)
+        elif enter:
+            lines += self._subagent_wrap([f"{enter}: open this execution's turns", ""], width)
         lines += self._sectioned_box("# Title", [self._subagent_wrap([title], inner)], width, [])
         prompt = self.app.subagent_prompt_text()
         lines += [""] + self._sectioned_box(
@@ -4522,7 +4548,7 @@ class Renderer:
     _TRACE_PROSE_LINES = 40
 
     def detail_turn_trace(self, workflow: Workflow, width: int) -> list[str]:
-        rows = self.session_turn_rows(workflow.id)
+        rows = self.reader_turn_rows(workflow.id)
         idx = self.app.active_trace_drill
         if not rows or idx is None or not 0 <= idx < len(rows):
             return []
@@ -4545,6 +4571,7 @@ class Renderer:
             self.session_records_reasoning(workflow.id),
             self._key("main", "select"),
             workflow.machine,
+            self.app.active_subagent_turns,
         )
         cached = self._trace_layout_cache
         if cached is None or cached[0] != key:
@@ -4574,6 +4601,8 @@ class Renderer:
         pos = siblings.index(idx) + 1
         wrap = max(20, width - 2)
         prefix = f"Turn {pos} of {len(siblings)}"
+        if self.app.active_subagent_turns:
+            prefix = f"Execution turn {idx + 1} · {pos} of {len(siblings)} in prompt"
         prompt = " ".join(str(row.get("prompt_title") or "").split()) or "(no prompt)"
         room = max(12, width - display_width(prefix) - 3)
         head = f"{prefix} · {shorten(prompt, room)}"
@@ -4854,7 +4883,7 @@ class Renderer:
 
     def detail_turn_drill(self, workflow: Workflow, width: int) -> list[str]:
         """Render one prompt's full text, totals, and turns."""
-        rows = self.session_turn_rows(workflow.id)
+        rows = self.reader_turn_rows(workflow.id)
         if not rows:
             return []
         i = self.app.active_turn_drill
@@ -4880,8 +4909,9 @@ class Renderer:
         n = i + 1
         order = groups
         share = g["cached"]
+        label = "Execution turns" if self.app.active_subagent_turns else "Turns"
         lines: list[str] = [
-            f"# Turns · prompt {n} of {len(order)} — {g['turns']} turn"
+            f"# {label} · prompt {n} of {len(order)} — {g['turns']} turn"
             f"{'' if g['turns'] == 1 else 's'} · {human_tokens(g['tokens'])} · "
             f"{money(g['cost'])} · cached {'-' if share is None else f'{share * 100:.0f}%'}",
             "",
@@ -4894,6 +4924,7 @@ class Renderer:
             [costs[i] for i in g["indices"]],
             width,
             self.session_supports_context_curve(workflow.id),
+            unit="execution turn" if self.app.active_subagent_turns else "turn",
             first_index=g["indices"][0] + 1,
         )
         lines.append("")
@@ -4992,7 +5023,7 @@ class Renderer:
         # text above it -- so the prologue is added, never assumed away. Left out, the
         # cursor lit a blank line above the frame and the click map was off by its height.
         prologue = len(lines)
-        lines += self._ruled_box(f"# Turns of prompt {n}", header, body, totals_row, [], width)
+        lines += self._ruled_box(f"# {label} of prompt {n}", header, body, totals_row, [], width)
         if traceable:
             # One body line per turn, so the offset IS the ordinal within this prompt.
             start = prologue + (self._ruled_body_start or 0)
@@ -5111,11 +5142,16 @@ class Renderer:
         # Only the current table layout is retained. Turn rows are immutable snapshots
         # until reload; keeping their reference also prevents id reuse after replacement.
         # Traces have scroll-dependent output markers and their own content lifetime.
-        if not self.session_supports_turns(workflow.id) or self.app.active_trace_drill is not None:
+        scoped = self.app.active_subagent_turns
+        if (
+            (scoped and (self.app._subagent_turn_rows is None or self.app._subagent_turns_error))
+            or (not scoped and not self.session_supports_turns(workflow.id))
+            or self.app.active_trace_drill is not None
+        ):
             self._turn_header_at = {}
             self._turn_cursor_line = None
             return self._build_turns(workflow, width)
-        rows = self.session_turn_rows(workflow.id)
+        rows = self.reader_turn_rows(workflow.id)
         drill = self.app.active_turn_drill
         key = (
             workflow.id,
@@ -5128,6 +5164,7 @@ class Renderer:
             self.session_supports_context_curve(workflow.id),
             self.session_supports_trace(workflow.id),
             unicode_screen(),
+            scoped,
         )
         cached = self._turn_layout_cache
         if cached is None or cached[0] != key:
@@ -5150,14 +5187,22 @@ class Renderer:
     def _build_turns(self, workflow: Workflow, width: int) -> list[str]:
         # Keep prompts chronological because this tab answers when cost accrued. Per-turn
         # detail is drilled separately; `$` reprices wholly unpriced turns at list rates.
-        if not self.session_supports_turns(workflow.id):
+        scoped = self.app.active_subagent_turns
+        label = "Execution turns" if scoped else "Turns"
+        if scoped:
+            if self.app._subagent_turns_error:
+                return self._subagent_wrap([f"# {label}", self.app._subagent_turns_error], width)
+            if self.app._subagent_turn_rows is None:
+                return [f"# {label}", "Loading execution turns..."]
+        elif not self.session_supports_turns(workflow.id):
             return [
                 "# Turns",
                 "This session's source records no per-turn usage.",
             ]
-        rows = self.session_turn_rows(workflow.id)
+        rows = self.reader_turn_rows(workflow.id)
         if not rows:
-            return ["# Turns", "No turns recorded for this session."]
+            scope = "execution" if scoped else "session"
+            return [f"# {label}", f"No turns recorded for this {scope}."]
         if self.app.active_turn_drill is not None:
             drilled = self.detail_turn_drill(workflow, width)
             if drilled:
@@ -5175,7 +5220,7 @@ class Renderer:
         misses = cache_misses(rows) if curve else []
         late = {m.index: m for m in misses if m.cause == "waited"}
         switched = {m.index: m for m in misses if m.cause == "reasoning"}
-        head = f"# Turns — {len(groups)} prompts · {len(rows)} turns · {money(total)}"
+        head = f"# {label} — {len(groups)} prompts · {len(rows)} turns · {money(total)}"
         if comps:
             freed = sum(before - after for before, after in comps.values())
             head += f" · ▼ {len(comps)} compaction{'s' if len(comps) > 1 else ''}"
@@ -5308,8 +5353,16 @@ class Renderer:
         cur = self.app._turn_cursor
         self._turn_cursor_line = start + cursor_rows[cur] if 0 <= cur < len(cursor_rows) else None
         notes = ["· Cached is context reused when the prompt started; low means it paid again."]
+        if scoped:
+            notes.insert(
+                0, "· Prompt and turn numbers are local to this execution, not session-wide."
+            )
         if comps:
-            notes.append("· ▼ context was compacted before that turn; Context charts the drop.")
+            notes.append(
+                "· ▼ context was compacted before that execution turn."
+                if scoped
+                else "· ▼ context was compacted before that turn; Context charts the drop."
+            )
         if late:
             notes.append(
                 "· ❄ idle time expired the prompt cache, so that turn paid for context again."

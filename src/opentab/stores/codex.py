@@ -971,12 +971,22 @@ class CodexStore:
         """The selected descendant's first recorded user prompt, never its label."""
         if self.demo or node_id == workflow_id:
             return None
+        session = self._node_session(workflow_id, node_id)
+        if session is None:
+            return None
+        for prompt in sorted(session["prompts"], key=lambda p: p["ts"]):
+            text = prompt["title"]  # Actual user-message event text, not the session title.
+            if isinstance(text, str) and text.strip():
+                return text
+        return None
+
+    def _node_session(self, workflow_id: str, node_id: str) -> dict | None:
+        if self.demo or not workflow_id or not node_id:
+            return None
         sessions = self._sessions
         if sessions is None or workflow_id not in sessions or node_id not in sessions:
             sessions = self._parse(include_empty=True)
-        if workflow_id not in sessions or not any(
-            sid == node_id for sid, _depth in self._descendants(sessions, workflow_id)
-        ):
+        if workflow_id not in sessions or node_id not in sessions:
             return None
         current = node_id
         seen = set()
@@ -988,11 +998,25 @@ class CodexStore:
             if len(session["parent_ids"]) != 1:
                 return None  # resumed rollouts must agree about the entire ownership chain
             current = session["parent_id"]
-        for prompt in sorted(sessions[node_id]["prompts"], key=lambda p: p["ts"]):
-            text = prompt["title"]  # Actual user-message event text, not the session title.
-            if isinstance(text, str) and text.strip():
-                return text
-        return None
+        return sessions[node_id]
+
+    def node_timeline(self, root_id: str, node_id: str) -> list[dict] | None:
+        """Own execution turns, with its own prompts and unchanged content keys."""
+        session = self._node_session(root_id, node_id)
+        return self._timeline(session, session["turns"]) if session is not None else None
+
+    def node_turn_content(self, root_id: str, node_id: str, content_key: str | None = None) -> dict:
+        session = self._node_session(root_id, node_id)
+        if session is None:
+            return {}
+        keys = {t["content_key"] for t in session["turns"] if t.get("content_key")}
+        if content_key is not None and content_key not in keys:
+            return {}
+        trace = TraceContent(content_key)
+        scratch: dict[str, dict] = {}
+        for path, text in read_files_parallel(self._session_files(node_id)):
+            self._parse_file(path, text.split("\n"), scratch, trace=trace)
+        return {key: events for key, events in trace.items() if key in keys}
 
     def _nodes_from(self, sessions: dict[str, dict], workflow_id: str) -> list[dict]:
         s = sessions.get(workflow_id)
@@ -1050,10 +1074,14 @@ class CodexStore:
         s = self._parse().get(workflow_id)
         if not s:
             return []
+        return self._timeline(s, self._subtree_turns(workflow_id))
+
+    @staticmethod
+    def _timeline(s: dict, turns: list[dict]) -> list[dict]:
         prompts = sorted(s["prompts"], key=lambda p: p["ts"])
         out = []
         pi, cur_id, cur_title, cur_full = 0, "", "", ""
-        for t in sorted(self._subtree_turns(workflow_id), key=lambda r: r["ts"]):
+        for t in sorted(turns, key=lambda r: r["ts"]):
             while pi < len(prompts) and prompts[pi]["ts"] <= t["ts"]:
                 cur_id, cur_full = prompts[pi]["id"], prompts[pi]["title"]
                 cur_title = _clean_prompt(cur_full)

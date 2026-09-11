@@ -326,6 +326,25 @@ follow are rebuilt with table geometry and cleared in execution detail. No raw
 content is needed for these metrics, and no node-to-turn join is inferred. Shares
 use node sums; model groupings are explicitly representative, not per-model accounting.
 
+The nested reader keeps **Subagents** as the actual active tab while reusing the
+prompt/turn UI: execution list -> detail -> execution prompts -> prompt turns ->
+trace. `Esc` reverses the stack and restores execution detail/list selection and
+scroll. `j`/`k` retain prompt and turn cursors, then scroll the trace; `g`/`G` select
+first/last in the prompts overview but scroll the pane in prompt/trace detail.
+`[`/`]` move between sibling turns of the same prompt and `z` toggles full content.
+The execution detail's select hint resolves the configured binding, not a hardcoded
+Enter key.
+
+Opening execution prompts queues optional `node_timeline(root_id, node_id)` on the
+exact owning leaf after a loading frame. Only that execution's rows and prompts
+are used, at `depth=0` with unchanged content keys; `None` is unavailable and `[]`
+is valid empty. Local OpenCode, Claude Code, Codex, OMP and Hermes support it;
+Gemini, Antigravity and Remote do not. Exact IDs and verified ownership are required,
+never sibling/name joins; ambiguous records fail closed and demo blocks reads.
+The drill does not replace the root timeline: session Turns/Context, web views and
+ordinary exports retain their root scope. An explicit nested CSV export instead
+uses execution-scoped numeric turn rows, never raw prompt/trace content.
+
 The separate Received prompt section uses the optional `node_prompt(root_id, node_id)`
 reader of the exact owning store. It reads the first recorded child user message,
 not the root timeline's prompt grouping or a node title. Opening an execution queues
@@ -334,7 +353,7 @@ from numeric snapshots. Closing, changing tabs/sessions, reload and demo/source 
 discard it. Unsupported/anonymous nodes and missing/ambiguous records have no title
 fallback. Demo is checked before any content read.
 
-Turns retains one prompt/turn table layout and one session's prompt-run indices.
+Turns retains one prompt/turn table layout and the active scope's prompt-run indices.
 Scrolling reuses the analysis, charts, formatted lines, and click map; only cursor
 highlight and viewport change. Layout keys include the turn snapshot, pane width,
 prompt drill, pricing mode, and capabilities. Reload and harness/demo changes
@@ -362,12 +381,18 @@ must agree. Events contain narration, recorded reasoning, or tool arguments/resu
 For local traces, missing reasoning text is explained using the harness's
 `records_reasoning` flag.
 
-Content is excluded from session prefetch. For local stores, `turn_content(id)`
+Content is excluded from session prefetch. For local root timelines, `turn_content(id)`
 returns capped session previews through `TraceContent`; supplying `content_key` requests full
 content for that turn only. Both reads paint a loading frame first. The app keeps
 at most four session previews and one full turn, separately from numeric memos
 and the warm-start cache. Full content is temporary, released on navigation,
 whole-turn collapse, reload, or harness changes.
+
+Inside Subagents, `node_turn_content(root_id, node_id, content_key=None)` supplies
+only that execution's previews, or the selected owned key's full content. These
+lazy reads use a separate scoped cache, released on leaving the drill along with
+its prompt/trace state; they do not populate root-session content caches. Nested
+reads add no raw-content support to web, fleet, CLI or MCP.
 
 Remote traces follow a separate one-turn lifetime. `trace_owner()` resolves the
 selected workflow's exact backend; `remote_trace_request(id, key)` builds a

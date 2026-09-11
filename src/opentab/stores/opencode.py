@@ -600,7 +600,8 @@ class Store:
         if self.supports_tool_breakdown:  # the raw prompt text lives in the part table
             part_text = (
                 "(select json_extract(p.data, '$.text') from part p "
-                "where p.message_id = m.id and json_extract(p.data, '$.type') = 'text' "
+                "where p.message_id = m.id and p.session_id = m.session_id "
+                "and json_extract(p.data, '$.type') = 'text' "
                 "order by p.rowid limit 1)"
             )
         else:
@@ -656,6 +657,9 @@ class Store:
         # the most recent user message owns every assistant turn until the next one.
         # A user message's title is OpenCode's generated `summary.title`, falling back
         # to its first text part (the raw prompt) when that's empty.
+        return self._message_timeline(workflow_id)
+
+    def _message_timeline(self, workflow_id: str, *, own: bool = False) -> list[dict]:
         if not self.supports_message_timeline:
             return []
         sql = f"""
@@ -664,6 +668,7 @@ class Store:
           union all
           select child.id, tree.depth + 1
           from session child join tree on child.parent_id = tree.id
+          where not ?
         )
         select {self._timeline_columns()}
         from message m
@@ -672,12 +677,16 @@ class Store:
         where json_extract(m.data, '$.role') in ('user', 'assistant')
         order by {_TL_TS}, m.rowid
         """
-        rows = [dict(r) for r in self.conn.execute(sql, [workflow_id])]
+        rows = [dict(r) for r in self.conn.execute(sql, [workflow_id, own])]
         return _process_timeline(
-            rows, self._timeline_tools(workflow_id), self._timeline_reads(workflow_id)
+            rows,
+            self._timeline_tools(workflow_id, own=own),
+            self._timeline_reads(workflow_id, own=own),
         )
 
-    def _timeline_reads(self, workflow_id: str) -> dict[str, tuple[bool, bool]]:
+    def _timeline_reads(
+        self, workflow_id: str, *, own: bool = False
+    ) -> dict[str, tuple[bool, bool]]:
         """message id -> (has narration, has reasoning), for the Turns drill's marker.
 
         A GROUPED aggregate, not a row scan: it answers one boolean pair per message
@@ -695,6 +704,7 @@ class Store:
           select id from session where id = ?
           union all
           select child.id from session child join tree on child.parent_id = tree.id
+          where not ?
         )
         select p.message_id,
                max(json_extract(p.data, '$.type') = 'text'),
@@ -720,12 +730,14 @@ class Store:
         group by p.message_id
         """
         try:
-            rows = self.conn.execute(sql, [workflow_id]).fetchall()
+            rows = self.conn.execute(sql, [workflow_id, own]).fetchall()
         except sqlite3.Error:
             return {}  # an older schema simply shows no marker, never an error
         return {mid: (bool(text), bool(reason)) for mid, text, reason in rows if mid}
 
-    def _timeline_tools(self, workflow_id: str | None = None) -> dict[str, list[str]]:
+    def _timeline_tools(
+        self, workflow_id: str | None = None, *, own: bool = False
+    ) -> dict[str, list[str]]:
         """message id -> the tool names that step called, in call order.
 
         A SEPARATE grouped scan, deliberately, rather than a correlated subquery in
@@ -758,6 +770,7 @@ class Store:
                   select id from session where id = ?
                   union all
                   select child.id from session child join tree on child.parent_id = tree.id
+                  where not ?
                 )
                 select message_id, json_extract(data, '$.tool') as tool
                 from part
@@ -766,7 +779,7 @@ class Store:
                 order by rowid
                 """
                 ),
-                [workflow_id],
+                [workflow_id, own],
             )
         out: dict[str, list[str]] = {}
         for mid, tool in self.conn.execute(sql, params):
@@ -785,6 +798,11 @@ class Store:
         PROSE rather than an empty block: measured 19,324 of 23,298 reasoning parts
         non-empty, averaging 224 characters.
         """
+        return self._turn_content(workflow_id, content_key)
+
+    def _turn_content(
+        self, workflow_id: str, content_key: str | None, *, own: bool = False
+    ) -> dict:
         if not self.supports_tool_breakdown:
             return {}
         sql = """
@@ -792,10 +810,12 @@ class Store:
           select id from session where id = ?
           union all
           select child.id from session child join tree on child.parent_id = tree.id
+          where not ?
         )
         select p.message_id, p.data from part p
         join message m on m.id = p.message_id
         where p.session_id in (select id from tree)
+          and m.session_id = p.session_id
           and json_extract(m.data, '$.role') = 'assistant'
           and json_extract(p.data, '$.type') in ('text', 'reasoning', 'tool')
         order by p.rowid
@@ -804,7 +824,7 @@ class Store:
         # Joined to the message rather than filtered afterwards: a USER message's text
         # part is the prompt, which the tab already shows as the group header -- keyed
         # here it would be content no turn claims, carried for the session's lifetime.
-        for mid, blob in self.conn.execute(sql, [workflow_id]):
+        for mid, blob in self.conn.execute(sql, [workflow_id, own]):
             if not mid or not out.accepts(mid):
                 continue
             events = out.setdefault(mid, [])
@@ -844,6 +864,43 @@ class Store:
     def supports_turn_content(self, workflow_id: str) -> bool:
         # Same gate as the tool breakdown: both read the part table.
         return bool(self.supports_tool_breakdown)
+
+    def _owns_node(self, root_id: str, node_id: str) -> bool:
+        if self.demo or not root_id or not node_id:
+            return False
+        return (
+            self.conn.execute(
+                """with recursive tree(id) as (
+              select id from session where id = ?
+              union
+              select child.id from session child join tree on child.parent_id = tree.id
+            ) select 1 from tree where id = ?""",
+                [root_id, node_id],
+            ).fetchone()
+            is not None
+        )
+
+    def node_timeline(self, root_id: str, node_id: str) -> list[dict] | None:
+        """Own execution turns; None means unsupported or unproven membership."""
+        if not self.supports_message_timeline or not self._owns_node(root_id, node_id):
+            return None
+        return self._message_timeline(node_id, own=True)
+
+    def node_turn_content(self, root_id: str, node_id: str, content_key: str | None = None) -> dict:
+        if not self.supports_tool_breakdown or not self._owns_node(root_id, node_id):
+            return {}
+        # Assistant message ids are the timeline keys, never user-message ids.
+        keys = {
+            r[0]
+            for r in self.conn.execute(
+                "select id from message where session_id = ? "
+                "and json_extract(data, '$.role') = 'assistant'",
+                [node_id],
+            )
+        }
+        if content_key is not None and content_key not in keys:
+            return {}
+        return self._turn_content(node_id, content_key, own=True)
 
     def node_prompt(self, workflow_id: str, node_id: str) -> str | None:
         """Read the exact child's first user text, independently of billed turns."""

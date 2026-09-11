@@ -444,6 +444,8 @@ def test_claude_node_prompt_refuses_colliding_public_prefixes():
             assert [n["id"] for n in store.workflow_nodes("s1")[1:]] == ["12345678"] * 2
             assert store.node_prompt("s1", "12345678") is None
             assert store.node_prompt("s1", "12345678-first") is None
+            assert store.node_timeline("s1", "12345678") is None
+            assert store.node_turn_content("s1", "12345678") == {}
 
 
 def test_claude_node_prompt_requires_the_initial_user_message():
@@ -451,6 +453,8 @@ def test_claude_node_prompt_requires_the_initial_user_message():
         with tempfile.TemporaryDirectory() as tmp:
             store, _path, _rows = _claude_prompt_run(tmp, content=content)
             assert store.node_prompt("s1", "12345678") is None
+            own = store.node_timeline("s1", "12345678")
+            assert len(own) == 1 and own[0]["depth"] == 0  # blank prompt is not a gate
     with tempfile.TemporaryDirectory() as tmp:
         store, path, rows = _claude_prompt_run(tmp)
         later = dict(
@@ -460,6 +464,8 @@ def test_claude_node_prompt_requires_the_initial_user_message():
         _write_jsonl(path, [rows[0], rows[2], later])
         assert store.node_prompt("s1", "answer") is None
         assert store.node_prompt("s1", "12345678") is None
+        assert store.node_timeline("s1", "answer") is None
+        assert store.node_turn_content("s1", "answer") == {}
 
 
 def test_claude_node_prompt_validates_session_and_node_identity():
@@ -499,6 +505,9 @@ def test_claude_node_prompt_refuses_an_unreadable_sidecar():
         ):
             assert store.node_prompt("s1", "12345678") is None
 
+            assert store.node_timeline("s1", "12345678") is None
+            assert store.node_turn_content("s1", "12345678") == {}
+
 
 def test_claude_node_prompt_rejects_conflicting_copies_and_cycles():
     with tempfile.TemporaryDirectory() as tmp:
@@ -512,8 +521,11 @@ def test_claude_node_prompt_rejects_conflicting_copies_and_cycles():
         ):
             _write_jsonl(path, rows + [conflict])
             assert store.node_prompt("s1", "12345678") is None
+            assert store.node_timeline("s1", "12345678") is None
+            assert store.node_turn_content("s1", "12345678") == {}
         _write_jsonl(path, [rows[0], dict(rows[1], parentUuid="answer"), rows[2]])
         assert store.node_prompt("s1", "12345678") is None
+        assert store.node_timeline("s1", "12345678") is None
 
 
 def test_claude_node_prompt_demo_and_replay_gates_precede_content_read():
@@ -525,6 +537,8 @@ def test_claude_node_prompt_demo_and_replay_gates_precede_content_read():
         store.demo = True
         with patch("builtins.open", side_effect=AssertionError("demo must not read")):
             assert store.node_prompt("s1", "12345678") is None
+            assert store.node_timeline("s1", "12345678") is None
+            assert store.node_turn_content("s1", "12345678") == {}
         store.demo = False
         for sidecar in (False, True):
             _write_jsonl(path, rows)
@@ -541,6 +555,152 @@ def test_claude_node_prompt_demo_and_replay_gates_precede_content_read():
                 side_effect=AssertionError("replay must not read content"),
             ):
                 assert store.node_prompt("s1", "12345678") is None
+                assert store.node_timeline("s1", "12345678") is None
+                assert store.node_turn_content("s1", "12345678") == {}
+
+
+def test_claude_node_turns_group_own_prompts_and_isolate_streamed_tools():
+    with tempfile.TemporaryDirectory() as tmp:
+        store, path, rows = _claude_prompt_run(tmp)
+        run = rows[1]["uuid"]
+        rows[1]["timestamp"] = "2026-06-10T18:45:00.000Z"
+        answer = rows[2]
+        answer["message"]["content"] = [
+            {"type": "tool_use", "id": "reused", "name": "Read", "input": {}}
+        ]
+        stream = dict(
+            answer,
+            uuid="stream",
+            parentUuid="answer",
+            message={**answer["message"], "content": [{"type": "text", "text": "child narration"}]},
+        )
+        other = dict(
+            _claude_user("sibling task", cwd=tmp, side=True, uuid="87654321-other"),
+            parentUuid="main",
+        )
+        sibling = _claude_msg(
+            "s1",
+            "claude-opus-4-8",
+            _usage(30, 5),
+            uuid="sibling",
+            cwd=tmp,
+            side=True,
+            parent=other["uuid"],
+            tools=["Bash"],
+        )
+        sibling["message"]["content"][0]["id"] = "reused"
+        result = dict(
+            _claude_user(
+                [{"type": "tool_result", "tool_use_id": "reused", "content": "child output"}],
+                cwd=tmp,
+                side=True,
+                uuid="result",
+            ),
+            parentUuid="stream",
+        )
+        sibling_result = dict(
+            result,
+            uuid="sibling-result",
+            parentUuid="sibling",
+            message={
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "reused", "content": "sibling output"}
+                ]
+            },
+        )
+        followup = dict(
+            _claude_user("child follow-up", cwd=tmp, side=True, uuid="followup"),
+            parentUuid="result",
+            timestamp="2026-06-10T18:47:00.000Z",
+        )
+        second = _claude_msg(
+            "s1",
+            "claude-opus-4-8",
+            _usage(20, 5),
+            uuid="second",
+            cwd=tmp,
+            side=True,
+            parent="followup",
+            ts="2026-06-10T18:48:00.000Z",
+            tools=["Read"],
+        )
+        second["message"]["content"][0]["id"] = "reused"
+        second_result = dict(
+            result,
+            uuid="second-result",
+            parentUuid="second",
+            message={
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "reused", "content": "second output"}
+                ]
+            },
+        )
+        _write_jsonl(
+            path,
+            rows
+            + [other, stream, sibling, result, sibling_result, followup, second, second_result],
+        )
+        workflows = store.workflows()
+        before = store.message_timeline("s1")
+        own = store.node_timeline("s1", run[:8])
+        assert len(own) == 2 and all(r["depth"] == 0 for r in own)
+        assert [r["prompt_full"] for r in own] == ["received task", "child follow-up"]
+        assert all(r["content_key"] in {r["content_key"] for r in before} for r in own)
+        key, second_key = (r["content_key"] for r in own)
+        trace = store.node_turn_content("s1", run[:8])
+        assert set(trace) == {key, second_key}
+        assert trace[key][0]["output"] == "child output"
+        assert trace[key][1]["text"] == "child narration"
+        assert trace[second_key][0]["output"] == "second output"
+        assert store.node_turn_content("s1", run[:8], key) == {key: trace[key]}
+        sibling_key = store.node_timeline("s1", "87654321")[0]["content_key"]
+        assert store.node_turn_content("s1", run[:8], sibling_key) == {}
+        assert store.node_turn_content("s1", run[:8], "") == {}
+        assert store.node_timeline("s1", "s1") == []  # a proven, usage-less root
+        assert store.node_turn_content("s1", "s1", key) == {}
+        assert store.node_timeline("s1", "missing") is None
+        assert store.node_timeline("missing", run[:8]) is None
+        assert store.message_timeline("s1") == before
+        assert store.workflows() == workflows
+        assert not store._sessions["s1"]["content"] and store._trace_one is None
+        # Identical opaque turn keys claimed by different runs must fail closed.
+        sibling["message"]["id"] = answer["message"]["id"]
+        sibling["requestId"] = answer["requestId"]
+        _write_jsonl(path, rows + [other, sibling])
+        assert store.node_timeline("s1", run[:8]) is None
+        assert store.node_turn_content("s1", run[:8], key) == {}
+
+
+def test_claude_node_content_does_not_bind_an_unbilled_calls_result_to_an_old_turn():
+    with tempfile.TemporaryDirectory() as tmp:
+        store, path, rows = _claude_prompt_run(tmp)
+        answer = rows[2]
+        answer["message"]["content"] = [{"type": "tool_use", "id": "reused", "name": "Read"}]
+        unbilled = dict(
+            answer,
+            uuid="unbilled",
+            parentUuid="answer",
+            requestId="other",
+            message={
+                "id": "unbilled",
+                "role": "assistant",
+                "content": answer["message"]["content"],
+            },
+        )
+        result = dict(
+            _claude_user(
+                [{"type": "tool_result", "tool_use_id": "reused", "content": "later output"}],
+                cwd=tmp,
+                side=True,
+                uuid="result",
+            ),
+            parentUuid="unbilled",
+        )
+        _write_jsonl(path, rows + [unbilled, result])
+        key = store.node_timeline("s1", "12345678")[0]["content_key"]
+        assert store.node_turn_content("s1", "12345678", key)[key][0]["output"] == ""
+        assert store.node_turn_content("s1", "12345678")[key][0]["output"] == ""
+        assert store.node_turn_content("s1", "12345678", "unbilled|other") == {}
 
 
 def test_claude_title_skips_injected_command_and_meta_messages():

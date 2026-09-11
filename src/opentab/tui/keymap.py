@@ -140,6 +140,8 @@ def context_label(app: App) -> str:
         return f"Trends · {trend_tab(app)}"
     tab = app.active_tab_name()
     if app.view == "session":
+        if app.active_subagent_turns:
+            return f"session · Subagents · {app.subagent_turns_title()} · Turns"
         return f"session · {tab}"
     if app.view == "zoom":
         return f"zoom · {tab}"
@@ -213,7 +215,7 @@ def _trend_close_summary(app: App) -> str:
 
 
 def _on_turns(app: App) -> bool:
-    return in_session(app) and app.active_tab_name() == "Turns"
+    return in_session(app) and app._on_turns_tab()
 
 
 def _on_trace(app: App) -> bool:
@@ -230,6 +232,8 @@ def _enter_opens_something(app: App) -> bool:
         # Machines drill too, and a key the footer hides is a key nobody finds.
         return app.active_tab_name() in ("Sessions", "Projects", "Harnesses", "Models", "Machines")
     if _on_turns(app):
+        if app.active_subagent_turns and (not app._subagent_turn_rows or app._subagent_turns_error):
+            return False
         if app.active_trace_drill is not None:
             return not app.trace_expanded and app.renderer.trace_output_target() is not None
         wf = app.current_session()
@@ -237,7 +241,7 @@ def _enter_opens_something(app: App) -> bool:
             wf is not None and app.session_supports_trace(wf.id)
         )
     if app._on_subagents_tab():
-        return app.active_subagent_drill is None
+        return app.active_subagent_drill is None or not app.subagent_turns_unavailable()
     return False
 
 
@@ -254,7 +258,7 @@ def _enter_summary(app: App) -> str:
     tab = app.active_tab_name()
     if tab == "Sessions":
         return "open the selected session"
-    if tab == "Turns":
+    if _on_turns(app):
         if app.active_trace_drill is not None:
             return "expand / collapse the output at the top of the viewport (or the next below)"
         return (
@@ -265,7 +269,11 @@ def _enter_summary(app: App) -> str:
     if tab == "Models":
         return "this model's economics and sessions, within this scope"
     if tab == "Subagents":
-        return "inspect the selected execution"
+        return (
+            "open this execution's turns"
+            if app.active_subagent_drill is not None
+            else "inspect the selected execution"
+        )
     return "its sessions, within this scope"
 
 
@@ -357,7 +365,11 @@ KEYS: tuple[Key, ...] = (
         summary=_enter_summary,
         section="here",
         when=_enter_opens_something,
-        chip=lambda app: "output" if _on_trace(app) else "in",
+        chip=lambda app: "output"
+        if _on_trace(app)
+        else "turns"
+        if app._on_subagents_tab() and not _on_turns(app) and app.active_subagent_drill is not None
+        else "in",
     ),
     Key(
         id="max",
@@ -679,6 +691,8 @@ KEYS: tuple[Key, ...] = (
         if _on_trace(app)
         else "back to the prompts"
         if _on_turns(app) and app.active_turn_drill is not None
+        else "back to execution detail"
+        if app.active_subagent_turns
         else "back to the executions"
         if app._on_subagents_tab() and app.active_subagent_drill is not None
         else "back to the Trends session list"
@@ -686,7 +700,9 @@ KEYS: tuple[Key, ...] = (
         else "step back out — session → zoom → browse",
         section="nav",
         when=lambda app: in_main(app) and app.view != "browse",
-        chip="out",
+        chip=lambda app: "execution"
+        if app.active_subagent_turns and app.active_turn_drill is None
+        else "out",
         chip_actions=("back",),
     ),
     Key(

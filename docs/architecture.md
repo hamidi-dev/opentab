@@ -69,6 +69,14 @@ The optional session interface extends this without making the UI format-aware:
 | Estimated context composition | `context_breakdown(id)` | `supports_context(id)` |
 | Recorded turn content | `turn_content(id, content_key=None)` | `supports_turn_content(id)` |
 | Received subagent prompt | `node_prompt(root_id, node_id)` | Optional method; `None` when unavailable |
+| Execution turns | `node_timeline(root_id, node_id)` | Optional method; `None` unavailable, `[]` valid empty |
+| Execution turn content | `node_turn_content(root_id, node_id, content_key=None)` | Optional method; owned previews or keyed full content |
+
+The node readers resolve exact root/node IDs within the owning leaf store, never
+by agent name or sibling matches; ambiguous ownership fails closed. Execution
+timelines contain only the node's own rows and prompts, with `depth=0` and original
+content keys unchanged. Local OpenCode, Claude Code, Codex, OMP and Hermes implement
+them; Gemini, Antigravity and Remote do not, and demo blocks the nested drill.
 
 The measured Context curve uses turn token counts rather than another store
 query; `supports_context_curve` can opt out when those rows do not describe
@@ -102,6 +110,11 @@ The TUI starts with workflow rollups. Its heavier per-model load runs after the
 first paint and is reused for every scope, rather than queried once per row.
 Opening a session paints a loading frame before fetching its extras. Raw traces
 are a further opt-in read and never part of the rollup cache.
+The TUI's nested Subagents reader loads one execution's timeline and content lazily
+and releases its scoped raw-content cache on leaving. It does not replace root
+timelines or change session Turns/Context, web views or ordinary exports. Only an
+explicit nested CSV export uses execution-scoped numeric turn rows; the reader
+adds no raw-content path to web, fleet, CLI or MCP.
 
 `RemoteStore` keeps ordinary fleet reads offline. Only the managed default summary
 directory can associate a session's winning source file with a saved SSH connection.

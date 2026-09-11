@@ -1002,6 +1002,30 @@ class ClaudeStore:
         """Read a uniquely owned subagent's initial user message, never its title."""
         if self.demo or not workflow_id or not node_id or node_id == workflow_id:
             return None
+        resolved = self._node_records(workflow_id, node_id)
+        if resolved is None:
+            return None
+        run, records = resolved
+        for obj in records:
+            if obj.get("uuid") != run:
+                continue
+            content = obj["message"].get("content")
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    part = block
+                    if isinstance(block, dict):
+                        part = block.get("text") if block.get("type") == "text" else None
+                    if isinstance(part, str):
+                        parts.append(part)
+                content = "\n\n".join(parts)
+            return content if isinstance(content, str) and content.strip() else None
+        return None
+
+    def _node_records(self, workflow_id: str, node_id: str) -> tuple | None:
+        """Resolve public run prefixes before narrowing the record/tool-pairing stream."""
+        if self.demo or not workflow_id or not node_id:
+            return None
         paths = self._transcripts(workflow_id)
         # Same isolation guard as supports_turn_content, before the content read.
         if not paths or any(self._replays_history(p) for p in paths):
@@ -1012,16 +1036,20 @@ class ClaudeStore:
         s = self._parse_texts(items).get(workflow_id)
         if s is None:
             return None
-        roots = {self._side_run_root(s, u) for u in s["side_usage"]}
-        matches = [u for u in roots if str(u)[:8] == node_id]
-        if len(matches) != 1:
-            return None
-        run = matches[0]
-        if not isinstance(run, str) or run not in s["side_uuids"]:
-            return None
-        if s["uuid_parent"].get(run) in s["side_uuids"]:
-            return None  # a cycle has no initial message
-        prompt = None
+        run = None
+        if node_id != workflow_id:
+            roots = {self._side_run_root(s, u) for u in s["side_usage"]}
+            matches = [u for u in roots if str(u)[:8] == node_id]
+            if len(matches) != 1:
+                return None
+            run = matches[0]
+            if not isinstance(run, str) or run not in s["side_uuids"]:
+                return None
+            if s["uuid_parent"].get(run) in s["side_uuids"]:
+                return None  # a cycle has no initial message
+        records = []
+        copies: dict[str, dict] = {}
+        owners: dict[str, set] = {}
         for _path, text in items:
             for obj in self._records(text):
                 if obj.get("sessionId") != workflow_id:
@@ -1032,29 +1060,81 @@ class ClaudeStore:
                     or (obj.get("isSidechain") is True) != (uuid in s["side_uuids"])
                 ):
                     return None  # conflicting resumed records cannot prove ownership
-                if uuid != run:
-                    continue
-                # A missing initial user record must not turn a later follow-up or
-                # tool result into the received task. The runroot is authoritative.
+                if uuid and uuid in copies and copies[uuid] != obj:
+                    return None
+                if uuid:
+                    copies[uuid] = obj
+                side = obj.get("isSidechain") is True
+                if side and not uuid:
+                    return None  # this record cannot be assigned to an execution
+                owner = self._side_run_root(s, uuid) if side else None
                 msg = obj.get("message")
-                if obj.get("type") != "user" or not isinstance(msg, dict):
-                    return None
-                content = msg.get("content")
-                if isinstance(content, list):
-                    parts = []
-                    for block in content:
-                        part = block
-                        if isinstance(block, dict):
-                            part = block.get("text") if block.get("type") == "text" else None
-                        if isinstance(part, str):
-                            parts.append(part)
-                    content = "\n\n".join(parts)
-                if not isinstance(content, str) or not content.strip():
-                    return None
-                if prompt is not None and prompt != content:
-                    return None
-                prompt = content
-        return prompt
+                if obj.get("type") == "assistant" and isinstance(msg, dict):
+                    key = self._content_key(msg, obj)
+                    if key:
+                        owners.setdefault(key, set()).add(owner)
+                if owner == run:
+                    records.append(obj)
+        if run is not None:
+            initial = copies.get(run, {})
+            if initial.get("type") != "user" or not isinstance(initial.get("message"), dict):
+                return None  # missing initial record, not merely an empty prompt
+        if any(run in executions and len(executions) != 1 for executions in owners.values()):
+            return None  # a streamed turn key cannot belong to two executions
+        return run, records
+
+    def _node_session(
+        self,
+        root_id: str,
+        node_id: str,
+        *,
+        trace: bool = False,
+        content_key: str | None = None,
+    ) -> dict | None:
+        resolved = self._node_records(root_id, node_id)
+        if resolved is None:
+            return None
+        _run, records = resolved
+        sessions: dict[str, dict] = {}
+        seen: set = set()
+        self._ingest({"sessionId": root_id}, sessions, seen)
+        for obj in records:
+            # Rebase only this private parse: existing keys and accounting stay intact.
+            self._ingest(dict(obj, isSidechain=False), sessions, seen)
+        session = sessions[root_id]
+        if not trace:
+            return session
+        keys = {t["content_key"] for t in session["turns"] if t.get("content_key")}
+        if content_key is not None and content_key not in keys:
+            return session
+        session["content"] = TraceContent(content_key)
+        traced: set = set()
+        for obj in records:
+            uuid = obj.get("uuid")
+            if uuid and uuid in traced:
+                continue
+            if uuid:
+                traced.add(uuid)
+            msg = obj.get("message")
+            if obj.get("type") == "assistant" and isinstance(msg, dict):
+                # Unbilled calls must also invalidate older bindings of a reused tool id.
+                self._trace_assistant(msg, self._content_key(msg, obj), session)
+            elif obj.get("type") == "user":
+                self._trace_result(obj, session)
+        return session
+
+    def node_timeline(self, root_id: str, node_id: str) -> list[dict] | None:
+        session = self._node_session(root_id, node_id)
+        return self._timeline(session) if session is not None else None
+
+    def node_turn_content(self, root_id: str, node_id: str, content_key: str | None = None) -> dict:
+        session = self._node_session(root_id, node_id, trace=True, content_key=content_key)
+        if session is None:
+            return {}
+        keys = {t["content_key"] for t in session["turns"] if t.get("content_key")}
+        if content_key is not None and content_key not in keys:
+            return {}
+        return {key: events for key, events in session["content"].items() if key in keys}
 
     def context_breakdown(self, workflow_id: str) -> list[dict]:
         # Estimated composition rows for the Context tab (what filled the window),
@@ -1479,6 +1559,10 @@ class ClaudeStore:
         # triggered it (sidechain turns inherit the main thread's current prompt).
         # Real rows -- App._scale_demo_turns hides magnitudes in demo, like Tools.
         s = self._session(workflow_id)
+        return self._timeline(s)
+
+    @staticmethod
+    def _timeline(s: dict | None) -> list[dict]:
         if not s:
             return []
         prompts = sorted(s["prompts"], key=lambda p: p["ts"])

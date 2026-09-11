@@ -63,6 +63,8 @@ def test_omp_node_prompt_uses_native_uuid_and_own_prompt_not_title_without_usage
         assert store.node_prompt(OMP_SID, child) == prompt
         assert store.node_prompt(OMP_SID, sibling) == "Sibling\nprompt"
         assert store.node_prompt(OMP_SID, nested) == "Nested prompt"
+        assert store.node_timeline(OMP_SID, empty) == []
+        assert store.node_turn_content(OMP_SID, empty) == {}
         for workflow_id, node_id in (
             (OMP_SID, OMP_SID),
             (OMP_SID, outside),
@@ -78,6 +80,8 @@ def test_omp_node_prompt_uses_native_uuid_and_own_prompt_not_title_without_usage
         store.demo = True
         with patch.object(store, "_parse", side_effect=AssertionError("demo read content")):
             assert store.node_prompt(OMP_SID, child) is None
+            assert store.node_timeline(OMP_SID, child) is None
+            assert store.node_turn_content(OMP_SID, child) == {}
 
 
 def test_omp_node_prompt_refuses_a_uuid_recorded_under_different_roots():
@@ -100,6 +104,61 @@ def test_omp_node_prompt_refuses_a_uuid_recorded_under_different_roots():
         store = ot.OmpStore(tmp, _omp_args())
         assert store.node_prompt(OMP_SID, child) is None
         assert store.node_prompt(other, child) is None
+        for root in (OMP_SID, other):
+            assert store.node_timeline(root, child) is None
+            assert store.node_turn_content(root, child) == {}
+
+
+def test_omp_node_turns_and_content_exclude_siblings_and_grandchildren():
+    child, sibling, nested = (f"019fa4fd-{n * 4}-7000-a6e9-c9e0c7ce25fc" for n in "abc")
+    with tempfile.TemporaryDirectory() as tmp:
+        for sid, name, chain in (
+            (OMP_SID, None, ()),
+            (child, "Scout", ()),
+            (sibling, "Sibling", ()),
+            (nested, "Nested", ("Scout",)),
+        ):
+            rows = [
+                _omp_session(sid, tmp),
+                _omp_user(sid),
+                _omp_assistant("gpt-5.6-sol", 100, 10, tools=["read"]),
+                {
+                    "type": "message",
+                    "id": "result",
+                    "message": {
+                        "role": "toolResult",
+                        "toolCallId": "a1-t0",
+                        "content": [{"type": "text", "text": sid}],
+                    },
+                },
+            ]
+            if name:
+                _omp_write_subagent(
+                    tmp, "project", "2026-07-27T19-11-52-093Z", OMP_SID, name, rows, chain=chain
+                )
+            else:
+                _omp_write(tmp, "project", sid, rows)
+        store = ot.OmpStore(tmp, _omp_args())
+        workflows = store.workflows()
+        before = store.message_timeline(OMP_SID)
+        for sid in (OMP_SID, child, sibling, nested):
+            rows = store.node_timeline(OMP_SID, sid)
+            assert len(rows) == 1 and rows[0]["depth"] == 0
+            assert rows[0]["prompt_full"] == sid
+            key = rows[0]["content_key"]
+            assert key in {r["content_key"] for r in before}
+            trace = store.node_turn_content(OMP_SID, sid)
+            assert set(trace) == {key} and trace[key][0]["output"] == sid
+            assert store.node_turn_content(OMP_SID, sid, key) == trace
+        for sid in (OMP_SID, sibling, nested):
+            key = store.node_timeline(OMP_SID, sid)[0]["content_key"]
+            assert store.node_turn_content(OMP_SID, child, key) == {}
+        for owner, node in ((child, sibling), (OMP_SID, "missing"), ("missing", child)):
+            assert store.node_timeline(owner, node) is None
+            assert store.node_turn_content(owner, node) == {}
+        assert store.node_turn_content(OMP_SID, child, "") == {}
+        assert store.message_timeline(OMP_SID) == before
+        assert store.workflows() == workflows
 
 
 def test_omp_subagent_transcript_is_never_silently_dropped():
@@ -586,6 +645,9 @@ def test_omp_turns_and_tools_tag_subagent_rows_with_depth_and_agent_name():
         assert [trace[t["content_key"]][0]["name"] for t in turns] == ["task", "grep"]
         key = turns[1]["content_key"]
         assert store.turn_content(OMP_SID, content_key=key) == {key: trace[key]}
+        own = store.node_timeline(OMP_SID, child_sid)
+        assert len(own) == 1 and own[0]["prompt_full"] == ""  # no prompt is still supported
+        assert store.node_turn_content(OMP_SID, child_sid, key) == {key: trace[key]}
         tools = {r["tool"]: r for r in store.tool_breakdown(OMP_SID)}
         assert set(tools) == {"task", "grep"}
         assert tools["grep"]["tokens_total"] == 530  # the subagent's own step
@@ -958,6 +1020,9 @@ def test_omp_a_usage_less_intermediate_subagent_is_spliced_not_cut():
         cwd = os.path.join(tmp, "repo")
         os.makedirs(cwd)
         ts = "2026-07-27T19-11-52-093Z"
+        router = "019fa4fd-3333-7000-a6e9-c9e0c7ce25fc"
+        worker = "019fa4fd-4444-7000-a6e9-c9e0c7ce25fc"
+        prompt = "  Worker's own task\n  Preserve indentation.\n"
         _omp_write(
             root,
             "--proj--",
@@ -975,7 +1040,7 @@ def test_omp_a_usage_less_intermediate_subagent_is_spliced_not_cut():
             ts,
             OMP_SID,
             "Router",
-            [_omp_session("019fa4fd-3333-7000-a6e9-c9e0c7ce25fc", cwd)],
+            [_omp_session(router, cwd)],
         )
         _omp_write_subagent(
             root,
@@ -984,17 +1049,55 @@ def test_omp_a_usage_less_intermediate_subagent_is_spliced_not_cut():
             OMP_SID,
             "Worker",
             [
-                _omp_session("019fa4fd-4444-7000-a6e9-c9e0c7ce25fc", cwd),
+                _omp_session(worker, cwd),
+                _omp_user(prompt),
                 _omp_assistant(
-                    "gpt-5.6-sol", 700, 70, provider="openai-codex", cost=0.07, mid="w1"
+                    "gpt-5.6-sol",
+                    700,
+                    70,
+                    provider="openai-codex",
+                    cost=0.07,
+                    mid="w1",
+                    tools=["read"],
                 ),
+                {
+                    "type": "message",
+                    "id": "result",
+                    "message": {
+                        "role": "toolResult",
+                        "toolCallId": "w1-t0",
+                        "content": [{"type": "text", "text": "worker output"}],
+                    },
+                },
             ],
             chain=("Router",),
         )
         store = ot.OmpStore(root, _omp_args())
+        assert store.node_prompt(OMP_SID, worker) == prompt
+        turns = store.node_timeline(OMP_SID, worker)
+        assert len(turns) == 1 and turns[0]["depth"] == 0
+        assert turns[0]["prompt_full"] == prompt.strip()
+        key = turns[0]["content_key"]
+        content = store.node_turn_content(OMP_SID, worker)
+        assert content[key][0]["output"] == "worker output"
+        assert store._sessions is None  # cold detail reads must not populate rollups
         wfs = store.workflows()
         assert [w.id for w in wfs] == [OMP_SID]  # the grandchild is NOT its own root
         assert wfs[0].total_tokens == 110 + 770
+        assert wfs[0].total_cost == wfs[0].root_cost == 0  # subscription route
+        cached = store._sessions
+        assert router not in cached and OMP_SID in cached and worker in cached
+        models = store.model_breakdown()
+        with patch.object(store, "_parse", wraps=store._parse) as parse:
+            for _ in range(3):
+                assert store.node_prompt(OMP_SID, worker) == prompt
+                assert store.node_timeline(OMP_SID, worker) == turns
+                assert store.node_turn_content(OMP_SID, worker) == content
+                assert store.node_turn_content(OMP_SID, worker, key) == content
+            assert parse.call_count == 1  # share lazy full ancestry across expanded reads
+            parse.assert_called_with(include_empty=True)
+        assert store._sessions is cached and router not in cached
+        assert store.model_breakdown() == models
         # Spliced onto the root: the usage-less Router is gone, so Worker sits at
         # depth 1 rather than dangling.
         assert [(n["depth"], n["agent"]) for n in store.workflow_nodes(OMP_SID)] == [
@@ -1005,6 +1108,30 @@ def test_omp_a_usage_less_intermediate_subagent_is_spliced_not_cut():
         fresh = ot.OmpStore(root, _omp_args())
         assert sum(n["tokens_total"] for n in fresh.status_nodes(OMP_SID)) == 110 + 770
         assert fresh.root_of("019fa4fd-4444-7000-a6e9-c9e0c7ce25fc") == OMP_SID
+        assert store.workflows() == wfs
+        with patch.object(store, "_parse", wraps=store._parse) as parse:
+            assert store.node_timeline(OMP_SID, worker) == turns
+            parse.assert_called_once_with(include_empty=True)  # a new rollup snapshot
+        # Resumed router files under different roots make the worker's ancestry ambiguous.
+        other = "019fa4fd-5555-7000-a6e9-c9e0c7ce25fc"
+        _omp_write(
+            root,
+            "--proj--",
+            other,
+            [
+                _omp_session(other, cwd),
+                _omp_assistant("gpt-5.6-sol", 10, 1),
+            ],
+            ts_prefix=ts,
+        )
+        _omp_write_subagent(root, "--proj--", ts, other, "Router", [_omp_session(router, cwd)])
+        store.workflows()
+        with patch.object(store, "_parse", wraps=store._parse) as parse:
+            for owner in (OMP_SID, other):
+                assert store.node_prompt(owner, worker) is None
+                assert store.node_timeline(owner, worker) is None
+                assert store.node_turn_content(owner, worker, key) == {}
+            parse.assert_called_once_with(include_empty=True)
 
 
 def test_omp_cache_fingerprint_covers_the_wal_but_stays_stable_across_reads():

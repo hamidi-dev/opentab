@@ -2,7 +2,7 @@ import os
 import re
 import sqlite3
 import tempfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import opentab as ot
 
@@ -1437,6 +1437,481 @@ def test_subagent_received_prompt_routes_to_root_owner_not_child_id():
     assert app.read_node_prompt("not-loaded", node) is None
     app.loaded.append(wf)
     assert app.read_node_prompt(wf.id, node) is None
+
+
+def _subagent_turns_app():
+    app = _subagent_prompt_app()
+    trace = _trace_app().store
+    store = app.store
+    store.supports_turns = trace.supports_turns
+    store.supports_turn_content = trace.supports_turn_content
+    store.message_timeline = Mock(wraps=trace.message_timeline)
+    store.turn_content = Mock(wraps=trace.turn_content)
+    rows = trace.message_timeline(app.current_session().id)
+    for i, row in enumerate(rows):
+        row.update(
+            prompt_id=f"child-p{i // 2}",
+            prompt_title=f"Child prompt {i // 2}",
+            prompt_full=f"Child instructions {i // 2}",
+            input=(i + 1) * 100_000,
+            tokens_total=(i + 1) * 100_000 + 10,
+            cost=float(i + 2),
+        )
+    store.node_timeline = Mock(return_value=rows)
+    # Identical keys in root and child content must never alias either preview cache.
+    trace._CONTENT["k0"][0]["text"] = "Child narration only."
+    child_content = trace.turn_content(app.current_session().id)
+    trace._CONTENT["k0"][0]["text"] = "Root narration only."
+    store.node_turn_content = Mock(
+        side_effect=lambda root, child, key=None: {
+            k: events for k, events in child_content.items() if key is None or key == k
+        }
+    )
+    app.can_switch_source = lambda: False
+    app.prefetch_session_data(app.current_session().id)
+    return app
+
+
+def test_subagent_turns_enter_is_lazy_and_esc_restores_each_reader_level():
+    app = _subagent_turns_app()
+    wf = app.current_session()
+    app.scroll = 5
+    app.handle_key(None, 10)
+    assert app.active_subagent_drill == 1 and not app.active_subagent_turns
+    app.renderer.detail_subagents(wf, 100)
+    app.load_subagent_prompt()
+    app.scroll = 17
+    app.handle_key(None, 10)
+    assert app.active_subagent_turns and app.scroll == 0
+    assert app._subagent_prompt is None and app._subagent_prompt_loading is None
+    assert app._subagent_turn_rows is None and app._subagent_turns_loading is not None
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        screen = FakeScreen(24, 120)
+        app.renderer.draw_detail(screen, 0, 0, 24, 120)
+    assert "Loading execution turns" in screen_text(screen)
+    app.store.node_timeline.assert_not_called()
+    app.store.node_turn_content.assert_not_called()
+    app.load_subagent_turns()
+    app.load_subagent_turns()
+    app.store.node_timeline.assert_called_once_with(wf.id, "child-1")
+    assert app.reader_turn_rows(wf.id) is app._subagent_turn_rows
+    assert "2 prompts" in "\n".join(app.renderer.detail_subagents(wf, 120))
+    app.handle_key(None, 10)
+    assert app.active_turn_drill == 0 and app.active_trace_drill is None
+    assert "Child instructions 0" in "\n".join(app.renderer.detail_subagents(wf, 120))
+    app.handle_key(None, 10)
+    assert app.active_trace_drill == 0
+    app.handle_key(None, 27)
+    assert app.active_trace_drill is None and app.active_turn_drill == 0
+    app.handle_key(None, 27)
+    assert app.active_turn_drill is None and app.active_subagent_turns
+    app.handle_key(None, 27)
+    assert not app.active_subagent_turns and app.active_subagent_drill == 1
+    assert app.scroll == 17
+    app.handle_key(None, 27)
+    assert app.active_subagent_drill is None and app.view == "session"
+    assert app.scroll == 5 and app._subagent_selected == 1
+
+
+def test_subagent_turns_reuse_prompt_cursor_and_drilled_pane_navigation():
+    app = _subagent_turns_app()
+    app.open_subagent_drill()
+    app.open_subagent_turns()
+    app.load_subagent_turns()
+    for cursor in ("_turn_cursor", "_trace_cursor"):
+        keys = (("j", 1), ("k", 0))
+        if cursor == "_turn_cursor":
+            keys += (("G", 1), ("g", 0))
+        for key, expected in keys:
+            app.handle_key(None, ord(key))
+            assert getattr(app, cursor) == expected, (cursor, key)
+            assert app._turn_follow
+        if cursor == "_trace_cursor":
+            # Like root Turns, g/G scroll the drilled pane rather than select a call.
+            with patch.object(app.renderer, "max_scroll", return_value=20):
+                app.handle_key(FakeScreen(24, 120), ord("G"))
+            assert app.scroll == 20 and app._trace_cursor == 0
+            app.handle_key(None, ord("g"))
+            assert app.scroll == 0 and app._trace_cursor == 0
+        app.handle_key(None, 10)
+    assert app.active_trace_drill == 0
+    app.store.node_turn_content.assert_not_called()
+    app.store.turn_content.assert_not_called()
+
+
+def test_subagent_turns_restored_scroll_survives_received_prompt_loading_paint():
+    app = _subagent_turns_app()
+    app.store.node_prompt = lambda *_: "Long received instruction.\n" * 200
+    app.open_subagent_drill()
+    app.subagent_prompt_text()
+    app.load_subagent_prompt()
+    app.scroll = 80
+    app.open_subagent_turns()
+    app.load_subagent_turns()
+    app.close_subagent_turns()
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        app.renderer.draw_detail(FakeScreen(24, 120), 0, 0, 24, 120)
+        assert app._subagent_prompt_loading is not None and app.scroll == 80
+        app.load_subagent_prompt()
+        app.renderer.draw_detail(FakeScreen(24, 120), 0, 0, 24, 120)
+        assert app.scroll == 80
+
+
+def test_subagent_turns_trace_preview_full_and_siblings_never_read_root_content():
+    app = _subagent_turns_app()
+    wf = app.current_session()
+    root = app.session_trace(wf.id)
+    app.store.turn_content.reset_mock()
+    app.open_subagent_drill()
+    app.open_subagent_turns()
+    app.load_subagent_turns()
+    app.open_turn_drill(0)
+    app.open_trace_drill()
+    assert not app.trace_data_ready(wf.id)  # the root preview is already warm
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        screen = FakeScreen(24, 120)
+        app.renderer.draw_detail(screen, 0, 0, 24, 120)
+    assert "Loading turn" in screen_text(screen)
+    app.store.node_turn_content.assert_not_called()
+    app.load_trace_expansion()
+    app.store.node_turn_content.assert_called_once_with(wf.id, "child-1", None)
+    assert app.trace_data_ready(wf.id)
+    text = "\n".join(app.renderer.detail_subagents(wf, 120))
+    assert "Child narration only" in text and "Root narration" not in text
+    app.handle_key(None, ord("z"))
+    assert app._trace_full is None and "Loading full turn" in "\n".join(
+        app.renderer.detail_subagents(wf, 120)
+    )
+    app.load_trace_expansion()
+    app.store.node_turn_content.assert_called_with(wf.id, "child-1", "k0")
+    assert app._trace_full[1] == "k0"
+    app.handle_key(None, ord("]"))
+    assert app.active_trace_drill == 1 and app._trace_full is None
+    app.handle_key(None, ord("]"))
+    assert app.active_trace_drill == 1  # never cross into the next prompt
+    app.handle_key(None, ord("z"))
+    app.load_trace_expansion()
+    app.store.node_turn_content.assert_called_with(wf.id, "child-1", "k1")
+    assert "Planning the next step" in "\n".join(app.renderer.detail_subagents(wf, 120))
+    app.handle_key(None, ord("["))
+    assert app.active_trace_drill == 0 and app._trace_full is None
+    app.handle_key(None, ord("z"))
+    app.load_trace_expansion()
+    app.handle_key(None, ord("z"))
+    assert not app.trace_expanded and app._trace_full is None
+    app.close_subagent_turns()
+    assert app._subagent_trace is None and app.session_trace(wf.id) is root
+    assert root["k0"][0]["text"] == "Root narration only."
+    app.store.turn_content.assert_not_called()
+
+
+def test_subagent_turns_scope_changes_cancel_pending_reads_and_drop_content():
+    for phase in ("timeline", "preview", "full"):
+        for change in ("close", "tab", "source", "demo", "reload", "snapshot", "session"):
+            app = _subagent_turns_app()
+            wf = app.current_session()
+            store = app.store
+            app.open_subagent_drill()
+            app.open_subagent_turns()
+            if phase != "timeline":
+                app.load_subagent_turns()
+                app.open_turn_drill(0)
+                app.open_trace_drill()
+                app.renderer.detail_subagents(wf, 120)
+                assert app._subagent_trace is not None
+                if phase == "full":
+                    app.toggle_trace_expansion()
+                    app.load_trace_expansion()
+                    app.renderer.detail_subagents(wf, 120)
+                    assert app._trace_full is not None
+                else:
+                    app.toggle_trace_expansion()  # cancel a keyed read as well
+            reads = (store.node_timeline.call_count, store.node_turn_content.call_count)
+            if change == "close":
+                app.close_subagent_turns()
+            elif change == "tab":
+                app.handle_key(None, ord("l"))
+            elif change in ("source", "demo"):
+                replacement = FakeStore(app.loaded)
+                replacement.demo = change == "demo"
+                app.store = replacement
+                app._reload_for_source()
+            elif change == "reload":
+                app.reload()
+            elif change == "snapshot":
+                app._nodes_by_session[wf.id] = [dict(n) for n in app.session_node_rows(wf.id)]
+                app.renderer.detail_subagents(wf, 120)
+            else:
+                app.workflow_index = 1
+                app.renderer.detail_subagents(app.current_session(), 120)
+            app.load_subagent_turns()
+            app.load_trace_expansion()
+            assert not app.active_subagent_turns, (phase, change)
+            for field in (
+                "_subagent_turns",
+                "_subagent_turns_loading",
+                "_subagent_turn_rows",
+                "_subagent_trace",
+                "_trace_full",
+                "_trace_loading",
+            ):
+                assert getattr(app, field) is None, (phase, change, field)
+            assert app.renderer._trace_layout_cache is None, (phase, change)
+            assert reads == (store.node_timeline.call_count, store.node_turn_content.call_count)
+            store.turn_content.assert_not_called()
+
+
+def test_subagent_turns_unavailable_identity_and_demo_are_explicit_and_never_read():
+    for case, message in (
+        ("unsupported", "not supported"),
+        ("missing", "no exact child identity"),
+        ("demo", "hidden in demo"),
+        ("ambiguous", "ambiguous"),
+    ):
+        app = _subagent_turns_app()
+        timeline = app.store.node_timeline
+        app.open_subagent_drill()
+        wf = app.current_session()
+        if case == "unsupported":
+            app.store.node_timeline = None
+        elif case == "missing":
+            del app.session_node_rows(wf.id)[1]["id"]
+        elif case == "demo":
+            app.store.demo = True
+        else:
+            app.loaded.append(wf)
+        assert message in "\n".join(app.renderer.detail_subagents(wf, 120))
+        assert not ot.keymap.BY_ID["enter"].shown(app)
+        app.handle_key(None, 10)
+        assert message in app.toasts[-1].text
+        app.load_subagent_turns()
+        assert not app.active_subagent_turns and app._subagent_turns_loading is None
+        timeline.assert_not_called()
+        app.store.node_turn_content.assert_not_called()
+        app.store.turn_content.assert_not_called()
+
+
+def test_subagent_turns_close_releases_cached_child_prompt_layout():
+    app = _subagent_turns_app()
+    app.open_subagent_drill()
+    app.open_subagent_turns()
+    app.load_subagent_turns()
+    app.open_turn_drill(0)
+    app.renderer.detail_subagents(app.current_session(), 120)
+    assert app.renderer._turn_layout_cache is not None
+    assert "Child instructions" in str(app.renderer._turn_layout_cache)
+    app.close_turn_drill()
+    app.close_subagent_turns()
+    assert app._subagent_turn_rows is None
+    assert app.renderer._turn_layout_cache is None
+
+
+def test_subagent_turns_removed_whatif_root_releases_scoped_content():
+    for phase in ("pending", "prompt", "trace"):
+        app = _subagent_turns_app()
+        wf = app.current_session()
+        with patch.object(app, "whatif_session_totals", return_value=(8, 10)):
+            app.whatif_model = "anthropic/claude-opus-4.5"
+            rows = app.subagent_rows(wf)
+            app.open_subagent_drill(next(i for i, row in enumerate(rows) if row["depth"] == 0))
+            app.open_subagent_turns()
+            if phase != "pending":
+                app.load_subagent_turns()
+                app.open_turn_drill(0)
+                app.renderer.detail_subagents(wf, 120)
+                if phase == "trace":
+                    app.open_trace_drill()
+                    app.session_trace(wf.id)
+                    app.toggle_trace_expansion()
+                    app.load_trace_expansion()
+            app.handle_key(None, ord("w"))
+            assert app.active_subagent_drill is None
+            app.renderer.detail_subagents(wf, 120)
+            assert not app.active_subagent_turns
+            assert app._subagent_turns is None and app._subagent_turns_loading is None
+            assert app._subagent_turn_rows is None and app._subagent_trace is None
+            assert app._trace_full is None and app._trace_loading is None
+            assert app.renderer._turn_layout_cache is None
+            assert app.renderer._trace_layout_cache is None
+
+
+def test_subagent_turns_empty_missing_and_failed_timelines_are_safe_and_retryable():
+    for result, message in (
+        ([], "No turns recorded for this execution"),
+        (None, "exact ownership could not be established"),
+        (OSError("private transcript path"), "Go back and reopen to retry"),
+    ):
+        app = _subagent_turns_app()
+        rows = app.store.node_timeline.return_value
+        app.store.node_timeline.side_effect = [result, rows]
+        app.open_subagent_drill()
+        app.open_subagent_turns()
+        app.load_subagent_turns()
+        assert app._subagent_turn_rows == [] and app._subagent_turns_loading is None
+        text = "\n".join(app.renderer.detail_subagents(app.current_session(), 120))
+        assert message in text and "private transcript" not in text
+        assert not ot.keymap.BY_ID["enter"].shown(app)
+        for key in (10, ord("j"), ord("k"), ord("g"), ord("G"), ord("z")):
+            app.handle_key(None, key)
+        assert app.active_subagent_turns and app.active_turn_drill is None
+        app.store.node_turn_content.assert_not_called()
+        app.store.turn_content.assert_not_called()
+        app.handle_key(None, 27)
+        app.handle_key(None, 10)
+        app.load_subagent_turns()
+        assert app._subagent_turn_rows == rows and app._subagent_turns_error == ""
+        assert app.store.node_timeline.call_count == 2
+        assert ot.keymap.BY_ID["enter"].shown(app)
+
+
+def test_subagent_turns_render_regions_cursor_trace_styles_and_execution_header():
+    app = _subagent_turns_app()
+    wf = app.current_session()
+    app.session_node_rows(wf.id)[1]["title"] = "Inspect duplicate task"
+    app.open_subagent_drill()
+    app.open_subagent_turns()
+    app.load_subagent_turns()
+    rnd = app.renderer
+    with patch.object(ot.curses, "color_pair", side_effect=lambda n: n << 8):
+        for level in ("prompts", "turns"):
+            app.handle_key(None, ord("G"))
+            screen = AttrScreen(24, 120)
+            rnd.regions = []
+            rnd.draw_detail(screen, 0, 0, 24, 120)
+            assert any(r[:2] == ("rows", "turnline") for r in rnd.regions)
+            assert not any(r[:2] == ("rows", "subagentline") for r in rnd.regions)
+            assert app.scroll <= rnd._turn_cursor_line < app.scroll + 20
+            y = 3 + rnd._turn_cursor_line - app.scroll
+            assert screen.attrs[(y, 4)] & ot.curses.A_REVERSE
+            assert not screen.attrs[(y, 2)] & ot.curses.A_REVERSE
+            assert not rnd._subagent_header_at
+            app.handle_key(None, ord("g"))
+            if level == "prompts":
+                app.handle_key(None, 10)
+        app.handle_key(None, 10)
+        app.session_trace(wf.id)
+        app.scroll = 4
+        screen = AttrScreen(30, 120)
+        rnd.draw_detail(screen, 0, 0, 30, 120)
+        assert "Execution turn 1" in screen_text(screen)
+        assert rnd._turn_header_at == {} and rnd._turn_cursor_line is None
+        assert "Inspect duplicate task" in rnd.breadcrumb() and "Prompt 1" in rnd.breadcrumb()
+        rnd.draw_header(screen, 120)
+        assert "Inspect duplicate task" in screen_text(screen)
+        app.scroll = 0
+        screen = AttrScreen(40, 120)
+        rnd.draw_detail(screen, 0, 0, 40, 120)
+        command = next(
+            y
+            for (y, x), ch in screen.cells.items()
+            if ch == "g"
+            and "git diff" in "".join(screen.cells.get((y, c), " ") for c in range(120))
+        )
+        assert screen.attrs[(command, 5)] == ot.curses.A_NORMAL
+        output = next(
+            y
+            for (y, x), ch in screen.cells.items()
+            if ch == "3"
+            and "3 files changed" in "".join(screen.cells.get((y, c), " ") for c in range(120))
+        )
+        assert screen.attrs[(output, 5)] == 1 << 8
+
+
+def test_subagent_turns_remapped_enter_help_and_footer_match_each_action():
+    app = _subagent_turns_app()
+    app.keymap = ot.tui.bindings.Keymap({("main", "select"): ["v"]})
+    app.open_subagent_drill()
+    enter = ot.keymap.BY_ID["enter"]
+    assert enter.shown(app) and enter.label(app) == "v"
+    assert enter.text(app) == "open this execution's turns"
+    assert "v: open this execution's turns" in "\n".join(
+        app.renderer.detail_subagents(app.current_session(), 120)
+    )
+    with patch.object(ot.curses, "color_pair", return_value=0):
+        help_rows = app.renderer.help_lines(120)
+    assert any("open this execution's turns" in str(row) and "'v'" in str(row) for row in help_rows)
+    footer = str(ot.keymap.footer_parts(app))
+    assert "v turns" in footer and "Enter turns" not in footer
+    app.handle_key(None, 10)
+    assert not app.active_subagent_turns
+    app.handle_key(None, ord("v"))
+    assert app.active_subagent_turns and not enter.shown(app)
+    app.load_subagent_turns()
+    assert enter.shown(app) and "prompt" in enter.text(app)
+    assert "back to execution detail" == ot.keymap.BY_ID["esc"].text(app)
+    assert "Esc execution" in str(ot.keymap.footer_parts(app))
+    app.handle_key(None, ord("v"))
+    assert enter.text(app) == "open the selected turn"
+    app.handle_key(None, ord("v"))
+    assert app.active_trace_drill == 0
+    app.renderer.detail_subagents(app.current_session(), 120)
+    assert enter.shown(app) and "v expand" in "\n".join(
+        app.renderer.detail_subagents(app.current_session(), 120)
+    )
+    app.handle_key(None, ord("v"))
+    assert app._trace_open_outputs == {1}
+    app.load_trace_expansion()
+    app.store.node_turn_content.assert_called_with(app.current_session().id, "child-1", "k0")
+
+
+def test_subagent_turns_combined_owner_routes_to_exact_leaf_not_child_root_collision():
+    app = _subagent_turns_app()
+    leaf = app.store
+    decoy = FakeStore([workflow("child-1", "2026-06-01 12:00:00")])
+    decoy.node_timeline = Mock(side_effect=AssertionError("wrong owner"))
+    decoy.node_turn_content = Mock(side_effect=AssertionError("wrong owner"))
+    app.store = ot.CombinedStore([decoy, ot.CombinedStore([leaf])])
+    app.store.workflows()
+    wf = app.current_session()
+    assert app.trace_owner(wf.id) is leaf
+    app.open_subagent_drill()
+    app.open_subagent_turns()
+    app.load_subagent_turns()
+    app.open_turn_drill(0)
+    app.open_trace_drill()
+    app.renderer.detail_subagents(wf, 120)
+    app.handle_key(None, ord("z"))
+    app.load_trace_expansion()
+    leaf.node_timeline.assert_called_once_with(wf.id, "child-1")
+    assert leaf.node_turn_content.call_args_list == [
+        ((wf.id, "child-1", None), {}),
+        ((wf.id, "child-1", "k0"), {}),
+    ]
+    decoy.node_timeline.assert_not_called()
+    decoy.node_turn_content.assert_not_called()
+    leaf.turn_content.assert_not_called()
+
+
+def test_subagent_turns_leave_session_timeline_context_and_export_scope_intact():
+    app = _subagent_turns_app()
+    wf = app.current_session()
+    root_rows = app.session_turn_rows(wf.id)
+    root_context = app.renderer.detail_context(wf, 120)
+    app.open_subagent_drill()
+    app.open_subagent_turns()
+    app.load_subagent_turns()
+    for level in ("overview", "prompt", "trace"):
+        assert app.session_turn_rows(wf.id) is root_rows
+        assert app.renderer.detail_context(wf, 120) == root_context
+        name, header, rows = app._export_dataset()
+        assert name == "turns" and len(rows) == 3
+        assert [row[header.index("prompt")] for row in rows] == [
+            "Child prompt 0",
+            "Child prompt 0",
+            "Child prompt 1",
+        ]
+        assert "content_key" not in header and "Child narration" not in str(rows)
+        if level != "trace":
+            app.handle_key(None, 10)
+    app.close_subagent_turns()
+    app.tab = app.current_tabs().index("Turns")
+    assert app.reader_turn_rows(wf.id) is root_rows
+    assert app.turn_runs(wf.id) == [[0, 1], [2]]
+    text = "\n".join(app.renderer.detail_turns(wf, 120))
+    assert "do the thing" in text and "Child prompt" not in text
+    assert all(row[-1] == "do the thing" for row in app._export_dataset()[2])
+    app.store.node_turn_content.assert_not_called()
+    app.store.message_timeline.assert_called_once_with(wf.id)
 
 
 def test_month_and_day_views_have_projects_tab():

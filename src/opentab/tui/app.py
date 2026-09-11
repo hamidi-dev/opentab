@@ -468,6 +468,12 @@ class App:
         self._subagent_list_scroll = 0
         self._subagent_prompt: tuple | None = None
         self._subagent_prompt_loading: tuple | None = None
+        self._subagent_turns: tuple | None = None
+        self._subagent_turn_rows: list[dict] | None = None
+        self._subagent_turns_loading: tuple | None = None
+        self._subagent_turns_error = ""
+        self._subagent_detail_scroll = 0
+        self._subagent_trace: dict | None = None
         # The third level: one turn's trace, addressed by its ABSOLUTE row index so it
         # survives the group's own ordering. Its cursor is a position within the drilled
         # prompt, cleared with the drill it belongs to.
@@ -1792,6 +1798,12 @@ class App:
     # drill-ins never open one.
 
     def session_supports_trace(self, workflow_id: str) -> bool:
+        if self.active_subagent_turns:
+            owner = self.trace_owner(workflow_id)
+            check = getattr(owner, "supports_turn_content", None)
+            return callable(getattr(owner, "node_turn_content", None)) and bool(
+                check and check(workflow_id)
+            )
         # Demo traces are static fixtures created above the store boundary. Keep them
         # off unless prompt content is being hidden, and never invent the feature for a
         # backend that cannot open real traces outside demo mode.
@@ -1814,6 +1826,8 @@ class App:
         return owner
 
     def remote_trace_reader(self, workflow_id: str):
+        if self.active_subagent_turns:
+            return None
         return getattr(self.trace_owner(workflow_id), "remote_trace_request", None)
 
     def trace_unavailable_reason(self, workflow_id: str) -> str:
@@ -1828,7 +1842,7 @@ class App:
             return
         if self.store.demo or not self.session_supports_trace(wf.id):
             return
-        rows = self.session_turn_rows(wf.id)
+        rows = self.reader_turn_rows(wf.id)
         if 0 <= idx < len(rows) and (key := rows[idx].get("content_key")):
             self._trace_loading = (wf.id, key)
 
@@ -1839,7 +1853,7 @@ class App:
         store, wid, key, job = pending
         wf = self.current_session()
         idx = self.active_trace_drill
-        rows = self.session_turn_rows(wid) if wf is not None and wf.id == wid else []
+        rows = self.reader_turn_rows(wid) if wf is not None and wf.id == wid else []
         if (
             self.store is not store
             or self.store.demo
@@ -1869,7 +1883,25 @@ class App:
     # session at a time, so a small ring costs nothing and bounds the total.
     TRACE_MEMO_SESSIONS = 4
 
+    def trace_data_ready(self, workflow_id: str) -> bool:
+        if self.active_subagent_turns:
+            return self._subagent_trace is not None
+        return workflow_id in self._trace_by_session
+
+    def _read_turn_content(self, workflow_id: str, content_key: str | None = None) -> dict:
+        owner = self.trace_owner(workflow_id)
+        if self._subagent_turns is not None:
+            if not self.active_subagent_turns:
+                return {}
+            snapshot, index = self._subagent_turns
+            return owner.node_turn_content(workflow_id, snapshot[1][index]["id"], content_key)
+        return owner.turn_content(workflow_id, content_key=content_key)
+
     def session_trace(self, workflow_id: str) -> dict:
+        if self.active_subagent_turns:
+            if self._subagent_trace is None:
+                self._subagent_trace = dict(self._read_turn_content(workflow_id))
+            return self._subagent_trace
         if self.remote_trace_reader(workflow_id):
             return {}  # Remote content is keyed, explicit, and never read from rendering.
         cached = self._trace_by_session.get(workflow_id)
@@ -1938,7 +1970,7 @@ class App:
             return False
         if not self.session_supports_trace(wf.id) or self._trace_loading is not None:
             return False
-        rows = self.session_turn_rows(wf.id)
+        rows = self.reader_turn_rows(wf.id)
         if not 0 <= idx < len(rows):
             return False
         if event_index is None:
@@ -1983,7 +2015,7 @@ class App:
         if self.trace_expanded:
             self._clear_trace_expansion(keep_remote=True)
         elif self.session_supports_trace(wf.id):
-            rows = self.session_turn_rows(wf.id)
+            rows = self.reader_turn_rows(wf.id)
             key = rows[idx].get("content_key") if 0 <= idx < len(rows) else None
             if not key:
                 return False
@@ -2001,6 +2033,9 @@ class App:
             return
         request, self._trace_loading = self._trace_loading, None
         if request is None:
+            return
+        if self._subagent_turns is not None and not self.active_subagent_turns:
+            self._clear_subagent_turns()
             return
         wid, key = request
         if not self.session_supports_trace(wid):
@@ -2024,11 +2059,14 @@ class App:
                     key, records_reasoning=self.session_records_reasoning(wid), full=True
                 )
             else:
-                content = self.trace_owner(wid).turn_content(wid, content_key=key)
+                content = self._read_turn_content(wid, content_key=key)
             self._trace_full = (wid, key, list(content.get(key) or []))
         except (OSError, ValueError, sqlite3.Error) as exc:
             if not key:
-                self._trace_by_session[wid] = {}
+                if self.active_subagent_turns:
+                    self._subagent_trace = {}
+                else:
+                    self._trace_by_session[wid] = {}
             self._clear_trace_expansion()
             if self.remote_trace_reader(wid):
                 self._remote_trace_error = str(exc)
@@ -2136,7 +2174,7 @@ class App:
         so a second copy of the run rule would eventually open a different prompt's
         turns than the header above them names.
         """
-        rows = self.session_turn_rows(workflow_id)
+        rows = self.reader_turn_rows(workflow_id)
         cached = self._turn_runs_cache
         if cached is not None and cached[0] is rows and cached[1] == len(rows):
             return cached[2]
@@ -2152,14 +2190,115 @@ class App:
         return runs
 
     def turn_groups(self, workflow_id: str) -> list[str]:
-        rows = self.session_turn_rows(workflow_id)
+        rows = self.reader_turn_rows(workflow_id)
         return [rows[run[0]].get("prompt_id", "") for run in self.turn_runs(workflow_id)]
 
     def _on_turns_tab(self) -> bool:
-        return self.view == "session" and self.active_tab_name() == "Turns"
+        return self.view == "session" and (
+            self.active_tab_name() == "Turns" or self.active_subagent_turns
+        )
 
     def _on_subagents_tab(self) -> bool:
         return self.view == "session" and self.active_tab_name() == "Subagents"
+
+    @property
+    def active_subagent_turns(self) -> bool:
+        scope = self._subagent_turns
+        return bool(
+            scope is not None
+            and not self.store.demo
+            and self._on_subagents_tab()
+            and scope[0] is self._subagent_snapshot
+            and self.active_subagent_drill == scope[1]
+        )
+
+    def reader_turn_rows(self, workflow_id: str) -> list[dict]:
+        if self.active_subagent_turns and self._subagent_snapshot[0] == workflow_id:
+            return self._subagent_turn_rows if self._subagent_turn_rows is not None else []
+        return self.session_turn_rows(workflow_id)
+
+    def subagent_turns_title(self) -> str:
+        index = self.active_subagent_drill
+        return (
+            self._subagent_snapshot[1][index].get("title", "Execution")
+            if index is not None
+            else "Execution"
+        )
+
+    def subagent_turns_unavailable(self) -> str:
+        if self.store.demo:
+            return "Execution turns are hidden in demo mode."
+        index = self.active_subagent_drill
+        if index is None:
+            return "No execution selected."
+        snapshot = self._subagent_snapshot
+        if not snapshot[1][index].get("id"):
+            return "Execution turns unavailable: this summary has no exact child identity."
+        if sum(w.id == snapshot[0] for w in self.loaded) != 1:
+            return "Execution turns unavailable: the owning session identity is ambiguous."
+        if not callable(getattr(self.trace_owner(snapshot[0]), "node_timeline", None)):
+            return "Execution turns are not supported by this harness."
+        return ""
+
+    def _clear_subagent_turns(self) -> None:
+        if self._subagent_turns is not None:
+            self.turn_drill = self._turn_drill_session = self.trace_drill = None
+            self._turn_cursor = self._trace_cursor = 0
+            self._turn_follow = False
+            self._clear_trace_expansion()
+            self._turn_runs_cache = None
+            self.renderer._turn_layout_cache = None
+            self.renderer._turn_header_at = {}
+            self.renderer._turn_cursor_line = None
+        self._subagent_turns = self._subagent_turns_loading = None
+        self._subagent_turn_rows = self._subagent_trace = None
+        self._subagent_turns_error = ""
+
+    def open_subagent_turns(self) -> bool:
+        if reason := self.subagent_turns_unavailable():
+            self.notify(reason, "warn")
+            return True
+        self._clear_subagent_turns()
+        self.turn_drill = self._turn_drill_session = self.trace_drill = None
+        self._turn_cursor = self._trace_cursor = 0
+        self._turn_follow = False
+        self._clear_trace_expansion()
+        self._subagent_detail_scroll = self.scroll
+        self._subagent_turns = (self._subagent_snapshot, self.active_subagent_drill)
+        self._subagent_turns_loading = self._subagent_turns
+        self._subagent_prompt = self._subagent_prompt_loading = None
+        self.scroll = 0
+        return True
+
+    def load_subagent_turns(self) -> None:
+        pending, self._subagent_turns_loading = self._subagent_turns_loading, None
+        if pending is None:
+            return
+        if not self.active_subagent_turns or pending is not self._subagent_turns:
+            self._clear_subagent_turns()
+            return
+        snapshot, index = pending
+        try:
+            rows = self.trace_owner(snapshot[0]).node_timeline(
+                snapshot[0], snapshot[1][index]["id"]
+            )
+            if rows is None:
+                self._subagent_turns_error = (
+                    "Execution turns unavailable: exact ownership could not be established."
+                )
+            self._subagent_turn_rows = [dict(row) for row in rows] if rows is not None else []
+        except Exception:
+            self._subagent_turns_error = (
+                "Could not read execution turns. Go back and reopen to retry."
+            )
+            self._subagent_turn_rows = []
+
+    def close_subagent_turns(self) -> bool:
+        if not self.active_subagent_turns:
+            return False
+        self._clear_subagent_turns()
+        self.scroll = self._subagent_detail_scroll
+        return True
 
     def subagent_rows(self, workflow: Workflow) -> list[dict]:
         nodes = self.session_node_rows(workflow.id)
@@ -2214,6 +2353,7 @@ class App:
             self.whatif_model and self.whatif_session_totals(wf)
         ):
             self.subagent_drill = None
+            self._clear_subagent_prompt()
         return self.subagent_drill
 
     def _move_subagent_cursor(self, delta: int) -> bool:
@@ -2235,7 +2375,7 @@ class App:
         if not rows:
             return False
         if self.active_subagent_drill is not None:
-            return True
+            return self.open_subagent_turns()
         cursor = self.subagent_cursor(rows) if ordinal is None else ordinal
         if not 0 <= cursor < len(rows):
             return False
@@ -2269,6 +2409,7 @@ class App:
     def _clear_subagent_prompt(self) -> None:
         self._subagent_prompt = None
         self._subagent_prompt_loading = None
+        self._clear_subagent_turns()
 
     def subagent_prompt_text(self) -> str:
         if self.store.demo:
@@ -2353,6 +2494,8 @@ class App:
     @property
     def active_turn_drill(self) -> int | None:
         wf = self.current_session()
+        if self._subagent_turns is not None and not self.active_subagent_turns:
+            return None
         if self.turn_drill is None or wf is None or self._turn_drill_session != wf.id:
             return None
         return self.turn_drill
@@ -3878,6 +4021,8 @@ class App:
         if session is None:
             return "subagents", ["date", "depth", "agent", "model", "cost", "tokens", "title"], []
         tab = self._active_tab()
+        if self.active_subagent_turns:
+            return self._turns_dataset(session)
         if tab == "Subagents":
             return self._subagents_dataset(session)
         if tab == "Turns":
@@ -3940,7 +4085,7 @@ class App:
             "prompt",
         ]
         rows = []
-        for r in self.session_turn_rows(session.id):
+        for r in self.reader_turn_rows(session.id):
             cost = r["cost"]
             if api and not cost:  # reprice a wholly-$0 turn at list price, like the tab
                 cost = api_equivalent_cost(
@@ -5992,6 +6137,10 @@ class App:
                 stdscr.refresh()
                 self.load_subagent_prompt()
                 continue
+            if self.startup_warning is None and self._subagent_turns_loading is not None:
+                stdscr.refresh()
+                self.load_subagent_turns()
+                continue
             if self._refresh_request is not None:
                 # The "refreshing…" toast painted above; now do the blocking ssh re-pull
                 # and store rebuild, then repaint with the result (the _session_loading
@@ -6467,6 +6616,9 @@ class App:
             named = ", ".join(t.lower() for t in tabs)
             self.notice = f"no '{name}' tab here -- this session has: {named}"
             return False
+        if self.tab != match:
+            self._clear_subagent_prompt()
+            self._clear_trace_expansion()
         self.tab, self.scroll = match, 0
         return True
 
@@ -7067,9 +7219,10 @@ class App:
         if act == "select":
             # On the Turns tab select folds/unfolds the selected ▸ group; everywhere
             # else it drills in (and it still does here when there's no group to toggle).
-            if self._on_subagents_tab() and self.open_subagent_drill():
+            if self._on_turns_tab():
+                self._toggle_turn_cursor()
                 return True
-            if self._on_turns_tab() and self._toggle_turn_cursor():
+            if self._on_subagents_tab() and self.open_subagent_drill():
                 return True
             self.drill_in()
             return True
@@ -7080,13 +7233,15 @@ class App:
             self.toggle_trace_expansion()
             return True
         if act == "back":
-            if self._on_subagents_tab() and self.close_subagent_drill():
-                return True
             # A drilled prompt is the innermost scope on the Turns tab, so Esc leaves it
             # before it starts popping the view stack -- but ONLY while that tab is the
             # one on screen. Left ungated, Esc on Tools or Context silently tore down an
             # invisible drill and was swallowed, so the key appeared to do nothing.
             if self._on_turns_tab() and (self.close_trace_drill() or self.close_turn_drill()):
+                return True
+            if self.close_subagent_turns():
+                return True
+            if self._on_subagents_tab() and self.close_subagent_drill():
                 return True
             self.drill_out()  # session -> zoom -> browse; no-op when browsing
             return True
@@ -7097,11 +7252,13 @@ class App:
                 self.drill_out()
             return True
         if act == "tab_prev":
+            self._clear_subagent_prompt()
             self._clear_trace_expansion()
             self.tab = (self.tab - 1) % len(self.current_tabs())
             self.scroll = 0
             return True
         if act == "tab_next":
+            self._clear_subagent_prompt()
             self._clear_trace_expansion()
             self.tab = (self.tab + 1) % len(self.current_tabs())
             self.scroll = 0
@@ -7646,6 +7803,8 @@ class App:
                 # active and j/k keeps moving it instead.
                 self.drill_in()
             if self.tab != value:
+                self._clear_subagent_prompt()
+                self._clear_trace_expansion()
                 self.tab = value
                 self.scroll = 0
             return

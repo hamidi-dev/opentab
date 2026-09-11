@@ -110,6 +110,8 @@ def test_codex_node_prompt_reads_exact_child_user_events_without_usage():
         assert store.node_prompt(root, child) == prompt
         assert store.node_prompt(root, sibling) == "Sibling\nreceived prompt"
         assert store.node_prompt(root, grandchild) == "Nested instruction"
+        assert store.node_timeline(root, empty) == []
+        assert store.node_turn_content(root, empty) == {}
         for workflow_id, node_id in (
             (root, root),
             (root, outside),
@@ -125,6 +127,77 @@ def test_codex_node_prompt_reads_exact_child_user_events_without_usage():
         store.demo = True
         with patch.object(store, "_parse", side_effect=AssertionError("demo read content")):
             assert store.node_prompt(root, child) is None
+            assert store.node_timeline(root, child) is None
+            assert store.node_turn_content(root, child) == {}
+
+
+def test_codex_node_turns_and_content_exclude_siblings_and_grandchildren():
+    ids = [str(i) * 8 + "-1111-1111-1111-111111111111" for i in range(1, 6)]
+    root, child, sibling, nested, outside = ids
+    with tempfile.TemporaryDirectory() as tmp:
+        for sid, parent in (
+            (root, None),
+            (child, root),
+            (sibling, root),
+            (nested, child),
+            (outside, None),
+        ):
+            source = (
+                {"subagent": {"thread_spawn": {"parent_thread_id": parent}}} if parent else "cli"
+            )
+            _codex_rollout(
+                tmp,
+                sid,
+                [
+                    _codex_meta(sid, tmp, source=source),
+                    _codex_user(sid),
+                    _codex_turn("gpt-5-codex", tmp),
+                    _codex_item(
+                        "function_call",
+                        name="shell",
+                        call_id="reused",
+                        arguments='{"command":"ls"}',
+                    ),
+                    _codex_item("function_call_output", call_id="reused", output=sid),
+                    _codex_tokens(100, 10, 0, 110),
+                    _codex_user("follow-up " + sid, ts="2025-10-03T14:52:00.000Z"),
+                    _codex_item(
+                        "message",
+                        role="assistant",
+                        content=[{"type": "output_text", "text": sid}],
+                        ts="2025-10-03T14:52:01.000Z",
+                    ),
+                    _codex_tokens(200, 20, 0, 220, ts="2025-10-03T14:52:02.000Z"),
+                ],
+            )
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        workflows = store.workflows()
+        before = store.message_timeline(root)
+        for sid in (root, child, sibling, nested):
+            rows = store.node_timeline(root, sid)
+            assert len(rows) == 2
+            assert [r["prompt_full"] for r in rows] == [sid, "follow-up " + sid]
+            assert all(r["depth"] == 0 for r in rows)
+            assert all(r["content_key"] in {r["content_key"] for r in before} for r in rows)
+            trace = store.node_turn_content(root, sid)
+            key = rows[0]["content_key"]
+            assert set(trace) == {r["content_key"] for r in rows}
+            assert trace[key][0]["output"] == sid
+            assert store.node_turn_content(root, sid, key) == {key: trace[key]}
+        for sid in (root, sibling, nested, outside):
+            key = store.node_timeline(sid, sid)[0]["content_key"]
+            assert store.node_turn_content(root, child, key) == {}
+        for owner, node in (
+            (root, outside),
+            (child, sibling),
+            (root, "missing"),
+            ("missing", child),
+        ):
+            assert store.node_timeline(owner, node) is None
+            assert store.node_turn_content(owner, node) == {}
+        assert store.node_turn_content(root, child, "") == {}
+        assert store.message_timeline(root) == before
+        assert store.workflows() == workflows
 
 
 def test_codex_store_dedupes_echo_attributes_models_and_rolls_up_to_git_root():
@@ -1139,3 +1212,6 @@ def test_codex_node_prompt_refuses_conflicting_resumed_parent_claims():
         store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
         assert store.node_prompt(first, child) is None
         assert store.node_prompt(second, child) is None
+        for root in (first, second):
+            assert store.node_timeline(root, child) is None
+            assert store.node_turn_content(root, child) == {}

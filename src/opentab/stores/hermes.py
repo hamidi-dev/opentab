@@ -1367,7 +1367,11 @@ class HermesStore:
         assistant rows carry it), and the tool RESULT is a separate role='tool' row
         joined back by tool_call_id.
         """
-        ids = [sid for sid, _, _ in self._subtree_ids(workflow_id)]
+        return self._turn_content(
+            [sid for sid, _, _ in self._subtree_ids(workflow_id)], content_key
+        )
+
+    def _turn_content(self, ids: list[str], content_key: str | None) -> dict:
         out = TraceContent(content_key)
         if not ids:
             return out
@@ -1523,7 +1527,9 @@ class HermesStore:
         # child's own prompts listed nowhere. A session with no prompts of its own
         # leaves its rows headerless (the Copilot shape), which is honest -- better an
         # unlabelled group than a wrong label.
-        subtree = self._subtree_ids(workflow_id)
+        return self._message_timeline(workflow_id, self._subtree_ids(workflow_id))
+
+    def _message_timeline(self, workflow_id: str, subtree: list[tuple]) -> list[dict]:
         turns = self._enriched_turns(subtree)
         rows: list[dict] = []
         for sid, depth, agent in subtree:
@@ -1566,6 +1572,43 @@ class HermesStore:
         if self.demo:
             out = [self._demo_turn(r) for r in out]
         return out
+
+    def _owns_node(self, root_id: str, node_id: str) -> bool:
+        if self.demo or not root_id or not node_id:
+            return False
+        # _subtree_ids has a legacy root fallback, which is not existence evidence.
+        try:
+            conn = self._connect()
+        except sqlite3.Error:
+            return False
+        try:
+            live = " AND archived = 0" if "archived" in self._cols else ""
+            if (
+                conn.execute(f"SELECT 1 FROM sessions WHERE id = ?{live}", [root_id]).fetchone()
+                is None
+            ):
+                return False
+        except sqlite3.Error:
+            return False
+        finally:
+            conn.close()
+        return any(sid == node_id for sid, _, _ in self._subtree_ids(root_id))
+
+    def node_timeline(self, root_id: str, node_id: str) -> list[dict] | None:
+        """Exact session calls; a valid node with no retained log calls is empty."""
+        if not self._owns_node(root_id, node_id):
+            return None
+        return self._message_timeline(node_id, [(node_id, 0, "-")])
+
+    def node_turn_content(self, root_id: str, node_id: str, content_key: str | None = None) -> dict:
+        rows = self.node_timeline(root_id, node_id)
+        if rows is None:
+            return {}
+        keys = {r["content_key"] for r in rows if r.get("content_key")}
+        if not keys or (content_key is not None and content_key not in keys):
+            return {}
+        content = self._turn_content([node_id], content_key)
+        return {key: events for key, events in content.items() if key in keys}
 
     def _demo_turn(self, r: dict) -> dict:
         # Titles are the only sensitive field on a turn row (magnitudes are scaled by
