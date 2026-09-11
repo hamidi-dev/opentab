@@ -321,7 +321,11 @@ Subagents reuses the prefetched node snapshot for its delegation overview,
 execution table, agent/model summaries and selected execution's token breakdown.
 Selection uses the node's index within that snapshot, not its label or sorted
 position: remote nodes may lack IDs, and labels can repeat. Sorting and repricing
-preserve identity; replacing the snapshot resets the drill. Row maps and cursor
+preserve identity. Reload reanchors an open execution by its exact, unique node ID
+within the same unambiguous session, harness and machine; missing or ambiguous
+identities fall back to the overview. Other snapshot replacements reset the drill.
+An open execution prompt list reloads lazily; deeper prompt/trace drills reset rather
+than reuse stale ordinals. Cached raw content is always discarded. Row maps and cursor
 follow are rebuilt with table geometry and cleared in execution detail. No raw
 content is needed for these metrics, and no node-to-turn join is inferred. Shares
 use node sums; model groupings are explicitly representative, not per-model accounting.

@@ -3160,6 +3160,17 @@ class App:
 
     def reload(self) -> None:
         anchor = self.selection_anchor()
+        subagent = None
+        wf = self.current_session() if self._on_subagents_tab() else None
+        index = self.active_subagent_drill if wf is not None else None
+        if index is not None and sum(w.id == wf.id for w in self.loaded) == 1:
+            nodes = self._subagent_snapshot[1]
+            node_id = nodes[index].get("id")
+            if node_id and sum(n.get("id") == node_id for n in nodes) == 1:
+                subagent = (wf.id, wf.source, wf.machine, node_id)
+        subagent_turns = self.active_subagent_turns
+        detail_scroll = self._subagent_detail_scroll if subagent_turns else self.scroll
+        list_scroll = self._subagent_list_scroll
         self._clear_subagent_prompt()
         self._clear_trace_expansion()
         self.loaded = self.store.workflows()
@@ -3191,6 +3202,29 @@ class App:
         self.harness_index = min(self.harness_index, max(0, len(self.harnesses) - 1))
         self.machine_index = min(self.machine_index, max(0, len(self.machines) - 1))
         self.restore_selection(anchor)
+        if index is not None:
+            self.subagent_drill = self._subagent_selected = None
+            self.scroll = list_scroll
+        wf = self.current_session() if self._on_subagents_tab() else None
+        if (
+            subagent is not None
+            and wf is not None
+            and (wf.id, wf.source, wf.machine) == subagent[:3]
+            and sum(w.id == wf.id for w in self.loaded) == 1
+        ):
+            # Snapshot ordinals expire on reload; only an exact, unique identity survives.
+            rows = self.subagent_rows(wf)
+            matches = [
+                i
+                for i, node in enumerate(self._subagent_snapshot[1])
+                if node.get("id") == subagent[3]
+            ]
+            if len(matches) == 1 and matches[0] in self._subagent_order:
+                ordinal = next(i for i, row in enumerate(rows) if row["_node_index"] == matches[0])
+                self.open_subagent_drill(ordinal)
+                self.scroll = detail_scroll
+                if subagent_turns and not self.subagent_turns_unavailable():
+                    self.open_subagent_turns()
         if notes_ok:
             self.notify("reloaded", "success")
 

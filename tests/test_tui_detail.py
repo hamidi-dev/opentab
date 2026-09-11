@@ -1384,6 +1384,79 @@ def test_subagent_received_prompt_is_lazy_full_and_separate_from_title():
     assert app._subagent_prompt is None and app._subagent_prompt_loading is None
 
 
+def test_subagent_reload_restores_exact_execution_after_snapshot_reordering():
+    app = _subagent_prompt_app()
+    wf = app.current_session()
+    nodes = app.session_node_rows(wf.id)
+    app.scroll = 5
+    app.open_subagent_drill(0)
+    app.subagent_prompt_text()
+    app.load_subagent_prompt()
+    app.scroll = 17
+    refreshed = [dict(nodes[i]) for i in (0, 3, 2, 1)]
+    refreshed[3]["cost"] = 0.5
+    with patch.object(app.store, "workflow_nodes", return_value=refreshed):
+        app.handle_key(None, ord("r"))
+    assert app.active_subagent_drill == 3 and app._subagent_selected == 3
+    assert app._subagent_snapshot[1][3]["id"] == "child-1"
+    assert app._subagent_snapshot[1][3]["cost"] == 0.5
+    assert app.scroll == 17
+    assert app._subagent_prompt is None and app._subagent_prompt_loading is None
+    assert len(app.store.prompt_calls) == 1
+    app.renderer.detail_subagents(app.current_session(), 120)
+    app.load_subagent_prompt()
+    assert app.store.prompt_calls == [(wf.id, "child-1"), (wf.id, "child-1")]
+    app.close_subagent_drill()
+    assert app.scroll == 5 and app._subagent_selected == 3
+
+
+def test_subagent_reload_does_not_guess_missing_or_ambiguous_identity():
+    for change in (
+        "anonymous",
+        "old-duplicate",
+        "removed",
+        "new-duplicate",
+        "old-root-duplicate",
+        "new-root-duplicate",
+        "root-removed",
+        "harness",
+        "machine",
+    ):
+        app = _subagent_prompt_app()
+        wf = app.current_session()
+        nodes = app.session_node_rows(wf.id)
+        if change == "anonymous":
+            nodes[1].pop("id")
+        elif change == "old-duplicate":
+            nodes[2]["id"] = nodes[1]["id"]
+        elif change == "old-root-duplicate":
+            app.loaded.append(wf)
+        app.open_subagent_drill(0)
+        refreshed = [dict(n) for n in nodes]
+        workflows = [ot.Workflow(**vars(w)) for w in app.store.workflows()]
+        if change == "removed":
+            refreshed.pop(1)
+        elif change == "new-duplicate":
+            refreshed[2]["id"] = refreshed[1]["id"]
+        elif change == "new-root-duplicate":
+            workflows.append(wf)
+        elif change == "root-removed":
+            workflows = [w for w in workflows if w.id != wf.id]
+        elif change in ("harness", "machine"):
+            for w in workflows:
+                if w.id == wf.id:
+                    setattr(w, "source" if change == "harness" else "machine", "other")
+        with (
+            patch.object(app.store, "workflow_nodes", return_value=refreshed),
+            patch.object(app.store, "workflows", return_value=workflows),
+        ):
+            app.reload()
+        app.renderer.detail_subagents(app.current_session(), 120)
+        assert app.active_subagent_drill is None, change
+        assert not app.active_subagent_turns, change
+        assert app.store.prompt_calls == [], change
+
+
 def test_subagent_received_prompt_cancels_stale_reads_and_never_reads_in_demo():
     for change in ("session", "tab", "demo", "reload", "close"):
         app = _subagent_prompt_app()
@@ -1603,6 +1676,46 @@ def test_subagent_turns_trace_preview_full_and_siblings_never_read_root_content(
     assert app._subagent_trace is None and app.session_trace(wf.id) is root
     assert root["k0"][0]["text"] == "Root narration only."
     app.store.turn_content.assert_not_called()
+
+
+def test_subagent_reload_reopens_execution_prompts_lazily_without_stale_traces():
+    for phase in ("timeline", "prompts", "trace"):
+        app = _subagent_turns_app()
+        wf = app.current_session()
+        app.scroll = 5
+        app.open_subagent_drill(0)
+        app.scroll = 17
+        app.open_subagent_turns()
+        if phase != "timeline":
+            app.load_subagent_turns()
+        if phase == "trace":
+            app.open_turn_drill(0)
+            app.open_trace_drill()
+            app.renderer.detail_subagents(wf, 120)
+            app.toggle_trace_expansion()
+            app.load_trace_expansion()
+            assert app._subagent_trace is not None and app._trace_full is not None
+        reads = app.store.node_timeline.call_count
+        content_reads = app.store.node_turn_content.call_count
+        nodes = app.session_node_rows(wf.id)
+        with patch.object(app.store, "workflow_nodes", return_value=list(reversed(nodes))):
+            app.reload()
+        assert app.active_subagent_drill == 2 and app.active_subagent_turns, phase
+        assert app.active_turn_drill is None and app.active_trace_drill is None
+        assert app._subagent_turn_rows is None and app._subagent_trace is None
+        assert app._trace_full is None and app._trace_loading is None
+        assert app._subagent_turns_loading is not None
+        assert app.store.node_timeline.call_count == reads
+        app.load_subagent_turns()
+        assert app.store.node_timeline.call_count == reads + 1
+        app.store.node_timeline.assert_called_with(wf.id, "child-1")
+        app.load_trace_expansion()
+        assert app.store.node_turn_content.call_count == content_reads
+        app.store.turn_content.assert_not_called()
+        app.close_subagent_turns()
+        assert app.scroll == 17
+        app.close_subagent_drill()
+        assert app.scroll == 5 and app._subagent_selected == 2
 
 
 def test_subagent_turns_scope_changes_cancel_pending_reads_and_drop_content():
