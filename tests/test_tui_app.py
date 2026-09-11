@@ -164,7 +164,7 @@ def test_scrollbar_thumb_is_proportional_and_reaches_both_ends():
     assert thumb(1_000, 10, 990) == (8, 2)  # tiny documents still get a visible thumb
 
 
-def test_release_hint_lasts_ten_seconds_without_changing_other_toast_durations():
+def test_release_hint_lasts_ten_seconds():
     app = app_with([])
     now = [100.0]
     app._toast_clock = lambda: now[0]
@@ -178,7 +178,7 @@ def test_release_hint_lasts_ten_seconds_without_changing_other_toast_durations()
     now[0] = 110.0
     assert app.active_toasts() == []
     app.notify("Ordinary notification")
-    assert app.toasts[-1].ttl == app.TOAST_TTL == 4.0
+    assert app.toasts[-1].ttl == 8.0
 
 
 def test_opening_release_notes_clears_only_the_release_toast_and_keeps_its_history():
@@ -2045,7 +2045,7 @@ def test_toasts_coalesce_within_a_frame_cap_and_expire():
     assert [t.text for t in app.toasts] == [f"message {i}" for i in range(2, app.TOAST_MAX + 2)]
 
     # Time, not a keystroke, dismisses them: past the TTL they're gone.
-    clock[0] += app.TOAST_TTL + 0.01
+    clock[0] += app.TOAST_TTL["info"] + 0.01
     assert app.active_toasts() == []
     assert app.notice == ""
 
@@ -2053,6 +2053,22 @@ def test_toasts_coalesce_within_a_frame_cap_and_expire():
     app.notify("lingering")
     app.notice = ""
     assert app.toasts == []
+
+
+def test_toast_durations_depend_on_severity_and_allow_explicit_override():
+    app = app_with([])
+    clock = [100.0]
+    app._toast_clock = lambda: clock[0]
+    for kind, ttl in (("success", 6), ("info", 8), ("warn", 12), ("error", 12), ("unknown", 8)):
+        clock[0] = 100.0
+        app.notify("Read this", kind)
+        assert app.toasts[-1].ttl == ttl
+        clock[0] += ttl - 0.1
+        assert len(app.active_toasts()) == 1
+        clock[0] = 100.0 + ttl
+        assert app.active_toasts() == []
+    app.notify("Short-lived", "error", ttl=1.0)
+    assert app.toasts[-1].ttl == 1.0
 
 
 def test_draw_toasts_paints_stacked_top_right_cards():
@@ -2072,12 +2088,37 @@ def test_draw_toasts_paints_stacked_top_right_cards():
     assert "copied: ses_42" in text and "Done" in text  # success card: header + message
     assert "disk on fire" in text and "Error" in text  # error card: header + message
     assert "✓" in text and "✕" in text  # per-kind sigils
-    # two-line cards in the top-right (newest on top), below the header hline (row 2)
+    # Compact framed cards (newest on top), below the header hline (row 2)
     # and clear of the footer; a 1-row gap separates them.
     rows = {y for (y, _x) in screen.cells}
-    assert rows == {3, 4, 6, 7}  # newest (error) at rows 3-4, older (success) at 6-7
-    # right-aligned: every painted cell sits in the right half of an 80-wide screen
-    assert min(x for (_y, x) in screen.cells) > 40
+    assert rows == {3, 4, 5, 7, 8, 9}
+    assert min(x for (_y, x) in screen.cells) == 32
+    assert max(x for (_y, x) in screen.cells) == 77
+    assert text.index("Error") < text.index("Done")
+
+
+def test_toast_body_stays_normal_and_titles_keep_severity_until_expiry():
+    app = app_with([])
+    clock = [0.0]
+    app._toast_clock = lambda: clock[0]
+    original = ot.curses.color_pair
+    try:
+        ot.curses.color_pair = lambda n: n << 8
+        for kind, pair in (("info", 4), ("success", 3), ("warn", 2), ("error", 5), ("release", 6)):
+            app.notice = ""
+            clock[0] = 0.0
+            app.notify("Still readable", kind)
+            clock[0] = app.toasts[-1].ttl - 0.1
+            screen = AttrScreen(24, 80)
+            app.renderer.draw_toasts(screen, 24, 80)
+            body_row = 5 if kind == "release" else 4
+            assert screen.attrs[(body_row, 35)] == 0
+            title_attr = (pair << 8) | ot.curses.A_BOLD
+            if kind == "release":
+                title_attr |= ot.curses.A_REVERSE
+            assert screen.attrs[(3, 35)] == title_attr
+    finally:
+        ot.curses.color_pair = original
 
 
 def test_draw_toasts_wraps_a_long_message_instead_of_truncating():
@@ -2100,10 +2141,40 @@ def test_draw_toasts_wraps_a_long_message_instead_of_truncating():
     assert ".csv" in text  # ...and its tail both survive (nothing truncated away)
 
 
+def test_toast_cards_wrap_wide_characters_and_fit_small_screens():
+    app = app_with([])
+    app.notify("界" * 81, "warn")
+    original = ot.curses.color_pair
+    writes = []
+    write = app.renderer.write
+
+    def record(screen, y, x, text, attr=0):
+        writes.append((y, x, text))
+        write(screen, y, x, text, attr)
+
+    app.renderer.write = record
+    try:
+        ot.curses.color_pair = lambda n: 0
+        for height, width in ((24, 80), (14, 30), (10, 20), (8, 12)):
+            writes.clear()
+            screen = FakeScreen(height, width)
+            app.renderer.draw_toasts(screen, height, width)
+            assert all(0 <= y < height - 2 and 0 <= x < width for y, x in screen.cells)
+            assert all(x + ot.display_width(text) <= width - 2 for _y, x, text in writes)
+            bodies = [text for _y, _x, text in writes if "界" in text]
+            if height >= 14:
+                assert len(bodies) == 4 and bodies[-1].endswith("…")
+                assert all(ot.display_width(text) <= min(46, width - 4) - 6 for text in bodies)
+            else:
+                assert not screen.cells  # no partial cards over the footer or tiny viewport
+    finally:
+        ot.curses.color_pair = original
+
+
 # --- the N notices scrollback -------------------------------------------------
 
 
-def test_notices_log_keeps_faded_toasts_beyond_the_live_cap():
+def test_notices_log_keeps_expired_toasts_beyond_the_live_cap():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     clock = [0.0]
     app._toast_clock = lambda: clock[0]
@@ -2114,7 +2185,7 @@ def test_notices_log_keeps_faded_toasts_beyond_the_live_cap():
     assert len(app.toasts) == app.TOAST_MAX
     assert [t.text for t in app.toast_log] == [f"m{i}" for i in range(app.TOAST_MAX + 3)]
     # Expiry empties the live cards but NEVER the scrollback -- that's the whole point.
-    clock[0] += app.TOAST_TTL + 1
+    clock[0] += app.TOAST_TTL["info"] + 1
     assert app.active_toasts() == []
     assert len(app.toast_log) == app.TOAST_MAX + 3
     # Clearing the current message (notice = "") leaves the history intact.
@@ -2193,9 +2264,9 @@ def test_draw_toast_history_paints_the_scrollback_newest_first():
     app.notify("boom", kind="error")
     app._mark_toasts_shown()
     app.toast_history = True
-    screen = FakeScreen(24, 80)
+    screen = AttrScreen(24, 80)
     orig_cp = ot.curses.color_pair
-    ot.curses.color_pair = lambda n: 0
+    ot.curses.color_pair = lambda n: n << 8
     try:
         app.renderer.draw_toast_history(screen, 3, 22, 80)
     finally:
@@ -2204,6 +2275,79 @@ def test_draw_toast_history_paints_the_scrollback_newest_first():
     assert "Notifications (2)" in text  # the count is in the title
     assert "boom" in text and "copied ses_42" in text
     assert text.index("boom") < text.index("copied ses_42")  # newest painted first
+    message_row = next(y for (y, x), ch in screen.cells.items() if x == 12 and ch == "b")
+    assert screen.attrs[(message_row, 12)] == 0
+    assert screen.attrs[(message_row, 10)] == 5 << 8  # only the age/sigil gutter is tinted
+
+
+def test_notification_history_wraps_full_messages_and_hides_live_cards():
+    app = app_with([])
+    app._toast_clock = lambda: 0.0
+    message = "Could not export " + "/long/path/界" * 20 + " report.csv"
+    app.notify(message, "error")
+    rows = app.renderer.toast_history_lines(30)
+    assert len(rows) > app.renderer.TOAST_MAX_LINES
+    assert "now" in rows[0][0]
+    assert all(kind == "error" and ot.display_width(text) <= 30 for text, kind in rows)
+    assert all(text.startswith(" " * 8) for text, _kind in rows[1:])
+    assert "".join(text[8:] for text, _kind in rows) == message
+    app.open_notices()
+    screen = FakeScreen(24, 80)
+    app.renderer.draw_toasts(screen, 24, 80)
+    assert not screen.cells
+    assert app.toasts and app.toast_log  # hiding cards does not discard them
+
+    original = ot.curses.color_pair
+    try:
+        ot.curses.color_pair = lambda n: 0
+        app.handle_key(None, ord("G"))
+        app.renderer.draw_toast_history(screen, 3, 12, 40)
+        assert app.toast_history_scroll > 0
+        assert "report.csv" in screen_text(screen)
+    finally:
+        ot.curses.color_pair = original
+
+
+def test_notice_wrapping_preserves_filename_spaces_and_error_line_breaks():
+    app = app_with([])
+    message = "exported to /tmp/a  b.csv"
+    app.notify(message, "success")
+    assert app.renderer.toast_history_lines(60)[0][0][8:] == message
+    for width in (10, 20, 40):
+        assert "".join(app.renderer._wrap_notice(message, width)) == message
+    assert app.renderer._wrap_notice("Failed:\n  detailed error\n\nTry again", 40) == [
+        "Failed:",
+        "  detailed error",
+        "",
+        "Try again",
+    ]
+    original = ot.curses.color_pair
+    try:
+        ot.curses.color_pair = lambda n: 0
+        screen = FakeScreen(24, 80)
+        app.renderer.draw_toasts(screen, 24, 80)
+        assert "/tmp/a  b.csv" in screen_text(screen)
+    finally:
+        ot.curses.color_pair = original
+
+
+def test_notification_history_bottom_reaches_beyond_ten_thousand_wrapped_rows():
+    app = app_with([])
+    app._toast_clock = lambda: 0.0
+    for _ in range(app.TOAST_LOG_MAX):
+        app.notify("x" * 3264, "error")
+        app._mark_toasts_shown()
+    app.open_notices()
+    app.handle_key(None, ord("G"))
+    original = ot.curses.color_pair
+    try:
+        ot.curses.color_pair = lambda n: 0
+        app.renderer.draw_toast_history(FakeScreen(24, 80), 3, 22, 80)
+    finally:
+        ot.curses.color_pair = original
+    rows = app.renderer.toast_history_lines(72)
+    assert len(rows) == 10_200
+    assert app.toast_history_scroll == len(rows) - 16
 
 
 def test_launch_menu_opens_in_tmux_and_copy_only_outside():

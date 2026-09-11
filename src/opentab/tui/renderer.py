@@ -860,7 +860,7 @@ class Renderer:
         elif self.launch_menu is not None:
             self.draw_launch_menu(stdscr, height, width)
 
-        # Toasts are the topmost layer, including above modals.
+        # Toasts float above modals, except their own history reader.
         self.draw_toasts(stdscr, height, width)
 
         stdscr.refresh()
@@ -6146,74 +6146,67 @@ class Renderer:
     TOAST_WIDTH = 46  # card width the message wraps within
     TOAST_MAX_LINES = 4  # cap wrapped message lines so a card can't fill the screen
 
+    @staticmethod
+    def _wrap_notice(text: str, width: int) -> list[str]:
+        # Preserve whitespace in paths/errors; wrap_cells deliberately collapses it
+        # for prose. Keep the break's space so even a double-space filename survives.
+        rows = []
+        for line in text.expandtabs(4).splitlines():
+            while display_width(line) > width:
+                part = clip(line, width)
+                space = part.rfind(" ")
+                if space > 0:
+                    part = part[: space + 1]
+                rows.append(part)
+                line = line[len(part) :]
+            rows.append(line)
+        return rows or [""]
+
     def draw_toasts(self, stdscr: curses.window, height: int, width: int) -> None:
-        # Floating cards stacked in the top-right, just under the header separator,
-        # newest on top. Each is a filled (reverse) coloured block: a header line
-        # (sigil + kind word) over the message, which WRAPS across as many lines as it
-        # needs (up to TOAST_MAX_LINES) instead of truncating, so nothing is hidden. The
-        # run loop expires cards by time; the last fraction of a second renders dim.
+        # Severity belongs to the frame/title, not the message background. Release
+        # announcements use the same card with extra vertical breathing room.
+        if self.toast_history:
+            return
         toasts = self.active_toasts()
         if not toasts:
             return
-        now = self.toast_now()
-        maxw = min(self.TOAST_WIDTH, max(16, width - 4))
+        maxw = min(self.TOAST_WIDTH, width - 4)
+        if maxw < 10:
+            return
         row = 3  # first body row, below the header hline (row 2)
         for toast in reversed(toasts):
             pair, sigil, label = self.TOAST_STYLE.get(toast.kind, self.TOAST_STYLE["info"])
-            head = f" {sigil} {label}"
             is_release = toast.kind == "release"
-            text_width = maxw - (6 if is_release else 1)
-            wrapped = (
-                wrap_cells(toast.text, text_width)
-                if is_release
-                else textwrap.wrap(toast.text, text_width)
-            )
-            wrapped = wrapped or [""]
+            text_width = maxw - 6
+            wrapped = self._wrap_notice(toast.text, text_width)
             if len(wrapped) > self.TOAST_MAX_LINES:  # mark the overflow rather than hide it
                 wrapped = wrapped[: self.TOAST_MAX_LINES]
-                wrapped[-1] = shorten(wrapped[-1], text_width - 1) + "…"
-            fading = toast.remaining(now) < self.TOAST_FADE
-            if is_release:
-                card_h = len(wrapped) + 4
-                if row + card_h > height - 2:
-                    break
-                x = max(0, width - maxw - 2)
-                accent = curses.color_pair(pair) | (curses.A_DIM if fading else curses.A_BOLD)
-                for dy in range(card_h):
-                    self.write(stdscr, row + dy, x, " " * maxw)
-                self.draw_frame(stdscr, row, x, card_h, maxw, accent)
-                sigil = sigil if unicode_screen() else "*"
-                title = f" {sigil} NEW IN v{self.app.whats_new_version} "
-                self.write(stdscr, row, x + 2, clip(title, maxw - 4), accent | curses.A_REVERSE)
-                key = self._key("main", "whats_new") or self._key("help", "whats_new")
-                for dy, line in enumerate(wrapped):
-                    self.write(stdscr, row + 2 + dy, x + 3, line, curses.A_DIM if fading else 0)
-                    if key and line.startswith(f"Press {key}"):
-                        self.write(stdscr, row + 2 + dy, x + 9, key, accent | curses.A_REVERSE)
-                row += card_h + 1
-                continue
-            body = [f" {line}" for line in wrapped]
-            if row + len(body) >= height - 2:  # the whole card must clear the footer hline
+                wrapped[-1] = clip(wrapped[-1], text_width - 1) + "…"
+            padding = 2 if is_release else 1
+            card_h = len(wrapped) + padding * 2
+            if row + card_h > height - 2:
                 break
-            cardw = min(max([len(head)] + [display_width(line) for line in body]) + 1, maxw)
-            x = max(0, width - cardw - 2)
-            base = curses.color_pair(pair) | curses.A_REVERSE
-            self.write(
-                stdscr,
-                row,
-                x,
-                pad(head, cardw),
-                base | (curses.A_DIM if fading else curses.A_BOLD),
+            x = width - maxw - 2
+            accent = curses.color_pair(pair) | curses.A_BOLD
+            for dy in range(card_h):
+                self.write(stdscr, row + dy, x, " " * maxw)
+            self.draw_frame(stdscr, row, x, card_h, maxw, accent)
+            sigil = sigil if unicode_screen() else "*"
+            if is_release:
+                label = f"NEW IN v{self.app.whats_new_version}"
+            title = f" {sigil} {label} "
+            title_attr = accent | curses.A_REVERSE if is_release else accent
+            self.write(stdscr, row, x + 2, clip(title, maxw - 4), title_attr)
+            key = (
+                self._key("main", "whats_new") or self._key("help", "whats_new")
+                if is_release
+                else ""
             )
-            for i, line in enumerate(body):
-                self.write(
-                    stdscr,
-                    row + 1 + i,
-                    x,
-                    pad(line, cardw),
-                    base | (curses.A_DIM if fading else 0),
-                )
-            row += len(body) + 2  # card (header + body lines) plus a 1-row gap
+            for dy, line in enumerate(wrapped):
+                self.write(stdscr, row + padding + dy, x + 3, line)
+                if key and line.startswith(f"Press {key}"):
+                    self.write(stdscr, row + padding + dy, x + 9, key, accent | curses.A_REVERSE)
+            row += card_h + 1
 
     @staticmethod
     def _toast_age(seconds: float) -> str:
@@ -6230,25 +6223,34 @@ class Renderer:
         return f"{int(seconds // 86400)}d"
 
     def toast_history_lines(self, width: int) -> list[tuple[str, str]]:
-        # One row per past notice, NEWEST FIRST -- "<age>  <sigil> <message>" -- each
-        # tagged with its kind so draw_toast_history colours it. Returns (text, kind)
-        # pairs, so a test can assert the content with no screen. Empty log = one hint row.
+        # Newest first, with hanging indents so complete messages remain readable
+        # even when a path or error was too long for its live card.
         log = self.app.toast_log
         if not log:
-            return [("No notifications yet — status messages will collect here.", "info")]
+            return [
+                (line, "info")
+                for line in wrap_cells(
+                    "No notifications yet — status messages will collect here.", width
+                )
+            ]
         now = self.toast_now()
         rows: list[tuple[str, str]] = []
         for toast in reversed(log):
             sigil = self.TOAST_STYLE.get(toast.kind, self.TOAST_STYLE["info"])[1]
             age = self._toast_age(max(0.0, now - toast.born))
-            rows.append((shorten(f"{age:>4}  {sigil} {toast.text}", width), toast.kind))
+            prefix = f"{age:>4}  {sigil} "
+            lines = self._wrap_notice(toast.text, max(2, width - display_width(prefix)))
+            for index, line in enumerate(lines):
+                rows.append(
+                    ((prefix if index == 0 else " " * display_width(prefix)) + line, toast.kind)
+                )
         return rows
 
     def draw_toast_history(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         # The `N` overlay: a pager over the notices scrollback (App.toast_log), floating
         # centered over the view like help -- but sized tall, since the log runs long.
-        # Newest first; each row painted in its kind's colour (red errors stay legible in
-        # the scrollback too). j/k/g/G/page scroll (handle_key); Esc/q/N close.
+        # Newest first; only the age/sigil gutter carries severity colour.
+        # j/k/g/G/page scroll (handle_key); Esc/q/N close.
         inner_w = max(24, min(76, width - 8))
         rows = self.toast_history_lines(inner_w)
         box_w = inner_w + 4
@@ -6271,7 +6273,11 @@ class Renderer:
         self.app.toast_history_scroll = scroll
         for offset, (text, kind) in enumerate(rows[scroll : scroll + visible]):
             pair = self.TOAST_STYLE.get(kind, self.TOAST_STYLE["info"])[0]
-            self.write(stdscr, box_y + 1 + offset, box_x + 2, text, curses.color_pair(pair))
+            self.write(stdscr, box_y + 1 + offset, box_x + 2, text)
+            if count:
+                self.write(
+                    stdscr, box_y + 1 + offset, box_x + 2, clip(text, 8), curses.color_pair(pair)
+                )
         self._paint_scrollbar(stdscr, box_y + 1, box_x + box_w - 1, len(rows), visible, scroll)
         if len(rows) > visible:  # only then is there anything to scroll
             hint = f" {self._keys('notices', 'down', 'up')} scroll "

@@ -307,8 +307,7 @@ class App:
         ("p", "popup", "popup"),
         ("y", "copy", "copy resume command"),
     )
-    TOAST_TTL = 4.0
-    TOAST_FADE = 0.9
+    TOAST_TTL = {"success": 6.0, "info": 8.0, "warn": 12.0, "error": 12.0, "release": 10.0}
     TOAST_MAX = 3
     TOAST_POLL_MS = 200
     # History is in-memory and expiry-independent; unlike notes, notices are not authored data.
@@ -5724,7 +5723,7 @@ class App:
     def toast_log(self) -> list[Toast]:
         # The `N` overlay's scrollback: every toast notify() ever raised (oldest first),
         # capped at TOAST_LOG_MAX and NEVER pruned by expiry -- the whole point is to
-        # read a message after its live card has faded. Lazily materialised like `toasts`
+        # read a message after its live card has expired. Lazily materialised like `toasts`
         # so a __new__-built App (tests) has one on demand.
         log = self.__dict__.get("_toast_log")
         if log is None:
@@ -5751,7 +5750,9 @@ class App:
         if not text:
             toasts.clear()  # clears the live card only; the N scrollback is history
             return
-        toast = Toast(text, kind, self.toast_now(), self.TOAST_TTL if ttl is None else ttl)
+        if ttl is None:
+            ttl = self.TOAST_TTL.get(kind, self.TOAST_TTL["info"])
+        toast = Toast(text, kind, self.toast_now(), ttl)
         # Several notices set within one input handler (e.g. "fetching…" → "refreshed")
         # never get a frame between them, so collapse onto one toast; distinct user
         # actions (a paint happened in between) stack instead. The scrollback mirrors
@@ -5826,7 +5827,7 @@ class App:
             text = f"Updated to v{self.whats_new_version}. See What's New in the keymap."
         self._whats_new_hint_pending = False
         self.whats_new_marker_to_save = self.whats_new_version
-        self.notify(text, kind="release", ttl=10.0)
+        self.notify(text, kind="release")
 
     def edit_keymap(self, stdscr: curses.window | None) -> None:
         # `K`: suspend curses, open keymap.conf in $EDITOR, and reload the bindings
@@ -5905,7 +5906,7 @@ class App:
         self._toast_shown = True
 
     def _input_timeout_ms(self) -> int:
-        # Poll for worker completion and fading toasts without requiring a keystroke.
+        # Poll for worker completion and toast expiry without requiring a keystroke.
         return self.TOAST_POLL_MS if self.toasts or self._remote_trace_job is not None else -1
 
     def run(self, stdscr: curses.window) -> None:
@@ -5963,7 +5964,7 @@ class App:
         first = True
         while True:
             self.poll_remote_trace()
-            self.active_toasts()  # expire faded toasts before painting
+            self.active_toasts()  # expire toasts before painting
             self.renderer.draw(stdscr)
             self._mark_toasts_shown()
             if first and self.startup_warning is None:
@@ -6020,7 +6021,7 @@ class App:
             stdscr.timeout(self._input_timeout_ms())
             key = self._read_key(stdscr)
             if key == -1:
-                continue  # idle wake while a toast fades: just re-expire and repaint
+                continue  # idle wake: check expiry and workers, then repaint
             if not self.handle_key(stdscr, key):
                 break
 
@@ -6819,7 +6820,9 @@ class App:
             elif act == "top":
                 self.toast_history_scroll = 0
             elif act == "bottom":
-                self.toast_history_scroll = 10_000  # clamped to the last page on draw
+                # Wrapped rows cannot exceed characters plus one row per notice.
+                # Clamp this content-derived upper bound to the last page on draw.
+                self.toast_history_scroll = sum(len(t.text) + 1 for t in self.toast_log)
             elif act == "close":
                 self.toast_history = False
             return True

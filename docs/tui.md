@@ -180,6 +180,18 @@ ASCII and special keys as integers, other characters as strings. Both forms go
 through action lookup, so non-ASCII keys can be bound as well as typed. Text
 prompts budget input length separately from visible width and scroll long input.
 
+### Notifications
+
+Toasts stack in the top-right as framed cards. Severity colours the border and
+title; message text keeps the normal background and stays readable until expiry.
+Success messages last 6 seconds, information 8, warnings/errors 12, and installed
+release announcements 10. Callers can override the duration explicitly.
+
+Live cards wrap by terminal cells and cap the body at four lines. `N` opens the
+in-memory notification history with full wrapped messages and hanging indents;
+live cards are hidden while reading it. History retains up to 200 notifications
+independently of live-card expiry, and scrolling operates on wrapped screen rows.
+
 ## Shared Table Geometry
 
 Tables use ruled boxes whether they are static summaries, line-based selectable
