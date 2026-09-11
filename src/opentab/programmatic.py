@@ -5,6 +5,7 @@ import json
 import sys
 
 from opentab import sources
+from opentab.conversation import ConversationError
 from opentab.models import API_SCHEMA_VERSION
 from opentab.state import load_state
 
@@ -87,6 +88,7 @@ def add_parsers(subs, add_globals) -> None:
         ("tools", "show a session's tool and MCP attribution"),
         ("context", "show a session's context curve and composition"),
         ("content", "read one raw recorded turn trace"),
+        ("conversation", "read bounded text records from one local execution"),
     ):
         parser = _leaf(session_subs, action, text, add_globals)
         parser.add_argument("session", metavar="SESSION_KEY|ID")
@@ -98,14 +100,86 @@ def add_parsers(subs, add_globals) -> None:
                 action="store_true",
                 help="permit full prompts and local trace keys",
             )
-        if action == "content":
-            parser.add_argument("content_key")
+        if action in {"content", "conversation"}:
+            if action == "content":
+                parser.add_argument("content_key")
             parser.add_argument(
                 "--allow-raw-content",
                 action="store_true",
                 required=True,
                 help="explicitly permit prompts, reasoning, tool arguments, and results",
             )
+        if action == "conversation":
+            parser.add_argument(
+                "--execution-id",
+                help="exact child id from response.executions; default is root only",
+            )
+            selector = parser.add_mutually_exclusive_group()
+            selector.add_argument("--anchor", help="record anchor returned by a previous read")
+            selector.add_argument("--cursor", help="opaque next_cursor returned by a previous read")
+            selector.add_argument("--tail", action="store_true", help="read the last window")
+            parser.add_argument(
+                "--limit", type=int, default=20, help="maximum records (1..100; default 20)"
+            )
+            parser.add_argument(
+                "--max-chars",
+                type=int,
+                default=20000,
+                help="text budget (1..120000; default 20000)",
+            )
+            parser.add_argument(
+                "--before",
+                type=int,
+                default=0,
+                help="records before anchor (0..99; requires --anchor)",
+            )
+
+    conversations = subs.add_parser(
+        "conversations", help="explicit local conversation indexing and search"
+    )
+    conversation_subs = conversations.add_subparsers(dest="action", required=True)
+    for action, text in (
+        (
+            "index",
+            "create or update a local plaintext conversation index; no network or embeddings",
+        ),
+        ("search", "search indexed conversation text; dates select messages, not root sessions"),
+        ("status", "show local conversation index counts without discovering sources"),
+        ("clear", "delete the local conversation index, not original harness records"),
+    ):
+        parser = _leaf(conversation_subs, action, text, add_globals)
+        if action != "status":
+            parser.add_argument(
+                "--allow-raw-content",
+                action="store_true",
+                required=True,
+                help="explicitly permit access to or deletion of the local plaintext conversation index",
+            )
+        if action in {"index", "search"}:
+            parser.add_argument("--project", help="only this project; saved ignores still apply")
+            parser.add_argument(
+                "--from-harness", dest="query_harness", help="filter loaded harnesses"
+            )
+            parser.add_argument("--machine", help="filter loaded machines; never fetch remote text")
+            parser.add_argument("--session", help="session_key or unique native id")
+        if action == "index":
+            parser.add_argument("--rebuild", action="store_true", help="rebuild the selected scope")
+        elif action == "search":
+            parser.add_argument("query", metavar="QUERY", help="lexical conversation text query")
+            parser.add_argument(
+                "--exclude-session", help="exclude this session_key or unique native id"
+            )
+            parser.add_argument(
+                "--limit", type=int, default=10, help="maximum hits (1..100; default 10)"
+            )
+            parser.add_argument(
+                "--max-chars", type=int, default=6000, help="text budget (1..120000; default 6000)"
+            )
+            # These globals already exist: search dates are message dates, not usage ranges.
+            for option in parser._actions:
+                if option.dest in {"since", "until"}:
+                    option.metavar = "YYYY-MM-DD"
+                    option.help = "inclusive message-date bound, not root-session start date"
 
     models = subs.add_parser("models", help="query used models, prices, and comparisons")
     model_subs = models.add_subparsers(dest="action", required=True)
@@ -232,6 +306,24 @@ def command(args) -> int:
     from opentab.service import OpenTabService, ServiceError
 
     try:
+        if args.command == "conversations":
+            if getattr(args, "demo", False):
+                raise ServiceError(
+                    "demo_unsupported",
+                    "conversation indexing and search are unavailable in demo mode",
+                )
+            if args.action != "status" and not getattr(args, "allow_raw_content", False):
+                raise ServiceError("raw_content_disabled", "--allow-raw-content is required")
+            if args.action in {"status", "clear"}:
+                from opentab import conversation_search
+
+                data = (
+                    conversation_search.index_status()
+                    if args.action == "status"
+                    else conversation_search.clear_index()
+                )
+                _write(envelope(data), getattr(args, "pretty", False))
+                return 0
         if args.command == "sources":
             present = sources.available_sources(args)
             selected = sources.resolve_source(args, {})
@@ -259,7 +351,26 @@ def command(args) -> int:
             service = OpenTabService.open(
                 args, allow_raw_content=bool(getattr(args, "allow_raw_content", False))
             )
-            if args.command == "usage":
+            if args.command == "conversations":
+                scope = dict(
+                    project=args.project,
+                    harness=args.query_harness,
+                    machine=args.machine,
+                    session=args.session,
+                )
+                if args.action == "index":
+                    data = service.index_conversations(**scope, rebuild=args.rebuild)
+                else:
+                    data = service.search_conversations(
+                        args.query,
+                        **scope,
+                        exclude_session=args.exclude_session,
+                        since=args.since,
+                        until=args.until,
+                        limit=args.limit,
+                        max_chars=args.max_chars,
+                    )
+            elif args.command == "usage":
                 data = service.summary(query_from_args(args), group_by=args.group_by)
             elif args.command == "sessions":
                 if args.action == "list":
@@ -278,8 +389,23 @@ def command(args) -> int:
                     data = service.session_tools(args.session)
                 elif args.action == "context":
                     data = service.session_context(args.session)
-                else:
+                elif args.action == "conversation":
+                    data = service.session_conversation(
+                        args.session,
+                        execution_id=args.execution_id,
+                        anchor=args.anchor,
+                        cursor=args.cursor,
+                        limit=args.limit,
+                        max_chars=args.max_chars,
+                        before=args.before,
+                        tail=args.tail,
+                    )
+                elif args.action == "content":
                     data = service.session_content(args.session, args.content_key)
+                else:
+                    raise ServiceError(
+                        "unknown_command", f"unsupported session action: {args.action}"
+                    )
             elif args.command == "models":
                 if args.action == "list":
                     data = service.list_models(
@@ -316,6 +442,9 @@ def command(args) -> int:
         return 0
     except ServiceError as exc:
         _write(error_envelope(exc.code, exc.message, exc.details), getattr(args, "pretty", False))
+        return 1
+    except ConversationError as exc:
+        _write(error_envelope(exc.code, exc.message), getattr(args, "pretty", False))
         return 1
     except SystemExit as exc:
         _write(error_envelope("source_error", str(exc)), getattr(args, "pretty", False))

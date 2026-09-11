@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sqlite3
+from contextlib import closing
 from urllib.parse import quote
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
@@ -52,6 +54,8 @@ REQUIRED_SCHEMA = {
     "session": ("id", "parent_id", "time_created"),
     "message": ("id", "session_id", "data"),
 }
+
+CONVERSATION_TEXT_BUDGET = 256 * 1024 * 1024
 
 
 def _process_timeline(
@@ -864,6 +868,261 @@ class Store:
     def supports_turn_content(self, workflow_id: str) -> bool:
         # Same gate as the tool breakdown: both read the part table.
         return bool(self.supports_tool_breakdown)
+
+    @staticmethod
+    def _conversation_columns(conn: sqlite3.Connection) -> dict[str, set[str]]:
+        required = {
+            "session": {"id", "parent_id"},
+            "message": {"id", "session_id", "data"},
+            "part": {"id", "message_id", "data"},
+        }
+        columns = {
+            table: {row[1] for row in conn.execute(f"pragma table_info({table})")}
+            for table in required
+        }
+        return columns if all(required[t] <= columns[t] for t in required) else {}
+
+    def supports_conversation(self, sid: str) -> bool:
+        """Schema capability only; retained text and exact ownership are checked on read."""
+        if self.demo:
+            return False
+        try:
+            return bool(self._conversation_columns(self.conn))
+        except sqlite3.Error:
+            return False
+
+    def conversation_manifest(self, _root_id: str):
+        from opentab.conversation import source_manifest
+
+        # The duplicated WAL-index header publishes the committed WAL snapshot. Hash
+        # only that stable prefix: locks and reader marks later in -shm churn on reads.
+        db = os.path.abspath(self.db)
+        paths = [db] + ([db + "-wal"] if os.path.exists(db + "-wal") else [])
+        files = source_manifest(paths)
+        if files is None:
+            return None
+        shm = db + "-shm"
+        try:
+            with open(shm, "rb") as stream:
+                initial = os.fstat(stream.fileno())
+                header = stream.read(96)
+                final = os.fstat(stream.fileno())
+            current = os.stat(shm)
+        except FileNotFoundError:
+            wal_header = None
+        except OSError:
+            return None
+        else:
+
+            def stamp(info):
+                return (
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_size,
+                    info.st_mtime_ns,
+                    info.st_ctime_ns,
+                )
+
+            if (
+                len(header) != 96
+                or header[:48] != header[48:]
+                or stamp(initial) != stamp(final)
+                or stamp(initial) != stamp(current)
+            ):
+                return None
+            wal_header = hashlib.sha256(header[:48]).hexdigest()
+        return [files, wal_header]
+
+    def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:
+        """Read original retained messages for one exact execution, never accounting rows."""
+        from opentab.conversation import ConversationError
+
+        if self.demo:
+            raise ConversationError("conversation_unavailable", "Conversation is disabled in demo.")
+        selected = root_id if execution_id is None else execution_id
+        if (
+            not isinstance(root_id, str)
+            or not root_id
+            or not isinstance(selected, str)
+            or not selected
+        ):
+            raise ConversationError(
+                "conversation_unavailable", "Conversation execution is unavailable."
+            )
+        uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
+        try:
+            # A separate connection sees commits since startup and cannot read an unlinked
+            # database through the accounting connection's still-open file descriptor.
+            with closing(sqlite3.connect(uri, uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("begin")
+                columns = self._conversation_columns(conn)
+                if not columns:
+                    raise ConversationError(
+                        "conversation_unavailable", "Conversation schema is unavailable."
+                    )
+                executions = [
+                    dict(row)
+                    for row in conn.execute(
+                        """with recursive tree(id) as (
+                      select id from session where id = ?
+                      union
+                      select s.id from session s join tree on s.parent_id = tree.id
+                    ) select s.id, s.parent_id from session s join tree on s.id = tree.id
+                    order by s.id""",
+                        [root_id],
+                    )
+                ]
+                parents = {}
+                for execution in executions:
+                    sid = execution["id"]
+                    parent = execution["parent_id"]
+                    if (
+                        not isinstance(sid, str)
+                        or not sid
+                        or sid in parents
+                        or (parent is not None and not isinstance(parent, str))
+                    ):
+                        raise ConversationError(
+                            "conversation_unavailable", "Conversation ownership is ambiguous."
+                        )
+                    parents[sid] = parent
+                if root_id not in parents or selected not in parents:
+                    raise ConversationError(
+                        "conversation_unavailable", "Conversation execution is unavailable."
+                    )
+                resolved = set()
+                for sid in parents:
+                    path = set()
+                    while sid in parents and sid not in resolved:
+                        if sid in path:
+                            raise ConversationError(
+                                "conversation_unavailable", "Conversation ownership is ambiguous."
+                            )
+                        path.add(sid)
+                        sid = parents[sid]
+                    resolved.update(path)
+
+                # Without part.session_id the message ID is the entire ownership key.
+                # Reject duplicate IDs even on schemas without primary-key constraints.
+                duplicate = conn.execute(
+                    "select id from message where id in "
+                    "(select id from message where session_id = ?) "
+                    "group by id having count(*) > 1 limit 1",
+                    [selected],
+                ).fetchone()
+                if duplicate:
+                    raise ConversationError(
+                        "conversation_unavailable", "Conversation message identity is ambiguous."
+                    )
+                message_order = (
+                    "m.time_created, m.id"
+                    if "time_created" in columns["message"]
+                    else f"{_TL_TS}, m.id"
+                )
+                part_order = "p.time_created, p.id" if "time_created" in columns["part"] else "p.id"
+                timestamp = (
+                    f"coalesce({_TL_TS}, m.time_created)"
+                    if "time_created" in columns["message"]
+                    else _TL_TS
+                )
+                parent = (
+                    "m.parent_id"
+                    if "parent_id" in columns["message"]
+                    else "json_extract(m.data, '$.parentID')"
+                )
+                records = []
+                by_id = {}
+                for row in conn.execute(
+                    f"select m.id, json_extract(m.data, '$.role') as role, "
+                    f"{timestamp} as timestamp, {parent} as parent_id from message m "
+                    "where m.session_id = ? and json_extract(m.data, '$.role') in ('user', 'assistant') "
+                    f"order by {message_order}",
+                    [selected],
+                ):
+                    mid = row["id"]
+                    if not isinstance(mid, str) or not mid:
+                        raise ConversationError(
+                            "conversation_unavailable",
+                            "Conversation message identity is unavailable.",
+                        )
+                    record = {
+                        "id": "oc:" + mid,
+                        "message_id": mid,
+                        "record_id": mid,
+                        "parent_id": row["parent_id"],
+                        "execution_id": selected,
+                        "role": row["role"],
+                        "timestamp": row["timestamp"],
+                        "origin": "recorded-message",
+                        "source": {"message_id": mid},
+                        "parts": [],
+                    }
+                    records.append(record)
+                    by_id[mid] = record
+                ownership = (
+                    "and p.session_id = m.session_id" if "session_id" in columns["part"] else ""
+                )
+                text_rows = (
+                    f"from part p join message m on p.message_id = m.id {ownership} "
+                    "where m.session_id = ? and json_extract(m.data, '$.role') in ('user', 'assistant') "
+                    "and json_extract(p.data, '$.type') = 'text' "
+                    "and coalesce(json_extract(p.data, '$.synthetic'), 0) in (0, '') "
+                    "and json_type(p.data, '$.text') = 'text'"
+                )
+                # Preflight UTF-8 bytes inside SQLite; neither oversized text nor raw
+                # tool/reasoning/attachment blobs cross the SQL result boundary.
+                size = conn.execute(
+                    "select coalesce(sum(length(cast(json_extract(p.data, '$.text') as blob))), 0) "
+                    + text_rows,
+                    [selected],
+                ).fetchone()[0]
+                if size > CONVERSATION_TEXT_BUDGET:
+                    raise ConversationError(
+                        "conversation_too_large", "Conversation exceeds the source text budget."
+                    )
+                part_ids = set()
+                for row in conn.execute(
+                    "select p.id, p.message_id, json_extract(p.data, '$.text') as text "
+                    + text_rows
+                    + f" order by {part_order}",
+                    [selected],
+                ):
+                    pid = row["id"]
+                    if not isinstance(pid, str) or not pid or pid in part_ids:
+                        raise ConversationError(
+                            "conversation_unavailable", "Conversation part identity is ambiguous."
+                        )
+                    part_ids.add(pid)
+                    by_id[row["message_id"]]["parts"].append(
+                        {
+                            "id": pid,
+                            "text": row["text"],
+                            "source": {"part_id": pid},
+                        }
+                    )
+                result = {
+                    "records": records,
+                    "execution_id": selected,
+                    "executions": executions,
+                    "limitations": [
+                        "retained_messages_only",
+                        "synthetic_text_excluded",
+                        "non_text_parts_excluded",
+                    ],
+                    "ordering": f"messages: {message_order}; parts: {part_order}",
+                }
+                digest = hashlib.sha256()
+                for chunk in json.JSONEncoder(sort_keys=True, separators=(",", ":")).iterencode(
+                    {"root_id": root_id, **result}
+                ):
+                    digest.update(chunk.encode("utf-8"))
+                result["snapshot"] = digest.hexdigest()
+                return result
+        except (sqlite3.Error, OSError, UnicodeError):
+            raise ConversationError(
+                "conversation_unavailable", "Conversation source is unavailable."
+            ) from None
 
     def _owns_node(self, root_id: str, node_id: str) -> bool:
         if self.demo or not root_id or not node_id:

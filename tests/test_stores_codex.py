@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import opentab as ot
@@ -46,6 +47,652 @@ def _codex_item(kind, ts="2025-10-03T14:51:15.000Z", **fields):
 def _codex_rollout(root, sid, rows):
     # Codex files are named rollout-<ts>-<uuid>.jsonl; the uuid is the session id.
     _write_jsonl(os.path.join(root, f"rollout-2025-10-03T16-51-03-{sid}.jsonl"), rows)
+
+
+def _conversation_rollout(root, sid, rows=(), parent=None, name=None):
+    source = {"subagent": {"thread_spawn": {"parent_thread_id": parent}}} if parent else "cli"
+    path = Path(root) / (name or f"rollout-2025-10-03T16-51-03-{sid}.jsonl")
+    _write_jsonl(str(path), [_codex_meta(sid, str(root), source=source), *rows])
+    return path
+
+
+def _conversation_error(store, root, selected=None, code=None):
+    from opentab.conversation import ConversationError
+
+    try:
+        store.conversation_source(root, selected)
+    except ConversationError as exc:
+        if code:
+            assert exc.code == code, exc.code
+        assert "PRIVATE" not in str(exc)
+    else:
+        raise AssertionError("Expected a safe conversation error")
+
+
+def test_codex_conversation_reads_final_messages_without_usage_flush_or_accounting():
+    with tempfile.TemporaryDirectory() as tmp:
+        answer = "  Verbatim answer\n" + "x" * (TRACE_OUTPUT_CAP + 20) + "\n"
+        rows = [
+            _codex_user("question"),
+            _codex_turn("gpt-5-codex", tmp),
+            _codex_tokens(10, 5, 0, 15),
+        ]
+        rows.extend(
+            _codex_item(
+                "message",
+                role="assistant",
+                id="same-native-id",
+                content=[
+                    {"type": "output_text", "text": answer if i == 120 else "repeat"},
+                    {"type": "image", "text": "PRIVATE attachment"},
+                    {"type": "output_text", "text": "\nsecond block  "},
+                    {"type": "output_text", "text": ""},
+                ],
+            )
+            for i in range(121)
+        )
+        rows[-1].update(id="native-record", parent_id="native-parent", timestamp=None)
+        _conversation_rollout(tmp, CODEX_SID, rows)
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        workflows = store.workflows()
+        cache = store._sessions
+        with patch.object(
+            store, "_parse", side_effect=AssertionError("accounting parse")
+        ), patch.object(
+            store, "_parse_file", side_effect=AssertionError("accounting file parse")
+        ), patch.object(store, "_head_meta", side_effect=AssertionError("cached metadata")):
+            result = store.conversation_source(CODEX_SID)
+        assert store._sessions is cache
+        assert store.workflows() == workflows
+        records = result["records"]
+        assert len(records) == 122 and len({r["id"] for r in records}) == 122
+        assert [p["text"] for p in records[-1]["parts"]] == [answer, "\nsecond block  ", ""]
+        assert [p["id"] for p in records[-1]["parts"]] == ["0", "2", "3"]
+        assert [p["source"] for p in records[-1]["parts"]] == [
+            {"block_index": 0},
+            {"block_index": 2},
+            {"block_index": 3},
+        ]
+        assert records[-1]["message_id"] == "same-native-id"
+        assert records[-1]["record_id"] == "native-record"
+        assert records[-1]["parent_id"] == "native-parent"
+        assert records[-1]["timestamp"] is None
+        assert result["execution_id"] == CODEX_SID
+        assert result["executions"] == [{"id": CODEX_SID, "parent_id": None}]
+        assert "PRIVATE" not in json.dumps(result)
+        assert result == store.conversation_source(CODEX_SID)
+
+
+def test_codex_refresh_manifest_reuses_heads_and_tracks_content_ownership_and_winners():
+    child = "0299aa8e-1b9e-7912-bcd4-9b00c8733ea6"
+    other = "0399aa8e-1b9e-7912-bcd4-9b00c8733ea6"
+    with tempfile.TemporaryDirectory() as tmp:
+        sessions = Path(tmp) / "sessions"
+        sessions.mkdir()
+        root_path = _conversation_rollout(sessions, CODEX_SID, [_codex_user("root")])
+        _conversation_rollout(sessions, child, [_codex_user("child")], parent=CODEX_SID)
+        other_path = _conversation_rollout(sessions, other, [_codex_user("unrelated")])
+        store = ot.CodexStore(str(sessions), type("Args", (), {"demo": False})())
+        with patch.object(
+            store,
+            "_read_conversation_head",
+            wraps=store._read_conversation_head,
+        ) as heads:
+            store.prepare_conversation_refresh()
+            initial_calls = heads.call_count
+            initial = store.conversation_manifest(CODEX_SID)
+            assert initial and store.conversation_source(CODEX_SID)
+            assert store.conversation_source(CODEX_SID, child)
+            assert heads.call_count == initial_calls == 3
+            store.finish_conversation_refresh()
+
+        with other_path.open("a") as stream:
+            stream.write(json.dumps(_codex_user("unrelated change")) + "\n")
+        assert store.conversation_manifest(CODEX_SID) == initial
+
+        with root_path.open("a") as stream:
+            stream.write(json.dumps(_codex_user("changed")) + "\n")
+        changed = store.conversation_manifest(CODEX_SID)
+        assert changed != initial
+
+        resumed = _conversation_rollout(
+            sessions,
+            CODEX_SID,
+            [_codex_user("resumed")],
+            name=f"rollout-2025-10-04T16-51-03-{CODEX_SID}.jsonl",
+        )
+        with_resume = store.conversation_manifest(CODEX_SID)
+        assert with_resume != changed
+        resumed.unlink()
+        assert store.conversation_manifest(CODEX_SID) != with_resume
+
+        before_replace = store.conversation_manifest(CODEX_SID)
+        root_path.unlink()
+        root_path = _conversation_rollout(sessions, CODEX_SID, [_codex_user("replacement")])
+        assert store.conversation_manifest(CODEX_SID) != before_replace
+
+        before_reparent = store.conversation_manifest(CODEX_SID)
+        _conversation_rollout(sessions, child, [_codex_user("moved")], parent=other)
+        assert store.conversation_manifest(CODEX_SID) != before_reparent
+
+        archived = Path(tmp) / "archived_sessions"
+        archived.mkdir()
+        before_archive = store.conversation_manifest(CODEX_SID)
+        root_path.rename(archived / root_path.name)
+        assert store.conversation_manifest(CODEX_SID) != before_archive
+
+
+def test_codex_refresh_catalog_rejects_a_head_mutated_during_discovery():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _conversation_rollout(tmp, CODEX_SID, [_codex_user("before")])
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        read_head = store._read_conversation_head
+        mutated = False
+
+        def mutate_after_head(name):
+            nonlocal mutated
+            result = read_head(name)
+            if not mutated:
+                mutated = True
+                _write_jsonl(
+                    str(path),
+                    [
+                        _codex_meta(
+                            CODEX_SID,
+                            tmp,
+                            source={"subagent": {"thread_spawn": {"parent_thread_id": "foreign"}}},
+                        ),
+                        _codex_user("after"),
+                    ],
+                )
+            return result
+
+        with patch.object(store, "_read_conversation_head", side_effect=mutate_after_head):
+            store.prepare_conversation_refresh()
+        assert path.exists()
+        assert store.conversation_manifest(CODEX_SID) is None
+        _conversation_error(store, CODEX_SID)
+
+
+def test_codex_manifest_tracks_an_unidentified_missing_ancestor_candidate():
+    with tempfile.TemporaryDirectory() as tmp:
+        _conversation_rollout(tmp, "root", [_codex_user("root")], parent="missing")
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        initial_manifest = store.conversation_manifest("root")
+        initial_snapshot = store.conversation_source("root")["snapshot"]
+
+        candidate = Path(tmp) / "rollout-2025-10-04T16-51-03-missing.jsonl"
+        _write_jsonl(str(candidate), [_codex_user("metadata unavailable")])
+        assert store.conversation_manifest("root") != initial_manifest
+        assert store.conversation_source("root")["snapshot"] != initial_snapshot
+
+        candidate.unlink()
+        assert store.conversation_manifest("root") == initial_manifest
+        assert store.conversation_source("root")["snapshot"] == initial_snapshot
+
+
+def test_codex_conversation_zero_usage_keeps_prompt_representations_and_omits_nontext():
+    with tempfile.TemporaryDirectory() as tmp:
+        prompt = "  repeat\nverbatim  "
+        _conversation_rollout(
+            tmp,
+            CODEX_SID,
+            [
+                _codex_user(prompt),
+                _codex_user(prompt),
+                _codex_item(
+                    "message", role="user", content=[{"type": "input_text", "text": prompt}]
+                ),
+                {
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "item_completed",
+                        "item": {
+                            "type": "UserMessage",
+                            "id": "user-item",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image", "text": "PRIVATE image"},
+                                {"type": "text", "text": "second"},
+                            ],
+                        },
+                    },
+                },
+                _codex_item(
+                    "message", role="assistant", content=[{"type": "output_text", "text": "answer"}]
+                ),
+                _codex_item(
+                    "message", role="system", content=[{"type": "text", "text": "PRIVATE system"}]
+                ),
+                _codex_item(
+                    "reasoning", summary=[{"type": "summary_text", "text": "PRIVATE reasoning"}]
+                ),
+                _codex_item("function_call", arguments="PRIVATE args"),
+                _codex_item("function_call_output", output="PRIVATE output"),
+            ],
+        )
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        assert store.workflows() == []
+        result = store.conversation_source(CODEX_SID)
+        assert len(result["records"]) == 5
+        assert [r["origin"] for r in result["records"]] == [
+            "prompt-event",
+            "prompt-event",
+            "model-input",
+            "prompt-event",
+            "recorded-message",
+        ]
+        assert [r["parts"][0]["text"] for r in result["records"][:4]] == [prompt] * 4
+        assert result["records"][3]["message_id"] == "user-item"
+        assert len(result["records"][3]["parts"]) == 2
+        assert "PRIVATE" not in json.dumps(result)
+        assert any("tools, reasoning, and attachments" in note for note in result["limitations"])
+        assert store.workflows() == []
+
+
+def test_codex_conversation_exact_execution_ownership_and_metadata_only_discovery():
+    from opentab.conversation import read_jsonl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for sid, parent in (
+            ("root", None),
+            ("child", "root"),
+            ("sibling", "root"),
+            ("grandchild", "child"),
+            ("foreign", None),
+        ):
+            _conversation_rollout(tmp, sid, [_codex_user(sid)], parent=parent)
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        with patch("opentab.conversation.read_jsonl", wraps=read_jsonl) as reader:
+            result = store.conversation_source("root", "child")
+        assert len(reader.call_args.args[0]) == 1
+        assert reader.call_args.args[0][0].name.endswith("-child.jsonl")
+        assert [r["parts"][0]["text"] for r in result["records"]] == ["child"]
+        assert result["executions"] == [
+            {"id": "root", "parent_id": None},
+            {"id": "child", "parent_id": "root"},
+            {"id": "grandchild", "parent_id": "child"},
+            {"id": "sibling", "parent_id": "root"},
+        ]
+        assert [r["parts"][0]["text"] for r in store.conversation_source("root")["records"]] == [
+            "root"
+        ]
+        assert store.conversation_source("root", "grandchild")["execution_id"] == "grandchild"
+        for root, selected in (
+            ("root", "foreign"),
+            ("child", "sibling"),
+            ("root", "missing"),
+            ("missing", "child"),
+            ("root", ""),
+            ("", "child"),
+        ):
+            _conversation_error(store, root, selected)
+
+
+def test_codex_conversation_rejects_resumed_conflicting_ownership_and_cycles_freshly():
+    with tempfile.TemporaryDirectory() as tmp:
+        _conversation_rollout(tmp, "root")
+        _conversation_rollout(tmp, "other")
+        child = _conversation_rollout(tmp, "child", [_codex_user("PRIVATE child")], parent="root")
+        _conversation_rollout(tmp, "nested", parent="child")
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        assert store.conversation_source("root", "child")["records"]
+        for parent in ("other", None, "child", "nested"):
+            resumed = _conversation_rollout(tmp, "child", parent=parent, name="resumed-child.jsonl")
+            _conversation_error(store, "root", "child", "invalid_execution")
+            _conversation_error(store, "root", "nested", "invalid_execution")
+            assert {e["id"] for e in store.conversation_source("root")["executions"]} == {"root"}
+            resumed.unlink()
+        child.unlink()
+        _conversation_rollout(tmp, "child", parent="nested")
+        _conversation_error(store, "root", "nested", "invalid_execution")
+        _conversation_error(store, "child", code="invalid_execution")
+        _conversation_rollout(tmp, "root", parent="root")
+        _conversation_error(store, "root", code="invalid_execution")
+
+
+def test_codex_conversation_requires_metadata_not_filename_and_discovers_nonstandard_names():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        _conversation_error(store, CODEX_SID, code="source_unavailable")
+        path = Path(tmp) / f"rollout-{CODEX_SID}.jsonl"
+        _write_jsonl(str(path), [_codex_user("PRIVATE unidentified")])
+        _conversation_error(store, CODEX_SID, code="source_unavailable")
+        _write_jsonl(str(path), [_codex_meta("foreign", tmp), _codex_user("PRIVATE foreign")])
+        _conversation_error(store, CODEX_SID, code="source_unavailable")
+        path.unlink()
+        _conversation_rollout(tmp, CODEX_SID, [_codex_user("renamed")], name="nonstandard.jsonl")
+        result = store.conversation_source(CODEX_SID)
+        assert result["records"][0]["source"]["file"] == "nonstandard.jsonl"
+        assert any("64 KiB" in note for note in result["limitations"])
+        _write_jsonl(
+            str(Path(tmp) / "bare.jsonl"),
+            [{"id": "legacy", "git": {}}, _codex_user("legacy prompt")],
+        )
+        assert (
+            store.conversation_source("legacy")["records"][0]["parts"][0]["text"] == "legacy prompt"
+        )
+
+
+def test_codex_conversation_live_archive_and_resumed_copy_policy_preserves_occurrences():
+    from opentab.conversation import source_key
+
+    with tempfile.TemporaryDirectory() as tmp:
+        live, archive = Path(tmp) / "sessions", Path(tmp) / "archived_sessions"
+        live.mkdir()
+        archive.mkdir()
+        first = _conversation_rollout(live, CODEX_SID, [_codex_user("repeat")])
+        _conversation_rollout(archive, CODEX_SID, [_codex_user("PRIVATE ignored backup")])
+        resumed = _conversation_rollout(
+            archive,
+            CODEX_SID,
+            [_codex_user("repeat")],
+            name=f"rollout-2025-10-04-{CODEX_SID}.jsonl",
+        )
+        _conversation_rollout(archive, "archived-only", [_codex_user("archived")])
+        store = ot.CodexStore(str(live), type("Args", (), {"demo": False})())
+        result = store.conversation_source(CODEX_SID)
+        assert [r["parts"][0]["text"] for r in result["records"]] == ["repeat", "repeat"]
+        assert [r["id"] for r in result["records"]] == [
+            f"cx:{source_key(p)}:2" for p in (first, resumed)
+        ]
+        assert all(r["message_id"] == "line:2" for r in result["records"])
+        assert all(r["record_id"] is None and r["parent_id"] is None for r in result["records"])
+        assert "PRIVATE" not in json.dumps(result)
+        assert any("live tree first" in note for note in result["limitations"])
+        assert any("resumed" in note for note in result["limitations"])
+        assert (
+            store.conversation_source("archived-only")["records"][0]["parts"][0]["text"]
+            == "archived"
+        )
+        first.unlink()
+        fresh = store.conversation_source(CODEX_SID)
+        assert fresh["snapshot"] != result["snapshot"]
+        assert fresh["records"][0]["id"] != result["records"][0]["id"]
+
+
+def test_codex_conversation_strict_physical_lines_warn_and_mutations_change_snapshot():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _conversation_rollout(tmp, CODEX_SID, [_codex_user("before")])
+        with path.open("ab") as fh:
+            fh.write(b'\n{"PRIVATE":"bad\xff"}\n{broken\n[]\n')
+            fh.write(json.dumps(_codex_user("after")).encode("utf-8") + b"\n")
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        before = store.conversation_source(CODEX_SID)
+        assert [r["source"]["line"] for r in before["records"]] == [2, 7]
+        assert [r["parts"][0]["text"] for r in before["records"]] == ["before", "after"]
+        assert any(
+            "malformed" in note.lower() or "partial" in note.lower()
+            for note in before["limitations"]
+        )
+        assert "PRIVATE" not in json.dumps(before)
+        _conversation_rollout(tmp, CODEX_SID, [_codex_user("edited")])
+        after = store.conversation_source(CODEX_SID)
+        assert after["snapshot"] != before["snapshot"]
+        assert after["records"][0]["id"] == before["records"][0]["id"]
+        path.unlink()
+        _conversation_error(store, CODEX_SID, code="source_unavailable")
+
+
+def test_codex_conversation_snapshot_rejects_metadata_mutation_during_selected_read():
+    from opentab.conversation import read_jsonl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _conversation_rollout(tmp, "root")
+        _conversation_rollout(tmp, "child", [_codex_user("child")], parent="root")
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+
+        def mutate(paths):
+            result = read_jsonl(paths)
+            _conversation_rollout(tmp, "root", parent="foreign")
+            return result
+
+        with patch("opentab.conversation.read_jsonl", side_effect=mutate):
+            _conversation_error(store, "root", "child", "source_changed")
+
+
+def test_codex_conversation_unrelated_activity_during_read_preserves_snapshot():
+    from opentab.conversation import read_jsonl
+
+    for selected in (None, "child"):
+        with tempfile.TemporaryDirectory() as tmp:
+            _conversation_rollout(tmp, "root", [_codex_user("root")])
+            _conversation_rollout(tmp, "child", [_codex_user("child")], parent="root")
+            unrelated = _conversation_rollout(tmp, "unrelated", [_codex_user("old")])
+            store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+            before = store.conversation_source("root", selected)
+            for action in ("modify", "append", "add-root", "unrelated-metadata", "other-execution"):
+
+                def mutate(paths, action=action, unrelated=unrelated, selected=selected):
+                    result = read_jsonl(paths)
+                    if action == "modify":
+                        _conversation_rollout(tmp, "unrelated", [_codex_user("modified")])
+                    elif action == "append":
+                        with unrelated.open("a", encoding="utf-8") as fh:
+                            fh.write(json.dumps(_codex_user("appended")) + "\n")
+                    elif action == "add-root":
+                        _conversation_rollout(tmp, "new-unrelated", [_codex_user("new")])
+                    elif action == "unrelated-metadata":
+                        _write_jsonl(str(unrelated), [_codex_meta("unrelated", "changed-cwd")])
+                    elif selected:
+                        _conversation_rollout(tmp, "root", [_codex_user("ancestor text changed")])
+                    else:
+                        _conversation_rollout(
+                            tmp, "child", [_codex_user("child text changed")], parent="root"
+                        )
+                    return result
+
+                store.prepare_conversation_refresh()
+                try:
+                    with patch("opentab.conversation.read_jsonl", side_effect=mutate):
+                        during = store.conversation_source("root", selected)
+                finally:
+                    store.finish_conversation_refresh()
+                assert during == before, action
+                assert store.conversation_source("root", selected) == before, action
+
+
+def test_codex_conversation_relevant_activity_during_read_invalidates_snapshot():
+    from opentab.conversation import read_jsonl
+
+    for action in (
+        "selected-text",
+        "selected-parent",
+        "ancestor-parent",
+        "selected-resume",
+        "ancestor-resume",
+        "declared-descendant",
+        "new-descendant",
+        "adopt-unrelated",
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            _conversation_rollout(tmp, "root")
+            _conversation_rollout(tmp, "middle", parent="root")
+            _conversation_rollout(tmp, "child", [_codex_user("child")], parent="middle")
+            _conversation_rollout(tmp, "sibling", parent="root")
+            _conversation_rollout(tmp, "unrelated")
+            store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+
+            def mutate(paths, action=action):
+                result = read_jsonl(paths)
+                if action == "selected-text":
+                    _conversation_rollout(tmp, "child", [_codex_user("changed")], parent="middle")
+                elif action == "selected-parent":
+                    _conversation_rollout(tmp, "child", parent="unrelated")
+                elif action == "ancestor-parent":
+                    _conversation_rollout(tmp, "middle", parent="unrelated")
+                elif action == "selected-resume":
+                    _conversation_rollout(
+                        tmp, "child", parent="unrelated", name="resumed-child.jsonl"
+                    )
+                elif action == "ancestor-resume":
+                    _conversation_rollout(
+                        tmp, "middle", parent="unrelated", name="resumed-middle.jsonl"
+                    )
+                elif action == "declared-descendant":
+                    _conversation_rollout(tmp, "sibling", parent="unrelated")
+                elif action == "new-descendant":
+                    _conversation_rollout(tmp, "new-descendant", parent="sibling")
+                else:
+                    _conversation_rollout(tmp, "unrelated", parent="root")
+                return result
+
+            with patch("opentab.conversation.read_jsonl", side_effect=mutate):
+                _conversation_error(store, "root", "child", "source_changed")
+
+
+def test_codex_conversation_capability_is_static_and_demo_never_reads():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        with patch.object(
+            store, "_files", side_effect=AssertionError("unexpected read")
+        ), patch.object(store, "_parse", side_effect=AssertionError("unexpected parse")):
+            assert store.supports_conversation("not-present") is True
+            store.demo = True
+            assert store.supports_conversation(CODEX_SID) is False
+            _conversation_error(store, CODEX_SID, code="unsupported")
+
+
+def test_codex_conversation_snapshot_includes_root_metadata_for_child_reads():
+    with tempfile.TemporaryDirectory() as tmp:
+        root_path = _conversation_rollout(tmp, "root")
+        _conversation_rollout(tmp, "child", [_codex_user("child")], parent="root")
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        before = store.conversation_source("root", "child")
+        _write_jsonl(str(root_path), [_codex_meta("root", "different-metadata-cwd")])
+        after = store.conversation_source("root", "child")
+        assert before["records"] == after["records"]
+        assert before["snapshot"] != after["snapshot"]
+        _conversation_rollout(tmp, "sibling", parent="root")
+        assert after["snapshot"] != store.conversation_source("root", "child")["snapshot"]
+
+
+def test_codex_conversation_revalidates_all_selected_metadata_and_missing_ancestor_copies():
+    with tempfile.TemporaryDirectory() as tmp:
+        _conversation_rollout(tmp, "root")
+        _conversation_rollout(tmp, "child", parent="root")
+        path = _conversation_rollout(tmp, "nested", [_codex_user("PRIVATE nested")], parent="child")
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        assert store.conversation_source("root", "nested")["records"]
+        missing_meta = Path(tmp) / "resumed-child.jsonl"
+        _write_jsonl(str(missing_meta), [_codex_user("PRIVATE unknown ownership")])
+        _conversation_error(store, "root", "nested", "invalid_execution")
+        missing_meta.unlink()
+        for meta in (_codex_meta("foreign", tmp), {"type": "session_meta", "payload": {}}):
+            _conversation_rollout(
+                tmp, "nested", [_codex_user("PRIVATE nested"), meta], parent="child"
+            )
+            _conversation_error(store, "root", "nested")
+        path.unlink()
+        _conversation_error(store, "root", "nested", "source_unavailable")
+
+
+def test_codex_conversation_same_rollout_ancestor_conflicts_cannot_authorize_grandchildren():
+    for intervening in ([], [_codex_user("PRIVATE ancestor text " + "x" * 70000)]):
+        with tempfile.TemporaryDirectory() as tmp:
+            _conversation_rollout(tmp, "root")
+            _conversation_rollout(tmp, "foreign")
+            conflict = _codex_meta(
+                "middle",
+                tmp,
+                source={"subagent": {"thread_spawn": {"parent_thread_id": "foreign"}}},
+            )
+            _conversation_rollout(tmp, "middle", [*intervening, conflict], parent="root")
+            _conversation_rollout(
+                tmp, "grandchild", [_codex_user("PRIVATE grandchild")], parent="middle"
+            )
+            _conversation_rollout(tmp, "sibling", [_codex_user("allowed")], parent="root")
+            store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+            _conversation_error(store, "root", "middle", "invalid_execution")
+            _conversation_error(store, "root", "grandchild", "invalid_execution")
+            # The corrupt middle is not an ancestor of the sibling. Its body
+            # must not be scanned just because its head was discovered.
+            result = store.conversation_source("root", "sibling")
+            assert result["records"][0]["parts"][0]["text"] == "allowed"
+
+
+def test_codex_conversation_ancestor_tail_claims_are_fresh_but_text_is_not_snapshotted():
+    from opentab.conversation import read_jsonl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _conversation_rollout(tmp, "root")
+        middle = _conversation_rollout(tmp, "middle", parent="root")
+        _conversation_rollout(tmp, "grandchild", [_codex_user("grandchild")], parent="middle")
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        before = store.conversation_source("root", "grandchild")
+        for kind in ("text", "same-claim", "conflicting-claim"):
+
+            def mutate(paths, kind=kind):
+                result = read_jsonl(paths)
+                parent = "foreign" if kind == "conflicting-claim" else "root"
+                row = (
+                    _codex_user("PRIVATE more ancestor text")
+                    if kind == "text"
+                    else _codex_meta(
+                        "middle",
+                        tmp,
+                        source={"subagent": {"thread_spawn": {"parent_thread_id": parent}}},
+                    )
+                )
+                with middle.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(row) + "\n")
+                return result
+
+            with patch("opentab.conversation.read_jsonl", side_effect=mutate):
+                if kind == "conflicting-claim":
+                    _conversation_error(store, "root", "grandchild", "source_changed")
+                else:
+                    assert store.conversation_source("root", "grandchild") == before
+            if kind != "conflicting-claim":
+                assert store.conversation_source("root", "grandchild") == before
+
+
+def test_codex_conversation_ancestry_validation_has_bounded_safe_reads():
+    with tempfile.TemporaryDirectory() as tmp:
+        _conversation_rollout(tmp, "root", [_codex_user("PRIVATE " + "x" * 2048)])
+        _conversation_rollout(tmp, "child", [_codex_user("child")], parent="root")
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        for constant, limit in (("MAX_LINE_BYTES", 1024), ("MAX_SOURCE_BYTES", 1024)):
+            with patch("opentab.conversation." + constant, limit):
+                _conversation_error(store, "root", "child", "conversation_too_large")
+
+
+def test_codex_conversation_metadata_head_budget_is_bounded_and_explicit():
+    with tempfile.TemporaryDirectory() as tmp:
+        # A valid but huge first line must not make metadata-only discovery read
+        # the whole transcript or silently identify a later session_meta record.
+        path = Path(tmp) / f"rollout-{CODEX_SID}.jsonl"
+        _write_jsonl(str(path), [_codex_user("x" * 65536), _codex_meta(CODEX_SID, tmp)])
+        _conversation_rollout(tmp, "root")
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        _conversation_error(store, CODEX_SID, code="source_unavailable")
+        result = store.conversation_source("root")
+        assert result["records"] == []
+        assert any("64 KiB" in note for note in result["limitations"])
+
+
+def test_codex_conversation_propagates_shared_reader_limits_and_safe_errors():
+    from opentab.conversation import ConversationError
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _conversation_rollout(tmp, CODEX_SID, [_codex_user("PRIVATE selected")])
+        store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
+        with patch(
+            "opentab.conversation.read_jsonl",
+            side_effect=ConversationError(
+                "source_too_large", "Conversation source exceeds the read limit."
+            ),
+        ):
+            _conversation_error(store, CODEX_SID, code="source_too_large")
+
+
+def test_codex_conversation_relative_root_has_the_same_source_identity():
+    with tempfile.TemporaryDirectory() as tmp:
+        _conversation_rollout(tmp, CODEX_SID, [_codex_user("relative source")])
+        args = type("Args", (), {"demo": False})()
+        absolute = ot.CodexStore(tmp, args).conversation_source(CODEX_SID)
+        relative = ot.CodexStore(os.path.relpath(tmp), args).conversation_source(CODEX_SID)
+        assert relative == absolute
 
 
 def test_codex_node_prompt_reads_exact_child_user_events_without_usage():

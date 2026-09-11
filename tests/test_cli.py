@@ -6,6 +6,7 @@ import re
 import sqlite3
 import sys
 import tempfile
+from unittest.mock import patch
 
 import opentab as ot
 
@@ -36,6 +37,93 @@ from tests._support import (
     app_with,
     workflow,
 )
+
+
+def test_conversations_top_level_normalizes_and_dispatches_before_discovery():
+    from opentab import cli
+
+    for action in ("index", "search", "status", "clear"):
+        argv = ["conversations", action]
+        if action == "search":
+            argv.append("synthetic evidence")
+        if action != "status":
+            argv.append("--allow-raw-content")
+        assert cli._normalize_argv(argv) == argv
+        with (
+            patch.object(sys, "argv", ["opentab", *argv]),
+            patch("opentab.programmatic.command", return_value=7) as command,
+            patch.object(cli.paths, "migrate_legacy_caches") as migrate,
+            patch.object(cli, "resolve_source") as resolve,
+            patch.object(cli.sources, "make_store") as make_store,
+        ):
+            assert cli.main() == 7
+        args = command.call_args.args[0]
+        assert (args.command, args.action) == ("conversations", action)
+        migrate.assert_not_called()
+        resolve.assert_not_called()
+        make_store.assert_not_called()
+
+
+def test_conversations_parser_uses_global_message_dates_and_integer_budgets():
+    args = ot.parse_args(
+        [
+            "conversations",
+            "search",
+            "evidence",
+            "--allow-raw-content",
+            "--since",
+            "2026-09-01",
+            "--until",
+            "2026-09-11",
+            "--limit",
+            "100",
+            "--max-chars",
+            "120000",
+            "--harness",
+            "all",
+            "--from-harness",
+            "claude",
+        ]
+    )
+    assert (args.since, args.until) == ("2026-09-01", "2026-09-11")
+    assert (args.limit, args.max_chars) == (100, 120000)
+    assert (args.source, args.query_harness) == ("all", "claude")
+    assert not hasattr(args, "search") and not hasattr(args, "range")
+    args = ot.parse_args(["conversations", "search", "evidence", "--allow-raw-content"])
+    assert (args.limit, args.max_chars) == (10, 6000)
+    assert args.since is args.until is None
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        try:
+            ot.parse_args(["conversations", "search", "--help"])
+        except SystemExit as exc:
+            assert exc.code == 0
+    assert "message-date bound, not root-session" in out.getvalue()
+
+
+def test_conversations_parser_requires_explicit_permission_and_rejects_unknown_options():
+    invalid = [
+        ["conversations", "index"],
+        ["conversations", "clear"],
+        ["conversations", "search", "evidence"],
+        ["conversations", "search", "--allow-raw-content"],
+        ["conversations", "status", "--session", "root"],
+        ["conversations", "index", "--allow-raw-content", "--include-ignored"],
+        ["conversations", "search", "evidence", "--allow-raw-content", "--search", "title"],
+    ]
+    for flag in ("--limit", "--max-chars"):
+        for value in ("true", "1.5", "no"):
+            invalid.append(
+                ["conversations", "search", "evidence", "--allow-raw-content", flag, value]
+            )
+    for argv in invalid:
+        with contextlib.redirect_stderr(io.StringIO()):
+            try:
+                ot.parse_args(argv)
+            except SystemExit as exc:
+                assert exc.code == 2
+            else:
+                raise AssertionError(f"parser accepted {argv}")
 
 
 def _write_status_db(db, sessions, messages=()):

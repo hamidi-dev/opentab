@@ -412,6 +412,7 @@ _SUBCOMMANDS = (
     "forget",
     "usage",
     "sessions",
+    "conversations",
     "models",
     "sources",
     "notes",
@@ -1879,6 +1880,7 @@ def main() -> int:
     if getattr(args, "command", None) in {
         "usage",
         "sessions",
+        "conversations",
         "models",
         "sources",
         "notes",

@@ -479,6 +479,7 @@ class OpenTabService:
                 return False
 
         turns = supports("supports_turns")
+        conversation_supported = supports("supports_conversation")
         return {
             "nodes": bool(item.workflow.subagents),
             "turns": turns,
@@ -486,6 +487,10 @@ class OpenTabService:
             "context": supports("supports_context"),
             "context_curve": supports("supports_context_curve", turns),
             "raw_content": self.allow_raw_content and supports("supports_turn_content"),
+            "conversation_supported": conversation_supported,
+            "conversation": conversation_supported
+            and self.allow_raw_content
+            and not any(getattr(obj, "demo", False) for obj in (self.args, self.store, owner)),
         }
 
     def _serialize_models(self, item: _Session) -> list[dict]:
@@ -696,6 +701,475 @@ class OpenTabService:
             "content_key": content_key,
             "content": content.get(content_key, []),
         }
+
+    def session_conversation(
+        self,
+        value: str,
+        *,
+        execution_id: str | None = None,
+        anchor: str | None = None,
+        cursor: str | None = None,
+        limit: int = 20,
+        max_chars: int = 20000,
+        before: int = 0,
+        tail: bool = False,
+    ) -> dict:
+        if not self.allow_raw_content:
+            raise ServiceError("raw_content_disabled", "start OpenTab with --allow-raw-content")
+        if getattr(self.args, "demo", False) or getattr(self.store, "demo", False):
+            raise ServiceError("demo_unsupported", "conversation is unavailable in demo mode")
+
+        from opentab.conversation import ConversationError, validate_window, window
+
+        options = dict(
+            anchor=anchor, cursor=cursor, limit=limit, max_chars=max_chars, before=before, tail=tail
+        )
+        try:
+            validate_window(**options)
+            if execution_id is not None and (not isinstance(execution_id, str) or not execution_id):
+                raise ServiceError("invalid_execution_id", "execution_id must be a nonempty string")
+            if not isinstance(value, str) or not value:
+                raise ServiceError("invalid_session_ref", "session must be a nonempty string")
+            item = self.resolve_session(value)
+            root_key = item.ref.encode()
+            # The ordinary catalog index keeps one row per key; raw access must not
+            # silently choose a winner when even the fully qualified identity collides.
+            if sum(other.ref == item.ref for other in self._by_native[item.workflow.id]) != 1:
+                raise ServiceError(
+                    "ambiguous_session", "qualified session identity has multiple owners"
+                )
+            owner = item.owner
+            if getattr(owner, "demo", False):
+                raise ServiceError("demo_unsupported", "conversation is unavailable in demo mode")
+            supports = getattr(owner, "supports_conversation", None)
+            fetch = getattr(owner, "conversation_source", None)
+            if not callable(supports) or not callable(fetch) or not supports(item.workflow.id):
+                raise ServiceError(
+                    "conversation_unavailable", "this session has no local conversation reader"
+                )
+            source = fetch(item.workflow.id, execution_id=execution_id)
+            return window(source, root_key=root_key, **options)
+        except ConversationError as exc:
+            raise ServiceError(exc.code, exc.message) from exc
+        except (OSError, ValueError) as exc:
+            raise ServiceError(
+                "conversation_unavailable", "conversation source could not be read"
+            ) from exc
+
+    def _validate_conversation_scope(
+        self, *, project=None, harness=None, machine=None, session=None
+    ):
+        if not self.allow_raw_content:
+            raise ServiceError("raw_content_disabled", "start OpenTab with --allow-raw-content")
+        if any(getattr(obj, "demo", False) for obj in (self.args, self.store)):
+            raise ServiceError(
+                "demo_unsupported", "conversation search is unavailable in demo mode"
+            )
+        for name, value in (
+            ("project", project),
+            ("harness", harness),
+            ("machine", machine),
+            ("session", session),
+        ):
+            if value is not None and (not isinstance(value, str) or not value or len(value) > 8192):
+                raise ServiceError("invalid_arguments", f"{name} must be a nonempty bounded string")
+
+    def _conversation_scope(self, *, project=None, harness=None, machine=None, session=None):
+        self._validate_conversation_scope(
+            project=project, harness=harness, machine=machine, session=session
+        )
+        rows = self._filtered(
+            SessionQuery(project=project, harness=harness, machine=machine, sort="date"),
+            paginate=False,
+        )
+        if session is not None:
+            selected = self.resolve_session(session).ref
+            rows = [item for item in rows if item.ref == selected]
+        # Raw text must never inherit the catalog dictionary's last-wins behavior.
+        for item in rows:
+            if sum(other.ref == item.ref for other in self._by_native[item.workflow.id]) != 1:
+                raise ServiceError(
+                    "ambiguous_session", "qualified session identity has multiple owners"
+                )
+        return rows
+
+    @staticmethod
+    def _conversation_source_id(owner):
+        from opentab.conversation import source_key
+
+        for field in ("db", "root_dir"):
+            location = getattr(owner, field, None)
+            if isinstance(location, (str, os.PathLike)) and location:
+                return source_key(location)
+        return None
+
+    @staticmethod
+    def _conversation_manifest(owner, sid):
+        reader = getattr(owner, "conversation_manifest", None)
+        if not callable(reader):
+            return None
+        try:
+            return reader(sid)
+        except (OSError, ValueError):
+            return None
+
+    def index_conversations(
+        self, *, project=None, harness=None, machine=None, session=None, rebuild=False
+    ):
+        from opentab.conversation import CONVERSATION_READER_VERSION, ConversationError
+        from opentab.conversation_search import ConversationIndex
+
+        self._validate_conversation_scope(
+            project=project, harness=harness, machine=machine, session=session
+        )
+        if not isinstance(rebuild, bool):
+            raise ServiceError("invalid_arguments", "rebuild must be a boolean")
+        self.reload()
+        rows = self._conversation_scope(
+            project=project, harness=harness, machine=machine, session=session
+        )
+        eligible = {item.ref.encode(): item for item in rows}
+        selected_key = self.resolve_session(session).ref.encode() if session else None
+        domains = set()
+
+        def visit(store):
+            children = getattr(store, "stores", None)
+            if children is not None:
+                for child in children:
+                    visit(child)
+            elif callable(getattr(store, "conversation_source", None)):
+                name = str(getattr(store, "source_name", "")).lower()
+                source_id = self._conversation_source_id(store)
+                if source_id is not None:
+                    domains.add(
+                        (
+                            getattr(store, "_machine", None) or socket.gethostname(),
+                            _SOURCE_KEYS.get(name, name),
+                            source_id,
+                        )
+                    )
+
+        visit(self.store)
+        target_project = (
+            resolve_project_root(git_root(os.path.expanduser(project))) if project else None
+        )
+        target_harness = _SOURCE_KEYS.get(harness.lower(), harness.lower()) if harness else None
+        scope = dict(
+            project=target_project, harness=target_harness, machine=machine, session=session
+        )
+        report = {
+            "scope": scope,
+            "updated": 0,
+            "unchanged": 0,
+            "removed": 0,
+            "unsupported": 0,
+            "errors": [],
+        }
+        try:
+            with ConversationIndex(write=True) as index:
+                # Prune only the currently loaded local domains and requested scope.
+                # A narrow OpenCode refresh must not remove a Claude index built earlier.
+                for old in index.roots():
+                    if (old["machine"], old["harness"], old.get("source_id")) not in domains:
+                        continue
+                    if target_project and old["project"] != target_project:
+                        continue
+                    if target_harness and old["harness"] != target_harness:
+                        continue
+                    if machine and old["machine"] != machine:
+                        continue
+                    if selected_key and old["session_key"] != selected_key:
+                        continue
+                    if old["session_key"] not in eligible:
+                        index.remove_root(old["session_key"])
+                        report["removed"] += 1
+                indexed = {row["session_key"]: row for row in index.roots()}
+                manifests = index.manifests()
+                owners = []
+                for item in eligible.values():
+                    if all(item.owner is not owner for owner in owners):
+                        owners.append(item.owner)
+                prepared = []
+                try:
+                    for owner in owners:
+                        prepare = getattr(owner, "prepare_conversation_refresh", None)
+                        if callable(prepare):
+                            prepare()
+                            prepared.append(owner)
+                    for key, item in eligible.items():
+                        owner, sid = item.owner, item.workflow.id
+                        metadata = {
+                            "session_key": key,
+                            "native_id": sid,
+                            "harness": item.ref.harness,
+                            "machine": item.ref.machine,
+                            "project": item.project,
+                            "title": item.workflow.title,
+                            "source_id": self._conversation_source_id(owner),
+                        }
+                        before = self._conversation_manifest(owner, sid)
+                        source_manifest = (
+                            [CONVERSATION_READER_VERSION, before] if before is not None else None
+                        )
+                        old = indexed.get(key)
+                        if (
+                            not rebuild
+                            and source_manifest is not None
+                            and manifests.get(key) == source_manifest
+                            and old is not None
+                            and all(old.get(name) == value for name, value in metadata.items())
+                        ):
+                            report["unchanged"] += 1
+                            continue
+                        try:
+                            supports = getattr(owner, "supports_conversation", None)
+                            if (
+                                getattr(owner, "demo", False)
+                                or not callable(supports)
+                                or not supports(sid)
+                            ):
+                                index.remove_root(key)
+                                report["unsupported"] += 1
+                                continue
+                            root = owner.conversation_source(sid)
+                            sources = [root]
+                            for execution in root["executions"]:
+                                if execution["id"] != root["execution_id"]:
+                                    sources.append(
+                                        owner.conversation_source(sid, execution_id=execution["id"])
+                                    )
+                            # Refuse a mixed root membership/root-text snapshot during refresh.
+                            if (
+                                len(sources) > 1
+                                and owner.conversation_source(sid)["snapshot"] != root["snapshot"]
+                            ):
+                                raise ConversationError(
+                                    "source_changed", "Root changed during indexing"
+                                )
+                            after = self._conversation_manifest(owner, sid)
+                            if before is not None and after != before:
+                                raise ConversationError(
+                                    "source_changed", "Conversation sources changed during indexing"
+                                )
+                        except (ConversationError, OSError, ValueError) as exc:
+                            index.remove_root(key)
+                            report["errors"].append(
+                                {
+                                    "session_key": key,
+                                    "code": exc.code
+                                    if isinstance(exc, ConversationError)
+                                    else "conversation_unavailable",
+                                }
+                            )
+                            continue
+                        if rebuild:
+                            index.remove_root(key)
+                        result = index.replace_root(metadata, sources, source_manifest)
+                        report["updated" if result["changed"] else "unchanged"] += 1
+                finally:
+                    for owner in prepared:
+                        finish = getattr(owner, "finish_conversation_refresh", None)
+                        if callable(finish):
+                            finish()
+                report["index"] = index.status()
+        except ConversationError as exc:
+            raise ServiceError(exc.code, exc.message) from exc
+        report["complete"] = not report["errors"] and not report["unsupported"]
+        report["refresh_policy"] = (
+            "cheap source manifests skip unchanged roots; changed roots are read and verified; "
+            "no automatic refresh"
+        )
+        return report
+
+    def search_conversations(
+        self,
+        query,
+        *,
+        project=None,
+        harness=None,
+        machine=None,
+        session=None,
+        exclude_session=None,
+        since=None,
+        until=None,
+        limit=10,
+        max_chars=6000,
+    ):
+        from opentab.conversation import ConversationError
+        from opentab.conversation_search import ConversationIndex, validate_search
+
+        rows = self._conversation_scope(
+            project=project, harness=harness, machine=machine, session=session
+        )
+        try:
+            validate_search(query, since=since, until=until, limit=limit, max_chars=max_chars)
+            if exclude_session is not None:
+                if (
+                    not isinstance(exclude_session, str)
+                    or not exclude_session
+                    or len(exclude_session) > 8192
+                ):
+                    raise ServiceError(
+                        "invalid_arguments", "exclude_session must be a nonempty bounded string"
+                    )
+                if (
+                    exclude_session.startswith(SessionRef.PREFIX)
+                    or exclude_session in self._by_native
+                ):
+                    try:
+                        excluded = self.resolve_session(exclude_session).ref.encode()
+                    except ServiceError as exc:
+                        if exc.code != "session_not_found":
+                            raise
+                        excluded = exclude_session
+                else:
+                    excluded = exclude_session
+                rows = [
+                    item for item in rows if excluded not in (item.ref.encode(), item.workflow.id)
+                ]
+            eligible = {item.ref.encode(): item for item in rows}
+            expected_metadata = {
+                key: {
+                    "session_key": key,
+                    "native_id": item.workflow.id,
+                    "harness": item.ref.harness,
+                    "machine": item.ref.machine,
+                    "project": item.project,
+                    "title": item.workflow.title,
+                    "source_id": self._conversation_source_id(item.owner),
+                }
+                for key, item in eligible.items()
+            }
+            with ConversationIndex() as index:
+                indexed = {row["session_key"]: row for row in index.roots()}
+                current_metadata = {
+                    key
+                    for key, metadata in expected_metadata.items()
+                    if key in indexed and all(indexed[key].get(k) == v for k, v in metadata.items())
+                }
+                candidates = index.candidates(
+                    query,
+                    current_metadata,
+                    since=since,
+                    until=until,
+                    group_by="record" if session else "root",
+                )
+                status = index.status()
+            hits, seen, checked, stale = [], set(), {}, set()
+            stale_metadata = (set(eligible) & set(indexed)) - current_metadata
+            remaining = max_chars
+            checked_limit = min(100, max(20, limit * 3))
+            limited = candidates["limited"]
+            for candidate in candidates["hits"]:
+                key = candidate["session_key"]
+                if any(
+                    candidate["metadata"].get(k) != v for k, v in expected_metadata[key].items()
+                ):
+                    stale_metadata.add(key)
+                    continue
+                identity = (key, candidate["execution_id"])
+                group = (key, candidate["execution_id"], candidate["record_id"]) if session else key
+                if group in seen:
+                    continue
+                if identity not in checked:
+                    if len(checked) >= checked_limit:
+                        limited = True
+                        break
+                    item = eligible[key]
+                    owner = item.owner
+                    supports = getattr(owner, "supports_conversation", None)
+                    try:
+                        if (
+                            getattr(owner, "demo", False)
+                            or not callable(supports)
+                            or not supports(item.workflow.id)
+                        ):
+                            raise ConversationError("conversation_unavailable", "No local reader")
+                        source = owner.conversation_source(
+                            item.workflow.id, execution_id=candidate["execution_id"]
+                        )
+                        checked[identity] = (
+                            source["snapshot"],
+                            {r["id"] for r in source["records"]},
+                        )
+                        del source
+                    except (ConversationError, OSError, ValueError):
+                        checked[identity] = None
+                current = checked[identity]
+                if (
+                    current is None
+                    or current[0] != candidate["snapshot"]
+                    or candidate["record_id"] not in current[1]
+                ):
+                    stale.add(identity)
+                    continue
+                excerpt = candidate["excerpt"]
+                excerpt_truncated = len(excerpt) > remaining
+                if excerpt_truncated:
+                    match_offset = candidate.get("match_offset")
+                    start = (
+                        0
+                        if match_offset is None
+                        else max(
+                            0,
+                            min(
+                                match_offset - max(0, (remaining - candidate["match_length"]) // 2),
+                                len(excerpt) - remaining,
+                            ),
+                        )
+                    )
+                    excerpt = excerpt[start : start + remaining]
+                if not excerpt:
+                    continue
+                item = eligible[key]
+                hits.append(
+                    {
+                        "session_key": key,
+                        "native_id": item.workflow.id,
+                        "harness": item.ref.harness,
+                        "machine": item.ref.machine,
+                        "project": item.project,
+                        "title": item.workflow.title,
+                        **{
+                            field: candidate[field]
+                            for field in (
+                                "execution_id",
+                                "record_id",
+                                "message_id",
+                                "timestamp",
+                                "source",
+                                "chunk_start",
+                                "chunk_end",
+                                "rank",
+                            )
+                        },
+                        "anchor": candidate["record_id"],
+                        "excerpt": excerpt,
+                        "excerpt_truncated": excerpt_truncated,
+                        "match_fields": candidate.get("match_fields", ["text", "title"]),
+                        "limitations": indexed.get(key, {}).get("limitations", []),
+                    }
+                )
+                seen.add(group)
+                remaining -= len(excerpt)
+                if len(hits) >= limit or remaining == 0:
+                    limited = True
+                    break
+            return {
+                "hits": hits,
+                "match_mode": candidates["mode"],
+                "grouping": "record" if session else "root_session",
+                "returned_chars": max_chars - remaining,
+                "limited": limited,
+                "index": status,
+                "unindexed_roots": len(set(eligible) - set(indexed)),
+                "stale_executions_skipped": len(stale),
+                "stale_metadata_roots_skipped": len(stale_metadata),
+                "date_scope": "inclusive UTC message dates; unknown timestamps excluded when filtered",
+                "freshness": "matched source snapshots checked live; update index explicitly for new/changed text",
+            }
+        except ConversationError as exc:
+            raise ServiceError(exc.code, exc.message) from exc
 
     def summary(self, query: SessionQuery | None = None, *, group_by: str = "none") -> dict:
         query = query or SessionQuery(limit=MAX_LIMIT)

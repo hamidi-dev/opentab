@@ -143,7 +143,7 @@ Run the newline-delimited JSON-RPC server over stdio:
 opentab mcp
 ```
 
-A typical MCP client entry is:
+A typical MCP client entry for usage queries and session metadata is:
 
 ```json
 {
@@ -156,8 +156,32 @@ A typical MCP client entry is:
 }
 ```
 
+**Optional: enable conversation retrieval and raw traces.** Add `--allow-raw-content`
+to the server arguments and restart the MCP server:
+
+```json
+{
+  "mcpServers": {
+    "opentab": {
+      "command": "opentab",
+      "args": ["mcp", "--allow-raw-content"]
+    }
+  }
+}
+```
+
+Without this flag, conversation reads, search, indexing, and raw trace reads are
+disabled; ordinary usage queries still work. Enabling it does not index anything
+automatically. When you explicitly ask your agent to build or refresh the local
+conversation index, it can call `opentab_index_conversations` with
+`confirm_index: true`. This persists sensitive conversation text in plaintext.
+Conversation search and reads require `confirm_raw: true`; returned text can enter
+the agent's model context. See [conversation search](conversation-search.md) for
+setup, supported sources, and refresh behavior.
+
 The server advertises tools for summaries, session discovery and detail, model
-prices and comparisons, notes, bookmarks/ignores/pins, source discovery, and reload.
+prices and comparisons, notes, bookmarks/ignores/pins, source discovery, reload,
+and conversation reads, search, indexing, and index status.
 Tool inputs reject unknown fields, wrong JSON types, unsupported enum values, and
 out-of-range pagination before they reach a store. Domain failures are successful
 JSON-RPC responses with `isError: true`, allowing the client to inspect the stable
@@ -189,6 +213,102 @@ checked before reading raw content, including before any remote trace transport.
 `--include-content-keys` (MCP: `include_content_keys: true`) lists opaque keys without
 fetching traces, even when raw-content permission is enabled. Requesting full
 prompts is separate from requesting keys.
+
+### Reading conversation records
+
+`sessions conversation` is a public **record-reading API, not conversation search**.
+It reads retained user/assistant text from local OpenCode, Claude Code, and Codex
+records, independently of usage-bearing turns. Zero-usage messages inside an
+accessible session are preserved. Tools, reasoning, and attachments are not part
+of this text-only view; use the separately gated turn-content API for raw traces.
+
+```sh
+opentab sessions conversation SESSION_KEY --allow-raw-content
+opentab sessions conversation SESSION_KEY --allow-raw-content --tail --limit 10
+opentab sessions conversation SESSION_KEY --allow-raw-content --cursor NEXT_CURSOR
+opentab sessions conversation SESSION_KEY --allow-raw-content --anchor ANCHOR --before 3
+opentab sessions conversation SESSION_KEY --allow-raw-content --execution-id CHILD_ID
+```
+
+The qualified **root must already be present in the selected session catalog**.
+There is no separate conversation-only catalog; sessions absent from usage
+discovery cannot be addressed through this API or conversation search. Unique
+native root IDs also work, but qualified keys avoid machine/harness collisions.
+Even a fully qualified key is rejected if it has duplicate catalog entries.
+
+Default scope is **only the root execution**, not a merged descendant conversation.
+Use precise child IDs from the response's `executions` list as `--execution-id`;
+keep the catalog root as `SESSION_KEY`. Do not substitute an agent name, a sibling
+ID, or a child ID as the root selector. Each read returns only the selected
+execution's records. These are **retained original occurrences, not active-branch
+reconstruction**: replayed prompts, resumed rollouts, and discarded branches may
+remain as separate occurrences. Consult `ordering`, `origin`, source locators, and
+`limitations` rather than assuming a normalized transcript or complete retention.
+
+| Option | Default | Bounds / behavior |
+|--------|---------|-------------------|
+| `limit` | 20 | 1..100 records |
+| `max_chars` | 20000 | 1..120000 text characters |
+| `before` | 0 | 0..99 records before an anchor; nonzero requires `anchor` |
+| `anchor` | absent | Nonempty returned record anchor, at most 1024 characters |
+| `cursor` | absent | Opaque `next_cursor`, at most 8192 characters |
+| `tail` | false | Select the last window |
+| `execution_id` | root | Nonempty exact execution ID from `executions` |
+
+`anchor`, `cursor`, and `tail=true` are mutually exclusive. Windows return bounded
+structured `records`, execution metadata, and `next_cursor` for continuation.
+Keep anchors/cursors opaque and tied to the same qualified root and execution;
+changed source snapshots can invalidate continuation. The text budget is not a
+byte cap on the entire JSON envelope. Python callers use the same options:
+
+```python
+service = OpenTabService(store, args, allow_raw_content=True)
+result = service.session_conversation(session_key, limit=20, max_chars=20000)
+```
+
+MCP exposes `opentab_get_session_conversation` with these same option names,
+`session`, and required `confirm_raw: true`. The server must also have been started
+with `--allow-raw-content`. Confirmation is checked before lazy service creation;
+the service checks permission before resolution and validates options before a
+conversation reader runs. Demo is rejected even if enabled after construction.
+Shared reader/window errors retain their stable code and message as `ServiceError`,
+CLI error envelopes, or MCP tool errors.
+
+Session detail reports `capabilities.conversation_supported` independently of raw
+permission, and `capabilities.conversation` only when supported and enabled.
+Capability checks do not read conversation text or guarantee retained source
+availability. This API is **local only**: remote summaries do not support it and
+never trigger SSH conversation reads. Conversation records, anchors, and cursors
+are not added to rollup caches, web reports, or fleet exports. OpenTab does not
+persist content merely by reading a conversation; CLI/MCP clients can retain their
+requested output. The separate [conversation search index](conversation-search.md)
+persists text only through an explicit indexing operation. Its `conversations
+index/search/status/clear` commands and MCP tools do not change the metadata-only
+meaning of `sessions list --search`.
+
+**Reading the response:** `records[].id` identifies a source occurrence, while
+`message_id` and `record_id` preserve native IDs where available. An exact native
+message/record ID can also be an anchor, but duplicate occurrences produce
+`ambiguous_anchor`; use the source-qualified returned `id` instead. Each record
+retains its role, raw timestamp, parent/execution IDs and ordered text `parts`.
+
+Large messages continue across pages rather than disappearing behind a fixed
+first-80-message limit. Each part reports `text_offset`, `text_total_chars` and
+`truncated`; a continued part keeps its ID. Reassemble by record/part identity and
+offset, not by appending whole rendered messages. `record_complete` means that
+this response contains the entire text-only record. `has_more` / `next_cursor`
+describe forward continuation; `has_earlier` says the window starts after the
+beginning. `history_completeness` remains `unknown`, even at the end of a page
+sequence: missing/deleted history and omitted nontext are not reconstructed.
+
+Reads are fresh and bounded at source as well as output. OpenCode permits up to
+256 MiB of selected text; JSONL permits up to 256 MiB of selected file data and
+8 MiB per physical line. An oversized **excluded tool-result line** can therefore
+make a JSONL source unavailable with `conversation_too_large`. JSONL parse errors
+are surfaced as a skipped-record limitation, not repaired or silently considered
+complete. Budgets and strict parsing bound failure cases; they are not an archive
+or a promise to read every damaged/oversized transcript. Unflagged wrapper-like
+text remains verbatim; explicit synthetic flags are excluded where recorded.
 
 ### Remote content
 

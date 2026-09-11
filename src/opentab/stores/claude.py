@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
+from pathlib import Path
 from typing import NamedTuple
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
@@ -997,6 +999,224 @@ class ClaudeStore:
         # showing another session's work.
         paths = self._transcripts(workflow_id)
         return bool(paths) and not any(self._replays_history(p) for p in paths)
+
+    def supports_conversation(self, sid: str) -> bool:
+        """Cheap source availability only; ownership is validated on the fresh read."""
+        return bool(
+            not self.demo
+            and isinstance(sid, str)
+            and re.fullmatch(r"[A-Za-z0-9_-]+", sid)
+            and self._transcripts(sid)
+        )
+
+    def conversation_manifest(self, root_id: str):
+        from opentab.conversation import source_manifest
+
+        if (
+            self.demo
+            or not isinstance(root_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", root_id)
+        ):
+            return None
+        paths = self._transcripts(root_id)
+        return source_manifest(paths) if paths else None
+
+    def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:
+        """Read recorded text occurrences, independently of usage and trace caches."""
+        from opentab.conversation import ConversationError, read_jsonl, source_key
+
+        if self.demo:
+            raise ConversationError("unavailable", "Conversation content is disabled in demo mode.")
+        if not isinstance(root_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", root_id):
+            raise ConversationError("not_found", "The exact root session was not found.")
+        selected = root_id if execution_id is None else execution_id
+        if not isinstance(selected, str) or not selected:
+            raise ConversationError("not_found", "The exact execution was not found.")
+        paths = sorted({Path(p).absolute() for p in self._transcripts(root_id)})
+        if not paths:
+            raise ConversationError("not_found", "The root transcript is missing.")
+        located, read_snapshot, limitations = read_jsonl(paths)
+        limitations = list(limitations)
+        limitations.extend(
+            [
+                "Recorded occurrences are retained; replay and active-branch status may be unknown.",
+                "User-role text is recorded/model-input text, not necessarily human-authored.",
+            ]
+        )
+        graph: dict[str, tuple[str | None, bool]] = {}
+        root_uuids: set[str] = set()
+        replay_paths: set[Path] = set()
+        counts: dict[str, int] = {}
+        matched = False
+        for path, _line, obj in located:
+            if not isinstance(obj, dict):
+                continue
+            if "sessionKind" in obj:
+                replay_paths.add(path)
+            sid = obj.get("sessionId")
+            if sid is not None and sid != root_id:
+                raise ConversationError(
+                    "ambiguous_execution", "A selected source has foreign session ownership."
+                )
+            if obj.get("type") in ("user", "assistant") and sid != root_id:
+                raise ConversationError(
+                    "ambiguous_execution", "A message has no verified session ownership."
+                )
+            if sid != root_id:
+                continue
+            matched = True
+            uuid, parent = obj.get("uuid"), obj.get("parentUuid")
+            side = obj.get("isSidechain", False)
+            if not isinstance(side, bool) or (parent is not None and not isinstance(parent, str)):
+                raise ConversationError(
+                    "ambiguous_execution", "A record has invalid execution ownership."
+                )
+            if uuid is not None and (not isinstance(uuid, str) or not uuid):
+                raise ConversationError("ambiguous_execution", "A record has an invalid UUID.")
+            if side and not uuid:
+                raise ConversationError("ambiguous_execution", "A sidechain record has no UUID.")
+            if uuid:
+                edge = (parent, side)
+                if uuid in graph and graph[uuid] != edge:
+                    raise ConversationError(
+                        "ambiguous_execution", "Record copies have conflicting execution ownership."
+                    )
+                graph[uuid] = edge
+                counts[uuid] = counts.get(uuid, 0) + 1
+                if not side and self._sidecar_owner(str(path)) is None:
+                    root_uuids.add(uuid)
+        if not matched:
+            raise ConversationError("not_found", "No records verify the selected root session.")
+
+        # Resolve every sidechain, including unanswered/zero-usage runs. Unknown
+        # parents and cycles cannot establish a run root; never guess from a filename.
+        owners: dict[str, str] = {u: root_id for u, (_, side) in graph.items() if not side}
+        for uuid, (parent, side) in graph.items():
+            if not side:
+                if parent in graph and graph[parent][1]:
+                    raise ConversationError(
+                        "ambiguous_execution", "A root record links into a sidechain."
+                    )
+                continue
+            chain: list[str] = []
+            visiting: set[str] = set()
+            current = uuid
+            while current not in owners:
+                if current in visiting:
+                    raise ConversationError(
+                        "ambiguous_execution", "The sidechain ownership graph contains a cycle."
+                    )
+                visiting.add(current)
+                chain.append(current)
+                parent = graph[current][0]
+                if parent is None or (parent in graph and not graph[parent][1]):
+                    owner = current
+                    break
+                if parent not in graph:
+                    raise ConversationError(
+                        "ambiguous_execution", "A sidechain parent record is missing."
+                    )
+                current = parent
+            else:
+                owner = owners[current]
+            for member in chain:
+                owners[member] = owner
+        runs = sorted({owner for uuid, owner in owners.items() if graph[uuid][1]})
+        if root_id in runs:
+            raise ConversationError(
+                "ambiguous_execution", "Root and sidechain execution IDs conflict."
+            )
+        executions = [{"id": root_id, "parent_id": None}] + [
+            {"id": run, "parent_id": root_id} for run in runs
+        ]
+        if selected != root_id and selected not in runs:
+            raise ConversationError("not_found", "The exact execution is not owned by this root.")
+
+        records = []
+        excluded = False
+        for path, line, obj in located:
+            if not isinstance(obj, dict) or obj.get("sessionId") != root_id:
+                continue
+            role, msg = obj.get("type"), obj.get("message")
+            if role not in ("user", "assistant") or not isinstance(msg, dict):
+                if role == "attachment":
+                    excluded = True
+                continue
+            uuid = obj.get("uuid")
+            side = obj.get("isSidechain") is True
+            if self._sidecar_owner(str(path)) is not None and not side and uuid not in root_uuids:
+                raise ConversationError(
+                    "ambiguous_execution", "A sidecar message has unresolved execution ownership."
+                )
+            owner = owners[uuid] if side else root_id
+            if owner != selected:
+                continue
+            if (
+                obj.get("isMeta")
+                or obj.get("isSynthetic")
+                or obj.get("isCompactSummary")
+                or msg.get("model") == "<synthetic>"
+            ):
+                excluded = True
+                continue
+            content = msg.get("content")
+            blocks = [content] if isinstance(content, str) else content
+            if not isinstance(blocks, list):
+                excluded = True
+                continue
+            parts = []
+            for index, block in enumerate(blocks):
+                text = block
+                if isinstance(block, dict):
+                    text = block.get("text") if block.get("type") == "text" else None
+                if not isinstance(text, str):
+                    excluded = True
+                    continue
+                parts.append({"id": str(index), "text": text, "source": {"block_index": index}})
+            if not parts:
+                continue
+            source_id = source_key(path)
+            origin = "recorded sidechain" if side else "recorded root"
+            if path in replay_paths or (uuid and counts[uuid] > 1):
+                origin += "; possible replay occurrence"
+            if role == "user":
+                origin += "; recorded/model-input"
+            records.append(
+                {
+                    "id": f"cl:{source_id}:{line}",
+                    "message_id": msg.get("id") or uuid or f"line:{line}",
+                    "record_id": uuid,
+                    "parent_id": obj.get("parentUuid"),
+                    "execution_id": owner,
+                    "role": role,
+                    "timestamp": obj.get("timestamp"),
+                    "origin": origin,
+                    "source": {"source_id": source_id, "file": path.name, "line": line},
+                    "parts": parts,
+                }
+            )
+        if excluded:
+            limitations.append(
+                "Tools, thinking, attachments and explicitly flagged meta/synthetic/compaction content are excluded."
+            )
+        if replay_paths or any(count > 1 for count in counts.values()):
+            limitations.append(
+                "Replay/copy occurrences are retained with source provenance; native message anchors may be ambiguous."
+            )
+        snapshot = hashlib.sha256(
+            json.dumps(
+                [root_id, selected, read_snapshot, executions, sorted(owners.items())],
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return {
+            "records": records,
+            "snapshot": snapshot,
+            "execution_id": selected,
+            "executions": executions,
+            "limitations": list(dict.fromkeys(limitations)),
+            "ordering": "source path order, then physical line order; not reconstructed active-branch chronology",
+        }
 
     def node_prompt(self, workflow_id: str, node_id: str) -> str | None:
         """Read a uniquely owned subagent's initial user message, never its title."""

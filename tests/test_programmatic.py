@@ -1,11 +1,12 @@
 import contextlib
 import io
 import json
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import opentab as ot
 import opentab.programmatic as programmatic
 import opentab.service as service_module
+from opentab.conversation import ConversationError
 
 from tests._support import FakeStore, workflow
 
@@ -162,3 +163,270 @@ def test_programmatic_domain_failures_are_json_and_nonzero():
         "message": "gone",
         "details": {"session": "missing"},
     }
+
+
+def test_conversation_cli_requires_opt_in_and_rejects_bad_selector_types():
+    for argv in (
+        ["sessions", "conversation", "root"],
+        ["sessions", "conversation", "root", "--allow-raw-content", "--limit", "true"],
+        ["sessions", "conversation", "root", "--allow-raw-content", "--max-chars", "1.5"],
+        ["sessions", "conversation", "root", "--allow-raw-content", "--before", "no"],
+        ["sessions", "conversation", "root", "--allow-raw-content", "--anchor", "a", "--tail"],
+        [
+            "sessions",
+            "conversation",
+            "root",
+            "--allow-raw-content",
+            "--cursor",
+            "c",
+            "--anchor",
+            "a",
+        ],
+    ):
+        with contextlib.redirect_stderr(io.StringIO()), patch.object(
+            ot.OpenTabService, "open"
+        ) as opened:
+            try:
+                ot.parse_args(argv)
+                raise AssertionError("expected parser rejection")
+            except SystemExit as exc:
+                assert exc.code == 2
+            opened.assert_not_called()
+
+
+def test_conversation_cli_forwards_all_options_without_falling_into_content():
+    defaults = dict(
+        execution_id=None, anchor=None, cursor=None, limit=20, max_chars=20000, before=0, tail=False
+    )
+    for flags, expected in (
+        ([], defaults),
+        (
+            [
+                "--execution-id",
+                "child",
+                "--anchor",
+                "a",
+                "--before",
+                "2",
+                "--limit",
+                "7",
+                "--max-chars",
+                "99",
+            ],
+            {
+                **defaults,
+                "execution_id": "child",
+                "anchor": "a",
+                "before": 2,
+                "limit": 7,
+                "max_chars": 99,
+            },
+        ),
+        (["--cursor", "opaque"], {**defaults, "cursor": "opaque"}),
+        (["--tail"], {**defaults, "tail": True}),
+    ):
+        args = ot.parse_args(
+            ["sessions", "conversation", "qualified-root", "--allow-raw-content", *flags]
+        )
+        service = Mock()
+        service.session_conversation.return_value = {"records": [], "execution_id": "root"}
+        out = io.StringIO()
+        with patch.object(
+            ot.OpenTabService, "open", return_value=service
+        ) as opened, contextlib.redirect_stdout(out):
+            assert programmatic.command(args) == 0
+        opened.assert_called_once_with(args, allow_raw_content=True)
+        service.session_conversation.assert_called_once_with("qualified-root", **expected)
+        service.session_content.assert_not_called()
+        assert json.loads(out.getvalue()) == {
+            "schema_version": "1",
+            "ok": True,
+            "data": service.session_conversation.return_value,
+        }
+
+
+def test_conversation_cli_shared_validation_errors_are_json_without_reader_calls():
+    from tests.test_service import ConversationStore
+
+    args = ot.parse_args(
+        ["sessions", "conversation", "root", "--allow-raw-content", "--limit", "101"]
+    )
+    store = ConversationStore([workflow("root", "2026-09-01 12:00:00")])
+    service = ot.OpenTabService(store, args, allow_raw_content=True)
+    out = io.StringIO()
+    with patch.object(ot.OpenTabService, "open", return_value=service), contextlib.redirect_stdout(
+        out
+    ):
+        assert programmatic.command(args) == 1
+    assert json.loads(out.getvalue())["error"]["code"].startswith("invalid")
+    assert store.reads == store.probes == []
+
+
+def test_conversations_cli_forwards_index_and_search_without_session_queries():
+    scope = dict(project=None, harness=None, machine=None, session=None)
+    for action in ("index", "search"):
+        for scoped in (False, True):
+            argv = ["conversations", action]
+            if action == "search":
+                argv.append("synthetic evidence")
+            argv.append("--allow-raw-content")
+            expected = dict(scope)
+            if scoped:
+                argv += [
+                    "--project",
+                    "/synthetic/project",
+                    "--from-harness",
+                    "claude",
+                    "--machine",
+                    "synthetic-box",
+                    "--session",
+                    "qualified-root",
+                ]
+                expected.update(
+                    project="/synthetic/project",
+                    harness="claude",
+                    machine="synthetic-box",
+                    session="qualified-root",
+                )
+            if action == "index":
+                expected["rebuild"] = scoped
+                if scoped:
+                    argv.append("--rebuild")
+            else:
+                expected.update(
+                    exclude_session=None, since=None, until=None, limit=10, max_chars=6000
+                )
+                if scoped:
+                    argv += [
+                        "--exclude-session",
+                        "current",
+                        "--since",
+                        "2026-09-01",
+                        "--until",
+                        "2026-09-11",
+                        "--limit",
+                        "7",
+                        "--max-chars",
+                        "99",
+                    ]
+                    expected.update(
+                        exclude_session="current",
+                        since="2026-09-01",
+                        until="2026-09-11",
+                        limit=7,
+                        max_chars=99,
+                    )
+            args = ot.parse_args(argv)
+            service = Mock(spec=["index_conversations", "search_conversations"])
+            method = getattr(service, f"{action}_conversations")
+            method.return_value = {"synthetic": True}
+            out = io.StringIO()
+            with (
+                patch.object(ot.OpenTabService, "open", return_value=service) as opened,
+                patch.object(
+                    programmatic, "query_from_args", side_effect=AssertionError("session query")
+                ),
+                contextlib.redirect_stdout(out),
+            ):
+                assert programmatic.command(args) == 0
+            opened.assert_called_once_with(args, allow_raw_content=True)
+            method.assert_called_once_with(
+                *(["synthetic evidence"] if action == "search" else []), **expected
+            )
+            assert json.loads(out.getvalue()) == {
+                "schema_version": "1",
+                "ok": True,
+                "data": {"synthetic": True},
+            }
+
+
+def test_conversations_cli_maintenance_is_dynamic_and_never_discovers_sources():
+    for action, method in (("status", "index_status"), ("clear", "clear_index")):
+        argv = ["conversations", action, "--harness", "opencode", "--db", "/missing/synthetic.db"]
+        if action == "clear":
+            argv.append("--allow-raw-content")
+        args = ot.parse_args(argv)
+        helper = Mock(spec=["index_status", "clear_index"])
+        getattr(helper, method).return_value = {"exists": False, "records": 0}
+        out = io.StringIO()
+        with (
+            patch.object(ot, "conversation_search", helper, create=True),
+            patch.object(
+                ot.OpenTabService, "open", side_effect=AssertionError("service discovery")
+            ) as opened,
+            patch.object(
+                programmatic.sources,
+                "resolve_source",
+                side_effect=AssertionError("source discovery"),
+            ),
+            patch.object(
+                programmatic.sources,
+                "available_sources",
+                side_effect=AssertionError("source discovery"),
+            ),
+            patch.object(
+                programmatic.sources, "make_store", side_effect=AssertionError("store creation")
+            ),
+            contextlib.redirect_stdout(out),
+        ):
+            assert programmatic.command(args) == 0
+        opened.assert_not_called()
+        getattr(helper, method).assert_called_once_with()
+        assert len(helper.mock_calls) == 1
+        assert json.loads(out.getvalue())["data"] == {"exists": False, "records": 0}
+
+
+def test_conversations_cli_demo_and_missing_permission_precede_helpers_and_service():
+    for action in ("index", "search", "status", "clear"):
+        argv = ["conversations", action]
+        if action == "search":
+            argv.append("synthetic evidence")
+        if action != "status":
+            argv.append("--allow-raw-content")
+        for denied in ("demo", "permission"):
+            if action == "status" and denied == "permission":
+                continue
+            args = ot.parse_args(argv)
+            args.demo = "all" if denied == "demo" else None
+            args.allow_raw_content = denied == "demo"
+            out, helper = io.StringIO(), Mock()
+            with (
+                patch.object(ot, "conversation_search", helper, create=True),
+                patch.object(ot.OpenTabService, "open") as opened,
+                contextlib.redirect_stdout(out),
+            ):
+                assert programmatic.command(args) == 1
+            opened.assert_not_called()
+            assert helper.mock_calls == []
+            assert json.loads(out.getvalue())["error"]["code"] == (
+                "demo_unsupported" if denied == "demo" else "raw_content_disabled"
+            )
+
+
+def test_conversations_cli_translates_shared_errors_including_maintenance():
+    for action in ("index", "search", "status", "clear"):
+        argv = ["conversations", action]
+        if action == "search":
+            argv += ["synthetic", "--limit", "0", "--since", "not-a-date"]
+        if action != "status":
+            argv.append("--allow-raw-content")
+        args = ot.parse_args(argv)
+        helper, service = Mock(), Mock()
+        target = (
+            getattr(helper, "index_status" if action == "status" else "clear_index")
+            if action in {"status", "clear"}
+            else getattr(service, f"{action}_conversations")
+        )
+        target.side_effect = ConversationError("invalid_conversation_index", "synthetic failure")
+        out = io.StringIO()
+        with (
+            patch.object(ot, "conversation_search", helper, create=True),
+            patch.object(ot.OpenTabService, "open", return_value=service),
+            contextlib.redirect_stdout(out),
+        ):
+            assert programmatic.command(args) == 1
+        assert json.loads(out.getvalue()) == {
+            "schema_version": "1",
+            "ok": False,
+            "error": {"code": "invalid_conversation_index", "message": "synthetic failure"},
+        }

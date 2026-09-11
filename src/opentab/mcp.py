@@ -5,6 +5,7 @@ import json
 import sys
 
 from opentab import __version__
+from opentab.conversation import ConversationError
 from opentab.service import OpenTabService, ServiceError, SessionQuery
 
 SERVER_NAME = "opentab"
@@ -45,6 +46,17 @@ _QUERY_PROPERTIES = {
     "reverse": {"type": "boolean"},
     "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
     "offset": {"type": "integer", "minimum": 0},
+}
+
+_CONVERSATION_SCOPE_PROPERTIES = {
+    key: {**_QUERY_PROPERTIES[key], "minLength": 1, "maxLength": 4096}
+    for key in ("project", "harness", "machine")
+}
+_CONVERSATION_SCOPE_PROPERTIES["session"] = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 4096,
+    "description": "session_key or unique native id",
 }
 
 
@@ -150,6 +162,91 @@ TOOLS = (
             {"content_key": {"type": "string"}, "confirm_raw": {"type": "boolean"}},
             ["content_key", "confirm_raw"],
         ),
+    },
+    {
+        "name": "opentab_get_session_conversation",
+        "description": (
+            "Read bounded text records, not search, from one local OpenCode, Claude Code or Codex execution. "
+            "The root must be in the session catalog. Default scope is root only; select a child with an exact "
+            "execution_id from response.executions. Retained original occurrences, not active-branch reconstruction. "
+            "Requires --allow-raw-content and confirm_raw=true. No remote reads. "
+            "anchor, cursor and tail are mutually exclusive; before requires anchor."
+        ),
+        "inputSchema": _session_schema(
+            {
+                "confirm_raw": {"type": "boolean", "enum": [True]},
+                "execution_id": {"type": "string", "minLength": 1},
+                "anchor": {"type": "string", "minLength": 1, "maxLength": 1024},
+                "cursor": {"type": "string", "minLength": 1, "maxLength": 8192},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                "max_chars": {"type": "integer", "minimum": 1, "maximum": 120000, "default": 20000},
+                "before": {"type": "integer", "minimum": 0, "maximum": 99, "default": 0},
+                "tail": {"type": "boolean", "default": False},
+            },
+            ["confirm_raw"],
+        ),
+    },
+    {
+        "name": "opentab_search_conversations",
+        "description": (
+            "Search the existing local plaintext conversation index for bounded lexical evidence. "
+            "Requires --allow-raw-content and confirm_raw=true. Saved ignores apply by default. "
+            "since/until are inclusive message dates, not root-session start dates. "
+            "Does not create an index, read remote text, use a network, or compute embeddings."
+        ),
+        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "inputSchema": _schema(
+            {
+                **_CONVERSATION_SCOPE_PROPERTIES,
+                "query": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "confirm_raw": {"type": "boolean", "enum": [True]},
+                "exclude_session": _CONVERSATION_SCOPE_PROPERTIES["session"],
+                "since": {
+                    "type": "string",
+                    "minLength": 10,
+                    "maxLength": 10,
+                    "format": "date",
+                    "description": "Inclusive YYYY-MM-DD message date, not root-session start date.",
+                },
+                "until": {
+                    "type": "string",
+                    "minLength": 10,
+                    "maxLength": 10,
+                    "format": "date",
+                    "description": "Inclusive YYYY-MM-DD message date, not root-session start date.",
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 10},
+                "max_chars": {"type": "integer", "minimum": 1, "maximum": 120000, "default": 6000},
+            },
+            ["query", "confirm_raw"],
+        ),
+    },
+    {
+        "name": "opentab_index_conversations",
+        "description": (
+            "Explicitly create or update a persistent local plaintext index of sensitive conversation text. "
+            "This writes derived raw content to OpenTab's own files; original harness records stay read-only. "
+            "Requires process --allow-raw-content and confirm_index=true. Saved ignores apply by default. "
+            "No network calls, remote text reads, or embeddings. Nothing is indexed automatically."
+        ),
+        "annotations": {"readOnlyHint": False, "openWorldHint": False},
+        "inputSchema": _schema(
+            {
+                **_CONVERSATION_SCOPE_PROPERTIES,
+                "confirm_index": {"type": "boolean", "enum": [True]},
+                "rebuild": {"type": "boolean", "default": False},
+            },
+            ["confirm_index"],
+        ),
+    },
+    {
+        "name": "opentab_conversation_index_status",
+        "description": (
+            "Read only local conversation index counts; no raw text, source discovery, service creation, "
+            "index creation, or network/auth API calls. Unavailable in demo mode."
+        ),
+        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "inputSchema": _schema(),
     },
     {
         "name": "opentab_list_models",
@@ -330,6 +427,9 @@ class McpServer:
             if exc.details:
                 data["error"]["details"] = exc.details
             return self._success(request_id, self._tool_result(data, is_error=True, modern=modern))
+        except ConversationError as exc:
+            data = {"ok": False, "error": {"code": exc.code, "message": exc.message}}
+            return self._success(request_id, self._tool_result(data, is_error=True, modern=modern))
         except (OSError, ValueError, SystemExit) as exc:
             data = {"ok": False, "error": {"code": "operation_failed", "message": str(exc)}}
             return self._success(request_id, self._tool_result(data, is_error=True, modern=modern))
@@ -395,6 +495,8 @@ class McpServer:
                 raise ServiceError("invalid_arguments", f"{key} has an unsupported value")
             if isinstance(value, str) and "maxLength" in rule and len(value) > rule["maxLength"]:
                 raise ServiceError("invalid_arguments", f"{key} is too long")
+            if isinstance(value, str) and "minLength" in rule and len(value) < rule["minLength"]:
+                raise ServiceError("invalid_arguments", f"{key} must not be empty")
             if isinstance(value, int) and not isinstance(value, bool):
                 if "minimum" in rule and value < rule["minimum"]:
                     raise ServiceError("invalid_arguments", f"{key} is below its minimum")
@@ -404,6 +506,21 @@ class McpServer:
     def call_tool(self, name: str, arguments: dict) -> dict:
         if name not in _TOOL_SCHEMAS:
             raise ServiceError("unknown_tool", f"unknown tool: {name}")
+        if name in {
+            "opentab_search_conversations",
+            "opentab_index_conversations",
+            "opentab_conversation_index_status",
+        } and getattr(self.args, "demo", False):
+            raise ServiceError(
+                "demo_unsupported", "conversation indexing and search are unavailable in demo mode"
+            )
+        if (
+            name in {"opentab_get_session_conversation", "opentab_search_conversations"}
+            and arguments.get("confirm_raw") is not True
+        ):
+            raise ServiceError("raw_content_confirmation_required", "confirm_raw must be true")
+        if name == "opentab_index_conversations" and arguments.get("confirm_index") is not True:
+            raise ServiceError("index_confirmation_required", "confirm_index must be true")
         self._validate_arguments(name, arguments)
         if name == "opentab_usage_summary":
             data = self.service.summary(
@@ -431,6 +548,42 @@ class McpServer:
             data = self.service.session_content(
                 self._require(arguments, "session"), self._require(arguments, "content_key")
             )
+        elif name == "opentab_get_session_conversation":
+            data = self.service.session_conversation(
+                self._require(arguments, "session"),
+                execution_id=arguments.get("execution_id"),
+                anchor=arguments.get("anchor"),
+                cursor=arguments.get("cursor"),
+                limit=arguments.get("limit", 20),
+                max_chars=arguments.get("max_chars", 20000),
+                before=arguments.get("before", 0),
+                tail=arguments.get("tail", False),
+            )
+        elif name == "opentab_search_conversations":
+            data = self.service.search_conversations(
+                arguments["query"],
+                project=arguments.get("project"),
+                harness=arguments.get("harness"),
+                machine=arguments.get("machine"),
+                session=arguments.get("session"),
+                exclude_session=arguments.get("exclude_session"),
+                since=arguments.get("since"),
+                until=arguments.get("until"),
+                limit=arguments.get("limit", 10),
+                max_chars=arguments.get("max_chars", 6000),
+            )
+        elif name == "opentab_index_conversations":
+            data = self.service.index_conversations(
+                project=arguments.get("project"),
+                harness=arguments.get("harness"),
+                machine=arguments.get("machine"),
+                session=arguments.get("session"),
+                rebuild=arguments.get("rebuild", False),
+            )
+        elif name == "opentab_conversation_index_status":
+            from opentab import conversation_search
+
+            data = conversation_search.index_status()
         elif name == "opentab_list_models":
             query = self._query(arguments)
             data = self.service.list_models(

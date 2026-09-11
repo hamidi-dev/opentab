@@ -143,6 +143,43 @@ sessions behind it. Filter as you type, change the date range, and keep explorin
 
 [Keys & navigation](docs/keys.md) · [Watch the full narrated tour on YouTube](https://www.youtube.com/watch?v=EsJPw4y5zgU)
 
+## Search past conversations
+
+Find what you discussed across local sessions. **OpenCode, Codex, and Claude Code
+are supported for now.**
+Search matches recorded user/assistant text, not just session titles, and returns
+excerpts with message anchors so you or your agent can read the surrounding context.
+This is keyword search through the CLI or MCP, not semantic memory. **TUI conversation
+search is planned.**
+Tool outputs, reasoning, and attachments are not indexed.
+
+**Enable it explicitly after installing or upgrading.** Building the index stores
+sensitive conversation text in plaintext on your machine; it makes no provider calls
+and leaves the original records untouched.
+
+```sh
+opentab conversations index --allow-raw-content
+opentab conversations search "sqlite locking" --allow-raw-content
+opentab conversations status
+```
+
+Add `--project /path/to/project` to index and search only that project. Saved session
+and project ignores apply by default. **Rerun the index command when you want to
+include new or changed conversations.** Startup, search, and reload never refresh it
+automatically; stale source evidence is withheld until refreshed.
+
+For agent access, add the optional `--allow-raw-content` flag to your MCP server's
+arguments: `"args": ["mcp", "--allow-raw-content"]`. Without it, ordinary usage queries
+work, but conversation reads, search, and indexing are disabled. Restart the MCP
+server after changing its configuration.
+
+**You can also ask your agent to build or refresh the index.** It uses
+`opentab_index_conversations` with `confirm_index: true` after your explicit request;
+search and conversation reads require `confirm_raw: true`. Enabling raw access alone
+does not build or refresh anything. Retrieved text can enter the agent's model context.
+[Search setup, limits, and clearing the index](docs/conversation-search.md) ·
+[MCP configuration](docs/programmatic.md#mcp-server)
+
 ## In your terminal. In your browser. In one file.
 
 ```sh

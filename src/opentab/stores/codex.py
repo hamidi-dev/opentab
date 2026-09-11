@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
+from pathlib import Path
 from typing import cast
 
 from opentab.demo import demo_config, scramble_node, scramble_workflow
@@ -61,6 +63,7 @@ class CodexStore:
         self._sessions: dict[str, dict] | None = None
         self._git_root_cache: dict[str, str] = {}
         self._head_meta_cache: dict[str, dict | None] = {}  # path -> head metadata
+        self._conversation_catalog_cache = None
 
     @staticmethod
     def _new_acc() -> dict[str, int]:
@@ -161,6 +164,457 @@ class CodexStore:
         # A session's rollout is rollout-<timestamp>-<uuid>.jsonl somewhere in the
         # YYYY/MM/DD tree; glob for the uuid so an id resolves without a parse.
         return self._scan("*" + glob.escape(session_id) + ".jsonl")
+
+    @classmethod
+    def _conversation_metadata(cls, record):
+        if not isinstance(record, dict):
+            return None
+        typ = record.get("type")
+        meta = (
+            record.get("payload")
+            if typ == "session_meta"
+            else (record if typ is None and "git" in record else None)
+        )
+        if not isinstance(meta, dict) or not isinstance(meta.get("id"), str) or not meta["id"]:
+            return None
+        spawn = cls._spawn_source(meta.get("source"))
+        return meta["id"], spawn[0] if spawn else None
+
+    @staticmethod
+    def _conversation_stamp(info):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def _read_conversation_head(self, name):
+        head = head_hash = before = None
+        try:
+            with Path(name).open("rb") as fh:
+                before = self._conversation_stamp(os.fstat(fh.fileno()))
+                remaining = 65536
+                while remaining:
+                    line = fh.readline(remaining + 1)
+                    if not line or len(line) > remaining:
+                        break
+                    remaining -= len(line)
+                    try:
+                        record = json.loads(line.decode("utf-8"))
+                        head = self._conversation_metadata(record)
+                    except (ValueError, RecursionError):
+                        continue
+                    if head is not None:
+                        head_hash = hashlib.sha256(line).hexdigest()
+                        break
+                    if isinstance(record, dict) and record.get("type") == "session_meta":
+                        break
+        except OSError:
+            pass
+        return head, head_hash, before
+
+    def _conversation_catalog(self):
+        from opentab.conversation import source_key
+
+        paths = sorted({os.path.abspath(name) for name in self._files()})
+        heads, hashes, stamps, sessions = {}, {}, {}, {}
+        for name in paths:
+            head, hashes[name], stamps[name] = self._read_conversation_head(name)
+            heads[name] = head
+            if head is not None:
+                sid, parent = head
+                session = sessions.setdefault(sid, {"paths": [], "parents": set()})
+                session["paths"].append(Path(name))
+                session["parents"].add(parent)
+        final_paths = sorted({os.path.abspath(name) for name in self._files()})
+        final_stamps = {}
+        try:
+            final_stamps = {name: self._conversation_stamp(os.stat(name)) for name in final_paths}
+        except OSError:
+            pass
+        valid = paths == final_paths and all(
+            stamps.get(name) is not None and stamps[name] == final_stamps.get(name)
+            for name in paths
+        )
+        return {
+            "paths": paths,
+            "heads": heads,
+            "hashes": hashes,
+            "stamps": stamps,
+            "sessions": sessions,
+            "files_manifest": [
+                [source_key(Path(name)), *final_stamps[name]] for name in final_paths
+            ]
+            if valid
+            else None,
+            "valid": valid,
+        }
+
+    def prepare_conversation_refresh(self):
+        self._conversation_catalog_cache = self._conversation_catalog()
+
+    def finish_conversation_refresh(self):
+        self._conversation_catalog_cache = None
+
+    def conversation_manifest(self, root_id: str):
+        from opentab.conversation import source_key
+
+        catalog = self._conversation_catalog_cache or self._conversation_catalog()
+        if not catalog["valid"]:
+            return None
+        heads, hashes, sessions = catalog["heads"], catalog["hashes"], catalog["sessions"]
+        if root_id not in sessions:
+            return None
+        ancestors, current, seen = set(), root_id, set()
+        while current in sessions and current not in seen:
+            seen.add(current)
+            parents = sessions[current]["parents"]
+            if len(parents) != 1:
+                return None
+            ancestors.add(current)
+            current = next(iter(parents))
+        if current:
+            # A filename candidate for a missing ancestor can change ownership proof.
+            ancestors.add(current)
+        descendants = {root_id}
+        while True:
+            added = {head[0] for head in heads.values() if head and head[1] in descendants}
+            if added <= descendants:
+                break
+            descendants.update(added)
+        relevant = descendants | ancestors
+        rows = []
+        for name, head in sorted(heads.items()):
+            if (head and head[0] in relevant) or (
+                head is None and any(name.endswith(sid + ".jsonl") for sid in relevant)
+            ):
+                stamp = catalog["stamps"].get(name)
+                if stamp is None:
+                    return None
+                stable_head = list(head) if head is not None else None
+                rows.append([source_key(Path(name)), stable_head, hashes.get(name), *stamp])
+        return rows
+
+    def supports_conversation(self, sid: str) -> bool:
+        """Static format capability, not a probe of retained history or usage."""
+        return not self.demo
+
+    def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:
+        """Read original text occurrences for exactly one metadata-owned execution.
+
+        Accounting's pending events and token-count boundaries deliberately play no
+        part here. Only the selected execution's text is retained. Other heads
+        establish addressing; required ancestors get a streaming metadata-only scan.
+        """
+        from opentab.conversation import (
+            MAX_LINE_BYTES,
+            MAX_SOURCE_BYTES,
+            ConversationError,
+            read_jsonl,
+            source_key,
+        )
+
+        if self.demo:
+            raise ConversationError("unsupported", "Conversation content is disabled in demo mode.")
+        selected = root_id if execution_id is None else execution_id
+        if (
+            not isinstance(root_id, str)
+            or not root_id
+            or not isinstance(selected, str)
+            or not selected
+        ):
+            raise ConversationError("invalid_execution", "An exact session ID is required.")
+
+        metadata = self._conversation_metadata
+        fingerprint = self._conversation_stamp
+        # A refresh reuses one global head/ownership scan across every selected root.
+        catalog = self._conversation_catalog_cache or self._conversation_catalog()
+        if not catalog["valid"]:
+            if catalog is self._conversation_catalog_cache:
+                self._conversation_catalog_cache = None
+            # Disable shared-head reuse, then let the original per-root postscan decide
+            # whether the instability was relevant to this root.
+        paths = catalog["paths"]
+        requested = {
+            sid: {name for name in paths if name.endswith(sid + ".jsonl")}
+            for sid in {root_id, selected}
+        }
+        heads = catalog["heads"]
+        head_hashes = catalog["hashes"]
+        stamps = catalog["stamps"]
+        sessions = catalog["sessions"]
+        limitations = [
+            "Only user and assistant text is included; tools, reasoning, and attachments are omitted.",
+            "Prompt events and model-input echoes are separate representations, not deduplicated messages.",
+            "Same-name rollout copies use the live tree first, then the first discovered copy; other copies are not read.",
+            "Distinct resumed rollouts are retained in filename/path order; replayed text is not deduplicated.",
+            "Execution discovery requires session metadata within the first 64 KiB; unidentifiable files are not addressable.",
+        ]
+
+        if any(stamps[name] is None for name in paths):
+            limitations.append(
+                "Some rollout metadata could not be read; execution discovery may be incomplete."
+            )
+
+        for sid, candidates in requested.items():
+            if any(heads.get(name) is None for name in candidates):
+                raise ConversationError(
+                    "source_unavailable", "Rollout metadata does not verify the requested session."
+                )
+            if any(heads[name][0] != sid for name in candidates):
+                limitations.append(
+                    "Filename candidates with a different metadata session ID are excluded."
+                )
+            if sid not in sessions:
+                raise ConversationError(
+                    "source_unavailable", "The requested session has no readable rollout metadata."
+                )
+
+        unidentified = [name for name, head in heads.items() if head is None]
+
+        def incomplete(sid):
+            return any(name.endswith(sid + ".jsonl") for name in unidentified)
+
+        def owned(sid):
+            current, seen = sid, set()
+            while current in sessions and current not in seen:
+                seen.add(current)
+                parents = sessions[current]["parents"]
+                if len(parents) != 1 or incomplete(current):
+                    return False
+                if current == root_id:
+                    return True
+                current = next(iter(parents))
+            return False
+
+        # An anchor can itself be an execution, but never one in a corrupt cycle
+        # or one whose resumed metadata makes its ancestry ambiguous.
+        current, seen = root_id, set()
+        while current in sessions:
+            parents = sessions[current]["parents"]
+            if current in seen or len(parents) != 1 or incomplete(current):
+                raise ConversationError(
+                    "invalid_execution", "Session ownership is cyclic or conflicting."
+                )
+            seen.add(current)
+            current = next(iter(parents))
+        ancestors = seen | ({current} if current else set())
+        if not owned(selected):
+            raise ConversationError(
+                "invalid_execution",
+                "The selected execution is not unambiguously owned by this root.",
+            )
+        current = selected
+        while current != root_id:
+            current = next(iter(sessions[current]["parents"]))
+            ancestors.add(current)
+        ancestor_paths = sorted(
+            path
+            for sid in ancestors
+            if sid != selected and sid in sessions
+            for path in sessions[sid]["paths"]
+        )
+
+        def validate_ancestry(code):
+            # A head authorizes discovery, not descendant content access: later
+            # session_meta records in the same ancestor must agree too. Stream
+            # only this authorization chain and retain no message bodies or hashes.
+            total = 0
+            try:
+                for path in ancestor_paths:
+                    found = False
+                    with path.open("rb") as stream:
+                        initial = fingerprint(os.fstat(stream.fileno()))
+                        if total + initial[2] > MAX_SOURCE_BYTES:
+                            raise ConversationError(
+                                "conversation_too_large", "Ancestry sources exceed the read budget."
+                            )
+                        while True:
+                            line = stream.readline(MAX_LINE_BYTES + 1)
+                            if not line:
+                                break
+                            total += len(line)
+                            if len(line) > MAX_LINE_BYTES or total > MAX_SOURCE_BYTES:
+                                raise ConversationError(
+                                    "conversation_too_large",
+                                    "Ancestry records exceed the read budget.",
+                                )
+                            if not line.strip():
+                                continue
+                            try:
+                                record = json.loads(line)
+                                if not isinstance(record, dict):
+                                    raise ValueError
+                            except (ValueError, UnicodeError, RecursionError):
+                                limitations.append("malformed_jsonl_records_skipped")
+                                continue
+                            if record.get("type") == "session_meta" or (
+                                record.get("type") is None and "git" in record
+                            ):
+                                if metadata(record) != heads[str(path)]:
+                                    raise ConversationError(
+                                        code, "Ancestor rollout metadata is conflicting."
+                                    )
+                                found = True
+                        if (
+                            fingerprint(os.fstat(stream.fileno())) != initial
+                            or fingerprint(path.stat()) != initial
+                        ):
+                            raise ConversationError(
+                                "source_changed", "Ancestry source changed during the read; retry."
+                            )
+                    if not found:
+                        raise ConversationError(code, "Ancestor rollout metadata is unavailable.")
+            except OSError:
+                raise ConversationError(
+                    "source_unavailable", "An ancestor source is missing or unreadable."
+                ) from None
+
+        validate_ancestry("invalid_execution")
+        executions = [
+            {"id": sid, "parent_id": next(iter(sessions[sid]["parents"]))}
+            for sid in [root_id] + sorted(sid for sid in sessions if sid != root_id and owned(sid))
+        ]
+        if any(len(session["parents"]) != 1 for session in sessions.values()):
+            limitations.append(
+                "Executions with conflicting ownership metadata are not addressable."
+            )
+
+        def ownership_heads(all_heads, hashes):
+            # Include all copies of candidate descendants, even conflicting ones:
+            # a changed claim could admit or remove a declared execution. Ancestors
+            # validate the anchor but do not pull their other children into scope.
+            descendants = {root_id}
+            while True:
+                added = {head[0] for head in all_heads.values() if head and head[1] in descendants}
+                if added <= descendants:
+                    break
+                descendants.update(added)
+            relevant = descendants | ancestors | {selected}
+            return [
+                [source_key(Path(name)), head, hashes.get(name)]
+                for name, head in sorted(all_heads.items())
+                if (head and head[0] in relevant)
+                or (head is None and any(name.endswith(sid + ".jsonl") for sid in relevant))
+            ]
+
+        ownership = ownership_heads(heads, head_hashes)
+        chosen = sorted(sessions[selected]["paths"], key=lambda p: (p.name, str(p)))
+        located, snapshot, warnings = read_jsonl(chosen)
+        limitations.extend(warnings)
+        verified = set()
+        records = []
+        for path, line, record in located:
+            meta = metadata(record)
+            if isinstance(record, dict) and record.get("type") == "session_meta" and meta is None:
+                raise ConversationError(
+                    "source_unavailable", "Selected rollout session metadata is invalid."
+                )
+            if meta is not None:
+                if meta != (selected, next(iter(sessions[selected]["parents"]))):
+                    raise ConversationError(
+                        "invalid_execution", "Selected rollout metadata is conflicting."
+                    )
+                verified.add(path)
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            typ, kind = record.get("type"), payload.get("type")
+            message = payload
+            if (
+                typ == "response_item"
+                and kind == "message"
+                and payload.get("role") in ("user", "assistant")
+            ):
+                role = payload["role"]
+                origin = "recorded-message" if role == "assistant" else "model-input"
+                content = payload.get("content")
+                text_types = (
+                    ("output_text", "text") if role == "assistant" else ("input_text", "text")
+                )
+            elif typ == "event_msg" and kind == "user_message":
+                role, origin = "user", "prompt-event"
+                content = [{"type": "text", "text": payload.get("message")}]
+                text_types = ("text",)
+            elif typ == "event_msg" and kind == "item_completed":
+                message = payload.get("item")
+                if not isinstance(message, dict) or message.get("type") != "UserMessage":
+                    continue
+                role, origin = "user", "prompt-event"
+                content, text_types = message.get("content"), ("text",)
+            else:
+                continue
+            parts = [
+                {"id": str(index), "text": block["text"], "source": {"block_index": index}}
+                for index, block in enumerate(content if isinstance(content, list) else [])
+                if isinstance(block, dict)
+                and block.get("type") in text_types
+                and isinstance(block.get("text"), str)
+            ]
+            if not parts:
+                continue
+            key = source_key(path)
+            records.append(
+                {
+                    "id": f"cx:{key}:{line}",
+                    "message_id": message.get("id")
+                    if message.get("id") is not None
+                    else f"line:{line}",
+                    "record_id": record.get("id"),
+                    "parent_id": record.get("parent_id"),
+                    "execution_id": selected,
+                    "role": role,
+                    "timestamp": record.get("timestamp"),
+                    "origin": origin,
+                    "source": {"source_id": key, "file": path.name, "line": line},
+                    "parts": parts,
+                }
+            )
+        if verified != set(chosen):
+            raise ConversationError(
+                "source_unavailable", "Selected rollouts lack valid session metadata."
+            )
+        # Other sessions can keep streaming. Recheck their head claims to discover
+        # new descendants/resumed copies, not their content fingerprints. Only the
+        # selected execution's full source contents must remain unchanged.
+        validate_ancestry("source_changed")
+        fresh_heads, fresh_hashes = {}, {}
+        if self._conversation_catalog_cache is not None:
+            current_files = sorted({os.path.abspath(name) for name in self._files()})
+            from opentab.conversation import source_manifest
+
+            if source_manifest(current_files) == catalog["files_manifest"]:
+                fresh_heads, fresh_hashes = heads, head_hashes
+            else:
+                self._conversation_catalog_cache = None
+        if not fresh_heads:
+            for name in sorted({os.path.abspath(name) for name in self._files()}):
+                fresh_heads[name], fresh_hashes[name], _stamp = self._read_conversation_head(name)
+        try:
+            changed = ownership_heads(fresh_heads, fresh_hashes) != ownership or any(
+                fingerprint(path.stat()) != stamps[str(path)] for path in chosen
+            )
+        except OSError:
+            changed = True
+        if changed:
+            raise ConversationError(
+                "source_changed", "Conversation sources changed during the read; retry."
+            )
+        binding = [
+            snapshot,
+            root_id,
+            selected,
+            executions,
+            ownership,
+        ]
+        return {
+            "records": records,
+            "snapshot": hashlib.sha256(
+                json.dumps(binding, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            "execution_id": selected,
+            "executions": executions,
+            "limitations": list(dict.fromkeys(limitations)),
+            "ordering": "rollout filename/path order, then physical line and content block order; not global timestamp order",
+        }
 
     def _head_meta(self, path: str) -> dict | None:
         # The session_meta at a rollout's head (or the rare legacy bare blob --

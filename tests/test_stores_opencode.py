@@ -2,6 +2,8 @@ import json
 import os
 import sqlite3
 import tempfile
+from contextlib import contextmanager
+from unittest.mock import patch
 
 import opentab as ot
 from opentab.stores.opencode import REQUIRED_SCHEMA
@@ -19,6 +21,397 @@ from tests._support import (
     _write_opencode_db_with_tools,
     _write_opencode_db_with_turns,
 )
+
+
+@contextmanager
+def _conversation_db(*, legacy=False, constrained=True):
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "conversation.db")
+        writer = sqlite3.connect(db)
+        key = "primary key" if constrained else ""
+        writer.execute(f"create table session (id text {key}, parent_id text)")
+        writer.execute(
+            f"create table message (id text {key}, session_id text, data text"
+            + ("" if legacy else ", time_created integer")
+            + ")"
+        )
+        writer.execute(
+            f"create table part (id text {key}, message_id text, data text"
+            + ("" if legacy else ", session_id text, time_created integer")
+            + ")"
+        )
+        writer.execute("insert into session values ('root', null)")
+        writer.commit()
+        store = ot.Store(db, type("Args", (), {"demo": False})())
+        try:
+            yield db, writer, store
+        finally:
+            store.conn.close()
+            writer.close()
+
+
+def _conversation_error(store, root="root", execution=None, code="conversation_unavailable"):
+    from opentab.conversation import ConversationError
+
+    try:
+        store.conversation_source(root, execution)
+    except ConversationError as exc:
+        assert exc.code == code, exc.code
+        assert "PRIVATE" not in str(exc)
+        return
+    raise AssertionError("Expected an explicit conversation error")
+
+
+def test_opencode_conversation_manifest_tracks_wal_commits_but_not_shm_reader_churn():
+    with _conversation_db() as (db, writer, store):
+        writer.execute("pragma journal_mode=wal")
+        store.conn.execute("select count(*) from session").fetchone()
+        initial = store.conversation_manifest("root")
+        store.conn.execute("select count(*) from session").fetchone()
+        assert store.conversation_manifest("root") == initial
+
+        with patch("opentab.conversation.source_manifest", return_value=[["fixed"]]):
+            before_commit = store.conversation_manifest("root")
+            writer.execute("insert into session values ('other', null)")
+            writer.commit()
+            assert store.conversation_manifest("root") != before_commit
+
+        initial = store.conversation_manifest("root")
+        with open(db + "-shm", "r+b") as stream:
+            stream.seek(120)
+            byte = stream.read(1)
+            stream.seek(120)
+            stream.write(bytes([(byte[0] if byte else 0) ^ 1]))
+        assert store.conversation_manifest("root") == initial
+
+        writer.execute("insert into session values ('another', null)")
+        writer.commit()
+        assert store.conversation_manifest("root") != initial
+
+
+def test_opencode_conversation_preserves_all_messages_and_verbatim_multipart_text():
+    with _conversation_db() as (_, writer, store):
+        # Insertion and JSON timestamps deliberately disagree with table timestamps.
+        for n in reversed(range(125)):
+            mid = f"m{n:03}"
+            data = {"role": "user" if n == 0 else "assistant", "time": {"created": 500 - n}}
+            if n:
+                data["parentID"] = "m000"
+            writer.execute(
+                "insert into message values (?, 'root', ?, ?)", (mid, json.dumps(data), n // 2)
+            )
+            for pid, ts, text in (
+                ("c", 2, ""),
+                ("b", 1, "\nsecond\t"),
+                ("a", 1, "  first\n\u00e9\x00"),
+            ):
+                writer.execute(
+                    "insert into part values (?, ?, ?, 'root', ?)",
+                    (
+                        mid + pid,
+                        mid,
+                        json.dumps({"type": "text", "text": text, "synthetic": False}),
+                        ts,
+                    ),
+                )
+        for mid, role in (
+            ("empty-user", "user"),
+            ("empty-assistant", "assistant"),
+            ("system", "system"),
+        ):
+            writer.execute(
+                "insert into message values (?, 'root', ?, 200)", (mid, json.dumps({"role": role}))
+            )
+            for n, part in enumerate(
+                (
+                    {"type": "text", "synthetic": True, "text": "PRIVATE synthetic"},
+                    {"type": "reasoning", "text": "PRIVATE reasoning"},
+                    {"type": "tool", "state": {"output": "PRIVATE tool" * 100000}},
+                    {"type": "file", "url": "PRIVATE attachment"},
+                )
+            ):
+                writer.execute(
+                    "insert into part values (?, ?, ?, 'root', ?)",
+                    (f"{mid}{n}", mid, json.dumps(part), n),
+                )
+        writer.commit()
+        source = store.conversation_source("root")
+        records = source["records"]
+        assert len(records) == 127  # No 100-message preview cap or usage filter.
+        assert [r["message_id"] for r in records[:125]] == [f"m{n:03}" for n in range(125)]
+        assert records[0] == {
+            "id": "oc:m000",
+            "message_id": "m000",
+            "record_id": "m000",
+            "parent_id": None,
+            "execution_id": "root",
+            "role": "user",
+            "timestamp": 500,
+            "origin": "recorded-message",
+            "source": {"message_id": "m000"},
+            "parts": [
+                {"id": "m000a", "text": "  first\n\u00e9\x00", "source": {"part_id": "m000a"}},
+                {"id": "m000b", "text": "\nsecond\t", "source": {"part_id": "m000b"}},
+                {"id": "m000c", "text": "", "source": {"part_id": "m000c"}},
+            ],
+        }
+        assert records[124]["parent_id"] == "m000"
+        assert all(r["parts"] == [] and r["timestamp"] == 200 for r in records[125:])
+        assert "PRIVATE" not in json.dumps(source)
+        assert source["execution_id"] == "root"
+        assert "synthetic_text_excluded" in source["limitations"]
+        assert "non_text_parts_excluded" in source["limitations"]
+        assert source == store.conversation_source("root")
+
+
+def test_opencode_conversation_proves_exact_execution_and_part_ownership():
+    with _conversation_db() as (_, writer, store):
+        writer.executemany(
+            "insert into session values (?, ?)",
+            [
+                ("child", "root"),
+                ("sibling", "root"),
+                ("nested", "child"),
+                ("outside", None),
+            ],
+        )
+        for sid in ("root", "child", "sibling", "nested", "outside"):
+            writer.execute("insert into message values (?, ?, ?, 1)", (sid, sid, '{"role":"user"}'))
+            writer.execute(
+                "insert into part values (?, ?, ?, ?, 1)",
+                (sid, sid, json.dumps({"type": "text", "text": sid}), sid),
+            )
+        for pid, mid, sid in (
+            ("foreign-part", "child", "sibling"),
+            ("false-message", "sibling", "child"),
+        ):
+            writer.execute(
+                "insert into part values (?, ?, ?, ?, 1)",
+                (pid, mid, '{"type":"text","text":"PRIVATE"}', sid),
+            )
+        writer.commit()
+        root = store.conversation_source("root")
+        assert [r["message_id"] for r in root["records"]] == ["root"]
+        assert root["executions"] == [
+            {"id": "child", "parent_id": "root"},
+            {"id": "nested", "parent_id": "child"},
+            {"id": "root", "parent_id": None},
+            {"id": "sibling", "parent_id": "root"},
+        ]
+        for sid in ("child", "sibling", "nested"):
+            source = store.conversation_source("root", sid)
+            assert source["executions"] == root["executions"]
+            assert [r["message_id"] for r in source["records"]] == [sid]
+            assert source["records"][0]["parts"] == [
+                {"id": sid, "text": sid, "source": {"part_id": sid}}
+            ]
+        for root_id, sid in (
+            ("child", "sibling"),
+            ("root", "outside"),
+            ("root", "missing"),
+            ("roo", "child"),
+            ("root", ""),
+        ):
+            _conversation_error(store, root_id, sid)
+        # Starting at a child is exact, not automatically expanded to its ancestor.
+        assert store.conversation_source("child")["executions"] == [
+            {"id": "child", "parent_id": "root"},
+            {"id": "nested", "parent_id": "child"},
+        ]
+        assert (
+            store.conversation_source("child")["snapshot"]
+            != store.conversation_source("root", "child")["snapshot"]
+        )
+        writer.execute("update session set parent_id = 'nested' where id = 'root'")
+        writer.commit()
+        _conversation_error(store)
+
+
+def test_opencode_conversation_legacy_schema_and_raw_timestamp_fallback():
+    with _conversation_db(legacy=True) as (_, writer, store):
+        for mid, data in (
+            ("z", {"role": "assistant", "time": {"created": 4}}),
+            ("b", {"role": "user"}),
+            ("a", {"role": "user"}),
+        ):
+            writer.execute("insert into message values (?, 'root', ?)", (mid, json.dumps(data)))
+        writer.executemany(
+            "insert into part values (?, 'z', ?)",
+            [(pid, json.dumps({"type": "text", "text": pid})) for pid in ("z", "a")],
+        )
+        writer.commit()
+        source = store.conversation_source("root")
+        assert [r["message_id"] for r in source["records"]] == ["a", "b", "z"]
+        assert [r["timestamp"] for r in source["records"]] == [None, None, 4]
+        assert [p["id"] for p in source["records"][2]["parts"]] == ["a", "z"]
+        assert (
+            source["ordering"]
+            == "messages: json_extract(m.data, '$.time.created'), m.id; parts: p.id"
+        )
+
+
+def test_opencode_conversation_capability_is_schema_only_and_demo_never_reads():
+    with _conversation_db() as (_, writer, store):
+        writer.execute("insert into message values ('broken', 'root', 'PRIVATE malformed JSON', 1)")
+        writer.commit()
+        queries = []
+        store.conn.set_trace_callback(queries.append)
+        with patch(
+            "opentab.stores.opencode.sqlite3.connect", side_effect=AssertionError("No new read")
+        ):
+            assert store.supports_conversation("root")
+            assert store.supports_conversation("nonexistent")  # Not a retention promise.
+        assert queries and all(sql.startswith("pragma table_info(") for sql in queries)
+        _conversation_error(store)
+        store.demo = True
+        store.conn.close()
+        with patch(
+            "opentab.stores.opencode.sqlite3.connect", side_effect=AssertionError("Demo read")
+        ):
+            assert not store.supports_conversation("root")
+            _conversation_error(store)
+
+
+def test_opencode_conversation_empty_missing_deleted_and_unsupported_are_distinct():
+    with _conversation_db() as (db, writer, store):
+        assert store.supports_conversation("root")
+        assert store.conversation_source("root")["records"] == []
+        _conversation_error(store, "missing")
+        writer.execute("delete from session")
+        writer.commit()
+        _conversation_error(store)
+        writer.execute("insert into session values ('root', null)")
+        writer.execute("drop table part")
+        writer.commit()
+        assert not store.supports_conversation("root")
+        _conversation_error(store)
+        writer.close()
+        store.conn.close()
+        os.unlink(db)
+        _conversation_error(store)
+        assert not os.path.exists(db)
+
+
+def test_opencode_conversation_rejects_ambiguous_native_ids():
+    for table in ("session", "message", "part"):
+        with _conversation_db(legacy=True, constrained=False) as (_, writer, store):
+            writer.execute("insert into message values ('m', 'root', '{\"role\":\"user\"}')")
+            writer.execute(
+                'insert into part values (\'p\', \'m\', \'{"type":"text","text":"hello"}\')'
+            )
+            if table == "session":
+                writer.execute("insert into session values ('root', 'outside')")
+            elif table == "message":
+                writer.execute("insert into message values ('m', 'outside', '{\"role\":\"user\"}')")
+            else:
+                writer.execute("insert into part select * from part")
+            writer.commit()
+            _conversation_error(store)
+
+
+def test_opencode_conversation_does_not_read_a_deleted_database_from_the_old_connection():
+    with _conversation_db(legacy=True) as (db, writer, store):
+        writer.execute("insert into message values ('m', 'root', '{\"role\":\"assistant\"}')")
+        writer.execute(
+            'insert into part values (\'p\', \'m\', \'{"type":"text","text":"retained"}\')'
+        )
+        writer.commit()
+        assert store.conversation_source("root")["records"][0]["parts"][0]["text"] == "retained"
+        writer.close()
+        if os.name == "nt":
+            store.conn.close()  # Windows cannot unlink the open database.
+        os.unlink(db)
+        # POSIX leaves the original reader's file descriptor usable after unlink.
+        if os.name != "nt":
+            assert store.conn.execute("select count(*) from message").fetchone()[0] == 1
+        _conversation_error(store)
+        assert not os.path.exists(db)
+
+
+def test_opencode_conversation_snapshot_is_fresh_and_hashes_text_and_execution_metadata():
+    with _conversation_db(legacy=True) as (_, writer, store):
+        empty = store.conversation_source("root")["snapshot"]
+        assert len(empty) == 64 and int(empty, 16) >= 0
+        writer.execute("insert into message values ('m', 'root', '{\"role\":\"assistant\"}')")
+        writer.execute(
+            'insert into part values (\'p\', \'m\', \'{"type":"text","text":"before"}\')'
+        )
+        writer.commit()
+        initial = store.conversation_source("root")
+        assert initial["snapshot"] != empty
+        initial["records"][0]["parts"][0]["text"] = "caller mutation"
+        assert store.conversation_source("root")["snapshot"] == initial["snapshot"]
+        writer.execute('update part set data = \'{"type":"text","text":"after"}\'')
+        writer.commit()
+        edited = store.conversation_source("root")
+        assert edited["snapshot"] != initial["snapshot"]
+        assert edited["records"][0]["parts"][0]["text"] == "after"
+        writer.execute("insert into session values ('child', 'root')")
+        writer.commit()
+        assert store.conversation_source("root")["snapshot"] != edited["snapshot"]
+        writer.execute("delete from part")
+        writer.commit()
+        assert store.conversation_source("root")["records"][0]["parts"] == []
+
+
+def test_opencode_conversation_text_budget_is_explicit_and_counts_utf8_bytes():
+    with _conversation_db(legacy=True) as (_, writer, store):
+        writer.execute("insert into message values ('m', 'root', '{\"role\":\"user\"}')")
+        writer.executemany(
+            "insert into part values (?, 'm', ?)",
+            [
+                ("p", json.dumps({"type": "text", "text": "\u00e9" * 4})),
+                ("tool", json.dumps({"type": "tool", "text": "PRIVATE" * 10000})),
+                (
+                    "synthetic",
+                    json.dumps({"type": "text", "synthetic": True, "text": "PRIVATE" * 10000}),
+                ),
+            ],
+        )
+        writer.commit()
+        with patch("opentab.stores.opencode.CONVERSATION_TEXT_BUDGET", 8):
+            assert (
+                store.conversation_source("root")["records"][0]["parts"][0]["text"] == "\u00e9" * 4
+            )
+        with patch("opentab.stores.opencode.CONVERSATION_TEXT_BUDGET", 7):
+            _conversation_error(store, code="conversation_too_large")
+
+
+def test_opencode_conversation_transaction_is_coherent_and_sql_never_projects_raw_blobs():
+    with _conversation_db(legacy=True) as (db, writer, store):
+        writer.execute("pragma journal_mode = wal")
+        writer.execute("insert into message values ('m', 'root', '{\"role\":\"assistant\"}')")
+        writer.execute(
+            'insert into part values (\'p\', \'m\', \'{"type":"text","text":"before"}\')'
+        )
+        writer.commit()
+        before = store.conversation_source("root")
+        connect = sqlite3.connect
+        queries = []
+
+        def trace(sql):
+            queries.append(sql)
+            if sql.startswith("select coalesce(sum("):
+                writer.execute('update part set data = \'{"type":"text","text":"after"}\'')
+                writer.execute("insert into session values ('child', 'root')")
+                writer.commit()
+
+        def traced_connect(*args, **kwargs):
+            assert args[0].endswith("?mode=ro") and db in args[0]
+            conn = connect(*args, **kwargs)
+            conn.set_trace_callback(trace)
+            return conn
+
+        with patch("opentab.stores.opencode.sqlite3.connect", traced_connect):
+            assert store.conversation_source("root") == before
+        assert queries[0] == "begin"
+        assert all(
+            "p.data" not in sql.replace("json_extract(p.data,", "").replace("json_type(p.data,", "")
+            for sql in queries
+        )
+        assert all("m.data" not in sql.replace("json_extract(m.data,", "") for sql in queries)
+        assert not any("$.state" in sql or "$.output" in sql or "$.input" in sql for sql in queries)
+        assert store.conversation_source("root")["records"][0]["parts"][0]["text"] == "after"
 
 
 def test_opencode_node_prompt_reads_all_text_parts_from_the_exact_child():

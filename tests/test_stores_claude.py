@@ -2,6 +2,8 @@ import json
 import os
 import random
 import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 import opentab as ot
 from opentab.formatting import iso_to_local
@@ -356,6 +358,415 @@ def _claude_prompt_run(tmp, run="12345678-first", content="received task"):
     ]
     _write_jsonl(path, rows)
     return ot.ClaudeStore(tmp, _claude_args()), path, rows
+
+
+def test_claude_conversation_reads_all_text_without_usage_or_accounting_caches():
+    from opentab.conversation import source_key
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "s1.jsonl"
+        prompt = _claude_user("  question\n\n", cwd=tmp, uuid="prompt")
+        first = _claude_msg("s1", "claude-opus-4-8", {}, uuid="first", cwd=tmp, mid="shared")
+        first["message"]["content"] = [
+            {"type": "text", "text": "  first fragment\n"},
+            {"type": "thinking", "thinking": "excluded thinking"},
+            {"type": "text", "text": "\nsecond block  "},
+            {"type": "tool_use", "input": {"text": "excluded tool"}},
+            {"type": "image", "source": {"data": "excluded attachment"}},
+            {"type": "text", "text": ""},
+        ]
+        final = dict(
+            first,
+            uuid="final",
+            parentUuid="first",
+            message={
+                "id": "shared",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "final without usage"}],
+            },
+        )
+        unanswered = _claude_user("unanswered", cwd=tmp, uuid=None)
+        unanswered.pop("timestamp")
+        _write_jsonl(path, [prompt, first, final, unanswered])
+        store = ot.ClaudeStore(tmp, _claude_args())
+        with patch.object(
+            store, "_ingest", side_effect=AssertionError("no accounting")
+        ), patch.object(store, "_files", side_effect=AssertionError("no corpus")), patch.object(
+            store, "turn_content", side_effect=AssertionError("no content cache")
+        ):
+            source = store.conversation_source("s1")
+        records = source["records"]
+        assert [r["role"] for r in records] == ["user", "assistant", "assistant", "user"]
+        assert [p["text"] for p in records[1]["parts"]] == [
+            "  first fragment\n",
+            "\nsecond block  ",
+            "",
+        ]
+        assert [p["id"] for p in records[1]["parts"]] == ["0", "2", "5"]
+        assert records[1]["parts"][1]["source"] == {"block_index": 2}
+        assert records[0]["parts"][0]["text"] == "  question\n\n"
+        assert records[1]["message_id"] == records[2]["message_id"] == "shared"
+        assert records[2]["parts"][0]["text"] == "final without usage"
+        assert records[2]["parent_id"] == "first"
+        assert records[3]["message_id"] == "line:4"
+        assert records[3]["timestamp"] is None and records[3]["record_id"] is None
+        assert records[0]["message_id"] == "prompt"
+        assert records[0]["id"] == f"cl:{source_key(path)}:1"
+        assert records[0]["source"] == {
+            "source_id": source_key(path),
+            "file": "s1.jsonl",
+            "line": 1,
+        }
+        assert "recorded/model-input" in records[0]["origin"]
+        assert "human-authored" in " ".join(source["limitations"])
+        assert "excluded" not in repr(records)
+        assert len({r["id"] for r in records}) == 4
+        assert source["executions"] == [{"id": "s1", "parent_id": None}]
+        assert source["execution_id"] == "s1"
+        assert store._sessions is None and store._one is None and store._trace_one is None
+
+
+def test_claude_conversation_manifest_tracks_main_resumes_sidecars_and_replacements():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "project-a" / "s1.jsonl"
+        main.parent.mkdir()
+        _write_jsonl(main, [_claude_user("main", cwd=tmp, uuid="main")])
+        store = ot.ClaudeStore(tmp, _claude_args())
+        initial = store.conversation_manifest("s1")
+        assert initial and store.conversation_manifest("s1") == initial
+
+        resumed = root / "project-b" / "s1.jsonl"
+        resumed.parent.mkdir()
+        _write_jsonl(resumed, [_claude_user("resume", cwd=tmp, uuid="resume")])
+        with_resume = store.conversation_manifest("s1")
+        assert with_resume != initial and len(with_resume) == 2
+
+        sidecar = root / "project-a" / "s1" / "subagents" / "agent.jsonl"
+        sidecar.parent.mkdir(parents=True)
+        _write_jsonl(sidecar, [_claude_user("side", cwd=tmp, uuid="side")])
+        with_sidecar = store.conversation_manifest("s1")
+        assert with_sidecar != with_resume and len(with_sidecar) == 3
+
+        resumed.unlink()
+        after_delete = store.conversation_manifest("s1")
+        assert after_delete != with_sidecar and len(after_delete) == 2
+        main.unlink()
+        _write_jsonl(main, [_claude_user("replacement", cwd=tmp, uuid="new")])
+        assert store.conversation_manifest("s1") != after_delete
+
+
+def test_claude_conversation_isolates_full_sidechain_ids_including_zero_usage():
+    from opentab.conversation import ConversationError
+
+    run = "12345678-1111-4111-8111-111111111111"
+    sibling_id = "12345678-2222-4222-8222-222222222222"
+    for sidecars in (False, True):
+        with tempfile.TemporaryDirectory() as tmp:
+            store, path, rows = _claude_prompt_run(tmp, run=run)
+            rows[2]["message"].pop("usage")
+            rows[2]["message"]["content"] = [{"type": "text", "text": "child final"}]
+            sibling = dict(rows[1], uuid=sibling_id, message={"content": "zero-usage sibling"})
+            # Shared model message IDs are not ownership keys, even across runs.
+            sibling["message"]["id"] = rows[2]["message"]["id"]
+            if sidecars:
+                side_dir = Path(tmp) / "s1" / "subagents"
+                side_dir.mkdir(parents=True)
+                _write_jsonl(path, rows[:1])
+                _write_jsonl(side_dir / "agent-not-an-execution.jsonl", [rows[2], rows[1]])
+                _write_jsonl(side_dir / "agent-sibling.jsonl", [sibling])
+            else:
+                _write_jsonl(path, [rows[0], rows[2], sibling, rows[1]])
+            root = store.conversation_source("s1")
+            assert [r["record_id"] for r in root["records"]] == ["main"]
+            assert root["executions"] == [
+                {"id": "s1", "parent_id": None},
+                {"id": run, "parent_id": "s1"},
+                {"id": sibling_id, "parent_id": "s1"},
+            ]
+            own = store.conversation_source("s1", run)
+            assert {r["record_id"] for r in own["records"]} == {run, "answer"}
+            assert all(r["execution_id"] == run for r in own["records"])
+            assert all("sidechain" in r["origin"] for r in own["records"])
+            sibling_source = store.conversation_source("s1", sibling_id)
+            assert sibling_source["records"][0]["parts"][0]["text"] == "zero-usage sibling"
+            assert len({root["snapshot"], own["snapshot"], sibling_source["snapshot"]}) == 3
+            assert root == store.conversation_source("s1", "s1")
+            for missing in ("12345678", "answer", "agent-not-an-execution", "foreign-full-id", ""):
+                try:
+                    store.conversation_source("s1", missing)
+                except ConversationError:
+                    pass
+                else:
+                    raise AssertionError("unowned or partial execution accepted")
+
+
+def test_claude_conversation_rejects_unresolved_ownership_without_guessing():
+    from opentab.conversation import ConversationError
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store, path, rows = _claude_prompt_run(tmp)
+        variants = [
+            rows + [dict(rows[1], parentUuid="answer")],
+            rows + [dict(rows[1], isSidechain=False)],
+            [rows[0], dict(rows[1], parentUuid="answer"), rows[2]],
+            [rows[0], dict(rows[1], parentUuid="missing-parent"), rows[2]],
+            [rows[0], dict(rows[1], uuid=None)],
+            [rows[0], dict(rows[1], sessionId="foreign")],
+            [rows[0], dict(rows[1], sessionId=None)],
+            [rows[0], dict(rows[1], isSidechain="true")],
+            [rows[0], dict(rows[1], parentUuid=[])],
+            [rows[0], dict(rows[1], uuid={})],
+            [rows[0], dict(rows[1], uuid="s1")],
+            [rows[0], dict(rows[1], isSidechain=False, parentUuid="answer"), rows[2]],
+        ]
+        for variant in variants:
+            _write_jsonl(path, variant)
+            try:
+                store.conversation_source("s1")
+            except ConversationError as exc:
+                assert "received task" not in str(exc) and tmp not in str(exc)
+            else:
+                raise AssertionError("ambiguous graph accepted")
+        _write_jsonl(Path(tmp) / "wrong-name.jsonl", rows)
+        try:
+            store.conversation_source("wrong-name")
+        except ConversationError:
+            pass
+        else:
+            raise AssertionError("filename was trusted over sessionId")
+
+
+def test_claude_conversation_sidecars_require_root_ownership_not_the_filename():
+    from opentab.conversation import ConversationError
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store, path, rows = _claude_prompt_run(tmp)
+        side_dir = Path(tmp) / "s1" / "subagents"
+        side_dir.mkdir(parents=True)
+        sidecar = side_dir / "agent-label.jsonl"
+        _write_jsonl(path, rows[:1])
+        # Null-parent sidechain roots are valid; the UUID, not agent-label, is the ID.
+        _write_jsonl(sidecar, [dict(rows[1], parentUuid=None)])
+        source = store.conversation_source("s1", rows[1]["uuid"])
+        assert source["records"][0]["source"]["file"] == sidecar.name
+        for bad in (dict(rows[1], isSidechain=False), dict(rows[1], sessionId="foreign")):
+            _write_jsonl(sidecar, [bad])
+            try:
+                store.conversation_source("s1")
+            except ConversationError:
+                pass
+            else:
+                raise AssertionError("sidecar ownership was guessed")
+
+
+def test_claude_conversation_preserves_replay_copies_and_fragment_provenance():
+    with tempfile.TemporaryDirectory() as tmp:
+        rows = [
+            dict(_claude_user(f"recorded occurrence {i}", cwd=tmp, uuid=f"u{i}"), sessionId="a-bg")
+            for i in range(3)
+        ]
+        _write_jsonl(
+            Path(tmp) / "a-bg.jsonl", rows + [{"sessionId": "a-bg", "sessionKind": "background"}]
+        )
+        _write_jsonl(Path(tmp) / "b-parent.jsonl", [dict(rows[0], sessionId="b-parent")])
+        store = ot.ClaudeStore(tmp, _claude_args())
+        with patch.object(store, "_files", side_effect=AssertionError("no corpus replay lookup")):
+            source = store.conversation_source("a-bg")
+        assert len(source["records"]) == 3
+        assert all("replay" in r["origin"] for r in source["records"])
+        assert "active-branch" in " ".join(source["limitations"])
+        assert all(r["execution_id"] == "a-bg" for r in source["records"])
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "s1.jsonl"
+        row = _claude_user("original", cwd=tmp)
+        fragment = dict(row, message={"id": "shared", "content": "fragment"})
+        row["message"]["id"] = "shared"
+        _write_jsonl(path, [row, row, fragment])
+        copy_dir = Path(tmp) / "resumed"
+        copy_dir.mkdir()
+        _write_jsonl(copy_dir / "s1.jsonl", [row])
+        source = ot.ClaudeStore(tmp, _claude_args()).conversation_source("s1")
+        records = source["records"]
+        assert len(records) == 4 and len({r["id"] for r in records}) == 4
+        assert len({r["source"]["source_id"] for r in records}) == 2
+        assert {r["message_id"] for r in records} == {"shared"}
+        assert "native message anchors may be ambiguous" in " ".join(source["limitations"])
+
+
+def test_claude_conversation_excludes_flagged_synthetic_text_but_keeps_recorded_echoes():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "s1.jsonl"
+        echo = _claude_user("recorded model-input echo", cwd=tmp, uuid="echo")
+        rows = [
+            echo,
+            dict(echo, uuid="meta", isMeta=True),
+            dict(echo, uuid="compact", isCompactSummary=True),
+            dict(echo, uuid="synthetic", isSynthetic=True),
+            dict(
+                echo,
+                uuid="model",
+                type="assistant",
+                message={"model": "<synthetic>", "content": "skip"},
+            ),
+            dict(
+                echo, uuid="tool", message={"content": [{"type": "tool_result", "content": "skip"}]}
+            ),
+            dict(echo, uuid="attachment", type="attachment"),
+        ]
+        _write_jsonl(path, rows)
+        source = ot.ClaudeStore(tmp, _claude_args()).conversation_source("s1")
+        assert [r["record_id"] for r in source["records"]] == ["echo"]
+        assert "explicitly flagged meta/synthetic/compaction" in " ".join(source["limitations"])
+
+
+def test_claude_conversation_preserves_unflagged_literal_wrappers_in_both_roles():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "s1.jsonl"
+        request = _claude_user(
+            "Show an XML system-reminder example, followed by a synthetic element.",
+            cwd=tmp,
+            uuid="request",
+        )
+        xml = '<system-reminder>Use the attribute name="example".</system-reminder>\n'
+        literal = "  <command-name>/example</command-name>\n\n"
+        synthetic = "<synthetic>This is literal XML, not a synthetic record.</synthetic>"
+        rows = [
+            request,
+            dict(
+                request,
+                uuid="answer",
+                type="assistant",
+                message={
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": xml},
+                        {"type": "text", "text": synthetic},
+                    ],
+                },
+            ),
+            _claude_user(literal, cwd=tmp, uuid="literal"),
+            _claude_user(synthetic, cwd=tmp, uuid="synthetic-literal"),
+        ]
+        _write_jsonl(path, rows)
+        source = ot.ClaudeStore(tmp, _claude_args()).conversation_source("s1")
+        records = source["records"]
+        assert [r["record_id"] for r in records] == [
+            "request",
+            "answer",
+            "literal",
+            "synthetic-literal",
+        ]
+        assert [part["text"] for part in records[1]["parts"]] == [xml, synthetic]
+        assert records[2]["parts"][0]["text"] == literal
+        assert records[3]["parts"][0]["text"] == synthetic
+        assert all("recorded/model-input" in r["origin"] for r in records if r["role"] == "user")
+        assert any("not necessarily human-authored" in item for item in source["limitations"])
+        assert not any("excluded" in item for item in source["limitations"])
+
+
+def test_claude_conversation_is_fresh_and_keeps_physical_lines_after_malformed_records():
+    from opentab.conversation import read_jsonl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "s1.jsonl"
+        row = _claude_user("before", cwd=tmp, uuid="first")
+        with path.open("w", encoding="utf-8") as fh:
+            fh.write(
+                "{malformed secret-sentinel}\n"
+                + json.dumps(row)
+                + '\n{"truncated":"secret-sentinel'
+            )
+        store = ot.ClaudeStore(tmp, _claude_args())
+        before = store.conversation_source("s1")
+        assert before["records"][0]["source"]["line"] == 2
+        diagnostics = read_jsonl([path])[2]
+        assert diagnostics and all(item in before["limitations"] for item in diagnostics)
+        assert "secret-sentinel" not in repr(before)
+        assert before == store.conversation_source("s1")
+        row["message"]["content"] = "after!"  # same size edit, mtime restored
+        stat = path.stat()
+        with path.open("w", encoding="utf-8") as fh:
+            fh.write(
+                "{malformed secret-sentinel}\n"
+                + json.dumps(row)
+                + '\n{"truncated":"secret-sentinel'
+            )
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        after = store.conversation_source("s1")
+        assert before["snapshot"] != after["snapshot"]
+        assert before["records"][0]["id"] == after["records"][0]["id"]
+        assert after["records"][0]["parts"][0]["text"] == "after!"
+        assert store._sessions is None and store._one is None and store._trace_one is None
+
+
+def test_claude_conversation_capability_is_cheap_and_demo_blocks_source_reads():
+    from opentab.conversation import ConversationError
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store, _path, _rows = _claude_prompt_run(tmp)
+        with patch(
+            "builtins.open", side_effect=AssertionError("capability must not read")
+        ), patch.object(store, "_files", side_effect=AssertionError("no corpus")):
+            assert store.supports_conversation("s1")
+            for sid in ("missing", "../s1", "*", "", None):
+                assert not store.supports_conversation(sid)
+        store.demo = True
+        with patch.object(
+            store, "_transcripts", side_effect=AssertionError("demo must not discover")
+        ), patch(
+            "opentab.conversation.read_jsonl", side_effect=AssertionError("demo must not read")
+        ):
+            assert not store.supports_conversation("s1")
+            try:
+                store.conversation_source("s1")
+            except ConversationError:
+                pass
+            else:
+                raise AssertionError("demo content accepted")
+
+
+def test_claude_conversation_propagates_bounded_reader_failures_without_fallback():
+    from opentab.conversation import ConversationError
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store, path, _rows = _claude_prompt_run(tmp)
+        for code in ("missing", "unreadable", "too_large", "source_changed"):
+            failure = ConversationError(code, "Safe reader failure.")
+            with patch("opentab.conversation.read_jsonl", side_effect=failure) as reader:
+                try:
+                    store.conversation_source("s1")
+                except ConversationError as exc:
+                    assert exc is failure
+                else:
+                    raise AssertionError("source failure swallowed")
+            assert reader.call_args.args == ([Path(path)],)
+
+
+def test_claude_conversation_snapshot_binds_full_root_and_execution_mapping():
+    from opentab.conversation import read_jsonl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root_id = "aaaaaaaa-1111-4111-8111-111111111111"
+        child_id = "bbbbbbbb-2222-4222-8222-222222222222"
+        store, _path, rows = _claude_prompt_run(tmp, run=child_id)
+        path = Path(tmp) / f"{root_id}.jsonl"
+        _write_jsonl(path, [dict(row, sessionId=root_id) for row in rows])
+        root = store.conversation_source(root_id)
+        assert root["execution_id"] == root_id
+        assert root["records"][0]["execution_id"] == root_id
+        assert root["executions"][1] == {"id": child_id, "parent_id": root_id}
+        assert not store.supports_conversation(root_id[:8])
+        located, _snapshot, limitations = read_jsonl([path])
+        with patch("opentab.conversation.read_jsonl", return_value=(located, "fixed", limitations)):
+            before = store.conversation_source(root_id)
+            child = store.conversation_source(root_id, child_id)
+            assert before["snapshot"] != child["snapshot"]
+        changed = [(p, line, dict(obj, isSidechain=False)) for p, line, obj in located]
+        with patch("opentab.conversation.read_jsonl", return_value=(changed, "fixed", limitations)):
+            after = store.conversation_source(root_id)
+        assert before["snapshot"] != after["snapshot"]
+        assert after["executions"] == [{"id": root_id, "parent_id": None}]
 
 
 def test_claude_node_prompt_reads_full_initial_message_with_exact_sibling_grouping():

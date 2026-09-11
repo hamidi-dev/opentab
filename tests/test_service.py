@@ -125,6 +125,223 @@ def _args():
     return type("Args", (), {"source": "auto", "demo": False})()
 
 
+class ConversationStore(DetailStore):
+    def __init__(self, workflows, source="OpenCode"):
+        super().__init__(workflows, source)
+        self.reads = []
+        self.probes = []
+
+    def supports_conversation(self, sid):
+        self.probes.append(sid)
+        return True
+
+    def conversation_source(self, root_id, execution_id=None):
+        self.reads.append((root_id, execution_id))
+        selected = root_id if execution_id is None else execution_id
+        return {
+            "snapshot": "synthetic-snapshot",
+            "execution_id": selected,
+            "executions": [
+                {"id": root_id, "parent_id": None},
+                {"id": "child", "parent_id": root_id},
+            ],
+            "limitations": ["synthetic records only"],
+            "ordering": "record order",
+            "records": [
+                {
+                    "id": f"{selected}:{i}",
+                    "execution_id": selected,
+                    "role": "user" if i % 2 == 0 else "assistant",
+                    "timestamp": "2026-09-01T12:00:00Z",
+                    "origin": "recorded-message",
+                    "source": {"message_id": f"{selected}:{i}"},
+                    "parts": [{"id": f"p{i}", "text": f"{selected} text {i}"}],
+                }
+                for i in range(3)
+            ],
+        }
+
+
+def test_conversation_permission_is_first_and_demo_is_rechecked_without_reads():
+    store = ConversationStore([workflow("root", "2026-09-01 12:00:00")])
+    args = _args()
+    service = ot.OpenTabService(store, args)
+    with patch.object(service, "resolve_session", side_effect=AssertionError("resolution")):
+        try:
+            service.session_conversation(None, limit=False, execution_id=[])
+            raise AssertionError("expected permission gate")
+        except ot.ServiceError as exc:
+            assert exc.code == "raw_content_disabled"
+        service.allow_raw_content = True
+        for obj in (args, store):
+            obj.demo = True
+            try:
+                service.session_conversation("missing")
+                raise AssertionError("expected demo gate")
+            except ot.ServiceError as exc:
+                assert exc.code == "demo_unsupported"
+            finally:
+                obj.demo = False
+    assert store.probes == store.reads == []
+
+
+def test_conversation_capability_is_independent_of_permission_and_never_reads_raw():
+    store = ConversationStore([workflow("root", "2026-09-01 12:00:00")])
+    service = ot.OpenTabService(store, _args())
+    for allowed in (False, True):
+        service.allow_raw_content = allowed
+        caps = service.get_session("root")["capabilities"]
+        assert caps["conversation_supported"] is True
+        assert caps["conversation"] is allowed
+    store.demo = True
+    assert service.get_session("root")["capabilities"]["conversation"] is False
+    assert store.reads == []
+
+
+def test_conversation_validates_window_and_execution_before_resolution_or_reader():
+    store = ConversationStore([workflow("root", "2026-09-01 12:00:00")])
+    service = ot.OpenTabService(store, _args(), allow_raw_content=True)
+    invalid = [
+        {name: value}
+        for name, values in (
+            ("limit", (True, "20", 0, 101, 1.5, None)),
+            ("max_chars", (False, "10", 0, 120001)),
+            ("before", (True, "1", -1, 100, 1)),
+            ("tail", (1, "true", None)),
+            ("anchor", (False, 1, "", "x" * 1025)),
+            ("cursor", (False, 1, "", "x" * 8193)),
+            ("execution_id", (False, 1, "", [], {})),
+        )
+        for value in values
+    ]
+    invalid += [
+        {"anchor": "a", "cursor": "c"},
+        {"anchor": "a", "tail": True},
+        {"cursor": "c", "tail": True},
+    ]
+    with patch.object(service, "resolve_session", side_effect=AssertionError("resolution")):
+        for options in invalid:
+            try:
+                service.session_conversation("root", **options)
+                raise AssertionError(f"accepted invalid options: {options!r}")
+            except ot.ServiceError as exc:
+                assert exc.code.startswith("invalid"), exc.code
+    assert store.probes == store.reads == []
+
+
+def test_conversation_routes_exact_qualified_owner_and_only_selected_execution():
+    items = [workflow("same", "2026-09-01 12:00:00") for _ in range(3)]
+    for item, machine, harness in zip(
+        items, ("one", "one", "two"), ("OpenCode", "Claude Code", "OpenCode")
+    ):
+        item.machine, item.source = machine, harness
+    stores = [ConversationStore([item], item.source) for item in items]
+    combined = ot.CombinedStore(stores)
+    service = ot.OpenTabService(combined, _args(), "all", allow_raw_content=True)
+    with patch(
+        "opentab.conversation.window", side_effect=lambda source, **opts: {"source": source, **opts}
+    ) as window:
+        for item, store in zip(service._sessions, stores):
+            key = item.ref.encode()
+            result = service.session_conversation(key)
+            assert result["root_key"] == key
+            assert result["source"]["execution_id"] == "same"
+            result = service.session_conversation(
+                key, execution_id="child", anchor="a", before=1, limit=7, max_chars=99
+            )
+            assert result["source"]["execution_id"] == "child"
+            assert all(record["execution_id"] == "child" for record in result["source"]["records"])
+            assert store.reads == [("same", None), ("same", "child")]
+            assert window.call_args.kwargs == dict(
+                root_key=key, anchor="a", cursor=None, limit=7, max_chars=99, before=1, tail=False
+            )
+        try:
+            service.session_conversation("same")
+            raise AssertionError("expected ambiguous native id")
+        except ot.ServiceError as exc:
+            assert exc.code == "ambiguous_session"
+    assert all(len(store.reads) == 2 for store in stores)
+
+
+def test_conversation_rejects_duplicate_full_refs_and_roots_absent_from_catalog():
+    items = [workflow("same", "2026-09-01 12:00:00") for _ in range(2)]
+    stores = [ConversationStore([item]) for item in items]
+    service = ot.OpenTabService(ot.CombinedStore(stores), _args(), allow_raw_content=True)
+    duplicate = service._sessions[0].ref.encode()
+    for value, code in (
+        (duplicate, "ambiguous_session"),
+        ("same", "ambiguous_session"),
+        ("child", "session_not_found"),
+        (None, "invalid_session_ref"),
+    ):
+        try:
+            service.session_conversation(value)
+            raise AssertionError("expected catalog identity rejection")
+        except ot.ServiceError as exc:
+            assert exc.code == code
+    assert all(store.probes == store.reads == [] for store in stores)
+
+
+def test_conversation_demo_leaf_and_unsupported_remote_fail_without_raw_or_transport():
+    local = ConversationStore([workflow("root", "2026-09-01 12:00:00")])
+    service = ot.OpenTabService(ot.CombinedStore([local]), _args(), allow_raw_content=True)
+    local.demo = True
+    try:
+        service.session_conversation("root")
+        raise AssertionError("expected leaf demo gate")
+    except ot.ServiceError as exc:
+        assert exc.code == "demo_unsupported"
+    assert local.probes == local.reads == []
+    with _managed() as (remote, *_), patch.object(
+        remote_content, "_ssh_json"
+    ) as transport, patch.object(remote, "turn_content") as raw:
+        service = ot.OpenTabService(remote, _args(), "remote", allow_raw_content=True)
+        caps = service.get_session("s1")["capabilities"]
+        assert caps["conversation_supported"] is caps["conversation"] is False
+        try:
+            service.session_conversation("s1")
+            raise AssertionError("expected unsupported remote")
+        except ot.ServiceError as exc:
+            assert exc.code == "conversation_unavailable"
+        transport.assert_not_called()
+        raw.assert_not_called()
+
+
+def test_conversation_translates_shared_errors_from_reader_and_window():
+    from opentab import conversation
+    from opentab.conversation import ConversationError
+
+    store = ConversationStore([workflow("root", "2026-09-01 12:00:00")])
+    service = ot.OpenTabService(store, _args(), allow_raw_content=True)
+    for target, name in ((store, "conversation_source"), (conversation, "window")):
+        with patch.object(
+            target, name, side_effect=ConversationError("source_changed", "source changed")
+        ):
+            try:
+                service.session_conversation("root")
+                raise AssertionError("expected translated error")
+            except ot.ServiceError as exc:
+                assert exc.code == "source_changed" and exc.message == "source changed"
+
+
+def test_conversation_window_preserves_zero_usage_text_and_root_selector():
+    store = ConversationStore([workflow("root", "2026-09-01 12:00:00", tokens=0, cost=0)])
+    service = ot.OpenTabService(store, _args(), allow_raw_content=True)
+    root = service.session_conversation("root", limit=2)
+    assert root["execution_id"] == "root" and len(root["records"]) == 2
+    assert root["next_cursor"]
+    assert root["executions"] == [
+        {"id": "root", "parent_id": None},
+        {"id": "child", "parent_id": "root"},
+    ]
+    rest = service.session_conversation("root", cursor=root["next_cursor"], limit=2)
+    assert len(rest["records"]) == 1
+    child = service.session_conversation("root", execution_id="child")
+    assert child["execution_id"] == "child"
+    assert all(record["execution_id"] == "child" for record in child["records"])
+    assert "root text" not in json.dumps(child["records"])
+
+
 def test_session_ref_round_trips_arbitrary_identity_fields():
     ref = ot.SessionRef("laptop:one", "claude/code", "id with ünicode")
     encoded = ref.encode()

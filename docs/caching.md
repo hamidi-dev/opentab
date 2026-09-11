@@ -57,6 +57,14 @@ See [claude.py](../src/opentab/stores/claude.py).
 
 ## Persistent warm cache
 
+The explicitly built [conversation search index](conversation-search.md) is a
+separate sensitive-text store, not part of this warm accounting cache. Normal
+startup/reload never creates it. Its refresh uses strong, reader-versioned source
+manifests to avoid full conversation reads for unchanged roots, then re-reads and
+pre/post-verifies changed roots. Search still verifies candidate snapshots live.
+These manifests and their additive SQLite migration are independent of the weaker
+rollup-cache fingerprint and source-parser splicing below.
+
 `sources.make_store()` wraps eligible leaf stores in `CachedStore`; combined
 views keep each leaf's cache independent. A changed Claude transcript should
 not invalidate an unchanged Codex history. Stores without `cache_inputs()` are

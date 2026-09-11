@@ -11,6 +11,7 @@ These pages hold the full detail:
 | [The web browser](web.md) | `--html`, `--serve`, and `--web` — the self-contained page, the live server, deep links, and security notes |
 | [Multiple machines](machines.md) | SSH pulls, browsing and resuming remote sessions, portable exports, and saved machines |
 | [Programmatic access](programmatic.md) | Versioned JSON commands, the headless Python service, MCP tools, stable session keys, and raw-content gates |
+| [Conversation search](conversation-search.md) | Explicit local lexical indexing, cross-harness and in-session queries, evidence reading, freshness and privacy limits |
 | [Windows & WSL](windows.md) | Running natively on Windows, and reading Windows-side data from WSL |
 | [Privacy — what it touches](privacy.md) | Everything OpenTab reads, writes, and runs; network policy; demo mode |
 | [Troubleshooting](troubleshooting.md) | `opentab doctor`, colours that won't change, garbled frames, a harness that won't show up |

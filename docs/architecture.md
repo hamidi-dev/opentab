@@ -29,6 +29,8 @@ package and installed command are both `opentab`.
 |--------|----------------|
 | `cli.py`, `programmatic.py`, `__main__.py` | Commands, argument routing, startup, JSON envelopes and one-shot operations |
 | `service.py`, `mcp.py` | Headless accounting API and stdio MCP adapter |
+| `conversation.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors |
+| `conversation_search.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
 | `models.py` | Workflow, qualified session identity and summary records |
 | `stores/` | Harness readers, combined views, portable summaries and warm caches |
 | `remote_content.py` | Opt-in keyed SSH traces, snapshot/live identity validation, bounded transport and cancelable jobs |
@@ -68,6 +70,7 @@ The optional session interface extends this without making the UI format-aware:
 | Tool attribution | `tool_breakdown(id)` | `supports_tools(id)` |
 | Estimated context composition | `context_breakdown(id)` | `supports_context(id)` |
 | Recorded turn content | `turn_content(id, content_key=None)` | `supports_turn_content(id)` |
+| Conversation records | `conversation_source(root_id, execution_id=None)` | `supports_conversation(root_id)`; local OpenCode, Claude Code and Codex only |
 | Received subagent prompt | `node_prompt(root_id, node_id)` | Optional method; `None` when unavailable |
 | Execution turns | `node_timeline(root_id, node_id)` | Optional method; `None` unavailable, `[]` valid empty |
 | Execution turn content | `node_turn_content(root_id, node_id, content_key=None)` | Optional method; owned previews or keyed full content |
@@ -89,6 +92,39 @@ harness and native ID; a bare native ID is rejected when it is ambiguous.
 `CachedStore` wraps eligible leaves independently, so a change to one
 harness need not invalidate the others. UI code consumes these interfaces, not
 SQL columns or transcript records.
+
+Conversation reads are a separate public service/CLI/MCP path, not an accounting
+timeline or search index. Each leaf returns `records`, `snapshot`, `execution_id`,
+`executions`, `limitations`, and `ordering`. The source contains only the selected
+execution's retained user/assistant text occurrences, including zero-usage messages;
+it does not reconstruct the active branch or merge descendants. Cached and
+machine-tagged wrappers delegate the optional methods without caching their raw
+results. Remote summaries have no conversation capability or transport fallback.
+
+`OpenTabService.session_conversation` gates raw permission first, rechecks demo,
+validates the shared window options before reading, and resolves a catalog root to
+its exact qualified owner. It never forwards native IDs through CombinedStore's
+detail routing. Duplicate fully qualified identities fail closed for this raw
+operation. Child selection uses an exact `execution_id` from the returned execution
+list under that root. Roots absent from the existing session catalog are not
+addressable; conversation search does not create a separate catalog. The shared `window`
+function receives the qualified root key and selected source, bounds the response,
+and validates continuation scope. `ConversationError` codes/messages become stable
+`ServiceError` values for both adapters. MCP confirmation precedes lazy service
+creation. Conversation capabilities are advertised without raw reads, with support
+separate from permission. None of this raw data enters rollup/web/fleet caches or
+payloads; see [Programmatic access](programmatic.md#reading-conversation-records).
+
+An optional `conversation_manifest(root_id)` store hook supplies a cheap,
+JSON-compatible source identity for explicit index refreshes. The service stores it
+only after a successful full read whose pre/post manifests match, and includes one
+shared reader-semantics version in both the manifest and root-content fingerprint,
+so behavior changes invalidate the read shortcut and rebuild indexed passages.
+Claude fingerprints a root's transcript set, OpenCode conservatively fingerprints
+its database/WAL globally but persists the token per root, and Codex reuses one
+refresh-local rollout-head/ownership discovery. Missing hooks or uncertain stamps
+fall back to `conversation_source`; they never authorize indexed text. This hook is
+not used by search, whose selected candidates retain live snapshot verification.
 
 See [Backend accounting](backends.md) for normalization, deduplication, subtree
 ownership and each format's limitations.

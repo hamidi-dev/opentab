@@ -68,6 +68,7 @@ Fix formatting with `ruff format src/opentab tests run_tests.py`. Note that `ruf
 deliberately ignores `E501` (long lines): the TUI f-strings build fixed-width columns, so
 don't wrap them to satisfy line length.
 
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org): `type(scope): subject`. Keeps

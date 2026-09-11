@@ -55,6 +55,14 @@ are ignored, and the defaults are shown):
 - Only when you ask: an `opentab-*.csv` export (on `e`, in the current directory),
   an HTML report (`opentab web --html FILE`), or a machine summary
   (`opentab export FILE`; stdout when no file is supplied).
+- Only on explicit conversation indexing: `conversations/index.sqlite3` under the
+  cache directory, containing plaintext user/assistant text, titles and source
+  identifiers. This separate opt-in index never enters normal rollup caches, web
+  or fleet payloads. It uses owner-only POSIX paths and no automatic secret
+  redaction; index only permitted projects. Normal startup does not create it.
+  [Conversation search](conversation-search.md) describes refresh, exclusions,
+  source checks and clearing. Clear removes active indexed content but is not a
+  secure-erasure or backup-deletion guarantee.
 
 Upgrading from a version that kept everything under `~/.config/opentab/`? The first run
 attempts to relocate state, notes and caches to their new homes. Migration is
@@ -131,6 +139,22 @@ commands, arguments, and results behind a content key, requires starting the com
 or MCP server with `--allow-raw-content` and explicitly requesting those fields. MCP
 raw trace reads require a second `confirm_raw: true` argument. See
 [Programmatic access](programmatic.md#raw-content).
+
+The separate `sessions conversation` / `opentab_get_session_conversation` API reads
+bounded user/assistant **text only** from one selected local OpenCode, Claude Code,
+or Codex execution. It requires raw-content opt-in and, for MCP, `confirm_raw: true`
+before lazy service creation. Demo is rejected, including when enabled after service
+construction. Permission and input validation precede conversation reads; checking
+the advertised capability does not fetch raw text.
+
+The default scope is the root only. Child reads require an explicit exact ID from
+`executions`, still addressed through a root present in the session catalog. This is
+record reading, not search or active-branch reconstruction: original retained text
+occurrences can include discarded branches and repeated prompts. Zero-usage text in
+accessible sessions is not filtered out. Remote summaries cannot supply conversation
+windows and no SSH fallback exists. The API adds no raw records, anchors, cursors,
+or conversation cache to rollup, web, or fleet data. Output remains sensitive and
+clients may save or forward it. See [conversation reads](programmatic.md#reading-conversation-records).
 
 Remote reads fetch only the requested turn, after checking its snapshot identity
 against the live timeline; there is no ordinal fallback. The TUI retains one remote
