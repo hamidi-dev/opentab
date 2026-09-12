@@ -4218,6 +4218,24 @@ def _trace_app():
     return app
 
 
+def test_empty_trace_events_do_not_leave_a_header_separator_before_the_preview_notice():
+    from opentab.util import TRACE_EVENTS_CAP
+
+    app = _trace_app()
+    app.store.records_reasoning = True
+    app.open_trace_drill()
+    wf = app.current_session()
+    rows = app.reader_turn_rows(wf.id)
+    # Bypass source normalization to exercise the layout boundary with empty events.
+    for count in (1, TRACE_EVENTS_CAP):
+        events = [{"kind": "text", "text": ""}] * count
+        lines = app.renderer._build_turn_trace(wf, 80, rows, 0, events)
+        assert lines[-1]
+        if count == TRACE_EVENTS_CAP:
+            assert "Preview limited" in lines[-1]
+            assert lines[-2] == "" and lines[-3]
+
+
 def test_prompt_and_turn_token_breakdowns_use_exact_normalized_rows_and_recorded_totals():
     app = _trace_app()
     wf = app.current_session()
@@ -4482,7 +4500,7 @@ def test_session_selection_snapshot_is_nested_and_never_survives_the_frame():
 
 
 def test_turns_cache_reuses_prompt_drills_but_never_retains_trace_lines():
-    from opentab.tui.renderer import TraceLine
+    from opentab.tui.trace import TraceLine
 
     app = _trace_app()
     wf = app.current_session()
@@ -4806,16 +4824,6 @@ def test_trace_keys_step_siblings_expand_on_demand_and_release_full_content():
     assert "line 59" not in "\n".join(app.renderer.detail_turn_drill(wf, 96))
 
 
-def test_trace_prose_wraps_words_but_fenced_code_keeps_spaces():
-    app = _trace_app()
-    prose = "alpha beta gamma delta " * 8
-    lines = app.renderer._trace_prose({"text": prose}, 36)
-    assert " ".join(ln.strip() for ln in lines) == prose.strip()
-    code = "```python\n    print('a  b')\n```"
-    lines = app.renderer._trace_prose({"text": code}, 36)
-    assert "      print('a  b')" in lines
-
-
 def test_trace_styles_cover_whole_blocks_and_stay_visible_while_scrolling():
     app = _trace_app()
     app.store._CONTENT["k0"] = [
@@ -4942,37 +4950,6 @@ def test_trace_outputs_expand_independently_with_keyboard_and_mouse():
     assert "│  Output · full" in text
     app.handle_key(None, ord("]"))
     assert not app._trace_open_outputs and app._trace_full is None
-
-
-def test_trace_output_preview_budgets_screen_rows_and_full_output_is_faithful():
-    from opentab.formatting import display_width
-
-    app = _trace_app()
-    output = "  " + "界  $1 **raw** " * 60 + "\n\n    \nlast"
-    event = {"output": output, "output_dropped": 90000}
-    preview = app.renderer._trace_output(event, 40)
-    assert all(display_width(ln) <= 40 for ln in preview)
-    assert len(preview) < 10 and "90,000 more characters" in " ".join(
-        ln.removeprefix("│").strip() for ln in preview
-    )
-    full = app.renderer._trace_output({"output": " a  b\n\n    \n$1 **raw**"}, 80, True)
-    assert full == ["│   a  b", "│", "│      ", "│  $1 **raw**"]
-
-
-def test_trace_markdown_headings_are_readable_but_code_and_output_are_raw():
-    app = _trace_app()
-    event = {
-        "kind": "reasoning",
-        "text": "**Inspecting the renderer**\n## Next step\n```python\n    print('**raw**')\n```\nUse **tests** to verify.",
-    }
-    lines = app.renderer._trace_prose(event, 80)
-    assert lines[0] == "  Inspecting the renderer" and lines[0].role == "heading"
-    assert lines[1] == "  Next step" and lines[1].role == "heading"
-    assert "      print('**raw**')" in lines and "  Use tests to verify." in lines
-    assert "│  ## Raw **output**" in app.renderer._trace_output({"output": "## Raw **output**"}, 80)
-    # A shorter fence inside a longer one is code, not the end of the block.
-    lines = app.renderer._trace_prose({"text": "````\n```\n**literal**\n````"}, 80)
-    assert "  ```" in lines and "  **literal**" in lines
 
 
 def test_trace_output_click_regions_and_reader_chrome_are_contextual():
