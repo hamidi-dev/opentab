@@ -120,7 +120,9 @@ JSON-compatible source identity for explicit index refreshes. The service stores
 only after a successful full read whose pre/post manifests match, and includes one
 shared reader-semantics version in both the manifest and root-content fingerprint,
 so behavior changes invalidate the read shortcut and rebuild indexed passages.
-Claude fingerprints a root's transcript set. OpenCode hashes its execution tree and
+Claude reuses one directory-stamp-guarded transcript lookup per explicit refresh,
+while fingerprinting each root's files freshly; uncertain discovery falls back to
+live reads and the lookup is released in `finally`. OpenCode hashes its execution tree and
 message/part row revisions in fresh, root-scoped SQLite metadata reads, falling back
 to a global database/WAL token for older or unconstrained schemas. Codex reuses one
 refresh-local rollout-head/ownership discovery. Missing hooks or uncertain stamps

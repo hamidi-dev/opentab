@@ -101,6 +101,7 @@ class ClaudeStore:
         self._want_trace = False
         self._trace_key: str | None = None
         self._git_root_cache: dict[str, str] = {}
+        self._conversation_catalog_cache: dict | None = None
 
     @staticmethod
     def _new_acc() -> dict[str, int]:
@@ -233,9 +234,97 @@ class ClaudeStore:
             return None
         return os.path.basename(os.path.dirname(holder)) or None
 
+    @staticmethod
+    def _conversation_stamp(info):
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def _conversation_catalog(self) -> dict:
+        """Discover refresh sources once, with directory stamps guarding membership."""
+        root = os.path.abspath(self.root_dir)
+        pending = [root]
+        paths: list[str] = []
+        directories = {}
+        visited = set()
+        valid = True
+        while pending:
+            directory = pending.pop()
+            try:
+                before = self._conversation_stamp(os.stat(directory))
+                identity = before[:2]
+                if identity in visited:
+                    valid = False
+                    continue
+                visited.add(identity)
+                with os.scandir(directory) as stream:
+                    entries = list(stream)
+                after = self._conversation_stamp(os.stat(directory))
+            except OSError:
+                valid = False
+                continue
+            directories[directory] = after
+            valid = valid and before == after
+            for entry in entries:
+                # Match recursive glob's hidden-entry policy. Keep matching directories
+                # and broken symlinks too, so unreadable sources still fail closed.
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if entry.name.endswith(".jsonl"):
+                        paths.append(os.path.abspath(entry.path))
+                    if entry.is_dir():
+                        pending.append(entry.path)
+                except OSError:
+                    valid = False
+
+        # A final metadata pass closes races where a directory changed after its
+        # entries were listed but before the recursive walk completed.
+        try:
+            valid = valid and all(
+                self._conversation_stamp(os.stat(directory)) == stamp
+                for directory, stamp in directories.items()
+            )
+        except OSError:
+            valid = False
+
+        transcripts: dict[str, list[str]] = {}
+        for path in paths:
+            owner = self._sidecar_owner(path)
+            session_id = owner or Path(path).stem
+            transcripts.setdefault(session_id, []).append(path)
+        return {"directories": directories, "transcripts": transcripts, "valid": valid}
+
+    def _catalog_transcripts(self, session_id: str) -> list[str] | None:
+        catalog = self._conversation_catalog_cache
+        if catalog is None or not catalog["valid"]:
+            return None
+        try:
+            stable = all(
+                self._conversation_stamp(os.stat(directory)) == stamp
+                for directory, stamp in catalog["directories"].items()
+            )
+        except OSError:
+            stable = False
+        if not stable:
+            # Keep the refresh fail-closed. Full reads can still use live discovery,
+            # while manifests remain unavailable instead of blessing a frozen set.
+            catalog["valid"] = False
+            return None
+        return list(catalog["transcripts"].get(session_id, ()))
+
+    def prepare_conversation_refresh(self):
+        self._conversation_catalog_cache = None
+        if not self.demo:
+            self._conversation_catalog_cache = self._conversation_catalog()
+
+    def finish_conversation_refresh(self):
+        self._conversation_catalog_cache = None
+
     def _transcripts(self, session_id: str) -> list[str]:
         # Include resumed copies and owned sidecars. The corpus parser uses _files()
         # instead; routing it here would count sidecars twice.
+        cached = self._catalog_transcripts(session_id)
+        if cached is not None:
+            return cached
         main = [
             p
             for p in glob.glob(
@@ -1019,6 +1108,11 @@ class ClaudeStore:
         ):
             return None
         paths = self._transcripts(root_id)
+        if (
+            self._conversation_catalog_cache is not None
+            and not self._conversation_catalog_cache["valid"]
+        ):
+            return None
         return source_manifest(paths) if paths else None
 
     def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:

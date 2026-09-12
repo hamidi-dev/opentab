@@ -456,6 +456,157 @@ def test_claude_conversation_manifest_tracks_main_resumes_sidecars_and_replaceme
         assert store.conversation_manifest("s1") != after_delete
 
 
+def test_claude_conversation_refresh_discovers_once_and_keeps_all_owned_sources():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "project-a" / "s1.jsonl"
+        resumed = root / "project-b" / "s1.jsonl"
+        sidecar = root / "project-a" / "s1" / "subagents" / "agent.jsonl"
+        misleading = root / "other" / "subagents" / "s1.jsonl"
+        for path, text in (
+            (main, "main"),
+            (resumed, "resume"),
+            (misleading, "belongs to other"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_jsonl(path, [_claude_user(text, cwd=tmp, uuid=text)])
+        sidecar.parent.mkdir(parents=True)
+        side = dict(_claude_user("side", cwd=tmp, uuid="run", side=True), parentUuid="main")
+        _write_jsonl(sidecar, [side])
+        store = ot.ClaudeStore(tmp, _claude_args())
+        scan = os.scandir
+        with patch("opentab.stores.claude.os.scandir", wraps=scan) as scandir:
+            store.prepare_conversation_refresh()
+            discovery_calls = scandir.call_count
+            manifest = store.conversation_manifest("s1")
+            source = store.conversation_source("s1")
+            child = store.conversation_source("s1", "run")
+            assert store.conversation_manifest("s1") == manifest
+            assert scandir.call_count == discovery_calls
+        assert manifest and len(manifest) == 3
+        assert {record["parts"][0]["text"] for record in source["records"]} == {
+            "main",
+            "resume",
+        }
+        assert child["records"][0]["parts"][0]["text"] == "side"
+        store.finish_conversation_refresh()
+        assert store._conversation_catalog_cache is None
+
+
+def test_claude_conversation_refresh_invalidates_added_deleted_and_reparented_sources():
+    for mutation in ("add", "delete", "reparent"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            main = root / "project" / "s1.jsonl"
+            main.parent.mkdir()
+            _write_jsonl(main, [_claude_user("main", cwd=tmp, uuid="main")])
+            sidecar = root / "project" / "s1" / "subagents" / "agent.jsonl"
+            if mutation != "add":
+                sidecar.parent.mkdir(parents=True)
+                side = dict(_claude_user("side", cwd=tmp, uuid="run", side=True), parentUuid="main")
+                _write_jsonl(sidecar, [side])
+            store = ot.ClaudeStore(tmp, _claude_args())
+            store.prepare_conversation_refresh()
+            assert store.conversation_manifest("s1") is not None
+            if mutation == "add":
+                sidecar.parent.mkdir(parents=True)
+                side = dict(_claude_user("side", cwd=tmp, uuid="run", side=True), parentUuid="main")
+                _write_jsonl(sidecar, [side])
+            elif mutation == "delete":
+                sidecar.unlink()
+            else:
+                destination = root / "project" / "s2" / "subagents" / sidecar.name
+                destination.parent.mkdir(parents=True)
+                sidecar.rename(destination)
+            assert store.conversation_manifest("s1") is None, mutation
+            assert store._conversation_catalog_cache is not None
+            assert not store._conversation_catalog_cache["valid"]
+            source = store.conversation_source("s1")
+            texts = {record["parts"][0]["text"] for record in source["records"]}
+            assert texts == {"main"}
+            assert [item["id"] for item in source["executions"]] == (
+                ["s1", "run"] if mutation == "add" else ["s1"]
+            )
+            store.finish_conversation_refresh()
+
+
+def test_claude_refresh_discovery_matches_glob_hidden_and_nonfile_source_policy():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        main = root / "project" / "s1.jsonl"
+        hidden_main = root / ".hidden" / "s1.jsonl"
+        hidden_side = root / "project" / "s1" / "subagents" / ".agent.jsonl"
+        for path in (main, hidden_main, hidden_side):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _write_jsonl(path, [_claude_user("retained", cwd=tmp, uuid="root")])
+        store = ot.ClaudeStore(tmp, _claude_args())
+        live = store.conversation_manifest("s1")
+        store.prepare_conversation_refresh()
+        assert store._transcripts("s1") == [str(main)]
+        assert store.conversation_manifest("s1") == live
+        store.finish_conversation_refresh()
+
+        # glob also returns a directory with the matching name. Discovery must
+        # not silently drop it and turn an unreadable source into a valid index.
+        nonfile = root / "other" / "s1.jsonl"
+        nonfile.mkdir(parents=True)
+        expected = set(store._transcripts("s1"))
+        store.prepare_conversation_refresh()
+        assert set(store._transcripts("s1")) == expected == {str(main), str(nonfile)}
+        store.finish_conversation_refresh()
+        if os.name != "nt":
+            broken = root / "broken" / "s1.jsonl"
+            broken.parent.mkdir()
+            broken.symlink_to("missing.jsonl")
+            expected = set(store._transcripts("s1"))
+            store.prepare_conversation_refresh()
+            assert str(broken) in expected
+            assert set(store._transcripts("s1")) == expected
+            assert store.conversation_manifest("s1") is None
+            store.finish_conversation_refresh()
+
+
+def test_claude_conversation_refresh_detects_mutation_during_read_and_direct_reads_stay_live():
+    from opentab.conversation import read_jsonl
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "s1.jsonl"
+        row = _claude_user("before", cwd=tmp, uuid="root")
+        _write_jsonl(path, [row])
+        store = ot.ClaudeStore(tmp, _claude_args())
+        store.prepare_conversation_refresh()
+        before = store.conversation_manifest("s1")
+
+        def mutate_after_read(paths):
+            result = read_jsonl(paths)
+            changed = dict(row, message={"role": "user", "content": "after!"})
+            _write_jsonl(path, [changed])
+            return result
+
+        with patch("opentab.conversation.read_jsonl", side_effect=mutate_after_read):
+            source = store.conversation_source("s1")
+        assert source["records"][0]["parts"][0]["text"] == "before"
+        assert store.conversation_manifest("s1") != before
+        store.finish_conversation_refresh()
+        assert store.conversation_source("s1")["records"][0]["parts"][0]["text"] == "after!"
+
+
+def test_claude_conversation_refresh_demo_and_failed_discovery_cleanup_are_safe():
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ot.ClaudeStore(tmp, _claude_args())
+        store.demo = True
+        with patch("opentab.stores.claude.os.scandir", side_effect=AssertionError("demo scan")):
+            store.prepare_conversation_refresh()
+        assert store._conversation_catalog_cache is None
+        store.demo = False
+        with patch("opentab.stores.claude.os.scandir", side_effect=OSError("unreadable")):
+            store.prepare_conversation_refresh()
+        assert store._conversation_catalog_cache is not None
+        assert not store._conversation_catalog_cache["valid"]
+        store.finish_conversation_refresh()
+        assert store._conversation_catalog_cache is None
+
+
 def test_claude_conversation_isolates_full_sidechain_ids_including_zero_usage():
     from opentab.conversation import ConversationError
 

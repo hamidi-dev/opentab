@@ -34,7 +34,15 @@ this single token whenever discovery, extraction, ownership, or chunk projection
 semantics change so unchanged source snapshots still rebuild their passages.
 
 Claude manifests cover every main/resumed transcript and owned subagent sidecar
-with device, inode, size, mtime and ctime stamps. Codex discovers rollout heads,
+with device, inode, size, mtime and ctime stamps. Each explicit refresh discovers
+the transcript tree once and reuses a session-to-path lookup while directory stamps
+remain unchanged. File stamps are still checked per root. Directory changes or
+uncertain discovery disable the lookup and manifest shortcut for the rest of that
+refresh, falling back to live discovery and full reads. The lookup holds no text,
+is cleared even after errors, and never changes standalone reads or startup caching.
+Hidden entries remain excluded as in the original glob search.
+
+Codex discovers rollout heads,
 live/archive filename winners and ownership once per stable refresh, then derives
 root-specific manifests; additions, deletion, replacement, reparenting and winner
 changes invalidate affected roots.
@@ -145,8 +153,15 @@ text. Deleted, changed, inaccessible or differently owned evidence is withheld.
 Search itself does not rewrite the index: refresh explicitly to find new text.
 Refresh manifests do not replace this per-result live verification.
 
-`unindexed_roots`, `stale_metadata_roots_skipped`, `stale_executions_skipped` and
-`limited` expose coverage gaps. At most 1,000 fairly admitted execution candidates
+`unindexed_roots` counts visible catalog roots in the requested scope that have no
+index entry, after saved ignores and any session exclusion. It includes harnesses
+without conversation readers, supported roots not yet indexed, and roots removed
+after a failed read. It is not a count of missed refreshes: refreshing cannot make
+an unsupported harness searchable. Use harness-scoped searches to narrow the count;
+explicit refresh reports distinguish unsupported readers from source errors.
+
+`stale_metadata_roots_skipped`, `stale_executions_skipped` and `limited` expose
+additional coverage gaps. At most 1,000 fairly admitted execution candidates
 (or grouped records for an in-session query) are considered,
 and at most 20..100 distinct executions are checked live depending on the result
 limit. These are bounded checks, not a guarantee of exhaustive results. Live

@@ -772,6 +772,73 @@ def test_manifest_mutation_during_read_fails_closed_and_is_not_blessed():
         assert store.reads == [("root", None)]
 
 
+def test_claude_refresh_catalog_is_cleared_when_a_source_read_fails():
+    with _isolated(), tempfile.TemporaryDirectory() as source_dir:
+        _write_jsonl(
+            Path(source_dir) / "root.jsonl",
+            [
+                {
+                    "type": "user",
+                    "sessionId": "root",
+                    "uuid": "prompt",
+                    "message": {"role": "user", "content": "retained text"},
+                }
+            ],
+        )
+        store = ot.ClaudeStore(source_dir, SimpleNamespace(demo=False))
+        item = workflow("root", "2026-09-12 12:00:00", directory="/synthetic/project")
+        item.machine, item.source = "test-machine", "Claude Code"
+        store.workflows = lambda: [item]
+        service = _service(store)
+        with patch.object(store, "conversation_source", side_effect=OSError("private path")):
+            result = service.index_conversations()
+        assert not result["complete"]
+        assert result["errors"] == [
+            {
+                "session_key": ot.SessionRef("test-machine", "claude", "root").encode(),
+                "code": "conversation_unavailable",
+            }
+        ]
+        assert store._conversation_catalog_cache is None
+
+
+def test_claude_refresh_rejects_a_resumed_source_added_during_a_full_read():
+    from opentab.conversation import read_jsonl
+
+    with _isolated(), tempfile.TemporaryDirectory() as source_dir:
+        root = Path(source_dir)
+        row = {
+            "type": "user",
+            "sessionId": "root",
+            "uuid": "prompt",
+            "message": {"role": "user", "content": "retainedneedle"},
+        }
+        _write_jsonl(root / "root.jsonl", [row])
+        resumed = root / "resumed" / "root.jsonl"
+        resumed.parent.mkdir()
+        store = ot.ClaudeStore(source_dir, SimpleNamespace(demo=False))
+        item = workflow("root", "2026-09-12 12:00:00", directory="/synthetic/project")
+        item.machine, item.source = "test-machine", "Claude Code"
+        store.workflows = lambda: [item]
+        service = _service(store)
+        assert service.index_conversations()["updated"] == 1
+        _write_jsonl(root / "root.jsonl", [{**row, "uuid": "changed"}])
+
+        def add_resume(paths):
+            result = read_jsonl(paths)
+            _write_jsonl(resumed, [{**row, "uuid": "resumed"}])
+            return result
+
+        with patch("opentab.conversation.read_jsonl", side_effect=add_resume):
+            result = service.index_conversations()
+        assert not result["complete"]
+        assert [error["code"] for error in result["errors"]] == ["source_changed"]
+        assert result["index"]["roots"] == 0
+        assert store._conversation_catalog_cache is None
+        assert service.index_conversations()["updated"] == 1
+        assert service.search_conversations("retainedneedle")["hits"]
+
+
 def test_global_manifest_token_is_persisted_per_root_under_scoped_refreshes():
     with _isolated():
         store = ManifestConversationStore(("one", "two"))
