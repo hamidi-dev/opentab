@@ -131,6 +131,32 @@ an older browser tab before requesting more prompts.
 
 ## Served live
 
+### Tools explorer
+
+The live **Tools** tab pairs the spend treemap with tool and server/namespace
+rankings. Select a row or treemap tile to inspect contribution, per-call averages,
+a token-composition band, exact token categories, model attribution and a
+chronological individual-call ledger. Tables sort on their headers; repeated
+calls remain separate, even within one turn. The ledger shows its aggregate
+coverage instead of assuming both accounting surfaces contain identical records.
+
+Select a call to open its owning prompt in **Turns**, with the exact turn
+highlighted and focused. `Esc`, browser Back or the visible Back button returns
+to that call in Tools; another Back returns to the ranking. Focused ranking/call
+rows support `j`/`k`, arrows and Enter, and `Tab` follows native browser focus.
+`$` changes the cost snapshot without losing the selected tool or call. Manual
+tab/scope changes and reload invalidate this transient navigation. Detail text
+wraps on small screens; tables scroll horizontally within their panels.
+
+Cost and token figures are **model usage attributed across a turn's tool calls**,
+not execution fees or tool-result size. Times are owning-turn timestamps, not tool
+start/end times. Status and duration are not inferred. Aggregate-only sources retain
+the rankings and breakdowns without inventing a call ledger. No arguments, tool
+results or raw content keys enter the live extras or static report; opening a call
+does not add a raw web trace reader. Static HTML still omits Tools entirely.
+
+### Running the server
+
 `opentab web` serves the browser on `http://localhost:8321` (`--port` changes the
 port) and opens it in your default browser. `opentab web --headless` serves without
 launching a browser. Stop either with `Ctrl-C`.

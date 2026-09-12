@@ -32,6 +32,7 @@ package and installed command are both `opentab`.
 | `conversation.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors |
 | `conversation_search.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
 | `models.py` | Workflow, qualified session identity and summary records |
+| `tools.py` | Numeric per-call projection of recorded usage rows; ordered repeated calls and proportional attribution |
 | `stores/` | Harness readers, combined views, portable summaries and warm caches |
 | `remote_content.py` | Opt-in keyed SSH traces, snapshot/live identity validation, bounded transport and cancelable jobs |
 | `tui/app.py` | Application state, accounting projections, keyboard/mouse navigation |

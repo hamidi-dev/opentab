@@ -89,6 +89,55 @@ class TurnsFakeStore(FakeStore):
         ]
 
 
+class ToolsExplorerFakeStore(TurnsFakeStore):
+    def supports_tools(self, workflow_id):
+        return True
+
+    def message_timeline(self, workflow_id):
+        rows = super().message_timeline(workflow_id)
+        rows[0].update(
+            tools=["Bash", "Bash", "mcp__github__search</script>"],
+            cost=0.9,
+            tokens_total=99,
+            input=42,
+            output=21,
+            reasoning=9,
+            cache_read=15,
+            cache_write=12,
+            cache_write_1h=3,
+            content_key="never-ship-this-key",
+            arguments={"secret": "never-ship-this-argument"},
+            result="never-ship-this-result",
+        )
+        rows[1].update(tools=["Read"], cost=0.0)
+        return rows
+
+    def tool_breakdown(self, workflow_id):
+        from opentab.tools import tool_calls_from_turns
+
+        return [
+            {
+                "tool": call["tool"],
+                "calls": 1,
+                "model_name": call["model_name"],
+                **{
+                    key: call[key]
+                    for key in (
+                        "cost",
+                        "tokens_total",
+                        "input",
+                        "output",
+                        "reasoning",
+                        "cache_read",
+                        "cache_write",
+                        "cache_write_1h",
+                    )
+                },
+            }
+            for call in tool_calls_from_turns(self.message_timeline(workflow_id))
+        ]
+
+
 def test_web_payload_carries_both_cost_snapshots():
     app = app_with(
         [
@@ -197,6 +246,61 @@ def test_web_session_extras_reports_turns_with_both_costs():
     assert [p["v"] for p in ctx["points"]] == [1000, 400]
     assert ctx["window"] == ot.model_context_window("anthropic/claude-fable-5")
     assert ctx["mixedWindows"] is False and ctx["comp"] == []
+
+
+def test_web_tools_explorer_payload_is_allowlisted_fractional_and_reprices_whole_turns():
+    w = workflow("w1", "2026-05-01 10:00:00", cost=0.9)
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    extras = ot.session_extras(ot.App(ToolsExplorerFakeStore([w]), args), "w1")
+
+    assert set(extras) == {"turns", "tools", "toolCalls", "context", "expiries"}
+    assert all(
+        set(row) == {"tool", "ns", "calls", "model", "real", "api", "tokens", "tok"}
+        for row in extras["tools"]
+    )
+    allowed = {
+        "index",
+        "turnIndex",
+        "callIndex",
+        "tool",
+        "ns",
+        "time",
+        "agent",
+        "depth",
+        "model",
+        "effort",
+        "promptId",
+        "promptTitle",
+        "real",
+        "api",
+        "tokens",
+        "tok",
+    }
+    assert all(set(call) == allowed for call in extras["toolCalls"])
+    bash1, bash2, github, read = extras["toolCalls"]
+    assert [call["index"] for call in extras["toolCalls"]] == [0, 1, 2, 3]
+    assert [call["callIndex"] for call in extras["toolCalls"]] == [0, 1, 2, 0]
+    assert [bash1["tool"], bash2["tool"], github["ns"], read["turnIndex"]] == [
+        "Bash",
+        "Bash",
+        "github",
+        1,
+    ]
+    assert bash1["tokens"] == bash2["tokens"] == github["tokens"] == 33.0
+    assert bash1["tok"] == [14.0, 7.0, 3.0, 5.0, 4.0, 1.0]
+    assert bash1["real"] == bash1["api"] == 0.3
+    assert read["real"] == 0 and read["api"] > 0
+    assert round(sum(call["api"] for call in extras["toolCalls"][:3]), 6) == 0.9
+    text = json.dumps(extras)
+    assert "never-ship-this" not in text
+    assert all(word not in text for word in ("content_key", "arguments", "result"))
+    assert "<\\/script>" in ot.render_html({"meta": {}, "toolCalls": extras["toolCalls"]})
+
+    # Static reports retain the lazy boundary: building one must neither query nor embed
+    # per-session tool calls, prompts, or the deliberately hostile fixture data above.
+    static_app = ot.App(ToolsExplorerFakeStore([w]), args)
+    static = json.dumps(ot.build_payload(static_app))
+    assert "toolCalls" not in static and "never-ship-this" not in static
 
 
 def test_web_never_fetches_or_serializes_remote_trace_content():
@@ -543,11 +647,13 @@ class Node {
   appendChild(n) { this.children.push(n); n.parent = this; return n; }
   append(...nodes) { nodes.forEach(n => this.appendChild(n)); }
   setAttribute(k, v) { this.attrs[k] = v; }
+  getAttribute(k) { return this.attrs[k]; }
   addEventListener(k, fn) { this.events[k] = fn; }
   set textContent(t) { this.children = []; this.text = t; }
   get textContent() { return this.text + this.children.map(n => n.textContent).join(''); }
   querySelectorAll() { return []; }
   focus() { document.activeElement = this; }
+  scrollIntoView(options) { this.scrolled = options; }
   get nextElementSibling() { return this.parent.children[this.parent.children.indexOf(this) + 1]; }
   get previousElementSibling() { return this.parent.children[this.parent.children.indexOf(this) - 1]; }
 }
@@ -557,6 +663,14 @@ const document = {
   createElement: tag => new Node(tag), createElementNS: (_, tag) => new Node(tag),
   createTextNode: text => new Node('#text', text),
   getElementById(id) { if (!elements.has(id)) elements.set(id, new Node('div')); return elements.get(id); },
+  querySelectorAll(selector) {
+    const out = [], visit = node => {
+      if (selector === 'tr[aria-label]' && node.tag === 'tr' && node.attrs['aria-label']) out.push(node);
+      if (selector === '[data-tool-focus]' && node.attrs['data-tool-focus']) out.push(node);
+      node.children.forEach(visit);
+    };
+    elements.forEach(visit); return out;
+  },
   addEventListener(k, fn) { listeners[k] = fn; }
 };
 const window = {addEventListener(k, fn) { listeners[k] = fn; }};
@@ -1272,7 +1386,13 @@ def test_web_report_server_serves_page_extras_and_404():
         assert '"serve":true' in page  # the served page knows the extras exist
         extras = json.loads(urllib.request.urlopen(base + "/api/session/w1").read().decode("utf-8"))
         # FakeStore: no turns/tools support, and no turns means no context curve
-        assert extras == {"turns": [], "tools": [], "context": None, "expiries": []}
+        assert extras == {
+            "turns": [],
+            "tools": [],
+            "toolCalls": [],
+            "context": None,
+            "expiries": [],
+        }
         try:
             urllib.request.urlopen(base + "/nope")
             raise AssertionError("expected a 404")
@@ -1846,12 +1966,14 @@ def test_web_overview_closes_with_the_models_table():
     assert "modelsTable('t-ov-models'" in body[body.rindex("root.appendChild(") :]
 
 
-def test_web_tools_treemap_is_passive_themed_and_precedes_the_table():
+def test_web_tools_treemap_is_clickable_themed_and_precedes_the_rankings():
     js = _js_source()
     tools = js.split("function toolsTable(", 1)[1].split("\nfunction binaryTreemap", 1)[0]
     tree = js.split("function toolTreemap(", 1)[1].split("\n}", 1)[0]
-    assert tools.index("toolTreemap(rows)") < tools.index("class: 'tool-table'")
-    assert "onclick" not in tools and "onclick" not in tree  # passive: no hidden interaction mode
+    assert tools.index("toolTreemap(rows)") < tools.index("class: 'tool-ranks'")
+    assert "openToolDrill('tool', r.tool)" in tools
+    assert "openToolDrill('ns', r.ns)" in tools
+    assert "openToolDrill('tool', r.tool)" in tree
     assert "TH.heat[level(r)]" in tree and "inkOn(fill)" in tree
     assert "dollars ? mCost(r) : r.tokens" in tree  # $0 subscription fallback
     assert "Math.min(8, all.length)" in tree and "tool: 'Other'" in tree
@@ -1893,7 +2015,7 @@ def test_web_tools_treemap_is_passive_themed_and_precedes_the_table():
     # The exact table below has to be able to state the figure the shade encodes.
     assert "{ key: 'calls', label: 'Calls', align: 'r' }," in tools
     assert "calls: sum(rows, r => r.calls)" in tools
-    assert "'aria-hidden': 'true'" in tree  # exact accessible table follows immediately
+    assert "aria-label': 'Tool-attributed spend treemap'" in tree
     assert "new ResizeObserver(" in tree  # reflow only the chart, never global page state
     assert "render(false)" not in tree
     assert "function binaryTreemap(" in js
@@ -1903,6 +2025,235 @@ def test_web_tools_treemap_is_passive_themed_and_precedes_the_table():
     # Shorter than it was: eight tiles restating one column did not earn 360px.
     assert "height:clamp(150px,18vw,220px)" in page
     assert ".tool-tile .tr{" in page  # the rate rides its own line, gated on its own
+
+
+def test_web_tools_drill_executes_navigation_back_price_and_turn_jump():
+    node = shutil.which("node")
+    if node is None:
+        print("SKIP JavaScript Tools explorer check: Node.js is not installed (required in CI)")
+        return
+    source = _js_source()
+    shipped = source[: source.index("document.getElementById('trends').addEventListener")]
+    shipped += re.search(r"window.addEventListener\('popstate', e => \{.*?\n\}\);", source, re.S)[0]
+    result = subprocess.run(
+        [node, "-"],
+        input=_WEB_DOM_JS
+        + r"""
+const payload = {meta:{source:'test', serve:true, startApi:false, demo:false, recordsCost:true},
+  warnings:[], workflows:[{id:'w1', title:'session', date:'2026-09-12T10:00:00Z', tokens:100,
+    real:1, api:5, realRoot:1, apiRoot:5, project:'/tmp/x', source:'test', subagents:0}],
+  models:{}, nodes:{}, whatif:{rates:{}, models:[], catalog:[]}, prices:{}, machineMeta:{}};
+global.requestAnimationFrame = () => 1; global.cancelAnimationFrame = () => {};
+document.getElementById('opentab-data').textContent = JSON.stringify(payload);
+"""
+        + shipped
+        + r"""
+function render() { renderDetail(curScope(), []); }
+const view = document.getElementById('view');
+function all(el, tag) { return [...(el.tag === tag ? [el] : []), ...el.children.flatMap(n => all(n, tag))]; }
+function key(key) { const e = {key, preventDefault(){this.prevented=true}, stopPropagation(){}}; listeners.keydown(e); return e; }
+EXTRAS = {id:'w1', loading:false, context:null, expiries:[],
+  turns:[{time:'2026-09-12T10:00:00Z', agent:'builder', depth:0, model:'vendor/model', effort:'high',
+    real:1, api:5, tokens:100, ctx:0, cached:null, tools:['Bash'], promptId:'p1',
+    promptTitle:'safe <img src=x onerror=alert(1)>', promptFull:'full prompt'}],
+  tools:[{tool:'Bash',ns:'(built-in)',calls:1,model:'vendor/model',real:1,api:5,tokens:100,tok:[40,20,10,20,10,4]}],
+  toolCalls:[{index:0,turnIndex:0,callIndex:0,tool:'Bash',ns:'(built-in)',time:'2026-09-12T10:00:00Z',
+    agent:'builder',depth:0,model:'vendor/model',effort:'high',promptId:'p1',
+    promptTitle:'safe <img src=x onerror=alert(1)>',real:1,api:5,tokens:100,tok:[40,20,10,20,10,4]}]};
+TAB = 'Tools';
+openToolDrill('tool', 'Bash');
+assert.deepEqual(TOOL_DRILL, {kind:'tool', value:'Bash'});
+assert.deepEqual(history.state.toolDrill, {kind:'tool', value:'Bash'});
+assert.equal(document.activeElement.attrs['data-tool-focus'], 'back');
+assert.ok(view.textContent.includes('Model output20'));
+assert.ok(view.textContent.includes('1h cache write4subset of cache write'));
+assert.ok(view.textContent.includes('Owning-turn time'));
+assert.ok(view.textContent.includes('Selected call ledger matches aggregate attribution'));
+assert.equal(all(view, 'img').length, 0);
+assert.ok(view.textContent.includes('$1.00'));
+key('$'); assert.deepEqual(TOOL_DRILL, {kind:'tool', value:'Bash'});
+assert.ok(view.textContent.includes('$5.00'));
+assert.equal(key('Escape').prevented, true); assert.equal(TOOL_DRILL, null);
+assert.equal(location.hash, '#/s/w1');
+assert.equal(document.activeElement.attrs['aria-label'], 'Open tool Bash');
+openToolDrill('ns', '(built-in)'); history.back(); assert.equal(TOOL_DRILL, null);
+openToolDrill('tool', 'Bash');
+const callRow = all(view, 'tr').find(r => String(r.attrs['aria-label'] || '').startsWith('Open owning turn'));
+assert.ok(callRow); callRow.events.click();
+assert.deepEqual(TOOL_DRILL, {kind:'tool', value:'Bash'}); assert.equal(TAB, 'Turns'); assert.equal(TURN_DRILL, 0);
+assert.deepEqual(TOOL_TURN, {callIndex:0, turnIndex:0, group:0});
+assert.equal(document.activeElement.attrs['data-tool-focus'], 'owner-turn');
+assert.ok(document.activeElement.className.includes('tool-owner'));
+assert.deepEqual(document.activeElement.scrolled, {block:'center', inline:'nearest'});
+assert.ok(view.textContent.includes('selected call 1 owns highlighted turn 1'));
+key('$'); assert.equal(document.activeElement.attrs['data-tool-focus'], 'owner-turn');
+const turnBack = all(view, 'button').find(r => r.attrs['data-tool-focus'] === 'turn-back');
+assert.ok(turnBack); turnBack.events.click();
+assert.equal(TAB, 'Tools'); assert.equal(TOOL_TURN, null);
+assert.deepEqual(TOOL_DRILL, {kind:'tool', value:'Bash'});
+assert.equal(document.activeElement.attrs['data-tool-focus'], 'call:0');
+key('$'); assert.equal(document.activeElement.attrs['data-tool-focus'], 'call:0');
+all(view, 'tr').find(r => r.attrs['data-tool-focus'] === 'call:0').events.click();
+assert.equal(key('Escape').prevented, true); assert.equal(TAB, 'Tools');
+assert.equal(document.activeElement.attrs['data-tool-focus'], 'call:0');
+assert.equal(key('Escape').prevented, true); assert.equal(TOOL_DRILL, null);
+assert.equal(document.activeElement.attrs['data-tool-focus'], 'rank:tool:Bash');
+openToolDrill('tool', 'Bash');
+all(view, 'tr').find(r => r.attrs['data-tool-focus'] === 'call:0').events.click();
+history.back(); assert.equal(TAB, 'Tools'); assert.deepEqual(TOOL_DRILL, {kind:'tool', value:'Bash'});
+history.back(); assert.equal(TOOL_DRILL, null);
+openToolDrill('tool', 'Bash'); const staleEpoch = TOOL_NAV;
+abandonToolNavigation(); TAB = 'Overview'; render(false); history.back();
+assert.notEqual(TOOL_NAV, staleEpoch); assert.equal(TOOL_DRILL, null); assert.equal(TOOL_TURN, null);
+TAB = 'Tools'; TOOL_DRILL = {kind:'tool', value:'Bash'};
+EXTRAS.toolCalls = [{...EXTRAS.toolCalls[0], index:1, tool:'Read', real:.5, api:.5, tokens:50}];
+render(false);
+assert.ok(view.textContent.includes('session ledger contains 1 calls for other tools'));
+assert.ok(!view.textContent.includes('This source retained aggregate attribution only for this selection'));
+EXTRAS.toolCalls = [{...EXTRAS.toolCalls[0], index:0, tool:'Bash', real:.5, api:.5, tokens:50}];
+render(false);
+assert.ok(view.textContent.includes('Selected aggregate / retained ledger differ'));
+""",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_web_session_extras_discards_a_stale_tool_ledger_response():
+    node = shutil.which("node")
+    if node is None:
+        print("SKIP JavaScript extras race check: Node.js is not installed (required in CI)")
+        return
+    source = _js_source()
+    shipped = source[: source.index("document.getElementById('trends').addEventListener")]
+    result = subprocess.run(
+        [node, "-"],
+        input=_WEB_DOM_JS
+        + r"""
+const payload = {meta:{source:'test', serve:true, startApi:false, demo:false}, warnings:[],
+  workflows:[{id:'w1',title:'one',date:'2026-09-12',project:''},{id:'w2',title:'two',date:'2026-09-12',project:''}],
+  models:{},nodes:{},whatif:{rates:{},models:[],catalog:[]},prices:{},machineMeta:{}};
+document.getElementById('opentab-data').textContent = JSON.stringify(payload);
+"""
+        + shipped
+        + r"""
+function render() {}
+const tick = () => new Promise(resolve => setImmediate(resolve));
+(async () => {
+  ensureExtras(curScope());
+  assert.equal(requests.length, 1); assert.ok(requests[0].url.endsWith('/w1'));
+  location.hash = '#/s/w2'; resetScopeState(); ensureExtras(curScope());
+  assert.equal(requests.length, 2); assert.equal(EXTRAS.id, 'w2');
+  requests[0].resolve({json:async () => ({turns:[{model:'stale'}],tools:[],toolCalls:[{tool:'stale'}]})});
+  await tick(); assert.equal(EXTRAS.id, 'w2'); assert.equal(EXTRAS.loading, true);
+  assert.deepEqual(EXTRAS.toolCalls, []);
+  requests[1].resolve({json:async () => ({turns:[],tools:[{tool:'Read'}],toolCalls:[{tool:'fresh'}]})});
+  await tick(); assert.equal(EXTRAS.id, 'w2'); assert.equal(EXTRAS.loading, false);
+  assert.deepEqual(EXTRAS.toolCalls, [{tool:'fresh'}]);
+})().catch(e => { console.error(e); process.exitCode = 1; });
+""",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_web_session_extras_survive_navigation_events_and_restart_after_abandonment():
+    node = shutil.which("node")
+    if node is None:
+        print(
+            "SKIP JavaScript extras navigation race check: Node.js is not installed (required in CI)"
+        )
+        return
+    source = _js_source()
+    shipped = source[: source.index("document.getElementById('trends').addEventListener")]
+    shipped += (
+        next(line for line in source.splitlines() if "window.addEventListener('hashchange'" in line)
+        + "\n"
+    )
+    shipped += re.search(r"window.addEventListener\('popstate', e => \{.*?\n\}\);", source, re.S)[0]
+    result = subprocess.run(
+        [node, "-"],
+        input=_WEB_DOM_JS
+        + r"""
+const payload = {meta:{source:'test', serve:true, startApi:false, demo:false, recordsCost:true}, warnings:[],
+  workflows:[{id:'w1',title:'one',date:'2026-09-12',project:'',tokens:10,real:1,api:1,
+    realRoot:1,apiRoot:1,source:'test',subagents:0}],
+  models:{},nodes:{},whatif:{rates:{},models:[],catalog:[]},prices:{},machineMeta:{}};
+global.requestAnimationFrame = () => 1; global.cancelAnimationFrame = () => {};
+document.getElementById('opentab-data').textContent = JSON.stringify(payload);
+"""
+        + shipped
+        + r"""
+function render() {
+  const sc = curScope();
+  ensureExtras(sc);
+  const tabs = tabsFor(sc);
+  if (!tabs.includes(TAB)) TAB = tabs[0];
+  renderTabs(sc, tabs);
+  renderDetail(sc, scopeWorkflows(sc));
+}
+const tick = () => new Promise(resolve => setImmediate(resolve));
+const tabText = () => document.getElementById('tabbar').textContent;
+const viewText = () => document.getElementById('view').textContent;
+const complete = {turns:[{time:'2026-09-12',agent:'main',depth:0,model:'test',real:1,api:1,
+  tokens:10,ctx:5,cached:0,tools:['Read'],promptId:'p1',promptTitle:'one',promptFull:'one'}],
+  tools:[{tool:'Read',ns:'local',calls:1,model:'test',real:1,api:1,tokens:10,tok:[5,1,0,4,0,0]}],
+  toolCalls:[{index:0,turnIndex:0,callIndex:0,tool:'Read',ns:'local',time:'2026-09-12',
+    agent:'main',depth:0,model:'test',effort:'',promptId:'p1',promptTitle:'one',real:1,api:1,
+    tokens:10,tok:[5,1,0,4,0,0]}],
+  context:{model:'test',window:100,points:[{t:'09-12',v:5,w:100}],comp:[]},expiries:[]};
+(async () => {
+  // Normal hash navigation dispatches popstate before hashchange in the live browser.
+  // The second event must not invalidate the same session's pending request.
+  location.hash = '#/'; TAB = 'Turns'; openSession('w1');
+  listeners.popstate({state:null});
+  assert.equal(requests.length, 1); assert.ok(requests[0].url.endsWith('/w1'));
+  listeners.hashchange({});
+  assert.equal(requests.length, 1); assert.ok(tabText().includes('Turns ⋯'));
+  requests[0].resolve({json:async () => complete}); await tick();
+  assert.equal(EXTRAS.loading, false);
+  assert.ok(!tabText().includes('⋯'));
+  for (const tab of ['Turns', 'Tools', 'Context']) {
+    TAB = tab; render(false); assert.ok(!viewText().includes('loading ' + tab.toLowerCase()));
+  }
+
+  // A completed cache survives another same-session event pair without refetching.
+  listeners.popstate({state:null}); listeners.hashchange({});
+  assert.equal(requests.length, 1); assert.equal(EXTRAS.loading, false);
+
+  // Leaving while a request is pending clears its identity. Returning to A starts a
+  // fresh request, and an old success arriving before it cannot populate the page.
+  EXTRAS = {id:null,loading:false,turns:[],tools:[],toolCalls:[],context:null,expiries:[]};
+  TAB = 'Turns'; render(false); const oldSuccess = requests[1];
+  location.hash = '#/d/2026-09-12'; listeners.hashchange({});
+  location.hash = '#/s/w1'; listeners.hashchange({}); const freshAfterSuccess = requests[2];
+  assert.equal(requests.length, 3); assert.equal(EXTRAS.id, 'w1'); assert.equal(EXTRAS.loading, true);
+  oldSuccess.resolve({json:async () => ({...complete, turns:[{model:'STALE'}]})}); await tick();
+  assert.equal(EXTRAS.loading, true); assert.deepEqual(EXTRAS.turns, []);
+  freshAfterSuccess.resolve({json:async () => complete}); await tick();
+  assert.equal(EXTRAS.loading, false); assert.equal(EXTRAS.turns[0].model, 'test');
+
+  // The inverse ordering is safe too: an old failure after the fresh success must not
+  // clear the completed extras or put all three tabs back into loading/empty state.
+  EXTRAS = {id:null,loading:false,turns:[],tools:[],toolCalls:[],context:null,expiries:[]};
+  render(false); const oldFailure = requests[3];
+  location.hash = '#/d/2026-09-12'; listeners.hashchange({});
+  location.hash = '#/s/w1'; listeners.hashchange({}); const freshBeforeFailure = requests[4];
+  freshBeforeFailure.resolve({json:async () => complete}); await tick();
+  oldFailure.reject(new Error('stale failure')); await tick();
+  assert.equal(EXTRAS.loading, false); assert.equal(EXTRAS.turns[0].model, 'test');
+  assert.equal(EXTRAS.tools[0].tool, 'Read'); assert.equal(EXTRAS.context.model, 'test');
+})().catch(e => { console.error(e); process.exitCode = 1; });
+""",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_web_flamegraph_divides_the_same_node_costs_as_the_tui():

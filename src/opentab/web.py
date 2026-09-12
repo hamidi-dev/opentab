@@ -29,6 +29,7 @@ from opentab.pricing import (
     model_price,
 )
 from opentab.themes import DEFAULT_THEME
+from opentab.tools import tool_calls_from_turns
 from opentab.util import (
     cached_share,
     context_size,
@@ -301,10 +302,13 @@ def _machine_meta_payload(app: App) -> dict:
 def session_extras(app: App, workflow_id: str) -> dict:
     """Return lazy drill-in data; empty capabilities remain hidden in the page."""
     turns = []
+    turn_rows = []
+    curve = False
     if app.session_supports_turns(workflow_id):
         # Cumulative-delta backends cannot expose per-request context safely.
         curve = app.session_supports_context_curve(workflow_id)
-        for r in app.session_turn_rows(workflow_id):
+        turn_rows = app.session_turn_rows(workflow_id)
+        for r in turn_rows:
             real = float(r.get("cost") or 0)
             api = real or api_equivalent_cost(
                 r.get("model_name") or "",
@@ -340,7 +344,7 @@ def session_extras(app: App, workflow_id: str) -> dict:
     # the causes the TUI renders; the client merely labels them.
     expiries = []
     if turns and curve:
-        for m in cache_misses(app.session_turn_rows(workflow_id)):
+        for m in cache_misses(turn_rows):
             if m.cause in ("waited", "reasoning"):
                 expiries.append(
                     {
@@ -354,7 +358,8 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     }
                 )
     tools = []
-    if app.session_supports_tools(workflow_id):
+    supports_tools = app.session_supports_tools(workflow_id)
+    if supports_tools:
         for r in app.session_tool_rows(workflow_id):
             real = float(r.get("cost") or 0)
             api = real or api_equivalent_cost(
@@ -374,16 +379,71 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     "model": r.get("model_name") or "",
                     "real": _money6(real),
                     "api": _money6(api),
-                    "tokens": int(r.get("tokens_total") or 0),
+                    "tokens": float(r.get("tokens_total") or 0),
+                    "tok": [
+                        float(r.get("input") or 0),
+                        float(r.get("output") or 0),
+                        float(r.get("reasoning") or 0),
+                        float(r.get("cache_read") or 0),
+                        float(r.get("cache_write") or 0),
+                        float(r.get("cache_write_1h") or 0),
+                    ],
                 }
             )
+    tool_calls = []
+    calls = tool_calls_from_turns(turn_rows) if supports_tools else []
+    calls_per_turn: dict[int, int] = {}
+    for call in calls:
+        turn_index = int(call.get("turn_index") or 0)
+        calls_per_turn[turn_index] = calls_per_turn.get(turn_index, 0) + 1
+    for call in calls:
+        turn_index = int(call.get("turn_index") or 0)
+        source = turn_rows[turn_index]
+        count = calls_per_turn[turn_index]
+        turn_real = float(source.get("cost") or 0)
+        turn_api = turn_real or api_equivalent_cost(
+            source.get("model_name") or "",
+            source.get("input") or 0,
+            source.get("output") or 0,
+            source.get("reasoning") or 0,
+            source.get("cache_read") or 0,
+            source.get("cache_write") or 0,
+            source.get("cache_write_1h") or 0,
+        )
+        tool_calls.append(
+            {
+                "index": int(call.get("index") or 0),
+                "turnIndex": turn_index,
+                "callIndex": int(call.get("call_index") or 0),
+                "tool": str(call.get("tool") or "?"),
+                "ns": str(call.get("namespace") or "local"),
+                "time": str(call.get("time") or ""),
+                "agent": str(call.get("agent") or "-"),
+                "depth": int(call.get("depth") or 0),
+                "model": str(call.get("model_name") or ""),
+                "effort": str(call.get("effort") or ""),
+                "promptId": str(call.get("prompt_id") or ""),
+                "promptTitle": str(call.get("prompt_title") or ""),
+                "real": _money6(call.get("cost")),
+                "api": _money6(turn_api / count),
+                "tokens": float(call.get("tokens_total") or 0),
+                "tok": [
+                    float(call.get("input") or 0),
+                    float(call.get("output") or 0),
+                    float(call.get("reasoning") or 0),
+                    float(call.get("cache_read") or 0),
+                    float(call.get("cache_write") or 0),
+                    float(call.get("cache_write_1h") or 0),
+                ],
+            }
+        )
     # Ship measurements; derive presentation-only context stats client-side.
     context = None
     if app.session_supports_context_curve(workflow_id):
         points = []
         windows = set()
         model = ""
-        for r in app.session_turn_rows(workflow_id):
+        for r in turn_rows:
             if r.get("depth"):
                 continue
             size = context_size(r)
@@ -414,7 +474,13 @@ def session_extras(app: App, workflow_id: str) -> dict:
                 "points": points,
                 "comp": comp,
             }
-    return {"turns": turns, "tools": tools, "context": context, "expiries": expiries}
+    return {
+        "turns": turns,
+        "tools": tools,
+        "toolCalls": tool_calls,
+        "context": context,
+        "expiries": expiries,
+    }
 
 
 def html_command(app: App, args: argparse.Namespace) -> int:

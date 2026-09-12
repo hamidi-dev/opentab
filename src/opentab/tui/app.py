@@ -73,6 +73,7 @@ from opentab.pricing import (
     refresh_model_prices,
 )
 from opentab.sources import RESUME_COMMANDS, SOURCE_LABELS
+from opentab.tools import tool_calls_from_turns
 from opentab.tui import bindings
 from opentab.tui.renderer import Renderer
 from opentab.util import (
@@ -86,6 +87,7 @@ from opentab.util import (
     open_path,
     parse_range_text,
     resolve_project_root,
+    tool_namespace,
     workflow_fuzzy_score,
 )
 from opentab.whats_new import RELEASES_URL, load_release_history, should_announce
@@ -460,6 +462,14 @@ class App:
         self._turn_drill_session: str | None = None
         self._turn_cursor = 0
         self._turn_follow = False
+        self._tool_drill_session: str | None = None
+        self.tool_drill: tuple[str, str] | None = None
+        self._tool_cursor = 0
+        self._tool_call_cursor = 0
+        self._tool_follow = False
+        self._tools_return: tuple | None = None
+        self._tool_projection_cache: tuple | None = None
+        self._model_price_revision = 0
         self._subagent_snapshot = None
         self._subagent_order: tuple[int, ...] = ()
         self._subagent_selected: int | None = None
@@ -674,6 +684,7 @@ class App:
 
     def set_all_time(self) -> None:
         # Capture first because clearing drills widens the list containing the selection.
+        self._tools_return = None
         anchor = self.selection_anchor()
         self._clear_zoom_drills()
         self.custom_since = None
@@ -694,6 +705,7 @@ class App:
 
     def set_range_from_text(self, raw: str) -> None:
         # Capture first because clearing drills widens the list containing the selection.
+        self._tools_return = None
         anchor = self.selection_anchor()
         self._clear_zoom_drills()
         days, months, since, until = parse_range_text(raw)
@@ -1041,6 +1053,7 @@ class App:
         name = name or None
         if name == self.machine_filter:
             return
+        self._tools_return = None
         anchor = self.selection_anchor()
         self.machine_filter = name
         self._invalidate_workflow_cache()
@@ -1109,6 +1122,7 @@ class App:
         name = name or None
         if name == self.harness_filter:
             return
+        self._tools_return = None
         anchor = self.selection_anchor()
         self.harness_filter = name
         self._invalidate_workflow_cache()
@@ -1248,6 +1262,7 @@ class App:
         if not (self.ignored_projects or self.ignored_sessions):
             self.notify("no ignored items", "error")
             return
+        self._tools_return = None
         project = self.active_project_for_toggle()
         project_dir = project.directory if project else None
         session = self.session_ignore_target()
@@ -1271,9 +1286,11 @@ class App:
 
     def toggle_ignore(self) -> None:
         if self.active_project_for_toggle() is not None:
+            self._tools_return = None
             self.toggle_project_ignore()
             return
         if self.session_ignore_target() is not None:
+            self._tools_return = None
             self.toggle_session_ignore()
             return
         self.notify("ignore: select a project or session first", "error")
@@ -1436,6 +1453,7 @@ class App:
                 "error",
             )
             return
+        self._tools_return = None
         anchor = self.selection_anchor()
         self.show_bookmarks_only = not self.show_bookmarks_only
         self.restore_selection(anchor)
@@ -1759,6 +1777,200 @@ class App:
             rows = self._scale_demo_tools(workflow_id, rows)
         self._tool_by_session[workflow_id] = rows
         return rows
+
+    def effective_tool_cost(self, row: dict) -> float:
+        cost = float(row.get("cost") or 0)
+        if self.show_api_prices and not self.store.demo and not cost:
+            return api_equivalent_cost(
+                str(row.get("model_name") or ""),
+                row.get("input", 0),
+                row.get("output", 0),
+                row.get("reasoning", 0),
+                row.get("cache_read", 0),
+                row.get("cache_write", 0),
+                row.get("cache_write_1h", 0),
+            )
+        return cost
+
+    @staticmethod
+    def _new_tool_total() -> dict:
+        return {
+            "calls": 0,
+            "cost": 0.0,
+            "tokens_total": 0,
+            "input": 0,
+            "output": 0,
+            "reasoning": 0,
+            "cache_read": 0,
+            "cache_write": 0,
+            "cache_write_1h": 0,
+        }
+
+    def tool_projection(self, workflow_id: str) -> dict:
+        aggregate = self.session_tool_rows(workflow_id)
+        turns = (
+            self.session_turn_rows(workflow_id) if self.session_supports_turns(workflow_id) else ()
+        )
+        key = (
+            workflow_id,
+            id(aggregate),
+            len(aggregate),
+            id(turns),
+            len(turns),
+            self.show_api_prices,
+            self._model_price_revision,
+            self.store.demo,
+        )
+        cached = self._tool_projection_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        buckets: dict[tuple[str, str], dict] = {}
+        models: dict[tuple[str, str], dict[str, dict]] = {}
+        for row in aggregate:
+            tool = str(row.get("tool") or "unknown")
+            row_cost = self.effective_tool_cost(row)
+            for kind, name in (("tool", tool), ("namespace", tool_namespace(tool))):
+                item = buckets.setdefault((kind, name), self._new_tool_total())
+                item.update({"kind": kind, "name": name})
+                item["calls"] += int(row.get("calls") or 0)
+                item["cost"] += row_cost
+                model = str(row.get("model_name") or "unknown")
+                model_item = models.setdefault((kind, name), {}).setdefault(
+                    model, self._new_tool_total()
+                )
+                model_item["calls"] += int(row.get("calls") or 0)
+                model_item["cost"] += row_cost
+                for field in (
+                    "tokens_total",
+                    "input",
+                    "output",
+                    "reasoning",
+                    "cache_read",
+                    "cache_write",
+                    "cache_write_1h",
+                ):
+                    item[field] += row.get(field, 0) or 0
+                    model_item[field] += row.get(field, 0) or 0
+        rankings = []
+        for kind in ("tool", "namespace"):
+            rows = [r for (row_kind, _name), r in buckets.items() if row_kind == kind]
+            rankings.extend(
+                sorted(
+                    rows,
+                    key=lambda r: (float(r["cost"]), float(r["tokens_total"]), r["name"]),
+                    reverse=True,
+                )
+            )
+        calls = []
+        for row in tool_calls_from_turns(turns):
+            item = dict(row)
+            item["cost"] = self.effective_tool_cost(item)
+            calls.append(item)
+        projection = {"key": key, "rankings": rankings, "calls": calls, "models": models}
+        self._tool_projection_cache = (key, projection)
+        return projection
+
+    def tool_rankings(self, workflow_id: str) -> list[dict]:
+        return self.tool_projection(workflow_id)["rankings"]
+
+    def tool_calls(self, workflow_id: str) -> list[dict]:
+        return self.tool_projection(workflow_id)["calls"]
+
+    @property
+    def active_tool_drill(self) -> tuple[str, str] | None:
+        wf = self.current_session() if self.view == "session" else None
+        if (
+            wf is None
+            or self.active_tab_name() != "Tools"
+            or self.tool_drill is None
+            or self._tool_drill_session != wf.id
+        ):
+            return None
+        keys = {(r["kind"], r["name"]) for r in self.tool_rankings(wf.id)}
+        return self.tool_drill if self.tool_drill in keys else None
+
+    def selected_tool_ranking(self, workflow_id: str) -> dict | None:
+        rows = self.tool_rankings(workflow_id)
+        if not rows:
+            return None
+        self._tool_cursor = max(0, min(self._tool_cursor, len(rows) - 1))
+        return rows[self._tool_cursor]
+
+    def selected_tool_calls(self, workflow_id: str) -> list[dict]:
+        drill = self.active_tool_drill
+        if drill is None:
+            return []
+        kind, name = drill
+        return [
+            row
+            for row in self.tool_calls(workflow_id)
+            if (row.get("tool") if kind == "tool" else row.get("namespace")) == name
+        ]
+
+    def open_tool_drill(self, ordinal: int | None = None) -> bool:
+        wf = self.current_session()
+        if wf is None or self.active_tab_name() != "Tools":
+            return False
+        rows = self.tool_rankings(wf.id)
+        if not rows:
+            return False
+        if ordinal is not None:
+            self._tool_cursor = max(0, min(ordinal, len(rows) - 1))
+        row = rows[max(0, min(self._tool_cursor, len(rows) - 1))]
+        self.tool_drill = (row["kind"], row["name"])
+        self._tool_drill_session = wf.id
+        self._tool_call_cursor = 0
+        self.scroll = 0
+        return True
+
+    def close_tool_drill(self) -> bool:
+        if self.active_tool_drill is None:
+            return False
+        self.tool_drill = self._tool_drill_session = None
+        self._tool_call_cursor = 0
+        self._tool_follow = True
+        self.scroll = 0
+        return True
+
+    def open_tool_call_reader(self) -> bool:
+        wf = self.current_session()
+        calls = self.selected_tool_calls(wf.id) if wf else []
+        if not calls or wf is None or "Turns" not in self.current_tabs():
+            return False
+        self._tool_call_cursor = max(0, min(self._tool_call_cursor, len(calls) - 1))
+        turn_index = int(calls[self._tool_call_cursor]["turn_index"])
+        runs = self.turn_runs(wf.id)
+        group = next((i for i, run in enumerate(runs) if turn_index in run), None)
+        if group is None:
+            return False
+        self._tools_return = (
+            wf.id,
+            self.tool_drill,
+            self._tool_cursor,
+            self._tool_call_cursor,
+            self.scroll,
+        )
+        self.tab = self.current_tabs().index("Turns")
+        self.open_turn_drill(group)
+        self._trace_cursor = runs[group].index(turn_index)
+        self._turn_follow = True
+        return True
+
+    def return_to_tools(self) -> bool:
+        ret = self._tools_return
+        wf = self.current_session()
+        if ret is None or wf is None or wf.id != ret[0] or "Tools" not in self.current_tabs():
+            self._tools_return = None
+            return False
+        self._clear_trace_expansion()
+        self.trace_drill = self.turn_drill = self._turn_drill_session = None
+        self.tab = self.current_tabs().index("Tools")
+        _wid, self.tool_drill, self._tool_cursor, self._tool_call_cursor, self.scroll = ret
+        self._tool_drill_session = wf.id
+        self._tool_follow = True
+        self._tools_return = None
+        return True
 
     def _scale_demo_tools(self, workflow_id: str, rows: list[dict]) -> list[dict]:
         # Synthetic subscription prices keep demo useful; scaling hides all real magnitudes.
@@ -2990,7 +3202,7 @@ class App:
             self.whatif_menu_index = 0
         return True
 
-    def _reprice_in_place(self) -> None:
+    def _reprice_in_place(self, tool_key: tuple[str, str] | None = None) -> None:
         # Repricing is a resort: on a measured corpus `$` moved 106/117 project rows.
         # Re-anchor every cursor by value or Enter can open an unselected neighbor.
         anchor = self.selection_anchor()
@@ -3003,9 +3215,13 @@ class App:
         ]
         zoom_project = None if self.browse_mode == "projects" else self.zoom_selected_project()
         scroll = self.scroll
+        wf = self.current_session() if self.view == "session" else None
         self._apply_price_mode()
         self.restore_selection(anchor)
         self.scroll = scroll
+        if wf is not None and tool_key is not None:
+            keys = [(r["kind"], r["name"]) for r in self.tool_rankings(wf.id)]
+            self._tool_cursor = keys.index(tool_key) if tool_key in keys else 0
         if trend_key is not None:
             keys = self.trend_ranked_keys()
             self.trend_row_index = keys.index(trend_key) if trend_key in keys else 0
@@ -3034,8 +3250,13 @@ class App:
             self.notify("API-price view is for real data, not the demo", "error")
             return
         self._ensure_models()
+        wf = self.current_session() if self.view == "session" else None
+        tool_key = None
+        if wf is not None and self.active_tab_name() == "Tools":
+            selected = self.selected_tool_ranking(wf.id)
+            tool_key = (selected["kind"], selected["name"]) if selected else None
         self.show_api_prices = not self.show_api_prices
-        self._reprice_in_place()
+        self._reprice_in_place(tool_key)
         self.notice = (
             "what-if prices (what unpriced usage would cost at API list prices)"
             if self.show_api_prices
@@ -3044,6 +3265,13 @@ class App:
 
     def refresh_prices_action(self) -> None:
         self.notice = "fetching prices from models.dev…"
+        wf = self.current_session() if self.view == "session" else None
+        selected = (
+            self.selected_tool_ranking(wf.id)
+            if wf is not None and self.active_tab_name() == "Tools"
+            else None
+        )
+        tool_key = (selected["kind"], selected["name"]) if selected else None
         try:
             count, _ = refresh_model_prices()
         except (OSError, ValueError) as exc:
@@ -3053,9 +3281,12 @@ class App:
         self.renderer._turn_layout_cache = None
         self.renderer._trace_layout_cache = None
         self._whatif_catalog_rows = None
+        self._model_price_revision += 1
+        self._tool_projection_cache = None
+        self.renderer._tool_layout_cache = None
         self._ensure_models()
         self._compute_api_costs()
-        self._reprice_in_place()
+        self._reprice_in_place(tool_key)
         # _ensure_models is already satisfied, so explicitly reject a now-unpriced target.
         self._revalidate_whatif()
         self.prices_scroll = 0
@@ -3178,6 +3409,10 @@ class App:
         self._resolve_project_roots()
         notes_ok = self.refresh_notes()
         self._tool_by_session.clear()
+        self._tool_projection_cache = None
+        self.renderer._tool_layout_cache = None
+        self.tool_drill = self._tool_drill_session = self._tools_return = None
+        self._tool_cursor = self._tool_call_cursor = 0
         self._turns_by_session.clear()
         self._turn_runs_cache = None
         self.renderer._turn_layout_cache = None
@@ -3528,6 +3763,10 @@ class App:
         self.refresh_notes()
         self._models_loaded = False
         self._tool_by_session.clear()
+        self._tool_projection_cache = None
+        self.renderer._tool_layout_cache = None
+        self.tool_drill = self._tool_drill_session = self._tools_return = None
+        self._tool_cursor = self._tool_call_cursor = 0
         self._turns_by_session.clear()
         self._turn_runs_cache = None
         self.renderer._turn_layout_cache = None
@@ -5186,6 +5425,7 @@ class App:
         self.tab = tabs.index(name) if name in tabs else 0
 
     def set_focus(self, name: str) -> None:
+        self._tools_return = None
         active_tab = self.active_tab_name()
         self.focus = name
         self._carry_tab(active_tab)
@@ -5250,6 +5490,7 @@ class App:
         # with it (those scope the detail pane we are leaving).
         if self.view == "browse":
             return
+        self._tools_return = None
         self.view = "browse"
         self._clear_zoom_drills()
         self.scroll = 0
@@ -5318,6 +5559,7 @@ class App:
     def set_browse_mode(self, mode: str) -> None:
         if mode == self.browse_mode:
             return
+        self._tools_return = None
         # Remember where we were in the mode we're leaving (session, tab, drills and all),
         # then restore the target mode's remembered spot if we've been there -- otherwise
         # open it fresh at the top. The snapshot is value-anchored, so it self-heals against
@@ -5485,6 +5727,7 @@ class App:
 
     def drill_out(self) -> None:
         if self.view == "session":
+            self._tools_return = None
             self._clear_trace_expansion()
             self.view = "zoom"
             tabs = self.current_tabs()  # land back on the Sessions tab we came from
@@ -5601,6 +5844,23 @@ class App:
     def move(self, delta: int) -> None:
         if self.view == "session":
             with self.session_selection():
+                if self.active_tab_name() == "Tools":
+                    wf = self.current_session()
+                    rows = (
+                        self.selected_tool_calls(wf.id)
+                        if wf and self.active_tool_drill
+                        else (self.tool_rankings(wf.id) if wf else [])
+                    )
+                    if rows:
+                        attr = "_tool_call_cursor" if self.active_tool_drill else "_tool_cursor"
+                        cur = max(0, min(getattr(self, attr), len(rows) - 1))
+                        setattr(self, attr, cur)
+                        moved = max(0, min(cur + delta, len(rows) - 1))
+                        if moved != cur:
+                            setattr(self, attr, moved)
+                            self._tool_follow = True
+                            return
+                        self._tool_follow = False
                 if self._on_subagents_tab() and self._move_subagent_cursor(delta):
                     return
                 if self._on_turns_tab():
@@ -5786,7 +6046,7 @@ class App:
             n = len(self.zoom_machine_rows())
             if n:
                 self.machine_pick_index = max(0, min(self.machine_pick_index + delta, n - 1))
-        elif kind in ("detail", "turnline", "subagentline"):
+        elif kind in ("detail", "turnline", "subagentline", "toolline", "toolcallline"):
             self.scroll = max(0, self.scroll + delta)  # scroll the detail content
         else:
             self.move(delta)  # a gap or the tab strip: the active pane, as before
@@ -5860,6 +6120,18 @@ class App:
                 self.machine_pick_index = len(rows) - 1 if to_end else 0
             return
 
+        if self.view == "session" and self.active_tab_name() == "Tools":
+            wf = self.current_session()
+            rows = (
+                self.selected_tool_calls(wf.id)
+                if wf and self.active_tool_drill
+                else (self.tool_rankings(wf.id) if wf else [])
+            )
+            if rows:
+                attr = "_tool_call_cursor" if self.active_tool_drill else "_tool_cursor"
+                setattr(self, attr, len(rows) - 1 if to_end else 0)
+                self._tool_follow = True
+                return
         if self._on_subagents_tab() and self.active_subagent_drill is None:
             wf = self.current_session()
             rows = self.subagent_rows(wf) if wf else []
@@ -7262,6 +7534,13 @@ class App:
             if self._on_turns_tab():
                 self._toggle_turn_cursor()
                 return True
+            if self.active_tab_name() == "Tools":
+                if self.active_tool_drill is not None:
+                    if not self.open_tool_call_reader():
+                        self.notify("No recoverable owning turn for this call.", "warn")
+                else:
+                    self.open_tool_drill()
+                return True
             if self._on_subagents_tab() and self.open_subagent_drill():
                 return True
             self.drill_in()
@@ -7277,7 +7556,13 @@ class App:
             # before it starts popping the view stack -- but ONLY while that tab is the
             # one on screen. Left ungated, Esc on Tools or Context silently tore down an
             # invisible drill and was swallowed, so the key appeared to do nothing.
-            if self._on_turns_tab() and (self.close_trace_drill() or self.close_turn_drill()):
+            if self._on_turns_tab() and self.close_trace_drill():
+                return True
+            if self._on_turns_tab() and self._tools_return is not None and self.return_to_tools():
+                return True
+            if self.active_tab_name() == "Tools" and self.close_tool_drill():
+                return True
+            if self._on_turns_tab() and self.close_turn_drill():
                 return True
             if self.close_subagent_turns():
                 return True
@@ -7292,12 +7577,14 @@ class App:
                 self.drill_out()
             return True
         if act == "tab_prev":
+            self._tools_return = None
             self._clear_subagent_prompt()
             self._clear_trace_expansion()
             self.tab = (self.tab - 1) % len(self.current_tabs())
             self.scroll = 0
             return True
         if act == "tab_next":
+            self._tools_return = None
             self._clear_subagent_prompt()
             self._clear_trace_expansion()
             self.tab = (self.tab + 1) % len(self.current_tabs())
@@ -7843,6 +8130,7 @@ class App:
                 # active and j/k keeps moving it instead.
                 self.drill_in()
             if self.tab != value:
+                self._tools_return = None
                 self._clear_subagent_prompt()
                 self._clear_trace_expansion()
                 self.tab = value
@@ -7858,6 +8146,20 @@ class App:
             ordinal = self.renderer._subagent_header_at.get(value)
             if ordinal is not None and self._on_subagents_tab():
                 self.open_subagent_drill(ordinal)
+            return
+        if kind == "toolline":
+            ordinal = getattr(self.renderer, "_tool_header_at", {}).get(value)
+            if ordinal is not None and self.active_tab_name() == "Tools":
+                self._tool_cursor = ordinal
+                if drill:
+                    self.open_tool_drill(ordinal)
+            return
+        if kind == "toolcallline":
+            ordinal = getattr(self.renderer, "_tool_call_at", {}).get(value)
+            if ordinal is not None and self.active_tool_drill is not None:
+                self._tool_call_cursor = ordinal
+                if drill:
+                    self.open_tool_call_reader()
             return
         if kind == "turnline":
             # A click on a Turns-tab prompt row drills into it (its full text + its

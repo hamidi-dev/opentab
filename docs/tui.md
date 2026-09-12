@@ -237,6 +237,22 @@ missing or uniform per-call rates fall back to area. Small entries fold into
 pairs while the browser measures its responsive container. Neither chart needs
 another store query.
 
+The Tools explorer adds selectable tool and namespace rankings beneath this chart.
+Opening one shows contribution, averages, a token-composition band, token categories,
+per-model attribution and individual calls recovered from the existing timeline.
+`tools.tool_calls_from_turns` preserves original turn indices and repeated calls;
+it does not read raw content. Aggregate and recovered-ledger coverage are compared
+separately for calls, tokens and cost. A turn timestamp is not tool start time,
+and attributed model output is not the returned result's size.
+
+The App retains one numeric Tools projection and the renderer one layout, keyed by
+source-row snapshots, pricing revision/mode and layout inputs. Cached layouts restore
+their paint metadata, while cursors and viewport scrolling stay independent. A call
+opens the owning prompt's Turns list with that turn selected; trace content still
+requires a further explicit action. Back unwinds trace, owning Turns, Tools detail,
+then rankings. Manual tab/scope changes discard the cross-tab return context; reload
+clears the projection and drill rather than reusing call ordinals from an old snapshot.
+
 ## Coordinates and Encoding
 
 The outer app frame is a viewport boundary. `draw()` paints it in screen

@@ -94,7 +94,6 @@ from opentab.util import (
     tool_call_label,
     tool_mix_label,
     tool_names,
-    tool_namespace,
     unicode_screen,
 )
 from opentab.whats_new import RELEASES_URL
@@ -211,11 +210,15 @@ class Renderer:
         self._trend_rows_at: tuple[int, int, int] | None = None
         self._turn_header_at: dict[int, int] = {}
         self._turn_layout_cache: tuple | None = None
+        self._tool_layout_cache: tuple | None = None
         self._trace_layout_cache: tuple | None = None
         self._trace_tool_at: dict[int, int] = {}
         self._trace_output_ends: list[tuple[int, int]] = []
         # Selected prompt header line, recomputed each paint for scroll/highlight.
         self._turn_cursor_line: int | None = None
+        self._tool_header_at: dict[int, int] = {}
+        self._tool_call_at: dict[int, int] = {}
+        self._tool_cursor_line: int | None = None
         self._subagent_header_at: dict[int, int] = {}
         self._subagent_cursor_line: int | None = None
         # Logical header lines become screen-coordinate sort regions during paint.
@@ -1000,6 +1003,10 @@ class Renderer:
             segs += ["Subagents", shorten(self.app.subagent_turns_title(), 28), "Turns"]
             if self.app.active_turn_drill is not None:
                 segs.append(f"Prompt {self.app.active_turn_drill + 1}")
+            return sep.join(segs)
+        if self.view == "session" and tab_name == "Tools" and self.app.active_tool_drill:
+            kind, name = self.app.active_tool_drill
+            segs += ["Tools", f"{kind}: {shorten(name, 28)}"]
             return sep.join(segs)
         # Machine drills are mutually exclusive and need no additional crumb.
         if self.browse_mode == "machines" and self.view != "session":
@@ -2645,6 +2652,9 @@ class Renderer:
             # Follow is one-shot and must run before the scroll clamp.
             self._scroll_turn_cursor_into_view(visible)
             self.app._turn_follow = False
+        if current == "Tools" and self.app._tool_follow:
+            self._scroll_line_into_view(self._tool_cursor_line, visible)
+            self.app._tool_follow = False
         if current == "Subagents" and not turns and self.app._subagent_follow:
             self._scroll_line_into_view(self._subagent_cursor_line, visible)
             self.app._subagent_follow = False
@@ -2661,10 +2671,14 @@ class Renderer:
         target = self.trace_output_target() if tracing else None
         for offset, line in enumerate(drawn):
             attr = self.line_attr(line)
-            if (turns and self.scroll + offset == self._turn_cursor_line) or (
-                current == "Subagents"
-                and not turns
-                and self.scroll + offset == self._subagent_cursor_line
+            if (
+                (turns and self.scroll + offset == self._turn_cursor_line)
+                or (
+                    current == "Subagents"
+                    and not turns
+                    and self.scroll + offset == self._subagent_cursor_line
+                )
+                or (current == "Tools" and self.scroll + offset == self._tool_cursor_line)
             ):
                 # Select by line index, not a display glyph. paint_cursor_row preserves
                 # gutters and prevents rich number colors from shredding the highlight.
@@ -2716,6 +2730,9 @@ class Renderer:
             self._add_rows_region("turnline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
         if current == "Subagents" and not turns:
             self._add_rows_region("subagentline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
+        if current == "Tools":
+            kind = "toolcallline" if self.app.active_tool_drill is not None else "toolline"
+            self._add_rows_region(kind, y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
         if not loading_content:
             self._paint_scrollbar(
                 stdscr, y + 3, x + w - 1, len(lines) - body_start, visible, self.scroll
@@ -4432,90 +4449,358 @@ class Renderer:
     def detail_tools(
         self, workflow: Workflow, width: int, treemap_height: int | None = None
     ) -> list[str]:
-        # Attribute each assistant step across its invoked tools. These are turn costs,
-        # not tool-output sizes; `$` reprices wholly unpriced rows at list rates.
+        self._tool_header_at = {}
+        self._tool_call_at = {}
+        self._tool_cursor_line = None
+        self._tool_tree_runs = {}
         if not self.session_supports_tools(workflow.id):
-            return [
-                "# Tools",
-                "This session's tool doesn't record per-tool attribution.",
-            ]
-        rows = self.session_tool_rows(workflow.id)
-        if not rows:
+            return ["# Tools", "This session's tool doesn't record per-tool attribution."]
+        if not self.session_tool_rows(workflow.id):
             return ["# Tools", "No tool calls recorded for this session."]
-        api = self.show_api_prices and not self.store.demo
-
-        def agg() -> dict[str, dict]:
-            return defaultdict(
-                lambda: {
-                    "calls": 0,
-                    "cost": 0.0,
-                    "tokens": 0,
-                    "cache_read": 0,
-                    "cache_write": 0,
-                    "output": 0,
-                }
+        projection = self.app.tool_projection(workflow.id)
+        layout_key = (
+            projection["key"],
+            self.app.active_tool_drill,
+            width,
+            treemap_height,
+            self._key("main", "select"),
+            self._key("main", "back"),
+            unicode_screen(),
+            self._tool_heat_ok,
+            self._token_series_ok,
+        )
+        cached = self._tool_layout_cache
+        if cached is None or cached[0] != layout_key:
+            lines = self._build_detail_tools(workflow, width, treemap_height, projection)
+            cached = (
+                layout_key,
+                lines,
+                dict(self._tool_header_at),
+                dict(self._tool_call_at),
+                dict(self._tool_tree_runs),
+                set(self._box_headers),
+                dict(self._token_runs),
             )
+            self._tool_layout_cache = cached
+        self._tool_header_at, self._tool_call_at, self._tool_tree_runs = cached[2:5]
+        self._box_headers.update(cached[5])
+        self._token_runs.update(cached[6])
+        mapping = (
+            self._tool_call_at if self.app.active_tool_drill is not None else self._tool_header_at
+        )
+        cursor = (
+            self.app._tool_call_cursor
+            if self.app.active_tool_drill is not None
+            else self.app._tool_cursor
+        )
+        self._tool_cursor_line = next(
+            (line for line, ordinal in mapping.items() if ordinal == cursor), None
+        )
+        return cached[1]
 
-        by_tool, by_server = agg(), agg()
-        for r in rows:
-            # Preserve recorded cost; only wholly unpriced rows receive list-price estimates.
-            cost = r["cost"]
-            if api and not cost:
-                cost = api_equivalent_cost(
-                    r["model_name"],
-                    r["input"],
-                    r["output"],
-                    r["reasoning"],
-                    r["cache_read"],
-                    r["cache_write"],
-                    r.get("cache_write_1h", 0),
-                )
-            for bucket, key in ((by_tool, r["tool"]), (by_server, tool_namespace(r["tool"]))):
-                it = bucket[key]
-                it["calls"] += r["calls"]
-                it["cost"] += cost
-                it["tokens"] += r["tokens_total"]
-                it["cache_read"] += r["cache_read"]
-                it["cache_write"] += r["cache_write"]
-                it["output"] += r["output"]
+    def _build_detail_tools(
+        self, workflow: Workflow, width: int, treemap_height: int | None, projection: dict
+    ) -> list[str]:
+        self._tool_header_at = {}
+        self._tool_call_at = {}
+        self._tool_cursor_line = None
+        if self.app.active_tool_drill is not None:
+            return self._tool_detail(workflow, width, projection)
 
-        def table_rows(bucket: dict[str, dict]) -> list[tuple]:
-            ordered = sorted(
-                bucket.items(), key=lambda kv: (kv[1]["cost"], kv[1]["tokens"]), reverse=True
-            )
-            return [
-                (
-                    name,
-                    it["calls"],
-                    it["cost"],
-                    it["tokens"],
-                    it["cache_read"],
-                    it["cache_write"],
-                    it["output"],
-                )
-                for name, it in ordered
-            ]
-
+        rankings = projection["rankings"]
+        tools = [r for r in rankings if r["kind"] == "tool"]
+        namespaces = [r for r in rankings if r["kind"] == "namespace"]
+        by_tool = {
+            r["name"]: {
+                "calls": r["calls"],
+                "cost": r["cost"],
+                "tokens": r["tokens_total"],
+            }
+            for r in tools
+        }
+        calls = sum(r["calls"] for r in tools)
+        cost = sum(r["cost"] for r in tools)
+        overview = [
+            f"{calls:,} calls   {len(tools)} tools   {len(namespaces)} namespaces",
+            f"Attributed cost {money(cost)}   {money(cost / calls) if calls else '-'} / call   "
+            f"{human_tokens(int(sum(r['tokens_total'] for r in tools) / calls)) if calls else '-'} tokens / call",
+        ]
         lines = self._tool_treemap_box(by_tool, width, treemap_height)
-        lines += self._model_table(
-            table_rows(by_tool), "# Tools — this session", width, "Tool", "Calls", price_split=False
+        lines += self._sectioned_box(
+            "# Tool ledger", [self._subagent_wrap(overview, width - 4)], width, []
         )
         lines.append("")
-        lines.extend(
-            self._model_table(
-                table_rows(by_server),
-                "# By server / namespace",
-                width,
-                "Server",
-                "Calls",
-                price_split=False,
-            )
+        lines += self._tool_ranking_box(tools, "# Tools — this session", width, 0, len(lines))
+        lines.append("")
+        lines += self._tool_ranking_box(
+            namespaces, "# By server / namespace", width, len(tools), len(lines)
         )
-        lines += [
-            "",
-            "· Tokens/cost are for the LLM turns that invoked each tool (split evenly across",
-            "· a turn's tools), not the tool's own output size.",
+        lines += self._subagent_wrap(
+            [
+                "",
+                f"{self._key('main', 'select')} / double-click inspects a tool or namespace. Tokens and cost belong to the LLM turns that invoked calls, split across every call; they are not tool-result size.",
+            ],
+            width,
+        )
+        return lines
+
+    def _tool_ranking_box(
+        self, rows: list[dict], title: str, width: int, ordinal: int, offset: int
+    ) -> list[str]:
+        display_rows = list(rows)
+        if len(rows) > 1:
+            display_rows.append(
+                {
+                    "name": "TOTAL",
+                    **{key: sum(r[key] for r in rows) for key in ("calls", "cost", "tokens_total")},
+                }
+            )
+        inner = max(1, width - self.BOX_CHROME)
+        calls_w = max(5, len(f"{sum(r['calls'] for r in rows):,}"))
+        cost_w = max(4, max((len(money(float(r["cost"]))) for r in display_rows), default=0))
+        avg_w = max(
+            6,
+            max(
+                (len(money(float(r["cost"]) / r["calls"])) for r in display_rows if r["calls"]),
+                default=0,
+            ),
+        )
+        token_w = max(
+            6, max((len(human_tokens(int(r["tokens_total"]))) for r in display_rows), default=0)
+        )
+        show_tokens = inner >= calls_w + cost_w + token_w + 19
+        show_avg = inner >= calls_w + cost_w + token_w + avg_w + 20
+        tail = (
+            calls_w
+            + cost_w
+            + 2
+            + (token_w + 1 if show_tokens else 0)
+            + (avg_w + 1 if show_avg else 0)
+        )
+        name_w = max(4, inner - tail - 2)
+        header = f"  {pad('Name', name_w)} {'Calls':>{calls_w}}"
+        if show_avg:
+            header += f" {'$/call':>{avg_w}}"
+        if show_tokens:
+            header += f" {'Tokens':>{token_w}}"
+        header += f" {'Cost':>{cost_w}}"
+        body = []
+        for row in display_rows:
+            avg = row["cost"] / row["calls"] if row["calls"] else 0
+            body.append(
+                f"  {pad(shorten(str(row['name']), name_w), name_w)} {row['calls']:>{calls_w},}"
+                + (f"{money(avg):>{avg_w + 1}}" if show_avg else "")
+                + (
+                    f"{human_tokens(int(row['tokens_total'])):>{token_w + 1}}"
+                    if show_tokens
+                    else ""
+                )
+                + f" {money(row['cost']):>{cost_w}}"
+            )
+        total = body.pop() if len(display_rows) > len(rows) else None
+        box = self._ruled_box(title, header, body, total, [], width)
+        start = offset + (self._ruled_body_start or 0)
+        for i in range(len(rows)):
+            self._tool_header_at[start + i] = ordinal + i
+        selected = self.app._tool_cursor
+        if ordinal <= selected < ordinal + len(rows):
+            self._tool_cursor_line = start + selected - ordinal
+        return box
+
+    def _tool_detail(self, workflow: Workflow, width: int, projection: dict) -> list[str]:
+        drill = self.app.active_tool_drill
+        ranking = next(r for r in projection["rankings"] if (r["kind"], r["name"]) == drill)
+        calls = [
+            row
+            for row in projection["calls"]
+            if (row.get("tool") if drill[0] == "tool" else row.get("namespace")) == drill[1]
         ]
+        all_tools = [r for r in projection["rankings"] if r["kind"] == "tool"]
+        total_cost = sum(r["cost"] for r in all_tools)
+        total_tokens = sum(r["tokens_total"] for r in all_tools)
+        back = self._key("main", "back")
+        lines = self._subagent_wrap(
+            [f"# {drill[0].capitalize()} · {drill[1]}   {back}: back to rankings", ""], width
+        )
+        avg_cost = ranking["cost"] / ranking["calls"] if ranking["calls"] else 0
+        avg_tokens = ranking["tokens_total"] / ranking["calls"] if ranking["calls"] else 0
+        lines += self._sectioned_box(
+            "# Contribution",
+            [
+                self._subagent_wrap(
+                    [
+                        f"{ranking['calls']:,} calls   cost {money(ranking['cost'])} ({pct(ranking['cost'], total_cost)})   tokens {human_tokens(int(ranking['tokens_total']))} ({pct(ranking['tokens_total'], total_tokens)})",
+                        f"Per call: {money(avg_cost)}   {human_tokens(int(avg_tokens))} attributed tokens",
+                    ],
+                    width - 4,
+                )
+            ],
+            width,
+            [],
+        )
+        categories = (
+            ("Uncached input", "input"),
+            ("Model output", "output"),
+            ("Reasoning", "reasoning"),
+            ("Cache read", "cache_read"),
+            ("Cache write", "cache_write"),
+        )
+        category_total = sum(float(ranking[key]) for _label, key in categories)
+        composition = []
+        if category_total > 0 and width >= 50:
+            slots = [(label, ranking[key], i) for i, (label, key) in enumerate(categories)]
+            composition = [
+                self._token_stack_line(slots, category_total, width - 4),
+                *self._token_legend_lines(
+                    [(label, value, 0, slot) for label, value, slot in slots if value > 0],
+                    width - 4,
+                ),
+                "",
+            ]
+        token_rows = [
+            f"{label:<14} {int(ranking[key]):>16,}  {pct(ranking[key], category_total):>6}   avg {human_tokens(int(ranking[key] / ranking['calls'])) if ranking['calls'] else '-'}"
+            for label, key in categories
+        ]
+        if ranking["cache_write_1h"]:
+            token_rows.append(f"  of cache writes, 1h: {int(ranking['cache_write_1h']):,} (subset)")
+        token_rows.append(f"Recorded total: {int(ranking['tokens_total']):,}")
+        lines += [""] + self._sectioned_box(
+            "# Attributed token categories",
+            [composition + self._subagent_wrap(token_rows, width - 4)],
+            width,
+            [],
+        )
+
+        models = projection["models"].get(drill, {})
+        model_rows = []
+        wide = width >= 116
+        inner = max(1, width - self.BOX_CHROME)
+        model_cost_w = max(
+            4, max((len(money(float(item["cost"]))) for item in models.values()), default=0)
+        )
+        show_total_tokens = wide or inner >= model_cost_w + 30
+        name_w = max(
+            4,
+            inner
+            - (70 + model_cost_w if wide else 9 + model_cost_w + (10 if show_total_tokens else 0)),
+        )
+        header = f"  {pad('Model', name_w)} {'Calls':>5}"
+        if show_total_tokens:
+            header += f" {'Tokens':>9}"
+        if wide:
+            header += f" {'Input':>9} {'Model out':>9} {'Reason':>9} {'CacheR':>9} {'CacheW':>9}"
+        header += f" {'Cost':>{model_cost_w}}"
+        for model, item in sorted(
+            models.items(), key=lambda kv: (kv[1]["cost"], kv[1]["tokens_total"]), reverse=True
+        ):
+            line = f"  {pad(shorten(model, name_w), name_w)} {item['calls']:>5}"
+            if show_total_tokens:
+                line += f" {human_tokens(int(item['tokens_total'])):>9}"
+            if wide:
+                line += " " + " ".join(
+                    f"{human_tokens(int(item[key])):>9}"
+                    for key in ("input", "output", "reasoning", "cache_read", "cache_write")
+                )
+            line += f" {money(item['cost']):>{model_cost_w}}"
+            model_rows.append(line)
+        lines += [""] + self._ruled_box(
+            "# Exact attributed usage by model", header, model_rows, None, [], width
+        )
+        if not wide:
+            for model, item in sorted(
+                models.items(), key=lambda kv: (kv[1]["cost"], kv[1]["tokens_total"]), reverse=True
+            ):
+                split = (
+                    f"  {shorten(model, 28)}: input {human_tokens(int(item['input']))} · "
+                    f"model output {human_tokens(int(item['output']))} · "
+                    f"reasoning {human_tokens(int(item['reasoning']))} · "
+                    f"cache read {human_tokens(int(item['cache_read']))} · "
+                    f"cache write {human_tokens(int(item['cache_write']))}"
+                )
+                if item["cache_write_1h"]:
+                    split += f" (1h {human_tokens(int(item['cache_write_1h']))}, subset)"
+                lines += self._subagent_wrap([split], width)
+
+        aggregate_calls = int(ranking["calls"])
+        recovered_calls = len(calls)
+        recovered_tokens = sum(float(call.get("tokens_total") or 0) for call in calls)
+        recovered_cost = sum(float(call.get("cost") or 0) for call in calls)
+        call_state = "complete" if recovered_calls == aggregate_calls else "partial"
+        token_state = (
+            "complete" if abs(recovered_tokens - ranking["tokens_total"]) < 0.01 else "partial"
+        )
+        cost_state = (
+            "complete" if abs(recovered_cost - float(ranking["cost"])) < 0.00005 else "partial"
+        )
+        ledger = (
+            f"Ledger coverage — calls {call_state}: {recovered_calls}/{aggregate_calls}; "
+            f"tokens {token_state}: {human_tokens(round(recovered_tokens))}/{human_tokens(round(ranking['tokens_total']))}; "
+            f"cost {cost_state}: {money(recovered_cost)}/{money(float(ranking['cost']))}."
+        )
+        if not self.session_supports_turns(workflow.id):
+            ledger = f"Call ledger unavailable: aggregate source reports {aggregate_calls} calls but has no Turns timeline."
+        lines += self._subagent_wrap(
+            ["", ledger, "Timestamps below are owning-turn timestamps."], width
+        )
+        if not calls:
+            return lines
+
+        inner = max(1, width - self.BOX_CHROME)
+        call_cost_w = max(4, max(len(money(float(call.get("cost") or 0))) for call in calls))
+        call_token_w = max(
+            6, max(len(human_tokens(int(call.get("tokens_total") or 0))) for call in calls)
+        )
+        room = inner - (13 + call_token_w + call_cost_w)
+        model_w = min(24, max(0, room)) if room >= 11 else 0
+        room -= model_w + (1 if model_w else 0)
+        time_w = 8 if room >= 9 else 0
+        room -= time_w + (1 if time_w else 0)
+        agent_w = min(12, room - 1) if room >= 9 else 0
+        room -= agent_w + (1 if agent_w else 0)
+        tool_w = min(24, room - 1) if drill[0] == "namespace" and room >= 9 else 0
+        header = f"  {'#':>3} {'Turn':>5}"
+        if time_w:
+            header += f" {'Time':<{time_w}}"
+        if tool_w:
+            header += f" {pad('Tool', tool_w)}"
+        if model_w:
+            header += f" {pad('Model', model_w)}"
+        if agent_w:
+            header += f" {pad('Agent', agent_w)}"
+        header += f" {'Tokens':>{call_token_w}} {'Cost':>{call_cost_w}}"
+        body = []
+        for i, call in enumerate(calls, start=1):
+            raw_time = str(call.get("time") or "")
+            time = (
+                raw_time[:19] if time_w == 19 else raw_time[11:19] if len(raw_time) >= 19 else "-"
+            )
+            agent = ("↳ " if call.get("depth") else "") + str(call.get("agent") or "-")
+            line = f"  {i:>3} {int(call['turn_index']) + 1:>5}"
+            if time_w:
+                line += f" {time:<{time_w}}"
+            if tool_w:
+                line += f" {pad(shorten(short_tool_name(str(call['tool'])), tool_w), tool_w)}"
+            if model_w:
+                line += (
+                    f" {pad(shorten(str(call.get('model_name') or 'unknown'), model_w), model_w)}"
+                )
+            if agent_w:
+                line += f" {pad(shorten(agent, agent_w), agent_w)}"
+            line += f" {human_tokens(int(call.get('tokens_total') or 0)):>{call_token_w}} {money(float(call.get('cost') or 0)):>{call_cost_w}}"
+            body.append(line)
+        offset = len(lines) + 1
+        box = self._ruled_box("# Calls — chronological", header, body, None, [], width)
+        start = offset + (self._ruled_body_start or 0)
+        self._tool_call_at = {start + i: i for i in range(len(calls))}
+        cur = max(0, min(self.app._tool_call_cursor, len(calls) - 1))
+        self._tool_cursor_line = start + cur
+        lines += [""] + box
+        lines += self._subagent_wrap(
+            [
+                f"{self._key('main', 'select')} / double-click opens the owning prompt's turn list; opening raw trace content remains a separate explicit {self._key('main', 'select')}. Model output is attributed LLM output, never tool-result bytes.",
+            ],
+            width,
+        )
         return lines
 
     def turn_costs(self, rows) -> list[float]:
