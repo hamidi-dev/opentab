@@ -237,6 +237,25 @@ def test_web_session_extras_reports_turns_with_both_costs():
     first, second = extras["turns"]
     assert first["real"] == 0.0 and first["api"] > 0  # $0 turn gets a list-price figure
     assert second["real"] == 0.5 and second["api"] == 0.5  # priced turn stays as recorded
+    assert first["tok"] == [1000, 200, 0, 0, 0, 0]
+    assert all(len(turn["tok"]) == 6 for turn in extras["turns"])
+    assert set(first) == {
+        "time",
+        "agent",
+        "depth",
+        "model",
+        "effort",
+        "real",
+        "api",
+        "tokens",
+        "tok",
+        "ctx",
+        "cached",
+        "tools",
+        "promptId",
+        "promptTitle",
+        "promptFull",
+    }
     assert first["promptTitle"] == "do the thing"
     # The whole prompt travels too, so the page's ▸ header can unfold/hover it.
     assert first["promptFull"] == "do the thing\nand do it properly, with tests"
@@ -652,6 +671,13 @@ class Node {
   set textContent(t) { this.children = []; this.text = t; }
   get textContent() { return this.text + this.children.map(n => n.textContent).join(''); }
   querySelectorAll() { return []; }
+  querySelector(selector) {
+    for (const node of this.children) {
+      if (selector === '.token-details[open]' && node.className === 'token-details' && node.attrs.open != null) return node;
+      const found = node.querySelector(selector); if (found) return found;
+    }
+    return null;
+  }
   focus() { document.activeElement = this; }
   scrollIntoView(options) { this.scrolled = options; }
   get nextElementSibling() { return this.parent.children[this.parent.children.indexOf(this) + 1]; }
@@ -877,9 +903,11 @@ document.getElementById('opentab-data').textContent = JSON.stringify({
         + r"""
 const make = (promptId, real, ctx, extra = {}) => ({promptId, real, api:real, ctx,
   time:'2026-09-09T12:00:00', model:'test/model', agent:'main', tokens:100, depth:0,
-  promptTitle:promptId, promptFull:promptId, ...extra});
-let turns = [make('a', 6, 90000), make('b', 4, 10000), make('b', 4, 20000),
-  make('b', 0, 0, {depth:1, agent:'explore', api:5}), make('a', 2, 2000)];
+  tok:[40,20,10,20,10,4], promptTitle:promptId, promptFull:promptId, ...extra});
+let turns = [make('a', 6, 90000), make('b', 4, 10000),
+  make('b', 4, 20000, {tok:[0,100,0,0,0,0]}),
+  make('b', 0, 0, {depth:1, agent:'explore', api:5, tok:[10,10,10,10,10,2]}),
+  make('a', 2, 2000)];
 const expiries = [{i:4, cause:'ttl', cost:2, idle:600, repaid:2000, ttl:300},
   {i:2, cause:'reasoning', cost:1, detail:'low to high', repaid:1000}];
 let view;
@@ -923,6 +951,19 @@ assert.equal(promptRows()[1].children.at(-2).textContent, '$13.00');
 // Open the second prompt through its real click handler, with global indices 2-4.
 promptRows()[1].events.click();
 assert.equal(TURN_DRILL, 1);
+assert.ok(view.textContent.includes('Answering-turn usage for this prompt run, not the typed prompt size.'));
+assert.ok(view.textContent.includes('Uncached input50'));
+assert.ok(view.textContent.includes('Model output130'));
+assert.ok(view.textContent.includes('Reasoning20'));
+assert.ok(view.textContent.includes('Cache read30'));
+assert.ok(view.textContent.includes('Cache write20'));
+assert.ok(view.textContent.includes('1h cache write6 (subset of cache write)'));
+assert.ok(view.textContent.includes('Categories sum to 250; recorded total is 300.'));
+assert.ok(view.textContent.includes('Category sum250Recorded total300'));
+let tokenDetails = all(view, 'details'); assert.equal(tokenDetails.length, 3);
+assert.equal(tokenDetails[0].attrs.open, undefined);
+let disclosureClick = {stopPropagation(){this.stopped=true}};
+tokenDetails[0].events.click(disclosureClick); assert.equal(disclosureClick.stopped, true);
 assert.equal(points().length, 3);
 assert.equal(all(chart(), 'title')[0].textContent, 'Cost and context by turn');
 assert.deepEqual(tips(), ['turn 2\n$4.00 · 10.0k context', 'turn 3\n$4.00 · 20.0k context',
@@ -931,7 +972,7 @@ assert.ok(labels().includes('turn 2') && labels().includes('turn 4'));
 assert.ok(!labels().includes('turn 1') && !labels().includes('turn 5'));
 assert.ok(labels().includes('peak turn $5.00'));
 assert.ok(labels().includes('peak context 20.0k')); // Not the outside prompt's 90k.
-assert.deepEqual(all(all(view, 'tbody')[0], 'tr').map(r => r.children[0].textContent), ['2','3','4']);
+assert.deepEqual(all(all(view, 'table')[1], 'tbody')[0].children.map(r => r.children[0].textContent), ['2','3','4']);
 assert.deepEqual(points().map(p => bars(p).map(b => b.attrs.height)), [[28,17.5],[28,35],[35]]);
 const ctxHeights = points().slice(0, 2).map(p => bars(p)[1].attrs.height);
 togglePrice();
@@ -939,15 +980,20 @@ assert.equal(TURN_DRILL, 1); // Reprice in place, never leave or select another 
 assert.ok(labels().includes('peak turn $4.00'));
 assert.deepEqual(points().slice(0, 2).map(p => bars(p)[1].attrs.height), ctxHeights);
 assert.deepEqual(points().map(p => bars(p).map(b => b.attrs.height)), [[35,17.5],[35,35],[]]);
+tokenDetails = all(view, 'details');
+tokenDetails[0].attrs.open = ''; tokenDetails[0].events.toggle();
+togglePrice(); assert.notEqual(all(view, 'details')[0].attrs.open, undefined);
+togglePrice();
 assert.equal(tips()[2], 'turn 4\n$0.00 · subagent context');
 assert.equal(all(chart(), 'desc')[0].textContent.includes('turn 1\n'), false);
 
 // The later recurring id drills only its own run and keeps its global turn label.
-all(view, 'a')[0].events.click();
+all(view, 'button').find(b => b.textContent.includes('back to the prompts')).events.click();
 assert.equal(TURN_DRILL, null);
 promptRows()[2].events.click();
 assert.equal(points().length, 1);
 assert.equal(tips()[0], 'turn 5\n$2.00 · 2.0k context');
+assert.ok(view.textContent.includes('Uncached input40')); // Repeated id uses only this run.
 assert.ok(labels().includes('turn 5') && !labels().includes('turn 1'));
 
 // A missing main-thread measurement is explicit when other calls have context.
@@ -970,6 +1016,11 @@ assert.ok(labels().includes('peak turn $0.00'));
 assert.ok(points().every(p => bars(p).length === 0));
 assert.ok(!chart().textContent.includes('NaN'));
 assert.equal(turnCostContextStrip([]), null);
+turns = [make('zero', 0, 0, {tokens:0, tok:[0,0,0,0,0,0]})]; TURN_DRILL = 0; render();
+assert.ok(view.textContent.includes('Uncached input0Model output0Reasoning0Cache read0Cache write0'));
+assert.ok(!view.textContent.includes('Categories sum to'));
+turns = [make('old', 0, 0, {tok:undefined})]; render();
+assert.ok(view.textContent.includes('Token categories unavailable.'));
 TURN_DRILL = null; turns = []; render();
 assert.equal(all(view, 'svg').length, 0);
 """,
@@ -2054,7 +2105,7 @@ function all(el, tag) { return [...(el.tag === tag ? [el] : []), ...el.children.
 function key(key) { const e = {key, preventDefault(){this.prevented=true}, stopPropagation(){}}; listeners.keydown(e); return e; }
 EXTRAS = {id:'w1', loading:false, context:null, expiries:[],
   turns:[{time:'2026-09-12T10:00:00Z', agent:'builder', depth:0, model:'vendor/model', effort:'high',
-    real:1, api:5, tokens:100, ctx:0, cached:null, tools:['Bash'], promptId:'p1',
+    real:1, api:5, tokens:100, tok:[40,20,10,20,10,4], ctx:0, cached:null, tools:['Bash'], promptId:'p1',
     promptTitle:'safe <img src=x onerror=alert(1)>', promptFull:'full prompt'}],
   tools:[{tool:'Bash',ns:'(built-in)',calls:1,model:'vendor/model',real:1,api:5,tokens:100,tok:[40,20,10,20,10,4]}],
   toolCalls:[{index:0,turnIndex:0,callIndex:0,tool:'Bash',ns:'(built-in)',time:'2026-09-12T10:00:00Z',
@@ -2084,9 +2135,17 @@ assert.deepEqual(TOOL_DRILL, {kind:'tool', value:'Bash'}); assert.equal(TAB, 'Tu
 assert.deepEqual(TOOL_TURN, {callIndex:0, turnIndex:0, group:0});
 assert.equal(document.activeElement.attrs['data-tool-focus'], 'owner-turn');
 assert.ok(document.activeElement.className.includes('tool-owner'));
+assert.notEqual(key('Tab').prevented, true); // Native focus can reach per-turn token disclosures.
+assert.notEqual(all(document.activeElement, 'details')[0].attrs.open, undefined);
+assert.deepEqual(all(document.activeElement, 'details')[0].scrolled, {block:'nearest', inline:'nearest'});
+assert.ok(document.activeElement.textContent.includes('1h cache write4 (subset of cache write)'));
 assert.deepEqual(document.activeElement.scrolled, {block:'center', inline:'nearest'});
 assert.ok(view.textContent.includes('selected call 1 owns highlighted turn 1'));
 key('$'); assert.equal(document.activeElement.attrs['data-tool-focus'], 'owner-turn');
+all(document.activeElement, 'summary')[0].focus(); key('$');
+assert.equal(document.activeElement.attrs['data-tool-focus'], 'turn-tokens:0');
+key('$');
+assert.equal(document.activeElement.attrs['data-tool-focus'], 'turn-tokens:0');
 const turnBack = all(view, 'button').find(r => r.attrs['data-tool-focus'] === 'turn-back');
 assert.ok(turnBack); turnBack.events.click();
 assert.equal(TAB, 'Tools'); assert.equal(TOOL_TURN, null);

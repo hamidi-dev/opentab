@@ -2711,6 +2711,9 @@ class Renderer:
                         line = " · ".join(line.split(" · ")[:2])
                 # $1 in a shell script is not money, and 1.0M in output is not a token count.
                 self.write(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+                # Trace prose deliberately bypasses write_rich, but numeric token bands
+                # still need their semantic colors overpainted explicitly.
+                self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
                 event = getattr(drawn[offset], "event", None)
                 if event is not None:
                     self._add_rows_region(
@@ -3126,6 +3129,88 @@ class Renderer:
             self._token_runs[text] = runs
             lines.append(text)
         return lines
+
+    _TOKEN_BREAKDOWN_CATEGORIES = (
+        ("Uncached input", "input"),
+        ("Model output", "output"),
+        ("Reasoning", "reasoning"),
+        ("Cache read", "cache_read"),
+        ("Cache write", "cache_write"),
+    )
+
+    @staticmethod
+    def _exact_token_count(value) -> str:
+        value = value or 0
+        if isinstance(value, int):
+            return f"{value:,}"
+        if float(value).is_integer():
+            return f"{int(value):,}"
+        return f"{float(value):,.6f}".rstrip("0").rstrip(".")
+
+    def _token_breakdown_box(
+        self,
+        usage: dict,
+        title: str,
+        width: int,
+        *,
+        attributed: bool = False,
+        calls: int = 0,
+        notes: tuple[str, ...] = (),
+    ) -> list[str]:
+        """Render the normalized five-part split without redefining recorded total."""
+        categories = self._TOKEN_BREAKDOWN_CATEGORIES
+        values = [usage.get(key) or 0 for _label, key in categories]
+        category_total = sum(values)
+        recorded_total = usage.get("tokens_total") or 0
+        inner = max(1, width - self.BOX_CHROME)
+        composition: list[str] = []
+        if category_total > 0 and inner >= 20:
+            slots = [
+                (label, value, i)
+                for i, ((label, _key), value) in enumerate(zip(categories, values))
+            ]
+            composition = [
+                self._token_stack_line(slots, category_total, inner),
+                *self._token_legend_lines(
+                    [(label, value, 0, slot) for label, value, slot in slots if value > 0],
+                    inner,
+                ),
+                "",
+            ]
+
+        rows = []
+        for (label, _key), value in zip(categories, values):
+            share = f"{100 * value / category_total:.1f}%" if category_total else "-"
+            count = self._exact_token_count(value)
+            avg = f"   avg {human_tokens(int(value / calls))}" if attributed and calls else ""
+            text = (
+                f"{label:<14} {count:>16}  {share:>6}{avg}"
+                if inner >= 48
+                else f"{label}: {count} ({share}){avg}"
+            )
+            rows += self._subagent_wrap([text], inner)
+
+        long_write = usage.get("cache_write_1h") or 0
+        if long_write:
+            rows += self._subagent_wrap(
+                [f"of cache writes, 1h: {self._exact_token_count(long_write)} " "(subset)"],
+                inner,
+            )
+        rows.append(f"Category sum: {self._exact_token_count(category_total)}")
+        rows.append(f"Recorded total: {self._exact_token_count(recorded_total)}")
+        delta = recorded_total - category_total
+        if abs(delta) > 1e-9:
+            direction = "higher" if delta > 0 else "lower"
+            rows += self._subagent_wrap(
+                [
+                    f"Mismatch: recorded total is {self._exact_token_count(abs(delta))} "
+                    f"{direction} than the five-category sum."
+                ],
+                inner,
+            )
+        return self._sectioned_box(
+            title, [composition + rows], width, self._subagent_wrap(list(notes), width)
+        )
 
     def _token_economics_box(
         self, workflows: list[Workflow], width: int, model: str | None = None
@@ -4638,37 +4723,12 @@ class Renderer:
             width,
             [],
         )
-        categories = (
-            ("Uncached input", "input"),
-            ("Model output", "output"),
-            ("Reasoning", "reasoning"),
-            ("Cache read", "cache_read"),
-            ("Cache write", "cache_write"),
-        )
-        category_total = sum(float(ranking[key]) for _label, key in categories)
-        composition = []
-        if category_total > 0 and width >= 50:
-            slots = [(label, ranking[key], i) for i, (label, key) in enumerate(categories)]
-            composition = [
-                self._token_stack_line(slots, category_total, width - 4),
-                *self._token_legend_lines(
-                    [(label, value, 0, slot) for label, value, slot in slots if value > 0],
-                    width - 4,
-                ),
-                "",
-            ]
-        token_rows = [
-            f"{label:<14} {int(ranking[key]):>16,}  {pct(ranking[key], category_total):>6}   avg {human_tokens(int(ranking[key] / ranking['calls'])) if ranking['calls'] else '-'}"
-            for label, key in categories
-        ]
-        if ranking["cache_write_1h"]:
-            token_rows.append(f"  of cache writes, 1h: {int(ranking['cache_write_1h']):,} (subset)")
-        token_rows.append(f"Recorded total: {int(ranking['tokens_total']):,}")
-        lines += [""] + self._sectioned_box(
+        lines += [""] + self._token_breakdown_box(
+            ranking,
             "# Attributed token categories",
-            [composition + self._subagent_wrap(token_rows, width - 4)],
             width,
-            [],
+            attributed=True,
+            calls=int(ranking["calls"]),
         )
 
         models = projection["models"].get(drill, {})
@@ -4854,6 +4914,7 @@ class Renderer:
             self.app.trace_expanded,
             frozenset(self.app._trace_open_outputs),
             self.session_records_reasoning(workflow.id),
+            self.app.session_supports_trace(workflow.id),
             self._key("main", "select"),
             workflow.machine,
             self.app.active_subagent_turns,
@@ -4862,9 +4923,19 @@ class Renderer:
         if cached is None or cached[0] != key:
             lines = self._build_turn_trace(workflow, width, rows, idx, events)
             # Retain source references with one layout, never raw text in the table cache.
-            cached = (key, rows, events, full, lines, self._trace_tool_at, self._trace_output_ends)
+            cached = (
+                key,
+                rows,
+                events,
+                full,
+                lines,
+                self._trace_tool_at,
+                self._trace_output_ends,
+                dict(self._token_runs),
+            )
             self._trace_layout_cache = cached
-        self._trace_tool_at, self._trace_output_ends = cached[5:]
+        self._trace_tool_at, self._trace_output_ends = cached[5:7]
+        self._token_runs.update(cached[7])
         return cached[4]
 
     def _build_turn_trace(
@@ -4899,6 +4970,16 @@ class Renderer:
         if remote:
             meta += f" · SSH: {workflow.machine}"
         lines: list[str] = [head, ""]
+        lines += self._token_breakdown_box(
+            row,
+            "# Turn token breakdown",
+            width,
+            notes=(
+                "· Uncached input is request input not served from cache.",
+                "· A zero reasoning field may mean reasoning is included in model output.",
+            ),
+        )
+        lines.append("")
         if self.app._trace_loading is not None:
             if remote:
                 return lines + [
@@ -4914,6 +4995,16 @@ class Renderer:
             )
             return lines + [TraceLine(f"  Loading {label} — reading recorded content…", "meta")]
         lines += [TraceLine(ln, "meta") for ln in self._trace_wrapped("", meta, "  ", width)] + [""]
+        if not self.app.session_supports_trace(workflow.id):
+            reason = self.app.trace_unavailable_reason(workflow.id)
+            message = (
+                f"Recorded trace unavailable: {reason}"
+                if reason
+                else "Recorded trace unavailable for this source; numeric usage is still available."
+            )
+            return lines + [
+                TraceLine(ln, "meta") for ln in self._trace_wrapped("  ", message, "  ", width)
+            ]
         if remote and self.app._remote_trace_error:
             return lines + [
                 TraceLine(f"  {self.app._remote_trace_error}", "meta"),
@@ -5204,6 +5295,28 @@ class Renderer:
         for para in (g["full"] or "(no preceding prompt)").splitlines() or [""]:
             lines += textwrap.wrap(para, max(20, width)) or [""]
         lines.append("")
+        prompt_usage = {
+            field: sum(rows[index].get(field) or 0 for index in g["indices"])
+            for field in (
+                "input",
+                "output",
+                "reasoning",
+                "cache_read",
+                "cache_write",
+                "cache_write_1h",
+                "tokens_total",
+            )
+        }
+        lines += self._token_breakdown_box(
+            prompt_usage,
+            "# Prompt token breakdown",
+            width,
+            notes=(
+                "· This sums the prompt's answering turns; it is not the typed prompt's token length.",
+                "· A zero reasoning field may mean reasoning is included in model output.",
+            ),
+        )
+        lines.append("")
         lines += self._turn_metric_strips(
             [rows[i] for i in g["indices"]],
             [costs[i] for i in g["indices"]],
@@ -5309,12 +5422,12 @@ class Renderer:
         # cursor lit a blank line above the frame and the click map was off by its height.
         prologue = len(lines)
         lines += self._ruled_box(f"# {label} of prompt {n}", header, body, totals_row, [], width)
-        if traceable:
-            # One body line per turn, so the offset IS the ordinal within this prompt.
-            start = prologue + (self._ruled_body_start or 0)
-            self._turn_header_at = {start + k: k for k in range(len(body))}
-            cur = self.app._trace_cursor
-            self._turn_cursor_line = start + cur if 0 <= cur < len(body) else None
+        # Numeric-only rows remain selectable; Enter opens the same reader state and
+        # explains why recorded output cannot be expanded.
+        start = prologue + (self._ruled_body_start or 0)
+        self._turn_header_at = {start + k: k for k in range(len(body))}
+        cur = self.app._trace_cursor
+        self._turn_cursor_line = start + cur if 0 <= cur < len(body) else None
         return lines
 
     @staticmethod
@@ -5458,11 +5571,20 @@ class Renderer:
             lines = self._build_turns(workflow, width)
             headers = {line for line in lines if line in self._box_headers}
             cursor_lines = {ordinal: line for line, ordinal in self._turn_header_at.items()}
-            cached = (key, rows, lines, headers, self._turn_header_at, cursor_lines)
+            cached = (
+                key,
+                rows,
+                lines,
+                headers,
+                self._turn_header_at,
+                cursor_lines,
+                dict(self._token_runs),
+            )
             self._turn_layout_cache = cached
-        _, _, lines, headers, self._turn_header_at, cursor_lines = cached
+        _, _, lines, headers, self._turn_header_at, cursor_lines, token_runs = cached
         # draw() clears paint metadata each frame; selection is deliberately not cached.
         self._box_headers.update(headers)
+        self._token_runs.update(token_runs)
         cursor = (
             self.app._turn_cursor if self.app.active_turn_drill is None else self.app._trace_cursor
         )

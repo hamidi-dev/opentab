@@ -219,6 +219,20 @@ tbody tr.rowlink{cursor:pointer}
 tbody tr.rowlink:hover{background:var(--panel2)}
 tbody tr.rowlink:hover td:first-child{box-shadow:inset 2px 0 var(--accent)}
 tbody tr.rowlink:focus{outline:2px solid var(--accent);outline-offset:-2px;background:var(--panel2)}
+.token-cell{vertical-align:top}
+.token-details{width:max-content;max-width:20rem;margin-left:auto;text-align:left;color:var(--ink)}
+.token-details summary{cursor:pointer;color:var(--accent);text-align:right;list-style-position:inside}
+.token-details[open] summary{margin-bottom:7px}
+.token-breakdown{min-width:0;white-space:normal}
+.token-details .token-breakdown{width:min(20rem,calc(100vw - 96px))}
+.prompt-token-breakdown{margin:14px 0}
+.prompt-token-breakdown .token-breakdown{max-width:40rem}
+.token-breakdown .sbar{margin:0 0 7px}
+.token-breakdown .track{height:12px;gap:1px}
+.token-breakdown table{font-size:11px}
+.token-breakdown th,.token-breakdown td{padding:2px 5px}
+.token-breakdown td{white-space:normal}
+.token-mismatch{margin-top:6px;color:var(--bad);font-size:10.5px;line-height:1.35}
 .execution-detail .meta{grid-template-columns:auto minmax(0,1fr);margin:14px 0}
 .execution-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .m{color:var(--good)}
@@ -954,6 +968,55 @@ function modelScopeUsage(ws, model) {
     listCost: sum(rows, r => r.listCost), est: rows.some(r => r.est) };
 }
 const TOK_TYPES = ['Uncached input', 'Output', 'Reasoning', 'Cache read', 'Cache write'];
+function tokenBreakdown(tok, recordedTotal, { outputLabel = 'Model output', shares = false } = {}) {
+  if (!Array.isArray(tok) || tok.length < 5)
+    return h('div', { class: 'token-breakdown hint' }, 'Token categories unavailable.');
+  const values = tok.slice(0, 5).map(v => Number(v) || 0);
+  const names = ['Uncached input', outputLabel, 'Reasoning', 'Cache read', 'Cache write'];
+  const total = values.reduce((a, b) => a + b, 0), series = tokSeries();
+  const rows = names.map((name, i) => ({ name, value: values[i], color: series[i],
+    share: total ? values[i] / total : 0 }));
+  const band = h('div', { class: 'sbar' },
+    shares ? h('div', { class: 'lbl' }, 'Share of attributed token categories') : null,
+    h('div', { class: 'track', 'aria-label': 'Token category composition' },
+      rows.filter(r => r.value > 0).map(r => h('div', {
+        class: 'seg', style: 'flex:' + r.share + ' 0 0;background:' + r.color
+          + ';color:' + inkOn(r.color),
+        title: r.name + ' · ' + exactTok(r.value) + ' · ' + fPct(r.share),
+      }, shares && r.share > 0.075 ? fPct(r.share) : null))));
+  const grid = h('table', null,
+    shares ? h('thead', null, h('tr', null, h('th', null, 'Category'),
+      h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Share'))) : null,
+    h('tbody', null,
+    rows.map(r => h('tr', null,
+      h('td', null, h('span', { class: 'lgd', style: 'background:' + r.color }), r.name),
+      h('td', { class: 'r' }, exactTok(r.value)),
+      shares ? h('td', { class: 'r dim' }, fPct(r.share)) : null)),
+    h('tr', null, h('td', null, '1h cache write'),
+      h('td', { class: 'r' }, exactTok(tok[5] || 0),
+        shares ? null : ' (subset of cache write)'),
+      shares ? h('td', { class: 'r dim' }, 'subset of cache write') : null),
+    h('tr', null, h('td', null, 'Category sum'), h('td', { class: 'r' }, exactTok(total))),
+    h('tr', null, h('td', null, 'Recorded total'), h('td', { class: 'r' }, exactTok(recordedTotal)))));
+  const recorded = Number(recordedTotal) || 0;
+  const mismatch = Math.abs(total - recorded) > 1e-9
+    ? h('div', { class: 'token-mismatch' }, 'Categories sum to ' + exactTok(total)
+        + '; recorded total is ' + exactTok(recorded) + '.') : null;
+  return h('div', { class: 'token-breakdown' }, band, h('div', { class: 'scroll' }, grid), mismatch);
+}
+const turnTokenKey = index => 'turn-tokens:' + (EXTRAS.id || '') + ':' + index;
+function turnTokenDetails(turn, index) {
+  const key = turnTokenKey(index);
+  const details = h('details', { class: 'token-details', open: EXPANDED.has(key) ? '' : null },
+    h('summary', { 'data-tool-focus': 'turn-tokens:' + index,
+      'aria-label': 'Token breakdown for turn ' + (index + 1) + ': '
+      + exactTok(turn.tokens) + ' tokens' }, exactTok(turn.tokens)), tokenBreakdown(turn.tok, turn.tokens));
+  details.addEventListener('click', e => e.stopPropagation());
+  details.addEventListener('toggle', () => {
+    if (details.getAttribute('open') != null) EXPANDED.add(key); else EXPANDED.delete(key);
+  });
+  return details;
+}
 // Token economics always uses list rates: recorded spend has no per-token-type split.
 function tokenEconomics(ws, model) {
   const tokens = [0, 0, 0, 0, 0], cost = [0, 0, 0, 0, 0];
@@ -1730,11 +1793,14 @@ function turnGroupRows(turns) {
     if (!groups.length || key !== last) {
       last = key;
       groups.push({ id: key, title: t.promptTitle || '', full: t.promptFull || t.promptTitle || '',
+                    tok: [0,0,0,0,0,0], tokAvailable: true,
                     time: t.time || '', turns: 0, tokens: 0, cost: 0, indices: [], calls: 0,
                     tools: [], rows: [], subturns: 0, first: null });
     }
     const g = groups[groups.length - 1];
     g.turns += 1; g.tokens += t.tokens || 0; g.cost += mCost(t); g.indices.push(i);
+    if (!Array.isArray(t.tok) || t.tok.length < 5) g.tokAvailable = false;
+    else t.tok.forEach((v, j) => { if (j < 6) g.tok[j] += Number(v) || 0; });
     const names = toolNames(t.tools);
     g.calls += names.length;
     if (names.length) g.tools.push(...names);
@@ -1890,14 +1956,15 @@ function turnDrillPane(turns, groups, n) {
       h('td', { class: 'indent' }, t.depth ? '↳ ' + t.agent : t.agent),
       ...(hasTools ? [h('td', null, toolLabel(t.tools, false) || '-')] : []),
       h('td', { class: 'r dim' }, pct(t.cached)),
-      h('td', { class: 'r' }, hTok(t.tokens)),
+      h('td', { class: 'r token-cell' }, turnTokenDetails(t, i)),
       h('td', { class: 'r' }, moneyCell(mCost(t))),
       h('td', { class: 'r dim' }, money(cum)));
   });
   const back = TOOL_TURN
     ? h('button', { class: 'hbtn', 'data-tool-focus': 'turn-back', onclick: closeToolTurn },
         '← back to ' + (TOOL_DRILL.kind === 'tool' ? 'tool ' : 'namespace ') + TOOL_DRILL.value)
-    : h('a', { class: 'rowlink', onclick: () => { TURN_DRILL = null; render(false); } }, '← back to the prompts');
+    : h('button', { class: 'hbtn', 'data-tool-focus': 'prompt-back',
+      onclick: () => { TURN_DRILL = null; render(false); } }, '← back to the prompts');
   return h('div', null,
     h('div', { class: 'hint' },
       back,
@@ -1907,6 +1974,11 @@ function turnDrillPane(turns, groups, n) {
       + (TOOL_TURN ? ' · selected call ' + (TOOL_TURN.callIndex + 1)
         + ' owns highlighted turn ' + (TOOL_TURN.turnIndex + 1) : '')),
     h('div', { class: 'prompt-full' }, g.full || '(no preceding prompt)'),
+    h('div', { class: 'prompt-token-breakdown' },
+      h('h3', null, 'Prompt token breakdown'),
+      h('div', { class: 'hint' }, 'Answering-turn usage for this prompt run, not the typed prompt size.'),
+      tokenBreakdown(g.tokAvailable ? g.tok : null, g.tokens),
+      h('div', { class: 'hint' }, 'Zero separate reasoning may mean it is included in model output. Expand a turn\'s token count below for its breakdown.')),
     turnCostContextStrip(g.rows, { indices: g.indices }),
     h('div', { class: 'scroll' }, h('table', null,
       h('thead', null, h('tr', null, h('th', { class: 'r' }, '#'), h('th', null, 'Time'),
@@ -1961,6 +2033,10 @@ function focusToolTarget(key, scroll = false) {
   if (target) {
     target.focus();
     if (scroll && target.scrollIntoView) target.scrollIntoView({ block: 'center', inline: 'nearest' });
+    if (scroll && key === 'owner-turn') {
+      const breakdown = target.querySelector('.token-details[open]');
+      if (breakdown && breakdown.scrollIntoView) breakdown.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
   }
 }
 function abandonToolNavigation() {
@@ -1977,6 +2053,7 @@ function jumpToToolCall(call) {
   if (history.state && history.state.toolDrill)
     history.replaceState({ ...history.state, toolFocus: sourceFocus }, '', location.hash);
   TOOL_TURN = { callIndex: call.index, turnIndex: call.turnIndex, group };
+  EXPANDED.add(turnTokenKey(call.turnIndex));
   TAB = 'Turns'; TURN_DRILL = group;
   history.pushState({ toolTurn: { ...TOOL_TURN }, toolDrill: { ...TOOL_DRILL },
     rankFocus: TOOL_RETURN_FOCUS, session: curScope().id, toolNav: TOOL_NAV }, '', location.hash);
@@ -2060,17 +2137,6 @@ function toolDetail(toolRows, calls, drill) {
   const allCost = sum(toolRows, mCost), allTokens = sum(toolRows, r => r.tokens || 0);
   const models = toolAgg(aggregate, r => r.model || 'unknown', 'tool').map(r => ({ ...r, model: r.tool }));
   const modelPeak = Math.max(...models.map(mCost), 0);
-  const categories = ['Uncached input', 'Model output', 'Reasoning', 'Cache read', 'Cache write'];
-  const categoryTotal = sum(total.tok.slice(0, 5), v => v);
-  const series = tokSeries();
-  const categoryRows = categories.map((name, i) => ({ name, color: series[i], tokens: total.tok[i] || 0,
-    share: categoryTotal ? (total.tok[i] || 0) / categoryTotal : 0 }));
-  const composition = categoryTotal > 0 ? h('div', { class: 'sbar' },
-    h('div', { class: 'lbl' }, 'Share of attributed token categories'),
-    h('div', { class: 'track' }, categoryRows.filter(r => r.tokens > 0).map(r => h('div', {
-      class: 'seg', style: 'flex:' + r.share + ' 0 0;background:' + r.color + ';color:' + inkOn(r.color),
-      title: r.name + ' · ' + exactTok(r.tokens) + ' · ' + fPct(r.share),
-    }, r.share > 0.075 ? fPct(r.share) : null)))) : null;
   const modelGrid = table('t-s-tool-models', [
     { key: 'model', label: 'Exact model', asc: true, cls: 'grow', fmt: r => modelCell(r.model) },
     { key: 'calls', label: 'Calls', align: 'r', fmt: r => exactTok(r.calls) },
@@ -2110,15 +2176,6 @@ function toolDetail(toolRows, calls, drill) {
     rowKey: r => 'call:' + r.index,
     onRow: r => jumpToToolCall(r) }) : h('div', { class: 'hint' },
       'No matching individual calls are retained; aggregate tool and model attribution remains available.');
-  const categoryGrid = h('div', { class: 'scroll' }, h('table', null,
-    h('thead', null, h('tr', null,
-      h('th', null, 'Category'), h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Share'))),
-    h('tbody', null, categoryRows.map(r => h('tr', null,
-      h('td', null, h('span', { class: 'lgd', style: 'background:' + r.color }), r.name), h('td', { class: 'r' }, exactTok(r.tokens)),
-      h('td', { class: 'r dim' }, fPct(r.share))))),
-    h('tfoot', null, h('tr', null,
-      h('td', null, '1h cache write'), h('td', { class: 'r' }, exactTok(total.tok[5] || 0)),
-      h('td', { class: 'r dim' }, 'subset of cache write')))));
   return h('div', null,
     h('div', { class: 'tool-detail-head' },
       h('span', { class: 'hint' }, (drill.kind === 'tool' ? 'tool' : 'namespace') + ' detail'),
@@ -2131,7 +2188,8 @@ function toolDetail(toolRows, calls, drill) {
       ['cost / call', total.calls ? money(mCost(total) / total.calls) : '-', MODE === 'api' ? 'API-equivalent' : 'recorded', true],
       ['tokens / call', total.calls ? exactTok(total.tokens / total.calls) : '-', 'attributed average'],
     ]),
-    pane('Attributed token categories', composition, categoryGrid),
+    pane('Attributed token categories', tokenBreakdown(total.tok, total.tokens,
+      { outputLabel: 'Model output', shares: true })),
     pane('Exact model attribution', modelGrid),
     h('div', { class: 'hint tool-detail-note' }, selectedCoverage),
     pane('Chronological individual calls', h('div', { class: 'tool-call-table' }, callGrid)),
@@ -3445,7 +3503,8 @@ document.addEventListener('keydown', e => {
     if (next !== list.index) list.rows[next].go();
     e.preventDefault();
   } else if (e.key === 'Tab') {
-    if (sc.kind === 's' && (TAB === 'Subagents' || TAB === 'Tools')) return; // Native focus reaches drill rows and Back.
+    if (sc.kind === 's' && (TAB === 'Subagents' || TAB === 'Tools'
+        || (TAB === 'Turns' && TURN_DRILL != null))) return; // Native focus reaches drill rows, token disclosures and Back.
     const order = focusOrder();
     const cur = order.indexOf(FOCUS);
     FOCUS = order[((cur < 0 ? 0 : cur) + (e.shiftKey ? -1 : 1) + order.length) % order.length];

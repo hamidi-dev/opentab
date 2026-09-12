@@ -1571,7 +1571,9 @@ def test_subagent_turns_enter_is_lazy_and_esc_restores_each_reader_level():
     assert "2 prompts" in "\n".join(app.renderer.detail_subagents(wf, 120))
     app.handle_key(None, 10)
     assert app.active_turn_drill == 0 and app.active_trace_drill is None
-    assert "Child instructions 0" in "\n".join(app.renderer.detail_subagents(wf, 120))
+    child_prompt = "\n".join(app.renderer.detail_subagents(wf, 120))
+    assert "Child instructions 0" in child_prompt and "Prompt token breakdown" in child_prompt
+    assert "Category sum: 300,020" in child_prompt
     app.handle_key(None, 10)
     assert app.active_trace_drill == 0
     app.handle_key(None, 27)
@@ -2612,7 +2614,7 @@ def test_tools_explorer_cached_paint_metadata_stays_scoped_and_fractional_covera
     aggregate[0]["tokens_total"] = 302 * 2 / 3
     app._tool_by_session["s1"] = aggregate
     joined = "\n".join(renderer.detail_tools(app.current_session(), 100))
-    assert "tokens complete:" in joined
+    assert "tokens complete:" in joined and "Recorded total: 201.333333" in joined
 
 
 def test_subagent_nodes_memoized_per_session():
@@ -3089,7 +3091,7 @@ def test_turns_name_the_tools_each_step_called():
     wf = app.current_session()
     app.open_turn_drill(0)  # p1: Read, then Bash x2
     drilled = app.renderer.detail_turn_drill(wf, 120)
-    assert "Tools" in box_cells(drilled)[0]
+    assert any("Tools" in cell and "Cached" in cell for cell in box_cells(drilled))
     body = [ln for ln in drilled if "sonnet" in ln]
     assert "Read" in body[0] and "Bash ×2" in body[1]
     # The TOTAL row carries the prompt's whole mix, busiest first.
@@ -3102,7 +3104,10 @@ def test_turns_name_the_tools_each_step_called():
     # A prompt that called nothing gets no column at all -- a stripe of dashes is width
     # the model name should have had.
     app.open_turn_drill(1)
-    assert "Tools" not in box_cells(app.renderer.detail_turn_drill(wf, 120))[0]
+    assert not any(
+        "Tools" in cell and "Cached" in cell
+        for cell in box_cells(app.renderer.detail_turn_drill(wf, 120))
+    )
 
 
 def test_turns_table_counts_the_calls_and_drops_the_column_without_them():
@@ -3601,13 +3606,16 @@ def test_detail_turn_drill_shows_the_reasoning_level_each_call_ran_at():
     app = _turns_app(_TurnNavStore)
     wf = app.current_session()
     app.open_turn_drill(0)
-    assert "Eff" not in box_cells(ot.Renderer(app).detail_turn_drill(wf, 130))[0]
+    assert not any(
+        "Eff" in cell and "Cached" in cell
+        for cell in box_cells(ot.Renderer(app).detail_turn_drill(wf, 130))
+    )
 
     rows = app.session_turn_rows(wf.id)
     for r in rows:
         r["effort"] = "xhigh"
     drilled = ot.Renderer(app).detail_turn_drill(wf, 130)
-    assert "Eff" in box_cells(drilled)[0]
+    assert any("Eff" in cell and "Cached" in cell for cell in box_cells(drilled))
     assert all("xhigh" in ln for ln in drilled if "sonnet" in ln)
     # ...and the column never pushes the table through its own frame.
     for w in range(77, 220):
@@ -3829,18 +3837,18 @@ def _drill_app():
     return app
 
 
-def test_a_drilled_prompt_does_not_leave_the_tables_hit_testing_armed():
+def test_a_drilled_prompt_replaces_the_prompt_hit_map_with_its_turn_rows():
     # draw_detail lays a "turnline" region over whatever the pane is showing, so the
-    # TABLE's line->ordinal map and selected line have to go when the drill takes over.
-    # Left standing, a click on drilled prompt TEXT re-drilled whichever row used to
-    # occupy that screen line, and the stale cursor line highlighted an unrelated line.
+    # prompt table's line->ordinal map must be replaced when the drill takes over. The
+    # new map belongs only to the turn table, including when those rows are numeric-only.
     app = _drill_app()
     rnd = app.renderer
     rnd.detail_turns(app.current_session(), 100)  # the table
     stale_line = min(rnd._turn_header_at)
     app.open_turn_drill(2)
     rnd.detail_turns(app.current_session(), 100)  # the drill
-    assert rnd._turn_header_at == {} and rnd._turn_cursor_line is None
+    assert rnd._turn_header_at and rnd._turn_cursor_line is not None
+    assert stale_line not in rnd._turn_header_at
     app._apply_click(("turnline", stale_line), drill=False)
     assert app.turn_drill == 2  # still where the reader put it
 
@@ -4210,6 +4218,122 @@ def _trace_app():
     return app
 
 
+def test_prompt_and_turn_token_breakdowns_use_exact_normalized_rows_and_recorded_totals():
+    app = _trace_app()
+    wf = app.current_session()
+    rows = app.reader_turn_rows(wf.id)
+    rows[0].update(
+        input=100,
+        output=20,
+        reasoning=0,
+        cache_read=30,
+        cache_write=10,
+        cache_write_1h=4,
+        tokens_total=190,
+    )
+    rows[1].update(
+        input=40,
+        output=5,
+        reasoning=5,
+        cache_read=0,
+        cache_write=0,
+        cache_write_1h=0,
+        tokens_total=50,
+    )
+    # The same ID recurring after another prompt is a distinct run and must not leak in.
+    repeated = dict(rows[0], prompt_id="p0", input=9_000, tokens_total=9_000)
+    rows.append(repeated)
+
+    prompt = app.renderer.detail_turn_drill(wf, 80)
+    text = "\n".join(prompt)
+    assert "Prompt token breakdown" in text
+    assert "Uncached input" in text and "140" in text
+    assert "Model output" in text and "25" in text
+    assert "Reasoning" in text and "5" in text
+    assert "Cache read" in text and "30" in text
+    assert "Cache write" in text and "10" in text
+    assert "of cache writes, 1h: 4 (subset)" in text
+    assert "Category sum: 210" in text and "Recorded total: 240" in text
+    assert "Mismatch: recorded total is 30 higher" in text
+    assert "9,000" not in text
+    prose = " ".join(text.split())
+    assert "answering turns" in prose and "typed prompt's token length" in prose
+    assert text.index("Prompt token breakdown") < text.index("cost│")
+
+    app.open_trace_drill()
+    turn = "\n".join(app.renderer.detail_turn_trace(wf, 80))
+    assert "Turn token breakdown" in turn
+    assert "Category sum: 160" in turn and "Recorded total: 190" in turn
+    assert "Mismatch: recorded total is 30 higher" in turn
+    assert "Reasoning" in turn and "included in model output" in turn
+    app.toggle_api_prices()
+    repriced = "\n".join(app.renderer.detail_turn_trace(wf, 80))
+    assert "Category sum: 160" in repriced and "Recorded total: 190" in repriced
+
+
+def test_token_breakdown_reflows_at_40_columns_and_handles_all_zero_categories():
+    app = _trace_app()
+    wf = app.current_session()
+    row = app.reader_turn_rows(wf.id)[0]
+    row.update(
+        input=0,
+        output=0,
+        reasoning=0,
+        cache_read=0,
+        cache_write=0,
+        cache_write_1h=0,
+        tokens_total=7,
+    )
+    app.open_trace_drill()
+    lines = app.renderer.detail_turn_trace(wf, 40)
+    assert all(len(line) <= 40 for line in lines if not line.startswith("# "))
+    text = "\n".join(lines)
+    assert "Category sum: 0" in text and "Recorded total: 7" in text
+    assert "Mismatch: recorded total is 7 higher" in text
+    assert not any(set(line) <= set("█▓▒░▚") and line for line in lines)
+    huge = 9_007_199_254_740_993
+    exact = "\n".join(
+        app.renderer._token_breakdown_box({"input": huge, "tokens_total": huge}, "# Exact", 80)
+    )
+    assert exact.count("9,007,199,254,740,993") == 3  # category, sum, recorded total
+
+
+def test_turn_layout_caches_restore_token_color_runs_for_prompt_and_trace():
+    app = _trace_app()
+    wf = app.current_session()
+    rnd = app.renderer
+    prompt = rnd.detail_turns(wf, 96)
+    prompt_bars = {line for line in prompt if line[2:-2].rstrip() in rnd._token_runs}
+    assert prompt_bars
+    rnd._token_runs = {}
+    assert rnd.detail_turns(wf, 96) is prompt
+    assert all(line[2:-2].rstrip() in rnd._token_runs for line in prompt_bars)
+
+    app.open_trace_drill()
+    trace = rnd.detail_turns(wf, 96)
+    trace_bars = {line for line in trace if line[2:-2].rstrip() in rnd._token_runs}
+    assert trace_bars
+    rnd._token_runs = {}
+    assert rnd.detail_turns(wf, 96) is trace
+    assert all(line[2:-2].rstrip() in rnd._token_runs for line in trace_bars)
+
+
+def test_trace_painter_applies_token_series_colors_without_rich_text():
+    from opentab.heatmap import TOKEN_SERIES_BASE_PAIR
+
+    app = _trace_app()
+    wf = app.current_session()
+    app._nodes_by_session[wf.id] = []
+    app.session_trace(wf.id)
+    app.open_trace_drill()
+    screen = AttrScreen(80, 100)
+    with patch.object(ot.curses, "color_pair", lambda n: n << 8):
+        app.renderer.draw_detail(screen, 0, 0, 80, 100)
+    attrs = set(screen.attrs.values())
+    expected = {((TOKEN_SERIES_BASE_PAIR + slot) << 8) | ot.curses.A_BOLD for slot in range(5)}
+    assert len(attrs & expected) >= 2
+
+
 class _ScrollScreen(AttrScreen):
     def erase(self):
         self.cells.clear()
@@ -4386,7 +4510,7 @@ def test_turns_cache_reuses_prompt_drills_but_never_retains_trace_lines():
     with patch.object(app, "session_supports_trace", return_value=False):
         no_trace = rnd.detail_turns(wf, 116)
         assert no_trace is not other
-        assert rnd._turn_header_at == {} and rnd._turn_cursor_line is None
+        assert rnd._turn_header_at and rnd._turn_cursor_line is not None
 
 
 def test_turn_trace_shows_the_exact_command_its_arguments_and_its_output():
@@ -4431,6 +4555,7 @@ def test_a_turn_with_no_recorded_content_says_so_rather_than_rendering_empty():
     app.open_turn_drill(1)  # the second prompt's turn carries no key
     app.open_trace_drill()
     lines = app.renderer.detail_turn_drill(app.current_session(), 96)
+    assert "Turn token breakdown" in "\n".join(lines)
     assert "  No content recorded for this turn." in lines
 
 
@@ -4769,7 +4894,10 @@ def test_first_trace_read_paints_loading_before_fetching_and_respects_demo():
     try:
         screen = AttrScreen(24, 100)
         app.renderer.draw_detail(screen, 0, 0, 24, 100)
-        assert "Loading turn" in screen_text(screen) and not fetched
+        assert "Loading turn" in screen_text(screen) and "Turn token breakdown" in screen_text(
+            screen
+        )
+        assert not fetched
         app.load_trace_expansion()
         assert len(fetched) == 1
         app.handle_key(None, ord("z"))
@@ -4996,11 +5124,13 @@ def test_remote_trace_unconfigured_machine_says_so_on_enter():
     app.store.trace_unavailable = lambda wid: "needs an SSH trace_cmd in remotes.json"
     app.prefetch_session_data(wf.id)
     app.open_turn_drill(0)
-    assert not app._toggle_turn_cursor()
-    assert "trace_cmd" in app.toasts[-1].text and not requests
-    app.toasts.clear()
-    app.store.trace_unavailable = lambda wid: ""
-    assert not app._toggle_turn_cursor() and not app.toasts
+    assert app._toggle_turn_cursor()
+    text = "\n".join(app.renderer.detail_turn_trace(wf, 96))
+    assert "Turn token breakdown" in text and "trace_cmd" in text and not requests
+    assert "no recorded output expansion" in ot.keymap.BY_ID["trace-scroll"].text(app)
+    assert not ot.keymap.BY_ID["trace-expand"].shown(app)
+    footer = str(ot.keymap.footer_parts(app))
+    assert "numeric-only" in footer and "expand" not in footer
 
 
 def test_remote_trace_esc_cancels_and_discards_late_results_without_retry():
@@ -5031,7 +5161,8 @@ def test_remote_trace_failure_stays_visible_until_explicit_retry():
         app.poll_remote_trace()
         screen = AttrScreen(24, 100)
         app.renderer.draw_detail(screen, 0, 0, 24, 100)
-        assert "timed out" in screen_text(screen) and "reopen" in screen_text(screen)
+        shown = screen_text(screen)
+        assert "Turn token breakdown" in shown and "timed out" in shown and "reopen" in shown
         assert app._trace_loading is None and len(requests) == 1
         app.close_trace_drill()
         app.open_trace_drill()
