@@ -27,6 +27,12 @@ can still contain **full user prompts**, session titles and project paths. They
 are private usage records, not anonymous statistics; inspect any snapshot before
 sharing it, even when using [demo mode](privacy.md#demo-mode).
 
+`--demo` changes the fleet view opened after a pull; it does not suppress the
+connection or ask the remote export to anonymize itself. A pull is always an
+explicit network request. Fleet commands always merge every present local harness
+with the summaries, so a conflicting local `--harness` selection is rejected;
+`--harness remote` remains an explicit alias for the normal fleet selection.
+
 ## Pull an exported URL
 
 HTTP(S) pulls fetch an **exported JSON file** hosted at a URL you can reach:

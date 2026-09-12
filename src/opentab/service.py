@@ -1340,48 +1340,72 @@ class OpenTabService:
         limit: int = DEFAULT_LIMIT,
         offset: int = 0,
     ) -> dict:
+        if catalog:
+            return self.list_model_catalog(
+                search=search, limit=limit, offset=offset, use_state=self.use_state
+            )
         limit, offset = self._bounded(limit, offset)
         _bookmarks, _ignored_projects, _ignored_sessions, pinned_models = self._state_sets()
-        if catalog:
-            rows = []
-            for provider, model, price, status in catalog_models():
-                name = f"{provider}/{model}"
-                if search and search.lower() not in name.lower():
-                    continue
-                rows.append(
-                    {
-                        "model": name,
-                        "input_usd_per_mtok": price[0],
-                        "output_usd_per_mtok": price[1],
-                        "cache_read_usd_per_mtok": price[2],
-                        "cache_write_usd_per_mtok": price[3],
-                        "cache_write_1h_usd_per_mtok": cache_write_1h_price(name),
-                        "status": status,
-                        "pinned": name in pinned_models or canonical_model(name) in pinned_models,
-                    }
-                )
-            rows.sort(key=lambda row: row["model"])
-        else:
-            sessions = self._filtered(query or SessionQuery(), paginate=False)
-            rows = self._model_groups(sessions, "model")
-            if search:
-                rows = [row for row in rows if search.lower() in row["key"].lower()]
-            for row in rows:
-                name = row.pop("key")
-                price = model_price(name)
-                row.update(
-                    {
-                        "model": name,
-                        "known_price": has_known_price(name),
-                        "local": is_local_provider(name),
-                        "input_usd_per_mtok": price[0],
-                        "output_usd_per_mtok": price[1],
-                        "cache_read_usd_per_mtok": price[2],
-                        "cache_write_usd_per_mtok": price[3],
-                        "cache_write_1h_usd_per_mtok": cache_write_1h_price(name),
-                        "pinned": name in pinned_models or canonical_model(name) in pinned_models,
-                    }
-                )
+        sessions = self._filtered(query or SessionQuery(), paginate=False)
+        rows = self._model_groups(sessions, "model")
+        if search:
+            rows = [row for row in rows if search.lower() in row["key"].lower()]
+        for row in rows:
+            name = row.pop("key")
+            price = model_price(name)
+            row.update(
+                {
+                    "model": name,
+                    "known_price": has_known_price(name),
+                    "local": is_local_provider(name),
+                    "input_usd_per_mtok": price[0],
+                    "output_usd_per_mtok": price[1],
+                    "cache_read_usd_per_mtok": price[2],
+                    "cache_write_usd_per_mtok": price[3],
+                    "cache_write_1h_usd_per_mtok": cache_write_1h_price(name),
+                    "pinned": name in pinned_models or canonical_model(name) in pinned_models,
+                }
+            )
+        total = len(rows)
+        return {
+            "models": rows[offset : offset + limit],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @classmethod
+    def list_model_catalog(
+        cls,
+        *,
+        search: str | None = None,
+        limit: int = DEFAULT_LIMIT,
+        offset: int = 0,
+        use_state: bool = True,
+    ) -> dict:
+        limit, offset = cls._bounded(limit, offset)
+        value = load_state().get("pinned_models", []) if use_state else []
+        pinned_models = (
+            {item for item in value if isinstance(item, str)} if isinstance(value, list) else set()
+        )
+        rows = []
+        for provider, model, price, status in catalog_models():
+            name = f"{provider}/{model}"
+            if search and search.lower() not in name.lower():
+                continue
+            rows.append(
+                {
+                    "model": name,
+                    "input_usd_per_mtok": price[0],
+                    "output_usd_per_mtok": price[1],
+                    "cache_read_usd_per_mtok": price[2],
+                    "cache_write_usd_per_mtok": price[3],
+                    "cache_write_1h_usd_per_mtok": cache_write_1h_price(name),
+                    "status": status,
+                    "pinned": name in pinned_models or canonical_model(name) in pinned_models,
+                }
+            )
+        rows.sort(key=lambda row: row["model"])
         total = len(rows)
         return {
             "models": rows[offset : offset + limit],
@@ -1468,13 +1492,13 @@ class OpenTabService:
         return {"session_key": item.ref.encode(), "note": self._session_note(item, notes)}
 
     def mutate_set(self, resource: str, operation: str, value: str) -> dict:
+        if resource in {"ignored-project", "pinned-model"}:
+            return self.mutate_global_set(resource, operation, value, use_state=self.use_state)
         if not self.use_state:
             raise ServiceError("state_disabled", "preferences are unavailable with --no-state")
         key_by_resource = {
             "bookmark": "bookmarks",
             "ignored-session": "ignored_sessions",
-            "ignored-project": "ignored_projects",
-            "pinned-model": "pinned_models",
         }
         key = key_by_resource.get(resource)
         if key is None:
@@ -1490,14 +1514,35 @@ class OpenTabService:
             if len(self._by_native.get(item.workflow.id, ())) == 1:
                 qualified_value = value
                 value = item.workflow.id
-        elif resource == "ignored-project":
-            value = resolve_project_root(git_root(os.path.expanduser(value)))
         state, error = update_state(
             "set-add" if operation == "add" else "set-remove",
             key,
             value,
             qualified_value=qualified_value,
         )
+        if error:
+            raise ServiceError(f"state_{error.replace(' ', '_')}", f"state update failed: {error}")
+        return {"resource": resource, "values": state.get(key, [])}
+
+    @staticmethod
+    def mutate_global_set(
+        resource: str, operation: str, value: str, *, use_state: bool = True
+    ) -> dict:
+        if not use_state:
+            raise ServiceError("state_disabled", "preferences are unavailable with --no-state")
+        key = {
+            "ignored-project": "ignored_projects",
+            "pinned-model": "pinned_models",
+        }.get(resource)
+        if key is None:
+            raise ServiceError("invalid_resource", f"unknown global preference set: {resource}")
+        if operation not in {"add", "remove"}:
+            raise ServiceError("invalid_operation", "operation must be add or remove")
+        if not isinstance(value, str) or not value:
+            raise ServiceError("invalid_value", "value must be a nonempty string")
+        if resource == "ignored-project":
+            value = resolve_project_root(git_root(os.path.expanduser(value)))
+        state, error = update_state("set-add" if operation == "add" else "set-remove", key, value)
         if error:
             raise ServiceError(f"state_{error.replace(' ', '_')}", f"state update failed: {error}")
         return {"resource": resource, "values": state.get(key, [])}

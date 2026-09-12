@@ -43,8 +43,24 @@ A native ID is accepted only when it resolves to exactly one visible session.
 For `models list`, `--search` matches model names by case-insensitive substring,
 both for used models and with `--catalog`. It does not search session text. Other
 session filters, such as `--range` and `--project`, still scope used-model usage.
+Catalog mode has no session catalog to filter: with `--catalog`, only `--search`,
+`--limit`, `--offset`, `--no-state`, and `--pretty` apply. Session and source
+selections that would change the request are rejected before OpenTab discovers or
+opens a store; explicitly supplying a default-valued no-op remains compatible.
 For `sessions list` and `usage summary`, `--search` fuzzy-matches session titles,
 projects, IDs, and notes instead.
+
+Programmatic commands expose only options they use. Store-backed commands accept
+the relevant harness paths, cache, remote-summary, and state controls; session
+query options appear only on `sessions list`, `usage summary`, and used-model
+listing. `sources list` accepts source-discovery paths but not cache or state flags,
+while preference-only commands avoid source discovery. UI/web options such as
+`--theme`, `--port`, `--bind`, `--demo`, and `--no-worktrees` are rejected.
+
+Session query dates preserve the established precedence: `--since` or `--until`
+override `--days`, which overrides `--range`. This permits one-sided explicit date
+bounds while keeping existing `--days` scripts working. Detail and mutation
+commands do not accept date options because they address one resource directly.
 
 Recorded spend and API-equivalent costs are separate fields. API-equivalent cost
 preserves recorded dollars and adds list-rate estimates for the unpriced portion;
@@ -90,7 +106,8 @@ filters do not load extra sources or pull remote data. Saved project and session
 ignores apply when `saved_ignores_applied` is true; `include_ignored` or `--no-state`
 bypasses them. Summaries include all matching sessions and groups: MCP `limit` and
 `offset` are accepted but ignored, and groups always sort by API-equivalent cost,
-then tokens, descending regardless of `sort`/`reverse`.
+then tokens, descending. The CLI does not accept ineffective summary
+`--sort`/`--reverse` options.
 
 Totals and every group expose the same normalized token fields as session model
 usage: `input_tokens` (uncached), `output_tokens`, `reasoning_tokens`,

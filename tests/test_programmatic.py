@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import io
 import json
@@ -92,9 +93,7 @@ def test_programmatic_catalog_search_matches_model_names_without_matching_sessio
             ("openai", "gpt-5", (1.25, 10, 0.125, 0), "active"),
         ],
     ):
-        result = _model_search_command(
-            ["models", "list", "--catalog", "--search", "OpUs", "--range", "2026-07"]
-        )
+        result = _model_search_command(["models", "list", "--catalog", "--search", "OpUs"])
     assert result["total"] == 1
     assert result["models"][0]["model"] == "anthropic/claude-opus-4-5"
 
@@ -121,6 +120,291 @@ def test_programmatic_command_tree_parses_resource_actions_and_privacy_flags():
     assert ot.parse_args(["models", "unpin", "gpt-5"]).action == "unpin"
     mcp = ot.parse_args(["mcp", "--harness", "claude", "--allow-raw-content"])
     assert mcp.command == "mcp" and mcp.source == "claude" and mcp.allow_raw_content
+
+
+def test_programmatic_valid_option_bundles_parse_and_date_precedence_is_stable():
+    cases = (
+        ["usage", "summary", "--days", "7", "--harness", "all", "--no-cache"],
+        ["sessions", "get", "root", "--harness", "remote", "--remotes", "/tmp/remotes"],
+        ["models", "list", "--catalog", "--search", "opus", "--no-state"],
+        ["sources", "list", "--db", "/tmp/opentab.db"],
+        ["notes", "get", "root", "--harness", "claude"],
+        ["bookmarks", "list", "--no-state"],
+        ["ignore", "project", "add", "/tmp/project"],
+        ["mcp", "--harness", "remote", "--remotes", "/tmp/remotes", "--no-cache"],
+    )
+    for argv in cases:
+        parsed = ot.parse_args(argv)
+        assert parsed.command == argv[0]
+        assert isinstance(parsed._programmatic_global_defaults, dict)
+
+    assert (
+        programmatic._range(
+            ot.parse_args(
+                [
+                    "sessions",
+                    "list",
+                    "--range",
+                    "1y",
+                    "--days",
+                    "30",
+                    "--since",
+                    "2026-09-01",
+                    "--until",
+                    "2026-09-10",
+                ]
+            )
+        )
+        == "2026-09-01..2026-09-10"
+    )
+    assert programmatic._range(ot.parse_args(["sessions", "list", "--days", "30"])) == "30d"
+
+
+def _parser_help(argv):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        try:
+            ot.parse_args([*argv, "--help"])
+        except SystemExit as exc:
+            assert exc.code == 0
+    return out.getvalue()
+
+
+def test_programmatic_help_only_exposes_options_used_by_each_command():
+    summary = _parser_help(["usage", "summary"])
+    assert all(flag in summary for flag in ("--range", "--days", "--since", "--until", "--db"))
+    assert "YYYY-MM-DD" in summary and "START..END" in summary
+    assert "spend to browse" not in summary and "saved range/sort state" not in summary
+    assert "accounting rollup cache" in summary
+    assert all(
+        flag not in summary
+        for flag in ("--sort", "--reverse", "--no-worktrees", "--demo", "--theme")
+    )
+
+    session_list = _parser_help(["sessions", "list"])
+    assert "--sort" in session_list and "--no-cache" in session_list
+    session_get = _parser_help(["sessions", "get"])
+    assert all(flag not in session_get for flag in ("--range", "--days", "--sort", "--theme"))
+    assert "--no-state" in session_get
+
+    for action in ("nodes", "tools", "context", "conversation"):
+        detail = _parser_help(["sessions", action])
+        assert "--no-state" not in detail
+    for action in ("turns", "content"):
+        detail = _parser_help(["sessions", action])
+        assert "--no-state" in detail
+        assert "accepted for remote trace compatibility" in detail
+    assert "--no-state" not in _parser_help(["models", "compare"])
+
+    source_list = _parser_help(["sources", "list"])
+    assert "--db" in source_list and "--claude-dir" in source_list
+    assert "reported as selected alongside" in source_list
+    assert all(flag not in source_list for flag in ("--no-cache", "--no-state", "--remotes"))
+
+    bookmarks = _parser_help(["bookmarks", "list"])
+    assert "--pretty" in bookmarks and "--no-state" in bookmarks
+    assert "ignore saved notes, bookmarks, ignores, and pinned models" in bookmarks
+    assert "--harness" not in bookmarks and "--db" not in bookmarks
+
+    conversation = _parser_help(["sessions", "conversation"])
+    assert "retained user and assistant" in conversation
+    assert "reasoning" not in conversation and "tool arguments" not in conversation
+
+    mcp = _parser_help(["mcp"])
+    assert all(
+        flag in mcp for flag in ("--harness", "--db", "--remotes", "--no-cache", "--no-state")
+    )
+    assert all(
+        flag not in mcp
+        for flag in (
+            "--range",
+            "--days",
+            "--no-worktrees",
+            "--demo",
+            "--theme",
+            "--port",
+            "--bind",
+        )
+    )
+
+
+def test_programmatic_irrelevant_options_are_rejected_by_parser_before_service_open():
+    cases = (
+        ["usage", "summary", "--sort", "cost"],
+        ["sessions", "get", "root", "--range", "30d"],
+        ["sources", "list", "--no-cache"],
+        ["bookmarks", "list", "--harness", "claude"],
+        ["models", "pin", "gpt-5", "--db", "/tmp/opentab.db"],
+        ["sessions", "nodes", "root", "--no-state"],
+        ["sessions", "tools", "root", "--no-state"],
+        ["sessions", "context", "root", "--no-state"],
+        ["sessions", "conversation", "root", "--allow-raw-content", "--no-state"],
+        ["models", "compare", "root", "gpt-5", "--no-state"],
+        ["mcp", "--no-worktrees"],
+        ["mcp", "--demo"],
+    )
+    for argv in cases:
+        with contextlib.redirect_stderr(io.StringIO()), patch.object(
+            ot.OpenTabService, "open"
+        ) as opened:
+            try:
+                ot.parse_args(argv)
+                raise AssertionError(f"expected parser rejection: {argv}")
+            except SystemExit as exc:
+                assert exc.code == 2
+            opened.assert_not_called()
+
+
+def test_remote_trace_argv_keeps_no_state_compatibility_for_turns_and_content():
+    for argv in (
+        [
+            "sessions",
+            "turns",
+            "--source",
+            "claude",
+            "--allow-raw-content",
+            "--no-state",
+            "--include-content-keys",
+            "--",
+            "native-root",
+        ],
+        [
+            "sessions",
+            "content",
+            "--source",
+            "claude",
+            "--allow-raw-content",
+            "--no-state",
+            "--",
+            "ot1_remote",
+            "turn-key",
+        ],
+    ):
+        args = ot.parse_args(argv)
+        assert args.source == "claude"
+        assert args.allow_raw_content is True
+        assert args.no_state is True
+
+
+def test_catalog_validation_defaults_stay_bound_to_the_parser_that_created_args():
+    def parse(default):
+        parser = argparse.ArgumentParser()
+        subs = parser.add_subparsers(dest="command", required=True)
+
+        def add_globals(leaf):
+            leaf.add_argument("--db", default=default)
+
+        programmatic.add_parsers(subs, add_globals)
+        return parser.parse_args(["models", "list", "--catalog"])
+
+    first = parse("/parser-a.db")
+    parse("/parser-b.db")
+    programmatic._validate_catalog_args(first, ot.ServiceError)
+    assert first._programmatic_global_defaults == {"db": "/parser-a.db"}
+
+
+def test_programmatic_catalog_rejects_session_and_source_filters_before_store_open():
+    for flags, reported in (
+        (["--range", "30d"], "--range"),
+        (["--days", "30"], "--days"),
+        (["--since", "2026-09-01"], "--since"),
+        (["--until", "2026-09-10"], "--until"),
+        (["--project", "/tmp/project"], "--project"),
+        (["--from-harness", "claude"], "--from-harness"),
+        (["--machine", "laptop"], "--machine"),
+        (["--model", "gpt-5"], "--model"),
+        (["--bookmarked"], "--bookmarked"),
+        (["--include-ignored"], "--include-ignored"),
+        (["--harness", "claude"], "--harness"),
+        (["--db", "/tmp/opentab.db"], "--db"),
+        (["--claude-dir", "/tmp/claude"], "--claude-dir"),
+        (["--codex-dir", "/tmp/codex"], "--codex-dir"),
+        (["--hermes-db", "/tmp/hermes.db"], "--hermes-db"),
+        (["--copilot-dir", "/tmp/copilot"], "--copilot-dir"),
+        (["--vscode-dir", "/tmp/vscode"], "--vscode-dir"),
+        (["--pi-dir", "/tmp/pi"], "--pi-dir"),
+        (["--omp-dir", "/tmp/omp"], "--omp-dir"),
+        (["--openclaw-dir", "/tmp/openclaw"], "--openclaw-dir"),
+        (["--zaly-dir", "/tmp/zaly"], "--zaly-dir"),
+        (["--gemini-dir", "/tmp/gemini"], "--gemini-dir"),
+        (["--antigravity-dir", "/tmp/antigravity"], "--antigravity-dir"),
+        (["--csv", "/tmp/requests.csv"], "--csv"),
+        (["--jsonl", "/tmp/requests.jsonl"], "--jsonl"),
+        (["--remotes", "/tmp/remotes"], "--remotes"),
+        (["--no-cache"], "--no-cache"),
+    ):
+        args = ot.parse_args(["models", "list", "--catalog", *flags])
+        out = io.StringIO()
+        with patch.object(ot.OpenTabService, "open") as opened, contextlib.redirect_stdout(out):
+            assert programmatic.command(args) == 1
+        opened.assert_not_called()
+        error = json.loads(out.getvalue())["error"]
+        assert error["code"] == "invalid_catalog_options"
+        assert reported in error["message"]
+
+
+def test_programmatic_catalog_needs_no_session_store_or_source_discovery():
+    args = ot.parse_args(
+        ["models", "list", "--catalog", "--search", "opus", "--limit", "1", "--offset", "0"]
+    )
+    expected = {
+        "models": [{"model": "anthropic/claude-opus", "pinned": True}],
+        "total": 1,
+        "limit": 1,
+        "offset": 0,
+    }
+    out = io.StringIO()
+    with (
+        patch.object(ot.OpenTabService, "open") as opened,
+        patch.object(ot.OpenTabService, "list_model_catalog", return_value=expected) as catalog,
+        patch.object(programmatic.sources, "available_sources") as available,
+        patch.object(programmatic.sources, "resolve_source") as resolved,
+        patch.object(programmatic.sources, "make_store") as made,
+        contextlib.redirect_stdout(out),
+    ):
+        assert programmatic.command(args) == 0
+    opened.assert_not_called()
+    available.assert_not_called()
+    resolved.assert_not_called()
+    made.assert_not_called()
+    catalog.assert_called_once_with(search="opus", limit=1, offset=0, use_state=True)
+    assert json.loads(out.getvalue())["data"] == expected
+
+
+def test_programmatic_state_only_mutations_do_not_open_a_store():
+    state = {
+        "pinned_models": ["synthetic/model"],
+        "ignored_projects": ["/tmp/synthetic-project"],
+    }
+    for argv, resource in (
+        (["models", "pin", "synthetic/model"], "pinned-model"),
+        (["ignore", "project", "add", "/tmp/synthetic-project"], "ignored-project"),
+    ):
+        args = ot.parse_args(argv)
+        out = io.StringIO()
+        with (
+            patch.object(ot.OpenTabService, "open") as opened,
+            patch.object(service_module, "update_state", return_value=(state, "")),
+            contextlib.redirect_stdout(out),
+        ):
+            assert programmatic.command(args) == 0
+        opened.assert_not_called()
+        assert json.loads(out.getvalue())["data"]["resource"] == resource
+
+
+def test_programmatic_internal_demo_gate_precedes_state_mutation():
+    args = ot.parse_args(["models", "pin", "synthetic/model"])
+    args.demo = "all"
+    out = io.StringIO()
+    with (
+        patch.object(ot.OpenTabService, "open") as opened,
+        patch("opentab.state.update_state") as updated,
+        contextlib.redirect_stdout(out),
+    ):
+        assert programmatic.command(args) == 1
+    opened.assert_not_called()
+    updated.assert_not_called()
+    assert json.loads(out.getvalue())["error"]["code"] == "demo_unsupported"
 
 
 def test_programmatic_stdout_is_one_versioned_json_document():
@@ -342,7 +626,7 @@ def test_conversations_cli_forwards_index_and_search_without_session_queries():
 
 def test_conversations_cli_maintenance_is_dynamic_and_never_discovers_sources():
     for action, method in (("status", "index_status"), ("clear", "clear_index")):
-        argv = ["conversations", action, "--harness", "opencode", "--db", "/missing/synthetic.db"]
+        argv = ["conversations", action]
         if action == "clear":
             argv.append("--allow-raw-content")
         args = ot.parse_args(argv)

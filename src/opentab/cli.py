@@ -69,8 +69,8 @@ from opentab.util import (
     unicode_screen,
 )
 
-# Global options are copied onto each subcommand. Legacy verb flags remain on the
-# implicit `tui` command; new verbs own their options.
+# The implicit `tui` command keeps the complete legacy surface. Subcommands register
+# only the global options they use; root defaults still provide one complete namespace.
 
 
 def _add_global_args(parser: argparse.ArgumentParser) -> None:
@@ -225,10 +225,9 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
         "--remotes",
         default=None,
         metavar="PATH",
-        help="where --harness remote reads machine summaries: a directory of them "
-        f"(default: {default_remotes_dir()}; one *.json per machine, from --export/"
-        "--pull), or a single exported *.json FILE -- which is how you open a summary "
-        "you copied over by hand. Pulls always WRITE into the default directory",
+        help="machine-summary directory used by fleet reads, pulls, and forget "
+        f"(default: {default_remotes_dir()}; one *.json per machine), or a single "
+        "exported *.json FILE for read-only browsing",
     )
     parser.add_argument(
         "--label",
@@ -422,12 +421,76 @@ _SUBCOMMANDS = (
 )
 
 
-def _focus_help(subparser: argparse.ArgumentParser, common_dests: set, keep: set) -> None:
-    # Every verb accepts globals for a complete namespace, but advertises only relevant
-    # ones. `opentab tui -h` remains the full reference.
-    for action in subparser._actions:
-        if action.dest in common_dests and action.dest not in keep:
-            action.help = argparse.SUPPRESS
+_SOURCE_PATH_DESTS = {
+    "db",
+    "claude_dir",
+    "codex_dir",
+    "hermes_db",
+    "copilot_dir",
+    "vscode_dir",
+    "pi_dir",
+    "omp_dir",
+    "openclaw_dir",
+    "zaly_dir",
+    "gemini_dir",
+    "antigravity_dir",
+    "csv",
+    "jsonl",
+}
+_LOCAL_SOURCE_CHOICES = (
+    "auto",
+    "opencode",
+    "claude",
+    "codex",
+    "hermes",
+    "csv",
+    "jsonl",
+    "copilot",
+    "vscode",
+    "pi",
+    "omp",
+    "openclaw",
+    "zaly",
+    "gemini",
+    "antigravity",
+    "all",
+)
+_STATUS_SOURCES = (
+    "opencode",
+    "claude",
+    "codex",
+    "hermes",
+    "pi",
+    "omp",
+    "openclaw",
+    "zaly",
+    "gemini",
+    "antigravity",
+)
+_STATUS_SOURCE_CHOICES = ("auto", *_STATUS_SOURCES, "all")
+
+
+def _add_command_global_args(
+    parser: argparse.ArgumentParser,
+    keep: set[str],
+    *,
+    source_choices: tuple[str, ...] | None = None,
+    source_help: str | None = None,
+    help_overrides: dict[str, str] | None = None,
+) -> None:
+    """Copy fresh argparse actions for the globals this command actually uses."""
+    probe = argparse.ArgumentParser(add_help=False)
+    _add_global_args(probe)
+    for action in probe._actions:
+        if action.dest != "version" and action.dest not in keep:
+            continue
+        if help_overrides and action.dest in help_overrides:
+            action.help = help_overrides[action.dest]
+        if action.dest == "source" and source_choices is not None:
+            action.choices = source_choices
+            if source_help is not None:
+                action.help = source_help
+        parser._optionals._add_action(action)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -435,13 +498,18 @@ def _build_parser() -> argparse.ArgumentParser:
     # would affect the others. This probe only identifies global destinations.
     probe = argparse.ArgumentParser(add_help=False)
     _add_global_args(probe)
-    gdests = {a.dest for a in probe._actions if a.dest not in ("help", "version")}
+    global_defaults = {
+        action.dest: action.default
+        for action in probe._actions
+        if action.dest not in ("help", "version") and action.default is not argparse.SUPPRESS
+    }
     parser = argparse.ArgumentParser(
         prog="opentab", description="OpenTab — browse your AI-coding spend"
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     # Keep one complete namespace for legacy dispatch, App/state, and path routing.
     parser.set_defaults(
+        **global_defaults,
         path=None,
         status=None,
         status_targets=[],
@@ -485,7 +553,38 @@ def _build_parser() -> argparse.ArgumentParser:
         "default browser. Add --headless to serve without opening one, or --html FILE "
         "to write the static page and exit instead of serving.",
     )
-    _add_global_args(web)
+    _add_command_global_args(
+        web,
+        {
+            "source",
+            *_SOURCE_PATH_DESTS,
+            "days",
+            "since",
+            "until",
+            "demo",
+            "no_state",
+            "no_worktrees",
+            "remotes",
+            "theme",
+            "no_cache",
+        },
+    )
+    web.add_argument(
+        "--port",
+        dest="web_port",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="port for the live server (default: 8321)",
+    )
+    web.add_argument(
+        "--bind",
+        dest="web_bind",
+        default=None,
+        metavar="ADDRESS",
+        help="address for the live server (default: 127.0.0.1); bind beyond localhost "
+        "only on a trusted/VPN interface",
+    )
     web.add_argument(
         "--html",
         nargs="?",
@@ -502,7 +601,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "opens one. Either way the live per-session Turns/Tools endpoints and the "
         "data-refresh button are served",
     )
-    _focus_help(web, gdests, {"source", "demo", "theme", "port", "bind"})
     # The verb is `cost` to avoid colliding with agent working/waiting status;
     # the established `--status` flag remains compatible.
     status = subs.add_parser(
@@ -516,7 +614,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "process -- which is the point: the interpreter start dwarfs the pricing, so a "
         "shell loop calling this once per pane pays it once per pane.",
     )
-    _add_global_args(status)
+    _add_command_global_args(
+        status,
+        {
+            "source",
+            "db",
+            "claude_dir",
+            "codex_dir",
+            "hermes_db",
+            "pi_dir",
+            "omp_dir",
+            "openclaw_dir",
+            "zaly_dir",
+            "gemini_dir",
+            "antigravity_dir",
+            "demo",
+        },
+        source_choices=_STATUS_SOURCE_CHOICES,
+        source_help="which interactive local harness to price (default: auto; all checks every present one)",
+    )
     status.add_argument(
         "targets",
         nargs="*",
@@ -534,7 +650,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "collect. Targets that can't be priced are omitted, so an empty table means "
         "nothing matched",
     )
-    _focus_help(status, gdests, {"source", "demo"})
     doctor = subs.add_parser(
         "doctor",
         help="report the environment, the harnesses found, and what's misconfigured",
@@ -545,7 +660,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "named, no transcript is ever read, and nothing is created or repaired. Exits 1 "
         "if something is actually broken (a warning alone doesn't).",
     )
-    _add_global_args(doctor)
+    _add_command_global_args(
+        doctor,
+        {"source", *_SOURCE_PATH_DESTS, "remotes", "no_state"},
+    )
     doctor.add_argument(
         "--full",
         action="store_true",
@@ -557,29 +675,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="emit one versioned JSON document instead of the human-readable report",
     )
-    # Doctor must advertise every path override it can diagnose.
-    _focus_help(
-        doctor,
-        gdests,
-        {
-            "source",
-            "db",
-            "claude_dir",
-            "codex_dir",
-            "hermes_db",
-            "copilot_dir",
-            "vscode_dir",
-            "pi_dir",
-            "omp_dir",
-            "openclaw_dir",
-            "zaly_dir",
-            "gemini_dir",
-            "antigravity_dir",
-            "csv",
-            "jsonl",
-            "remotes",
-        },
-    )
     # Fleet subcommands map to legacy fields so both interfaces share one dispatch path.
     pull = subs.add_parser(
         "pull",
@@ -587,9 +682,33 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Fetch other machines' spend summaries over SSH (all in parallel) and "
         "open them merged (the fleet view). Each HOST is remembered, so a later bare "
         "`opentab pull` refreshes every saved machine. The remote just needs opentab on "
-        "its PATH -- it runs `opentab export -` there; nothing has to be listening.",
+        "its PATH -- it runs `opentab export -` there; nothing has to be listening. "
+        "--demo changes the fleet view after fetching; pull remains an explicit network "
+        "request and the remote export itself is not put in demo mode.",
     )
-    _add_global_args(pull)
+    fleet_globals = {
+        "source",
+        *_SOURCE_PATH_DESTS,
+        "days",
+        "since",
+        "until",
+        "demo",
+        "no_state",
+        "no_worktrees",
+        "remotes",
+        "theme",
+        "no_cache",
+    }
+    fleet_source_help = (
+        "fleet commands load remote summaries plus every present local harness; "
+        "--harness remote is an explicit alias (default: auto)"
+    )
+    _add_command_global_args(
+        pull,
+        fleet_globals,
+        source_choices=("auto", "remote"),
+        source_help=fleet_source_help,
+    )
     pull.add_argument(
         "hosts",
         nargs="*",
@@ -599,7 +718,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "already in remotes.json. Set a machine's `cmd` in remotes.json if opentab isn't "
         "on its non-interactive PATH",
     )
-    _focus_help(pull, gdests, {"remotes", "demo"})
     remote = subs.add_parser(
         "remote",
         help="open pulled machines, or summary files copied over by hand",
@@ -609,7 +727,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "moved here yourself (`opentab export -` on the far side, scp, then "
         "`opentab remote box.json`) instead of the pulled ones.",
     )
-    _add_global_args(remote)
+    _add_command_global_args(
+        remote,
+        fleet_globals,
+        source_choices=("auto", "remote"),
+        source_help=fleet_source_help,
+    )
     remote.add_argument(
         "files",
         nargs="*",
@@ -618,17 +741,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "`opentab export`); a directory works too. Without one, the machines already "
         "pulled into --remotes are opened",
     )
-    _focus_help(remote, gdests, {"remotes", "demo"})
     export = subs.add_parser(
         "export",
         help="write this machine's spend summary as portable JSON",
-        description="Write this machine's spend summary (every present harness, merged) "
-        "as a portable JSON file -- totals + per-model breakdown, no transcripts. Copy "
+        description="Write this machine's spend summary (every present harness by default, "
+        "or the local --harness selection) as a portable JSON file -- totals + per-model "
+        "breakdown, no transcripts. Copy "
         "it to another machine and open it there with `opentab remote box.json`; "
         "`opentab pull` is the automatic twin and takes an SSH target, never a file. "
         "Pairs with --demo for a shareable summary.",
     )
-    _add_global_args(export)
+    _add_command_global_args(
+        export,
+        {"source", *_SOURCE_PATH_DESTS, "demo", "label", "no_cache"},
+        source_choices=_LOCAL_SOURCE_CHOICES,
+        source_help="which local harness to export (default: auto exports all present harnesses)",
+        help_overrides={
+            "demo": "anonymize titles, paths, prompts, and/or spend in the exported "
+            "summary; bare --demo applies every category, or pass a comma list such as "
+            "titles,spend. Review the file before sharing"
+        },
+    )
     export.add_argument(
         "file",
         nargs="?",
@@ -636,21 +769,22 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FILE",
         help="where to write it (default: stdout, so `ssh box opentab export > box.json` " "works)",
     )
-    _focus_help(export, gdests, {"demo", "label"})
     forget = subs.add_parser(
         "forget",
         help="drop machines from the saved fleet",
         description="Remove machines from remotes.json and delete their cached summaries "
         "(under --remotes), then exit.",
     )
-    _add_global_args(forget)
+    _add_command_global_args(forget, {"remotes"})
+    forget._option_string_actions[
+        "--remotes"
+    ].help = "directory containing the fleet configuration and cached summaries to remove"
     forget.add_argument(
         "names",
         nargs="+",
         metavar="NAME",
         help="the machine name(s) to forget",
     )
-    _focus_help(forget, gdests, {"remotes"})
     # Keep the machine-facing command tree out of this already large compatibility parser.
     from opentab.programmatic import add_parsers
 
@@ -670,6 +804,10 @@ def _apply_subcommand(args: argparse.Namespace) -> None:
     # Map subcommands onto the legacy namespace so there is one dispatch path.
     command = getattr(args, "command", None)
     if command == "web":
+        if args.web_port is not None:
+            args.port = args.web_port
+        if args.web_bind is not None:
+            args.bind = args.web_bind
         if args.html is not None:
             args.serve = args.web = False
         elif args.headless:
@@ -740,12 +878,31 @@ def _validate_remote_files(parser: argparse.ArgumentParser, args: argparse.Names
         parser.error(f"remote: no such summary file: {', '.join(missing)}")
 
 
+def _validate_web_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if getattr(args, "command", None) != "web" or getattr(args, "html", None) is None:
+        return
+    explicit_server_flags = []
+    if getattr(args, "web_port", None) is not None:
+        explicit_server_flags.append("--port")
+    if getattr(args, "web_bind", None) is not None:
+        explicit_server_flags.append("--bind")
+    if getattr(args, "headless", False):
+        explicit_server_flags.append("--headless")
+    if explicit_server_flags:
+        parser.error(
+            "web: --html writes a static file and cannot be combined with "
+            + "/".join(explicit_server_flags)
+        )
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     raw = list(sys.argv[1:] if argv is None else argv)
     parser = _build_parser()
-    args = parser.parse_args(_normalize_argv(raw))
+    normalized = _normalize_argv(raw)
+    args = parser.parse_args(normalized)
     _validate_demo_cats(parser, args)
     _validate_remote_files(parser, args)
+    _validate_web_args(parser, args)
     _apply_subcommand(args)
     _route_path_arg(parser, args)
     return args
@@ -1161,21 +1318,6 @@ def _fleet_timing_tables(store, backends: list, uni: bool | None = None) -> list
 def _project_key(directory: str) -> str:
     # Match the TUI's git-root and worktree project grouping.
     return os.path.normpath(resolve_project_root(git_root(os.path.expanduser(directory))))
-
-
-# Only interactive harnesses expose live session identity for cost/goto targets.
-_STATUS_SOURCES = (
-    "opencode",
-    "claude",
-    "codex",
-    "hermes",
-    "pi",
-    "omp",
-    "openclaw",
-    "zaly",
-    "gemini",
-    "antigravity",
-)
 
 
 def _is_session_target(target: str) -> bool:

@@ -16,11 +16,23 @@ opentab conversations status
 opentab conversations search "retry sqlite locking" --project ~/work/my-project --allow-raw-content
 ```
 
-`--harness` selects which sources to load; `--from-harness` filters the loaded
-catalog. Index/search also accept `--machine`, `--project` (an exact normalized
-project path), and `--session SESSION_KEY`. Saved project/session ignores apply;
-`--no-state` disables saved ignores as it does elsewhere. Remote summaries are
-unsupported, not silently fetched over SSH.
+CLI index and search load all present supported conversation readers by default:
+OpenCode, Claude Code and Codex. `--harness` (or its deprecated `--source` alias)
+can select one of them or `all`; accounting-only harnesses are rejected rather
+than loaded and later reported as unindexable. `--db`, `--claude-dir`, and
+`--codex-dir` override those readers' local paths. `--from-harness` filters the
+loaded catalog. Index/search also accept `--machine`, `--project` (an exact
+normalized project path), and `--session SESSION_KEY`. Saved project/session
+ignores apply; `--no-state` disables them. `--no-cache` bypasses only the
+accounting rollup cache used to construct the current session catalog, not the
+conversation index. Remote summaries are unsupported, not silently fetched over
+SSH. This CLI restriction does not change the MCP server's loaded catalog;
+unscoped MCP searches can still report unsupported catalog roots as unindexed.
+
+These are command-specific argument surfaces. Index does not accept date bounds:
+dates filter retained UTC messages during search and cannot narrow what index
+refresh persists. UI options such as `--demo`, `--theme`, `--port`, `--bind`, and
+accounting ranges are rejected; demo is not an anonymizer for indexed text.
 
 Index refresh first compares cheap source manifests for the scoped roots. An
 unchanged manifest and unchanged catalog metadata reuse that root without opening

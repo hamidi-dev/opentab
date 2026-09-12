@@ -340,6 +340,9 @@ SOURCE_LABELS = {
     "all": "all",
 }
 
+CONVERSATION_SOURCES = frozenset(("opencode", "claude", "codex"))
+
+
 RESUME_COMMANDS = {
     "OpenCode": "opencode --session",
     "Claude Code": "claude --resume",
@@ -499,8 +502,15 @@ def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
 
 def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
     if key == "all":
-        subs = [make_store(args, k)[0] for k in available_sources(args)]
+        keys = available_sources(args)
+        if getattr(args, "conversation_sources_only", False):
+            keys = [key for key in keys if key in CONVERSATION_SOURCES]
+        subs = [make_store(args, k)[0] for k in keys]
         if not subs:
+            if getattr(args, "conversation_sources_only", False):
+                raise SystemExit(
+                    "no supported conversation sources found (OpenCode, Claude Code, or Codex)"
+                )
             raise SystemExit("no data sources found (no OpenCode DB, no Claude Code transcripts)")
         if len(subs) == 1:
             return subs[0], "OpenTab: loading…\r"

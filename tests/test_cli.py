@@ -64,7 +64,7 @@ def test_conversations_top_level_normalizes_and_dispatches_before_discovery():
         make_store.assert_not_called()
 
 
-def test_conversations_parser_uses_global_message_dates_and_integer_budgets():
+def test_conversations_parser_uses_message_dates_and_integer_budgets():
     args = ot.parse_args(
         [
             "conversations",
@@ -101,6 +101,67 @@ def test_conversations_parser_uses_global_message_dates_and_integer_budgets():
     assert "message-date bound, not root-session" in out.getvalue()
 
 
+def test_conversations_parser_has_command_specific_help_and_catalog_defaults():
+    expected = {
+        "index": {"--harness", "--db", "--claude-dir", "--codex-dir", "--rebuild"},
+        "search": {"--harness", "--since", "--until", "--limit", "--max-chars"},
+        "status": {"--pretty"},
+        "clear": {"--allow-raw-content", "--pretty"},
+    }
+    forbidden = {
+        "--theme",
+        "--port",
+        "--bind",
+        "--days",
+        "--demo",
+        "--hermes-db",
+        "--no-worktrees",
+    }
+    for action in ("index", "search", "status", "clear"):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            try:
+                ot.parse_args(["conversations", action, "--help"])
+            except SystemExit as exc:
+                assert exc.code == 0
+        help_text = out.getvalue()
+        assert expected[action] <= set(re.findall(r"--[a-z-]+", help_text))
+        assert forbidden.isdisjoint(set(re.findall(r"--[a-z-]+", help_text)))
+
+    args = ot.parse_args(["conversations", "index", "--allow-raw-content"])
+    assert args.source == "all"
+    assert args.conversation_sources_only
+    assert args.db and args.claude_dir and args.codex_dir
+    assert args.demo is None and not args.no_state and not args.no_cache
+
+
+def test_conversations_parser_preserves_supported_paths_aliases_and_state_controls():
+    args = ot.parse_args(
+        [
+            "conversations",
+            "index",
+            "--allow-raw-content",
+            "--source",
+            "codex",
+            "--db",
+            "/synthetic/opencode.db",
+            "--claude-dir",
+            "/synthetic/claude",
+            "--codex-dir",
+            "/synthetic/codex",
+            "--no-state",
+            "--no-cache",
+        ]
+    )
+    assert args.source == "codex"
+    assert (args.db, args.claude_dir, args.codex_dir) == (
+        "/synthetic/opencode.db",
+        "/synthetic/claude",
+        "/synthetic/codex",
+    )
+    assert args.no_state and args.no_cache
+
+
 def test_conversations_parser_requires_explicit_permission_and_rejects_unknown_options():
     invalid = [
         ["conversations", "index"],
@@ -109,8 +170,29 @@ def test_conversations_parser_requires_explicit_permission_and_rejects_unknown_o
         ["conversations", "search", "--allow-raw-content"],
         ["conversations", "status", "--session", "root"],
         ["conversations", "index", "--allow-raw-content", "--include-ignored"],
+        ["conversations", "index", "--allow-raw-content", "--since", "2026-09-01"],
+        ["conversations", "index", "--allow-raw-content", "--until", "2026-09-01"],
+        ["conversations", "index", "--allow-raw-content", "--harness", "hermes"],
+        ["conversations", "index", "--allow-raw-content", "--from-harness", "hermes"],
         ["conversations", "search", "evidence", "--allow-raw-content", "--search", "title"],
     ]
+    for action in ("index", "search", "status", "clear"):
+        base = ["conversations", action]
+        if action == "search":
+            base.append("evidence")
+        if action != "status":
+            base.append("--allow-raw-content")
+        invalid.extend(
+            [
+                [*base, "--demo"],
+                [*base, "--theme", "opentab"],
+                [*base, "--port", "8321"],
+                [*base, "--bind", "127.0.0.1"],
+                [*base, "--days", "7"],
+                [*base, "--hermes-db", "/synthetic/hermes.db"],
+                [*base, "--no-worktrees"],
+            ]
+        )
     for flag in ("--limit", "--max-chars"):
         for value in ("true", "1.5", "no"):
             invalid.append(
@@ -124,6 +206,31 @@ def test_conversations_parser_requires_explicit_permission_and_rejects_unknown_o
                 assert exc.code == 2
             else:
                 raise AssertionError(f"parser accepted {argv}")
+
+
+def test_conversation_demo_and_unsupported_harness_fail_before_any_access():
+    from opentab import cli
+
+    for argv in (
+        ["conversations", "index", "--allow-raw-content", "--demo"],
+        ["conversations", "index", "--allow-raw-content", "--harness", "hermes"],
+    ):
+        with (
+            patch.object(sys, "argv", ["opentab", *argv]),
+            patch(
+                "opentab.programmatic.command", side_effect=AssertionError("dispatch")
+            ) as command,
+            patch.object(cli.sources, "available_sources", side_effect=AssertionError("discovery")),
+            patch.object(cli.sources, "make_store", side_effect=AssertionError("store")),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            try:
+                cli.main()
+            except SystemExit as exc:
+                assert exc.code == 2
+            else:
+                raise AssertionError(f"parser accepted {argv}")
+        command.assert_not_called()
 
 
 def _write_status_db(db, sessions, messages=()):
@@ -813,10 +920,64 @@ def test_web_subcommand_takes_the_shared_globals_after_the_verb():
     assert a.command == "web" and a.demo == "all" and a.theme == "nord" and a.port == 9000
 
 
+def test_static_web_rejects_server_options_before_any_access():
+    from opentab import cli
+
+    for argv in (
+        ["web", "--html", "report.html", "--port", "9000"],
+        ["web", "--html", "report.html", "--po", "9000"],
+        ["web", "--html", "report.html", "--bi", "localhost"],
+        ["web", "--html", "report.html", "--port", "8321"],
+        ["web", "--html", "report.html", "--bind", "127.0.0.1"],
+        ["web", "--html", "report.html", "--headless"],
+    ):
+        with (
+            patch.object(sys, "argv", ["opentab", *argv]),
+            patch.object(cli.paths, "migrate_legacy_caches") as migrate,
+            patch.object(cli, "web_command", side_effect=AssertionError("web access")) as web,
+            patch.object(cli.sources, "make_store", side_effect=AssertionError("store")) as store,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            try:
+                cli.main()
+            except SystemExit as exc:
+                assert exc.code == 2
+            else:
+                raise AssertionError(f"parser accepted {argv}")
+        migrate.assert_not_called()
+        web.assert_not_called()
+        store.assert_not_called()
+
+
 def test_pull_subcommand_maps_hosts_onto_the_pull_field():
     assert _parse(["pull"]).pull == []  # bare: refresh the saved machines (== bare --pull)
     assert _parse(["pull", "laptop", "mo@box"]).pull == ["laptop", "mo@box"]
     assert _parse(["pull"]).command == "pull"
+
+
+def test_fleet_harness_conflicts_fail_before_ssh_or_state_access():
+    from opentab import cli
+
+    for argv in (
+        ["pull", "--harness", "claude", "host"],
+        ["remote", "--harness", "opencode"],
+    ):
+        with (
+            patch.object(sys, "argv", ["opentab", *argv]),
+            patch.object(cli.paths, "migrate_legacy_caches") as migrate,
+            patch.object(cli, "_load_remotes", side_effect=AssertionError("state")) as state,
+            patch.object(cli, "_fetch_summary", side_effect=AssertionError("network")) as fetch,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            try:
+                cli.main()
+            except SystemExit as exc:
+                assert exc.code == 2
+            else:
+                raise AssertionError(f"parser accepted {argv}")
+        migrate.assert_not_called()
+        state.assert_not_called()
+        fetch.assert_not_called()
 
 
 def test_remote_export_forget_subcommands_map_onto_legacy_fields():
@@ -840,24 +1001,180 @@ def _subparser_help(name):
     return action.choices[name].format_help()
 
 
-def test_verb_help_is_focused_but_globals_still_parse():
-    # `opentab pull -h` must not recite every backend path / the theme list -- only the
-    # globals that matter to it. But the hidden ones are SUPPRESSED from help, NOT removed:
-    # they still parse. (And per-verb hiding must not leak across verbs -- the shared-action
-    # trap: forget must still show --remotes even though web/pull hid other globals.)
-    pull_help = _subparser_help("pull")
-    assert "--remotes" in pull_help and "--demo" in pull_help  # kept
-    assert "--claude-dir" not in pull_help and "--theme" not in pull_help  # hidden
-    assert "--port" not in pull_help and "--csv" not in pull_help
-    assert "--remotes" in _subparser_help("forget")  # no cross-verb leak
-    assert "--label" in _subparser_help("export") and "--harness" not in _subparser_help("export")
-    assert "--theme" in _subparser_help("web")  # web keeps its relevant ones
-    # tui stays the full reference -- nothing hidden there.
+def _assert_parse_error(argv):
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            _parse(argv)
+        except SystemExit as exc:
+            assert exc.code == 2, argv
+        else:
+            raise AssertionError(f"parser accepted {argv}")
+
+
+def test_older_verb_help_and_accepted_globals_match_real_behavior():
+    expected = {
+        "web": {
+            "--harness",
+            "--claude-dir",
+            "--days",
+            "--demo",
+            "--no-state",
+            "--no-worktrees",
+            "--remotes",
+            "--theme",
+            "--port",
+            "--bind",
+            "--no-cache",
+        },
+        "cost": {"--harness", "--db", "--claude-dir", "--demo"},
+        "doctor": {"--harness", "--db", "--claude-dir", "--remotes", "--no-state"},
+        "pull": {
+            "--harness",
+            "--claude-dir",
+            "--days",
+            "--demo",
+            "--no-state",
+            "--no-worktrees",
+            "--remotes",
+            "--theme",
+            "--no-cache",
+        },
+        "remote": {
+            "--harness",
+            "--claude-dir",
+            "--days",
+            "--demo",
+            "--no-state",
+            "--no-worktrees",
+            "--remotes",
+            "--theme",
+            "--no-cache",
+        },
+        "export": {"--harness", "--db", "--claude-dir", "--demo", "--label", "--no-cache"},
+        "forget": {"--remotes"},
+    }
+    forbidden = {
+        "web": {"--label"},
+        "cost": {
+            "--days",
+            "--no-state",
+            "--no-worktrees",
+            "--remotes",
+            "--theme",
+            "--port",
+            "--bind",
+            "--label",
+            "--no-cache",
+        },
+        "doctor": {
+            "--days",
+            "--demo",
+            "--no-worktrees",
+            "--theme",
+            "--port",
+            "--bind",
+            "--label",
+            "--no-cache",
+        },
+        "pull": {"--label", "--port", "--bind"},
+        "remote": {"--label", "--port", "--bind"},
+        "export": {
+            "--days",
+            "--since",
+            "--until",
+            "--no-state",
+            "--no-worktrees",
+            "--remotes",
+            "--theme",
+            "--port",
+            "--bind",
+        },
+        "forget": {
+            "--harness",
+            "--db",
+            "--days",
+            "--demo",
+            "--no-state",
+            "--no-worktrees",
+            "--label",
+            "--theme",
+            "--port",
+            "--bind",
+            "--no-cache",
+        },
+    }
+    for command, flags in expected.items():
+        help_flags = set(re.findall(r"--[a-z-]+", _subparser_help(command)))
+        assert flags <= help_flags, command
+        assert forbidden[command].isdisjoint(help_flags), command
+    export_help = _subparser_help("export")
+    assert "exported summary" in export_help and "Toggle live in the TUI" not in export_help
+
+    # Representative accepted values exercise every deliberately retained group.
+    web = _parse(
+        [
+            "web",
+            "--harness",
+            "claude",
+            "--claude-dir",
+            "/tmp/c",
+            "--days",
+            "7",
+            "--no-state",
+            "--no-worktrees",
+            "--theme",
+            "nord",
+            "--port",
+            "9000",
+            "--bind",
+            "localhost",
+            "--no-cache",
+        ]
+    )
+    assert web.source == "claude" and web.no_worktrees and web.port == 9000
+    assert _parse(["cost", "--harness", "codex", "--codex-dir", "/tmp/c", "--demo"]).demo
+    assert _parse(["doctor", "--no-state", "--remotes", "/tmp/r"]).no_state
+    assert _parse(["pull", "--source", "remote", "--db", "/tmp/db", "host"]).pull == ["host"]
+    assert _parse(["remote", "--no-worktrees", "--theme", "nord"]).remote
+    assert _parse(["export", "--harness", "claude", "--label", "box", "--no-cache"]).label == "box"
+    assert _parse(["forget", "--remotes", "/tmp/r", "box"]).forget == ["box"]
+
+    # The explicit TUI remains the complete compatibility reference.
     tui_help = _subparser_help("tui")
     assert "--claude-dir" in tui_help and "--theme" in tui_help and "--web" in tui_help
-    # Hidden != gone: a suppressed global still parses on that verb.
-    assert _parse(["pull", "--no-cache", "host"]).no_cache is True
-    assert _parse(["export", "--harness", "claude"]).source == "claude"
+
+
+def test_older_verbs_reject_irrelevant_globals_after_the_verb():
+    cases = [
+        (["cost"], ["--days", "7"]),
+        (["cost"], ["--no-cache"]),
+        (["doctor"], ["--demo"]),
+        (["forget", "box"], ["--no-state"]),
+        (["export"], ["--since", "2026-09-01"]),
+        (["web"], ["--label", "box"]),
+        (["pull", "host"], ["--port", "9000"]),
+        (["remote"], ["--bind", "localhost"]),
+    ]
+    for command, option in cases:
+        _assert_parse_error([*command, *option])
+
+
+def test_options_before_a_word_keep_the_legacy_implicit_tui_grammar():
+    # Only the first word selects a subcommand. Moving an option prefix would reinterpret
+    # a genuine path named like a verb and does not compose with nested programmatic verbs.
+    for argv in (
+        ["--harness", "claude", "web"],
+        ["--harness", "claude", "sessions", "list"],
+        ["--db", "cost"],
+    ):
+        assert ot.cli._normalize_argv(argv) == ["tui", *argv]
+
+
+def test_live_web_preserves_explicit_and_default_server_values():
+    default = _parse(["web"])
+    assert (default.port, default.bind) == (8321, "127.0.0.1")
+    explicit = _parse(["web", "--po", "9000", "--bi", "localhost"])
+    assert (explicit.port, explicit.bind) == (9000, "localhost")
 
 
 def test_version_stays_order_independent_through_the_tui_prepend():

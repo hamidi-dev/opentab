@@ -19,6 +19,10 @@ The older `--web`, `--serve`, and `--html` flags remain available.
 (default `opentab-report.html`) — no server, no dependencies, works from disk or any
 static host.
 
+For `opentab web`, server-only options do not apply to a static file: `--html` cannot be combined
+with `--headless`, `--port`, or `--bind`. OpenTab rejects those combinations
+rather than silently ignoring them.
+
 - The top browse bar switches between **Time**, **Projects**, **Harnesses**, and
   **Machines** (`t`/`p`/`u`/`m`). Harnesses is available even when the report contains
   only one source; its synthetic **all harnesses** row and source rows show spend and

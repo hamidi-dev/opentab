@@ -740,6 +740,46 @@ def test_service_note_and_preference_mutations_use_authored_xdg_files():
                     os.environ[key] = value
 
 
+def test_model_catalog_static_path_matches_instance_api_with_state_and_paging():
+    rows = [
+        ("openai", "gpt-5", (1.25, 10, 0.125, 0), "active"),
+        ("anthropic", "claude-opus", (5, 25, 0.5, 6.25), "active"),
+    ]
+    state = {"pinned_models": ["anthropic/claude-opus"]}
+    service = ot.OpenTabService(DetailStore([]), _args())
+    with (
+        patch("opentab.service.catalog_models", return_value=rows),
+        patch("opentab.service.load_state", return_value=state) as loaded,
+    ):
+        direct = ot.OpenTabService.list_model_catalog(
+            search="claude", limit=1, offset=0, use_state=True
+        )
+        through_instance = service.list_models(catalog=True, search="claude", limit=1, offset=0)
+        without_state = ot.OpenTabService.list_model_catalog(
+            search="claude", limit=1, offset=0, use_state=False
+        )
+    assert loaded.call_count == 2
+    assert direct == through_instance
+    assert direct == {
+        "models": [
+            {
+                "model": "anthropic/claude-opus",
+                "input_usd_per_mtok": 5,
+                "output_usd_per_mtok": 25,
+                "cache_read_usd_per_mtok": 0.5,
+                "cache_write_usd_per_mtok": 6.25,
+                "cache_write_1h_usd_per_mtok": 10.0,
+                "status": "active",
+                "pinned": True,
+            }
+        ],
+        "total": 1,
+        "limit": 1,
+        "offset": 0,
+    }
+    assert without_state["models"][0]["pinned"] is False
+
+
 def test_qualified_mutations_do_not_cross_colliding_native_session_ids():
     left = workflow("same", "2026-09-01 12:00:00")
     right = workflow("same", "2026-09-01 13:00:00")

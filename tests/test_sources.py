@@ -4,11 +4,74 @@ import json
 import os
 import sqlite3
 import tempfile
+from unittest.mock import patch
 
 import opentab as ot
 from opentab.stores.opencode import REQUIRED_SCHEMA
 
 from tests._support import FakeStore, _empty_opencode_db, _parse, _write_csv, workflow
+
+
+def test_conversation_all_builds_only_present_supported_readers():
+    args = ot.parse_args(["conversations", "index", "--allow-raw-content"])
+    built = []
+
+    def make_store(_args, key):
+        built.append(key)
+        return FakeStore([workflow(key, "2026-09-01 12:00:00")]), ""
+
+    with (
+        patch.object(
+            ot.sources,
+            "available_sources",
+            return_value=["opencode", "hermes", "claude", "csv", "codex"],
+        ),
+        patch.object(ot.sources, "make_store", side_effect=make_store),
+    ):
+        store, _ = ot.sources._build_store(args, "all")
+
+    assert built == ["opencode", "claude", "codex"]
+    assert {row.id for row in store.workflows()} == {"opencode", "claude", "codex"}
+
+
+def test_ordinary_all_keeps_the_full_accounting_source_catalog():
+    args = _parse(["--source", "all"])
+    built = []
+
+    def make_store(_args, key):
+        built.append(key)
+        return FakeStore([workflow(key, "2026-09-01 12:00:00")]), ""
+
+    with (
+        patch.object(ot.sources, "available_sources", return_value=["opencode", "hermes"]),
+        patch.object(ot.sources, "make_store", side_effect=make_store),
+    ):
+        ot.sources._build_store(args, "all")
+
+    assert built == ["opencode", "hermes"]
+
+
+def test_conversation_specific_defaults_build_an_explicit_read_only_opencode_store():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _empty_opencode_db(db)
+        args = ot.parse_args(
+            [
+                "conversations",
+                "index",
+                "--allow-raw-content",
+                "--harness",
+                "opencode",
+                "--db",
+                db,
+            ]
+        )
+        with open(db, "rb") as fh:
+            before = fh.read()
+        store = ot.sources.make_store(args, args.source)[0]
+        assert store.workflows() == []
+        with open(db, "rb") as fh:
+            assert fh.read() == before
 
 
 def test_next_source_name_names_the_destination():
