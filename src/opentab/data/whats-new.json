@@ -1,6 +1,39 @@
 {
   "releases": [
     {
+      "version": "1.24.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {
+              "text": "Find past conversations across OpenCode, Claude Code and Codex through keyword search in the CLI or MCP. Opt-in indexing stores text locally in plaintext; refresh it explicitly.",
+              "hint": {"text": "opentab conversations index --allow-raw-content"}
+            },
+            {
+              "text": "Drill into a subagent's own prompts, turns and traces where retained.",
+              "availability": "tui",
+              "hint": {"text": "Session > Subagents > execution > prompts > turns"}
+            }
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Compare prompt costs, then inspect cost and context charts scoped to that prompt's turns."}
+          ]
+        },
+        {
+          "title": "Fixed",
+          "items": [
+            {"text": "Keep the selected subagent across refresh, and jump to the first or last turn inside a prompt with g/G.", "availability": "tui"},
+            {"text": "CLI commands now reject unsupported or conflicting options instead of silently ignoring them."}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.24.0"
+    },
+    {
       "version": "1.23.0",
       "sections": [
         {
