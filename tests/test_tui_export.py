@@ -1,6 +1,7 @@
 import os
 
 import opentab as ot
+from opentab.tui import exporting
 
 from tests._support import FakeStore, _model_row, app_with, workflow
 
@@ -165,7 +166,7 @@ def test_export_neutralizes_formula_prefixed_cells():
     # Formula injection: a cell starting with =, +, -, @, tab, or CR is executed
     # by Excel/LibreOffice/Sheets on import. Would-be formulas get a leading
     # apostrophe; plain numbers (negative included) and non-strings pass through.
-    safe = ot.App._csv_safe
+    safe = exporting.csv_safe
     assert safe("=SUM(A1:A9)") == "'=SUM(A1:A9)"
     assert safe("+cmd|' /C calc'!A0") == "'+cmd|' /C calc'!A0"
     assert safe("@evil") == "'@evil"
@@ -177,6 +178,29 @@ def test_export_neutralizes_formula_prefixed_cells():
     assert safe(-1.5) == -1.5 and safe(0) == 0  # non-strings untouched
     assert safe("session title") == "session title"
     assert safe("") == ""
+
+
+def test_exporting_builds_sessions_dataset_from_explicit_inputs():
+    item = workflow("w1", "2026-06-01 12:00:00", cost=2.5, directory="/tmp/work")
+    item.root_cost = 1.25
+
+    scope, header, rows = exporting.sessions_dataset([item], {"w1": "ship it"})
+
+    assert scope == "sessions"
+    assert rows[0][header.index("subagent_cost")] == 1.25
+    assert rows[0][header.index("note")] == "ship it"
+
+
+def test_exporting_writes_formula_safe_csv():
+    import csv
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "sessions.csv")
+        exporting.write_csv(path, ["title", "cost"], [["=1+1 界", -1.5]])
+
+        with open(path, newline="", encoding="utf-8") as file:
+            assert list(csv.reader(file)) == [["title", "cost"], ["'=1+1 界", "-1.5"]]
 
 
 def test_export_current_sanitizes_the_written_csv():

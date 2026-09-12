@@ -21,6 +21,23 @@ layout, painting, and the hit regions produced by the current frame.
 read `self.current_sessions()` or `self.tab` through that shared interface.
 Assignments do not delegate; state changes in rendering code use `self.app`.
 
+Two internal modules keep stateless work out of those coordinators:
+
+- [`trace.py`](../src/opentab/tui/trace.py) formats recorded events from explicit
+  width, expansion and key-label inputs. Its `TraceLayout` returns text with
+  semantic roles plus output hit/scroll positions; the line offset accounts for
+  the renderer's header. The renderer still owns capability checks, lazy content
+  reads, the token box, layout caching and curses painting. The formatter neither
+  fetches nor retains content.
+- [`exporting.py`](../src/opentab/tui/exporting.py) builds CSV headers and rows
+  from selected, price-projected records and serializes formula-safe cells.
+  `App` still selects the active scope, resolves notes, loads session details,
+  applies contextual pricing, checks demo mode and chooses the export path.
+  This module is for TUI CSVs, not web payloads or fleet exports.
+
+These modules do not import `App` or `Renderer`. Keep new pure builders alongside
+their feature rather than adding mixins that implicitly share the entire UI state.
+
 Session frames and in-session cursor movement resolve the selected workflow once
 with `session_selection()`. Nested tab/drill checks reuse that snapshot instead
 of repeatedly rebuilding and sorting the enclosing session scope. It expires at

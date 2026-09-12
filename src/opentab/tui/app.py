@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import copy
-import csv
 import os
 import re
 import shlex
@@ -74,7 +73,7 @@ from opentab.pricing import (
 )
 from opentab.sources import RESUME_COMMANDS, SOURCE_LABELS
 from opentab.tools import tool_calls_from_turns
-from opentab.tui import bindings
+from opentab.tui import bindings, exporting
 from opentab.tui.renderer import Renderer
 from opentab.util import (
     DULL_AGENT_NAMES,
@@ -3839,114 +3838,6 @@ class App:
         if self._notes_ok:
             self.notice = f"source: {self.store.source_name}"
 
-    def _sessions_dataset(self, sessions: list[Workflow]) -> tuple[str, list[str], list[list]]:
-        header = [
-            "id",
-            "created_at",
-            "title",
-            "directory",
-            "total_cost",
-            "root_cost",
-            "subagent_cost",
-            "subagents",
-            "models",
-            "total_tokens",
-            "unpriced_tokens",
-            "note",
-        ]
-        rows = [
-            [
-                w.id,
-                w.created_at,
-                w.title,
-                w.directory,
-                w.total_cost,
-                w.root_cost,
-                round(w.total_cost - w.root_cost, 6),
-                w.subagents,
-                w.model_count,
-                w.total_tokens,
-                w.unpriced_tokens,
-                self.note_for(w.id),
-            ]
-            for w in sessions
-        ]
-        return "sessions", header, rows
-
-    def _model_sessions_dataset(
-        self, sessions: list[Workflow], model: str
-    ) -> tuple[str, list[str], list[list]]:
-        header = [
-            "id",
-            "created_at",
-            "title",
-            "directory",
-            "model",
-            "model_list_cost",
-            "model_cost_estimated",
-            "model_tokens",
-            "model_messages",
-            "session_cost",
-            "session_tokens",
-        ]
-        rows = []
-        for workflow in sessions:
-            usage = self.model_session_usage(workflow.id, model)
-            rows.append(
-                [
-                    workflow.id,
-                    workflow.created_at,
-                    workflow.title,
-                    workflow.directory,
-                    model,
-                    usage["list_cost"],
-                    usage["estimated"],
-                    usage["tokens"],
-                    usage["runs"],
-                    workflow.total_cost,
-                    workflow.total_tokens,
-                ]
-            )
-        return "model-sessions", header, rows
-
-    @staticmethod
-    def _projects_dataset(projects: list[ProjectSummary]) -> tuple[str, list[str], list[list]]:
-        header = ["directory", "cost", "tokens", "sessions", "subagents", "unpriced_tokens"]
-        rows = [
-            [p.directory, p.cost, p.tokens, p.workflows, p.subagents, p.unpriced_tokens]
-            for p in projects
-        ]
-        return "projects", header, rows
-
-    @staticmethod
-    def _machines_dataset(machines: list[MachineSummary]) -> tuple[str, list[str], list[list]]:
-        # Export the fleet flag because free-text names cannot identify the synthetic total.
-        header = [
-            "machine",
-            "live",
-            "cost",
-            "tokens",
-            "sessions",
-            "subagents",
-            "exported_at",
-            "fleet",
-        ]
-        rows = [
-            [m.name, m.live, m.cost, m.tokens, m.workflows, m.subagents, m.exported_at, m.fleet]
-            for m in machines
-        ]
-        return "machines", header, rows
-
-    @staticmethod
-    def _harnesses_dataset(
-        harnesses: list[HarnessSummary],
-    ) -> tuple[str, list[str], list[list]]:
-        header = ["harness", "cost", "tokens", "sessions", "subagents", "aggregate"]
-        rows = [
-            [h.name, h.cost, h.tokens, h.workflows, h.subagents, h.aggregate] for h in harnesses
-        ]
-        return "harnesses", header, rows
-
     def _active_tab(self) -> str:
         tabs = self.current_tabs()
         return tabs[self.tab % len(tabs)] if tabs else ""
@@ -3954,31 +3845,22 @@ class App:
     def _export_dataset(self) -> tuple[str, list[str], list[list]]:
         # Export the active panel at full precision under the active price mode.
         if self.overlay_top == "prices":
-            return self._prices_dataset()
+            return exporting.prices_dataset(self.priced_model_entries())
         if self.view == "session":
             return self._session_tab_dataset()
         if self.view == "zoom":
             return self._zoom_tab_dataset()
         if self.browse_mode == "machines":
-            return self._machines_dataset(self.machines)
+            return exporting.machines_dataset(self.machines)
         if self.browse_mode == "harnesses":
-            return self._harnesses_dataset(self.harnesses)
+            return exporting.harnesses_dataset(self.harnesses)
         if self.browse_mode == "projects":
-            return self._projects_dataset(self.projects)
+            return exporting.projects_dataset(self.projects)
         if self.focus == "years":
-            return self._periods_dataset("years", "year", self.years)
+            return exporting.periods_dataset("years", "year", self.years)
         if self.focus == "months":
-            return self._periods_dataset("months", "month", self.months)
-        return self._periods_dataset("days", "day", self.panel_days)
-
-    @staticmethod
-    def _periods_dataset(scope: str, label: str, items: list) -> tuple[str, list[str], list[list]]:
-        header = [label, "cost", "tokens", "sessions", "subagents", "unpriced_tokens"]
-        rows = [
-            [getattr(it, label), it.cost, it.tokens, it.workflows, it.subagents, it.unpriced_tokens]
-            for it in items
-        ]
-        return scope, header, rows
+            return exporting.periods_dataset("months", "month", self.months)
+        return exporting.periods_dataset("days", "day", self.panel_days)
 
     _PRICE_COLUMN_INDEX = {"input": 0, "output": 1, "cache_read": 2, "cache_write": 3}
 
@@ -4196,48 +4078,24 @@ class App:
         out.sort(key=lambda r: (r[1], r[2]), reverse=True)
         return out
 
-    def _prices_dataset(self) -> tuple[str, list[str], list[list]]:
-        header = [
-            "model",
-            "family",
-            "routes",
-            "pinned",
-            "share",
-            "eff_usd_per_mtok",
-            "eff_approx",
-            "input",
-            "output",
-            "cache_read",
-            "cache_write",
-        ]
-        rows = [
-            [
-                e.bare,
-                family_label(e.family),
-                " ".join(e.routes),
-                e.pinned,
-                round(e.share, 4),
-                round(e.eff, 4),
-                e.approx,
-                *e.price,
-            ]
-            for e in self.priced_model_entries()
-        ]
-        return "prices", header, rows
-
     def _zoom_tab_dataset(self) -> tuple[str, list[str], list[list]]:
         tab = self._active_tab()
         if self.zoom_model:
-            return self._model_sessions_dataset(self.current_sessions(), self.zoom_model)
+            sessions = self.current_sessions()
+            usage = [(w, self.model_session_usage(w.id, self.zoom_model)) for w in sessions]
+            return exporting.model_sessions_dataset(usage, self.zoom_model)
         if tab == "Projects":
-            return self._projects_dataset(self.zoom_projects())
+            return exporting.projects_dataset(self.zoom_projects())
         if tab == "Models":
-            return self._models_dataset(self.aggregate_models(self._active_scope_workflows()))
+            return exporting.models_dataset(self.aggregate_models(self._active_scope_workflows()))
         if tab == "Harnesses":
-            return self._sources_dataset(self._active_scope_workflows())
+            return exporting.sources_dataset(self._active_scope_workflows())
         if tab == "Machines":
-            return self._machine_agg_dataset(self._active_scope_workflows())
-        return self._sessions_dataset(self.current_sessions())
+            rows = self.machine_rows(self._active_scope_workflows())
+            return exporting.machine_agg_dataset(rows)
+        sessions = self.current_sessions()
+        notes = {workflow.id: self.note_for(workflow.id) for workflow in sessions}
+        return exporting.sessions_dataset(sessions, notes)
 
     def _active_scope_workflows(self) -> list[Workflow]:
         if self.browse_mode == "machines":
@@ -4262,29 +4120,6 @@ class App:
             )
         return self.zoom_scope_workflows()
 
-    @staticmethod
-    def _sources_dataset(workflows: list[Workflow]) -> tuple[str, list[str], list[list]]:
-        by_source: dict[str, dict[str, float | int]] = defaultdict(
-            lambda: {"cost": 0.0, "tokens": 0, "sessions": 0}
-        )
-        for w in workflows:
-            item = by_source[w.source or "unknown"]
-            item["cost"] = float(item["cost"]) + w.total_cost
-            item["tokens"] = int(item["tokens"]) + w.total_tokens
-            item["sessions"] = int(item["sessions"]) + 1
-        rows = sorted(
-            by_source.items(),
-            key=lambda kv: (float(kv[1]["cost"]), int(kv[1]["tokens"])),
-            reverse=True,
-        )
-        header = ["source", "cost", "tokens", "sessions"]
-        return "sources", header, [[s, it["cost"], it["tokens"], it["sessions"]] for s, it in rows]
-
-    def _machine_agg_dataset(self, workflows: list[Workflow]) -> tuple[str, list[str], list[list]]:
-        rows = self.machine_rows(workflows)
-        header = ["machine", "cost", "tokens", "sessions"]
-        return "machines", header, [[m, it["cost"], it["tokens"], it["sessions"]] for m, it in rows]
-
     def _session_tab_dataset(self) -> tuple[str, list[str], list[list]]:
         session = self.current_session()
         if session is None:
@@ -4298,66 +4133,21 @@ class App:
             return self._turns_dataset(session)
         if tab == "Tools":
             return self._tools_dataset(session)
-        return self._models_dataset([(r["model_name"], r) for r in self.model_mix(session.id)])
-
-    @staticmethod
-    def _models_dataset(rows: list) -> tuple[str, list[str], list[list]]:
-        header = ["model", "runs", "cost", "tokens", "cache_read", "cache_write", "output"]
-        out = []
-        for name, it in rows:
-            tokens_total = it["tokens"] if "tokens" in it else it["tokens_total"]
-            out.append(
-                [
-                    name,
-                    it["runs"],
-                    it["cost"],
-                    tokens_total,
-                    it["cache_read"],
-                    it["cache_write"],
-                    it["output"],
-                ]
-            )
-        return "models", header, out
+        return exporting.models_dataset([(r["model_name"], r) for r in self.model_mix(session.id)])
 
     def _subagents_dataset(self, session: Workflow) -> tuple[str, list[str], list[list]]:
         nodes = self._priced_nodes(
             [r for r in self.session_node_rows(session.id) if r["depth"] > 0]
         )
-        header = ["date", "depth", "agent", "model", "cost", "tokens", "title"]
-        rows = [
-            [
-                r.get("created_at", ""),
-                r["depth"],
-                r["agent"],
-                r["model_name"],
-                r["cost"],
-                r["tokens_total"],
-                r["title"],
-            ]
-            for r in self.sorted_subagent_rows(nodes)
-        ]
-        return "subagents", header, rows
+        return exporting.subagents_dataset(self.sorted_subagent_rows(nodes))
 
     def _turns_dataset(self, session: Workflow) -> tuple[str, list[str], list[list]]:
         api = self.show_api_prices and not self.store.demo
-        header = [
-            "time",
-            "agent",
-            "depth",
-            "model",
-            "cost",
-            "tokens",
-            "input",
-            "output",
-            "cache_read",
-            "cache_write",
-            "prompt",
-        ]
         rows = []
         for r in self.reader_turn_rows(session.id):
-            cost = r["cost"]
-            if api and not cost:  # reprice a wholly-$0 turn at list price, like the tab
-                cost = api_equivalent_cost(
+            row = dict(r)
+            if api and not row["cost"]:  # reprice a wholly-$0 turn at list price, like the tab
+                row["cost"] = api_equivalent_cost(
                     r["model_name"],
                     r["input"],
                     r["output"],
@@ -4366,41 +4156,16 @@ class App:
                     r["cache_write"],
                     r.get("cache_write_1h", 0),
                 )
-            rows.append(
-                [
-                    r["time"],
-                    r["agent"] if r["depth"] else "-",
-                    r["depth"],
-                    r["model_name"],
-                    cost,
-                    r["tokens_total"],
-                    r["input"],
-                    r["output"],
-                    r["cache_read"],
-                    r["cache_write"],
-                    (r.get("prompt_title") or "").strip(),
-                ]
-            )
-        return "turns", header, rows
+            rows.append(row)
+        return exporting.turns_dataset(rows)
 
     def _tools_dataset(self, session: Workflow) -> tuple[str, list[str], list[list]]:
         api = self.show_api_prices and not self.store.demo
-        header = [
-            "tool",
-            "model",
-            "calls",
-            "cost",
-            "tokens",
-            "input",
-            "output",
-            "cache_read",
-            "cache_write",
-        ]
         rows = []
         for r in self.session_tool_rows(session.id):
-            cost = r["cost"]
-            if api and not cost:
-                cost = api_equivalent_cost(
+            row = dict(r)
+            if api and not row["cost"]:
+                row["cost"] = api_equivalent_cost(
                     r["model_name"],
                     r["input"],
                     r["output"],
@@ -4409,35 +4174,8 @@ class App:
                     r["cache_write"],
                     r.get("cache_write_1h", 0),
                 )
-            rows.append(
-                [
-                    r["tool"],
-                    r["model_name"],
-                    r["calls"],
-                    cost,
-                    r["tokens_total"],
-                    r["input"],
-                    r["output"],
-                    r["cache_read"],
-                    r["cache_write"],
-                ]
-            )
-        return "tools", header, rows
-
-    @staticmethod
-    def _csv_safe(value):
-        # Neutralize spreadsheet formula injection: a cell starting with =, +, -,
-        # @, tab, or CR is executed as a formula by Excel/LibreOffice/Sheets, and
-        # titles/dirs/models are attacker-influenced text. Only strings need the
-        # guard, and a string that is itself a plain number (a negative cost)
-        # passes through -- only would-be formulas get the leading apostrophe.
-        if not isinstance(value, str) or not value or value[0] not in "=+-@\t\r":
-            return value
-        try:
-            float(value)
-            return value
-        except ValueError:
-            return "'" + value
+            rows.append(row)
+        return exporting.tools_dataset(rows)
 
     def export_current(self) -> None:
         if self.store.demo:
@@ -4450,10 +4188,7 @@ class App:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = os.path.abspath(f"opentab-{scope}-{stamp}.csv")
         try:
-            with open(path, "w", newline="") as fh:
-                writer = csv.writer(fh)
-                writer.writerow(header)
-                writer.writerows([[self._csv_safe(cell) for cell in row] for row in rows])
+            exporting.write_csv(path, header, rows)
         except OSError as exc:
             self.notify(f"export failed: {exc}", "error")
             return

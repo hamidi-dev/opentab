@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import math
-import re
 import textwrap
-from bisect import bisect_left
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -21,6 +19,7 @@ from opentab.models import (
 )
 from opentab.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
 from opentab.tui import bindings, keymap
+from opentab.tui.trace import TraceLine, build_event_body, format_block, output_target, wrapped
 
 if TYPE_CHECKING:
     from opentab.tui.app import App
@@ -97,16 +96,6 @@ from opentab.util import (
     unicode_screen,
 )
 from opentab.whats_new import RELEASES_URL
-
-
-class TraceLine(str):
-    """Transcript styling belongs to its event, never to text found inside it."""
-
-    def __new__(cls, text: str, role: str, event: int | None = None):
-        line = super().__new__(cls, text)
-        line.role = role
-        line.event = event
-        return line
 
 
 def _turn_read_mark(row) -> str:
@@ -4143,7 +4132,7 @@ class Renderer:
         prompt = self.app.subagent_prompt_text()
         lines += [""] + self._sectioned_box(
             "# Received prompt",
-            [self._trace_block(prompt, "", inner, len(prompt.splitlines()))],
+            [format_block(prompt, "", inner, len(prompt.splitlines()))],
             width,
             self._subagent_wrap(
                 [
@@ -4882,16 +4871,6 @@ class Renderer:
             out.append(cost)
         return out
 
-    # How much of one event the pane shows before it says how much it is holding back.
-    # The store already clipped the text; this is the SECOND cap, and it exists because
-    # a 2,000-character tool result is four screens of a pane whose job is to let you
-    # scan a turn -- the head is what identifies the output, the rest is why there is a
-    # cap at all.
-    _TRACE_OUTPUT_LINES = 6
-    _TRACE_PARAM_LINES = 6
-    _TRACE_VALUE_LINES = 10
-    _TRACE_PROSE_LINES = 40
-
     def detail_turn_trace(self, workflow: Workflow, width: int) -> list[str]:
         rows = self.reader_turn_rows(workflow.id)
         idx = self.app.active_trace_drill
@@ -4955,7 +4934,6 @@ class Renderer:
         row = rows[idx]
         cost = self.turn_costs([row])[0]
         pos = siblings.index(idx) + 1
-        wrap = max(20, width - 2)
         prefix = f"Turn {pos} of {len(siblings)}"
         if self.app.active_subagent_turns:
             prefix = f"Execution turn {idx + 1} · {pos} of {len(siblings)} in prompt"
@@ -4994,7 +4972,7 @@ class Renderer:
                 else "turn"
             )
             return lines + [TraceLine(f"  Loading {label} — reading recorded content…", "meta")]
-        lines += [TraceLine(ln, "meta") for ln in self._trace_wrapped("", meta, "  ", width)] + [""]
+        lines += [TraceLine(ln, "meta") for ln in wrapped("", meta, "  ", width)] + [""]
         if not self.app.session_supports_trace(workflow.id):
             reason = self.app.trace_unavailable_reason(workflow.id)
             message = (
@@ -5002,9 +4980,7 @@ class Renderer:
                 if reason
                 else "Recorded trace unavailable for this source; numeric usage is still available."
             )
-            return lines + [
-                TraceLine(ln, "meta") for ln in self._trace_wrapped("  ", message, "  ", width)
-            ]
+            return lines + [TraceLine(ln, "meta") for ln in wrapped("  ", message, "  ", width)]
         if remote and self.app._remote_trace_error:
             return lines + [
                 TraceLine(f"  {self.app._remote_trace_error}", "meta"),
@@ -5015,22 +4991,19 @@ class Renderer:
             # tab only offers this level where the store said it could answer.
             lines.append("  No content recorded for this turn.")
             return lines
-        for event_index, event in enumerate(events):
-            kind = event.get("kind")
-            if kind == "text":
-                lines += self._trace_prose(event, min(wrap, 100), indent="  ")
-            elif kind == "reasoning":
-                lines.append(TraceLine("✻ Thinking", "reasoning"))
-                lines += self._trace_prose(event, min(wrap, 100), indent="  ")
-            else:
-                start = len(lines) - 2
-                lines += self._trace_call(event, wrap, event_index)
-                if event.get("output") or event.get("output_dropped"):
-                    self._trace_tool_at.update(
-                        (line, event_index) for line in range(start, len(lines) - 2)
-                    )
-                    self._trace_output_ends.append((len(lines) - 3, event_index))
-            lines.append("")
+        full_events = self.app._trace_full[2] if self.app._trace_full is not None else None
+        body = build_event_body(
+            events,
+            width,
+            line_offset=len(lines),
+            expanded=self.app.trace_expanded,
+            open_outputs=frozenset(self.app._trace_open_outputs),
+            full_events=full_events,
+            select_key=self._key("main", "select"),
+        )
+        lines += body.lines
+        self._trace_tool_at = body.tool_lines
+        self._trace_output_ends = body.output_ends
         while lines and not lines[-1]:
             lines.pop()
         if not self.app.trace_expanded and len(events) >= TRACE_EVENTS_CAP:
@@ -5048,7 +5021,7 @@ class Renderer:
             # Say WHY the thinking is missing. This harness writes its thinking blocks
             # empty -- only the signed blob survives -- so silence here would read as a
             # parsing bug on the one thing people most expect to find.
-            lines += self._trace_wrapped(
+            lines += wrapped(
                 "· ",
                 "This harness records no reasoning text; its thinking blocks are empty.",
                 "  ",
@@ -5058,204 +5031,7 @@ class Renderer:
 
     def trace_output_target(self) -> int | None:
         """The output section at the viewport top, or the next one below it."""
-        ends = self._trace_output_ends
-        pos = bisect_left(ends, (self.app.scroll, -1))
-        return ends[pos][1] if pos < len(ends) else None
-
-    @staticmethod
-    def _trace_wrapped(prefix: str, text: str, cont: str, wrap: int) -> list[str]:
-        # One logical line: the prefix rides the first row, continuations are indented,
-        # and BOTH are charged against the pane. wrap_cells re-joins on single spaces, so
-        # the prefix is added here rather than baked into the string handed to it -- built
-        # in, an indent comes back stripped and the block loses its shape.
-        room = max(4, wrap - display_width(cont if len(cont) > len(prefix) else prefix))
-        parts = wrap_cells(text, room) or [""]
-        return [prefix + parts[0]] + [cont + p for p in parts[1:]]
-
-    @staticmethod
-    def _cell_chunks(text: str, width: int) -> list[str]:
-        # Hard-wrap at cell boundaries, preserving EVERY character. wrap_cells is a WORD
-        # wrapper: it splits on whitespace and rejoins on single spaces, which is right
-        # for prose and wrong for anything quoted -- `printf 'a  b'` comes back claiming
-        # to print one space, and a column-aligned table loses its alignment.
-        width = max(1, width)
-        if text.isascii():
-            return [text[i : i + width] for i in range(0, len(text), width)] or [""]
-        out: list[str] = []
-        start = used = 0
-        for i, ch in enumerate(text):
-            cells = display_width(ch)
-            if used + cells > width and i > start:
-                out.append(text[start:i])
-                start, used = i, 0
-            used += cells
-        return out + [text[start:]]
-
-    def _trace_block(self, text: str, indent: str, wrap: int, limit: int) -> list[str]:
-        """Raw transcript lines, verbatim: every space, tab stop and blank line kept.
-
-        This is what makes a patch, a heredoc or an aligned table readable. Overlong
-        lines break at a cell boundary rather than being re-flowed, because a shell
-        command's characters are the thing the reader came for.
-        """
-        out: list[str] = []
-        lines = text.splitlines() or [""]
-        room = max(4, wrap - display_width(indent))
-        for raw in lines[:limit]:
-            raw = raw.replace("\t", "    ")
-            if not raw:
-                out.append(indent.rstrip())
-                continue
-            out += [indent + chunk for chunk in self._cell_chunks(raw, room)]
-        hidden = len(lines) - limit
-        if hidden > 0:
-            out.append(f"{indent}… {hidden:,} more line{'' if hidden == 1 else 's'}")
-        return out
-
-    def _trace_prose(self, event: dict, wrap: int, indent: str = "  ") -> list[str]:
-        raw_lines = (event.get("text") or "").splitlines()
-        limit = len(raw_lines) if self.app.trace_expanded else self._TRACE_PROSE_LINES
-        out = []
-        fenced = ""
-        role = "reasoning" if event.get("kind") == "reasoning" else "text"
-        for raw in raw_lines[:limit]:
-            fence = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", raw)
-            code = fenced or fence or raw.startswith(("    ", "\t"))
-            if fence:
-                if not fenced:
-                    fenced = fence[1]
-                    out += [
-                        TraceLine(ln, "meta")
-                        for ln in self._trace_wrapped(
-                            indent, fence[2].strip() or "Code", indent, wrap
-                        )
-                    ]
-                elif (
-                    fence[1][0] == fenced[0]
-                    and len(fence[1]) >= len(fenced)
-                    and not fence[2].strip()
-                ):
-                    fenced = ""
-                else:
-                    out += [TraceLine(ln, role) for ln in self._trace_block(raw, indent, wrap, 1)]
-                continue
-            if code:
-                out += [TraceLine(ln, role) for ln in self._trace_block(raw, indent, wrap, 1)]
-            elif raw.strip():
-                heading = re.match(r"^ {0,3}#{1,6}\s+(.+?)(?:\s+#+)?$", raw)
-                strong = re.fullmatch(r"\s*\*\*([^*]+)\*\*\s*", raw)
-                line_role = "heading" if heading or strong else role
-                raw = heading[1] if heading else strong[1] if strong else raw
-                # Deliberately small Markdown surface: no interpretation of tool results,
-                # and inline code is protected from emphasis processing.
-                parts = re.split(r"(`+[^`]+`+)", raw)
-                raw = "".join(
-                    part if part.startswith("`") else re.sub(r"\*\*([^*]+)\*\*", r"\1", part)
-                    for part in parts
-                )
-                out += [
-                    TraceLine(indent + part, line_role)
-                    for part in wrap_cells(raw, max(4, wrap - display_width(indent)))
-                ]
-            else:
-                out.append("")
-        if len(raw_lines) > limit:
-            out.append(TraceLine(f"{indent}… {len(raw_lines) - limit:,} more lines", "meta"))
-        dropped = event.get("dropped") or 0
-        if dropped:
-            out.append(TraceLine(f"{indent}… {dropped:,} more characters", "meta"))
-        return out
-
-    def _trace_call(self, event: dict, wrap: int, event_index: int = 0) -> list[str]:
-        name = short_tool_name(str(event.get("name") or "(unknown)"))
-        status = event.get("status")
-        if status in ("error", "pending", "running"):
-            name += f" · {str(status).capitalize()}"
-        args = str(event.get("args") or "")
-        limit = len(args.splitlines()) if self.app.trace_expanded else self._TRACE_VALUE_LINES
-        # Whitespace is NOT collapsed: 48% of real tool calls carry a multi-line argument
-        # and 25% a multi-line command (heredocs, patches, a Write's body), and "the exact
-        # command that ran" is this view's whole promise. Flattened, a patch becomes one
-        # unreadable line and `printf 'a  b'` starts lying about what it printed.
-        out = self._trace_block(f"▸ {name}", "", wrap, 1)
-        if args:
-            out += self._trace_block(args, "│  ", wrap, limit)
-        out = [
-            TraceLine(ln, "error" if status == "error" else "tool")
-            if i == 0
-            else TraceLine(ln, "text")
-            for i, ln in enumerate(out)
-        ]
-        params = event.get("params") or []
-        param_limit = len(params) if self.app.trace_expanded else self._TRACE_PARAM_LINES
-        for key, value in params[:param_limit]:
-            if key == "…":
-                out.append(TraceLine(f"│  … {value}", "meta"))
-                continue
-            text = str(value)
-            if "\n" in text:
-                out += self._trace_block(f"{key}:", "│  ", wrap, 1)
-                out += self._trace_block(
-                    text,
-                    "│    ",
-                    wrap,
-                    len(text.splitlines()) if self.app.trace_expanded else self._TRACE_VALUE_LINES,
-                )
-            else:
-                out += self._trace_block(f"{key}: {text}", "│  ", wrap, 1)
-        extra = len(params) - param_limit
-        if extra > 0:
-            out.append(f"│  … {extra} more argument{'' if extra == 1 else 's'}")
-        out = [ln if isinstance(ln, TraceLine) else TraceLine(ln, "text") for ln in out]
-        expanded = self.app.trace_expanded or event_index in self.app._trace_open_outputs
-        output_event = event
-        if expanded and self.app._trace_full is not None:
-            full = self.app._trace_full[2]
-            if event_index < len(full):
-                output_event = full[event_index]
-        if event.get("output") or event.get("output_dropped"):
-            label = "Output · full" if expanded else "Output · preview"
-            out.append(TraceLine("│", "meta"))
-            key = self._key("main", "select")
-            if not self.app.trace_expanded and key:
-                label += f" · {key} {'collapse' if expanded else 'expand'}"
-            out.append(TraceLine(shorten(f"│  {label}", wrap), "meta", event_index))
-            out += [
-                TraceLine(ln, "output", event_index)
-                for ln in self._trace_output(output_event, wrap, expanded)
-            ]
-            out[0].event = event_index
-        out.append(TraceLine("╰─", "meta"))
-        return out
-
-    def _trace_output(self, event: dict, wrap: int, expanded: bool = False) -> list[str]:
-        output = event.get("output") or ""
-        if not output:
-            return []
-        if expanded:
-            return [
-                ln or "│" for ln in self._trace_block(output, "│  ", wrap, len(output.splitlines()))
-            ]
-        # Collapse runs of blank lines before counting: many tools separate their results
-        # with them, and blank runs should not use up the entire preview.
-        shown: list[str] = []
-        for para in output.splitlines():
-            if para.strip() or (shown and shown[-1].strip()):
-                shown.append(para)
-        while shown and not shown[-1].strip():
-            shown.pop()
-        body = self._trace_block("\n".join(shown), "│  ", wrap, len(shown))
-        # Budget screen rows, not source lines: one minified result must not fill a screen.
-        hidden = max(0, len(body) - self._TRACE_OUTPUT_LINES)
-        out = [ln or "│" for ln in body[: self._TRACE_OUTPUT_LINES]]
-        tail = []
-        if hidden:
-            tail.append(f"{hidden:,} more line{'' if hidden == 1 else 's'}")
-        if event.get("output_dropped"):
-            tail.append(f"{event['output_dropped']:,} more characters")
-        if tail:
-            out += self._trace_wrapped("│  … ", ", ".join(tail), "│    ", wrap)
-        return out
+        return output_target(self._trace_output_ends, self.app.scroll)
 
     def detail_turn_drill(self, workflow: Workflow, width: int) -> list[str]:
         """Render one prompt's full text, totals, and turns."""
