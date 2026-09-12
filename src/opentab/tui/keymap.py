@@ -222,6 +222,11 @@ def _on_trace(app: App) -> bool:
     return in_main(app) and _on_turns(app) and app.active_trace_drill is not None
 
 
+def _trace_available(app: App) -> bool:
+    wf = app.current_session()
+    return bool(wf is not None and app.session_supports_trace(wf.id))
+
+
 def _enter_opens_something(app: App) -> bool:
     if not in_main(app):
         return False
@@ -237,9 +242,7 @@ def _enter_opens_something(app: App) -> bool:
         if app.active_trace_drill is not None:
             return not app.trace_expanded and app.renderer.trace_output_target() is not None
         wf = app.current_session()
-        return app.active_turn_drill is None or (
-            wf is not None and app.session_supports_trace(wf.id)
-        )
+        return app.active_turn_drill is None or wf is not None
     if app._on_subagents_tab():
         return app.active_subagent_drill is None or not app.subagent_turns_unavailable()
     if app.active_tab_name() == "Tools":
@@ -267,7 +270,11 @@ def _enter_summary(app: App) -> str:
         if app.active_trace_drill is not None:
             return "expand / collapse the output at the top of the viewport (or the next below)"
         return (
-            "open the selected turn"
+            (
+                "open the selected turn"
+                if _trace_available(app)
+                else "open the selected turn's numeric token breakdown; no output expansion is available"
+            )
             if app.active_turn_drill is not None
             else "open the selected prompt"
         )
@@ -346,10 +353,12 @@ KEYS: tuple[Key, ...] = (
         id="trace-scroll",
         ctx="main",
         actions=("down", "up"),
-        summary="scroll this turn; the ▸ marker follows the next output section",
+        summary=lambda app: "scroll this turn; the ▸ marker follows the next output section"
+        if _trace_available(app)
+        else "scroll this turn's numeric usage; no recorded output expansion is available",
         section="here",
         when=_on_trace,
-        chip="scroll",
+        chip=lambda app: "scroll" if _trace_available(app) else "numeric-only",
     ),
     Key(
         id="trace-siblings",
@@ -366,7 +375,7 @@ KEYS: tuple[Key, ...] = (
         actions=("trace_expand",),
         summary="expand the full recorded content / return to preview",
         section="here",
-        when=_on_trace,
+        when=lambda app: _on_trace(app) and _trace_available(app),
         chip=lambda app: "collapse" if app.trace_expanded else "expand",
     ),
     Key(
@@ -378,6 +387,8 @@ KEYS: tuple[Key, ...] = (
         when=_enter_opens_something,
         chip=lambda app: "output"
         if _on_trace(app)
+        else "tokens"
+        if _on_turns(app) and app.active_turn_drill is not None and not _trace_available(app)
         else "turns"
         if app._on_subagents_tab() and not _on_turns(app) and app.active_subagent_drill is not None
         else "in",

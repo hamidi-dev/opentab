@@ -174,6 +174,15 @@ and the same session-global turn numbers as its drill table. If context is not
 recorded, only cost is shown. `$` updates costs at both levels; compaction and
 cache markers in the overview and the full-session **Context** tab are unchanged.
 
+Prompt details also show a colored token breakdown with exact category counts for
+that consecutive prompt run. Expand a turn's token count for its individual
+breakdown; `Tab` and `Enter` work on these native disclosures. `$` preserves their
+expansion and keyboard focus, and a Tools call jump opens the owning turn's breakdown.
+These are answering-turn usage counts, not typed prompt size. One-hour cache writes
+are a subset, and separate reasoning can be zero when included in output. Recorded
+totals stay independent of category sums, with differences shown explicitly. The
+live payload adds only numeric counts; static reports and raw-content access are unchanged.
+
 The page's refresh button re-reads local data; it does not automatically re-pull
 remote machines. A pulled machine's own refresh button requests a new summary.
 See [fleet refresh](machines.md#refresh-and-offline-history) for the distinction.

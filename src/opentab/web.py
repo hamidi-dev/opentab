@@ -330,6 +330,15 @@ def session_extras(app: App, workflow_id: str) -> dict:
                     "real": _money6(real),
                     "api": _money6(api),
                     "tokens": int(r.get("tokens_total") or 0),
+                    # Five additive categories plus the long-TTL cache-write subset.
+                    "tok": [
+                        int(r.get("input") or 0),
+                        int(r.get("output") or 0),
+                        int(r.get("reasoning") or 0),
+                        int(r.get("cache_read") or 0),
+                        int(r.get("cache_write") or 0),
+                        int(r.get("cache_write_1h") or 0),
+                    ],
                     # Subagent contexts are separate and must not break the main chain.
                     "ctx": 0 if (int(r.get("depth") or 0) or not curve) else context_size(r),
                     "cached": None if not curve else cached_share(r),

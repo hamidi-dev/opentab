@@ -89,13 +89,19 @@ drill adds no raw-content support to web, fleet, CLI or MCP.
 On the Turns tab, `j`/`k` select a prompt and `Enter` (or a click) opens its full
 text and per-turn rows; `g`/`G` jump to the first/last prompt. Inside a prompt,
 `j`/`k` select a turn, `g`/`G` jump to the first/last turn, and `Enter` opens its
-recorded content. The Content column shows text, thinking and tool names where
-space allows. Inside a turn, `j`/`k` scroll while `[`/`]` step between turns. The
+token breakdown and recorded content where supported. The Content column shows
+text, thinking and tool names where space allows. Inside a turn, `j`/`k` scroll
+while `[`/`]` step between turns. The
 prompt and turn identity stay visible above the transcript. `z` reads the selected
 turn's full arguments, reasoning and output; a second `z` returns to the capped preview.
 Expansion is temporary and is released when you leave the turn. Recorded tool
-errors are labeled explicitly. Sources that do not support content have no turn
-detail; real content is also unavailable in demo mode.
+errors are labeled explicitly. Sources without recorded content still have numeric
+turn detail, but no output expansion. Real content is unavailable in demo mode.
+
+Prompt and turn details show a colored token breakdown and exact counts. Prompt
+totals sum the answering turns, not the text you typed. One-hour cache writes are
+shown as a subset; separate reasoning may be zero when already included in output.
+Recorded totals are preserved even when the category sum differs.
 
 On **Tools**, `j`/`k` select a tool or server/namespace ranking and `Enter` or
 double-click opens its contribution, per-call averages, token composition and exact

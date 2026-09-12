@@ -2686,11 +2686,7 @@ class App:
             if self.active_trace_drill is not None:
                 self.toggle_trace_output()
                 return True
-            if self.session_supports_trace(wf.id):
-                return self.open_trace_drill()
-            if reason := self.trace_unavailable_reason(wf.id):
-                self.notify(reason, "warn")
-            return False
+            return self.open_trace_drill()
         groups = self.turn_runs(wf.id)
         if not groups:
             return False

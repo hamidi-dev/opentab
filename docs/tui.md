@@ -324,6 +324,15 @@ on available row data; content flags advertise only an openable trace and never
 trigger a content fetch just to draw a marker. Tools attribution means usage in
 steps that invoked a tool, not the size of the tool's output.
 
+Prompt details sum the selected consecutive run's normalized token categories,
+including its interleaved subagent steps, rather than measuring the typed prompt.
+The selected turn shows the same colored breakdown for its own row. Both use
+`_token_breakdown_box`, shared with Tools: uncached input, output, separate
+reasoning, cache read and cache write are additive; one-hour cache writes remain
+a subset. Exact recorded totals stay independent, with differences disclosed.
+Nested execution readers use only their own `reader_turn_rows` scope. These
+breakdowns add no source reads and do not depend on trace availability.
+
 Above the prompt table, a three-row chart shows total cost per consecutive prompt
 run, matching the table's costs and prompt numbers. Inside a prompt, cost uses
 three chart rows and main-thread context uses five, scoped to that prompt's turns
@@ -379,7 +388,9 @@ highlight and viewport change. Layout keys include the turn snapshot, pane width
 prompt drill, pricing mode, and capabilities. Reload and harness/demo changes
 clear both memos; a price refresh also clears the layout. Painting checks headers
 only in the visible slice, not across the entire cached table. Raw traces use a
-separate one-turn layout cache, released with trace expansion state.
+separate one-turn layout cache, released with trace expansion state. Both caches
+restore token-band paint metadata. Trace painting applies these colors explicitly
+without treating numbers in raw content as usage or money.
 
 Context's measured curve uses main-thread `input + cache_read + cache_write`.
 Subagents have their own windows. Curve support is separate from optional
@@ -393,8 +404,9 @@ of the measured first-turn baseline.
 
 ## The Turn Reader
 
-A trace is a third level under Turns: prompts explain **when**, their turns
-explain **which calls**, and a selected turn explains **what happened**. Its
+A selected turn is the third level under Turns. It shows numeric token usage even
+when recorded content is unavailable, including during content loading or errors.
+Where supported, its trace also explains **what happened**. The trace's
 `content_key` comes from the source record for local sessions, or from a frozen
 summary identity for managed remote sessions. Separately loaded usage and content
 must agree. Events contain narration, recorded reasoning, or tool arguments/results.
