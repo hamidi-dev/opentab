@@ -8,7 +8,7 @@
           "items": [
             {
               "text": "Find past conversations across OpenCode, Claude Code and Codex through keyword search in the CLI or MCP. Opt-in indexing stores text locally in plaintext; refresh it explicitly.",
-              "hint": {"text": "opentab conversations index --allow-raw-content"}
+              "hint": {"text": "After enabling MCP conversation access and building the index, ask your agent: \"What did we decide about the database migration?\" It can find the discussion even if it happened in another supported coding tool."}
             },
             {
               "text": "Drill into a subagent's own prompts, turns and traces where retained.",
