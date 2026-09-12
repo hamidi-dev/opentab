@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 from contextlib import closing
 from urllib.parse import quote
 
@@ -891,7 +892,103 @@ class Store:
         except sqlite3.Error:
             return False
 
-    def conversation_manifest(self, _root_id: str):
+    def conversation_manifest(self, root_id: str):
+        """Fingerprint one execution tree's row revisions, never its raw text."""
+        if self.demo or not isinstance(root_id, str) or not root_id:
+            return None
+        uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
+        try:
+            initial = os.stat(self.db)
+            with closing(sqlite3.connect(uri, uri=True)) as conn:
+                conn.execute("begin")
+                inspected_ms = time.time_ns() // 1_000_000
+                schema = {
+                    table: list(conn.execute(f"pragma table_info({table})"))
+                    for table in ("session", "message", "part", "event_sequence")
+                }
+                columns = {table: {row[1] for row in rows} for table, rows in schema.items()}
+                required = {
+                    "session": {"id", "parent_id"},
+                    "message": {"id", "session_id", "time_created", "time_updated", "data"},
+                    "part": {
+                        "id",
+                        "session_id",
+                        "message_id",
+                        "time_created",
+                        "time_updated",
+                        "data",
+                    },
+                }
+                if any(
+                    not names <= columns[table]
+                    or [row[1] for row in schema[table] if row[5]] != ["id"]
+                    for table, names in required.items()
+                ):
+                    # Missing revisions or ambiguous IDs cannot support a root-local shortcut.
+                    return self._conversation_database_manifest()
+                tree = """with recursive tree(id) as (
+                  select id from session where id = ?
+                  union
+                  select s.id from session s join tree on s.parent_id = tree.id
+                ) """
+                executions = list(
+                    conn.execute(
+                        tree
+                        + "select id, parent_id from session where id in (select id from tree) order by id",
+                        [root_id],
+                    )
+                )
+                if not executions:
+                    return None
+                digest = hashlib.sha256()
+                digest.update(json.dumps(executions, separators=(",", ":")).encode())
+                for table in ("message", "part"):
+                    extra = (
+                        ", r.message_id"
+                        if table == "part"
+                        else (", r.parent_id" if "parent_id" in columns[table] else "")
+                    )
+                    # IN bounds the scan by session before sorting; a join can make
+                    # SQLite walk the entire ID index once for every root instead.
+                    rows = list(
+                        conn.execute(
+                            tree
+                            + f"select r.id, r.session_id, r.time_created, r.time_updated{extra} "
+                            f"from {table} r where r.session_id in (select id from tree) order by r.id",
+                            [root_id],
+                        )
+                    )
+                    # Do not bless a revision that can still collide with another write
+                    # in the same millisecond. Unknown/future clocks also take the full read.
+                    if any(
+                        not isinstance(row[3], int) or row[3] >= inspected_ms - 1 for row in rows
+                    ):
+                        return None
+                    digest.update(table.encode())
+                    digest.update(json.dumps(rows, separators=(",", ":")).encode())
+                if {"aggregate_id", "seq"} <= columns["event_sequence"]:
+                    rows = list(
+                        conn.execute(
+                            tree + "select e.aggregate_id, e.seq from event_sequence e "
+                            "where e.aggregate_id in (select id from tree) order by e.aggregate_id, e.seq",
+                            [root_id],
+                        )
+                    )
+                    digest.update(json.dumps(rows, separators=(",", ":")).encode())
+                current = os.stat(self.db)
+                identity = (initial.st_dev, initial.st_ino)
+                if identity != (current.st_dev, current.st_ino):
+                    return None
+                return [
+                    "opencode-root-v1",
+                    *identity,
+                    "parent_id" in columns["message"],
+                    digest.hexdigest(),
+                ]
+        except (sqlite3.Error, OSError, ValueError, TypeError):
+            return None
+
+    def _conversation_database_manifest(self):
         from opentab.conversation import source_manifest
 
         # The duplicated WAL-index header publishes the committed WAL snapshot. Hash

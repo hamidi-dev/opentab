@@ -2,7 +2,7 @@ import json
 import os
 import sqlite3
 import tempfile
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from unittest.mock import patch
 
 import opentab as ot
@@ -24,7 +24,7 @@ from tests._support import (
 
 
 @contextmanager
-def _conversation_db(*, legacy=False, constrained=True):
+def _conversation_db(*, legacy=False, constrained=True, revisions=False):
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "conversation.db")
         writer = sqlite3.connect(db)
@@ -40,6 +40,14 @@ def _conversation_db(*, legacy=False, constrained=True):
             + ("" if legacy else ", session_id text, time_created integer")
             + ")"
         )
+        if revisions:
+            for table in ("message", "part"):
+                writer.execute(f"alter table {table} add column time_updated integer default 1")
+            writer.execute("create index session_parent_idx on session(parent_id)")
+            writer.execute(
+                "create index message_session_idx on message(session_id, time_created, id)"
+            )
+            writer.execute("create index part_session_idx on part(session_id)")
         writer.execute("insert into session values ('root', null)")
         writer.commit()
         store = ot.Store(db, type("Args", (), {"demo": False})())
@@ -87,6 +95,177 @@ def test_opencode_conversation_manifest_tracks_wal_commits_but_not_shm_reader_ch
         writer.execute("insert into session values ('another', null)")
         writer.commit()
         assert store.conversation_manifest("root") != initial
+
+
+def test_opencode_root_manifest_tracks_every_row_revision_and_import_without_global_churn():
+    with _conversation_db(revisions=True) as (_, writer, store):
+        writer.execute("pragma journal_mode=wal")
+        writer.execute("insert into session values ('other', null)")
+        for sid in ("root", "other"):
+            writer.executemany(
+                "insert into message values (?, ?, ?, ?, ?)",
+                [(sid + str(n), sid, '{"role":"user"}', n, n) for n in (1, 100)],
+            )
+            writer.execute(
+                "insert into part values (?, ?, ?, ?, 1, 1)",
+                (sid, sid + "1", '{"type":"text","text":"PRIVATE"}', sid),
+            )
+        writer.commit()
+        initial = store.conversation_manifest("root")
+        assert initial[0] == "opencode-root-v1"
+        assert json.loads(json.dumps(initial)) == initial
+        assert "PRIVATE" not in json.dumps(initial)
+        writer.execute("update part set time_updated = 2 where session_id = 'other'")
+        writer.commit()
+        assert store.conversation_manifest("root") == initial
+        writer.execute("pragma wal_checkpoint(truncate)")
+        assert store.conversation_manifest("root") == initial
+
+        # An old row's edit can leave count and max(time_updated) unchanged.
+        writer.execute("update message set time_updated = 2 where id = 'root1'")
+        writer.commit()
+        changed = store.conversation_manifest("root")
+        assert changed != initial
+        for sql in (
+            'update part set data = \'{"type":"text","text":"edited"}\', time_updated = 3 where id = \'root\'',
+            "update part set message_id = 'root100' where id = 'root'",
+            "update part set time_created = 5 where id = 'root'",
+            "update message set time_created = 6 where id = 'root1'",
+            "update part set id = 'replacement' where id = 'root'",
+            "update message set id = 'replacement' where id = 'root1'",
+            "insert into message values ('import', 'root', '{\"role\":\"user\"}', 1, 1)",
+            "insert into part values ('import', 'import', '{\"type\":\"text\",\"text\":\"imported\"}', 'root', 1, 1)",
+            "delete from part where id = 'import'",
+            "delete from message where id = 'import'",
+        ):
+            writer.execute(sql)
+            writer.commit()
+            next_manifest = store.conversation_manifest("root")
+            assert next_manifest and next_manifest != changed, sql
+            changed = next_manifest
+
+
+def test_opencode_root_manifest_tracks_subtree_membership_and_both_sides_of_reparenting():
+    with _conversation_db(revisions=True) as (_, writer, store):
+        writer.execute("insert into session values ('other', null)")
+        writer.commit()
+        original = store.conversation_manifest("root")
+        other = store.conversation_manifest("other")
+        writer.execute("insert into session values ('child', 'root')")
+        writer.execute("insert into session values ('nested', 'child')")
+        writer.execute("insert into message values ('m', 'nested', '{\"role\":\"user\"}', 1, 1)")
+        writer.execute("insert into part values ('p', 'm', '{}', 'nested', 1, 1)")
+        writer.commit()
+        child_added = store.conversation_manifest("root")
+        assert child_added != original
+        assert store.conversation_manifest("other") == other
+        writer.execute("update part set time_updated = 2 where id = 'p'")
+        writer.commit()
+        assert store.conversation_manifest("root") != child_added
+        writer.execute("update session set parent_id = 'other' where id = 'child'")
+        writer.commit()
+        assert store.conversation_manifest("root") == original
+        reparented = store.conversation_manifest("other")
+        assert reparented != other
+        writer.execute("update part set session_id = 'root' where id = 'p'")
+        writer.commit()
+        assert store.conversation_manifest("root") != original
+        assert store.conversation_manifest("other") != reparented
+        writer.execute("delete from session where id in ('child', 'nested')")
+        writer.commit()
+        assert store.conversation_manifest("other") == other
+
+
+def test_opencode_root_manifest_includes_event_sequences_and_explicit_message_parent():
+    with _conversation_db(revisions=True) as (_, writer, store):
+        writer.execute("alter table message add column parent_id text")
+        writer.execute("create table event_sequence (aggregate_id text primary key, seq integer)")
+        writer.execute("insert into event_sequence values ('root', 1)")
+        writer.execute("insert into message values ('m', 'root', '{}', 1, 1, null)")
+        writer.commit()
+        before = store.conversation_manifest("root")
+        writer.execute("insert into event_sequence values ('unrelated', 100)")
+        writer.commit()
+        assert store.conversation_manifest("root") == before
+        # A durable update is visible even when millisecond row stamps collide.
+        writer.execute("update message set data = '{\"role\":\"user\"}' where id = 'm'")
+        writer.execute("update event_sequence set seq = 2 where aggregate_id = 'root'")
+        writer.commit()
+        event_changed = store.conversation_manifest("root")
+        assert event_changed != before
+        writer.execute("update message set parent_id = 'parent' where id = 'm'")
+        writer.commit()
+        assert store.conversation_manifest("root") != event_changed
+
+
+def test_opencode_root_manifest_refuses_unknown_recent_or_future_revisions_and_weak_schema():
+    with _conversation_db(revisions=True) as (_, writer, store):
+        writer.execute("insert into message values ('m', 'root', '{}', 1, 1)")
+        writer.commit()
+        with patch("opentab.stores.opencode.time.time_ns", return_value=10_000_000_000):
+            for stamp in (None, "unknown", 9999, 10000, 12000):
+                writer.execute("update message set time_updated = ?", [stamp])
+                writer.commit()
+                assert store.conversation_manifest("root") is None
+            writer.execute("update message set time_updated = 9998")
+            writer.commit()
+            assert store.conversation_manifest("root")[0] == "opencode-root-v1"
+        assert store.conversation_manifest("missing") is None
+        store.demo = True
+        with patch("opentab.stores.opencode.sqlite3.connect", side_effect=AssertionError("demo")):
+            assert store.conversation_manifest("root") is None
+    with _conversation_db(revisions=True, constrained=False) as (_, _, store):
+        assert store.conversation_manifest("root")[0] != "opencode-root-v1"
+
+
+def test_opencode_root_manifest_reads_only_indexed_metadata_in_one_fresh_snapshot():
+    with _conversation_db(revisions=True) as (_, writer, store):
+        writer.execute("pragma journal_mode=wal")
+        writer.execute("insert into message values ('m', 'root', 'PRIVATE malformed JSON', 1, 1)")
+        writer.execute("insert into part values ('p', 'm', 'PRIVATE malformed JSON', 'root', 1, 1)")
+        writer.commit()
+        before = store.conversation_manifest("root")
+        connect = sqlite3.connect
+        queries = []
+
+        def trace(sql):
+            queries.append(sql)
+            if "from part r" in sql:
+                writer.execute("update part set time_updated = 2 where id = 'p'")
+                writer.execute("insert into session values ('child', 'root')")
+                writer.commit()
+
+        def traced_connect(*args, **kwargs):
+            assert args[0].endswith("?mode=ro")
+            conn = connect(*args, **kwargs)
+            conn.set_trace_callback(trace)
+            return conn
+
+        with patch("opentab.stores.opencode.sqlite3.connect", traced_connect):
+            assert store.conversation_manifest("root") == before
+        assert queries[0] == "begin"
+        assert all(".data" not in sql and "json_extract" not in sql for sql in queries)
+        for sql in queries:
+            if "from message r" in sql or "from part r" in sql:
+                plan = [r[3] for r in writer.execute("explain query plan " + sql)]
+                assert any("SEARCH r USING INDEX" in step for step in plan), plan
+                assert not any("SCAN r" in step for step in plan), plan
+        assert store.conversation_manifest("root") != before
+
+
+def test_opencode_root_manifest_rejects_deleted_db_and_invalidates_replacement_identity():
+    with _conversation_db(revisions=True) as (db, writer, store):
+        before = store.conversation_manifest("root")
+        with closing(sqlite3.connect(db + ".replacement")) as replacement:
+            writer.backup(replacement)
+        writer.close()
+        if os.name == "nt":
+            store.conn.close()
+        os.replace(db + ".replacement", db)
+        assert store.conversation_manifest("root") != before
+        os.unlink(db)
+        assert store.conversation_manifest("root") is None
+        assert not os.path.exists(db)
 
 
 def test_opencode_conversation_preserves_all_messages_and_verbatim_multipart_text():

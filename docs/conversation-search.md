@@ -37,16 +37,32 @@ Claude manifests cover every main/resumed transcript and owned subagent sidecar
 with device, inode, size, mtime and ctime stamps. Codex discovers rollout heads,
 live/archive filename winners and ownership once per stable refresh, then derives
 root-specific manifests; additions, deletion, replacement, reparenting and winner
-changes invalidate affected roots. OpenCode combines conservative main-DB plus WAL
-stamps with the duplicated 48-byte WAL-index header that publishes the committed
-snapshot. It ignores the later `-shm` lock and reader-mark regions, which can churn
-without committed content. Because the global token is persisted per root, a narrow
-refresh cannot mark untouched OpenCode roots current.
+changes invalidate affected roots.
+
+OpenCode hashes each root's execution membership and message/part row identities,
+ownership, creation/update stamps, and durable event sequences where available.
+Every manifest is read from a fresh read-only SQLite snapshot using session-indexed
+metadata queries; it does not extract JSON or read conversation bodies. Ordinary
+edits, imported rows, deletions and reparenting invalidate the affected roots, not
+unrelated history. It uses every row's revision, not just counts or the newest
+timestamp, and does not trust `session.time_updated` to track text changes. Recent
+same-millisecond, missing or future row-update stamps disable the shortcut.
+
+Schemas lacking the required row revisions or unique IDs retain the conservative
+main-DB/WAL fingerprint, including the duplicated 48-byte WAL-index header but not
+the later `-shm` reader/lock region. The first refresh after upgrading from global
+OpenCode manifests reads each selected root once to seed root-local manifests;
+unchanged text need not be rewritten. Scoped refreshes never mark untouched roots
+current. Neither path changes the accounting rollup cache.
+
 This is incremental source verification, not an incremental parser or watcher.
 Manifests are change detectors, not content-integrity hashes: they rely on source
-paths and filesystem metadata plus Codex ownership heads. Use `--rebuild` when
-investigating deliberately rewritten history or any case where metadata may have
-been preserved despite content changes; rebuild still performs the full readers.
+paths/filesystem metadata, Codex ownership heads, and OpenCode's writer-maintained
+row revisions. Direct SQL edits/restores that preserve OpenCode row revisions and
+event sequences can evade its shortcut, just as file rewrites preserving filesystem
+stamps can evade file manifests. Use `--rebuild` when investigating rewritten
+history or a writer that bypasses those revision updates. Rebuild still performs
+the full readers; search always independently verifies returned evidence live.
 
 The result includes `updated`, `unchanged`, `removed`, `unsupported`, `errors`,
 `complete`, and index counts. A finished command can report a partial build via

@@ -2,9 +2,10 @@
 
 import json
 import os
+import sqlite3
 import stat
 import tempfile
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,7 +18,13 @@ from opentab import service as service_module
 from opentab import state
 from opentab.conversation import ConversationError
 
-from tests._support import FakeStore, _codex_meta, _write_jsonl, workflow
+from tests._support import (
+    FakeStore,
+    _codex_meta,
+    _write_jsonl,
+    _write_opencode_db_with_turns,
+    workflow,
+)
 
 
 class ConversationStore(FakeStore):
@@ -631,6 +638,117 @@ def test_codex_manifest_survives_index_json_roundtrip_and_skips_second_full_read
             assert reader.call_count == 1
         with search.ConversationIndex() as index:
             assert index.candidates("needle", [key])["hits"]
+
+
+@contextmanager
+def _opencode_revision_service():
+    with _isolated() as index_path:
+        db = str(index_path.parents[3] / "source.db")
+        _write_opencode_db_with_turns(db)
+        with closing(sqlite3.connect(db)) as writer:
+            writer.execute("pragma journal_mode=wal")
+            for table in ("message", "part"):
+                writer.execute(f"alter table {table} add column time_created integer default 1")
+                writer.execute(f"alter table {table} add column time_updated integer default 1")
+            writer.execute(
+                "insert into session values ('s3', null, 'Other', '/elsewhere', null, 1)"
+            )
+            writer.execute("insert into message values ('m4', 's3', '{\"role\":\"user\"}', 1, 1)")
+            for pid, mid, sid, text in (
+                ("p1", "m1", "s1", "rootneedle"),
+                ("p2", "m3", "s2", "childneedle"),
+                ("p3", "m4", "s3", "otherneedle"),
+            ):
+                writer.execute(
+                    "insert into part values (?, ?, ?, ?, 1, 1)",
+                    (pid, mid, sid, json.dumps({"type": "text", "text": text})),
+                )
+            writer.commit()
+            store = ot.Store(db, SimpleNamespace(demo=False))
+            try:
+                yield _service(store), store, writer
+            finally:
+                store.conn.close()
+
+
+def test_opencode_refresh_skips_unchanged_roots_and_tracks_children_and_scoped_refreshes():
+    with _opencode_revision_service() as (service, store, writer), patch.object(
+        store, "conversation_source", wraps=store.conversation_source
+    ) as reader:
+        assert service.index_conversations()["updated"] == 2
+        reader.reset_mock()
+        assert service.index_conversations()["unchanged"] == 2
+        reader.assert_not_called()
+        writer.execute(
+            'update part set data = \'{"type":"text","text":"newchild"}\', '
+            "time_updated = 2 where id = 'p2'"
+        )
+        writer.commit()
+        assert service.index_conversations(session="s3")["unchanged"] == 1
+        reader.assert_not_called()
+        assert service.index_conversations()["updated"] == 1
+        assert [call.args for call in reader.call_args_list] == [("s1",), ("s1",), ("s1",)]
+        assert reader.call_args_list[1].kwargs == {"execution_id": "s2"}
+        assert service.search_conversations("newchild")["hits"][0]["execution_id"] == "s2"
+        assert not service.search_conversations("childneedle")["hits"]
+
+        for pid, text in (("p1", "newroot"), ("p3", "newother")):
+            writer.execute(
+                "update part set data = ?, time_updated = 3 where id = ?",
+                (json.dumps({"type": "text", "text": text}), pid),
+            )
+        writer.commit()
+        assert service.index_conversations(session="s1")["updated"] == 1
+        assert not service.search_conversations("newother")["hits"]
+        assert service.index_conversations(session="s3")["updated"] == 1
+        assert service.search_conversations("newother")["hits"]
+
+        # Direct SQL bypassing the writer's revision contract requires an explicit
+        # rebuild, but search must still withhold the old text via live verification.
+        writer.execute(
+            'update part set data = \'{"type":"text","text":"manualrewrite"}\' where id = \'p3\''
+        )
+        writer.commit()
+        stale = service.search_conversations("newother")
+        assert not stale["hits"] and stale["stale_executions_skipped"] == 1
+        assert service.index_conversations(session="s3", rebuild=True)["updated"] == 1
+        assert service.search_conversations("manualrewrite")["hits"]
+
+
+def test_opencode_refresh_allows_unrelated_commits_but_rejects_child_edits_during_read():
+    with _opencode_revision_service() as (service, store, writer):
+        assert service.index_conversations()["updated"] == 2
+        writer.execute(
+            'update part set data = \'{"type":"text","text":"newroot"}\', time_updated = 2 where id = \'p1\''
+        )
+        writer.commit()
+        read = store.conversation_source
+
+        def unrelated_commit(root_id, execution_id=None):
+            source = read(root_id, execution_id)
+            writer.execute("update part set time_updated = time_updated + 1 where id = 'p3'")
+            writer.commit()
+            return source
+
+        with patch.object(store, "conversation_source", side_effect=unrelated_commit):
+            result = service.index_conversations(session="s1")
+        assert result["complete"] and result["updated"] == 1
+        writer.execute("update part set time_updated = 3 where id = 'p1'")
+        writer.commit()
+
+        def child_commit(root_id, execution_id=None):
+            source = read(root_id, execution_id)
+            if execution_id == "s2":
+                writer.execute("update part set time_updated = 3 where id = 'p2'")
+                writer.commit()
+            return source
+
+        with patch.object(store, "conversation_source", side_effect=child_commit):
+            result = service.index_conversations(session="s1")
+        assert not result["complete"]
+        assert [error["code"] for error in result["errors"]] == ["source_changed"]
+        assert not service.search_conversations("newroot")["hits"]
+        assert service.index_conversations(session="s1")["updated"] == 1
 
 
 def test_manifest_mutation_during_read_fails_closed_and_is_not_blessed():
