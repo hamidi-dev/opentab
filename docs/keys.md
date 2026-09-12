@@ -66,8 +66,9 @@ are representative, not proof that an execution used only one model.
 The nested reader stays inside **Subagents** and shows only that execution's own
 prompts and turns, not its descendants or siblings. `j`/`k` select prompts in the
 overview and turns inside a prompt, then scroll the trace. `g`/`G` select the
-first/last prompt in the overview but scroll the pane inside a prompt or trace;
-`[`/`]` step between sibling turns of the same prompt, and `z` toggles full content.
+first/last prompt in the overview, the first/last turn inside a prompt, and scroll
+to the top/bottom inside a trace; `[`/`]` step between sibling turns of the same
+prompt, and `z` toggles full content.
 Local OpenCode, Claude Code, Codex, OMP and Hermes support this drill when exact
 records survive. Gemini, Antigravity and Remote do not; demo blocks it. Missing or
 ambiguous ownership is unavailable, while a valid execution with no turns is empty.
@@ -87,11 +88,11 @@ drill adds no raw-content support to web, fleet, CLI or MCP.
 
 On the Turns tab, `j`/`k` select a prompt and `Enter` (or a click) opens its full
 text and per-turn rows; `g`/`G` jump to the first/last prompt. Inside a prompt,
-`j`/`k` select a turn and `Enter` opens its recorded content. The Content column
-shows text, thinking and tool names where space allows. Inside a turn, `j`/`k`
-scroll while `[`/`]` step between turns. The prompt and turn identity stay visible
-above the transcript. `z` reads the selected turn's full arguments, reasoning and
-output; a second `z` returns to the capped preview.
+`j`/`k` select a turn, `g`/`G` jump to the first/last turn, and `Enter` opens its
+recorded content. The Content column shows text, thinking and tool names where
+space allows. Inside a turn, `j`/`k` scroll while `[`/`]` step between turns. The
+prompt and turn identity stay visible above the transcript. `z` reads the selected
+turn's full arguments, reasoning and output; a second `z` returns to the capped preview.
 Expansion is temporary and is released when you leave the turn. Recorded tool
 errors are labeled explicitly. Sources that do not support content have no turn
 detail; real content is also unavailable in demo mode.

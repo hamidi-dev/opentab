@@ -5874,6 +5874,12 @@ class App:
                 self._turn_cursor = len(groups) - 1 if to_end else 0
                 self._turn_follow = True
                 return
+        if self._on_turns_tab() and self.active_trace_drill is None:
+            rows = self.drilled_turn_indices()
+            if rows:
+                self._trace_cursor = len(rows) - 1 if to_end else 0
+                self._turn_follow = True
+                return
         if not to_end:
             self.scroll = 0
             return

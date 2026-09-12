@@ -1592,22 +1592,18 @@ def test_subagent_turns_reuse_prompt_cursor_and_drilled_pane_navigation():
     app.open_subagent_turns()
     app.load_subagent_turns()
     for cursor in ("_turn_cursor", "_trace_cursor"):
-        keys = (("j", 1), ("k", 0))
-        if cursor == "_turn_cursor":
-            keys += (("G", 1), ("g", 0))
+        keys = (("j", 1), ("k", 0), ("G", 1), ("g", 0))
         for key, expected in keys:
             app.handle_key(None, ord(key))
             assert getattr(app, cursor) == expected, (cursor, key)
             assert app._turn_follow
-        if cursor == "_trace_cursor":
-            # Like root Turns, g/G scroll the drilled pane rather than select a call.
-            with patch.object(app.renderer, "max_scroll", return_value=20):
-                app.handle_key(FakeScreen(24, 120), ord("G"))
-            assert app.scroll == 20 and app._trace_cursor == 0
-            app.handle_key(None, ord("g"))
-            assert app.scroll == 0 and app._trace_cursor == 0
         app.handle_key(None, 10)
     assert app.active_trace_drill == 0
+    with patch.object(app.renderer, "max_scroll", return_value=20):
+        app.handle_key(FakeScreen(24, 120), ord("G"))
+    assert app.scroll == 20 and app._trace_cursor == 0
+    app.handle_key(None, ord("g"))
+    assert app.scroll == 0 and app._trace_cursor == 0
     app.store.node_turn_content.assert_not_called()
     app.store.turn_content.assert_not_called()
 
@@ -3429,16 +3425,14 @@ def test_a_drilled_prompt_does_not_leave_the_tables_hit_testing_armed():
     assert app.turn_drill == 2  # still where the reader put it
 
 
-def test_jump_keys_belong_to_the_drilled_pane_not_the_hidden_prompt_cursor():
-    # g/G scroll the drilled view. They used to fall through to the table's cursor, so g
-    # left the pane where it was and silently moved a selection nobody could see.
-    app = _drill_app()
-    app.open_turn_drill(2)
-    app.scroll, app._turn_cursor = 5, 2
+def test_jump_keys_select_the_first_and_last_turn_inside_a_prompt():
+    app = _trace_app()
+    app.scroll, app._trace_cursor = 5, 1
     app.jump(to_end=False)
-    assert app.scroll == 0 and app._turn_cursor == 2  # the pane moved, the cursor did not
+    assert app.scroll == 5 and app._trace_cursor == 0
     app.jump(to_end=True)
-    assert app._turn_cursor == 2
+    assert app.scroll == 5 and app._trace_cursor == 1
+    assert app._turn_follow
 
 
 def test_esc_only_leaves_a_drilled_prompt_while_the_turns_tab_is_showing():

@@ -742,6 +742,8 @@ KEYS: tuple[Key, ...] = (
         actions=("top", "bottom"),
         summary=lambda app: "first / last prompt"
         if _on_turns(app) and app.active_turn_drill is None
+        else "first / last turn"
+        if _on_turns(app) and app.active_trace_drill is None
         else "first / last execution"
         if app._on_subagents_tab() and app.active_subagent_drill is None
         else "top / bottom",
