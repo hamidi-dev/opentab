@@ -242,6 +242,11 @@ def _enter_opens_something(app: App) -> bool:
         )
     if app._on_subagents_tab():
         return app.active_subagent_drill is None or not app.subagent_turns_unavailable()
+    if app.active_tab_name() == "Tools":
+        wf = app.current_session()
+        if wf is None:
+            return False
+        return app.active_tool_drill is None or bool(app.selected_tool_calls(wf.id))
     return False
 
 
@@ -273,6 +278,12 @@ def _enter_summary(app: App) -> str:
             "open this execution's turns"
             if app.active_subagent_drill is not None
             else "inspect the selected execution"
+        )
+    if tab == "Tools":
+        return (
+            "open the owning turn"
+            if app.active_tool_drill is not None
+            else "inspect the selected tool or namespace"
         )
     return "its sessions, within this scope"
 
@@ -695,6 +706,10 @@ KEYS: tuple[Key, ...] = (
         if app.active_subagent_turns
         else "back to the executions"
         if app._on_subagents_tab() and app.active_subagent_drill is not None
+        else "back to the Tools drill"
+        if app._on_turns_tab() and app._tools_return is not None
+        else "back to the Tools rankings"
+        if app.active_tab_name() == "Tools" and app.active_tool_drill is not None
         else "back to the Trends session list"
         if in_session(app) and app._trend_return is not None and app._trend_return[0] == "drill"
         else "step back out — session → zoom → browse",
@@ -721,6 +736,10 @@ KEYS: tuple[Key, ...] = (
             if _on_turns(app)
             else "pick an execution"
             if app._on_subagents_tab() and app.active_subagent_drill is None
+            else "pick a call"
+            if app.active_tab_name() == "Tools" and app.active_tool_drill is not None
+            else "pick a tool or namespace"
+            if app.active_tab_name() == "Tools"
             else "move / scroll",
         ),
         section="nav",
@@ -746,6 +765,10 @@ KEYS: tuple[Key, ...] = (
         if _on_turns(app) and app.active_trace_drill is None
         else "first / last execution"
         if app._on_subagents_tab() and app.active_subagent_drill is None
+        else "first / last call"
+        if app.active_tab_name() == "Tools" and app.active_tool_drill is not None
+        else "first / last tool or namespace"
+        if app.active_tab_name() == "Tools"
         else "top / bottom",
         section="nav",
         when=lambda app: not in_trends(app) or app.trend_drill is not None,

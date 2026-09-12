@@ -2195,6 +2195,426 @@ def test_pager_lines_dispatch_session_tabs_by_name():
         assert app.renderer.current_pager_lines(100) == table(wf, 96)  # content = width - 4
 
 
+class _ToolsExplorerStore(FakeStore):
+    raw_reads = 0
+
+    def workflow_nodes(self, wid):
+        return []
+
+    def supports_turns(self, wid):
+        return True
+
+    def supports_tools(self, wid):
+        return True
+
+    def supports_turn_content(self, wid):
+        return True
+
+    def turn_content(self, wid, content_key=None):
+        self.raw_reads += 1
+        return {}
+
+    def message_timeline(self, wid):
+        return [
+            {
+                "time": "2026-06-01 12:00:01",
+                "agent": "main",
+                "depth": 0,
+                "model_name": "anthropic/claude-fable-5",
+                "cost": 3.0,
+                "tokens_total": 300,
+                "input": 120,
+                "output": 60,
+                "reasoning": 30,
+                "cache_read": 60,
+                "cache_write": 30,
+                "cache_write_1h": 15,
+                "tools": ["Read", "Read", "mcp__srv__read"],
+                "prompt_id": "p1",
+                "prompt_title": "inspect",
+                "content_key": "turn-1",
+            },
+            {
+                "time": "2026-06-01 12:01:00",
+                "agent": "explore",
+                "depth": 1,
+                "model_name": "anthropic/claude-fable-5",
+                "cost": 0.0,
+                "tokens_total": 1_000_000,
+                "input": 1_000_000,
+                "output": 0,
+                "reasoning": 0,
+                "cache_read": 0,
+                "cache_write": 0,
+                "cache_write_1h": 0,
+                "tools": ["Bash"],
+                "prompt_id": "p1",
+                "prompt_title": "inspect",
+                "content_key": "turn-2",
+            },
+        ]
+
+    def tool_breakdown(self, wid):
+        def row(tool, calls, cost, total, input_, output, reasoning, read, write, one_hour):
+            return {
+                "tool": tool,
+                "model_name": "anthropic/claude-fable-5",
+                "calls": calls,
+                "cost": cost,
+                "tokens_total": total,
+                "input": input_,
+                "output": output,
+                "reasoning": reasoning,
+                "cache_read": read,
+                "cache_write": write,
+                "cache_write_1h": one_hour,
+            }
+
+        return [
+            row("Read", 2, 2.0, 200, 80, 40, 20, 40, 20, 10),
+            row("mcp__srv__read", 1, 1.0, 100, 40, 20, 10, 20, 10, 5),
+            # Aggregate ledger retained one call the timeline no longer can recover.
+            row("Bash", 2, 0.0, 1_000_000, 1_000_000, 0, 0, 0, 0, 0),
+        ]
+
+
+def _tools_explorer_app(store_type=_ToolsExplorerStore):
+    args = type("Args", (), {"since": None, "until": None, "days": None})()
+    app = ot.App(store_type([workflow("s1", "2026-06-01 12:00:00")]), args)
+    app.view = "session"
+    app.tab = app.current_tabs().index("Tools")
+    return app
+
+
+def test_tools_explorer_drills_duplicate_calls_and_returns_without_raw_read():
+    app = _tools_explorer_app()
+    rows = app.tool_rankings("s1")
+    app._tool_cursor = next(
+        i for i, row in enumerate(rows) if row["kind"] == "tool" and row["name"] == "Read"
+    )
+    assert app.open_tool_drill()
+    calls = app.selected_tool_calls("s1")
+    assert len(calls) == 2
+    assert [call["call_index"] for call in calls] == [0, 1]
+    assert [call["cost"] for call in calls] == [1.0, 1.0]
+
+    app.keymap = ot.tui.bindings.Keymap({("main", "select"): ["v"]})
+    joined = "\n".join(app.renderer.detail_tools(app.current_session(), 120))
+    assert "Model output" in joined and "of cache writes, 1h: 10 (subset)" in joined
+    assert "Exact attributed usage by model" in joined
+    assert "calls complete: 2/2" in joined
+    assert "tokens complete: 200/200" in joined
+    assert "cost complete: $2.00/$2.00" in joined
+    assert "owning-turn timestamps" in joined
+    assert "v / double-click" in joined
+    assert not any(
+        "anthropic/claude-fable-5: input" in line
+        for line in app.renderer.detail_tools(app.current_session(), 120)
+    )
+
+    app.handle_key(None, ord("v"))
+    assert app.active_tab_name() == "Turns" and app.active_turn_drill == 0
+    assert app.active_trace_drill is None and app.store.raw_reads == 0
+    app.handle_key(None, 27)
+    assert app.active_tab_name() == "Tools" and app.active_tool_drill == ("tool", "Read")
+
+
+def test_tools_explorer_namespace_partial_aggregate_only_and_narrow_layout():
+    app = _tools_explorer_app()
+    rows = app.tool_rankings("s1")
+    app._tool_cursor = next(
+        i
+        for i, row in enumerate(rows)
+        if row["kind"] == "namespace" and row["name"] == "(built-in)"
+    )
+    app.open_tool_drill()
+    assert {call["tool"] for call in app.selected_tool_calls("s1")} == {"Read", "Bash"}
+    narrow = app.renderer.detail_tools(app.current_session(), 76)
+    assert all(len(line) <= 76 for line in narrow)
+    assert "calls partial: 3/4" in "\n".join(narrow)
+    assert "tokens complete: 1.0M/1.0M" in "\n".join(narrow)
+
+    class AggregateOnly(_ToolsExplorerStore):
+        def supports_turns(self, wid):
+            return False
+
+    aggregate = _tools_explorer_app(AggregateOnly)
+    aggregate.open_tool_drill()
+    text = "\n".join(aggregate.renderer.detail_tools(aggregate.current_session(), 80))
+    assert "Call ledger unavailable" in text and "no Turns\ntimeline" in text
+    aggregate.handle_key(None, 10)
+    assert aggregate.active_tab_name() == "Tools"
+
+
+def test_tools_explorer_repricing_preserves_selected_identity_and_reorders():
+    app = _tools_explorer_app()
+    app.show_api_prices = False
+    rows = app.tool_rankings("s1")
+    app._tool_cursor = next(
+        i for i, row in enumerate(rows) if row["kind"] == "tool" and row["name"] == "Bash"
+    )
+    before = app._tool_cursor
+    app.toggle_api_prices()
+    selected = app.selected_tool_ranking("s1")
+    assert selected["name"] == "Bash" and selected["cost"] > 0
+    assert app._tool_cursor != before
+
+
+def test_tools_explorer_mouse_navigation_and_reload_reset_without_raw_read():
+    app = _tools_explorer_app()
+    rankings = app.tool_rankings("s1")
+    read_ordinal = next(
+        i for i, row in enumerate(rankings) if row["kind"] == "tool" and row["name"] == "Read"
+    )
+    app.renderer.detail_tools(app.current_session(), 100)
+    read_line = next(
+        line for line, ordinal in app.renderer._tool_header_at.items() if ordinal == read_ordinal
+    )
+
+    app._apply_click(("toolline", read_line), False)
+    assert app._tool_cursor == read_ordinal and app.active_tool_drill is None
+    app._apply_click(("toolline", read_line), True)
+    assert app.active_tool_drill == ("tool", "Read")
+
+    app.renderer.detail_tools(app.current_session(), 100)
+    second_call_line = next(
+        line for line, ordinal in app.renderer._tool_call_at.items() if ordinal == 1
+    )
+    app._apply_click(("toolcallline", second_call_line), True)
+    assert app.active_tab_name() == "Turns" and app.active_trace_drill is None
+    assert app.store.raw_reads == 0
+    app.handle_key(None, 27)
+    assert app.active_tool_drill == ("tool", "Read")
+
+    app.reload()
+    assert app.active_tool_drill is None and app._tool_cursor == app._tool_call_cursor == 0
+
+
+def test_tools_explorer_draw_paints_follows_and_routes_real_mouse_regions():
+    app = _tools_explorer_app()
+    app.prefetch_session_data("s1")
+    rows = app.tool_rankings("s1")
+    read_ordinal = next(
+        i for i, row in enumerate(rows) if row["kind"] == "tool" and row["name"] == "Read"
+    )
+    app._tool_cursor = read_ordinal
+    app._tool_follow = True
+    app.scroll = 10_000
+    screen = AttrScreen(60, 100)
+    with patch.object(ot.curses, "color_pair", side_effect=lambda n: n << 8):
+        app.renderer.regions = []
+        app.renderer.draw_detail(screen, 0, 0, 60, 100)
+    logical = next(
+        line for line, ordinal in app.renderer._tool_header_at.items() if ordinal == read_ordinal
+    )
+    screen_y = 3 + logical - app.scroll
+    assert 3 <= screen_y < 59 and not app._tool_follow
+    assert any(
+        attr & ot.curses.A_REVERSE for (row, _col), attr in screen.attrs.items() if row == screen_y
+    )
+    assert app.renderer.hit(screen_y, 8) == ("toolline", logical)
+
+    original = ot.curses.getmouse
+    try:
+        ot.curses.getmouse = lambda: (0, 8, screen_y, 0, ot.curses.BUTTON1_DOUBLE_CLICKED)
+        app.handle_key(screen, ot.curses.KEY_MOUSE)
+    finally:
+        ot.curses.getmouse = original
+    assert app.active_tool_drill == ("tool", "Read")
+
+    call_screen = AttrScreen(80, 100)
+    with patch.object(ot.curses, "color_pair", side_effect=lambda n: n << 8):
+        app.renderer.regions = []
+        app.renderer.draw_detail(call_screen, 0, 0, 80, 100)
+    call_line = next(line for line, ordinal in app.renderer._tool_call_at.items() if ordinal == 1)
+    call_y = 3 + call_line - app.scroll
+    assert app.renderer.hit(call_y, 8) == ("toolcallline", call_line)
+    before = app.scroll
+    app._wheel_down = getattr(ot.curses, "BUTTON5_PRESSED", 0) or ot.curses.REPORT_MOUSE_POSITION
+    try:
+        ot.curses.getmouse = lambda: (0, 8, call_y, 0, app._wheel_down)
+        app.handle_key(call_screen, ot.curses.KEY_MOUSE)
+    finally:
+        ot.curses.getmouse = original
+    assert app.scroll == before + 3
+
+
+def test_tools_explorer_cursor_bounds_hand_keys_to_the_scrollable_pane():
+    class ManyCalls(_ToolsExplorerStore):
+        def message_timeline(self, wid):
+            rows = super().message_timeline(wid)
+            rows[0]["tools"] = ["Read"] * 24 + ["mcp__srv__read"]
+            return rows
+
+        def tool_breakdown(self, wid):
+            rows = super().tool_breakdown(wid)
+            rows[0]["calls"] = 24
+            return rows
+
+    def draw(app):
+        screen = AttrScreen(12, 100)
+        with patch.object(ot.curses, "color_pair", side_effect=lambda n: n << 8):
+            app.renderer.draw_detail(screen, 0, 0, 12, 100)
+        return screen
+
+    def exercise_bounds(app, cursor_attr, summaries):
+        rows = (
+            app.selected_tool_calls(app.current_session().id)
+            if app.active_tool_drill
+            else app.tool_rankings(app.current_session().id)
+        )
+        assert len(rows) > 1
+
+        app.scroll = 10_000
+        app._tool_follow = True
+        draw(app)
+        assert app.scroll > 0 and getattr(app, cursor_attr) == 0
+
+        seen = ""
+        for key in (ord("k"), ot.curses.KEY_UP) * 50:
+            app.handle_key(None, key)
+            assert not app._tool_follow
+            screen = draw(app)
+            seen += screen_text(screen)
+            if app.scroll == 0:
+                break
+        assert app.scroll == 0
+        assert all(summary in seen for summary in summaries), seen
+        assert getattr(app, cursor_attr) == 0
+
+        app.handle_key(None, ord("j"))
+        assert getattr(app, cursor_attr) == 1 and app._tool_follow
+        draw(app)
+        assert not app._tool_follow
+
+        app.jump(to_end=True)
+        draw(app)
+        last = len(rows) - 1
+        assert getattr(app, cursor_attr) == last
+        bottom_start = app.scroll
+        for key in (ord("j"), ot.curses.KEY_DOWN) * 50:
+            before = app.scroll
+            app.handle_key(None, key)
+            assert not app._tool_follow
+            draw(app)
+            if app.scroll == before:
+                break
+        assert app.scroll > bottom_start and getattr(app, cursor_attr) == last
+
+        app.handle_key(None, ord("k"))
+        assert getattr(app, cursor_attr) == last - 1 and app._tool_follow
+        draw(app)
+        assert not app._tool_follow
+
+    app = _tools_explorer_app(ManyCalls)
+    app.prefetch_session_data("s1")
+    exercise_bounds(app, "_tool_cursor", ("Tool ledger",))
+
+    app._tool_cursor = next(
+        i
+        for i, row in enumerate(app.tool_rankings("s1"))
+        if row["kind"] == "tool" and row["name"] == "Read"
+    )
+    assert app.open_tool_drill()
+    exercise_bounds(app, "_tool_call_cursor", ("Contribution", "Attributed token categories"))
+
+
+def test_tools_explorer_warm_draw_reuses_projection_pricing_and_layout():
+    app = _tools_explorer_app()
+    app.prefetch_session_data("s1")
+    app.effective_tool_cost = Mock(wraps=app.effective_tool_cost)
+    screen = FakeScreen(30, 100)
+    with patch.object(ot.curses, "color_pair", side_effect=lambda n: n << 8):
+        app.renderer.draw_detail(screen, 0, 0, 30, 100)
+        priced = app.effective_tool_cost.call_count
+        layout = app.renderer._tool_layout_cache
+        projection = app._tool_projection_cache
+        app.scroll += 1
+        app.renderer.draw_detail(FakeScreen(30, 100), 0, 0, 30, 100)
+    assert app.effective_tool_cost.call_count == priced
+    assert app.renderer._tool_layout_cache is layout
+    assert app._tool_projection_cache is projection
+    app._model_price_revision += 1
+    with patch.object(ot.curses, "color_pair", side_effect=lambda n: n << 8):
+        app.renderer.draw_detail(FakeScreen(30, 100), 0, 0, 30, 100)
+    assert app.effective_tool_cost.call_count > priced
+
+
+def test_tools_explorer_return_lifecycle_and_trace_back_stack():
+    def owning_turn_app():
+        app = _tools_explorer_app()
+        app.open_tool_drill()
+        assert app.open_tool_call_reader() and app._tools_return is not None
+        return app
+
+    app = owning_turn_app()
+    app.open_trace_drill()
+    assert app.active_trace_drill is not None
+    app.handle_key(None, 27)
+    assert app.active_tab_name() == "Turns" and app.active_trace_drill is None
+    assert app._tools_return is not None
+    app.handle_key(None, 27)
+    assert app.active_tab_name() == "Tools" and app.active_tool_drill is not None
+
+    app = owning_turn_app()
+    app._apply_click(("tab", 0), False)
+    assert app._tools_return is None
+    app = owning_turn_app()
+    app.handle_key(None, ord("1"))
+    assert app.view == "browse" and app._tools_return is None
+    app = owning_turn_app()
+    app.set_browse_mode("projects")
+    assert app._tools_return is None
+    app = owning_turn_app()
+    app._reload_for_source()
+    assert app._tools_return is None
+
+
+def test_tools_explorer_narrow_tables_keep_cost_at_the_right_edge():
+    app = _tools_explorer_app()
+    for width in (40, 80, 136):
+        ranking = app.renderer.detail_tools(app.current_session(), width)
+        assert all(len(line) <= width for line in ranking)
+        ranking_rows = [row for row in _cells(ranking) if re.match(r"\s*(Bash|Read)\s+\d", row)]
+        assert ranking_rows and all(re.search(r"\$[\d,.]+\d\s*$", row) for row in ranking_rows)
+    app.open_tool_drill()
+    calls = app.renderer.detail_tools(app.current_session(), 40)
+    assert all(len(line) <= 40 for line in calls)
+    call_rows = [row for row in _cells(calls) if re.match(r"\s*\d+\s+\d+", row)]
+    assert call_rows and all("$" in row for row in call_rows)
+
+
+def test_tools_explorer_cached_paint_metadata_stays_scoped_and_fractional_coverage_closes():
+    app = _tools_explorer_app()
+    renderer = app.renderer
+    renderer.detail_tools(app.current_session(), 100)
+    headers = set(renderer._box_headers)
+    renderer._box_headers.clear()
+    renderer.detail_tools(app.current_session(), 100)
+    assert headers <= renderer._box_headers
+    assert renderer._tool_tree_runs
+
+    app.open_tool_drill(1)
+    lines = renderer.detail_tools(app.current_session(), 100)
+    assert renderer._tool_tree_runs == {}
+    runs = dict(renderer._token_runs)
+    assert runs
+    renderer._token_runs.clear()
+    assert renderer.detail_tools(app.current_session(), 100) is lines
+    assert renderer._token_runs == runs
+
+    # Thirds remain fractional until display; truncating each call falsely loses tokens.
+    app.tool_drill = ("tool", "Read")
+    turns = [dict(row) for row in app.session_turn_rows("s1")]
+    turns[0]["tokens_total"] = 302
+    app._turns_by_session["s1"] = turns
+    aggregate = [dict(row) for row in app.session_tool_rows("s1")]
+    aggregate[0]["tokens_total"] = 302 * 2 / 3
+    app._tool_by_session["s1"] = aggregate
+    joined = "\n".join(renderer.detail_tools(app.current_session(), 100))
+    assert "tokens complete:" in joined
+
+
 def test_subagent_nodes_memoized_per_session():
     def node(workflow_id, depth, agent, title):
         return {

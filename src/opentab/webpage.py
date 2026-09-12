@@ -253,7 +253,8 @@ input.filter:focus{outline:none;border-color:var(--accent)}
   border-radius:6px;background:var(--panel2)}
 .tool-tile{position:absolute;border:2px solid var(--panel);background-clip:padding-box;
   padding:9px 11px;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-start;
-  line-height:1.25;container-type:size}
+  line-height:1.25;container-type:size;font:inherit;text-align:left;color:inherit}
+.tool-tile.click{cursor:pointer}.tool-tile.click:hover,.tool-tile.click:focus-visible{filter:brightness(1.12);outline:2px solid var(--accent);outline-offset:-3px}
 .tool-tile .tn{font-size:clamp(12px,2.3cqw,19px);font-weight:800;white-space:nowrap;
   overflow:hidden;text-overflow:ellipsis}
 .tool-tile .tv{font-size:clamp(10px,1.7cqw,14px);margin-top:3px;white-space:nowrap;opacity:.9}
@@ -261,6 +262,14 @@ input.filter:focus{outline:none;border-color:var(--accent)}
   font-weight:600}
 .tool-tile.tiny{padding:2px}
 .tool-table{margin-top:2px}
+.tool-ranks{display:grid;grid-template-columns:minmax(0,3fr) minmax(260px,2fr);gap:16px;margin-top:4px}
+.tool-ranks > .pane{min-width:0}
+.tool-detail-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.tool-detail-head .hbtn{margin-left:auto}.tool-detail-note{margin:8px 0 12px}
+.tool-call-table table{table-layout:auto}.tool-call-table td.grow{min-width:150px;white-space:normal;overflow-wrap:anywhere}
+.tool-owner{background:color-mix(in srgb,var(--accent) 16%,transparent);box-shadow:inset 3px 0 var(--accent)}
+.tool-owner:focus{outline:2px solid var(--accent);outline-offset:-2px}
+@media (max-width:760px){.tool-ranks{grid-template-columns:minmax(0,1fr)}.tool-detail-head .hbtn{margin-left:0}.tool-call-table td.grow{min-width:180px}}
 @media (max-width:600px){.tool-map{height:170px}.tool-map-head{align-items:flex-start;flex-direction:column;gap:1px}}
 
 tr.prompt-row td{color:var(--accent);padding-top:9px;font-weight:600}
@@ -644,9 +653,21 @@ function openSession(id) {
 // one exception being the hop straight back into the scope a drill was armed in, which
 // both Esc and the browser's Back button make by restoring that exact hash.
 function resetScopeState() {
+  if (typeof EXTRAS !== 'undefined' && EXTRAS.loading) {
+    const sc = curScope();
+    // popstate can start loading before hashchange resets the same destination.
+    if (sc.kind !== 's' || sc.id !== EXTRAS.id) {
+      EXTRAS_REQUEST += 1;
+      EXTRAS.id = null;
+      EXTRAS.loading = false;
+    }
+  }
+  if (typeof TOOL_NAV !== 'undefined') TOOL_NAV += '.';
   FILTER = '';
   EXPANDED.clear();
   NODE_DRILL = null;
+  if (typeof TOOL_DRILL !== 'undefined') TOOL_DRILL = null;
+  if (typeof TOOL_TURN !== 'undefined') TOOL_TURN = null;
   clearNodePrompt();
   const back = !!RETURN && location.hash === RETURN.from;
   MSUB = back ? RETURN.msub : null;
@@ -671,10 +692,17 @@ const EXPANDED = new Set();
 const VIEW = { calYear: null };
 // Prompt ids may repeat, so a drill is an ordinal valid only for the loaded session.
 let TURN_DRILL = null;
+// A tool/server drill is transient and identified by its exact payload key, not row order.
+let TOOL_DRILL = null;
+let TOOL_TURN = null;
+let TOOL_RETURN_FOCUS = null;
+// A per-page generation makes same-URL history entries from a reload fail closed.
+let TOOL_NAV = Math.random().toString(36);
 // Payload indices, never titles or representative models, identify executions.
 let NODE_DRILL = null;
 let NODE_PROMPT = null;
-let EXTRAS = { id: null, loading: false, turns: [], tools: [], context: null, expiries: [] };
+let EXTRAS = { id: null, loading: false, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
+let EXTRAS_REQUEST = 0;
 const TREND_TABS = ['Daily', 'Weekly', 'Monthly', 'Calendar', 'Models', 'Providers', 'Projects', 'Harnesses'].concat(META.machines ? ['Machines'] : []);
 let TRENDS = { open: false, tab: 'Daily', monthIdx: 0, weekIdx: 0, yearIdx: 0, drill: null, drillTab: null, sort: 'cost', desc: true };
 const PRICE_VIEWS = [['flat', 'flat list'], ['family', 'by vendor'], ['provider', 'by provider'], ['all', 'models.dev']];
@@ -721,6 +749,12 @@ const hDur = s => { s = Math.max(0, Math.floor(s)); if (s < 60) return s + 's';
 const cost = w => MODE === 'api' ? w.api : w.real;
 const rootCost = w => MODE === 'api' ? w.apiRoot : w.realRoot;
 const mCost = r => MODE === 'api' ? r.api : r.real;
+function setCostMode(mode) {
+  const focus = toolFocusKey();
+  MODE = mode;
+  render(false);
+  focusToolTarget(focus, focus === 'owner-turn');
+}
 const shortPath = p => META.home && p.startsWith(META.home) ? '~' + p.slice(META.home.length) : p;
 const projName = p => { const parts = shortPath(p).split('/').filter(Boolean);
   return parts.length ? parts[parts.length - 1] : (p || '(no project)'); };
@@ -1008,6 +1042,7 @@ function table(id, cols, rows, opts = {}) {
     if (opts.rowLabel && opts.onRow) {
       row.setAttribute('tabindex', '0');
       row.setAttribute('aria-label', opts.rowLabel(r));
+      if (opts.rowKey) row.setAttribute('data-tool-focus', opts.rowKey(r));
       row.addEventListener('keydown', e => {
         if (e.metaKey || e.ctrlKey || e.altKey || STARTUP_WARNINGS.length || WHATS_NEW_OPEN || THEMEPICK
             || WHATIF.open || PRICES.open || TRENDS.open || RANGE.pick) return;
@@ -1844,8 +1879,10 @@ function turnDrillPane(turns, groups, n) {
   let cum = 0;
   const rows = g.indices.map(i => {
     const t = turns[i];
+    const owner = TOOL_TURN && TOOL_TURN.turnIndex === i;
     cum += mCost(t);
-    return h('tr', null,
+    return h('tr', owner ? { class: 'tool-owner', tabindex: '-1', 'data-tool-focus': 'owner-turn',
+      'aria-label': 'Owning turn ' + (i + 1) + ' for selected tool call' } : null,
       h('td', { class: 'r dim' }, String(i + 1)),
       h('td', { class: 'dim' }, t.time.slice(5, 19).replace('T', ' ')),
       h('td', { class: 'grow' }, modelCell(t.model)),
@@ -1857,12 +1894,18 @@ function turnDrillPane(turns, groups, n) {
       h('td', { class: 'r' }, moneyCell(mCost(t))),
       h('td', { class: 'r dim' }, money(cum)));
   });
+  const back = TOOL_TURN
+    ? h('button', { class: 'hbtn', 'data-tool-focus': 'turn-back', onclick: closeToolTurn },
+        '← back to ' + (TOOL_DRILL.kind === 'tool' ? 'tool ' : 'namespace ') + TOOL_DRILL.value)
+    : h('a', { class: 'rowlink', onclick: () => { TURN_DRILL = null; render(false); } }, '← back to the prompts');
   return h('div', null,
     h('div', { class: 'hint' },
-      h('a', { class: 'rowlink', onclick: () => { TURN_DRILL = null; render(false); } }, '← back to the prompts'),
+      back,
       '  ·  prompt ' + (n + 1) + ' of ' + groups.length + ' — ' + g.turns + ' turn'
       + (g.turns === 1 ? '' : 's') + ' · ' + hTok(g.tokens) + ' · ' + money(g.cost)
-      + ' · cached ' + pct(g.cached)),
+      + ' · cached ' + pct(g.cached)
+      + (TOOL_TURN ? ' · selected call ' + (TOOL_TURN.callIndex + 1)
+        + ' owns highlighted turn ' + (TOOL_TURN.turnIndex + 1) : '')),
     h('div', { class: 'prompt-full' }, g.full || '(no preceding prompt)'),
     turnCostContextStrip(g.rows, { indices: g.indices }),
     h('div', { class: 'scroll' }, h('table', null,
@@ -1877,14 +1920,87 @@ function turnDrillPane(turns, groups, n) {
       h('tbody', null, rows))));
 }
 
-function toolsTable(toolRows) {
+const exactTok = v => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+function toolAgg(toolRows, keyFn, nameKey) {
+  const agg = new Map();
+  for (const r of toolRows) {
+    const key = keyFn(r);
+    let a = agg.get(key);
+    if (!a) { a = { tool: '', ns: '', calls: 0, real: 0, api: 0, tokens: 0, tok: [0,0,0,0,0,0] }; a[nameKey] = key; agg.set(key, a); }
+    a.calls += r.calls || 0; a.real += r.real || 0; a.api += r.api || 0; a.tokens += r.tokens || 0;
+    (r.tok || []).forEach((v, i) => { a.tok[i] += v || 0; });
+  }
+  return [...agg.values()];
+}
+function openToolDrill(kind, value) {
+  if (history.state && history.state.session === curScope().id) history.replaceState(null, '', location.hash);
+  TOOL_DRILL = { kind, value };
+  TOOL_TURN = null;
+  TOOL_RETURN_FOCUS = 'rank:' + kind + ':' + value;
+  history.pushState({ toolDrill: { kind, value }, rankFocus: TOOL_RETURN_FOCUS,
+    session: curScope().id, toolNav: TOOL_NAV }, '', location.hash);
+  render(false);
+  focusToolTarget('back');
+}
+function closeToolDrill() {
+  const state = history.state;
+  if (state && state.session === curScope().id && state.toolDrill && state.toolNav === TOOL_NAV) history.back();
+  else {
+    const target = TOOL_RETURN_FOCUS;
+    TOOL_DRILL = null; TOOL_TURN = null; render(false); focusToolTarget(target);
+  }
+}
+function toolFocusKey() {
+  const active = document.activeElement;
+  return active && active.getAttribute ? active.getAttribute('data-tool-focus') : null;
+}
+function focusToolTarget(key, scroll = false) {
+  if (!key) return;
+  const target = Array.from(document.querySelectorAll('[data-tool-focus]'))
+    .find(el => el.getAttribute('data-tool-focus') === key);
+  if (target) {
+    target.focus();
+    if (scroll && target.scrollIntoView) target.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+}
+function abandonToolNavigation() {
+  if (!TOOL_DRILL && !TOOL_TURN) return;
+  TOOL_NAV += '.'; TOOL_DRILL = null; TOOL_TURN = null; TOOL_RETURN_FOCUS = null;
+  if (history.state && (history.state.toolDrill || history.state.toolTurn))
+    history.replaceState(null, '', location.hash);
+}
+function jumpToToolCall(call) {
+  const groups = turnGroupRows(EXTRAS.turns);
+  const group = groups.findIndex(g => g.indices.includes(call.turnIndex));
+  if (group < 0) return;
+  const sourceFocus = 'call:' + call.index;
+  if (history.state && history.state.toolDrill)
+    history.replaceState({ ...history.state, toolFocus: sourceFocus }, '', location.hash);
+  TOOL_TURN = { callIndex: call.index, turnIndex: call.turnIndex, group };
+  TAB = 'Turns'; TURN_DRILL = group;
+  history.pushState({ toolTurn: { ...TOOL_TURN }, toolDrill: { ...TOOL_DRILL },
+    rankFocus: TOOL_RETURN_FOCUS, session: curScope().id, toolNav: TOOL_NAV }, '', location.hash);
+  render(false);
+  focusToolTarget('owner-turn', true);
+}
+function closeToolTurn() {
+  const state = history.state;
+  if (state && state.toolTurn && state.toolNav === TOOL_NAV) history.back();
+  else {
+    TOOL_TURN = null; TAB = 'Tools'; TURN_DRILL = null; render(false); focusToolTarget('back');
+  }
+}
+function toolsTable(toolRows, calls) {
+  if (TOOL_DRILL) return toolDetail(toolRows, calls, TOOL_DRILL);
   const agg = new Map();
   for (const r of toolRows) {
     let a = agg.get(r.tool);
-    if (!a) { a = { tool: r.tool, ns: r.ns, calls: 0, real: 0, api: 0, tokens: 0 }; agg.set(r.tool, a); }
+    if (!a) { a = { tool: r.tool, ns: r.ns, calls: 0, real: 0, api: 0, tokens: 0, tok: [0,0,0,0,0,0] }; agg.set(r.tool, a); }
     a.calls += r.calls || 0; a.real += r.real; a.api += r.api; a.tokens += r.tokens;
+    (r.tok || []).forEach((v, i) => { a.tok[i] += v || 0; });
   }
   const rows = [...agg.values()];
+  const namespaces = toolAgg(toolRows, r => r.ns || 'local', 'ns');
   const peak = Math.max(...rows.map(mCost), 0);
   const grid = table('t-s-tools', [
     { key: 'tool', label: 'Tool', asc: true, cls: 'grow' },
@@ -1893,11 +2009,133 @@ function toolsTable(toolRows) {
     { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => barCell(mCost(r), peak) },
     { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
   ], rows, { defaultSort: { key: 'cost', desc: true },
+    rowLabel: r => 'Open tool ' + r.tool,
+    rowKey: r => 'rank:tool:' + r.tool,
+    onRow: r => openToolDrill('tool', r.tool),
     totals: { tool: 'TOTAL', calls: sum(rows, r => r.calls),
       cost: moneyCell(sum(rows, mCost)), tokens: hTok(sum(rows, r => r.tokens)) } });
-  return h('div', null, toolTreemap(rows), h('div', { class: 'tool-table' }, grid),
+  const nsPeak = Math.max(...namespaces.map(mCost), 0);
+  const nsGrid = table('t-s-tool-ns', [
+    { key: 'ns', label: 'Namespace', asc: true, cls: 'grow' },
+    { key: 'calls', label: 'Calls', align: 'r' },
+    { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => barCell(mCost(r), nsPeak) },
+    { key: 'tokens', label: 'Tokens', align: 'r', fmt: r => hTok(r.tokens) },
+  ], namespaces, { defaultSort: { key: 'cost', desc: true },
+    rowLabel: r => 'Open namespace ' + r.ns,
+    rowKey: r => 'rank:ns:' + r.ns,
+    onRow: r => openToolDrill('ns', r.ns),
+    totals: { ns: 'TOTAL', calls: sum(namespaces, r => r.calls),
+      cost: moneyCell(sum(namespaces, mCost)), tokens: hTok(sum(namespaces, r => r.tokens)) } });
+  const totalCalls = sum(rows, r => r.calls), totalCost = sum(rows, mCost);
+  const ledgerCalls = (calls || []).length, ledgerCost = sum(calls || [], mCost);
+  const totalTokens = sum(rows, r => r.tokens || 0), ledgerTokens = sum(calls || [], r => r.tokens || 0);
+  const costTolerance = Math.max(0.000001, ledgerCalls * 0.0000006);
+  const coverage = ledgerCalls === totalCalls && Math.abs(ledgerCost - totalCost) <= costTolerance
+      && Math.abs(ledgerTokens - totalTokens) < 0.01
+    ? (ledgerCalls ? 'call ledger covers all aggregate calls and attributed cost' : 'aggregate attribution available; no individual call ledger retained')
+    : 'aggregate coverage differs from the call ledger: ' + totalCalls + ' aggregate calls / ' + ledgerCalls
+      + ' retained calls, ' + money(totalCost) + ' / ' + money(ledgerCost) + ' attributed cost, '
+      + exactTok(totalTokens) + ' / ' + exactTok(ledgerTokens) + ' attributed tokens';
+  return h('div', null,
+    tiles([
+      ['calls', exactTok(totalCalls), rows.length + ' tools'],
+      ['tools', String(rows.length), namespaces.length + ' namespaces'],
+      ['namespaces', String(namespaces.length), 'tool/server groups'],
+      ['cost / call', totalCalls ? money(totalCost / totalCalls) : '-', MODE === 'api' ? 'API-equivalent' : 'recorded', true],
+    ]),
+    toolTreemap(rows),
+    h('div', { class: 'tool-ranks' },
+      pane('Tools ranking', h('div', { class: 'tool-table' }, grid)),
+      pane('Namespaces ranking', h('div', { class: 'tool-table' }, nsGrid))),
+    h('div', { class: 'hint tool-detail-note' }, coverage),
     h('div', { class: 'hint' }, 'cost and tokens belong to the LLM turns that invoked each tool; '
       + 'a multi-tool turn is split evenly'));
+}
+
+function toolDetail(toolRows, calls, drill) {
+  const match = r => drill.kind === 'tool' ? r.tool === drill.value : r.ns === drill.value;
+  const aggregate = toolRows.filter(match), ledger = (calls || []).filter(match);
+  const total = toolAgg(aggregate, () => drill.value, drill.kind === 'tool' ? 'tool' : 'ns')[0]
+    || { calls: 0, real: 0, api: 0, tokens: 0, tok: [0,0,0,0,0,0] };
+  const allCost = sum(toolRows, mCost), allTokens = sum(toolRows, r => r.tokens || 0);
+  const models = toolAgg(aggregate, r => r.model || 'unknown', 'tool').map(r => ({ ...r, model: r.tool }));
+  const modelPeak = Math.max(...models.map(mCost), 0);
+  const categories = ['Uncached input', 'Model output', 'Reasoning', 'Cache read', 'Cache write'];
+  const categoryTotal = sum(total.tok.slice(0, 5), v => v);
+  const series = tokSeries();
+  const categoryRows = categories.map((name, i) => ({ name, color: series[i], tokens: total.tok[i] || 0,
+    share: categoryTotal ? (total.tok[i] || 0) / categoryTotal : 0 }));
+  const composition = categoryTotal > 0 ? h('div', { class: 'sbar' },
+    h('div', { class: 'lbl' }, 'Share of attributed token categories'),
+    h('div', { class: 'track' }, categoryRows.filter(r => r.tokens > 0).map(r => h('div', {
+      class: 'seg', style: 'flex:' + r.share + ' 0 0;background:' + r.color + ';color:' + inkOn(r.color),
+      title: r.name + ' · ' + exactTok(r.tokens) + ' · ' + fPct(r.share),
+    }, r.share > 0.075 ? fPct(r.share) : null)))) : null;
+  const modelGrid = table('t-s-tool-models', [
+    { key: 'model', label: 'Exact model', asc: true, cls: 'grow', fmt: r => modelCell(r.model) },
+    { key: 'calls', label: 'Calls', align: 'r', fmt: r => exactTok(r.calls) },
+    { key: 'cost', label: 'Cost', align: 'r', sortVal: mCost, fmt: r => barCell(mCost(r), modelPeak) },
+    { key: 'tokens', label: 'Attributed tokens', align: 'r', fmt: r => exactTok(r.tokens) },
+  ], models, { defaultSort: { key: 'cost', desc: true } });
+  const ledgerCost = sum(ledger, mCost), ledgerTokens = sum(ledger, r => r.tokens || 0);
+  const selectedTolerance = Math.max(0.000001, ledger.length * 0.0000006);
+  const selectedCovered = ledger.length === total.calls
+    && Math.abs(ledgerCost - mCost(total)) <= selectedTolerance
+    && Math.abs(ledgerTokens - total.tokens) < 0.01;
+  let selectedCoverage;
+  if (selectedCovered) selectedCoverage = 'Selected call ledger matches aggregate attribution: '
+    + exactTok(total.calls) + ' calls · ' + exactTok(total.tokens) + ' tokens · ' + money(mCost(total)) + '.';
+  else if (!ledger.length && (calls || []).length)
+    selectedCoverage = 'No retained individual calls match this selection; the session ledger contains '
+      + (calls || []).length + ' calls for other tools. Aggregate: ' + exactTok(total.calls) + ' calls · '
+      + exactTok(total.tokens) + ' tokens · ' + money(mCost(total)) + '.';
+  else if (!ledger.length)
+    selectedCoverage = 'This source retained aggregate attribution only for this selection: '
+      + exactTok(total.calls) + ' calls · ' + exactTok(total.tokens) + ' tokens · ' + money(mCost(total)) + '.';
+  else selectedCoverage = 'Selected aggregate / retained ledger differ: ' + exactTok(total.calls) + ' / '
+    + ledger.length + ' calls · ' + exactTok(total.tokens) + ' / ' + exactTok(ledgerTokens)
+    + ' tokens · ' + money(mCost(total)) + ' / ' + money(ledgerCost) + '.';
+  const callGrid = ledger.length ? table('t-s-tool-calls', [
+    { key: 'index', label: 'Call', asc: true, align: 'r', fmt: r => [String(r.index + 1),
+      h('div', { class: 'mut' }, 'turn ' + (r.turnIndex + 1) + ' · #' + (r.callIndex + 1))] },
+    { key: 'time', label: 'Owning-turn time', asc: true, fmt: r => dt(r.time) || '-' },
+    ...(drill.kind === 'ns' ? [{ key: 'tool', label: 'Tool', cls: 'grow' }] : []),
+    { key: 'promptTitle', label: 'Owning prompt', cls: 'grow', fmt: r => r.promptTitle || '(no preceding prompt)' },
+    { key: 'agent', label: 'Owner', cls: 'grow', fmt: r => [
+      h('div', null, r.depth ? '↳ ' + r.agent : r.agent), h('div', { class: 'mut' }, modelCell(r.model || '-'))] },
+    { key: 'tokens', label: 'Attributed tokens', align: 'r', fmt: r => exactTok(r.tokens) },
+    { key: 'cost', label: 'Attributed cost', align: 'r', sortVal: mCost, fmt: r => moneyCell(mCost(r)) },
+  ], ledger, { defaultSort: { key: 'index', desc: false },
+    rowLabel: r => 'Open owning turn ' + (r.turnIndex + 1) + ' for call ' + (r.index + 1),
+    rowKey: r => 'call:' + r.index,
+    onRow: r => jumpToToolCall(r) }) : h('div', { class: 'hint' },
+      'No matching individual calls are retained; aggregate tool and model attribution remains available.');
+  const categoryGrid = h('div', { class: 'scroll' }, h('table', null,
+    h('thead', null, h('tr', null,
+      h('th', null, 'Category'), h('th', { class: 'r' }, 'Tokens'), h('th', { class: 'r' }, 'Share'))),
+    h('tbody', null, categoryRows.map(r => h('tr', null,
+      h('td', null, h('span', { class: 'lgd', style: 'background:' + r.color }), r.name), h('td', { class: 'r' }, exactTok(r.tokens)),
+      h('td', { class: 'r dim' }, fPct(r.share))))),
+    h('tfoot', null, h('tr', null,
+      h('td', null, '1h cache write'), h('td', { class: 'r' }, exactTok(total.tok[5] || 0)),
+      h('td', { class: 'r dim' }, 'subset of cache write')))));
+  return h('div', null,
+    h('div', { class: 'tool-detail-head' },
+      h('span', { class: 'hint' }, (drill.kind === 'tool' ? 'tool' : 'namespace') + ' detail'),
+      h('h2', { class: 'title' }, drill.value),
+      h('button', { class: 'hbtn', 'data-tool-focus': 'back', onclick: closeToolDrill }, 'esc  back to rankings')),
+    tiles([
+      ['calls', exactTok(total.calls), ledger.length ? ledger.length + ' retained individually' : 'aggregate only'],
+      ['cost', money(mCost(total)), pct(mCost(total), allCost) + ' of tool-attributed cost', true],
+      ['tokens', exactTok(total.tokens), pct(total.tokens, allTokens) + ' of tool-attributed tokens'],
+      ['cost / call', total.calls ? money(mCost(total) / total.calls) : '-', MODE === 'api' ? 'API-equivalent' : 'recorded', true],
+      ['tokens / call', total.calls ? exactTok(total.tokens / total.calls) : '-', 'attributed average'],
+    ]),
+    pane('Attributed token categories', composition, categoryGrid),
+    pane('Exact model attribution', modelGrid),
+    h('div', { class: 'hint tool-detail-note' }, selectedCoverage),
+    pane('Chronological individual calls', h('div', { class: 'tool-call-table' }, callGrid)),
+    h('div', { class: 'hint' }, 'Times are owning-turn timestamps. Output is model output, not a tool result size. Click a call to open its owning prompt in Turns.'));
 }
 
 function binaryTreemap(items, x, y, w, h, out) {
@@ -1958,7 +2196,7 @@ function toolTreemap(rows) {
     : (r.value / r.calls) >= 0.01 ? money(r.value / r.calls) + '/call'
     : (r.value / r.calls) < 0.0001 ? '<$0.0001/call'
     : '$' + (r.value / r.calls).toFixed(4).replace(/0+$/, '') + '/call';
-  const map = h('div', { class: 'tool-map', 'aria-hidden': 'true' });
+  const map = h('div', { class: 'tool-map', 'aria-label': 'Tool-attributed spend treemap' });
   // Reflow only this chart; a global resize render would discard transient UI state.
   let frame = 0;
   const draw = () => {
@@ -1977,11 +2215,14 @@ function toolTreemap(rows) {
       const rateEl = (rate && r.w >= 110 && r.h >= 64)
         ? h('span', { class: 'tr' }, rate + ' · ' + r.calls + ' call' + (r.calls === 1 ? '' : 's'))
         : null;
-      return h('div', {
-        class: 'tool-tile' + (roomy ? '' : ' tiny'),
+      const clickable = r.tool !== 'Other';
+      return h(clickable ? 'button' : 'div', {
+        class: 'tool-tile' + (roomy ? '' : ' tiny') + (clickable ? ' click' : ''),
         style: 'left:' + r.x + 'px;top:' + r.y + 'px;width:' + r.w + 'px;height:' + r.h
           + 'px;background:' + fill + ';color:' + inkOn(fill),
         title: r.tool + ' · ' + amount + (rate ? ' · ' + rate : ''),
+        'data-tool-focus': clickable ? 'rank:tool:' + r.tool : null,
+        onclick: clickable ? () => openToolDrill('tool', r.tool) : null,
       }, roomy ? h('span', { class: 'tn' }, r.tool) : null, details, rateEl);
     });
     map.replaceChildren(...tiles_);
@@ -2516,8 +2757,8 @@ function renderDetail(sc, ws) {
     if (tree) root.appendChild(h('div', { class: 'hint' }, 'Click an execution for detail; focus a row and use j/k or arrows, then Enter. Model labels are representative, not a full model mix.'));
   } else if (TAB === 'Turns') root.appendChild(pane('Turns · cost over time',
     EXTRAS.loading ? h('div', { class: 'hint' }, 'loading turns…') : turnsTable(EXTRAS.turns, EXTRAS.expiries)));
-  else if (TAB === 'Tools') root.appendChild(pane('Tools',
-    EXTRAS.loading ? h('div', { class: 'hint' }, 'loading tools…') : toolsTable(EXTRAS.tools)));
+  else if (TAB === 'Tools') root.appendChild(pane('Tools explorer',
+    EXTRAS.loading ? h('div', { class: 'hint' }, 'loading tools…') : toolsTable(EXTRAS.tools, EXTRAS.toolCalls)));
   else if (TAB === 'Context') {
     root.appendChild(pane('Context · window usage',
       EXTRAS.loading ? h('div', { class: 'hint' }, 'loading context…') : contextPane(EXTRAS.context)));
@@ -2537,7 +2778,7 @@ function renderTabs(sc, tabs) {
     const ld = loading && (t === 'Turns' || t === 'Tools' || t === 'Context');
     const cls = (t === TAB ? 'on ' : '') + (ld ? 'ld' : '');
     bar.appendChild(h('button', { class: cls.trim() || null,
-      onclick: () => { TAB = t; render(false); } }, t + (ld ? ' ⋯' : '')));
+      onclick: () => { if (t !== TAB) abandonToolNavigation(); TAB = t; render(false); } }, t + (ld ? ' ⋯' : '')));
   });
 }
 function renderCrumbs(sc) {
@@ -2580,8 +2821,8 @@ function chrome() {
   right.textContent = '';
   if (!META.demo) {
     right.appendChild(h('div', { class: 'seg' },
-      h('button', { class: MODE === 'real' ? 'on' : null, onclick: () => { MODE = 'real'; render(false); } }, 'actual $'),
-      h('button', { class: MODE === 'api' ? 'on' : null, onclick: () => { MODE = 'api'; render(false); } }, 'what-if $')));
+      h('button', { class: MODE === 'real' ? 'on' : null, onclick: () => setCostMode('real') }, 'actual $'),
+      h('button', { class: MODE === 'api' ? 'on' : null, onclick: () => setCostMode('api') }, 'what-if $')));
   }
   if (META.demo) { }
   else if (MODE === 'api') right.appendChild(h('span', { class: 'badge est' }, 'estimated · list prices'));
@@ -2605,14 +2846,20 @@ function chrome() {
 
 function ensureExtras(sc) {
   if (sc.kind !== 's' || !META.serve || EXTRAS.id === sc.id) return;
+  const request = ++EXTRAS_REQUEST, session = sc.id;
   TURN_DRILL = null;
-  EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], context: null, expiries: [] };
+  abandonToolNavigation();
+  EXTRAS = { id: sc.id, loading: true, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
   fetch('/api/session/' + encodeURIComponent(sc.id)).then(r => r.json()).then(x => {
-    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], context: x.context || null, expiries: x.expiries || [] };
+    const current = curScope();
+    if (request !== EXTRAS_REQUEST || current.kind !== 's' || current.id !== session || EXTRAS.id !== session) return;
+    EXTRAS = { id: sc.id, loading: false, turns: x.turns || [], tools: x.tools || [], toolCalls: x.toolCalls || [], context: x.context || null, expiries: x.expiries || [] };
     render(false);
   }).catch(err => {
+    const current = curScope();
+    if (request !== EXTRAS_REQUEST || current.kind !== 's' || current.id !== session || EXTRAS.id !== session) return;
     console.error('session extras failed:', err);
-    EXTRAS = { id: sc.id, loading: false, turns: [], tools: [], context: null, expiries: [] };
+    EXTRAS = { id: sc.id, loading: false, turns: [], tools: [], toolCalls: [], context: null, expiries: [] };
     render(false);
   });
 }
@@ -3198,7 +3445,7 @@ document.addEventListener('keydown', e => {
     if (next !== list.index) list.rows[next].go();
     e.preventDefault();
   } else if (e.key === 'Tab') {
-    if (sc.kind === 's' && TAB === 'Subagents') return; // Native focus reaches execution rows and Back.
+    if (sc.kind === 's' && (TAB === 'Subagents' || TAB === 'Tools')) return; // Native focus reaches drill rows and Back.
     const order = focusOrder();
     const cur = order.indexOf(FOCUS);
     FOCUS = order[((cur < 0 ? 0 : cur) + (e.shiftKey ? -1 : 1) + order.length) % order.length];
@@ -3207,10 +3454,12 @@ document.addEventListener('keydown', e => {
   } else if (e.key === 'h' || e.key === 'ArrowLeft' || e.key === 'l' || e.key === 'ArrowRight') {
     const i = tabs.indexOf(TAB);
     const step = (e.key === 'h' || e.key === 'ArrowLeft') ? -1 : 1;
-    TAB = tabs[(i + step + tabs.length) % tabs.length];
+    abandonToolNavigation(); TAB = tabs[(i + step + tabs.length) % tabs.length];
     render(false);
   } else if (e.key === 'Escape') {
     if (NODE_DRILL != null && TAB === 'Subagents') { closeExecution(); e.preventDefault(); return; }
+    if (typeof TOOL_TURN !== 'undefined' && TOOL_TURN != null && TAB === 'Turns') { closeToolTurn(); e.preventDefault(); return; }
+    if (typeof TOOL_DRILL !== 'undefined' && TOOL_DRILL != null && TAB === 'Tools') { closeToolDrill(); e.preventDefault(); return; }
     // Escape leaves a visible prompt drill before popping the route scope.
     if (TURN_DRILL != null && TAB === 'Turns') { TURN_DRILL = null; render(false); e.preventDefault(); return; }
     if (MSUB) { clearMsub(); e.preventDefault(); return; }
@@ -3224,8 +3473,7 @@ document.addEventListener('keydown', e => {
     else if (sc.kind === 'H') go('', '');
     else if (sc.kind === 'y' || sc.kind === 'p' || sc.kind === 'M') go('', '');
   } else if (e.key === '$' && !META.demo) {
-    MODE = MODE === 'api' ? 'real' : 'api';
-    render(false);
+    setCostMode(MODE === 'api' ? 'real' : 'api');
   } else if (e.key === 'w') {
     // Demo scaling hides absolute values but preserves the comparison ratio.
     toggleWhatif();
@@ -3279,10 +3527,29 @@ window.addEventListener('hashchange', () => { resetScopeState(); render(); });
 // Same-URL history entries let browser Back close an execution without leaving its session.
 window.addEventListener('popstate', e => {
   const sc = curScope(), state = e.state;
+  const leavingTool = TOOL_DRILL, returnFocus = TOOL_RETURN_FOCUS;
   NODE_DRILL = sc.kind === 's' && state && state.session === sc.id && Number.isInteger(state.execution)
     ? state.execution : null;
+  const validToolState = sc.kind === 's' && state && state.session === sc.id && state.toolNav === TOOL_NAV;
+  TOOL_DRILL = validToolState && state.toolDrill
+    && (state.toolDrill.kind === 'tool' || state.toolDrill.kind === 'ns')
+    ? { kind: state.toolDrill.kind, value: String(state.toolDrill.value) } : null;
+  TOOL_RETURN_FOCUS = TOOL_DRILL ? String(state.rankFocus || '') : null;
+  TOOL_TURN = validToolState && state.toolTurn && Number.isInteger(state.toolTurn.turnIndex)
+    && Number.isInteger(state.toolTurn.callIndex)
+    ? { turnIndex: state.toolTurn.turnIndex, callIndex: state.toolTurn.callIndex, group: state.toolTurn.group } : null;
+  if (TOOL_TURN && TOOL_DRILL) {
+    const groups = turnGroupRows(EXTRAS.turns);
+    const group = groups.findIndex(g => g.indices.includes(TOOL_TURN.turnIndex));
+    if (group >= 0) { TOOL_TURN.group = group; TURN_DRILL = group; TAB = 'Turns'; }
+    else { TOOL_TURN = null; TAB = 'Tools'; TURN_DRILL = null; }
+  } else if (TOOL_DRILL) { TAB = 'Tools'; TURN_DRILL = null; }
+  else if (leavingTool) { TAB = 'Tools'; TURN_DRILL = null; }
   requestNodePrompt();
   render(false);
+  if (TOOL_TURN) focusToolTarget('owner-turn', true);
+  else if (TOOL_DRILL) focusToolTarget(String(state.toolFocus || 'back'));
+  else if (leavingTool) focusToolTarget(returnFocus);
 });
 // Apply persisted or payload theme before charts render.
 applyTheme((function () { try { return localStorage.getItem('opentab-theme'); } catch (e) { return null; } })() || META.theme || 'tokyo-night');

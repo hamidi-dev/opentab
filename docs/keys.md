@@ -97,6 +97,17 @@ Expansion is temporary and is released when you leave the turn. Recorded tool
 errors are labeled explicitly. Sources that do not support content have no turn
 detail; real content is also unavailable in demo mode.
 
+On **Tools**, `j`/`k` select a tool or server/namespace ranking and `Enter` or
+double-click opens its contribution, per-call averages, token composition and exact
+model attribution. The chronological call list uses the same keys; `Enter` opens
+the owning prompt's turn list with the relevant turn selected. Another `Enter`
+opens the existing trace reader where supported. `Esc` returns through each level,
+restoring the originating tool call and ranking. `g`/`G` select first/last; page keys
+and the mouse wheel scroll the details. `$` updates attribution without changing
+the selected tool. The rankings remain useful for aggregate-only sources, which
+explicitly report that individual calls are unavailable. Tools CSV export remains
+the session's aggregate tool/model attribution, not the selected call ledger.
+
 The overview chart shows **total cost per prompt**, matching the prompt table.
 Inside a prompt, the charts show **cost per turn and context growth** for that
 prompt only, with the same session-wide turn numbers as its table. Each peak is
