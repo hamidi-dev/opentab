@@ -565,6 +565,7 @@ def test_whatif_picker_renders_the_tier_tab_strip():
     with tempfile.TemporaryDirectory() as tmp:
         app = _whatif_db(tmp)
         app.toggle_whatif()
+        app.whatif_model = app.whatif_rows()[0][0]
         orig_cp = ot.curses.color_pair
         ot.curses.color_pair = lambda n: 0
         try:
@@ -572,6 +573,7 @@ def test_whatif_picker_renders_the_tier_tab_strip():
             app.renderer.draw_whatif_menu(screen, 30, 90)
             text = screen_text(screen)
             assert "[your models]" in text and " models.dev " in text
+            assert "(current)" not in text
             assert "w next" in text and "again clears" not in text
             app.handle_whatif_menu_key(ord("w"))
             assert app.whatif_menu_index == 1 and app.whatif_menu

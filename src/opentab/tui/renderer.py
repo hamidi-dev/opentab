@@ -19,6 +19,96 @@ from opentab.models import (
 )
 from opentab.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
 from opentab.tui import bindings, keymap
+from opentab.tui.components import menus
+from opentab.tui.components.bars import (
+    legend_lines,
+    positioned_label_line,
+    segment_glyph,
+    stack_line,
+    stack_widths,
+)
+from opentab.tui.components.boxes import (
+    BOX_CHROME as COMPONENT_BOX_CHROME,
+)
+from opentab.tui.components.boxes import (
+    TABLE_GLYPHS,
+    TABLE_GLYPHS_ASCII,
+    ruled_box,
+    sectioned_box,
+)
+from opentab.tui.components.boxes import (
+    box_row as component_box_row,
+)
+from opentab.tui.components.boxes import (
+    box_rule as component_box_rule,
+)
+from opentab.tui.components.boxes import (
+    box_top as component_box_top,
+)
+from opentab.tui.components.charts import bar_chart, treemap_rects
+from opentab.tui.components.modal import StyledLine, modal_layout
+from opentab.tui.components.navigation import (
+    keybar_layout,
+    pager_layout,
+    scrollbar_layout,
+    scrollbar_thumb,
+    tab_strip_layout,
+)
+from opentab.tui.components.notifications import (
+    NOTIFICATION_STYLES,
+    Notification,
+    history_rows,
+    toast_age,
+    toast_cards,
+    toast_history_viewport,
+    wrap_notice,
+)
+from opentab.tui.components.tables import (
+    PICKER_CHROME as COMPONENT_PICKER_CHROME,
+)
+from opentab.tui.components.tables import (
+    SESSION_PROJECT_MAX as COMPONENT_SESSION_PROJECT_MAX,
+)
+from opentab.tui.components.tables import (
+    SESSION_TITLE_MIN as COMPONENT_SESSION_TITLE_MIN,
+)
+from opentab.tui.components.tables import (
+    ProjectHeadings,
+    ProjectRow,
+    SessionHeadings,
+    SessionRow,
+    picker_box_width,
+    picker_frame,
+    picker_row,
+    picker_window,
+    project_table_text,
+)
+from opentab.tui.components.tables import (
+    project_header_text as table_project_header_text,
+)
+from opentab.tui.components.tables import (
+    project_name_width as table_project_name_width,
+)
+from opentab.tui.components.tables import (
+    project_row_text as table_project_row_text,
+)
+from opentab.tui.components.tables import (
+    project_total_text as table_project_total_text,
+)
+from opentab.tui.components.tables import (
+    session_columns as table_session_columns,
+)
+from opentab.tui.components.tables import (
+    session_header_text as table_session_header_text,
+)
+from opentab.tui.components.tables import (
+    session_row_text as table_session_row_text,
+)
+from opentab.tui.components.token_cards import (
+    EconomicsCategory,
+    token_breakdown_card,
+    token_economics_card,
+)
 from opentab.tui.search_layout import conversation_layout, snippet_lines
 from opentab.tui.trace import TraceLine, build_event_body, format_block, output_target, wrapped
 
@@ -59,7 +149,6 @@ from opentab.heatmap import (
     PRICE_HEAT_BASE_PAIR,
     PRICE_HEAT_LEVELS,
     TOKEN_SERIES_BASE_PAIR,
-    TOKEN_SERIES_GLYPHS,
     TOOL_HEAT_BASE_PAIR,
     TOOL_HEAT_LEVELS,
     calendar_cells,
@@ -414,38 +503,47 @@ class Renderer:
 
     @staticmethod
     def project_name_width(width: int) -> int:
-        return max(8, width - 38)
+        return table_project_name_width(width)
+
+    def _project_headings(self) -> ProjectHeadings:
+        return ProjectHeadings(
+            project=self.project_sort_heading("project", "Project"),
+            cost=self.project_sort_heading("cost", "Cost"),
+            tokens=self.project_sort_heading("tokens", "Tokens"),
+            sessions=self.project_sort_heading("sessions", "Ses"),
+            subagents=self.project_sort_heading("subagents", "Subagents"),
+        )
+
+    @staticmethod
+    def _project_row(project: ProjectSummary) -> ProjectRow:
+        return ProjectRow(
+            name=project.directory,
+            cost=money_whole(project.cost),
+            tokens=human_tokens(project.tokens),
+            sessions=project.workflows,
+            subagents=project.subagents,
+            ignored=project.ignored,
+        )
+
+    @staticmethod
+    def _project_total_row(rows: list[ProjectSummary]) -> ProjectRow:
+        return ProjectRow(
+            name="TOTAL",
+            cost=money_whole(sum(project.cost for project in rows)),
+            tokens=human_tokens(sum(project.tokens for project in rows)),
+            sessions=sum(project.workflows for project in rows),
+            subagents=sum(project.subagents for project in rows),
+        )
 
     def project_row_text(self, project: ProjectSummary, marker: str, width: int) -> str:
-        name_width = self.project_name_width(width)
-        name = short_path(project.directory, max(1, name_width - (2 if project.ignored else 0)))
-        if project.ignored:
-            name = f"× {name}"
-        return (
-            f"{marker} {pad(name, name_width)} "
-            f"{money_whole(project.cost):>7} {human_tokens(project.tokens):>6} "
-            f"{project.workflows:>3} ses {project.subagents:>6} subs"
-        )
+        return table_project_row_text(self._project_row(project), marker, width)
 
     def project_total_text(self, rows: list[ProjectSummary], width: int) -> str:
         # Pickers omit totals because a fixed footer would appear to sum only the window.
-        name_width = self.project_name_width(width)
-        return (
-            f"  {pad('TOTAL', name_width)} "
-            f"{money_whole(sum(p.cost for p in rows)):>7} "
-            f"{human_tokens(sum(p.tokens for p in rows)):>6} "
-            f"{sum(p.workflows for p in rows):>3} ses {sum(p.subagents for p in rows):>6} subs"
-        )
+        return table_project_total_text(self._project_total_row(rows), width)
 
     def project_header_text(self, width: int) -> str:
-        name_width = self.project_name_width(width)
-        return (
-            f"  {self.project_sort_heading('project', 'Project'):{name_width}} "
-            f"{self.project_sort_heading('cost', 'Cost'):>7} "
-            f"{self.project_sort_heading('tokens', 'Tokens'):>6} "
-            f"{self.project_sort_heading('sessions', 'Ses'):>7} "
-            f"{self.project_sort_heading('subagents', 'Subagents'):>11}"
-        )
+        return table_project_header_text(self._project_headings(), width)
 
     def list_width(self, content: int, width: int) -> int:
         # Content plus the two box borders, never past the detail pane's 44-column floor.
@@ -566,15 +664,7 @@ class Renderer:
     @staticmethod
     def _scrollbar_thumb(total: int, visible: int, offset: int) -> tuple[int, int] | None:
         """Return the thumb's row and height within a viewport-sized track."""
-        if total <= visible or visible <= 0:
-            return None
-        max_scroll = total - visible
-        offset = max(0, min(offset, max_scroll))
-        max_thumb = max(1, visible - 1)  # leave a track cell for even one-line overflow
-        thumb_h = min(max_thumb, max(min(2, visible), math.ceil(visible * visible / total)))
-        travel = visible - thumb_h
-        thumb_y = (travel * offset + max_scroll // 2) // max_scroll
-        return thumb_y, thumb_h
+        return scrollbar_thumb(total, visible, offset)
 
     def _paint_scrollbar(
         self,
@@ -587,10 +677,9 @@ class Renderer:
         active: bool = True,
     ) -> None:
         """Turn a pane's right border into a scrollbar without costing content width."""
-        thumb = self._scrollbar_thumb(total, visible, offset)
-        if thumb is None:
+        layout = scrollbar_layout(total, visible, offset)
+        if layout is None:
             return
-        thumb_y, thumb_h = thumb
         track_glyph = getattr(curses, "ACS_VLINE", "|")
         thumb_glyph = getattr(curses, "ACS_BLOCK", getattr(curses, "ACS_CKBOARD", "#"))
         track_attr = curses.color_pair(4)
@@ -598,12 +687,10 @@ class Renderer:
         sy, sx = y + self.oy, x + self.ox
         try:
             # Keep this to three native runs; per-cell addch lets key-repeat outrun paint.
-            if thumb_y:
-                stdscr.vline(sy, sx, track_glyph, thumb_y, track_attr)
-            stdscr.vline(sy + thumb_y, sx, thumb_glyph, thumb_h, thumb_attr)
-            below = visible - thumb_y - thumb_h
-            if below:
-                stdscr.vline(sy + thumb_y + thumb_h, sx, track_glyph, below, track_attr)
+            for run in layout.runs:
+                glyph = thumb_glyph if run.style == "thumb" else track_glyph
+                attr = thumb_attr if run.style == "thumb" else track_attr
+                stdscr.vline(sy + run.y, sx, glyph, run.length, attr)
         except curses.error:
             pass
 
@@ -1488,32 +1575,10 @@ class Renderer:
         # Entries may contain contiguous sub-segments so only the active token is accented.
         base = curses.color_pair(4)
         active = curses.color_pair(6) | curses.A_BOLD
-        limit = limit or width  # right edge the hints may reach; `width` is what they centre in
-        # Two passes: drop the hints that cannot fit, then centre the ones that survive --
-        # the bar's own width has to be known before the first cell is painted.
-        shown: list[list] = []
-        total = 0
-        for part in parts:
-            segs = part if isinstance(part, list) else [part]
-            span = (2 if shown else 0) + sum(len(t) for t, _ in segs)
-            if total + span > limit - 2:  # never draw a partial hint
-                break
-            shown.append(segs)
-            total += span
-        if not shown:
-            return
-        # A bar too wide to sit centred clear of the version slot re-centres in the room
-        # it does have, which reads as centred without crowding the version.
-        x = max(1, (width - total) // 2)
-        if x + total > limit - 1:
-            x = max(1, (limit - total) // 2)
-        for i, segs in enumerate(shown):
-            if i:
-                self.write(stdscr, y, x, "  ", base)
-                x += 2
-            for text, on in segs:
-                self.write(stdscr, y, x, text, active if on else base)
-                x += len(text)
+        layout = keybar_layout(parts, width, limit=limit or None)
+        for span in layout.spans:
+            attr = active if span.style == "active" else base
+            self.write(stdscr, y, span.x, span.text, attr)
 
     # Each visible list owns its sort arrow; shared screens must not use effective_sort_by.
     def sort_heading(self, key: str, label: str) -> str:
@@ -1636,33 +1701,18 @@ class Renderer:
         return f"{pad(shorten(workflow.machine or '?', w), w)} "
 
     # Preview and picker must use these same builders so entering zoom only adds a cursor.
-    SESSION_TITLE_MIN = 24  # room the title keeps before an optional column earns its cells
-    SESSION_PROJECT_MAX = 20
+    SESSION_TITLE_MIN = COMPONENT_SESSION_TITLE_MIN
+    SESSION_PROJECT_MAX = COMPONENT_SESSION_PROJECT_MAX
 
     def session_columns(self, sessions: list[Workflow], width: int) -> tuple[bool, int, bool]:
-        # Both frames must measure the same pane. Drop Models, Project, then Duration;
-        # preserve the title floor because session lists are read by title.
-        proj_w = 0
-        if self.sessions_span_projects():
-            # Cap project width so one deep path cannot consume the title.
-            head = self.sort_heading("project", "Project")
-            longest = max((display_width(self.session_project(wf)) for wf in sessions), default=0)
-            proj_w = max(len(head), min(self.SESSION_PROJECT_MAX, longest))
-        title = self.sort_heading("title", "Title")
-        for models, proj, dur in (
-            (True, proj_w, True),
-            (False, proj_w, True),
-            (False, 0, True),
-            (False, 0, False),
-        ):
-            if self.view == "zoom" and self.zoom_model:
-                # The selected model is already the scope; a Models-count column says
-                # nothing and is the first width the attributed session list should shed.
-                models = False
-            prefix = len(self.session_header_text(models, proj, dur)) - len(title)
-            if width - prefix >= self.SESSION_TITLE_MIN:
-                return models, proj, dur
-        return False, 0, False
+        span_projects = self.sessions_span_projects()
+        return table_session_columns(
+            [self.session_project(workflow) for workflow in sessions] if span_projects else (),
+            width,
+            span_projects,
+            self.view == "zoom" and bool(self.zoom_model),
+            self._session_headings(),
+        )
 
     def session_metric_labels(self) -> tuple[str, str]:
         # A model scope attributes the two metric columns to the selected model, so they
@@ -1687,23 +1737,24 @@ class Renderer:
             max(9 if model_scope else 8, len(token)),
         )
 
-    def session_header_text(self, models: bool, proj_w: int, dur: bool = True) -> str:
+    def _session_headings(self) -> SessionHeadings:
         cost, token, cost_w, token_w = self.session_metric_headings()
-        header = f"  {self.sort_heading(*self.session_date_column()):<10} "
-        if dur:
-            header += f"{self.sort_heading('duration', 'Worked'):>8} "
-        header += (
-            f"{cost:>{cost_w}} "
-            f"{token:>{token_w}} "
-            f"{self.sort_heading('subagents', 'Subagents'):>11} "
+        return SessionHeadings(
+            date=self.sort_heading(*self.session_date_column()),
+            duration=self.sort_heading("duration", "Worked"),
+            cost=cost,
+            tokens=token,
+            subagents=self.sort_heading("subagents", "Subagents"),
+            project=self.sort_heading("project", "Project"),
+            title=self.sort_heading("title", "Title"),
+            cost_width=cost_w,
+            token_width=token_w,
+            source_column=self.src_col(),
+            machine_column=self.mach_col(),
         )
-        if models:
-            header += f"{'Models':>6}  "
-        header += self.src_col()
-        header += self.mach_col()
-        if proj_w:
-            header += f"{self.sort_heading('project', 'Project'):<{proj_w}}  "
-        return header + self.sort_heading("title", "Title")
+
+    def session_header_text(self, models: bool, proj_w: int, dur: bool = True) -> str:
+        return table_session_header_text(self._session_headings(), models, proj_w, dur)
 
     def _worked_suffix(self, workflow: Workflow) -> str:
         # Worked time excludes idle waits. Keep the date when activity crosses a day.
@@ -1731,24 +1782,28 @@ class Renderer:
         else:
             cost, token_count = workflow.total_cost, workflow.total_tokens
             cost_text = money(cost)
-        _cost_head, _token_head, cost_w, token_w = self.session_metric_headings()
-        text = f"{marker} {self.session_date_cell(workflow):<10} "
-        if dur:
-            text += f"{self.session_duration(workflow):>8} "
-        text += (
-            f"{cost_text:>{cost_w}} "
-            f"{human_tokens(token_count):>{token_w}} "
-            f"{workflow.subagents:>11} "
-        )
-        if models:
-            text += f"{workflow.model_count:>6}  "
-        text += self.src_col(workflow)
-        text += self.mach_col(workflow)
-        if proj_w:
-            text += f"{pad(shorten(self.session_project(workflow), proj_w), proj_w)}  "
-        return (
-            f"{text}{self.session_marks(workflow)}"
-            f"{self.ignored_session_tag(workflow)}{workflow.title}"
+        _cost, _token, cost_w, token_w = self.session_metric_headings()
+        return table_session_row_text(
+            SessionRow(
+                date=self.session_date_cell(workflow),
+                duration=self.session_duration(workflow) if dur else "",
+                cost=cost_text,
+                tokens=human_tokens(token_count),
+                subagents=workflow.subagents,
+                model_count=workflow.model_count,
+                source_column=self.src_col(workflow),
+                machine_column=self.mach_col(workflow),
+                project=self.session_project(workflow) if proj_w else "",
+                marks=self.session_marks(workflow),
+                ignored=self.ignored_session_tag(workflow),
+                title=workflow.title,
+            ),
+            marker,
+            models,
+            proj_w,
+            cost_w,
+            token_w,
+            dur,
         )
 
     def session_total_text(
@@ -1947,11 +2002,10 @@ class Renderer:
             )
 
     # Top border, header, rule, bottom border.
-    PICKER_CHROME = 4
+    PICKER_CHROME = COMPONENT_PICKER_CHROME
 
     def picker_box_width(self, w: int) -> int:
-        # Preview and picker must use this same boxed width for optional columns.
-        return max(1, w - 4 - self.BOX_CHROME)
+        return picker_box_width(w)
 
     def draw_picker_frame(
         self,
@@ -1965,21 +2019,29 @@ class Renderer:
         sort_columns: tuple = (),
         sort_target: str = "",
     ) -> tuple[int, int, int]:
-        # Static tables assemble frames up front; scrolling pickers paint the same pieces
-        # after sizing their window. Callers must paint exactly `nrows`, because the
-        # bottom border is already placed beneath them.
-        outer = max(5, w - 4)
-        inner = outer - self.BOX_CHROME
-        cx = x + 2 + 2
+        frame = picker_frame(cy, x, w, title, header, nrows, self.box_glyphs())
         self.write(
-            stdscr, cy, x + 2, self.box_top(title, outer), curses.color_pair(2) | curses.A_BOLD
+            stdscr,
+            frame.top_y,
+            frame.frame_x,
+            frame.top,
+            curses.color_pair(2) | curses.A_BOLD,
         )
-        self._paint_box_header(stdscr, cy + 1, x + 2, self.box_row(header, outer), outer)
+        self._paint_box_header(
+            stdscr, frame.header_y, frame.frame_x, frame.header, frame.outer_width
+        )
         if sort_columns:
-            self._register_sort_header(cy + 1, cx, header, sort_columns, sort_target, inner)
-        self.write(stdscr, cy + 2, x + 2, self.box_rule(outer), curses.A_NORMAL)
-        self.write(stdscr, cy + 3 + nrows, x + 2, self.box_rule(outer, "bl", "br"), curses.A_NORMAL)
-        return cy + 3, cx, inner
+            self._register_sort_header(
+                frame.header_y,
+                frame.content_x,
+                header,
+                sort_columns,
+                sort_target,
+                frame.inner_width,
+            )
+        self.write(stdscr, frame.rule_y, frame.frame_x, frame.rule, curses.A_NORMAL)
+        self.write(stdscr, frame.bottom_y, frame.frame_x, frame.bottom, curses.A_NORMAL)
+        return frame.body_y, frame.content_x, frame.inner_width
 
     def paint_picker_row(
         self,
@@ -1994,18 +2056,17 @@ class Renderer:
         token_text: str = "",
         bars: bool = False,
     ) -> None:
-        # Selection reverses cells only; gutters retain the table frame.
-        g = self.box_glyphs()["v"]
-        self.write(stdscr, ry, x + 2, f"{g} ", curses.A_NORMAL)
-        self.write(stdscr, ry, cx + inner, f" {g}", curses.A_NORMAL)
-        if selected:
-            self.paint_cursor_row(
-                stdscr, ry, cx, pad(shorten(text, inner), inner), inner, bars=bars
-            )
+        row = picker_row(ry, x, cx, inner, text, selected, self.box_glyphs())
+        self.write(stdscr, row.y, row.left_x, row.left, curses.A_NORMAL)
+        self.write(stdscr, row.y, row.right_x, row.right, curses.A_NORMAL)
+        if row.selected:
+            self.paint_cursor_row(stdscr, row.y, row.content_x, row.content, inner, bars=bars)
         elif cost or token_text:
-            self.write_colored_summary_row(stdscr, ry, cx, text, cost, token_text, inner)
+            self.write_colored_summary_row(
+                stdscr, row.y, row.content_x, row.content, cost, token_text, inner
+            )
         else:
-            self.write_rich(stdscr, ry, cx, pad(shorten(text, inner), inner))
+            self.write_rich(stdscr, row.y, row.content_x, row.content)
 
     def draw_sessions_picker(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         sessions = self.current_sessions()
@@ -2019,10 +2080,8 @@ class Renderer:
             )
             self.paint_picker_row(stdscr, body_y, x, cx, inner, "No sessions.", False)
             return
-        visible = max(1, h - 5 - self.PICKER_CHROME)
-        idx = max(0, min(self.workflow_index, len(sessions) - 1))
-        start = max(0, min(idx - visible // 2, max(0, len(sessions) - visible)))
-        shown = sessions[start : start + visible]
+        idx, start, count = picker_window(len(sessions), self.workflow_index, h)
+        shown = sessions[start : start + count]
         body_y, cx, inner = self.draw_picker_frame(
             stdscr,
             cy,
@@ -2069,10 +2128,8 @@ class Renderer:
             )
             self.paint_picker_row(stdscr, body_y, x, cx, inner, "No projects.", False)
             return
-        visible = max(1, h - 5 - self.PICKER_CHROME)
-        idx = max(0, min(self.project_index, len(projects) - 1))
-        start = max(0, min(idx - visible // 2, max(0, len(projects) - visible)))
-        shown = projects[start : start + visible]
+        idx, start, count = picker_window(len(projects), self.project_index, h)
+        shown = projects[start : start + count]
         body_y, cx, inner = self.draw_picker_frame(
             stdscr, cy, x, w, title, header, len(shown), self.PROJECT_SORT_COLUMNS, "project"
         )
@@ -2136,10 +2193,8 @@ class Renderer:
         peak = max((float(it["cost"]) for _, it in rows), default=0.0) or 1.0
         namew, barw = self._group_widths(rows, col, inner_w)
         header = self._group_header(col, namew, barw)
-        visible = max(1, h - 5 - self.PICKER_CHROME)
-        idx = max(0, min(sel_index, len(rows) - 1))
-        start = max(0, min(idx - visible // 2, max(0, len(rows) - visible)))
-        shown = rows[start : start + visible]
+        idx, start, count = picker_window(len(rows), sel_index, h)
+        shown = rows[start : start + count]
         body_y, cx, inner = self.draw_picker_frame(stdscr, cy, x, w, title, header, len(shown))
         self._add_rows_region(region_kind, body_y, x, x + w - 1, start, len(shown))
         for off, (source, it) in enumerate(shown):
@@ -2187,40 +2242,28 @@ class Renderer:
         # `rule` is the browse-mode bar's shape -- chips centered in a horizontal rule,
         # which fills the row instead of leaving it to a key hint. It implies centering
         # and the tighter one-cell gap, so the chips read as one band.
-        if width <= 0 or not tabs:
+        layout = tab_strip_layout(
+            tabs,
+            active_index,
+            width,
+            center=center,
+            rule=rule,
+            disabled=disabled or (),
+        )
+        if not layout.spans and not layout.rules:
             return
-        active_index %= len(tabs)
-        disabled = disabled or set()
-        labels = [f"[{t}]" if i == active_index else f" {t} " for i, t in enumerate(tabs)]
-        sep = " " if rule else "  "
-        total = sum(display_width(lbl) for lbl in labels) + display_width(sep) * (len(labels) - 1)
-        cx = x + max(0, (width - total) // 2) if (center or rule) and total <= width else x
-        if rule and cx - x >= 2:
-            self.hline(stdscr, y, x, cx - x - 1)  # left rule, a blank cell before the chips
-        remaining = max(0, width - (cx - x))
-        for i, label in enumerate(labels):
-            if i > 0:
-                self.write(stdscr, y, cx, shorten(sep, remaining), curses.A_NORMAL)
-                separator_width = min(display_width(sep), remaining)
-                cx += separator_width
-                remaining -= separator_width
-            if remaining <= 0:
-                break
-            if i in disabled:
-                attr = curses.color_pair(4) | curses.A_DIM
-            elif i == active_index:
-                attr = curses.color_pair(7) | curses.A_BOLD
-            else:
-                attr = curses.color_pair(self._TAB_PAIR)
-            text = shorten(label, remaining)
-            self.write(stdscr, y, cx, text, attr)
-            text_width = display_width(text)
-            if i not in disabled:
-                self.regions.append((kind, y, cx, cx + text_width - 1, i))
-            cx += text_width
-            remaining -= text_width
-        if rule and cx + 2 <= x + width:
-            self.hline(stdscr, y, cx + 1, x + width - cx - 1)  # right rule after the chips
+        attrs = {
+            "separator": curses.A_NORMAL,
+            "disabled": curses.color_pair(4) | curses.A_DIM,
+            "active": curses.color_pair(7) | curses.A_BOLD,
+            "inactive": curses.color_pair(self._TAB_PAIR),
+        }
+        for rule_x, length in layout.rules:
+            self.hline(stdscr, y, x + rule_x, length)
+        for span in layout.spans:
+            self.write(stdscr, y, x + span.x, span.text, attrs[span.style])
+        for hit in layout.hits:
+            self.regions.append((kind, y, x + hit.x0, x + hit.x1, hit.index))
 
     @staticmethod
     def panel_title(number: int, title: str, active: bool = False) -> str:
@@ -3214,31 +3257,13 @@ class Renderer:
         return lines
 
     # Content strings cannot use curses ACS; use ASCII when the screen is not UTF-8.
-    _TABLE_GLYPHS = {
-        "tl": "┌",
-        "tr": "┐",
-        "bl": "└",
-        "br": "┘",
-        "lt": "├",
-        "rt": "┤",
-        "h": "─",
-        "v": "│",
-    }
-    _TABLE_GLYPHS_ASCII = {
-        "tl": "+",
-        "tr": "+",
-        "bl": "+",
-        "br": "+",
-        "lt": "+",
-        "rt": "+",
-        "h": "-",
-        "v": "|",
-    }
+    _TABLE_GLYPHS = TABLE_GLYPHS
+    _TABLE_GLYPHS_ASCII = TABLE_GLYPHS_ASCII
 
     # Static tables and scrolling pickers share these pieces despite building at different
     # times. BOX_CHROME is the width callers must reserve for the frame.
 
-    BOX_CHROME = 4  # "| " + " |"
+    BOX_CHROME = COMPONENT_BOX_CHROME
 
     @classmethod
     def box_glyphs(cls) -> dict:
@@ -3246,24 +3271,15 @@ class Renderer:
 
     @classmethod
     def box_top(cls, title: str, width: int) -> str:
-        # A square titled frame needs at least five cells; paint clips narrower panes.
-        g = cls.box_glyphs()
-        width = max(5, width)
-        heading = shorten(title[2:] if title.startswith("# ") else title, max(1, width - 6))
-        prefix = f"{g['tl']} {heading} "
-        return prefix + g["h"] * max(0, width - display_width(prefix) - 1) + g["tr"]
+        return component_box_top(title, width, cls.box_glyphs())
 
     @classmethod
     def box_rule(cls, width: int, left: str = "lt", right: str = "rt") -> str:
-        g = cls.box_glyphs()
-        return g[left] + g["h"] * max(0, max(5, width) - 2) + g[right]
+        return component_box_rule(width, cls.box_glyphs(), left, right)
 
     @classmethod
     def box_row(cls, text: str, width: int) -> str:
-        # Clip inside gutters so narrow panes retain a square frame.
-        g = cls.box_glyphs()
-        inner = max(5, width) - cls.BOX_CHROME
-        return f"{g['v']} {pad(shorten(text, inner), inner)} {g['v']}"
+        return component_box_row(text, width, cls.box_glyphs())
 
     def _ruled_box(
         self,
@@ -3274,34 +3290,16 @@ class Renderer:
         notes: list[str],
         width: int,
     ) -> list[str]:
-        # `width` is outer width. Caveats remain outside the box so line_attr can style
-        # them independently; the title and TOTAL are recognized by their framed text.
-        lines = [self.box_top(title, width), self.box_row(header, width)]
-        self._mark_box_header(header, width)
-        self._ruled_body_start = None
-        if body:
-            lines.append(self.box_rule(width))
-            self._ruled_body_start = len(lines)
-            lines.extend(self.box_row(b, width) for b in body)
-            if total is not None:
-                lines.append(self.box_rule(width))
-                lines.append(self.box_row(total, width))
-        lines.append(self.box_rule(width, "bl", "br"))
-        lines.extend(notes)
-        return lines
+        layout = ruled_box(title, header, body, total, notes, width, self.box_glyphs())
+        self._ruled_body_start = layout.body_start
+        if layout.header_line is not None:
+            self._box_headers.add(layout.lines[layout.header_line])
+        return list(layout.lines)
 
     def _sectioned_box(
         self, title: str, groups: list[list[str]], width: int, notes: list[str]
     ) -> list[str]:
-        # Drop empty groups so separators never open onto nothing.
-        lines = [self.box_top(title, width)]
-        for i, group in enumerate(g2 for g2 in groups if g2):
-            if i:
-                lines.append(self.box_rule(width))
-            lines.extend(self.box_row(row, width) for row in group)
-        lines.append(self.box_rule(width, "bl", "br"))
-        lines.extend(notes)
-        return lines
+        return list(sectioned_box(title, groups, width, notes, self.box_glyphs()).lines)
 
     @staticmethod
     def _price_split_dollars(
@@ -3414,96 +3412,48 @@ class Renderer:
             )
 
     def _token_glyph(self, slot: int) -> str:
-        # Pair-starved terminals distinguish token types by glyph instead of color.
-        return "█" if self._token_series_ok else TOKEN_SERIES_GLYPHS[slot]
+        return segment_glyph(slot, colored=self._token_series_ok)
 
     @staticmethod
     def _stack_widths(rows, total: float, cells: int) -> list[int]:
-        # Compute geometry once for bars and labels. Cumulative rounding closes the right
-        # edge; positive segments get one cell unless they outnumber available cells.
-        floor = sum(1 for _, value, _ in rows if value > 0)
-        bump = 1
-        if floor > cells:
-            floor = bump = 0
-        room = max(0, cells - floor)
-        widths, acc, used = [], 0.0, 0
-        for _label, value, _slot in rows:
-            if total > 0:
-                acc += value / total
-            edge = min(room, round(acc * room))
-            widths.append(max(0, edge - used) + (bump if value > 0 else 0))
-            used = edge
-        short = cells - sum(widths)
-        if short > 0 and widths:
-            widths[widths.index(max(widths))] += short
-        return widths
+        return stack_widths(rows, total, cells)
 
     def _token_stack_line(self, rows, total: float, cells: int, labels=None, share_fmt=None) -> str:
-        # Key color runs by text because boxes splice this line at unknown offsets.
-        widths = self._stack_widths(rows, total, cells)
-        runs: list[tuple[int, int, int]] = []
-        text, col = "", 0
-        for i, ((_label, value, slot), w) in enumerate(zip(rows, widths)):
-            if w <= 0:
-                continue
-            glyph = self._token_glyph(slot)
-            # Flamegraph shares guard near-zero and near-total values; other bars use round.
-            share = ""
-            if total > 0:
-                share = (
-                    share_fmt(value / total) if share_fmt else f"{round(100.0 * value / total)}%"
-                )
-            # Inline labels require surrounding space and color separation. In glyph
-            # fallback mode, overwriting fill would remove the only category cue.
-            body = glyph * w
-            if self._token_series_ok:
-                named = f"{labels[i]} {share}".strip() if labels else ""
-                for candidate in (named, share):
-                    if candidate and len(candidate) + 2 <= w:
-                        body = candidate.center(w, glyph)
-                        break
-            runs.append((col, w, slot))
-            text += body
-            col += w
-        self._token_runs[text] = runs
-        return text
+        line = stack_line(
+            rows,
+            total,
+            cells,
+            colored=self._token_series_ok,
+            labels=labels,
+            share_formatter=share_fmt,
+        )
+        self._token_runs[line.text] = [(span.column, span.length, span.slot) for span in line.spans]
+        return line.text
 
     def _token_legend_lines(self, rows, inner: int) -> list[str]:
-        # Wrap rather than clip: narrow segments rely most on the legend. Build color runs
-        # with each line so wrapped swatches retain their positions.
-        lines: list[str] = []
-        runs: list[tuple[int, int, int]] = []
-        text = ""
-        for label, _toks, _cost, slot in rows:
-            entry = f"{self._token_glyph(slot)} {label}"
-            gap = "  " if text else ""
-            if text and len(text) + len(gap) + len(entry) > inner:
-                self._token_runs[text] = runs
-                lines.append(text)
-                text, runs, gap = "", [], ""
-            runs.append((len(text) + len(gap), 1, slot))
-            text += gap + entry
-        if text:
-            self._token_runs[text] = runs
-            lines.append(text)
-        return lines
+        lines = legend_lines(
+            [(label, slot) for label, _toks, _cost, slot in rows],
+            inner,
+            colored=self._token_series_ok,
+        )
+        for line in lines:
+            self._token_runs[line.text] = [
+                (span.column, span.length, span.slot) for span in line.spans
+            ]
+        return [line.text for line in lines]
 
-    _TOKEN_BREAKDOWN_CATEGORIES = (
-        ("Uncached input", "input"),
-        ("Model output", "output"),
-        ("Reasoning", "reasoning"),
-        ("Cache read", "cache_read"),
-        ("Cache write", "cache_write"),
-    )
-
-    @staticmethod
-    def _exact_token_count(value) -> str:
-        value = value or 0
-        if isinstance(value, int):
-            return f"{value:,}"
-        if float(value).is_integer():
-            return f"{int(value):,}"
-        return f"{float(value):,.6f}".rstrip("0").rstrip(".")
+    def _adopt_token_card(self, card) -> list[list[str]]:
+        groups = []
+        for group in card.groups:
+            lines = []
+            for line in group:
+                if line.spans:
+                    self._token_runs[line.text] = [
+                        (span.column, span.length, span.slot) for span in line.spans
+                    ]
+                lines.append(line.text)
+            groups.append(lines)
+        return groups
 
     def _token_breakdown_box(
         self,
@@ -3515,59 +3465,25 @@ class Renderer:
         calls: int = 0,
         notes: tuple[str, ...] = (),
     ) -> list[str]:
-        """Render the normalized five-part split without redefining recorded total."""
-        categories = self._TOKEN_BREAKDOWN_CATEGORIES
-        values = [usage.get(key) or 0 for _label, key in categories]
-        category_total = sum(values)
-        recorded_total = usage.get("tokens_total") or 0
         inner = max(1, width - self.BOX_CHROME)
-        composition: list[str] = []
-        if category_total > 0 and inner >= 20:
-            slots = [
-                (label, value, i)
-                for i, ((label, _key), value) in enumerate(zip(categories, values))
-            ]
-            composition = [
-                self._token_stack_line(slots, category_total, inner),
-                *self._token_legend_lines(
-                    [(label, value, 0, slot) for label, value, slot in slots if value > 0],
-                    inner,
-                ),
-                "",
-            ]
-
-        rows = []
-        for (label, _key), value in zip(categories, values):
-            share = f"{100 * value / category_total:.1f}%" if category_total else "-"
-            count = self._exact_token_count(value)
-            avg = f"   avg {human_tokens(int(value / calls))}" if attributed and calls else ""
-            text = (
-                f"{label:<14} {count:>16}  {share:>6}{avg}"
-                if inner >= 48
-                else f"{label}: {count} ({share}){avg}"
-            )
-            rows += self._subagent_wrap([text], inner)
-
-        long_write = usage.get("cache_write_1h") or 0
-        if long_write:
-            rows += self._subagent_wrap(
-                [f"of cache writes, 1h: {self._exact_token_count(long_write)} " "(subset)"],
-                inner,
-            )
-        rows.append(f"Category sum: {self._exact_token_count(category_total)}")
-        rows.append(f"Recorded total: {self._exact_token_count(recorded_total)}")
-        delta = recorded_total - category_total
-        if abs(delta) > 1e-9:
-            direction = "higher" if delta > 0 else "lower"
-            rows += self._subagent_wrap(
-                [
-                    f"Mismatch: recorded total is {self._exact_token_count(abs(delta))} "
-                    f"{direction} than the five-category sum."
-                ],
-                inner,
-            )
+        card = token_breakdown_card(
+            title=title,
+            inner_width=inner,
+            note_width=width,
+            input_tokens=usage.get("input") or 0,
+            output_tokens=usage.get("output") or 0,
+            reasoning_tokens=usage.get("reasoning") or 0,
+            cache_read_tokens=usage.get("cache_read") or 0,
+            cache_write_tokens=usage.get("cache_write") or 0,
+            cache_write_1h=usage.get("cache_write_1h") or 0,
+            recorded_total=usage.get("tokens_total") or 0,
+            attributed=attributed,
+            calls=calls,
+            notes=notes,
+            colored=self._token_series_ok,
+        )
         return self._sectioned_box(
-            title, [composition + rows], width, self._subagent_wrap(list(notes), width)
+            card.title, self._adopt_token_card(card), width, list(card.notes)
         )
 
     def _token_economics_box(
@@ -3580,78 +3496,27 @@ class Renderer:
             return self._ruled_box(
                 "# Token economics", "no priceable usage here", [], None, [], width
             )
-        approx = "~" if econ.estimated else ""
         inner = max(1, width - 4)
-        # Keep each token type's color stable after cost sorting.
-        rows = [
-            (label, econ.tokens[i], econ.cost[i], i)
+        categories = [
+            EconomicsCategory(label, econ.tokens[i], econ.cost[i], i)
             for i, label in enumerate(TOKEN_TYPES)
             if econ.tokens[i] > 0 or econ.cost[i] > 0
         ]
-        rows.sort(key=lambda r: (r[2], r[1]), reverse=True)
-
-        def share_text(value: float, total: float) -> str:
-            # Preserve informative sub-percent differences that formatting.pct floors.
-            share = 100.0 * value / total if total > 0 else 0.0
-            if share >= 10 or share == 0:
-                return f"{share:.0f}%"
-            if share >= 1:
-                return f"{share:.1f}%"
-            if share >= 0.005:
-                return f"{share:.2f}%"
-            return "<0.01%"
-
-        # Below 34 cells, omit ambiguous bars and keep the exact table.
-        chart: list[str] = []
-        if inner >= 34:
-            for caption, index, total, fmt in (
-                ("share of tokens used", 1, econ.total_tokens, lambda v: human_tokens(int(v))),
-                ("share of dollars billed", 2, econ.total_cost, money),
-            ):
-                if chart:
-                    chart.append("")
-                figure = fmt(total)
-                chart.append(caption + " " * max(1, inner - len(caption) - len(figure)) + figure)
-                chart.append(
-                    self._token_stack_line([(r[0], r[index], r[3]) for r in rows], total, inner)
-                )
-            chart.append("")
-            chart.extend(self._token_legend_lines(rows, inner))
-
-        type_w = max(max((len(label) for label, *_ in rows), default=4), len("TOTAL"))
-        cost_w = max(8, *(len(money(c)) for _, _, c, _ in rows), len(money(econ.total_cost)) + 1)
-        # Use the common 2-cell table gutter below the flush chart.
-        table = [
-            f"  {'Type':<{type_w}}  {'Tokens':>8}  {'Volume':>6}  {'Cost':>{cost_w}}  {'Spend':>6}"
-        ]
-        table += [
-            f"  {label:<{type_w}}  {human_tokens(int(toks)):>8}  "
-            f"{share_text(toks, econ.total_tokens):>6}  {money(cost):>{cost_w}}  "
-            f"{share_text(cost, econ.total_cost):>6}"
-            for label, toks, cost, _slot in rows
-        ]
-        total_row = [
-            f"  {'TOTAL':<{type_w}}  {human_tokens(int(econ.total_tokens)):>8}  "
-            f"{'':>6}  {approx + money(econ.total_cost):>{cost_w}}"
-        ]
-        notes = []
-        if econ.estimated:
-            notes.append(
-                "! ~ a model here has no known list rate — its tokens use a generic estimate"
-            )
-        if econ.missing_cache_rate:
-            notes.append(
-                "! a model here has no cache-read rate on file — its reads price at $0, "
-                "so Cache read is understated"
-            )
-        if econ.local_tokens:
-            notes.append(
-                f"! {human_tokens(econ.local_tokens)} local-model tokens excluded — "
-                "no API rate to price them at"
-            )
-        self._mark_box_header(table[0], width)
-        title = f"# Token economics · {approx}{money(econ.total_cost)} at list rates"
-        return self._sectioned_box(title, [chart, table, total_row], width, notes)
+        card = token_economics_card(
+            categories=categories,
+            total_tokens=econ.total_tokens,
+            total_cost=econ.total_cost,
+            inner_width=inner,
+            estimated=econ.estimated,
+            missing_cache_rate=econ.missing_cache_rate,
+            local_tokens=econ.local_tokens,
+            colored=self._token_series_ok,
+        )
+        if card.header:
+            self._mark_box_header(card.header, width)
+        return self._sectioned_box(
+            card.title, self._adopt_token_card(card), width, list(card.notes)
+        )
 
     def model_scope_overview(self, width: int) -> list[str]:
         """Show one selected model's contribution inside the current zoom scope."""
@@ -3999,15 +3864,14 @@ class Renderer:
         # cursor — same builders, same ruled box, so the picker takes over in place on
         # Enter without a single row shifting.
         inner = max(1, width - self.BOX_CHROME)
-        header = self.project_header_text(inner)
-        title = self.projects_box_title(rows)
-        body = (
-            [self.project_row_text(project, " ", inner) for project in rows]
-            if rows
-            else ["No projects."]
+        table = project_table_text(
+            [self._project_row(project) for project in rows],
+            self._project_headings(),
+            inner,
+            self._project_total_row(rows) if len(rows) > 1 else None,
         )
-        total = self.project_total_text(rows, inner) if len(rows) > 1 else None
-        lines = self._ruled_box(title, header, body, total, [], width)
+        title = self.projects_box_title(rows)
+        lines = self._ruled_box(title, table.header, list(table.body), table.total, [], width)
         self._line_sort_headers[self.BOX_HEADER_LINE] = (self.PROJECT_SORT_COLUMNS, "project")
         return lines
 
@@ -4170,24 +4034,14 @@ class Renderer:
         return out
 
     def _flame_label_line(self, segments, widths, text_of) -> tuple[str, list[int]]:
-        # Position labels under their own segments; drop rather than shift oversized text.
-        # Reserve one cell between labels and return labeled indices for legend fallback.
-        text, runs, done = "", [], []
-        for i, (seg, w) in enumerate(zip(segments, widths)):
-            if w <= 0:
-                continue
-            label = str(text_of(seg) or "")
-            room = w - 1 if i < len(widths) - 1 else w
-            if not label or len(label) > room:
-                continue
-            col = sum(widths[:i])
-            text += " " * (col - len(text)) + label
-            runs.append((col, len(label), seg.slot))
-            done.append(i)
-        if not text:
-            return "", []
-        self._token_runs[text] = runs
-        return text, done
+        line, placed = positioned_label_line(
+            [(str(text_of(segment) or ""), segment.slot) for segment in segments], widths
+        )
+        if line.text:
+            self._token_runs[line.text] = [
+                (span.column, span.length, span.slot) for span in line.spans
+            ]
+        return line.text, placed
 
     def _flamegraph_box(self, workflow: Workflow, width: int) -> list[str]:
         # Visualize root/subagent share using App.session_flame, the same values as the
@@ -4662,41 +4516,7 @@ class Renderer:
     def _treemap_rects(
         items: list[tuple[str, float]], width: int, height: int
     ) -> list[tuple[str, float, int, int, int, int]]:
-        # Match the web's balanced-binary split; integer cuts remain paintable as cells.
-        out: list[tuple[str, float, int, int, int, int]] = []
-
-        def place(rows, x: int, y: int, w: int, h: int) -> None:
-            if not rows or w <= 0 or h <= 0:
-                return
-            if len(rows) == 1 or w * h == 1:
-                name = rows[0][0] if len(rows) == 1 else "Other"
-                out.append((name, sum(value for _, value in rows), x, y, w, h))
-                return
-            total = sum(value for _, value in rows)
-            half = total / 2
-            split = min(
-                range(1, len(rows)),
-                key=lambda i: abs(sum(value for _, value in rows[:i]) - half),
-            )
-            left, right = rows[:split], rows[split:]
-            share = sum(value for _, value in left) / total
-            vertical = w >= h
-            if vertical and w < 2:
-                vertical = False
-            elif not vertical and h < 2:
-                vertical = True
-            if vertical:
-                cut = max(1, min(w - 1, round(w * share)))
-                place(left, x, y, cut, h)
-                place(right, x + cut, y, w - cut, h)
-            else:
-                cut = max(1, min(h - 1, round(h * share)))
-                place(left, x, y, w, cut)
-                place(right, x, y + cut, w, h - cut)
-
-        positive = [(name, float(value)) for name, value in items if value > 0]
-        place(positive, 0, 0, max(1, width), max(1, height))
-        return out
+        return treemap_rects(items, width, height)
 
     # Narrower tiles cannot carry a useful label; the exact table still lists them.
     _TOOL_TILE_MIN = 12
@@ -6209,11 +6029,21 @@ class Renderer:
         # six lines is what a manual looks like, not a cheat sheet.
         inner_w = max(20, min(self.help_width(), width - 8))
         lines = self.help_lines(inner_w)
-        box_w = inner_w + 4
-        box_x = max(0, (width - box_w) // 2)
-        avail_h = bottom - y
-        box_h = min(avail_h, len(lines) + 3)
-        box_y = y + max(0, (avail_h - box_h) // 2)
+        workspace = (
+            self.app.conversation_search if keymap.in_conversation_search(self.app) else None
+        )
+        pager = workspace or self.app
+        layout = pager_layout(
+            top=y,
+            bottom=bottom,
+            width=width,
+            inner_width=inner_w,
+            horizontal_chrome=4,
+            total_rows=len(lines),
+            scroll=pager.help_scroll,
+            content_sized=True,
+        )
+        box_y, box_x, box_h, box_w = layout.y, layout.x, layout.height, layout.width
 
         # Clear the footprint first (draw_modal's rule) so the view behind doesn't bleed
         # through the gaps between segments.
@@ -6229,14 +6059,10 @@ class Renderer:
             active=True,
         )
 
-        visible = max(1, box_h - 3)
-        workspace = (
-            self.app.conversation_search if keymap.in_conversation_search(self.app) else None
-        )
-        pager = workspace or self.app
+        visible = layout.viewport.visible
         if workspace is not None:
             workspace.help_page_size = visible
-        scroll = max(0, min(pager.help_scroll, max(0, len(lines) - visible)))
+        scroll = layout.viewport.offset
         pager.help_scroll = scroll
         for offset, segments in enumerate(lines[scroll : scroll + visible]):
             row_y = box_y + 1 + offset
@@ -6303,10 +6129,18 @@ class Renderer:
     def draw_whats_new(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         inner_w = max(20, min(72, width - 8))
         lines = self.whats_new_lines(inner_w)
-        box_w = inner_w + 6
-        box_x = max(0, (width - box_w) // 2)
-        box_h = bottom - y
-        box_y = y
+        layout = pager_layout(
+            top=y,
+            bottom=bottom,
+            width=width,
+            inner_width=inner_w,
+            horizontal_chrome=6,
+            total_rows=len(lines),
+            scroll=self.app.whats_new_scroll,
+            content_sized=False,
+            center_vertical=False,
+        )
+        box_y, box_x, box_h, box_w = layout.y, layout.x, layout.height, layout.width
         for row in range(box_y, box_y + box_h):
             self.write(stdscr, row, box_x, " " * box_w)
         close = self._key("whats-new", "close")
@@ -6317,8 +6151,8 @@ class Renderer:
         self.draw_frame(stdscr, box_y, box_x, box_h, box_w, border)
         label = f" {shorten(title, box_w - 6)} "
         self.write(stdscr, box_y, box_x + (box_w - display_width(label)) // 2, label, border)
-        visible = max(1, box_h - 3)
-        scroll = max(0, min(self.app.whats_new_scroll, max(0, len(lines) - visible)))
+        visible = layout.viewport.visible
+        scroll = layout.viewport.offset
         self.app.whats_new_scroll = scroll
         for offset, segments in enumerate(lines[scroll : scroll + visible]):
             row_y = box_y + 1 + offset
@@ -6748,30 +6582,21 @@ class Renderer:
     # toast reads the same as the cost/alert colours everywhere else; the sigil + word
     # give a non-colour cue too.
     TOAST_STYLE = {
-        "info": (4, "·", "Note"),
-        "success": (3, "✓", "Done"),
-        "warn": (2, "▲", "Heads up"),
-        "error": (5, "✕", "Error"),
-        "release": (6, "✦", "What's new"),
+        kind: (pair, NOTIFICATION_STYLES[kind].sigil, NOTIFICATION_STYLES[kind].label)
+        for kind, pair in (
+            ("info", 4),
+            ("success", 3),
+            ("warn", 2),
+            ("error", 5),
+            ("release", 6),
+        )
     }
     TOAST_WIDTH = 46  # card width the message wraps within
     TOAST_MAX_LINES = 4  # cap wrapped message lines so a card can't fill the screen
 
     @staticmethod
     def _wrap_notice(text: str, width: int) -> list[str]:
-        # Preserve whitespace in paths/errors; wrap_cells deliberately collapses it
-        # for prose. Keep the break's space so even a double-space filename survives.
-        rows = []
-        for line in text.expandtabs(4).splitlines():
-            while display_width(line) > width:
-                part = clip(line, width)
-                space = part.rfind(" ")
-                if space > 0:
-                    part = part[: space + 1]
-                rows.append(part)
-                line = line[len(part) :]
-            rows.append(line)
-        return rows or [""]
+        return wrap_notice(text, width)
 
     def draw_toasts(self, stdscr: curses.window, height: int, width: int) -> None:
         # Severity belongs to the frame/title, not the message background. Release
@@ -6781,124 +6606,117 @@ class Renderer:
         toasts = self.active_toasts()
         if not toasts:
             return
-        maxw = min(self.TOAST_WIDTH, width - 4)
-        if maxw < 10:
-            return
-        row = 3  # first body row, below the header hline (row 2)
-        for toast in reversed(toasts):
-            pair, sigil, label = self.TOAST_STYLE.get(toast.kind, self.TOAST_STYLE["info"])
-            is_release = toast.kind == "release"
-            text_width = maxw - 6
-            wrapped = self._wrap_notice(toast.text, text_width)
-            if len(wrapped) > self.TOAST_MAX_LINES:  # mark the overflow rather than hide it
-                wrapped = wrapped[: self.TOAST_MAX_LINES]
-                wrapped[-1] = clip(wrapped[-1], text_width - 1) + "…"
-            padding = 2 if is_release else 1
-            card_h = len(wrapped) + padding * 2
-            if row + card_h > height - 2:
-                break
-            x = width - maxw - 2
+        key = self._key("main", "whats_new") or self._key("help", "whats_new")
+        cards = toast_cards(
+            [Notification(toast.text, toast.kind, toast.born) for toast in toasts],
+            height=height,
+            width=width,
+            release_version=self.app.whats_new_version,
+            release_key=key,
+            fallback_sigil=None if unicode_screen() else "*",
+            card_width=self.TOAST_WIDTH,
+            max_lines=self.TOAST_MAX_LINES,
+        )
+        for card in cards:
+            pair = self.TOAST_STYLE.get(card.kind, self.TOAST_STYLE["info"])[0]
             accent = curses.color_pair(pair) | curses.A_BOLD
-            for dy in range(card_h):
-                self.write(stdscr, row + dy, x, " " * maxw)
-            self.draw_frame(stdscr, row, x, card_h, maxw, accent)
-            sigil = sigil if unicode_screen() else "*"
-            if is_release:
-                label = f"NEW IN v{self.app.whats_new_version}"
-            title = f" {sigil} {label} "
-            title_attr = accent | curses.A_REVERSE if is_release else accent
-            self.write(stdscr, row, x + 2, clip(title, maxw - 4), title_attr)
-            key = (
-                self._key("main", "whats_new") or self._key("help", "whats_new")
-                if is_release
-                else ""
-            )
-            for dy, line in enumerate(wrapped):
-                self.write(stdscr, row + padding + dy, x + 3, line)
-                if key and line.startswith(f"Press {key}"):
-                    self.write(stdscr, row + padding + dy, x + 9, key, accent | curses.A_REVERSE)
-            row += card_h + 1
+            for dy in range(card.height):
+                self.write(stdscr, card.y + dy, card.x, " " * card.width)
+            self.draw_frame(stdscr, card.y, card.x, card.height, card.width, accent)
+            title_attr = accent | curses.A_REVERSE if card.kind == "release" else accent
+            self.write(stdscr, card.y, card.x + 2, clip(card.title, card.width - 4), title_attr)
+            for dy, line in enumerate(card.lines):
+                self.write(stdscr, card.y + card.padding + dy, card.x + 3, line)
+            if card.shortcut:
+                dy, offset, shortcut = card.shortcut
+                self.write(
+                    stdscr,
+                    card.y + card.padding + dy,
+                    card.x + 3 + offset,
+                    shortcut,
+                    accent | curses.A_REVERSE,
+                )
 
     @staticmethod
     def _toast_age(seconds: float) -> str:
-        # A compact "how long ago" for the notices log. Toasts store a monotonic birth
-        # time, so this is elapsed seconds -- no wall clock, no timezone, just an age.
-        if seconds < 1:
-            return "now"
-        if seconds < 60:
-            return f"{int(seconds)}s"
-        if seconds < 3600:
-            return f"{int(seconds // 60)}m"
-        if seconds < 86400:
-            return f"{int(seconds // 3600)}h"
-        return f"{int(seconds // 86400)}d"
+        return toast_age(seconds)
 
     def toast_history_lines(self, width: int) -> list[tuple[str, str]]:
         # Newest first, with hanging indents so complete messages remain readable
         # even when a path or error was too long for its live card.
-        log = self.app.toast_log
-        if not log:
-            return [
-                (line, "info")
-                for line in wrap_cells(
-                    "No notifications yet — status messages will collect here.", width
-                )
-            ]
-        now = self.toast_now()
-        rows: list[tuple[str, str]] = []
-        for toast in reversed(log):
-            sigil = self.TOAST_STYLE.get(toast.kind, self.TOAST_STYLE["info"])[1]
-            age = self._toast_age(max(0.0, now - toast.born))
-            prefix = f"{age:>4}  {sigil} "
-            lines = self._wrap_notice(toast.text, max(2, width - display_width(prefix)))
-            for index, line in enumerate(lines):
-                rows.append(
-                    ((prefix if index == 0 else " " * display_width(prefix)) + line, toast.kind)
-                )
-        return rows
+        rows = history_rows(
+            [Notification(toast.text, toast.kind, toast.born) for toast in self.app.toast_log],
+            current_time=self.toast_now(),
+            width=width,
+            fallback_sigil=None if unicode_screen() else "*",
+        )
+        return [(row.text, row.kind) for row in rows]
 
     def draw_toast_history(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         # The `N` overlay: a pager over the notices scrollback (App.toast_log), floating
         # centered over the view like help -- but sized tall, since the log runs long.
         # Newest first; only the age/sigil gutter carries severity colour.
         # j/k/g/G/page scroll (handle_key); Esc/q/N close.
-        inner_w = max(24, min(76, width - 8))
-        rows = self.toast_history_lines(inner_w)
-        box_w = inner_w + 4
-        box_x = max(0, (width - box_w) // 2)
-        avail_h = bottom - y
-        box_h = min(avail_h, max(6, len(rows) + 3))
-        box_y = y + max(0, (avail_h - box_h) // 2)
-        for row in range(box_y, box_y + box_h):  # clear the footprint (draw_modal's rule)
-            self.write(stdscr, row, box_x, " " * box_w)
-        count = len(self.app.toast_log)
-        close = self._key("notices", "close")
-        title = (
-            f"Notifications ({count}) · {close} close"
-            if count
-            else f"Notifications · {close} close"
+        layout = toast_history_viewport(
+            [Notification(toast.text, toast.kind, toast.born) for toast in self.app.toast_log],
+            current_time=self.toast_now(),
+            y=y,
+            bottom=bottom,
+            width=width,
+            scroll=self.app.toast_history_scroll,
+            close_key=self._key("notices", "close"),
+            scroll_keys=self._keys("notices", "down", "up"),
+            fallback_sigil=None if unicode_screen() else "*",
         )
-        self.box(stdscr, box_y, box_x, box_h, box_w, title, active=True)
-        visible = max(1, box_h - 3)
-        scroll = max(0, min(self.app.toast_history_scroll, max(0, len(rows) - visible)))
-        self.app.toast_history_scroll = scroll
-        for offset, (text, kind) in enumerate(rows[scroll : scroll + visible]):
-            pair = self.TOAST_STYLE.get(kind, self.TOAST_STYLE["info"])[0]
-            self.write(stdscr, box_y + 1 + offset, box_x + 2, text)
+        if layout is None:
+            return
+        for row in range(layout.y, layout.y + layout.height):
+            self.write(stdscr, row, layout.x, " " * layout.width)
+        self.box(stdscr, layout.y, layout.x, layout.height, layout.width, layout.title, active=True)
+        self.app.toast_history_scroll = layout.scroll
+        count = len(self.app.toast_log)
+        for offset, row in enumerate(layout.rows):
+            pair = self.TOAST_STYLE.get(row.kind, self.TOAST_STYLE["info"])[0]
+            self.write(stdscr, layout.y + 1 + offset, layout.x + 2, row.text)
             if count:
                 self.write(
-                    stdscr, box_y + 1 + offset, box_x + 2, clip(text, 8), curses.color_pair(pair)
+                    stdscr,
+                    layout.y + 1 + offset,
+                    layout.x + 2,
+                    row.gutter,
+                    curses.color_pair(pair),
                 )
-        self._paint_scrollbar(stdscr, box_y + 1, box_x + box_w - 1, len(rows), visible, scroll)
-        if len(rows) > visible:  # only then is there anything to scroll
-            hint = f" {self._keys('notices', 'down', 'up')} scroll "
+        self._paint_scrollbar(
+            stdscr,
+            layout.y + 1,
+            layout.x + layout.width - 1,
+            layout.total_rows,
+            layout.visible_rows,
+            layout.scroll,
+        )
+        if layout.scroll_hint:
             self.write(
                 stdscr,
-                box_y + box_h - 1,
-                box_x + max(2, box_w - len(hint) - 2),
-                hint,
+                layout.y + layout.height - 1,
+                layout.scroll_hint_x,
+                layout.scroll_hint,
                 curses.color_pair(1),
             )
+
+    @staticmethod
+    def _menu_attr(style: str) -> int:
+        attrs = {
+            menus.NORMAL: curses.A_NORMAL,
+            menus.MUTED: curses.color_pair(4),
+            menus.DIM: curses.A_DIM,
+            menus.SELECTED: curses.A_REVERSE | curses.A_BOLD,
+            menus.NOTICE: curses.color_pair(2),
+            menus.SUBTLE: curses.color_pair(1),
+        }
+        return attrs[style]
+
+    def _menu_lines(self, layout: menus.MenuLayout) -> list[tuple[str, int]]:
+        return [(line.text, self._menu_attr(line.style)) for line in layout.lines]
 
     def draw_modal(
         self,
@@ -6916,47 +6734,46 @@ class Renderer:
         # the bad-role border; callers can center their rows instead of picker-aligning them.
         # Returns the box geometry (y, x, h, w) so a caller can post-paint richer rows --
         # the `w` picker lays its tier tab strip over a placeholder line this way.
-        content = [(str(t), a) for t, a in lines]
-        inner_w = max([len(title) + 2] + [display_width(t) for t, _ in content] + [16])
-        w = min(inner_w + 4, max(24, scr_w - 4))
-        h = min(len(content) + 4, max(6, scr_h - 4))
-        y = max(1, (scr_h - h) // 2)
-        x = max(1, (scr_w - w) // 2)
-        for row in range(y, y + h):  # clear the footprint first
-            self.write(stdscr, row, x, " " * w)
+        content = [
+            line if isinstance(line, StyledLine) else StyledLine(str(line[0]), line[1])
+            for line in lines
+        ]
+        layout = modal_layout(scr_h, scr_w, title, content, center_rows=center)
+        for row in range(layout.y, layout.y + layout.height):  # clear the footprint first
+            self.write(stdscr, row, layout.x, " " * layout.width)
         if alert:
             border = curses.color_pair(5) | curses.A_BOLD
-            self.draw_frame(stdscr, y, x, h, w, border)
-            label = f" {shorten(title, w - 6)} "
-            self.write(stdscr, y, x + max(2, (w - display_width(label)) // 2), label, border)
+            self.draw_frame(stdscr, layout.y, layout.x, layout.height, layout.width, border)
+            self.write(stdscr, layout.y, layout.title_x, layout.title, border)
         else:
-            self.box(stdscr, y, x, h, w, title, active=True)
-        field = w - 4
-        for offset, (text, attr) in enumerate(content[: h - 4]):
-            drawn = shorten(text, field)
-            tx = x + 2 + max(0, (field - display_width(drawn)) // 2) if center else x + 2
-            self.write(
+            self.box(
                 stdscr,
-                y + 2 + offset,
-                tx,
-                drawn if center else pad(drawn, field),
-                attr,
+                layout.y,
+                layout.x,
+                layout.height,
+                layout.width,
+                title,
+                active=True,
             )
-        return y, x, h, w
+        for row in layout.rows:
+            self.write(stdscr, row.y, row.x, row.text, row.style)
+        return layout.y, layout.x, layout.height, layout.width
 
     def draw_source_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `H` picker: a small modal list of every present source. j/k moves the
         # highlight, Enter switches, Esc cancels (handled in handle_source_menu_key).
         entries = self.source_menu_entries()
-        idx = self.source_menu_index % len(entries) if entries else 0
-        lines = [("Browse spend recorded by which harness:", curses.color_pair(4)), ("", 0)]
-        for offset, (_key, label, is_current) in enumerate(entries):
-            marker = "●" if is_current else "○"
-            suffix = "  (current)" if is_current else ""
-            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
-            lines.append((f" {marker}  {label}{suffix}", attr))
+        layout = menus.radio_menu(
+            "Browse spend recorded by which harness:",
+            [(label, is_current) for _key, label, is_current in entries],
+            self.source_menu_index,
+        )
         self.draw_modal(
-            stdscr, scr_h, scr_w, self._menu_title("Switch harness", "menu.source"), lines
+            stdscr,
+            scr_h,
+            scr_w,
+            self._menu_title("Switch harness", "menu.source"),
+            self._menu_lines(layout),
         )
 
     def draw_demo_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
@@ -6964,35 +6781,32 @@ class Renderer:
         # row's [x], `a` all/none, Enter applies (nothing checked = back to real data),
         # Esc cancels. A checkbox list where draw_source_menu is a radio one.
         entries = self.demo_menu_entries()
-        idx = self.demo_menu_index % len(entries) if entries else 0
         intro = (
             "Anonymize which parts (for a shareable screen):"
             if self.demo_menu_sel
             else f"Nothing checked — {self._key('menu.demo', 'select')} shows real data again."
         )
-        lines = [(intro, curses.color_pair(4)), ("", 0)]
-        for offset, (_cat, label, checked) in enumerate(entries):
-            box = "[x]" if checked else "[ ]"
-            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
-            lines.append((f" {box}  {label}", attr))
+        layout = menus.check_menu(
+            intro,
+            [(label, checked) for _cat, label, checked in entries],
+            self.demo_menu_index,
+        )
         title = (
             f"Demo · {self._key('menu.demo', 'toggle')} · "
             f"{self._key('menu.demo', 'check_all')} all · "
             f"{self._key('menu.demo', 'select')} · {self._key('menu.demo', 'cancel')}"
         )
-        self.draw_modal(stdscr, scr_h, scr_w, title, lines)
+        self.draw_modal(stdscr, scr_h, scr_w, title, self._menu_lines(layout))
 
     def _draw_filter_menu(self, stdscr, scr_h, scr_w, title, intro, options, index) -> None:
         # Shared body for the `M` / `H` global-filter pickers: an intro line then a radio
         # list (● current, ○ others), the selected row reversed. Mirrors draw_source_menu.
-        idx = index % len(options) if options else 0
-        lines = [(intro, curses.color_pair(4)), ("", 0)]
-        for offset, (_value, label, is_current) in enumerate(options):
-            marker = "●" if is_current else "○"
-            suffix = "  (current)" if is_current else ""
-            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
-            lines.append((f" {marker}  {label}{suffix}", attr))
-        self.draw_modal(stdscr, scr_h, scr_w, title, lines)
+        layout = menus.radio_menu(
+            intro,
+            [(label, is_current) for _value, label, is_current in options],
+            index,
+        )
+        self.draw_modal(stdscr, scr_h, scr_w, title, self._menu_lines(layout))
 
     def draw_machine_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `M` picker: narrow every view to one box (or "All machines" to clear). j/k
@@ -7034,7 +6848,7 @@ class Renderer:
         # a target set clears it. Scrolled around the selection like the theme picker --
         # the catalog runs to thousands of rows, which is what the filter is for.
         entries = self.whatif_rows()
-        idx = self.whatif_menu_index % len(entries) if entries else 0
+        idx = menus.selected_index(self.whatif_menu_index, len(entries))
         # Reserve rows for every non-entry line the modal carries, so draw_modal never
         # clips the SELECTED entry off the bottom -- even at the 80x20 minimum, where this
         # is handed scr_h=18. draw_modal paints at most scr_h-8 content rows; the worst-case
@@ -7042,11 +6856,7 @@ class Renderer:
         # filter and its blank + the "↑ more" marker), so entries must stay <= scr_h-15.
         # The floor is 1, not 4: at scr_h=18 only three rows fit, and a floor of 4 would put
         # the selected last row past the paint budget (Enter then arms an off-screen model).
-        max_rows = max(1, scr_h - 15)
-        start = 0
-        if len(entries) > max_rows:
-            start = min(max(0, idx - max_rows // 2), len(entries) - max_rows)
-        visible = entries[start : start + max_rows]
+        max_rows = menus.option_budget(scr_h, 15)
         # The model-id column widens to fit the longest row, capped so the box still fits
         # the terminal (and the eff/tokens cell isn't clipped off the right edge): 36% of
         # catalog ids overflow a fixed 34 ("github-copilot/claude-sonnet-4.5", the whole
@@ -7055,36 +6865,29 @@ class Renderer:
         longest = max((len(str(r[0])) for r in entries), default=24)
         name_cap = max(24, scr_w - 4) - 19  # modal width cap − "| |" gutters(4) − prefix+cell(15)
         namew = max(24, min(longest, name_cap))
-        lines = [
-            ("Compare a session's tree against one model's list rates:", curses.color_pair(4)),
-            ("(the Subagents tab; every other view keeps its actual cost)", curses.A_DIM),
-            ("", 0),  # the tier tab strip, post-painted below (draw_tabs needs mixed attrs)
-            ("", 0),
+        intro = [
+            StyledLine("Compare a session's tree against one model's list rates:", menus.MUTED),
+            StyledLine("(the Subagents tab; every other view keeps its actual cost)", menus.DIM),
+            StyledLine("", menus.NORMAL),  # post-painted tier tab strip
+            StyledLine("", menus.NORMAL),
         ]
         tier_line = 2
         if self.whatif_query or self.whatif_filter_active:
             # A block cursor while the query is live, so it reads as an input, not a label.
             cursor = "█" if self.whatif_filter_active else ""
-            lines.append((f" filter: {self.whatif_query}{cursor}", curses.color_pair(4)))
-            lines.append(("", 0))
-        if start:
-            lines.append((f"    ↑ {start} more", curses.A_DIM))
-        for offset, row in enumerate(visible, start=start):
+            intro.append(StyledLine(f" filter: {self.whatif_query}{cursor}", menus.MUTED))
+            intro.append(StyledLine("", menus.NORMAL))
+
+        def format_entry(row):
             name = row[0]
             if self.whatif_catalog:
                 _name, eff, approx = row
                 cell = f"{'~' if approx else ''}${eff:,.2f}/M"
             else:
                 cell = human_tokens(row[1])
-            marker = "●" if name == self.whatif_model else "○"
-            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
-            lines.append((f" {marker}  {pad(shorten(name, namew), namew)} {cell:>10}", attr))
-        if not entries:
-            erase = self._key("menu.whatif.filter", "erase")
-            lines.append((f"    no model matches — {erase} to widen", curses.color_pair(2)))
-        below = len(entries) - (start + len(visible))
-        if below:
-            lines.append((f"    ↓ {below} more", curses.A_DIM))
+            return f"{pad(shorten(name, namew), namew)} {cell:>10}"
+
+        menu_entries = [(row, row[0] == self.whatif_model) for row in entries]
         hint = (
             f"{self._key('menu.whatif.filter', 'select')} selects · "
             f"{self._key('menu.whatif.filter', 'cancel')} drops the filter"
@@ -7093,7 +6896,17 @@ class Renderer:
             f"{self._key('menu.whatif', 'advance')} next · "
             f"{self._key('menu.whatif', 'cancel')} cancels"
         )
-        lines += [("", 0), (hint, curses.color_pair(1))]
+        erase = self._key("menu.whatif.filter", "erase")
+        layout = menus.windowed_radio_menu(
+            intro,
+            menu_entries,
+            idx,
+            max_rows,
+            empty=StyledLine(f"    no model matches — {erase} to widen", menus.NOTICE),
+            footer=[StyledLine("", menus.NORMAL), StyledLine(hint, menus.SUBTLE)],
+            label_formatter=format_entry,
+            current_suffix="",
+        )
         catalog_specs = self.app.keymap.specs("menu.whatif", "catalog")
         if self.whatif_filter_active:
             catalog_specs = tuple(
@@ -7111,7 +6924,7 @@ class Renderer:
             f"What-if model · {self._keys(ctx, 'down', 'up')} · {catalog} · "
             f"{self._key(ctx, 'select')} · {self._key(ctx, 'cancel')}"
         )
-        my, mx, mh, mw = self.draw_modal(stdscr, scr_h, scr_w, title, lines)
+        my, mx, mh, mw = self.draw_modal(stdscr, scr_h, scr_w, title, self._menu_lines(layout))
         # The tier switch is a real tab strip (the P overlay's view tabs, same renderer,
         # same clickable regions -- handle_mouse routes "whatiftab" hits to the flip):
         # [your models]  models.dev, with the tier's column meaning dimmed beside it.
@@ -7129,31 +6942,23 @@ class Renderer:
         # browser). j/k live-previews each (the whole UI is the swatch), Enter keeps it,
         # Esc reverts to the theme active on open. Colours re-map via init_theme_colors.
         entries = self.theme_menu_entries()
-        idx = self.theme_menu_index % len(entries) if entries else 0
         # The list outgrew small terminals: scroll a window around the selection so
         # j/k live-preview never walks the highlight off the modal's visible rows
         # (draw_modal itself just truncates; ↑/↓ counts show what's clipped).
-        max_rows = max(4, scr_h - 12)
-        start = 0
-        if len(entries) > max_rows:
-            start = min(max(0, idx - max_rows // 2), len(entries) - max_rows)
-        visible = entries[start : start + max_rows]
-        lines = [("Colour theme (also the web browser's):", curses.color_pair(4)), ("", 0)]
-        if start:
-            lines.append((f"    ↑ {start} more", curses.A_DIM))
-        for offset, (_tid, name, is_current) in enumerate(visible, start=start):
-            marker = "●" if is_current else "○"
-            suffix = "  (current)" if is_current else ""
-            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
-            lines.append((f" {marker}  {name}{suffix}", attr))
-        below = len(entries) - (start + len(visible))
-        if below:
-            lines.append((f"    ↓ {below} more", curses.A_DIM))
+        layout = menus.windowed_radio_menu(
+            [
+                StyledLine("Colour theme (also the web browser's):", menus.MUTED),
+                StyledLine("", menus.NORMAL),
+            ],
+            [(name, is_current) for _tid, name, is_current in entries],
+            self.theme_menu_index,
+            max(4, scr_h - 12),
+        )
         title = (
             f"Theme · {self._keys('menu.theme', 'down', 'up')} preview · "
             f"{self._key('menu.theme', 'select')} keep · {self._key('menu.theme', 'cancel')} revert"
         )
-        self.draw_modal(stdscr, scr_h, scr_w, title, lines)
+        self.draw_modal(stdscr, scr_h, scr_w, title, self._menu_lines(layout))
 
     # Friendlier one-word names for the raw sort keys shown in the `s` picker.
     SORT_LABELS = {
@@ -7195,16 +7000,19 @@ class Renderer:
         # list. j/k moves the highlight, Enter applies, Esc cancels (handled in
         # handle_sort_menu_key).
         options = self.sort_menu_options()
-        idx = self.sort_menu_index % len(options) if options else 0
         current = self.effective_sort_by()
-        lines = [("Order this list by:", curses.color_pair(4)), ("", 0)]
-        for offset, key in enumerate(options):
-            is_current = key == current
-            marker = "●" if is_current else "○"
-            suffix = "  (current)" if is_current else ""
-            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
-            lines.append((f" {marker}  {self.sort_label(key)}{suffix}", attr))
-        self.draw_modal(stdscr, scr_h, scr_w, self._menu_title("Sort by", "menu.sort"), lines)
+        layout = menus.radio_menu(
+            "Order this list by:",
+            [(self.sort_label(key), key == current) for key in options],
+            self.sort_menu_index,
+        )
+        self.draw_modal(
+            stdscr,
+            scr_h,
+            scr_w,
+            self._menu_title("Sort by", "menu.sort"),
+            self._menu_lines(layout),
+        )
 
     def draw_launch_menu(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
         # The `L` picker: a small modal of launch targets. One keystroke picks (handled in
@@ -7224,24 +7032,35 @@ class Renderer:
                 "launcher hook" if self.launch_menu_backend == "hook" else self.launch_menu_backend
             )
             headline = f"open in {via}:" if not remote else f"open on {remote} (ssh) in {via}:"
-        idx = self.launch_menu_index % len(targets)
-        lines = [
-            (shorten(session.title or "(untitled)", 52), curses.color_pair(4)),
-            (headline, curses.A_NORMAL),
-            ("", 0),
+        heading = [
+            StyledLine(shorten(session.title or "(untitled)", 52), menus.MUTED),
+            StyledLine(headline, menus.NORMAL),
+            StyledLine("", menus.NORMAL),
         ]
-        for offset, (kc, kind, label) in enumerate(targets):
-            attr = curses.A_REVERSE | curses.A_BOLD if offset == idx else curses.A_NORMAL
+        rows = []
+        for kc, kind, label in targets:
             # The yank is the one row whose CONTENT changes with the machine: for a
             # pulled session it copies the ssh line, not a cd into a path that isn't here.
             if kind == "copy" and remote:
                 label = "copy ssh command"
             if self.app.keymap.action("menu.launch", ord(kc)) is not None:
                 kc = " "  # A configured menu action takes precedence over target letters.
-            lines.append((f" {kc}  {label}", attr))
-        lines += [("", 0), (f" {self._key('menu.launch', 'cancel')}  cancel", curses.A_NORMAL)]
+            rows.append((kc, label))
+        layout = menus.select_menu(
+            heading,
+            rows,
+            self.launch_menu_index,
+            footer=[
+                StyledLine("", menus.NORMAL),
+                StyledLine(f" {self._key('menu.launch', 'cancel')}  cancel", menus.NORMAL),
+            ],
+        )
         self.draw_modal(
-            stdscr, scr_h, scr_w, self._menu_title("Launch session", "menu.launch"), lines
+            stdscr,
+            scr_h,
+            scr_w,
+            self._menu_title("Launch session", "menu.launch"),
+            self._menu_lines(layout),
         )
 
     def draw_price_prompt(self, stdscr: curses.window, scr_h: int, scr_w: int) -> None:
@@ -7445,149 +7264,10 @@ class Renderer:
         keys: list[str] | None = None,
         selected: str | None = None,
     ) -> list[str]:
-        # Vertical bar chart from chronological (label, value) pairs. Shows the most
-        # recent buckets that fit; eighth-blocks give sub-row resolution on top.
-        # The spend for each bar rides on top of it (no y-axis) — the peak is always
-        # labelled and the rest fill in where there's room; when dense (e.g. daily),
-        # bars pack in and labels/x-ticks are spaced so they never overlap.
-        # `keys` names each bar's bucket (defaults to its label) for the mouse
-        # geometry stash; `selected` marks that bucket's bar with a ▲ cursor line.
-        self._bar_slots = None
-        self._bar_click_rows = 0
-        if not pairs or height < 5:
-            return ["Not enough room to chart."]
-        margin = 1  # the y-axis is gone; just a sliver of left padding
-        plot_w = max(4, width - margin)
-        label_w = max((len(label) for label, _ in pairs), default=2)
-        ideal = label_w + 2  # the slot that fits an x-tick label with a column of air
-        if len(pairs) * ideal <= plot_w:
-            col_w = ideal  # room for a label under every bar
-        else:
-            col_w = next((c for c in (4, 3, 2) if len(pairs) * c <= plot_w), 1)
-        fit = max(1, plot_w // col_w)
-        shown = pairs[-fit:]
-        n = len(shown)
-        # Spread the shown bars across the *whole* plot width with a fractional
-        # step, capped at the ideal slot so a handful of bars stay clustered (not
-        # stretched comically wide). When bars are dense the integer col_w would
-        # leave the right side empty and cram the wide "$x.xx" value labels;
-        # filling the width gives every bar a little more horizontal air.
-        step = min(float(ideal), plot_w / n)
-        bar_w = max(1, min(int(step) - 1, 4))
-
-        def x0_of(i: int) -> int:  # left edge of bar i, centred in its float-width slot
-            lo = round(i * step)
-            hi = round((i + 1) * step)
-            return margin + lo + max(0, (hi - lo - bar_w) // 2)
-
-        # Each shown bar's clickable slot (its whole float-width column, so short
-        # bars are easy to hit) tagged with its bucket key, for _trend_bar_at.
-        shown_keys = (keys or [label for label, _ in pairs])[len(pairs) - n :]
-        self._bar_slots = [
-            (margin + round(i * step), margin + round((i + 1) * step) - 1, shown_keys[i])
-            for i in range(n)
-        ]
-
-        peak = max((v for _, v in shown), default=0.0)
-        scale = peak or 1.0  # bar-height denominator; guards an all-empty window
-        rows_n = max(2, height - 4)  # value labels + bars + baseline + x-ticks + summary
-        total_w = margin + round(n * step)
-        # grid row 0 is the label margin above the tallest bar; 1..rows_n are bars.
-        grid = [[" "] * total_w for _ in range(rows_n + 1)]
-        tops: list[tuple[int, int, float]] = []  # (col, top filled row, value)
-        for i, (_, v) in enumerate(shown):
-            full, rem = divmod(round((v / scale) * rows_n * 8), 8)
-            x0 = x0_of(i)
-            for b in range(full):  # full cells from the bottom up
-                for dx in range(bar_w):
-                    grid[rows_n - b][x0 + dx] = "█"
-            if rem:
-                for dx in range(bar_w):
-                    grid[rows_n - full][x0 + dx] = BLOCKS_UP[rem]
-            filled = full + (1 if rem else 0)
-            if filled:
-                tops.append((i, rows_n - filled + 1, v))
-
-        def place_value(i: int, top_row: int, v: float) -> None:
-            labels = [money_label(v)]
-            if 1 <= v < 1000:
-                labels.append(f"${v:.0f}")
-            labels = [label for j, label in enumerate(labels) if label and label not in labels[:j]]
-            if not labels:
-                return
-            center = x0_of(i) + bar_w // 2
-            if top_row - 1 < 0:
-                return
-            for text in labels:
-                start = max(margin, min(center - len(text) // 2, total_w - len(text)))
-                lo, hi = start - 1, start + len(text)  # keep a blank column on each side
-                cols = range(max(margin, lo), min(total_w, hi + 1))
-                # Sit just above the bar; if a neighbour's label already owns that
-                # row, float up to the next free one so the bar still gets its price.
-                for lrow in range(top_row - 1, -1, -1):
-                    if all(grid[lrow][c] == " " for c in cols):
-                        for k, ch in enumerate(text):
-                            grid[lrow][start + k] = ch
-                        return
-
-        # Peak first so its value is never crowded out, then the rest left-to-right.
-        tops.sort(key=lambda t: t[2], reverse=True)
-        if tops:
-            place_value(*tops[0])
-        for spec in sorted(tops[1:], key=lambda t: t[0]):
-            place_value(*spec)
-        out = ["".join(r).rstrip() for r in grid]
-        out.append(" " * margin + "─" * (total_w - margin))
-        # x-axis tick labels, greedily spaced left-to-right so they never overlap,
-        # with the final bucket always labelled at the right edge.
-        axis = [" "] * total_w
-
-        def place(pos: int, label: str) -> None:
-            for j, ch in enumerate(label):
-                if 0 <= pos + j < len(axis):
-                    axis[pos + j] = ch
-
-        # Always anchor the final (most recent) bucket at the right edge, then fill
-        # earlier ticks greedily in the space before it.
-        tail = len(axis) - len(shown[-1][0])
-        place(tail, shown[-1][0])
-        next_free = margin
-        for i, (label, _) in enumerate(shown[:-1]):
-            pos = x0_of(i)
-            if pos >= next_free and pos + len(label) < tail:
-                place(pos, label)
-                next_free = pos + len(label) + 1
-        out.append("".join(axis).rstrip())
-        self._bar_click_rows = len(out)  # grid + baseline + axis: the clickable band
-        if selected in shown_keys:
-            # The focused-chart cursor: a ▲ under the selected bar, its bucket and
-            # value beside it (before the ▲ when the bar sits near the right edge).
-            sel_i = shown_keys.index(selected)
-            marker = [" "] * total_w
-            center = min(x0_of(sel_i) + bar_w // 2, total_w - 1)
-            marker[center] = "▲"
-            text = f" {selected} · {money(shown[sel_i][1])}"
-            if center + 1 + len(text) <= total_w:
-                start = center + 1
-            else:
-                text = f"{selected} · {money(shown[sel_i][1])} "
-                start = max(0, center - len(text))
-            for j, ch in enumerate(text):
-                if 0 <= start + j < total_w and start + j != center:
-                    marker[start + j] = ch
-            out.append("".join(marker).rstrip())
-        total = sum(v for _, v in shown)  # match exactly what's charted
-        if total:
-            peak_label = max(shown, key=lambda kv: kv[1])[0]
-            out.append(
-                f"{' ' * margin}peak {money(peak)} on {peak_label}    "
-                f"total {money(total)}    avg {money(total / len(shown))}"
-            )
-        else:
-            out.append(f"{' ' * margin}no spend in view")
-        if len(shown) < len(pairs):
-            out.append(f"{' ' * margin}(most recent {len(shown)} of {len(pairs)} — widen for more)")
-        return out
+        layout = bar_chart(pairs, width, height, keys=keys, selected=selected)
+        self._bar_slots = list(layout.slots) if layout.slots is not None else None
+        self._bar_click_rows = layout.click_rows
+        return list(layout.lines)
 
     def _bar_selection(self, tab: str, data: list[tuple[str, float]]) -> str | None:
         # The bucket to mark with the ▲ cursor: only when this chart is the focused

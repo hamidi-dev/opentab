@@ -36,7 +36,7 @@ package and installed command are both `opentab`.
 | `stores/` | Harness readers, combined views, portable summaries and warm caches |
 | `remote_content.py` | Opt-in keyed SSH traces, snapshot/live identity validation, bounded transport and cancelable jobs |
 | `tui/app.py` | Application state, accounting projections, keyboard/mouse navigation |
-| `tui/renderer.py` | Terminal layout and painting |
+| `tui/renderer.py`, `tui/components/` | Screen composition and painting; reusable stateless layouts |
 | `tui/trace.py` | Pure recorded-event formatting and trace output hit/scroll geometry |
 | `tui/exporting.py` | TUI CSV dataset construction and formula-safe serialization |
 | `tui/search_workspace.py`, `tui/search_layout.py` | Conversation-search interaction state and pure width-aware result/reader layout |

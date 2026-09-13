@@ -21,7 +21,13 @@ layout, painting, and the hit regions produced by the current frame.
 read `self.current_sessions()` or `self.tab` through that shared interface.
 Assignments do not delegate; state changes in rendering code use `self.app`.
 
-Three internal modules keep stateless work out of those coordinators:
+Stateless layout and formatting live outside those coordinators:
+
+- [`components/`](../src/opentab/tui/components/) contains boxes, tables/pickers,
+  bars, token cards, charts, menus/modals, notifications and navigation chrome.
+  Builders take explicit data and dimensions, returning text, style spans and
+  local geometry. They do not receive App/Renderer or initialize curses. The
+  renderer adopts their metadata and paints; App still owns input and loading.
 
 - [`trace.py`](../src/opentab/tui/trace.py) formats recorded events from explicit
   width, expansion and key-label inputs. Its `TraceLayout` returns text with
@@ -44,8 +50,8 @@ one serial thread; never share the App's SQLite connections. Superseded reads ar
 coalesced, but status and confirmed index jobs survive cancellation. Initial status
 reads only index metadata, without service creation or source discovery.
 
-These modules do not import `App` or `Renderer`. Keep new pure builders alongside
-their feature rather than adding mixins that implicitly share the entire UI state.
+These modules do not import `App` or `Renderer`. Put reusable layouts in components
+and feature-specific builders alongside their feature, not in state-sharing mixins.
 
 Session frames and in-session cursor movement resolve the selected workflow once
 with `session_selection()`. Nested tab/drill checks reuse that snapshot instead
