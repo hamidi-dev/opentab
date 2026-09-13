@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from opentab.persistence import paths
 from opentab.presentation import themes
 from opentab.presentation.heatmap import HEAT_MAX_LEVELS, HEAT_MIN_LEVELS
-from opentab.whats_new import marker_to_save
+from opentab.presentation.whats_new import marker_to_save
 
 if TYPE_CHECKING:
     from opentab.tui.app import App

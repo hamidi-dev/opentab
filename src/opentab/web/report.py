@@ -30,6 +30,7 @@ from opentab.accounting.pricing import (
 )
 from opentab.accounting.tools import tool_calls_from_turns
 from opentab.presentation.themes import DEFAULT_THEME
+from opentab.presentation.whats_new import public_payload
 from opentab.util import (
     cached_share,
     context_size,
@@ -39,7 +40,6 @@ from opentab.util import (
     tool_namespace,
 )
 from opentab.web.page import render_html
-from opentab.whats_new import public_payload
 
 if TYPE_CHECKING:
     import argparse

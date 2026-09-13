@@ -73,6 +73,7 @@ from opentab.presentation.heatmap import (
     month_range,
     week_key,
 )
+from opentab.presentation.whats_new import RELEASES_URL, load_release_history, should_announce
 from opentab.sources import RESUME_COMMANDS, SOURCE_LABELS
 from opentab.tui import bindings, exporting, keymap
 from opentab.tui.renderer import Renderer
@@ -91,7 +92,6 @@ from opentab.util import (
     tool_namespace,
     workflow_fuzzy_score,
 )
-from opentab.whats_new import RELEASES_URL, load_release_history, should_announce
 
 
 class Toast:

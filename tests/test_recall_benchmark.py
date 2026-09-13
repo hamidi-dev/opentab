@@ -3,9 +3,10 @@
 import json
 import sqlite3
 import tempfile
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from copy import deepcopy
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts import recall_benchmark as benchmark
 
@@ -211,6 +212,24 @@ def test_verify_sources_opencode_exact_quote_roles_ordinal_and_read_only():
             assert path.read_bytes() == before
             del case["expected"][0]["source"]["message_ordinal"]
             assert benchmark.verify_sources([case]) == 1
+
+
+def test_verify_sources_opencode_explicit_uri_handles_escaped_paths_and_denies_writes():
+    with _opencode_source() as case:
+        source = case["expected"][0]["source"]
+        path = Path(source["path"])
+        path = path.rename(path.with_name("source #%.sqlite"))
+        source["path"] = str(path)
+        with patch.object(benchmark.sqlite3, "connect", wraps=sqlite3.connect) as connect:
+            assert benchmark.verify_sources([case]) == 1
+        connect.assert_called_once_with(path.as_uri() + "?mode=ro", uri=True)
+        with closing(sqlite3.connect(*connect.call_args.args, **connect.call_args.kwargs)) as conn:
+            try:
+                conn.execute("DELETE FROM part")
+            except sqlite3.OperationalError as error:
+                assert "readonly" in str(error).lower()
+            else:
+                raise AssertionError("Source connection allowed a write")
 
 
 def test_verify_sources_opencode_rejects_wrong_part_message_session_and_file():

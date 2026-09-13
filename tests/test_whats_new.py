@@ -2,7 +2,7 @@ import json
 from unittest.mock import patch
 
 import opentab as ot
-from opentab import whats_new
+from opentab.presentation import whats_new
 
 
 def _release(version=ot.__version__, title="Fixed"):

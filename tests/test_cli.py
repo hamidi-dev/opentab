@@ -77,7 +77,7 @@ for name in (
     assert getattr(opentab, name) is getattr(cli, name), name
 for package, names in (
     ('accounting', ('models', 'pricing', 'tools')),
-    ('presentation', ('formatting', 'heatmap', 'themes')),
+    ('presentation', ('formatting', 'heatmap', 'themes', 'whats_new')),
     ('persistence', ('paths', 'state', 'notes')),
 ):
     for name in names:

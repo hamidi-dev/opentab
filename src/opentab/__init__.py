@@ -108,7 +108,7 @@ from opentab.persistence.state import (
     state_path,
     update_state,
 )
-from opentab.presentation import formatting, heatmap, themes
+from opentab.presentation import formatting, heatmap, themes, whats_new
 from opentab.presentation.formatting import (
     BAR_CELLS,
     BAR_EIGHTHS,

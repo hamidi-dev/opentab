@@ -46,6 +46,7 @@ package and installed command are both `opentab`.
 | `web/report.py`, `web/page.py` | Report payload, HTTP server and self-contained HTML/CSS/JS |
 | `accounting/pricing.py`, `data/models.json` | Rate lookup, cost calculations and generated catalog |
 | `presentation/formatting.py`, `presentation/heatmap.py`, `presentation/themes.py` | Text, charts and shared colour palettes |
+| `presentation/whats_new.py` | Shared release-note content, validation and announcement rules |
 | `sources.py` | Harness discovery, selection and store construction |
 | `persistence/paths.py`, `persistence/state.py`, `persistence/notes.py` | XDG locations, preferences and authored notes |
 | `demo.py` | In-memory anonymization and spend scaling |

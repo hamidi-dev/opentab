@@ -183,6 +183,7 @@ from opentab.presentation.heatmap import (
     token_series,
     token_series_ansi,
 )
+from opentab.presentation.whats_new import RELEASES_URL
 from opentab.util import (
     CONTEXT_COMPACT_FLOOR,
     CONTEXT_COMPACT_RATIO,
@@ -190,7 +191,6 @@ from opentab.util import (
     fuzzy_score,
     unicode_screen,
 )
-from opentab.whats_new import RELEASES_URL
 
 
 def _turn_read_mark(row) -> str:

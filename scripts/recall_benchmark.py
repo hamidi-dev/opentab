@@ -58,7 +58,7 @@ def verify_sources(cases):
             source = anchor["source"]
             path = Path(source["path"])
             if anchor["harness"] == "opencode":
-                connection = sqlite3.connect(path.as_uri() + "?mode=ro")
+                connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
                 try:
                     row = connection.execute(
                         "SELECT p.data, m.data, m.session_id FROM part p "
