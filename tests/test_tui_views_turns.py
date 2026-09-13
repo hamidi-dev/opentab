@@ -70,8 +70,11 @@ def _rows():
 def test_turn_overview_returns_lines_headers_and_prompt_geometry_without_state():
     rows = _rows()
     with patch(
-        "opentab.pricing.api_equivalent_cost", side_effect=AssertionError("view repriced rows")
-    ), patch("opentab.pricing.cache_misses", side_effect=AssertionError("view scanned rows")):
+        "opentab.accounting.pricing.api_equivalent_cost",
+        side_effect=AssertionError("view repriced rows"),
+    ), patch(
+        "opentab.accounting.pricing.cache_misses", side_effect=AssertionError("view scanned rows")
+    ):
         layout = build_turns(
             rows=rows,
             costs=[1.0, 0.5, 2.0],

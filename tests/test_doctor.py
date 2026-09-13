@@ -4,10 +4,13 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 
 import opentab as ot
-from opentab import doctor
+from opentab.cli import doctor
+from opentab.cli import main as cli
 
 from tests._support import _parse
 
@@ -100,6 +103,38 @@ def _tilde(path):
 # --- this opentab ------------------------------------------------------------------------
 
 
+def test_doctor_root_exports_stay_lazy_and_identical_in_every_import_order():
+    for first in ("doctor", "build_report", "doctor_command", "canonical"):
+        probe = f"""
+import importlib
+import sys
+import opentab
+
+assert 'opentab.cli.doctor' not in sys.modules
+names = {{'doctor', 'build_report', 'doctor_command'}}
+assert names.issubset(opentab.__all__)
+assert names.issubset(dir(opentab))
+assert names.isdisjoint(vars(opentab))
+if {first!r} == 'canonical':
+    importlib.import_module('opentab.cli.doctor')
+else:
+    getattr(opentab, {first!r})
+doctor = importlib.import_module('opentab.cli.doctor')
+assert opentab.doctor is doctor
+assert opentab.build_report is doctor.build_report
+assert opentab.doctor_command is doctor.doctor_command
+"""
+        src = os.path.dirname(os.path.dirname(os.path.abspath(ot.__file__)))
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "PYTHONPATH": src},
+        )
+        assert result.returncode == 0, (first, result.stderr)
+
+
 def test_the_install_method_is_named_not_left_to_be_inferred_from_the_path():
     # It decides the answer to the next two questions anyone asks: how do I upgrade, and
     # am I running the copy I just changed.
@@ -112,6 +147,7 @@ def test_the_install_method_is_named_not_left_to_be_inferred_from_the_path():
     for path, expected in cases.items():
         assert doctor._install_method(path) == expected
     # A src-layout checkout is recognised by its pyproject, not by a path fragment.
+    assert doctor._pkg_dir() == os.path.dirname(os.path.abspath(ot.__file__))
     assert doctor._install_method(doctor._pkg_dir()) == "source checkout"
 
 
@@ -1066,7 +1102,7 @@ def test_doctor_is_a_subcommand_that_main_dispatches_without_curses():
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out):
-                code = ot.cli.main()
+                code = cli.main()
         finally:
             _sys.argv = argv
         assert code in (0, 1)  # depends on the developer's real machine; it must not raise

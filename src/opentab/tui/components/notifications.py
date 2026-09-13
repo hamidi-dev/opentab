@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Optional
 
-from opentab.formatting import clip, display_width, wrap_cells
+from opentab.presentation.formatting import clip, display_width, wrap_cells
 from opentab.tui.components.navigation import pager_layout
 
 

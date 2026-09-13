@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import opentab as ot
-import opentab.notes as notes_module
+import opentab.persistence.notes as notes_module
 
 from tests._support import FakeScreen, _app_on_session, app_with, box_cells, workflow
 

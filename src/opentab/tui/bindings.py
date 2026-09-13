@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 from typing import NamedTuple
 
-from opentab import paths
+from opentab.persistence import paths
 
 try:
     import curses

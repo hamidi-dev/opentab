@@ -7,9 +7,14 @@ import math
 import os
 from datetime import datetime, timezone
 
+from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
-from opentab.models import Workflow
+from opentab.presentation.formatting import (
+    _clean_prompt,
+    iso_to_epoch,
+    iso_to_local,
+    worked_seconds,
+)
 from opentab.util import git_root, safe_float, safe_int, tool_rows_from_turns
 
 

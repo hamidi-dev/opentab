@@ -46,7 +46,7 @@ Repository = "https://github.com/hamidi-dev/opentab"
 Issues = "https://github.com/hamidi-dev/opentab/issues"
 
 [project.scripts]
-opentab = "opentab.cli:main"
+opentab = "opentab.cli.main:main"
 
 [tool.hatch.version]
 path = "src/opentab/__init__.py"

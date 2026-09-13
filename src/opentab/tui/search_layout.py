@@ -6,7 +6,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from opentab.formatting import clip, iso_to_local, shorten, wrap_cells
+from opentab.presentation.formatting import clip, iso_to_local, shorten, wrap_cells
 
 
 @dataclass

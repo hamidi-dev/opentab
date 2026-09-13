@@ -26,7 +26,7 @@ relevant topic, not the entire documentation tree:
 - Python 3.9+. Standard library only at runtime, except Windows-only
   `windows-curses`. No new runtime dependencies.
 - Harness databases, transcripts and auth files are read-only. Writes belong to
-  OpenTab's own files or explicitly requested exports; use `paths.py` for XDG paths.
+  OpenTab's own files or explicitly requested exports; use `persistence/paths.py` for XDG paths.
 - Notes are authored data: locked read-modify-write, atomic save on each edit,
   no overwrite of malformed files, preserve unknown entries, never prune missing IDs.
 - Keep imports acyclic and stores independent of the TUI. Use `TYPE_CHECKING` for

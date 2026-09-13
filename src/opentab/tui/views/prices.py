@@ -6,9 +6,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from opentab.formatting import cost_bar, human_tokens, money, pad, shorten
-from opentab.heatmap import PRICE_HEAT_LEVELS
-from opentab.pricing import family_label
+from opentab.accounting.pricing import family_label
+from opentab.presentation.formatting import cost_bar, human_tokens, money, pad, shorten
+from opentab.presentation.heatmap import PRICE_HEAT_LEVELS
 
 PRICE_SORT_COLUMNS = (
     ("model", "model"),

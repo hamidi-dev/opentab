@@ -16,8 +16,8 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from opentab import paths
 from opentab.conversations.reader import ConversationError
+from opentab.persistence import paths
 
 SCHEMA_VERSION = 2
 _LEGACY_SCHEMA_VERSION = 1

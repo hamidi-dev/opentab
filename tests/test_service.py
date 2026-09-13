@@ -10,8 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import opentab as ot
-import opentab.notes as notes_module
-import opentab.state as state_module
+import opentab.persistence.notes as notes_module
+import opentab.persistence.state as state_module
 from opentab import remote_content
 from opentab.api import json_cli as programmatic
 

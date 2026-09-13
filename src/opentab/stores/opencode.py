@@ -11,9 +11,9 @@ import time
 from contextlib import closing
 from urllib.parse import quote
 
+from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import WORKED_BURST_GAP_SECONDS, _clean_prompt
-from opentab.models import Workflow
+from opentab.presentation.formatting import WORKED_BURST_GAP_SECONDS, _clean_prompt
 from opentab.util import (
     TRACE_OUTPUT_CAP,
     TRACE_TEXT_CAP,

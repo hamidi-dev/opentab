@@ -12,8 +12,8 @@ import threading
 import time
 from dataclasses import dataclass
 
-from opentab import paths
-from opentab.models import API_SCHEMA_VERSION, SessionRef
+from opentab.accounting.models import API_SCHEMA_VERSION, SessionRef
+from opentab.persistence import paths
 
 TIMEOUT = 30.0
 MAX_STDOUT = 16 * 1024 * 1024

@@ -9,9 +9,9 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import unquote
 
+from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt
-from opentab.models import Workflow
+from opentab.presentation.formatting import _clean_prompt
 from opentab.util import git_root, read_files_parallel, windows_to_wsl_path
 
 

@@ -8,9 +8,9 @@ import os
 import sys
 from datetime import datetime, timezone
 
+from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt, worked_seconds
-from opentab.models import Workflow
+from opentab.presentation.formatting import _clean_prompt, worked_seconds
 from opentab.util import (
     ATTACHMENT_EST_TOKENS,
     TRACE_OUTPUT_CAP,

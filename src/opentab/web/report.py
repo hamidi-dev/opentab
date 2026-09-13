@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote
 
 from opentab import __version__
-from opentab.pricing import (
+from opentab.accounting.pricing import (
     api_equivalent_cost,
     cache_misses,
     cache_write_1h_price,
@@ -28,8 +28,8 @@ from opentab.pricing import (
     model_context_window,
     model_price,
 )
-from opentab.themes import DEFAULT_THEME
-from opentab.tools import tool_calls_from_turns
+from opentab.accounting.tools import tool_calls_from_turns
+from opentab.presentation.themes import DEFAULT_THEME
 from opentab.util import (
     cached_share,
     context_size,

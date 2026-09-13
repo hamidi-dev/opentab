@@ -502,7 +502,7 @@ def test_remote_store_machine_meta_carries_pulled_niceties_and_the_refresh_key()
 
 
 def test_remote_store_machine_meta_key_survives_a_percent_encoded_filename():
-    from opentab.cli import _summary_filename
+    from opentab.cli.main import _summary_filename
 
     with tempfile.TemporaryDirectory() as d:
         _write(

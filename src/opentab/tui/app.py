@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
-from opentab.models import SessionRef, Workflow
+from opentab.accounting.models import SessionRef, Workflow
 from opentab.stores.opencode import Store
 
 try:
@@ -21,25 +21,8 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-from opentab import __version__, sources, themes, util
-from opentab.demo import (
-    DEMO_ALL,
-    DEMO_CATEGORIES,
-    demo_cost,
-    demo_machine,
-    demo_model,
-    demo_title,
-    demo_turn_content,
-)
-from opentab.formatting import clip, clip_tail, display_width, short_path, shorten
-from opentab.heatmap import (
-    HEAT_DEFAULT_LEVELS,
-    HEAT_MAX_LEVELS,
-    HEAT_MIN_LEVELS,
-    month_range,
-    week_key,
-)
-from opentab.models import (
+from opentab import __version__, sources, util
+from opentab.accounting.models import (
     ALL_HARNESSES,
     ALL_MACHINES,
     ALL_YEARS,
@@ -50,8 +33,7 @@ from opentab.models import (
     ProjectSummary,
     YearSummary,
 )
-from opentab.notes import notes_path, read_notes, update_note
-from opentab.pricing import (
+from opentab.accounting.pricing import (
     LOCAL_PROVIDERS,
     TOKEN_TYPES,
     api_equivalent_cost,
@@ -71,8 +53,27 @@ from opentab.pricing import (
     price_cache_meta,
     refresh_model_prices,
 )
+from opentab.accounting.tools import tool_calls_from_turns
+from opentab.demo import (
+    DEMO_ALL,
+    DEMO_CATEGORIES,
+    demo_cost,
+    demo_machine,
+    demo_model,
+    demo_title,
+    demo_turn_content,
+)
+from opentab.persistence.notes import notes_path, read_notes, update_note
+from opentab.presentation import themes
+from opentab.presentation.formatting import clip, clip_tail, display_width, short_path, shorten
+from opentab.presentation.heatmap import (
+    HEAT_DEFAULT_LEVELS,
+    HEAT_MAX_LEVELS,
+    HEAT_MIN_LEVELS,
+    month_range,
+    week_key,
+)
 from opentab.sources import RESUME_COMMANDS, SOURCE_LABELS
-from opentab.tools import tool_calls_from_turns
 from opentab.tui import bindings, exporting, keymap
 from opentab.tui.renderer import Renderer
 from opentab.tui.search_workspace import SearchWorkspace

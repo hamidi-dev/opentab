@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from opentab.formatting import display_width, pad, shorten
+from opentab.presentation.formatting import display_width, pad, shorten
 
 Style = TypeVar("Style")
 

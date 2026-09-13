@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 import opentab as ot
-from opentab.models import SessionRef
+from opentab.accounting.models import SessionRef
 from opentab.tui import bindings
 from opentab.tui.search_workspace import SearchWorkspace
 

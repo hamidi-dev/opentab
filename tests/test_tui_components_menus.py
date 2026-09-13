@@ -1,4 +1,4 @@
-from opentab.formatting import display_width
+from opentab.presentation.formatting import display_width
 from opentab.tui.components.menus import (
     SELECTED,
     check_menu,

@@ -6,8 +6,8 @@ import os
 import random
 import zlib
 
-from opentab.models import Workflow
-from opentab.pricing import is_local_provider
+from opentab.accounting.models import Workflow
+from opentab.accounting.pricing import is_local_provider
 
 # `titles` hides identity (session/prompt/subagent titles, model and machine names);
 # `paths` hides the project directories; `turns` hides the expandable full prompt text;

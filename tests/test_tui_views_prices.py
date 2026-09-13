@@ -1,7 +1,7 @@
 from collections import namedtuple
 
-from opentab.formatting import pad, shorten
-from opentab.heatmap import PRICE_HEAT_LEVELS
+from opentab.presentation.formatting import pad, shorten
+from opentab.presentation.heatmap import PRICE_HEAT_LEVELS
 from opentab.tui.views import prices
 
 Entry = namedtuple(

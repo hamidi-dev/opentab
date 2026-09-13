@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Union
 
-from opentab.formatting import human_tokens, money, pad, pct, short_path, shorten
-from opentab.heatmap import calendar_cells, heat_band_label, heat_level
+from opentab.presentation.formatting import human_tokens, money, pad, pct, short_path, shorten
+from opentab.presentation.heatmap import calendar_cells, heat_band_label, heat_level
 from opentab.tui.components.boxes import BOX_CHROME, ruled_box, sectioned_box
 from opentab.tui.components.charts import bar_chart
 from opentab.tui.components.tables import (

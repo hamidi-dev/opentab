@@ -1,4 +1,4 @@
-from opentab.tools import tool_calls_from_turns
+from opentab.accounting.tools import tool_calls_from_turns
 
 
 def _turn(**changes):

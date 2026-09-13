@@ -6,7 +6,7 @@ import textwrap
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from opentab.formatting import (
+from opentab.presentation.formatting import (
     cost_bar,
     display_width,
     human_duration,
@@ -16,7 +16,7 @@ from opentab.formatting import (
     pct,
     shorten,
 )
-from opentab.heatmap import BLOCKS_UP
+from opentab.presentation.heatmap import BLOCKS_UP
 from opentab.tui.components.boxes import BOX_CHROME, ruled_box, sectioned_box
 from opentab.tui.components.token_cards import token_breakdown_card
 from opentab.tui.trace import TraceLine, build_event_body, wrapped

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from opentab.cli import main
+from opentab.cli.main import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

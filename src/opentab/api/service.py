@@ -8,9 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from opentab import sources
-from opentab.models import API_SCHEMA_VERSION, SessionRef, Workflow
-from opentab.notes import read_notes, update_note
-from opentab.pricing import (
+from opentab.accounting.models import API_SCHEMA_VERSION, SessionRef, Workflow
+from opentab.accounting.pricing import (
     api_equivalent_cost,
     cache_write_1h_price,
     canonical_model,
@@ -20,8 +19,9 @@ from opentab.pricing import (
     model_context_window,
     model_price,
 )
+from opentab.persistence.notes import read_notes, update_note
+from opentab.persistence.state import load_state, update_state
 from opentab.remote_content import RemoteTraceError
-from opentab.state import load_state, update_state
 from opentab.util import (
     cached_share,
     context_size,

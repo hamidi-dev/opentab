@@ -74,8 +74,8 @@ def test_entering_demo_before_release_hint_delivery_does_not_acknowledge_it():
 
 
 def test_demo_categories_gate_titles_paths_turns_and_spend():
+    from opentab.accounting.models import Workflow
     from opentab.demo import demo_config, scramble_workflow
-    from opentab.models import Workflow
 
     def wf():
         return Workflow(

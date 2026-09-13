@@ -10,6 +10,7 @@ import tempfile
 from unittest.mock import patch
 
 import opentab as ot
+from opentab.cli import main as cli
 
 from tests._support import (
     OCL_SID,
@@ -46,7 +47,7 @@ def test_cost_parser_keeps_service_mcp_index_and_http_server_lazy():
         "args = opentab.parse_args(['cost']);"
         "assert args.command == 'cost';"
         "blocked = {'opentab.api.service', 'opentab.api.mcp', "
-        "'opentab.conversations.index', 'http.server'};"
+        "'opentab.conversations.index', 'opentab.cli.doctor', 'http.server'};"
         "assert blocked.isdisjoint(sys.modules), sorted(blocked & sys.modules.keys());"
         "assert 'opentab.api.json_cli' in sys.modules"
     )
@@ -61,8 +62,51 @@ def test_cost_parser_keeps_service_mcp_index_and_http_server_lazy():
     assert result.returncode == 0, result.stderr
 
 
+def test_grouped_modules_preserve_root_exports_and_canonical_import_identity():
+    probe = """
+import importlib
+import opentab
+import opentab.cli.main as cli
+
+assert opentab.cli.main is cli
+for name in (
+    'MIN_PYTHON', 'enable_unicode_locale', 'export_command', 'forget_command',
+    'main', 'parse_args', 'pull_command', 'refresh_models_command',
+    'status_command', 'status_line', 'web_command',
+):
+    assert getattr(opentab, name) is getattr(cli, name), name
+for package, names in (
+    ('accounting', ('models', 'pricing', 'tools')),
+    ('presentation', ('formatting', 'heatmap', 'themes')),
+    ('persistence', ('paths', 'state', 'notes')),
+):
+    for name in names:
+        module = importlib.import_module('opentab.' + package + '.' + name)
+        assert getattr(opentab, name) is module, name
+        assert name in opentab.__all__, name
+        for exported in opentab.__all__:
+            value = vars(opentab).get(exported)
+            if getattr(value, '__module__', None) == module.__name__:
+                assert value is getattr(module, exported), exported
+assert opentab.Workflow is opentab.models.Workflow
+assert opentab.model_price is opentab.pricing.model_price
+assert opentab.money is opentab.formatting.money
+assert opentab.load_state is opentab.state.load_state
+assert opentab.update_note is opentab.notes.update_note
+"""
+    src = os.path.dirname(os.path.dirname(os.path.abspath(ot.__file__)))
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "PYTHONPATH": src},
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_conversations_top_level_normalizes_and_dispatches_before_discovery():
-    from opentab import cli
+    from opentab.cli import main as cli
 
     for action in ("index", "search", "status", "clear"):
         argv = ["conversations", action]
@@ -231,7 +275,7 @@ def test_conversations_parser_requires_explicit_permission_and_rejects_unknown_o
 
 
 def test_conversation_demo_and_unsupported_harness_fail_before_any_access():
-    from opentab import cli
+    from opentab.cli import main as cli
 
     for argv in (
         ["conversations", "index", "--allow-raw-content", "--demo"],
@@ -412,16 +456,16 @@ def test_status_command_prices_whichever_tool_ran_last():
         claude_price = "~" + ot.money(
             ot.api_equivalent_cost("anthropic/claude-opus-4-8", 1000, 50, 0, 0, 0)
         )
-        assert ot.cli._status_line_all(args, repo) == claude_price
-        assert ot.cli._status_line_all(args, "ses_oc") == "$2.00"
-        assert ot.cli._status_line_all(args, sid) == claude_price
+        assert cli._status_line_all(args, repo) == claude_price
+        assert cli._status_line_all(args, "ses_oc") == "$2.00"
+        assert cli._status_line_all(args, sid) == claude_price
 
         os.utime(
             os.path.join(projects, re.sub(r"[^A-Za-z0-9]", "-", repo), sid + ".jsonl"),
             (1760000100, 1760000100),
         )
-        assert ot.cli._status_line_all(args, repo) == "$2.00"
-        assert ot.cli._status_line_all(args, None) == "$2.00"
+        assert cli._status_line_all(args, repo) == "$2.00"
+        assert cli._status_line_all(args, None) == "$2.00"
 
 
 def test_status_batch_prints_a_table_keyed_by_the_target_asked_for():
@@ -439,12 +483,12 @@ def test_status_batch_prints_a_table_keyed_by_the_target_asked_for():
                 ("ses_b", None, "/work/beta", 1760000200000, 1760000300000, 2.0, 10),
             ],
         )
-        args = ot.cli.parse_args(["cost", "--batch", "-"])
+        args = cli.parse_args(["cost", "--batch", "-"])
         args.db, args.demo = db, False
         args.status_targets = ["ses_b", "ses_gone", "ses_a"]
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            assert ot.cli.status_command(args) == 0
+            assert cli.status_command(args) == 0
         # asked-for order kept, ses_gone omitted rather than given an empty price
         assert out.getvalue() == "ses_b\t$2.00\nses_a\t$5.00\n"
 
@@ -468,7 +512,7 @@ def test_status_batch_prices_a_shared_root_only_once():
         walk = store.workflow_nodes
         store.workflow_nodes = lambda wid: (priced.append(wid), walk(wid))[1]
 
-        pricer = ot.cli._StatusPricer([store])
+        pricer = cli._StatusPricer([store])
         assert pricer.line("ses_root") == "$5.50"  # subtree included
         assert pricer.line("ses_kid") == "$5.50"  # subagent id -> the same root
         assert pricer.line("/work/repo") == "$5.50"  # project's latest -> the same root
@@ -483,7 +527,7 @@ def test_status_batch_targets_keep_the_callers_exact_strings():
     #    them would price a different directory than the caller named;
     #  - no dedup: the output is keyed by the exact string asked for, and asking
     #    twice is free because the pricer memoizes the resolved root.
-    assert ot.cli._batch_targets(["ses_a", "", "ses_b\r", "ses_a", "  /w/ dir "]) == [
+    assert cli._batch_targets(["ses_a", "", "ses_b\r", "ses_a", "  /w/ dir "]) == [
         "ses_a",
         "ses_b",
         "ses_a",
@@ -491,11 +535,11 @@ def test_status_batch_targets_keep_the_callers_exact_strings():
     ]
     # A tab or NUL can't be represented in a TSV keyed by the target, so it's dropped
     # rather than emitted as a row that won't parse.
-    assert ot.cli._batch_targets(["/work/has\ttab", "ses_ok", "nul\0here"]) == ["ses_ok"]
+    assert cli._batch_targets(["/work/has\ttab", "ses_ok", "nul\0here"]) == ["ses_ok"]
     # `-` takes the whole list from stdin; mixing it with literal targets is a
     # usage mistake, not a merge.
     try:
-        ot.cli._batch_targets(["ses_a", "-"])
+        cli._batch_targets(["ses_a", "-"])
         raise AssertionError("expected a usage error")
     except ValueError as exc:
         assert "don't mix it" in str(exc)
@@ -520,17 +564,17 @@ def test_status_batch_reports_an_incomplete_table_with_a_nonzero_exit():
         def workflow_nodes(self, wid):
             return [{"cost": 1.0, "tokens_total": 0, "model_name": "m"}]
 
-    args = ot.cli.parse_args(["cost", "--batch", "-"])
-    real = ot.cli._status_stores
-    ot.cli._status_stores = lambda a: [_Boom()]
+    args = cli.parse_args(["cost", "--batch", "-"])
+    real = cli._status_stores
+    cli._status_stores = lambda a: [_Boom()]
     try:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = ot.cli._status_batch(args, ["ses_ok", "ses_bad"])
+            rc = cli._status_batch(args, ["ses_ok", "ses_bad"])
         assert out.getvalue() == "ses_ok\t$1.00\n"  # the good target still printed
         assert rc == 1  # ...but the table is incomplete, and says so
     finally:
-        ot.cli._status_stores = real
+        cli._status_stores = real
 
 
 def test_status_batch_reads_stdin_but_refuses_a_terminal():
@@ -545,13 +589,13 @@ def test_status_batch_reads_stdin_but_refuses_a_terminal():
     stdin = sys.stdin
     try:
         sys.stdin = _Pipe("ses_a\n\nses_b\n")
-        assert ot.cli._batch_targets(["-"]) == ["ses_a", "ses_b"]
+        assert cli._batch_targets(["-"]) == ["ses_a", "ses_b"]
 
         sys.stdin = type("T", (io.StringIO,), {"isatty": lambda self: True})("")
-        args = ot.cli.parse_args(["cost", "--batch", "-"])
+        args = cli.parse_args(["cost", "--batch", "-"])
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            assert ot.cli.status_command(args) == 2
+            assert cli.status_command(args) == 2
         assert "stdin is a terminal" in err.getvalue()
     finally:
         sys.stdin = stdin
@@ -564,19 +608,19 @@ def test_cost_subcommand_shape_follows_arity_and_keeps_the_legacy_flag():
     # --status flag stays single-target -- it's the deprecated alias, not the surface
     # new callers should reach for. `cost` replaced the `status` VERB outright (it was
     # never advertised), so the old spelling must now be rejected, not quietly accepted.
-    one = ot.cli.parse_args(["cost", "ses_a"])
+    one = cli.parse_args(["cost", "ses_a"])
     assert (one.status, one.status_targets, one.status_batch) == ("ses_a", ["ses_a"], False)
 
-    two = ot.cli.parse_args(["cost", "ses_a", "ses_b"])
+    two = cli.parse_args(["cost", "ses_a", "ses_b"])
     assert (two.status_targets, two.status_batch) == (["ses_a", "ses_b"], True)
 
-    forced = ot.cli.parse_args(["cost", "--batch", "ses_a"])
+    forced = cli.parse_args(["cost", "--batch", "ses_a"])
     assert (forced.status_targets, forced.status_batch) == (["ses_a"], True)
 
-    bare = ot.cli.parse_args(["cost"])
+    bare = cli.parse_args(["cost"])
     assert (bare.status, bare.status_targets, bare.status_batch) == ("", [], False)
 
-    legacy = ot.cli.parse_args(["--status", "ses_a"])
+    legacy = cli.parse_args(["--status", "ses_a"])
     assert (legacy.status, legacy.status_batch) == ("ses_a", False)
 
     # The retired verb is now just an unknown first word: it falls through to the
@@ -584,7 +628,7 @@ def test_cost_subcommand_shape_follows_arity_and_keeps_the_legacy_flag():
     # the old spelling fails loudly instead of quietly pricing nothing.
     try:
         with contextlib.redirect_stderr(io.StringIO()):
-            ot.cli.parse_args(["status", "ses_a"])
+            cli.parse_args(["status", "ses_a"])
     except SystemExit:
         pass
     else:
@@ -880,13 +924,13 @@ def test_status_command_routes_uuid_ids_by_probing_backends():
             ot.api_equivalent_cost("openai/gpt-5-codex", 2000, 100, 0, 0, 0)
         )
         args = stub("auto")
-        assert ot.cli._status_line_all(args, codex_sid) == codex_price  # a Codex-owned UUID
-        assert ot.cli._status_line_all(args, claude_sid) == claude_price
-        assert ot.cli._status_line_all(args, repo) == claude_price  # dir: claude is newer
+        assert cli._status_line_all(args, codex_sid) == codex_price  # a Codex-owned UUID
+        assert cli._status_line_all(args, claude_sid) == claude_price
+        assert cli._status_line_all(args, repo) == claude_price  # dir: claude is newer
 
         pinned = stub("codex")
-        assert ot.cli._status_line_all(pinned, repo) == codex_price  # --source pins the backend
-        assert ot.cli._status_line_all(pinned, claude_sid) == ""  # ...for ids too
+        assert cli._status_line_all(pinned, repo) == codex_price  # --source pins the backend
+        assert cli._status_line_all(pinned, claude_sid) == ""  # ...for ids too
 
 
 def test_cli_theme_choices_match_the_theme_registry():
@@ -943,7 +987,7 @@ def test_web_subcommand_takes_the_shared_globals_after_the_verb():
 
 
 def test_static_web_rejects_server_options_before_any_access():
-    from opentab import cli
+    from opentab.cli import main as cli
 
     for argv in (
         ["web", "--html", "report.html", "--port", "9000"],
@@ -978,7 +1022,7 @@ def test_pull_subcommand_maps_hosts_onto_the_pull_field():
 
 
 def test_fleet_harness_conflicts_fail_before_ssh_or_state_access():
-    from opentab import cli
+    from opentab.cli import main as cli
 
     for argv in (
         ["pull", "--harness", "claude", "host"],
@@ -1018,7 +1062,7 @@ def test_explicit_tui_verb_still_reads_legacy_flags():
 def _subparser_help(name):
     import argparse
 
-    parser = ot.cli._build_parser()
+    parser = cli._build_parser()
     action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
     return action.choices[name].format_help()
 
@@ -1189,7 +1233,7 @@ def test_options_before_a_word_keep_the_legacy_implicit_tui_grammar():
         ["--harness", "claude", "sessions", "list"],
         ["--db", "cost"],
     ):
-        assert ot.cli._normalize_argv(argv) == ["tui", *argv]
+        assert cli._normalize_argv(argv) == ["tui", *argv]
 
 
 def test_live_web_preserves_explicit_and_default_server_values():
@@ -1242,13 +1286,13 @@ def test_goto_target_resolves_ids_and_directories_like_status():
         args = type("A", (), {"demo": False, "db": db, "claude_dir": projects, "goto": None})()
 
         args.goto = sid
-        assert ot.cli._goto_target(args) == ("claude", sid)
+        assert cli._goto_target(args) == ("claude", sid)
         args.goto = "ses_oc"
-        assert ot.cli._goto_target(args) == ("opencode", "ses_oc")
+        assert cli._goto_target(args) == ("opencode", "ses_oc")
         args.goto = repo
-        assert ot.cli._goto_target(args) == ("claude", sid)
+        assert cli._goto_target(args) == ("claude", sid)
         args.goto = "99999999-9999-9999-9999-999999999999"
-        assert ot.cli._goto_target(args) is None  # unclaimed id, never a dir fallback
+        assert cli._goto_target(args) is None  # unclaimed id, never a dir fallback
 
 
 def test_goto_target_probes_local_backends_under_source_remote():
@@ -1268,7 +1312,7 @@ def test_goto_target_probes_local_backends_under_source_remote():
             (),
             {"demo": False, "db": db, "claude_dir": projects, "goto": sid, "source": "remote"},
         )()
-        assert ot.cli._goto_target(args) == ("claude", sid)
+        assert cli._goto_target(args) == ("claude", sid)
 
 
 def test_goto_session_lands_in_session_view_and_clears_a_hiding_range():
@@ -1326,7 +1370,7 @@ def test_claude_config_dir_controls_the_default_source_and_startup_warning():
         try:
             assert _parse([]).claude_dir == os.path.join(tmp, "projects")
             app = app_with([])
-            ot.cli._offer_claude_retention_warning(app, can_persist=True)
+            cli._offer_claude_retention_warning(app, can_persist=True)
             assert app.startup_warning is not None
             assert app.startup_warning["id"] == ot.CLAUDE_RETENTION_WARNING_ID
             assert "after 30 days" in app.startup_warning["headline"]
@@ -1335,7 +1379,7 @@ def test_claude_config_dir_controls_the_default_source_and_startup_warning():
             with open(os.path.join(tmp, "settings.json"), "w") as fh:
                 json.dump({"cleanupPeriodDays": 3650}, fh)
             safe = app_with([])
-            ot.cli._offer_claude_retention_warning(safe, can_persist=True)
+            cli._offer_claude_retention_warning(safe, can_persist=True)
             assert safe.startup_warning is None
         finally:
             if old is None:
@@ -1356,13 +1400,13 @@ def test_gemini_retention_warning_is_offered_beside_claude_and_gated_on_its_data
 
             # No .gemini/tmp yet: nothing to lose, so nothing to warn about.
             quiet = app_with([])
-            ot.cli._offer_retention_warnings(quiet, args, "all", can_persist=True)
+            cli._offer_retention_warnings(quiet, args, "all", can_persist=True)
             assert [w["id"] for w in quiet.startup_warnings()] == []
 
             os.makedirs(os.path.join(tmp, ".gemini", "tmp"))
             os.makedirs(os.path.join(tmp, "claude", "projects"))
             app = app_with([])
-            ot.cli._offer_retention_warnings(app, args, "all", can_persist=True)
+            cli._offer_retention_warnings(app, args, "all", can_persist=True)
             assert [w["id"] for w in app.startup_warnings()] == [
                 ot.CLAUDE_RETENTION_WARNING_ID,
                 ot.GEMINI_RETENTION_WARNING_ID,
@@ -1376,14 +1420,14 @@ def test_gemini_retention_warning_is_offered_beside_claude_and_gated_on_its_data
             # be the one line that is not.
             demo_args = _parse(["--demo"])
             demo = app_with([])
-            ot.cli._offer_retention_warnings(demo, demo_args, "all", can_persist=False)
+            cli._offer_retention_warnings(demo, demo_args, "all", can_persist=False)
             assert demo.startup_warnings() == []
 
             settings = os.path.join(tmp, ".gemini", "settings.json")
             with open(settings, "w") as fh:
                 json.dump({"general": {"sessionRetention": {"enabled": False}}}, fh)
             safe = app_with([])
-            ot.cli._offer_retention_warnings(safe, args, "all", can_persist=True)
+            cli._offer_retention_warnings(safe, args, "all", can_persist=True)
             assert [w["id"] for w in safe.startup_warnings()] == [ot.CLAUDE_RETENTION_WARNING_ID]
         finally:
             for name, value in (("GEMINI_CLI_HOME", old_home), ("CLAUDE_CONFIG_DIR", old_claude)):
@@ -1405,8 +1449,8 @@ def test_goto_missing_tab_notice_survives_a_range_clear():
 
 def test_goto_hint_distinguishes_a_fresh_directory_from_an_unknown_id():
     with tempfile.TemporaryDirectory() as tmp:
-        assert "no session yet" in ot.cli._goto_hint(tmp)
-    hint = ot.cli._goto_hint("99999999-9999-9999-9999-999999999999")
+        assert "no session yet" in cli._goto_hint(tmp)
+    hint = cli._goto_hint("99999999-9999-9999-9999-999999999999")
     assert "not found" in hint and "99999999" in hint
 
 
@@ -1433,7 +1477,7 @@ def test_goto_miss_opens_the_plain_tui_with_a_hint_instead_of_exiting():
             def wrapper(fn):
                 captured["app"] = fn.__self__
 
-        argv, real_curses = _sys.argv, ot.cli.curses
+        argv, real_curses = _sys.argv, cli.curses
         _sys.argv = [
             "opentab",
             "--source",
@@ -1445,12 +1489,12 @@ def test_goto_miss_opens_the_plain_tui_with_a_hint_instead_of_exiting():
             "--no-state",
             "--no-cache",
         ]
-        ot.cli.curses = _FakeCurses
+        cli.curses = _FakeCurses
         try:
             with contextlib.redirect_stderr(io.StringIO()):  # the loading hint
-                assert ot.cli.main() == 0
+                assert cli.main() == 0
         finally:
-            _sys.argv, ot.cli.curses = argv, real_curses
+            _sys.argv, cli.curses = argv, real_curses
         app = captured["app"]
         assert app.view == "browse"
         assert "no session yet" in app.notice
@@ -1467,10 +1511,10 @@ def test_tui_startup_configures_release_markers_for_state_and_privacy_modes():
         )
         real = {
             "argv": sys.argv,
-            "curses": ot.cli.curses,
-            "load_state": ot.cli.load_state,
-            "save_state": ot.cli.save_state,
-            "warnings": ot.cli._offer_retention_warnings,
+            "curses": cli.curses,
+            "load_state": cli.load_state,
+            "save_state": cli.save_state,
+            "warnings": cli._offer_retention_warnings,
         }
         captured = []
 
@@ -1479,9 +1523,9 @@ def test_tui_startup_configures_release_markers_for_state_and_privacy_modes():
             def wrapper(fn):
                 captured.append(fn.__self__)
 
-        ot.cli.curses = FakeCurses
-        ot.cli.save_state = lambda _app: None
-        ot.cli._offer_retention_warnings = lambda *_args, **_kwargs: None
+        cli.curses = FakeCurses
+        cli.save_state = lambda _app: None
+        cli._offer_retention_warnings = lambda *_args, **_kwargs: None
         try:
             for marker, extra, pending, candidate in (
                 ("1.20.0", [], True, "1.20.0"),
@@ -1491,7 +1535,7 @@ def test_tui_startup_configures_release_markers_for_state_and_privacy_modes():
                 ("1.20.0", ["--demo"], False, None),
                 ("1.20.0", ["--no-state"], False, None),
             ):
-                ot.cli.load_state = lambda marker=marker: (
+                cli.load_state = lambda marker=marker: (
                     {} if marker is None else {"last_announced_version": marker}
                 )
                 sys.argv = [
@@ -1504,16 +1548,16 @@ def test_tui_startup_configures_release_markers_for_state_and_privacy_modes():
                     *extra,
                 ]
                 with contextlib.redirect_stderr(io.StringIO()):
-                    assert ot.cli.main() == 0
+                    assert cli.main() == 0
                 app = captured[-1]
                 assert app._whats_new_hint_pending is pending
                 assert app.whats_new_marker_to_save == candidate
         finally:
             sys.argv = real["argv"]
-            ot.cli.curses = real["curses"]
-            ot.cli.load_state = real["load_state"]
-            ot.cli.save_state = real["save_state"]
-            ot.cli._offer_retention_warnings = real["warnings"]
+            cli.curses = real["curses"]
+            cli.load_state = real["load_state"]
+            cli.save_state = real["save_state"]
+            cli._offer_retention_warnings = real["warnings"]
 
 
 def test_goto_startup_keeps_the_release_hint_pending_until_the_tui_paints():
@@ -1532,7 +1576,7 @@ def test_goto_startup_keeps_the_release_hint_pending_until_the_tui_paints():
             def wrapper(fn):
                 captured["app"] = fn.__self__
 
-        real = (sys.argv, ot.cli.curses, ot.cli.load_state, ot.cli.save_state)
+        real = (sys.argv, cli.curses, cli.load_state, cli.save_state)
         sys.argv = [
             "opentab",
             "--source",
@@ -1543,14 +1587,14 @@ def test_goto_startup_keeps_the_release_hint_pending_until_the_tui_paints():
             repo,
             "--no-cache",
         ]
-        ot.cli.curses = FakeCurses
-        ot.cli.load_state = lambda: {"last_announced_version": "1.20.0"}
-        ot.cli.save_state = lambda _app: None
+        cli.curses = FakeCurses
+        cli.load_state = lambda: {"last_announced_version": "1.20.0"}
+        cli.save_state = lambda _app: None
         try:
             with contextlib.redirect_stderr(io.StringIO()):
-                assert ot.cli.main() == 0
+                assert cli.main() == 0
         finally:
-            sys.argv, ot.cli.curses, ot.cli.load_state, ot.cli.save_state = real
+            sys.argv, cli.curses, cli.load_state, cli.save_state = real
         app = captured["app"]
         assert app.view == "session" and app.current_session().id == "ses_oc"
         assert app._whats_new_hint_pending
@@ -1584,16 +1628,16 @@ def test_goto_miss_hint_never_buries_the_notes_warning():
             def wrapper(fn):
                 captured["app"] = fn.__self__
 
-        argv, real_curses = _sys.argv, ot.cli.curses
+        argv, real_curses = _sys.argv, cli.curses
         xdg = os.environ.get("XDG_DATA_HOME")
         _sys.argv = ["opentab", "--source", "opencode", "--db", db, "--goto", repo, "--no-cache"]
-        ot.cli.curses = _FakeCurses
+        cli.curses = _FakeCurses
         os.environ["XDG_DATA_HOME"] = cfg  # notes.json lives here, not the suite's dir
         try:
             with contextlib.redirect_stderr(io.StringIO()):
-                assert ot.cli.main() == 0
+                assert cli.main() == 0
         finally:
-            _sys.argv, ot.cli.curses = argv, real_curses
+            _sys.argv, cli.curses = argv, real_curses
             if xdg is None:
                 os.environ.pop("XDG_DATA_HOME", None)
             else:
@@ -1610,14 +1654,14 @@ def test_goto_miss_hint_never_buries_the_notes_warning():
 def _remotes_env(cfg_path, fetch=None):
     # Point remotes.json at a temp file (the config path is XDG-global, shared across
     # tests) and optionally stub the SSH/HTTP fetch, restoring both after.
-    o_path, o_fetch = ot.cli.remotes_config_path, ot.cli._fetch_summary
-    ot.cli.remotes_config_path = lambda: cfg_path
+    o_path, o_fetch = cli.remotes_config_path, cli._fetch_summary
+    cli.remotes_config_path = lambda: cfg_path
     if fetch is not None:
-        ot.cli._fetch_summary = fetch
+        cli._fetch_summary = fetch
     try:
         yield
     finally:
-        ot.cli.remotes_config_path, ot.cli._fetch_summary = o_path, o_fetch
+        cli.remotes_config_path, cli._fetch_summary = o_path, o_fetch
 
 
 def _fake_summary_text(label, ids):
@@ -1655,26 +1699,26 @@ def test_pull_and_remote_flags_parse():
 
 
 def test_remote_entry_parses_hosts_urls_and_named_specs():
-    assert ot.cli._remote_entry("box") == ("box", {"ssh": "box"})
-    assert ot.cli._remote_entry("mo@host.local") == ("host.local", {"ssh": "mo@host.local"})
-    assert ot.cli._remote_entry("build=mo@10.0.0.5") == ("build", {"ssh": "mo@10.0.0.5"})
-    name, entry = ot.cli._remote_entry("http://100.64.0.5:8321")
+    assert cli._remote_entry("box") == ("box", {"ssh": "box"})
+    assert cli._remote_entry("mo@host.local") == ("host.local", {"ssh": "mo@host.local"})
+    assert cli._remote_entry("build=mo@10.0.0.5") == ("build", {"ssh": "mo@10.0.0.5"})
+    name, entry = cli._remote_entry("http://100.64.0.5:8321")
     assert name == "100.64.0.5" and entry == {"url": "http://100.64.0.5:8321"}
 
 
 def test_pull_ssh_fails_fast_without_interactive_prompts():
     calls = []
-    real_run = ot.cli.subprocess.run
+    real_run = cli.subprocess.run
 
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
-        return ot.cli.subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
+        return cli.subprocess.CompletedProcess(argv, 0, stdout="{}", stderr="")
 
     try:
-        ot.cli.subprocess.run = fake_run
-        assert ot.cli._fetch_summary("box", {"ssh": "mo@box"}) == "{}"
+        cli.subprocess.run = fake_run
+        assert cli._fetch_summary("box", {"ssh": "mo@box"}) == "{}"
     finally:
-        ot.cli.subprocess.run = real_run
+        cli.subprocess.run = real_run
 
     argv, kwargs = calls[0]
     assert argv == [
@@ -1695,9 +1739,9 @@ def test_remotes_config_round_trips():
     with tempfile.TemporaryDirectory() as d:
         cfg = os.path.join(d, "remotes.json")
         with _remotes_env(cfg):
-            assert ot.cli._load_remotes() == {}  # missing file is empty, never fatal
-            ot.cli._save_remotes({"box": {"ssh": "box"}})
-            assert ot.cli._load_remotes() == {"box": {"ssh": "box"}}
+            assert cli._load_remotes() == {}  # missing file is empty, never fatal
+            cli._save_remotes({"box": {"ssh": "box"}})
+            assert cli._load_remotes() == {"box": {"ssh": "box"}}
 
 
 def test_pull_learns_hosts_writes_summaries_and_survives_a_failure():
@@ -1714,7 +1758,7 @@ def test_pull_learns_hosts_writes_summaries_and_survives_a_failure():
         args = _parse(["--pull", "laptop", "mo@server", "broken", "--remotes", rdir])
         err = io.StringIO()
         with _remotes_env(cfg, fetch), contextlib.redirect_stderr(err):
-            ot.cli.pull_command(args)
+            cli.pull_command(args)
         machines = json.load(open(cfg, encoding="utf-8"))["machines"]
         assert set(machines) == {"laptop", "server", "broken"}
         assert machines["server"] == {"ssh": "mo@server"}  # name derived, target kept
@@ -1734,8 +1778,8 @@ def test_make_refresh_fn_repulls_named_machines_over_the_pull_workers():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg, fetch):
-            ot.cli._save_remotes({"server": {"ssh": "server"}, "desktop": {"ssh": "root@desktop"}})
-            fn = ot.cli._make_refresh_fn(_parse(["--remote", "--remotes", rdir]))
+            cli._save_remotes({"server": {"ssh": "server"}, "desktop": {"ssh": "root@desktop"}})
+            fn = cli._make_refresh_fn(_parse(["--remote", "--remotes", rdir]))
             results = dict((n, (c, e)) for n, c, e in fn(["server"]))
             assert results == {"server": (2, "")}  # only server, its 2 sessions
             assert os.listdir(rdir) == ["server.json"]  # desktop was not touched
@@ -1752,10 +1796,10 @@ def test_pull_with_no_hosts_refreshes_every_saved_machine():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            ot.cli._save_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "mo@server"}})
+            cli._save_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "mo@server"}})
         args = _parse(["--pull", "--remotes", rdir])  # bare --pull
         with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
-            ot.cli.pull_command(args)
+            cli.pull_command(args)
         assert sorted(os.listdir(rdir)) == ["laptop.json", "server.json"]
 
 
@@ -1767,10 +1811,10 @@ def test_forget_removes_a_machine_and_its_cached_summary():
         with open(os.path.join(rdir, "laptop.json"), "w", encoding="utf-8") as fh:
             fh.write("{}")
         with _remotes_env(cfg):
-            ot.cli._save_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "server"}})
+            cli._save_remotes({"laptop": {"ssh": "laptop"}, "server": {"ssh": "server"}})
         args = _parse(["--forget", "laptop", "--remotes", rdir])
         with _remotes_env(cfg), contextlib.redirect_stderr(io.StringIO()):
-            assert ot.cli.forget_command(args) == 0
+            assert cli.forget_command(args) == 0
         assert set(json.load(open(cfg, encoding="utf-8"))["machines"]) == {"server"}
         assert not os.path.exists(os.path.join(rdir, "laptop.json"))
 
@@ -1778,8 +1822,8 @@ def test_forget_removes_a_machine_and_its_cached_summary():
 def test_summary_filename_encodes_distinct_names_without_collision():
     # `a/b` and `a_b` must not map to the same cache file (else a pull overwrites, and
     # --forget deletes the wrong machine's summary).
-    assert ot.cli._summary_filename("a/b") != ot.cli._summary_filename("a_b")
-    assert "/" not in ot.cli._summary_filename("a/b")  # no separator escapes the dir
+    assert cli._summary_filename("a/b") != cli._summary_filename("a_b")
+    assert "/" not in cli._summary_filename("a/b")  # no separator escapes the dir
 
 
 def test_load_remotes_drops_malformed_entries_and_pull_never_sinks():
@@ -1790,8 +1834,8 @@ def test_load_remotes_drops_malformed_entries_and_pull_never_sinks():
         with open(cfg, "w", encoding="utf-8") as fh:
             json.dump({"version": 1, "machines": {"ok": {"ssh": "ok"}, "bad": None}}, fh)
         with _remotes_env(cfg):
-            assert set(ot.cli._load_remotes()) == {"ok"}  # null "bad" dropped
-        count, err = ot.cli._pull_one("bad", None, d)  # even if it slipped through
+            assert set(cli._load_remotes()) == {"ok"}  # null "bad" dropped
+        count, err = cli._pull_one("bad", None, d)  # even if it slipped through
         assert count == 0 and err  # a failure line, not an exception
 
 
@@ -1803,10 +1847,10 @@ def test_pull_relearn_swaps_url_target_to_ssh():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            ot.cli._save_remotes({"box": {"url": "http://old:8321"}})
+            cli._save_remotes({"box": {"url": "http://old:8321"}})
         args = _parse(["--pull", "box=newhost", "--remotes", rdir])
         with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
-            ot.cli.pull_command(args)
+            cli.pull_command(args)
         entry = json.load(open(cfg, encoding="utf-8"))["machines"]["box"]
         assert entry == {"ssh": "newhost"}  # old url dropped, not merged
 
@@ -1814,8 +1858,8 @@ def test_pull_relearn_swaps_url_target_to_ssh():
 def test_summary_filename_is_never_a_hidden_file():
     # RemoteStore globs "*.json" (skips dotfiles), so a "."-leading name must not write
     # a hidden summary the remote view then can't see.
-    assert not ot.cli._summary_filename(".box").startswith(".")
-    assert not ot.cli._summary_filename("..").startswith(".")
+    assert not cli._summary_filename(".box").startswith(".")
+    assert not cli._summary_filename("..").startswith(".")
 
 
 def test_pull_repairs_a_cmd_only_saved_entry():
@@ -1831,10 +1875,10 @@ def test_pull_repairs_a_cmd_only_saved_entry():
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            ot.cli._save_remotes({"box": {"cmd": "/opt/opentab --export -"}})
+            cli._save_remotes({"box": {"cmd": "/opt/opentab --export -"}})
         args = _parse(["--pull", "box", "--remotes", rdir])
         with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
-            ot.cli.pull_command(args)
+            cli.pull_command(args)
         assert calls and calls[0][1].get("ssh") == "box"
         saved = json.load(open(cfg, encoding="utf-8"))["machines"]["box"]
         assert saved.get("ssh") == "box" and saved.get("cmd") == "/opt/opentab --export -"
@@ -1870,7 +1914,7 @@ def test_fleet_aggregate_rolls_up_by_machine_and_harness():
         _fleet_wf("b", "laptop", "claude", cost=0.0, tokens=2000),
         _fleet_wf("c", "server", "opencode", cost=2.0, tokens=500),
     ]
-    by_machine, by_harness, cell = ot.cli._fleet_aggregate(wfs)
+    by_machine, by_harness, cell = cli._fleet_aggregate(wfs)
     # sessions, tokens, cost, est -- est defaults to cost with no estimate map
     assert by_machine["laptop"] == [2, 3000, 5.0, 5.0]
     assert by_harness["opencode"] == [2, 1500, 7.0, 7.0]  # spans two machines
@@ -1884,7 +1928,7 @@ def test_fleet_aggregate_adds_the_list_price_estimate_per_session():
         _fleet_wf("a", "laptop", "opencode", cost=5.0, tokens=1000),
         _fleet_wf("b", "laptop", "claude", cost=0.0, tokens=2000),
     ]
-    by_machine, by_harness, _cell = ot.cli._fleet_aggregate(wfs, {"b": 3.0})
+    by_machine, by_harness, _cell = cli._fleet_aggregate(wfs, {"b": 3.0})
     assert by_machine["laptop"] == [2, 3000, 5.0, 8.0]  # est adds b's $3
     assert by_harness["claude"] == [1, 2000, 0.0, 3.0]  # $0 real -> $3 estimated
 
@@ -1892,7 +1936,7 @@ def test_fleet_aggregate_adds_the_list_price_estimate_per_session():
 def test_fleet_estimated_costs_prices_unpriced_tokens():
     # The per-root estimate = the row's unpriced tokens at list rates, summed per root_id.
     # Mirrors App._compute_api_costs, so assert it equals a direct api_equivalent_cost call.
-    from opentab.pricing import api_equivalent_cost
+    from opentab.accounting.pricing import api_equivalent_cost
 
     row = {
         "root_id": "s1",
@@ -1905,12 +1949,12 @@ def test_fleet_estimated_costs_prices_unpriced_tokens():
         "unpriced_cache_write": 0,
     }
     backends = [["Claude Code", 1, 10.0, False, object(), [], [row]]]
-    est = ot.cli._fleet_estimated_costs(backends)
+    est = cli._fleet_estimated_costs(backends)
     expect = api_equivalent_cost("anthropic/claude-sonnet-5", 1000, 500, 0, 2000, 0)
     assert est == {"s1": expect}
     assert est["s1"] > 0  # a priced model -> a real estimate
     # A backend row without model rows (older fixture) contributes nothing, never crashes.
-    assert ot.cli._fleet_estimated_costs([["OpenCode", 1, 5.0, False, object(), []]]) == {}
+    assert cli._fleet_estimated_costs([["OpenCode", 1, 5.0, False, object(), []]]) == {}
 
 
 def test_fleet_timings_show_the_list_price_estimate_column():
@@ -1937,7 +1981,7 @@ def test_fleet_timings_show_the_list_price_estimate_column():
         ["Claude Code", 1, 100.0, False, object(), laptop, [mrow("s1", 3000)]],
         ["remote", 1, 0.1, False, remote, server, [mrow("s2", 800)]],
     ]
-    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=True))
+    text = "\n".join(cli._fleet_timing_tables(store, backends, uni=True))
     assert "est $" in text  # the estimate column is present
     assert "list-price estimate" in text  # and its footnote
     assert "$0.00" in text  # real cost stays $0 for subscription rows
@@ -1959,12 +2003,12 @@ def test_fleet_timings_hide_the_estimate_when_everything_is_metered():
         ["OpenCode", 1, 100.0, False, object(), laptop, [priced("s1", 5.0)]],
         ["remote", 1, 0.1, False, remote, server, [priced("s2", 2.0)]],
     ]
-    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=True))
+    text = "\n".join(cli._fleet_timing_tables(store, backends, uni=True))
     assert "est $" not in text and "list-price estimate" not in text
 
 
 def test_box_table_is_a_bordered_grid_with_a_titled_top_rule():
-    lines = ot.cli._box_table(
+    lines = cli._box_table(
         "Cap", ["name", "n"], [["x", "1"], ["total", "9"]], aligns="lr", rule_before_last=True
     )
     assert lines[0].startswith("  ┌") and lines[0].endswith("┐") and "Cap" in lines[0]  # titled top
@@ -1974,7 +2018,7 @@ def test_box_table_is_a_bordered_grid_with_a_titled_top_rule():
     assert body[0].split("│")[1].strip() == "name"  # header cell
     assert body[-1].split("│")[1].strip() == "total"  # total row last
     # the ASCII fallback swaps the glyphs for a non-UTF-8 terminal
-    ascii_lines = ot.cli._box_table("Cap", ["name"], [["x"]], aligns="l", uni=False)
+    ascii_lines = cli._box_table("Cap", ["name"], [["x"]], aligns="l", uni=False)
     assert ascii_lines[0].startswith("  +") and "│" not in "\n".join(ascii_lines)
 
 
@@ -1993,7 +2037,7 @@ def test_fleet_timings_break_down_by_machine_harness_and_grid():
         ["Claude Code", 5, 1500.0, False, object(), laptop_cc],
         ["remote", 1, 0.1, False, remote, omv_oc],
     ]
-    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=True))
+    text = "\n".join(cli._fleet_timing_tables(store, backends, uni=True))
     assert "By machine" in text and "By harness" in text and "machine × harness" in text
     assert "● laptop" in text and "○ server" in text  # live vs pulled markers
     assert "OpenCode" in text and "Claude Code" in text
@@ -2015,7 +2059,7 @@ def test_fleet_timings_include_a_zero_session_pulled_box():
         ["OpenCode", 3, 300.0, False, object(), laptop],
         ["remote", 1, 0.1, False, remote, []],  # idle contributed no workflows
     ]
-    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=True))
+    text = "\n".join(cli._fleet_timing_tables(store, backends, uni=True))
     assert "By machine" in text  # the breakdown didn't collapse to nothing
     assert "idle" in text and "512 B" in text  # the empty box still appears, with its size
 
@@ -2031,7 +2075,7 @@ def test_fleet_timings_use_ascii_glyphs_on_a_non_utf8_terminal():
         ["OpenCode", 3, 300.0, False, object(), laptop_oc],
         ["remote", 1, 0.1, False, remote, omv_oc],
     ]
-    text = "\n".join(ot.cli._fleet_timing_tables(store, backends, uni=False))
+    text = "\n".join(cli._fleet_timing_tables(store, backends, uni=False))
     assert text.isascii()  # not a single multibyte glyph slips through
     assert "* laptop" in text and "- server" in text and "machine x harness" in text
 
@@ -2039,7 +2083,7 @@ def test_fleet_timings_use_ascii_glyphs_on_a_non_utf8_terminal():
 def test_fleet_timings_are_empty_for_a_single_source_local_run():
     # One box, one harness -> nothing to break down; --timings prints only its usual table.
     backends = [["OpenCode", 3, 300.0, False, object(), [_fleet_wf("a", "", "opencode")]]]
-    assert ot.cli._fleet_timing_tables(_MetaStore({}), backends) == []
+    assert cli._fleet_timing_tables(_MetaStore({}), backends) == []
 
 
 def test_pull_with_timings_refreshes_the_fleet_before_profiling():
@@ -2060,31 +2104,31 @@ def test_pull_with_timings_refreshes_the_fleet_before_profiling():
             return []
 
     saved = (
-        ot.cli.sources.available_sources,
-        ot.cli.resolve_source,
-        ot.cli.sources.make_store,
-        ot.cli._fleet_timing_tables,
+        cli.sources.available_sources,
+        cli.resolve_source,
+        cli.sources.make_store,
+        cli._fleet_timing_tables,
     )
     with tempfile.TemporaryDirectory() as d:
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            ot.cli._save_remotes({"server": {"ssh": "server"}})
-        ot.cli.sources.available_sources = lambda args: []
-        ot.cli.resolve_source = lambda args, state: "remote"
-        ot.cli.sources.make_store = lambda args, key: (_Stub(), "")
-        ot.cli._fleet_timing_tables = lambda *a, **k: []
+            cli._save_remotes({"server": {"ssh": "server"}})
+        cli.sources.available_sources = lambda args: []
+        cli.resolve_source = lambda args, state: "remote"
+        cli.sources.make_store = lambda args, key: (_Stub(), "")
+        cli._fleet_timing_tables = lambda *a, **k: []
         try:
             args = _parse(["--pull", "--timings", "--remotes", rdir])
             with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
                 with contextlib.redirect_stdout(io.StringIO()):
-                    assert ot.cli.timings_command(args) == 0
+                    assert cli.timings_command(args) == 0
         finally:
             (
-                ot.cli.sources.available_sources,
-                ot.cli.resolve_source,
-                ot.cli.sources.make_store,
-                ot.cli._fleet_timing_tables,
+                cli.sources.available_sources,
+                cli.resolve_source,
+                cli.sources.make_store,
+                cli._fleet_timing_tables,
             ) = saved
         assert os.listdir(rdir) == ["server.json"]  # the pull fetched and wrote the summary
 
@@ -2105,31 +2149,31 @@ def test_remote_timings_without_pull_never_fetches():
             return []
 
     saved = (
-        ot.cli.sources.available_sources,
-        ot.cli.resolve_source,
-        ot.cli.sources.make_store,
-        ot.cli._fleet_timing_tables,
+        cli.sources.available_sources,
+        cli.resolve_source,
+        cli.sources.make_store,
+        cli._fleet_timing_tables,
     )
     with tempfile.TemporaryDirectory() as d:
         cfg = os.path.join(d, "remotes.json")
         rdir = os.path.join(d, "remotes")
         with _remotes_env(cfg):
-            ot.cli._save_remotes({"server": {"ssh": "server"}})
-        ot.cli.sources.available_sources = lambda args: []
-        ot.cli.resolve_source = lambda args, state: "remote"
-        ot.cli.sources.make_store = lambda args, key: (_Stub(), "")
-        ot.cli._fleet_timing_tables = lambda *a, **k: []
+            cli._save_remotes({"server": {"ssh": "server"}})
+        cli.sources.available_sources = lambda args: []
+        cli.resolve_source = lambda args, state: "remote"
+        cli.sources.make_store = lambda args, key: (_Stub(), "")
+        cli._fleet_timing_tables = lambda *a, **k: []
         try:
             args = _parse(["--remote", "--timings", "--remotes", rdir])
             with _remotes_env(cfg, fetch), contextlib.redirect_stderr(io.StringIO()):
                 with contextlib.redirect_stdout(io.StringIO()):
-                    assert ot.cli.timings_command(args) == 0  # no fetch, no raise
+                    assert cli.timings_command(args) == 0  # no fetch, no raise
         finally:
             (
-                ot.cli.sources.available_sources,
-                ot.cli.resolve_source,
-                ot.cli.sources.make_store,
-                ot.cli._fleet_timing_tables,
+                cli.sources.available_sources,
+                cli.resolve_source,
+                cli.sources.make_store,
+                cli._fleet_timing_tables,
             ) = saved
 
 
@@ -2138,7 +2182,7 @@ def test_demo_rejects_a_value_that_is_not_a_category():
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             try:
-                ot.cli.parse_args(argv)
+                cli.parse_args(argv)
                 raise AssertionError(f"{argv} should have been rejected")
             except SystemExit:
                 pass
@@ -2146,8 +2190,8 @@ def test_demo_rejects_a_value_that_is_not_a_category():
 
     # The real category specs still work, bare --demo still means everything, and a path
     # can still be passed either side of the flag.
-    assert ot.cli.parse_args(["--demo", "titles,spend"]).demo == "titles,spend"
-    assert ot.cli.parse_args(["--demo"]).demo == "all"
+    assert cli.parse_args(["--demo", "titles,spend"]).demo == "titles,spend"
+    assert cli.parse_args(["--demo"]).demo == "all"
 
 
 def test_export_under_demo_does_not_leak_the_real_hostname():
@@ -2166,7 +2210,7 @@ def test_export_under_demo_does_not_leak_the_real_hostname():
             out = io.StringIO()
             try:
                 with contextlib.redirect_stdout(out):
-                    ot.cli.main()
+                    cli.main()
             finally:
                 _sys.argv = argv
             return json.loads(out.getvalue())
@@ -2186,7 +2230,7 @@ def test_init_color_env_overrides_the_detection_in_both_directions():
     try:
         for key in saved:
             os.environ.pop(key, None)
-        resolve = ot.cli._resolve_init_color
+        resolve = cli._resolve_init_color
         assert resolve() is True  # ordinary terminal: exact colours
         os.environ["HERDR_ENV"] = "1"
         assert resolve() is False  # detected, nothing for the user to set
@@ -2245,10 +2289,10 @@ def test_remotes_write_dir_never_points_a_pull_at_a_summary_file():
         with open(summary, "w", encoding="utf-8") as fh:
             fh.write(_fake_summary_text("box", ["s1"]))
         default = ot.sources.default_remotes_dir()
-        assert ot.cli._remotes_write_dir(_parse(["--remotes", summary])) == default
-        assert ot.cli._remotes_write_dir(_parse(["remote", summary])) == default
+        assert cli._remotes_write_dir(_parse(["--remotes", summary])) == default
+        assert cli._remotes_write_dir(_parse(["remote", summary])) == default
         # A directory is still honoured -- that is what --remotes has always meant.
-        assert ot.cli._remotes_write_dir(_parse(["--remotes", d])) == d
+        assert cli._remotes_write_dir(_parse(["--remotes", d])) == d
 
 
 def test_pull_refuses_a_local_summary_before_saving_it_as_a_machine():
@@ -2262,7 +2306,7 @@ def test_pull_refuses_a_local_summary_before_saving_it_as_a_machine():
             fh.write(_fake_summary_text("box", ["s1"]))
         err = io.StringIO()
         with _remotes_env(cfg), contextlib.redirect_stderr(err):
-            ot.cli.pull_command(_parse(["--pull", summary, "--remotes", d]))
+            cli.pull_command(_parse(["--pull", summary, "--remotes", d]))
         assert "opentab remote" in err.getvalue()
         assert not os.path.exists(cfg)  # nothing learned, nothing to clean up
 
@@ -2270,14 +2314,14 @@ def test_pull_refuses_a_local_summary_before_saving_it_as_a_machine():
 def test_pull_still_accepts_hosts_that_are_not_local_files():
     # The guard keys on path syntax or an existing file, never on the `.json` suffix:
     # a host may legitimately be spelled that way, and an ssh:// URL is a destination.
-    assert not ot.cli._looks_like_a_summary_path("box")
-    assert not ot.cli._looks_like_a_summary_path("mo@host.example.json")
-    assert not ot.cli._looks_like_a_summary_path("name=user@host")
-    assert not ot.cli._looks_like_a_summary_path("ssh://user@host:2222")
-    assert not ot.cli._looks_like_a_summary_path("http://host:8321")
-    assert ot.cli._looks_like_a_summary_path("./box.json")
-    assert ot.cli._looks_like_a_summary_path("/tmp/box.json")
-    assert ot.cli._looks_like_a_summary_path("box=../fleet/box.json")
+    assert not cli._looks_like_a_summary_path("box")
+    assert not cli._looks_like_a_summary_path("mo@host.example.json")
+    assert not cli._looks_like_a_summary_path("name=user@host")
+    assert not cli._looks_like_a_summary_path("ssh://user@host:2222")
+    assert not cli._looks_like_a_summary_path("http://host:8321")
+    assert cli._looks_like_a_summary_path("./box.json")
+    assert cli._looks_like_a_summary_path("/tmp/box.json")
+    assert cli._looks_like_a_summary_path("box=../fleet/box.json")
 
 
 def test_a_file_sourced_fleet_gets_no_refresh_backend():
@@ -2288,11 +2332,11 @@ def test_a_file_sourced_fleet_gets_no_refresh_backend():
         summary = os.path.join(d, "box.json")
         with open(summary, "w", encoding="utf-8") as fh:
             fh.write(_fake_summary_text("box", ["s1"]))
-        assert ot.cli._make_refresh_fn(_parse(["remote", summary])) is None
-        assert ot.cli._make_refresh_fn(_parse(["--remotes", summary, "--remote"])) is None
+        assert cli._make_refresh_fn(_parse(["remote", summary])) is None
+        assert cli._make_refresh_fn(_parse(["--remotes", summary, "--remote"])) is None
         # A directory reads and writes in the same place, so refresh stays available.
-        assert ot.cli._make_refresh_fn(_parse(["remote", "--remotes", d])) is not None
-        assert ot.cli._make_refresh_fn(_parse(["--remote"])) is not None
+        assert cli._make_refresh_fn(_parse(["remote", "--remotes", d])) is not None
+        assert cli._make_refresh_fn(_parse(["--remote"])) is not None
 
 
 def test_a_pull_refuses_to_write_beside_a_summary_file():
@@ -2306,7 +2350,7 @@ def test_a_pull_refuses_to_write_beside_a_summary_file():
             fh.write(_fake_summary_text("box", ["s1"]))
         err = io.StringIO()
         with _remotes_env(cfg), contextlib.redirect_stderr(err):
-            ot.cli.pull_command(_parse(["--pull", "server", "--remotes", summary]))
+            cli.pull_command(_parse(["--pull", "server", "--remotes", summary]))
         assert "needs a directory" in err.getvalue()
         assert not os.path.exists(cfg)  # refused before _save_remotes learns the host
 
@@ -2315,14 +2359,14 @@ def test_a_positional_directory_keeps_its_refresh():
     # `opentab remote DIR` and `--remotes DIR` are the same request; the positional
     # arrives as a one-element list, which must not cost it the F key.
     with tempfile.TemporaryDirectory() as d:
-        assert ot.cli._remotes_write_dir(_parse(["remote", d])) == d
-        assert ot.cli._make_refresh_fn(_parse(["remote", d])) is not None
+        assert cli._remotes_write_dir(_parse(["remote", d])) == d
+        assert cli._make_refresh_fn(_parse(["remote", d])) is not None
 
 
 def test_the_pull_refusal_names_the_target_not_the_whole_spec():
     # `opentab remote office=box.json` would look for a file literally called that.
-    assert ot.cli._pull_target("office=./box.json") == "./box.json"
-    assert ot.cli._pull_target("./box.json") == "./box.json"
+    assert cli._pull_target("office=./box.json") == "./box.json"
+    assert cli._pull_target("./box.json") == "./box.json"
     with tempfile.TemporaryDirectory() as d:
         cfg = os.path.join(d, "remotes.json")
         summary = os.path.join(d, "box.json")
@@ -2330,7 +2374,7 @@ def test_the_pull_refusal_names_the_target_not_the_whole_spec():
             fh.write(_fake_summary_text("box", ["s1"]))
         err = io.StringIO()
         with _remotes_env(cfg), contextlib.redirect_stderr(err):
-            ot.cli.pull_command(_parse(["--pull", f"office={summary}"]))
+            cli.pull_command(_parse(["--pull", f"office={summary}"]))
         out = err.getvalue()
         assert f"opentab remote {summary}" in out and "office=" not in out
 

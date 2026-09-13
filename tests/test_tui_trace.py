@@ -1,6 +1,6 @@
 """Pure trace formatting tests: no App, store, or curses setup."""
 
-from opentab.formatting import display_width
+from opentab.presentation.formatting import display_width
 from opentab.tui.trace import build_event_body, format_output, format_prose, output_target
 
 

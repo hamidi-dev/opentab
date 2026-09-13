@@ -16,21 +16,24 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-from opentab import __version__, paths, sources, themes
+from opentab import __version__, sources
+from opentab.accounting.pricing import (
+    MODELS_DEV_URL,
+    api_equivalent_cost,
+    price_cache_path,
+    refresh_model_prices,
+)
 from opentab.demo import DEMO_CATEGORIES, demo_config, demo_machine
-from opentab.formatting import (
+from opentab.persistence import paths
+from opentab.persistence.state import apply_state, load_state, save_state
+from opentab.presentation import themes
+from opentab.presentation.formatting import (
     cost_bar,
     human_bytes,
     human_tokens,
     money,
     relative_age,
     short_path,
-)
-from opentab.pricing import (
-    MODELS_DEV_URL,
-    api_equivalent_cost,
-    price_cache_path,
-    refresh_model_prices,
 )
 from opentab.sources import (
     DEFAULT_CSV_PATH,
@@ -46,7 +49,6 @@ from opentab.sources import (
     default_remotes_dir,
     resolve_source,
 )
-from opentab.state import apply_state, load_state, save_state
 from opentab.stores.claude import (
     CLAUDE_RETENTION_RECOMMENDED_DAYS,
     CLAUDE_RETENTION_WARNING_ID,
@@ -2036,7 +2038,7 @@ def main() -> int:
     if getattr(args, "command", None) == "doctor":
         # Doctor must run before migration: it reports the state that caused the problem
         # and promises no side effects. Keep its import off the status command's hot path.
-        from opentab import doctor as doctor_module
+        from opentab.cli import doctor as doctor_module
 
         return doctor_module.doctor_command(args)
     if not getattr(args, "demo", False):

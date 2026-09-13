@@ -4,8 +4,8 @@ from __future__ import annotations
 import csv
 from collections import defaultdict
 
-from opentab.models import HarnessSummary, MachineSummary, ProjectSummary, Workflow
-from opentab.pricing import family_label
+from opentab.accounting.models import HarnessSummary, MachineSummary, ProjectSummary, Workflow
+from opentab.accounting.pricing import family_label
 
 
 def sessions_dataset(

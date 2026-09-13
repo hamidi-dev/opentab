@@ -11,7 +11,7 @@ from __future__ import annotations
 import html
 import json
 
-from opentab import themes
+from opentab.presentation import themes
 
 _FAVICON = (
     "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E"

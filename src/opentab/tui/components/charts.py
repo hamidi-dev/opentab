@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from opentab.formatting import money, money_label
-from opentab.heatmap import BLOCKS_UP
+from opentab.presentation.formatting import money, money_label
+from opentab.presentation.heatmap import BLOCKS_UP
 
 
 @dataclass(frozen=True)

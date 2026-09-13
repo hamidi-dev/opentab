@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from opentab.formatting import display_width, pad, shorten
+from opentab.presentation.formatting import display_width, pad, shorten
 
 BOX_CHROME = 4
 

@@ -8,8 +8,9 @@ import os
 import tempfile
 from typing import TYPE_CHECKING
 
-from opentab import paths, themes
-from opentab.heatmap import HEAT_MAX_LEVELS, HEAT_MIN_LEVELS
+from opentab.persistence import paths
+from opentab.presentation import themes
+from opentab.presentation.heatmap import HEAT_MAX_LEVELS, HEAT_MIN_LEVELS
 from opentab.whats_new import marker_to_save
 
 if TYPE_CHECKING:

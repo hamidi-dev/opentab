@@ -19,7 +19,7 @@ from urllib.request import Request, urlopen
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 
-from opentab.pricing import MODELS_DEV_URL, prune_models_dev  # noqa: E402
+from opentab.accounting.pricing import MODELS_DEV_URL, prune_models_dev  # noqa: E402
 
 
 def kb(n: int) -> str:

@@ -1,6 +1,6 @@
 import opentab.tui.app as app_mod
-from opentab.heatmap import TOKEN_SERIES_BASE_PAIR
-from opentab.pricing import TOKEN_TYPES, api_equivalent_cost, model_price
+from opentab.accounting.pricing import TOKEN_TYPES, api_equivalent_cost, model_price
+from opentab.presentation.heatmap import TOKEN_SERIES_BASE_PAIR
 
 from tests._support import AttrScreen, _model_row, app_with, workflow
 

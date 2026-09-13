@@ -398,7 +398,7 @@ def test_programmatic_internal_demo_gate_precedes_state_mutation():
     out = io.StringIO()
     with (
         patch.object(ot.OpenTabService, "open") as opened,
-        patch("opentab.state.update_state") as updated,
+        patch("opentab.persistence.state.update_state") as updated,
         contextlib.redirect_stdout(out),
     ):
         assert programmatic.command(args) == 1

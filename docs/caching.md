@@ -190,7 +190,7 @@ workflow/model/provenance stashes together on a hit, keeping them one answer.
 `opentab cost` is a curses-free fast path using raw stores, not persistent
 rollups. `--harness` limits which local tool it queries.
 
-Resolution in [cli.py](../src/opentab/cli.py) uses the interactive backends in
+Resolution in [cli/main.py](../src/opentab/cli/main.py) uses the interactive backends in
 `_STATUS_SOURCES`, excluding request logs, Copilot, VS Code, and pulled summaries.
 `auto`/`all` ignore the TUI's saved single-harness preference; an explicit local
 harness limits the search. ID-like targets are probed through each `root_of()`:

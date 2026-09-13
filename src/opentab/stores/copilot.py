@@ -8,8 +8,8 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
+from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.models import Workflow
 from opentab.util import git_root, read_files_parallel
 
 

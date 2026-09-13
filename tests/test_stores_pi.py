@@ -3,7 +3,7 @@ import os
 import tempfile
 
 import opentab as ot
-from opentab.formatting import iso_to_local
+from opentab.presentation.formatting import iso_to_local
 
 from tests._support import PI_SID, _pi_args, _pi_assistant, _pi_session, _pi_user, _pi_write
 

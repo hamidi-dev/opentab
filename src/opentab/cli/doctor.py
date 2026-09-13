@@ -30,8 +30,10 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-from opentab import __version__, notes, paths, pricing, sources, state
-from opentab.formatting import human_bytes, relative_age
+from opentab import __version__, sources
+from opentab.accounting import pricing
+from opentab.persistence import notes, paths, state
+from opentab.presentation.formatting import human_bytes, relative_age
 from opentab.stores import cached
 from opentab.stores.claude import (
     CLAUDE_RETENTION_RECOMMENDED_DAYS,
@@ -223,7 +225,7 @@ _INSTALL_MARKERS = (
 
 
 def _pkg_dir() -> str:
-    return os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _install_method(pkg_dir: str) -> str:
@@ -1034,7 +1036,7 @@ def doctor_command(args: argparse.Namespace) -> int:
     sections = build_report(args, full=bool(getattr(args, "full", False)))
     broken = [r for _t, rows in sections for r in rows if r.status == BAD]
     if getattr(args, "json", False):
-        from opentab.models import API_SCHEMA_VERSION
+        from opentab.accounting.models import API_SCHEMA_VERSION
 
         payload = {
             "schema_version": API_SCHEMA_VERSION,

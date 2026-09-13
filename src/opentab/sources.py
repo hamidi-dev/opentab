@@ -8,8 +8,9 @@ import sqlite3
 import sys
 from urllib.parse import quote
 
-from opentab import paths, util
-from opentab.formatting import short_path
+from opentab import util
+from opentab.persistence import paths
+from opentab.presentation.formatting import short_path
 from opentab.stores.antigravity import (
     CONVERSATION_DIRS as ANTIGRAVITY_DIRS,
 )

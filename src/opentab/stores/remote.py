@@ -15,9 +15,10 @@ import threading
 from dataclasses import asdict, fields
 from urllib.parse import unquote
 
-from opentab import paths, remote_content
+from opentab import remote_content
+from opentab.accounting.models import Workflow
 from opentab.demo import DEMO_ALL, demo_config, demo_machine, scramble_node, scramble_workflow
-from opentab.models import Workflow
+from opentab.persistence import paths
 from opentab.util import tool_names
 
 # Portable exports evolve independently from the local warm-start cache.

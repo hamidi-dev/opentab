@@ -2,7 +2,8 @@ import os
 import tempfile
 
 import opentab as ot
-from opentab import paths, sources
+from opentab import sources
+from opentab.persistence import paths
 
 
 def _set(**env):

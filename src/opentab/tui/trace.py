@@ -5,7 +5,7 @@ import re
 from bisect import bisect_left
 from dataclasses import dataclass
 
-from opentab.formatting import display_width, shorten, wrap_cells
+from opentab.presentation.formatting import display_width, shorten, wrap_cells
 from opentab.util import short_tool_name
 
 # The store already clips recorded text. These second caps keep a turn scannable.

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from opentab.formatting import display_width
+from opentab.presentation.formatting import display_width
 from opentab.tui.search_layout import (
     SearchLine,
     conversation_layout,

@@ -8,9 +8,9 @@ import re
 import sqlite3
 from urllib.parse import unquote, urlparse
 
+from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt, worked_seconds
-from opentab.models import Workflow
+from opentab.presentation.formatting import _clean_prompt, worked_seconds
 from opentab.util import LazyStatusRoot, git_root, safe_int, tool_rows_from_turns
 
 # Antigravity keeps each conversation in its own SQLite file under the Gemini home. The

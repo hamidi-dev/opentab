@@ -10,8 +10,8 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 
-from opentab import paths
-from opentab.models import Workflow
+from opentab.accounting.models import Workflow
+from opentab.persistence import paths
 
 _UNICODE_SCREEN: bool | None = None
 

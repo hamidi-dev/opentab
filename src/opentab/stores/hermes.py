@@ -9,9 +9,9 @@ import re
 import sqlite3
 from datetime import datetime, timezone
 
+from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, demo_title, scramble_node, scramble_workflow
-from opentab.formatting import worked_seconds
-from opentab.models import Workflow
+from opentab.presentation.formatting import worked_seconds
 from opentab.util import (
     TRACE_OUTPUT_CAP,
     TRACE_TEXT_CAP,

@@ -6,7 +6,7 @@ from tests._support import app_with, workflow
 def test_relative_age():
     from datetime import datetime, timedelta, timezone
 
-    from opentab.formatting import relative_age
+    from opentab.presentation.formatting import relative_age
 
     now = datetime(2026, 7, 18, 12, 0, 0, tzinfo=timezone.utc)
     assert relative_age("", now=now) == ""
@@ -58,7 +58,7 @@ def test_money_label_marks_sub_cent_costs_like_money():
 
 
 def test_money_pattern_covers_the_compact_k_suffix():
-    from opentab.formatting import MONEY_PATTERN
+    from opentab.presentation.formatting import MONEY_PATTERN
 
     for label in ("$1.2k", "$12k", "$1,234.56", "$0.00", "<$0.01"):
         assert MONEY_PATTERN.search(label).group(0).lstrip("<") == label.lstrip("<")
@@ -67,7 +67,7 @@ def test_money_pattern_covers_the_compact_k_suffix():
 
 
 def test_token_pattern_never_clobbers_a_money_k_label():
-    from opentab.formatting import TOKEN_PATTERN
+    from opentab.presentation.formatting import TOKEN_PATTERN
 
     assert TOKEN_PATTERN.search("$1.2k") is None
     assert TOKEN_PATTERN.search("($12.3k)") is None
@@ -146,7 +146,7 @@ def test_wrap_cells_and_clip_tail():
 
 
 def test_wrap_lines_preserves_short_layout_rows_and_wraps_overflow_by_cells():
-    from opentab.formatting import wrap_lines
+    from opentab.presentation.formatting import wrap_lines
 
     assert wrap_lines(["  a  b", "", "one\n\ntwo", "世界世界"], 6) == [
         "  a  b",
@@ -201,7 +201,7 @@ def test_wrap_cells_indent_never_overflows_the_width_it_was_given():
     # A word accepted against the FIRST line's room was then emitted on a continuation,
     # whose width the indent has shrunk -- so an indented wrap came back wider than the
     # caller asked for, and the painter clipped what it could not fit.
-    from opentab.formatting import display_width, wrap_cells
+    from opentab.presentation.formatting import display_width, wrap_cells
 
     assert wrap_cells("12345 1234567", 10, "    ") == ["12345", "    123456", "    7"]
     # A continuation narrower than one glyph spends the indent rather than the width.

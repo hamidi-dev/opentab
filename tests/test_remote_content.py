@@ -12,8 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from opentab import remote_content as rc
+from opentab.accounting.models import API_SCHEMA_VERSION, SessionRef
 from opentab.api.service import OpenTabService, ServiceError
-from opentab.models import API_SCHEMA_VERSION, SessionRef
 from opentab.stores.remote import RemoteStore, _clean_turn, build_export
 
 from tests._support import _parse, workflow
@@ -44,8 +44,8 @@ def _managed(entry=None, rows=None):
         payload = _summary("display-not-ssh", [_session()])
         payload["turns"] = {"s1": [_turn()] if rows is None else rows}
         filename = _write(directory, "saved%2Fbox.json", payload)
-        with patch("opentab.paths.cache_dir", return_value=cache), patch(
-            "opentab.paths.config_dir", return_value=config
+        with patch("opentab.persistence.paths.cache_dir", return_value=cache), patch(
+            "opentab.persistence.paths.config_dir", return_value=config
         ):
             yield RemoteStore(directory), directory, config, filename
 

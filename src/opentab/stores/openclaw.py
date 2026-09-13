@@ -7,9 +7,9 @@ import json
 import os
 from datetime import datetime, timezone
 
+from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, scramble_node, scramble_workflow
-from opentab.formatting import _clean_prompt, worked_seconds
-from opentab.models import Workflow
+from opentab.presentation.formatting import _clean_prompt, worked_seconds
 from opentab.util import (
     TRACE_OUTPUT_CAP,
     TRACE_TEXT_CAP,

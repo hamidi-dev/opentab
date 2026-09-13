@@ -6,7 +6,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Callable
 
-from opentab.heatmap import TOKEN_SERIES_GLYPHS
+from opentab.presentation.heatmap import TOKEN_SERIES_GLYPHS
 
 
 @dataclass(frozen=True)

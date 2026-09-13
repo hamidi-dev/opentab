@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 
 import opentab as ot
+from opentab.cli import main as cli
 from opentab.web import page, report
 
 from tests._support import (
@@ -114,7 +115,7 @@ class ToolsExplorerFakeStore(TurnsFakeStore):
         return rows
 
     def tool_breakdown(self, workflow_id):
-        from opentab.tools import tool_calls_from_turns
+        from opentab.accounting.tools import tool_calls_from_turns
 
         return [
             {
@@ -1745,7 +1746,7 @@ def test_web_copied_summary_has_no_repull_control():
         with open(summary, "w", encoding="utf-8") as fh:
             json.dump({"workflows": []}, fh)
         args = ot.parse_args(["web", "--harness", "remote", "--remotes", summary])
-        app._refresh_backend = ot.cli._make_refresh_fn(args)
+        app._refresh_backend = cli._make_refresh_fn(args)
         assert app._refresh_backend is None
         assert ot.build_payload(app)["machineMeta"]["server"]["refreshable"] is False
         assert app.refresh_machines_now("server") == []

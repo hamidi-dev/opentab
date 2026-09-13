@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import opentab as ot
-from opentab.formatting import iso_to_local
+from opentab.presentation.formatting import iso_to_local
 from opentab.util import TRACE_OUTPUT_CAP
 
 from tests._support import (

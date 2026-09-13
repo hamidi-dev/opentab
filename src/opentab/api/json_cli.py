@@ -7,9 +7,9 @@ import json
 import sys
 
 from opentab import sources
+from opentab.accounting.models import API_SCHEMA_VERSION
 from opentab.conversations.reader import ConversationError
-from opentab.models import API_SCHEMA_VERSION
-from opentab.state import load_state
+from opentab.persistence.state import load_state
 
 SCHEMA_VERSION = API_SCHEMA_VERSION
 

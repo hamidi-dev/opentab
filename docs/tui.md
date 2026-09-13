@@ -87,7 +87,7 @@ Dispatch by tab name rather than assuming a class tuple's index is still valid.
 | `session` | One session's detail occupies the full body width. |
 
 `zoom_maximized` controls whether **zoom** hides its sidebar. It is a global
-preference saved and restored by `state.py`, not a transient flag reset on entry.
+preference saved and restored by `persistence/state.py`, not a transient flag reset on entry.
 The footer consistently labels `+` as `expand` and highlights it only in a visibly
 maximized zoom, never from that saved preference while browsing or in a session.
 The session layout is full-screen regardless of that flag; changing it there
@@ -332,7 +332,7 @@ corner error is harmless.
 
 ## Themes and Palettes
 
-`themes.py` supplies semantic roles and heat ramps to both frontends. The web
+`presentation/themes.py` supplies semantic roles and heat ramps to both frontends. The web
 uses CSS variables; `init_theme_colors()` maps the same roles to fixed curses
 pairs. On capable terminals an explicit background pair fills the screen before
 erase, making light themes genuinely light. Theme changes reuse palette slots.

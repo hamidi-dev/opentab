@@ -13,10 +13,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import opentab as ot
-from opentab import state
 from opentab.api import service as service_module
 from opentab.conversations import index as search
 from opentab.conversations.reader import ConversationError
+from opentab.persistence import state
 
 from tests._support import (
     FakeStore,

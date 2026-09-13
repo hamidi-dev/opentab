@@ -961,7 +961,7 @@ def test_trends_model_economics_reuses_model_and_range_scoped_card():
 
 
 def test_trends_model_economics_paints_token_colors_in_bars_and_legend():
-    from opentab.heatmap import TOKEN_SERIES_BASE_PAIR
+    from opentab.presentation.heatmap import TOKEN_SERIES_BASE_PAIR
 
     model = "anthropic/claude-opus-4.5"
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])

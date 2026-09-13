@@ -1,8 +1,8 @@
 import random
 
 import opentab as ot
-from opentab.heatmap import TOKEN_SERIES_BASE_PAIR
-from opentab.pricing import api_equivalent_cost
+from opentab.accounting.pricing import api_equivalent_cost
+from opentab.presentation.heatmap import TOKEN_SERIES_BASE_PAIR
 from opentab.tui.app import FLAME_SELF_SLOT
 
 from tests._support import AttrScreen, app_with, workflow

@@ -9,7 +9,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from opentab import __version__, paths
+from opentab import __version__
+from opentab.persistence import paths
 from opentab.util import anchored_fuzzy_match
 
 # Local providers have no per-token API bill; list-price mode must not invent one.

@@ -16,78 +16,8 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-from opentab.cli import (
-    MIN_PYTHON,
-    enable_unicode_locale,
-    export_command,
-    forget_command,
-    main,
-    parse_args,
-    pull_command,
-    refresh_models_command,
-    status_command,
-    status_line,
-    web_command,
-)
-from opentab.demo import (
-    DEMO_MACHINES,
-    DEMO_MODEL_POOL,
-    DEMO_NOUNS,
-    DEMO_RATE,
-    DEMO_REPOS,
-    DEMO_VERBS,
-    demo_cost,
-    demo_dir,
-    demo_machine,
-    demo_model,
-    demo_title,
-    demo_turn_content,
-)
-from opentab.formatting import (
-    BAR_CELLS,
-    BAR_EIGHTHS,
-    MONEY_PATTERN,
-    TOKEN_PATTERN,
-    clip,
-    clip_tail,
-    cost_bar,
-    display_width,
-    human_duration,
-    human_tokens,
-    iso_to_local,
-    money,
-    money_label,
-    pad,
-    pct,
-    relative_age,
-    short_path,
-    shorten,
-    tokens,
-    wrap_cells,
-)
-from opentab.heatmap import (
-    BLOCKS_UP,
-    HEAT_CUBE_RAMP,
-    HEAT_DEFAULT_LEVELS,
-    HEAT_EMPTY_GLYPH,
-    HEAT_MAX_LEVELS,
-    HEAT_MIN_LEVELS,
-    HEAT_RAMP,
-    MONTH_ABBR,
-    PRICE_HEAT_BASE_PAIR,
-    PRICE_HEAT_LEVELS,
-    TOOL_HEAT_BASE_PAIR,
-    TOOL_HEAT_LEVELS,
-    calendar_cells,
-    heat_band_label,
-    heat_glyph,
-    heat_level,
-    heat_palette,
-    heat_sample,
-    month_range,
-    week_key,
-)
-from opentab.models import (
+from opentab.accounting import models, pricing, tools
+from opentab.accounting.models import (
     ALL_HARNESSES,
     ALL_MACHINES,
     ALL_YEARS,
@@ -102,15 +32,7 @@ from opentab.models import (
     YearSummary,
     year_label,
 )
-from opentab.notes import (
-    NOTES_VERSION,
-    load_notes,
-    notes_path,
-    read_notes,
-    save_notes,
-    update_note,
-)
-from opentab.pricing import (
+from opentab.accounting.pricing import (
     CACHE_TTL_LONG,
     CACHE_TTL_SHORT,
     DEFAULT_CONTEXT_WINDOW,
@@ -142,6 +64,106 @@ from opentab.pricing import (
     prune_models_dev,
     refresh_model_prices,
 )
+from opentab.cli.main import (
+    MIN_PYTHON,
+    enable_unicode_locale,
+    export_command,
+    forget_command,
+    main,
+    parse_args,
+    pull_command,
+    refresh_models_command,
+    status_command,
+    status_line,
+    web_command,
+)
+from opentab.demo import (
+    DEMO_MACHINES,
+    DEMO_MODEL_POOL,
+    DEMO_NOUNS,
+    DEMO_RATE,
+    DEMO_REPOS,
+    DEMO_VERBS,
+    demo_cost,
+    demo_dir,
+    demo_machine,
+    demo_model,
+    demo_title,
+    demo_turn_content,
+)
+from opentab.persistence import notes, paths, state
+from opentab.persistence.notes import (
+    NOTES_VERSION,
+    load_notes,
+    notes_path,
+    read_notes,
+    save_notes,
+    update_note,
+)
+from opentab.persistence.state import (
+    apply_state,
+    load_state,
+    read_state,
+    save_state,
+    state_path,
+    update_state,
+)
+from opentab.presentation import formatting, heatmap, themes
+from opentab.presentation.formatting import (
+    BAR_CELLS,
+    BAR_EIGHTHS,
+    MONEY_PATTERN,
+    TOKEN_PATTERN,
+    clip,
+    clip_tail,
+    cost_bar,
+    display_width,
+    human_duration,
+    human_tokens,
+    iso_to_local,
+    money,
+    money_label,
+    pad,
+    pct,
+    relative_age,
+    short_path,
+    shorten,
+    tokens,
+    wrap_cells,
+)
+from opentab.presentation.heatmap import (
+    BLOCKS_UP,
+    HEAT_CUBE_RAMP,
+    HEAT_DEFAULT_LEVELS,
+    HEAT_EMPTY_GLYPH,
+    HEAT_MAX_LEVELS,
+    HEAT_MIN_LEVELS,
+    HEAT_RAMP,
+    MONTH_ABBR,
+    PRICE_HEAT_BASE_PAIR,
+    PRICE_HEAT_LEVELS,
+    TOOL_HEAT_BASE_PAIR,
+    TOOL_HEAT_LEVELS,
+    calendar_cells,
+    heat_band_label,
+    heat_glyph,
+    heat_level,
+    heat_palette,
+    heat_sample,
+    month_range,
+    week_key,
+)
+from opentab.presentation.themes import (
+    DEFAULT_THEME,
+    THEME_IDS,
+    THEMES,
+    ink_on,
+    nearest_8,
+    nearest_256,
+    ramp,
+    resolve_theme,
+    web_payload,
+)
 from opentab.sources import (
     DEFAULT_CSV_PATH,
     DEFAULT_JSONL_PATH,
@@ -153,7 +175,6 @@ from opentab.sources import (
     resolve_source,
     source_cycle,
 )
-from opentab.state import apply_state, load_state, read_state, save_state, state_path, update_state
 from opentab.stores.antigravity import AntigravityStore
 from opentab.stores.cached import CachedStore
 from opentab.stores.claude import (
@@ -192,17 +213,6 @@ from opentab.stores.pi import PiStore
 from opentab.stores.remote import RemoteStore, build_export
 from opentab.stores.vscode import VscodeStore
 from opentab.stores.zaly import ZalyStore
-from opentab.themes import (
-    DEFAULT_THEME,
-    THEME_IDS,
-    THEMES,
-    ink_on,
-    nearest_8,
-    nearest_256,
-    ramp,
-    resolve_theme,
-    web_payload,
-)
 from opentab.tui import keymap
 from opentab.tui.app import App
 from opentab.tui.renderer import Renderer
@@ -268,14 +278,14 @@ _LAZY_ATTRS = {
     "serve_command": "opentab.web.report",
     "session_extras": "opentab.web.report",
     "render_html": "opentab.web.page",
-    "build_report": "opentab.doctor",
-    "doctor_command": "opentab.doctor",
+    "build_report": "opentab.cli.doctor",
+    "doctor_command": "opentab.cli.doctor",
 }
 # Preserve module attributes independently of which lazy name is accessed first.
 _LAZY_MODULES = {
     "web": "opentab.web",
     "webpage": "opentab.web.page",
-    "doctor": "opentab.doctor",
+    "doctor": "opentab.cli.doctor",
 }
 
 

@@ -1,6 +1,6 @@
 """Pure notification layout tests: no App, renderer, or curses."""
 
-from opentab.formatting import display_width
+from opentab.presentation.formatting import display_width
 from opentab.tui.components.notifications import (
     Notification,
     history_rows,

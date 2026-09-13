@@ -7,9 +7,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from opentab import __version__
-from opentab import pricing as pricing_ops
 from opentab import util as util_ops
-from opentab.models import (
+from opentab.accounting import pricing as pricing_ops
+from opentab.accounting.models import (
     DaySummary,
     HarnessSummary,
     MachineSummary,
@@ -18,7 +18,7 @@ from opentab.models import (
     Workflow,
     YearSummary,
 )
-from opentab.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
+from opentab.presentation.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
 from opentab.tui import bindings, keymap
 from opentab.tui.components import menus
 from opentab.tui.components.bars import (
@@ -137,7 +137,16 @@ try:
 except ImportError:  # native Windows has no stdlib curses
     curses = None
 
-from opentab.formatting import (
+from opentab.accounting.models import ALL_YEARS, year_label
+from opentab.accounting.pricing import (
+    TOKEN_TYPES,
+    api_equivalent_cost,
+    is_local_provider,
+    model_context_window,
+    model_price,
+    price_source_meta,
+)
+from opentab.presentation.formatting import (
     BAR_CELLS,
     BAR_GLYPH_PATTERN,
     MONEY_PATTERN,
@@ -161,7 +170,7 @@ from opentab.formatting import (
     wrap_cells,
     wrap_lines,
 )
-from opentab.heatmap import (
+from opentab.presentation.heatmap import (
     BLOCKS_UP,
     HEAT_EMPTY_GLYPH,
     PRICE_HEAT_BASE_PAIR,
@@ -173,15 +182,6 @@ from opentab.heatmap import (
     heat_palette,
     token_series,
     token_series_ansi,
-)
-from opentab.models import ALL_YEARS, year_label
-from opentab.pricing import (
-    TOKEN_TYPES,
-    api_equivalent_cost,
-    is_local_provider,
-    model_context_window,
-    model_price,
-    price_source_meta,
 )
 from opentab.util import (
     CONTEXT_COMPACT_FLOOR,

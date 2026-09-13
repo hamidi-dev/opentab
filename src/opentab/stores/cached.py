@@ -13,8 +13,8 @@ import json
 import os
 from dataclasses import asdict
 
-from opentab import paths
-from opentab.models import Workflow
+from opentab.accounting.models import Workflow
+from opentab.persistence import paths
 
 CACHE_VERSION = 12  # bump when the cached payload shape or meaning changes
 

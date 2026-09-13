@@ -175,7 +175,7 @@ suppressed under `--no-state`/`--demo`).
 
 ## Contributing to pricing
 
-[`pricing.py`](../src/opentab/pricing.py) owns rate resolution and arithmetic.
+[`accounting/pricing.py`](../src/opentab/accounting/pricing.py) owns rate resolution and arithmetic.
 App groups the per-model rows once and keeps recorded and API-equivalent workflow
 snapshots; `_apply_price_mode()` selects one rather than recomputing spend on every
 toggle. The estimate applies only to the `unpriced_*` portion of mixed-billing rows.

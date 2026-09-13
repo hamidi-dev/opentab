@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from opentab.formatting import human_tokens, money, wrap_lines
+from opentab.presentation.formatting import human_tokens, money, wrap_lines
 from opentab.tui.components.bars import StyledLine, legend_lines, stack_line
 
 

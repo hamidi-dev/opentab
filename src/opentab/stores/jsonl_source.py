@@ -5,7 +5,7 @@ import argparse
 import json
 
 from opentab.demo import demo_config
-from opentab.formatting import _clean_prompt
+from opentab.presentation.formatting import _clean_prompt
 from opentab.stores.csv_source import CsvStore
 
 

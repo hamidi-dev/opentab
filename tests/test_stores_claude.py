@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import opentab as ot
-from opentab.formatting import iso_to_local
+from opentab.presentation.formatting import iso_to_local
 
 from tests._support import _claude_msg, _usage, _write_jsonl
 

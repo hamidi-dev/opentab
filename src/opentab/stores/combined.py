@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from functools import cached_property
 
+from opentab.accounting.models import Workflow
 from opentab.demo import DEMO_ALL
-from opentab.models import Workflow
 
 
 def _gather(calls: list) -> list:

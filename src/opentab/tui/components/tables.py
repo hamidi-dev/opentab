@@ -4,7 +4,15 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from opentab.formatting import display_width, human_tokens, money, pad, pct, short_path, shorten
+from opentab.presentation.formatting import (
+    display_width,
+    human_tokens,
+    money,
+    pad,
+    pct,
+    short_path,
+    shorten,
+)
 from opentab.tui.components.boxes import BOX_CHROME, box_row, box_rule, box_top, ruled_box
 
 PICKER_CHROME = 4

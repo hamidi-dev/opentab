@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from opentab.formatting import human_tokens, money, pad, pct, shorten, wrap_lines
+from opentab.presentation.formatting import human_tokens, money, pad, pct, shorten, wrap_lines
 from opentab.tui.components.bars import (
     StyleSpan,
     legend_lines,

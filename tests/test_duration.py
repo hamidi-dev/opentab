@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 
 import opentab as ot
-from opentab.formatting import iso_to_epoch, worked_seconds
+from opentab.presentation.formatting import iso_to_epoch, worked_seconds
 
 from tests._support import (
     _claude_msg,
@@ -531,7 +531,7 @@ def test_csv_non_finite_timestamp_does_not_crash_or_poison_worked():
     # parsed as a float -- otherwise worked becomes inf and human_duration's int()
     # crashes the render. Here the only real boundary is p1@10:00, its partner is inf,
     # so no measurable second boundary survives -> unknown, and no crash.
-    from opentab.formatting import human_duration
+    from opentab.presentation.formatting import human_duration
 
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "req.csv")

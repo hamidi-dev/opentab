@@ -6,8 +6,13 @@ import json
 import os
 import sqlite3
 
-from opentab.formatting import _clean_prompt, iso_to_epoch, iso_to_local, worked_seconds
-from opentab.models import Workflow
+from opentab.accounting.models import Workflow
+from opentab.presentation.formatting import (
+    _clean_prompt,
+    iso_to_epoch,
+    iso_to_local,
+    worked_seconds,
+)
 from opentab.stores.pi import PiStore
 from opentab.util import LazyStatusRoot, TraceContent, read_files_parallel, tool_rows_from_turns
 

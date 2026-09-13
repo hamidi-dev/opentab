@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import opentab as ot
-import opentab.state as state_module
+import opentab.persistence.state as state_module
 
 from tests._support import (
     _claude_msg,

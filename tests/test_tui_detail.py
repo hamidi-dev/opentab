@@ -4352,7 +4352,7 @@ def test_turn_layout_caches_restore_token_color_runs_for_prompt_and_trace():
 
 
 def test_trace_painter_applies_token_series_colors_without_rich_text():
-    from opentab.heatmap import TOKEN_SERIES_BASE_PAIR
+    from opentab.presentation.heatmap import TOKEN_SERIES_BASE_PAIR
 
     app = _trace_app()
     wf = app.current_session()
@@ -4736,7 +4736,7 @@ def test_a_multiline_command_keeps_its_shape_instead_of_collapsing():
 def test_trace_lines_never_exceed_the_pane_in_terminal_cells():
     # textwrap counts code points, so wide glyphs came back at twice the width asked for
     # and the painter clipped them: characters vanished instead of flowing on.
-    from opentab.formatting import display_width
+    from opentab.presentation.formatting import display_width
 
     app = _trace_app()
     app.store._CONTENT["k0"] = [
@@ -4764,7 +4764,7 @@ def test_the_read_column_gives_way_before_the_money_does():
     # a marker cost the reader the Cost column, on an ordinary row carrying both an
     # effort and narration. (Below 80 the table clips with or without this column; that
     # is the pre-existing geometry of its eight fixed-width cells, not the marker.)
-    from opentab.formatting import display_width
+    from opentab.presentation.formatting import display_width
 
     app = _trace_app()
     for row in app.session_turn_rows(app.current_session().id):

@@ -9,7 +9,7 @@ import contextlib
 import json
 import os
 
-from opentab import paths
+from opentab.persistence import paths
 
 try:
     import fcntl  # POSIX advisory locks; native Windows has none

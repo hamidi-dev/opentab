@@ -7,7 +7,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from opentab.formatting import (
+from opentab.presentation.formatting import (
     clip,
     human_tokens,
     money,
@@ -16,7 +16,7 @@ from opentab.formatting import (
     shorten,
     wrap_lines,
 )
-from opentab.heatmap import TOOL_HEAT_LEVELS
+from opentab.presentation.heatmap import TOOL_HEAT_LEVELS
 from opentab.tui.components.bars import StyleSpan
 from opentab.tui.components.boxes import (
     BOX_CHROME,

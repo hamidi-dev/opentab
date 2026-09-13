@@ -27,12 +27,12 @@ package and installed command are both `opentab`.
 
 | Module | Responsibility |
 |--------|----------------|
-| `cli.py`, `__main__.py` | Commands, argument routing and startup |
+| `cli/main.py`, `__main__.py` | Commands, argument routing and startup |
 | `api/service.py`, `api/json_cli.py`, `api/mcp.py` | Headless accounting service, JSON commands and stdio MCP adapter |
 | `conversations/reader.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors |
 | `conversations/index.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
-| `models.py` | Workflow, qualified session identity and summary records |
-| `tools.py` | Numeric per-call projection of recorded usage rows; ordered repeated calls and proportional attribution |
+| `accounting/models.py` | Workflow, qualified session identity and summary records |
+| `accounting/tools.py` | Numeric per-call projection of recorded usage rows; ordered repeated calls and proportional attribution |
 | `stores/` | Harness readers, combined views, portable summaries and warm caches |
 | `remote_content.py` | Opt-in keyed SSH traces, snapshot/live identity validation, bounded transport and cancelable jobs |
 | `tui/app.py` | Application state, accounting projections, keyboard/mouse navigation |
@@ -44,13 +44,13 @@ package and installed command are both `opentab`.
 | `tui/search_worker.py` | Source-owning serial background service for local search, reads and explicit indexing |
 | `tui/bindings.py`, `tui/keymap.py` | Configurable bindings, contextual actions and help |
 | `web/report.py`, `web/page.py` | Report payload, HTTP server and self-contained HTML/CSS/JS |
-| `pricing.py`, `data/models.json` | Rate lookup, cost calculations and generated catalog |
-| `formatting.py`, `heatmap.py`, `themes.py` | Text, charts and shared colour palettes |
+| `accounting/pricing.py`, `data/models.json` | Rate lookup, cost calculations and generated catalog |
+| `presentation/formatting.py`, `presentation/heatmap.py`, `presentation/themes.py` | Text, charts and shared colour palettes |
 | `sources.py` | Harness discovery, selection and store construction |
-| `paths.py`, `state.py`, `notes.py` | XDG locations, preferences and authored notes |
+| `persistence/paths.py`, `persistence/state.py`, `persistence/notes.py` | XDG locations, preferences and authored notes |
 | `demo.py` | In-memory anonymization and spend scaling |
 | `util.py` | Shared parsing, path, terminal, content and launcher helpers |
-| `doctor.py` | Read-only environment and harness diagnosis |
+| `cli/doctor.py` | Read-only environment and harness diagnosis |
 
 Imports flow from shared helpers to stores, then to the TUI, application adapters
 and CLI. Stores never import the TUI. Annotation-only back-references use
@@ -215,7 +215,7 @@ See [TUI internals](tui.md) for lifecycle and navigation.
 
 ## Diagnostics that do not repair
 
-`doctor.py` separates report construction (`build_report`) from text rendering.
+`cli/doctor.py` separates report construction (`build_report`) from text rendering.
 Its rows carry a status, label, explanation and optional remedy. `BAD` produces a
 nonzero exit code; `WARN` does not. This distinguishes a broken invocation from a
 working setup with a limitation, such as short transcript retention.
