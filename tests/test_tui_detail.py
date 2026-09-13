@@ -4218,6 +4218,21 @@ def _trace_app():
     return app
 
 
+def test_turn_reader_keeps_the_standard_header_chrome_and_full_breadcrumb():
+    app = _trace_app()
+    app.open_trace_drill()
+    screen = AttrScreen(24, 140)
+    with patch.object(ot.curses, "color_pair", side_effect=lambda n: n << 8):
+        app.renderer.draw_header(screen, 140)
+
+    lines = screen_text(screen).splitlines()
+    assert "1 sessions" in lines[0] and "cost $1.00" in lines[0]
+    assert "ZOOM" in lines[1]
+    assert app.current_session().title in lines[1]
+    assert "Turns" in lines[1] and "Prompt 1" in lines[1]
+    assert screen.attrs[(0, len(" OpenTab "))] & ot.curses.A_BOLD
+
+
 def test_empty_trace_events_do_not_leave_a_header_separator_before_the_preview_notice():
     from opentab.util import TRACE_EVENTS_CAP
 

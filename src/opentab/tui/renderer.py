@@ -864,7 +864,6 @@ class Renderer:
         stdscr.refresh()
 
     def draw_header(self, stdscr: curses.window, width: int) -> None:
-        reading = self.app._on_turns_tab() and self.app.active_trace_drill is not None
         summary = self.store.summary(self.all_workflows)
         title = " OpenTab "
         info = (
@@ -875,13 +874,7 @@ class Renderer:
         )
         self.write(stdscr, 0, 0, title, curses.color_pair(2) | curses.A_BOLD)
         chip = f" {self.store.source_name} "
-        self.write(
-            stdscr,
-            0,
-            len(title),
-            chip,
-            curses.color_pair(1) if reading else curses.color_pair(7) | curses.A_BOLD,
-        )
+        self.write(stdscr, 0, len(title), chip, curses.color_pair(7) | curses.A_BOLD)
         # Session-scoped what-if does not alter these aggregate header figures.
         if self.store.demo:
             tag = " DEMO — synthetic "
@@ -895,11 +888,6 @@ class Renderer:
             tag = f" $0 = no recorded cost · press {self._key('main', 'api_prices')} to estimate "
         else:
             tag = ""
-        if reading:
-            info = ""
-            if not self.store.demo and self.show_api_prices:
-                label = "WHAT-IF" if getattr(self.store, "records_cost", True) else "ESTIMATED"
-                tag = f" {label} · API list prices "
         info_x = len(title) + len(chip)
         self.write(
             stdscr,
@@ -914,26 +902,22 @@ class Renderer:
                 0,
                 max(0, width - len(tag) - 1),
                 tag,
-                curses.color_pair(1)
-                if reading
-                else curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD,
+                curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD,
             )
         drilled = self.view in ("zoom", "session")
         sort_by = self.effective_sort_by()
         # Accent only persistent narrowing modifiers; scope and sort remain neutral.
         # The live filter appears in the command line and is shown here only when committed.
         x = 0
-        if drilled and not reading:
+        if drilled:
             chip = " ZOOM "
             self.write(stdscr, 1, 0, chip, curses.color_pair(2) | curses.A_REVERSE | curses.A_BOLD)
             x = len(chip) + 1
-        base = curses.color_pair(1) | (curses.A_BOLD if drilled and not reading else 0)
+        base = curses.color_pair(1) | (curses.A_BOLD if drilled else 0)
         active = curses.color_pair(6) | curses.A_BOLD
         range_lbl = self.range_label()
         bc = self.breadcrumb()  # always starts with range_lbl (its root segment)
         rest_bc = bc[len(range_lbl) :] if bc.startswith(range_lbl) else bc
-        if reading and not self.app.active_subagent_turns:
-            rest_bc = f" › Turns › Prompt {self.app.active_turn_drill + 1}"
         segs = [(range_lbl, active if range_lbl != "all time" else base), (rest_bc, base)]
         if sort_by:
             # Display the visible column label, not a shared internal sort key.
@@ -1050,6 +1034,8 @@ class Renderer:
             sess = self.current_session()
             segs.append(shorten(sess.title, 28) if sess else "session")
             segs.append(tab_name)
+            if tab_name == "Turns" and self.app.active_trace_drill is not None:
+                segs.append(f"Prompt {self.app.active_turn_drill + 1}")
         elif self.focus == "years":
             if self.focused_year:
                 segs.append(self.focused_year)
