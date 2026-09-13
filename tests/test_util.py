@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -247,6 +248,58 @@ def test_copy_to_clipboard_backends_per_platform():
         calls.clear()
         assert ot.util.copy_to_clipboard("ok") is True
         assert calls == [(["pbcopy"], b"ok")]
+    finally:
+        sys.platform = real_platform
+        ot.util.shutil.which = real_which
+        ot.util.subprocess.run = real_run
+
+
+def test_resume_copy_command_uses_powershell_5_syntax_on_native_windows():
+    directory = r"C:\Users\Mo O'Brien\project [one]"
+    session_id = "ses; Write-Host pwned"
+    command = f"claude --resume {shlex.quote(session_id)}"
+    expected = (
+        "Set-Location -LiteralPath 'C:\\Users\\Mo O''Brien\\project [one]'; "
+        "if ($?) { & 'claude' '--resume' 'ses; Write-Host pwned' }"
+    )
+    real_platform = sys.platform
+    try:
+        sys.platform = "win32"
+        assert ot.util.resume_copy_command(directory, command) == expected
+        assert "&&" not in expected  # Windows PowerShell 5 has no && operator.
+        # The resume is inside the immediate Set-Location success gate, so a missing
+        # directory cannot fall through and launch against PowerShell's previous cwd.
+        assert expected.index("if ($?)") < expected.index("& 'claude'")
+    finally:
+        sys.platform = real_platform
+
+
+def test_resume_copy_command_keeps_posix_format_off_native_windows():
+    real_platform = sys.platform
+    try:
+        sys.platform = "darwin"
+        directory = "/repo/Mo O'Brien"
+        command = "codex resume abc"
+        assert ot.util.resume_copy_command(directory, command) == (
+            f"cd {shlex.quote(directory)} && {command}"
+        )
+    finally:
+        sys.platform = real_platform
+
+
+def test_copy_to_clipboard_keeps_authored_windows_text_exact():
+    real_which = ot.util.shutil.which
+    real_run = ot.util.subprocess.run
+    real_platform = sys.platform
+    calls = []
+    try:
+        sys.platform = "win32"
+        ot.util.shutil.which = lambda name: "clip.exe" if name == "clip" else None
+        ot.util.subprocess.run = lambda argv, input=None, **kwargs: calls.append((argv, input))
+
+        authored = "cd 'C:\\my project' && this is authored text"
+        assert ot.util.copy_to_clipboard(authored) is True
+        assert calls == [(["clip"], authored.encode())]
     finally:
         sys.platform = real_platform
         ot.util.shutil.which = real_which

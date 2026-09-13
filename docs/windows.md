@@ -21,6 +21,10 @@ directory in Explorer (via `os.startfile`), so reveal-in-folder works natively t
 If `curses` is missing, OpenTab prints a short hint (install `windows-curses`)
 instead of crashing.
 
+On native Windows, `L` then `y` copies a PowerShell 5-compatible resume command,
+not a cmd command. It runs only if changing directory succeeds. POSIX copies
+retain `cd ... && ...`.
+
 The web browser (`opentab --web`) is curses-free entirely, so it works on any
 Windows Python regardless.
 

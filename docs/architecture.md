@@ -39,6 +39,8 @@ package and installed command are both `opentab`.
 | `tui/renderer.py` | Terminal layout and painting |
 | `tui/trace.py` | Pure recorded-event formatting and trace output hit/scroll geometry |
 | `tui/exporting.py` | TUI CSV dataset construction and formula-safe serialization |
+| `tui/search_workspace.py`, `tui/search_layout.py` | Conversation-search interaction state and pure width-aware result/reader layout |
+| `tui/search_worker.py` | Source-owning serial background service for local search, reads and explicit indexing |
 | `tui/bindings.py`, `tui/keymap.py` | Configurable bindings, contextual actions and help |
 | `web.py`, `webpage.py` | Report payload, HTTP server and self-contained HTML/CSS/JS |
 | `pricing.py`, `data/models.json` | Rate lookup, cost calculations and generated catalog |
@@ -96,7 +98,7 @@ harness and native ID; a bare native ID is rejected when it is ambiguous.
 harness need not invalidate the others. UI code consumes these interfaces, not
 SQL columns or transcript records.
 
-Conversation reads are a separate public service/CLI/MCP path, not an accounting
+Conversation reads are a separate service path used by the TUI, CLI and MCP, not an accounting
 timeline or search index. Each leaf returns `records`, `snapshot`, `execution_id`,
 `executions`, `limitations`, and `ordering`. The source contains only the selected
 execution's retained user/assistant text occurrences, including zero-usage messages;
@@ -146,6 +148,7 @@ root rollups -> App -> range, project and machine projections
                    -> Renderer or web report payload
 
 selected turn -> lazy local reader or explicit SSH request -> TUI trace
+Ctrl-F -> workspace -> source-owned serial worker -> local service/index + bounded reader
 ```
 
 The TUI starts with workflow rollups. Its heavier per-model load runs after the
@@ -190,7 +193,8 @@ session without changing global rollups; see [Pricing](pricing.md).
 Static HTML carries rollups; the live server supplies session extras on demand.
 The server is single-threaded because SQLite connections belong to their creating
 thread. Raw traces, content keys and notes are absent from web/fleet payloads;
-the TUI and explicitly gated CLI/MCP reads are separate content paths. See
+the TUI's locally authorized search and explicitly gated CLI/MCP reads are separate
+content paths. Search results and indexed text are likewise excluded. See
 [Web](web.md) for serialization, browser state and security boundaries, and
 [Machines](machines.md) for portable summaries.
 
@@ -200,6 +204,9 @@ state, and lazy detail reads without depending on curses or browser state. Adapt
 thin: `programmatic.py` maps argparse actions to service calls and emits one versioned
 document; `mcp.py` validates tool inputs and maps the same calls to structured MCP
 results. See [Programmatic access](programmatic.md) for their public contract.
+
+TUI search creates its own `OpenTabService` and store in a serial worker thread.
+See [TUI internals](tui.md) for lifecycle and navigation.
 
 ## Diagnostics that do not repair
 

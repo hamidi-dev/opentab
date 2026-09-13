@@ -1,8 +1,10 @@
 import contextlib
 import os
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import opentab as ot
+from opentab.tui.search_workspace import SearchWorkspace
 
 from tests._support import (
     AttrScreen,
@@ -2348,6 +2350,194 @@ def test_notification_history_bottom_reaches_beyond_ten_thousand_wrapped_rows():
     rows = app.renderer.toast_history_lines(72)
     assert len(rows) == 10_200
     assert app.toast_history_scroll == len(rows) - 16
+
+
+def _app_on_conversation_hit(rows, target, *, session_key=None, execution_id="child-exec"):
+    app = app_with(rows)
+    ref = ot.SessionRef(
+        target.machine or app.local_machine_name,
+        app._conversation_harness(target, app.store),
+        target.id,
+    )
+    workspace = SearchWorkspace(app.args, "all")
+    workspace.query = "needle"
+    workspace.editing = False
+    workspace.hits = [
+        {
+            "session_key": session_key or ref.encode(),
+            "execution_id": execution_id,
+            "title": target.title,
+            "anchor": "matching-record",
+        }
+    ]
+    workspace.preview = {"records": [{"id": "matching-record"}]}
+    app.conversation_search = workspace
+    return app, workspace
+
+
+def test_search_launch_menu_opens_in_tmux_and_herdr_without_losing_search_state():
+    root = workflow("root", "2026-06-01 12:00:00", directory="/repo/root")
+    root.source = "Claude Code"
+    app, workspace = _app_on_conversation_hit([root], root)
+    before = (workspace.query, workspace.hits, workspace.preview, workspace.selected)
+
+    for backend in ("tmux", "herdr"):
+        with patch.object(ot.util, "launch_backend", return_value=backend):
+            assert app.handle_key(None, ord("L"))
+        assert app.launch_menu is root
+        assert app.launch_menu_backend == backend
+        assert app.conversation_search is workspace and workspace.active
+        assert (workspace.query, workspace.hits, workspace.preview, workspace.selected) == before
+
+        assert app.handle_key(None, 27)
+        assert app.launch_menu is None and app.launch_menu_backend is None
+        assert app.conversation_search is workspace and workspace.active
+        assert (workspace.query, workspace.hits, workspace.preview, workspace.selected) == before
+
+
+def test_search_copy_uses_qualified_root_not_child_or_native_id_collisions():
+    selected = workflow("shared-root", "2026-06-01 12:00:00", directory="/right/claude")
+    selected.source = "Claude Code"
+    selected.machine = "laptop"
+    other_harness = workflow("shared-root", "2026-06-02 12:00:00", directory="/wrong/opencode")
+    other_harness.source = "OpenCode"
+    other_harness.machine = "laptop"
+    other_machine = workflow("shared-root", "2026-06-03 12:00:00", directory="/wrong/server")
+    other_machine.source = "Claude Code"
+    other_machine.machine = "server"
+    app, workspace = _app_on_conversation_hit(
+        [other_harness, other_machine, selected], selected, execution_id="colliding-child-id"
+    )
+
+    with (
+        patch.object(ot.util, "launch_backend", return_value=None),
+        patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied,
+        patch.object(ot.util, "launch_command") as launched,
+    ):
+        app.handle_key(None, ord("L"))
+        app.handle_key(None, ord("y"))
+
+    copied.assert_called_once_with("cd /right/claude && claude --resume shared-root")
+    launched.assert_not_called()
+    assert app.conversation_search is workspace and workspace.active
+    assert workspace.hits[0]["execution_id"] == "colliding-child-id"
+
+
+def test_search_launch_fails_closed_for_unavailable_or_ambiguous_qualified_identity():
+    available = workflow("root", "2026-06-01 12:00:00", directory="/repo")
+    available.source = "Claude Code"
+    available.machine = "laptop"
+    missing_key = ot.SessionRef("missing-machine", "claude", "root").encode()
+    missing_app, missing_workspace = _app_on_conversation_hit(
+        [available], available, session_key=missing_key
+    )
+
+    duplicate = workflow("root", "2026-06-02 12:00:00", directory="/duplicate")
+    duplicate.source = "Claude Code"
+    duplicate.machine = "laptop"
+    ambiguous_app, ambiguous_workspace = _app_on_conversation_hit([available, duplicate], available)
+
+    with (
+        patch.object(ot.util, "launch_backend") as backend,
+        patch.object(ot.util, "copy_to_clipboard") as copied,
+        patch.object(ot.util, "launch_command") as launched,
+    ):
+        for app, workspace in (
+            (missing_app, missing_workspace),
+            (ambiguous_app, ambiguous_workspace),
+        ):
+            assert app.handle_key(None, ord("L"))
+            assert app.launch_menu is None and app.launch_menu_backend is None
+            assert app.notice == "launch works on sessions only"
+            assert app.conversation_search is workspace and workspace.active
+
+    backend.assert_not_called()
+    copied.assert_not_called()
+    launched.assert_not_called()
+
+
+def test_search_editing_types_capital_l_instead_of_launching():
+    root = workflow("root", "2026-06-01 12:00:00", directory="/repo")
+    root.source = "Claude Code"
+    app, workspace = _app_on_conversation_hit([root], root)
+    workspace.query = "need"
+    workspace.editing = True
+
+    with (
+        patch.object(ot.util, "launch_backend") as backend,
+        patch.object(ot.util, "copy_to_clipboard") as copied,
+        patch.object(ot.util, "launch_command") as launched,
+    ):
+        assert app.handle_key(None, ord("L"))
+
+    assert workspace.query == "needL"
+    assert app.launch_menu is None
+    backend.assert_not_called()
+    copied.assert_not_called()
+    launched.assert_not_called()
+
+
+def test_launch_copy_on_native_windows_targets_powershell_5():
+    root = workflow("root", "2026-06-01 12:00:00", directory=r"C:\Users\Mo O'Brien\project")
+    root.source = "Claude Code"
+    app, workspace = _app_on_conversation_hit([root], root)
+    with (
+        patch.object(ot.util.sys, "platform", "win32"),
+        patch.object(ot.util, "launch_backend", return_value=None),
+        patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied,
+    ):
+        app.handle_key(None, ord("L"))
+        app.handle_key(None, ord("y"))
+    copied.assert_called_once_with(
+        "Set-Location -LiteralPath 'C:\\Users\\Mo O''Brien\\project'; if ($?) { & 'claude' '--resume' 'root' }"
+    )
+    assert app.conversation_search is workspace and workspace.active
+
+
+def test_ctrl_c_closes_search_launch_menu_and_worker_without_dispatching():
+    root = workflow("root", "2026-06-01 12:00:00", directory="/repo")
+    root.source = "Claude Code"
+    app, workspace = _app_on_conversation_hit([root], root)
+    worker_closed = []
+    workspace._worker = SimpleNamespace(close=lambda: worker_closed.append(True))
+    app.renderer._search_layout_cache = object()
+
+    with (
+        patch.object(ot.util, "launch_backend", return_value="tmux"),
+        patch.object(ot.util, "copy_to_clipboard") as copied,
+        patch.object(ot.util, "launch_command") as launched,
+    ):
+        app.handle_key(None, ord("L"))
+        assert app.handle_key(None, 3) is False
+
+    assert app.launch_menu is None and app.launch_menu_backend is None
+    assert app.conversation_search is None and not workspace.active
+    assert worker_closed == [True] and app.renderer._search_layout_cache is None
+    copied.assert_not_called()
+    launched.assert_not_called()
+
+
+def test_search_draw_paints_launch_menu_and_toasts_after_workspace():
+    root = workflow("root", "2026-06-01 12:00:00", directory="/repo")
+    root.source = "Claude Code"
+    app, _workspace = _app_on_conversation_hit([root], root)
+    app.launch_menu = root
+    app.launch_menu_backend = "tmux"
+    calls = []
+    app.renderer.apply_background = lambda _screen: None
+    app.renderer.frame_app = lambda _screen, _height, _width: None
+    app.renderer.draw_conversation_search = lambda _screen, _height, _width: calls.append("search")
+    app.renderer.draw_launch_menu = lambda _screen, _height, _width: calls.append("launch")
+    app.renderer.draw_toasts = lambda _screen, _height, _width: calls.append("toasts")
+    screen = SimpleNamespace(
+        getmaxyx=lambda: (30, 100),
+        erase=lambda: None,
+        refresh=lambda: calls.append("refresh"),
+    )
+
+    app.renderer._draw(screen)
+
+    assert calls == ["search", "launch", "toasts", "refresh"]
 
 
 def test_launch_menu_opens_in_tmux_and_copy_only_outside():

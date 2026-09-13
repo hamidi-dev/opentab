@@ -13,7 +13,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
-from opentab.models import Workflow
+from opentab.models import SessionRef, Workflow
 from opentab.stores.opencode import Store
 
 try:
@@ -73,8 +73,9 @@ from opentab.pricing import (
 )
 from opentab.sources import RESUME_COMMANDS, SOURCE_LABELS
 from opentab.tools import tool_calls_from_turns
-from opentab.tui import bindings, exporting
+from opentab.tui import bindings, exporting, keymap
 from opentab.tui.renderer import Renderer
+from opentab.tui.search_workspace import SearchWorkspace
 from opentab.util import (
     DULL_AGENT_NAMES,
     fuzzy_score,
@@ -540,6 +541,7 @@ class App:
         self.machine_filter: str | None = None
         # Fleet machine and harness filters are orthogonal and compose globally.
         self.harness_filter: str | None = None
+        self.conversation_search: SearchWorkspace | None = None
         self.renderer = Renderer(self)
         self._anchor_default_selection()
 
@@ -3385,6 +3387,7 @@ class App:
         )
 
     def reload(self) -> None:
+        self._close_conversation_search()
         anchor = self.selection_anchor()
         subagent = None
         wf = self.current_session() if self._on_subagents_tab() else None
@@ -3631,6 +3634,7 @@ class App:
         if key == self.source_key:
             self.notice = f"already on {SOURCE_LABELS.get(key, key)}"
             return
+        self._close_conversation_search()
         cache_key = (key, self._store_state_key(self.store))
         if cache_key not in self._store_cache:
             try:
@@ -3651,6 +3655,7 @@ class App:
         self._apply_demo_state(state)
 
     def _apply_demo_state(self, state) -> None:
+        self._close_conversation_search()
         if not self.source_key:
             self.notify("demo toggle unavailable", "error")
             return
@@ -3750,6 +3755,7 @@ class App:
         }
 
     def _reload_for_source(self, restore: dict | None = None) -> None:
+        self._close_conversation_search()
         self._clear_subagent_prompt()
         self._clear_trace_expansion()
         self.loaded = self.store.workflows()
@@ -4270,7 +4276,7 @@ class App:
         target = self.machine_ssh_target(workflow)
         if target:
             return util.ssh_command(target, directory, command)
-        return f"cd {shlex.quote(directory)} && {command}"
+        return util.resume_copy_command(directory, command)
 
     def launch_available(self) -> bool:
         # launch_backend picks the hook or innermost supported multiplexer when the
@@ -4328,6 +4334,20 @@ class App:
         self.launch_menu_backend = util.launch_backend()
 
     def launch_session(self) -> Workflow | None:
+        if keymap.in_conversation_search(self):
+            hit = self.conversation_search.selected_hit or {}
+            try:
+                ref = SessionRef.decode(hit.get("session_key"))
+            except ValueError:
+                return None
+            matches = [
+                row
+                for row in self.loaded
+                if row.id == ref.native_id
+                and self.machine_of(row) == ref.machine
+                and self._conversation_harness(row, self.store) == ref.harness
+            ]
+            return matches[0] if len(matches) == 1 else None
         if self.view == "session" or (self.view == "zoom" and self.on_sessions_tab):
             return self.current_session()
         return None
@@ -5730,6 +5750,14 @@ class App:
         # detail content); a gap or the tab strip falls back to the active pane.
         hit = self.renderer.hit(my, mx)
         kind = hit[0] if hit else None
+        if keymap.in_conversation_search(self):
+            ws = self.conversation_search
+            if kind == "search-preview":
+                ws.preview_scroll = max(0, ws.preview_scroll + delta)
+            elif kind in ("search-result", "search-results"):
+                if delta:
+                    ws.select(ws.selected + (1 if delta > 0 else -1))
+            return
         if kind == "year" and self.years:
             new = max(0, min(self.year_index + delta, len(self.years) - 1))
             self._wheel_rescoped("year", new != self.year_index)
@@ -6095,12 +6123,75 @@ class App:
 
     def _input_timeout_ms(self) -> int:
         # Poll for worker completion and toast expiry without requiring a keystroke.
+        if self.conversation_search is not None and self.conversation_search.active:
+            return 50
         return self.TOAST_POLL_MS if self.toasts or self._remote_trace_job is not None else -1
+
+    @staticmethod
+    def _conversation_harness(workflow: Workflow, store) -> str:
+        value = str(workflow.source or getattr(store, "source_name", "") or "unknown")
+        aliases = {label.lower(): key for key, label in SOURCE_LABELS.items()}
+        return aliases.get(value.lower(), value.lower().replace(" ", "-"))
+
+    def open_conversation_search(self) -> None:
+        if getattr(self.store, "demo", False):
+            self.notify("conversation search is unavailable in demo mode", "error")
+            return
+        if self.source_key and self.source_key not in {"all", "opencode", "claude", "codex"}:
+            self.notify(
+                "conversation search needs a local OpenCode, Claude Code, Codex or all catalog",
+                "error",
+            )
+            return
+        if self.conversation_search is not None and self.conversation_search.active:
+            return
+        workflow = self.current_session() if self.view == "session" else None
+        session_key = None
+        title = ""
+        project = None
+        if workflow is not None:
+            session_key = SessionRef(
+                workflow.machine or self.local_machine_name,
+                self._conversation_harness(workflow, self.store),
+                workflow.id,
+            ).encode()
+            title = workflow.title
+            project = self.project_root(workflow.directory)
+        elif self.zoom_project:
+            project = self.zoom_project
+        elif self.browse_mode == "projects" and (selected_project := self.selected_project_summary):
+            project = selected_project.directory
+        self.conversation_search = SearchWorkspace(
+            self.args,
+            self.source_key,
+            session_key,
+            title,
+            project,
+        )
+
+    def poll_conversation_search(self) -> None:
+        workspace = self.conversation_search
+        if workspace is None:
+            return
+        if getattr(self.store, "demo", False):
+            self._close_conversation_search()
+            return
+        workspace.poll()
+        if not workspace.active:
+            self._close_conversation_search()
+
+    def _close_conversation_search(self) -> None:
+        workspace = getattr(self, "conversation_search", None)
+        if workspace is not None:
+            workspace.close()
+            self.conversation_search = None
+            self.renderer._search_layout_cache = None
 
     def run(self, stdscr: curses.window) -> None:
         try:
             self._run(stdscr)
         finally:
+            self._close_conversation_search()
             pending = self._remote_trace_job
             self._clear_trace_expansion()
             if pending is not None:
@@ -6152,6 +6243,7 @@ class App:
         first = True
         while True:
             self.poll_remote_trace()
+            self.poll_conversation_search()
             self.active_toasts()  # expire toasts before painting
             self.renderer.draw(stdscr)
             self._mark_toasts_shown()
@@ -6866,6 +6958,9 @@ class App:
             self.help = True
             self.help_scroll = 0
             return True
+        if act == "conversation_search":
+            self.open_conversation_search()
+            return True
         if act == "prices":
             self.open_prices()  # floats over the charts; closing it lands back here
             return True
@@ -6917,6 +7012,24 @@ class App:
             return self.handle_startup_warning_key(key)
         if self.price_prompt:
             return self.handle_price_prompt_key(key)
+        if self.conversation_search is not None and self.conversation_search.active:
+            ws = self.conversation_search
+            if key == 3:
+                self.launch_menu = self.launch_menu_backend = None
+                self._close_conversation_search()
+                return False
+            if self.launch_menu is not None:
+                return self.handle_launch_key(key)
+            if (
+                not (ws.consent or ws.help or ws.editing or ws.filter_field or ws.filter_menu)
+                and self.keymap.action("search", key) == "launch"
+            ):
+                self.launch_current()
+                return True
+            self.conversation_search.handle_key(key, self.keymap)
+            if not self.conversation_search.active:
+                self._close_conversation_search()
+            return False if key == 3 else True
         # The C (Colours), H (source) and M (machine filter) pickers float above
         # everything -- they can be opened from inside Trends / P / help now, so they must
         # see keys before the overlays do (draw() already paints these small modals on top).
@@ -6936,6 +7049,9 @@ class App:
             if key == 3:
                 return False
             act = self.keymap.action("whats-new", key)
+            if act == "conversation_search":
+                self.open_conversation_search()
+                return True
             if act == "down":
                 self.whats_new_scroll += 1
             elif act == "up":
@@ -6966,6 +7082,9 @@ class App:
             if key == 3:  # Ctrl-C still quits
                 return False
             act = self.keymap.action("help", key)
+            if act == "conversation_search":
+                self.open_conversation_search()
+                return True
             if act == "down":
                 self.help_scroll += 1
             elif act == "up":
@@ -7002,6 +7121,9 @@ class App:
             if key == 3:  # Ctrl-C still quits
                 return False
             act = self.keymap.action("notices", key)
+            if act == "conversation_search":
+                self.open_conversation_search()
+                return True
             if act == "down":
                 self.toast_history_scroll += 1
             elif act == "up":
@@ -7127,6 +7249,9 @@ class App:
         if act == "help":
             self.help = True
             self.help_scroll = 0
+            return True
+        if act == "conversation_search":
+            self.open_conversation_search()
             return True
         if act == "notices":
             self.open_notices()  # the notices scrollback: read a toast that faded
@@ -7463,6 +7588,9 @@ class App:
             self.help = True
             self.help_scroll = 0
             return True
+        if act == "conversation_search":
+            self.open_conversation_search()
+            return True
         if act == "theme":
             self.open_theme_menu()
             return True
@@ -7589,6 +7717,50 @@ class App:
                 self.price_prompt = False  # click = not now
                 self.notice = f"skipped — {self.price_fetch_hint()}"
             return True
+        if self.launch_menu is not None:
+            if click or double:
+                self.launch_menu = None  # click cancels the launch picker
+                self.launch_menu_backend = None
+            return True
+        if keymap.in_conversation_search(self):
+            ws = self.conversation_search
+            if ws.consent or ws.filter_field:
+                return True
+            if ws.filter_menu:
+                options = ws.filter_options()
+                if (up or down) and options:
+                    ws.filter_menu_index = (ws.filter_menu_index + (-1 if up else 1)) % len(options)
+                elif click or double:
+                    target = self.renderer.hit(my, mx)
+                    if target and target[0] == "searchfilter-option":
+                        ws.choose_filter(target[1])
+                    else:
+                        ws.filter_menu = ""
+                return True
+            if ws.help:
+                if up or down:
+                    ws.help_scroll = max(0, ws.help_scroll + (-3 if up else 3))
+                elif click or double:
+                    ws.help = False
+                return True
+            if up or down:
+                self._wheel(my, mx, -3 if up else 3)
+            elif (click or double) and (target := self.renderer.hit(my, mx)):
+                kind, index = target
+                if kind == "search-query":
+                    ws.edit_query()
+                elif kind == "searchtab":
+                    ws.switch_view("conversation" if index else "results")
+                elif kind == "searchfilter":
+                    ws.open_filter(("scope", "harness", "project", "date", "reset")[index])
+                elif kind in ("search-result", "search-results", "search-preview"):
+                    ws.editing = False
+                    ws.focus = "preview" if kind == "search-preview" else "results"
+                    if kind == "search-result":
+                        ws.select(index)
+                        if double:
+                            ws._open_reader()
+            return True
         if self.theme_menu:
             if up:
                 self._preview_theme_at(self.theme_menu_index - 1)  # wheel live-previews
@@ -7662,11 +7834,6 @@ class App:
                 self.sort_menu_index = (self.sort_menu_index + 1) % len(options)
             elif click or double:
                 self.sort_menu = False  # click cancels, order unchanged
-            return True
-        if self.launch_menu is not None:
-            if click or double:
-                self.launch_menu = None  # click cancels the launch picker
-                self.launch_menu_backend = None
             return True
         if self.whats_new:
             if up:

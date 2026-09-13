@@ -667,6 +667,19 @@ def clipboard_tools_label() -> str:
     return "clip/powershell" if sys.platform == "win32" else "pbcopy/wl-copy/xclip/xsel"
 
 
+def resume_copy_command(directory: str, command: str) -> str:
+    """Format a generated local resume command for the native platform shell."""
+    if sys.platform != "win32":
+        return f"cd {shlex.quote(directory)} && {command}"
+
+    def quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    argv = shlex.split(command)
+    invocation = " ".join(quote(arg) for arg in argv)
+    return f"Set-Location -LiteralPath {quote(directory)}; if ($?) {{ & {invocation} }}"
+
+
 def copy_to_clipboard(text: str) -> bool:
     commands = _WINDOWS_CLIPBOARD if sys.platform == "win32" else _POSIX_CLIPBOARD
     for cmd, encoding in commands:

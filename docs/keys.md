@@ -41,7 +41,7 @@ compaction.
 | `Tab` / `Shift-Tab` | Cycle focus Years → Months → Days (Time mode); Shift-Tab at the top steps back out |
 | `1` / `2` / `3` / `0` | Jump straight to a panel — **each panel wears its number in its title**, lazygit-style: the sidebar top to bottom (`[1] Years`, `[2] Months`, `[3] Days`; in Projects mode `[1] Projects`) and `[0]` the detail pane on the right, what `Enter` drills into. A digit jumps from anywhere: it steps out of a zoomed detail or an open session to get there |
 | `Enter` | Drill into the selection; on Turns, open a prompt, then its selected turn. Inside a turn, expand / collapse the `▸` tool's output (at the top of the viewport, or the next below it) |
-| `+` | Focus detail from browse; maximize / restore the zoom pane. Sessions stay full-screen; pressing it there changes the zoom layout on return |
+| `+` | `expand`: focus detail from browse; maximize / restore the zoom pane. Highlighted only when the visible zoom pane is maximized. Sessions stay full-screen; pressing it there changes the zoom layout on return |
 | `Esc` | Step back out — turn → prompt → session → zoom → browse; returning from a turn keeps the selected row visible |
 | `h` / `l` | Switch detail tabs |
 | `j` / `k` | Move in the list (`↑`/`↓` too), or scroll the detail pane; on the Turns tab, move the `▸` prompt cursor |
@@ -138,6 +138,34 @@ the harness records cumulative-total deltas rather than per-request prompts
 
 ## Scope & filter
 
+`Ctrl-F` opens [conversation search](conversation-search.md); `/` outside search
+still filters metadata. Printable keys type while editing; finish with `Enter`
+or `Tab` before using letter shortcuts.
+
+| Search key | Action |
+|------------|--------|
+| `Enter` | Input to Results; selected match to Conversation |
+| `Ctrl-F` / `/` | Return to query input (`Ctrl-F` also works while typing) |
+| `h` / `l`, Left/Right | Switch Results / Conversation tabs |
+| `Tab` / `Shift-Tab` | Finish typing / switch matches and preview focus |
+| `j` / `k`, Up/Down, `PgDn` / `PgUp` | Move results or scroll the focused pane |
+| `J` / `K` | Scroll only the preview, without changing focus or selection |
+| `S` | Scope picker: All sessions / This session |
+| `s` / `a` | Selected session / all sessions; keep other filters |
+| `H` | Harness picker: OpenCode / Claude Code / Codex / all |
+| `p` | Exact project directory; empty clears |
+| `d` | UTC message dates: `YYYY-MM-DD..YYYY-MM-DD` |
+| `R` | Reset all filters; keep the query |
+| `I` | Confirm an index update; date filters do not limit indexing |
+| `[` / `]` | Previous / next reader window |
+| `L` | Launch/copy the owning root session via tmux, Herdr or a hook |
+| `Esc` | Back through reader, editing and prior session scope; then close |
+| `?` | Search help |
+
+Tabs and filters are clickable. Click a result to select; double-click to read.
+The wheel moves one result or three preview lines under the pointer, without
+changing focus.
+
 **Harnesses** (`u`) compares the data already loaded, within the active date range
 and machine filter. Its sidebar shows cost, tokens and session counts; `s` or a
 column-header click sorts the harness rows while **All harnesses** stays first.
@@ -152,6 +180,7 @@ harnesses are detected; the browse mode remains available with a single source.
 
 | Key | Action |
 |-----|--------|
+| `Ctrl-F` | Search retained conversation text in the current local catalog; available from the main views and supported overlays |
 | `R` | Set the date range — `all` · `30d` (or `30`) · `2m` · `1y` · `2026` · `2026-05` · `start..end` |
 | `a` | Back to all time, keeping the current selection where possible |
 | `s` | Sort picker for the visible list (`j`/`k` move · `Enter` · `Esc`). Sessions offer **Start Date** (`created_at`, default) and, everywhere except the Time overview's **Days** pane, **Last Activity** (`ended_at`, including subagent activity where tracked) — a single day's list is read by start time, and activity can run into a later day than the one the row is filed under, so ranking by it there is deliberately left out — that pane falls back to **Start Date**, keeping your choice for when you focus Months/Years again. The Date column follows whichever is active, and its header shows "Last act" under the latter. Projects offer the matching pair: **Recency** (the newest session's *start*) and **Last Activity** (the newest activity in any of the project's sessions, subagents included) |
@@ -221,8 +250,9 @@ worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock st
 | `D` | Demo (anonymize for a shareable screen) — opens a multi-check picker of what to scramble: **Titles** (session / prompt / model / machine names), **Paths** (project directories), **Turns** (the expandable full prompt text), **Spend** (dollars + token magnitudes). Paths are separate from titles because a project tree is often the one label a demo *wants* real — leave it unchecked to keep real project names on an otherwise anonymised screen. `j`/`k` move · `Space` toggle a category · `a` all/none · `Enter` apply · `Esc` cancel. **While demo is on, `D` switches it straight back off** (one press, no picker); the categories are remembered, so `D` again re-offers them. From the CLI: `--demo` (all) or `--demo titles,spend` |
 | `r` / `q` / `?` | Reload the data · quit · help (Help also links to What's New) |
 
-The global toggles stay live inside Trends and Prices: `?`, `C`, `H`, `M` (fleet),
-and `D`. Help also accepts the theme, harness, machine and demo pickers. Other
+The global toggles stay live inside Trends and Prices: `?`, `Ctrl-F`, `C`, `H`, `M` (fleet),
+and `D`. Help, What's New and notification history also accept `Ctrl-F`; Help accepts
+the theme, harness, machine and demo pickers too. Other
 modals own their input and show their controls in their title or footer. The Help
 body describes the view underneath it; close Help before using that view's keys.
 
@@ -284,7 +314,8 @@ left right pgup pgdn home end f1`–`f12`, `comma` for a literal `,`), and contr
 (`ctrl-u` or `^u`, letters only). `Ctrl-C` is the hardwired panic quit and cannot be
 rebound.
 
-Contexts mirror what owns the keyboard: `[main]` for browse/zoom/session, `[trends]`
+Contexts mirror what owns the keyboard: `[main]` for browse/zoom/session, `[search]`
+for search commands and `[search.edit]` for query/scope typing, `[trends]`
 (+ `[trends.chart]` for a focused chart, `[trends.drill]` for a ranked row's session
 list), `[prices]` (+ `[prices.sessions]`), `[help]`, `[whats-new]`, `[notices]`, the shared `[menu]`
 with per-picker overrides (`[menu.sort]`, `[menu.theme]`, `[menu.launch]`,

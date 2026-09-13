@@ -19,6 +19,7 @@ from opentab.models import (
 )
 from opentab.themes import hex_rgb1000, ink_on, nearest_8, nearest_256, ramp
 from opentab.tui import bindings, keymap
+from opentab.tui.search_layout import conversation_layout, snippet_lines
 from opentab.tui.trace import TraceLine, build_event_body, format_block, output_target, wrapped
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ from opentab.formatting import (
     MONEY_PATTERN,
     TOKEN_PATTERN,
     clip,
+    clip_tail,
     cost_bar,
     display_width,
     human_duration,
@@ -761,6 +763,14 @@ class Renderer:
         height -= 2
         width -= 2
 
+        if keymap.in_conversation_search(self.app):
+            self.draw_conversation_search(stdscr, height, width)
+            if self.launch_menu is not None:
+                self.draw_launch_menu(stdscr, height, width)
+            self.draw_toasts(stdscr, height, width)
+            stdscr.refresh()
+            return
+        self._search_layout_cache = None
         self.draw_header(stdscr, width)
 
         top = 3
@@ -862,6 +872,373 @@ class Renderer:
         self.draw_toasts(stdscr, height, width)
 
         stdscr.refresh()
+
+    def draw_conversation_search(self, stdscr, height: int, width: int) -> None:
+        ws = self.app.conversation_search
+        accent = curses.color_pair(6) | curses.A_BOLD
+        muted = curses.color_pair(4)
+
+        if ws.consent:
+            building = ws.status.get("exists") is False
+            scope = f"Scope: {ws.source_key or 'current harness'} / {ws.scope_label}"
+            lines = [
+                ("Store sensitive messages as local plaintext.", curses.A_NORMAL),
+                (snippet_lines(scope, 62, max_lines=1)[0].text, muted),
+                ("Project / harness / session apply; dates do NOT.", muted),
+                (
+                    "Saved ignores are disabled (--no-state)."
+                    if getattr(ws.args, "no_state", False)
+                    else "Saved project and session ignores apply.",
+                    muted,
+                ),
+                ("Source records stay read-only.", muted),
+                ("Running updates may finish after search closes.", muted),
+                ("", 0),
+                (
+                    " Enter / y   " + ("Build index " if building else "Update index "),
+                    accent | curses.A_REVERSE,
+                ),
+                ("Esc / n   Cancel", muted),
+            ]
+            self.draw_modal(
+                stdscr,
+                height,
+                width,
+                "Build search index?" if building else "Update search index?",
+                lines,
+                center=True,
+            )
+            return
+
+        def clean(value, cells):
+            line = snippet_lines(str(value), max(1, cells), max_lines=1)
+            return line[0].text if line else ""
+
+        def text(y, value, attr=0):
+            line = snippet_lines(str(value), width - 4, max_lines=1)
+            if line:
+                self.write(stdscr, y, 2, line[0].text, attr)
+
+        selected_title = clean((ws.selected_hit or {}).get("title", ""), max(1, width - 30))
+        conversation_available = ws.conversation_available
+        conversation_tab = "Conversation"
+        if selected_title and conversation_available:
+            conversation_tab += f" · {selected_title}"
+        self.draw_tabs(
+            stdscr,
+            0,
+            1,
+            width - 2,
+            ("Results", conversation_tab),
+            int(bool(ws.reader)),
+            kind="searchtab",
+            disabled={1} if not conversation_available else None,
+        )
+
+        value = f"{ws.filter_field}: {ws.filter_text}" if ws.filter_field else ws.query
+        prefix = "Search: > " if ws.editing or ws.filter_field else "Search:   "
+        query = snippet_lines(value, max(1, display_width(value)), max_lines=1)[0].text
+        if ws.editing or ws.filter_field:
+            query += "_"
+        text(1, prefix + clip_tail(query, width - display_width(prefix) - 4), accent)
+        self.regions.append(("search-query", 1, 0, width - 1, 0))
+
+        scope = ws.scope
+        values = [
+            "Session" if scope.get("session") else "All",
+            scope.get("harness") or "All",
+            scope.get("project") or "Any",
+            f"{scope.get('since') or '...'}..{scope.get('until') or '...'}"
+            if scope.get("since") or scope.get("until")
+            else "Any",
+        ]
+        prefixes = ("Scope: ", "Harness: ", "Project: ", "Dates: ")
+        safe_values = [clean(value, max(1, width)) for value in values]
+        gaps = 4
+        value_budget = max(
+            4, width - 4 - sum(map(display_width, prefixes)) - len("Reset") - gaps - 8
+        )
+        budgets = [1, 1, 1, 1]
+        caps = (12, 16, 32, 24)
+        while sum(budgets) < value_budget:
+            grew = False
+            for index, value in enumerate(safe_values):
+                if budgets[index] < min(display_width(value), caps[index]):
+                    budgets[index] += 1
+                    grew = True
+                    if sum(budgets) >= value_budget:
+                        break
+            if not grew:
+                break
+        chips = [
+            prefix + shorten(value, budget) + " ▾"
+            for prefix, value, budget in zip(prefixes, safe_values, budgets)
+        ]
+        chips.append("Reset")
+        cx = 2
+        for index, chip in enumerate(chips):
+            if index:
+                self.write(stdscr, 2, cx, " ", muted)
+                cx += 1
+            drawn = shorten(chip, max(0, width - 2 - cx))
+            if not drawn:
+                break
+            chip_width = display_width(drawn)
+            attr = muted | curses.A_UNDERLINE | (curses.A_BOLD if scope and index == 4 else 0)
+            self.write(stdscr, 2, cx, drawn, attr)
+            self.regions.append(("searchfilter", 2, cx, cx + chip_width - 1, index))
+            cx += chip_width
+
+        self.hline(stdscr, 4, 0, width)
+
+        diagnostics = []
+        response = ws.response
+        if ws.busy:
+            diagnostics.append(
+                {
+                    "search": "Searching",
+                    "conversation": "Loading message",
+                    "index": "Updating index",
+                    "status": "Checking index",
+                }.get(ws.busy, ws.busy)
+                + "..."
+            )
+        if response.get("match_mode") == "any_term":
+            diagnostics.append("Any-word fallback")
+        if response.get("limited"):
+            diagnostics.append("Bounded results: narrow scope for more")
+        gaps = response.get("unindexed_roots", 0)
+        stale = response.get("stale_executions_skipped", 0) + response.get(
+            "stale_metadata_roots_skipped", 0
+        )
+        if gaps:
+            diagnostics.append(f"{gaps} unindexed roots")
+        if stale:
+            diagnostics.append(f"{stale} stale sources withheld")
+        if not diagnostics:
+            index = response.get("index") or ws.status
+            diagnostics.append(
+                f"{index.get('roots', 0)} indexed roots"
+                if index.get("exists")
+                else (
+                    "No index yet: leave typing with Tab, then use "
+                    + (self._key("search", "index") or "the index action")
+                    if index
+                    else "Index coverage is checked when searching; no automatic refresh"
+                )
+            )
+        text(
+            3,
+            " | ".join(diagnostics) + f"  /  Catalog: {ws.source_key or 'current harness'}",
+            muted,
+        )
+        top, bottom = 5, height - 3
+        if ws.reader:
+            self._draw_search_preview(stdscr, top, 0, bottom - top, width)
+        elif width >= 108:
+            left = min(58, width * 2 // 5)
+            self._draw_search_results(stdscr, top, 0, bottom - top, left)
+            self._draw_search_preview(stdscr, top, left, bottom - top, width - left)
+        else:
+            # One compact result above the preview at the app's 80x20 minimum.
+            results_h = max(4, (bottom - top) // 2)
+            self._draw_search_results(stdscr, top, 0, results_h, width, compact=True)
+            self._draw_search_preview(stdscr, top + results_h, 0, bottom - top - results_h, width)
+        if ws.error:
+            text(height - 3, ws.error, curses.color_pair(1) | curses.A_BOLD)
+        elif ws.filter_field:
+            text(
+                height - 3,
+                "Enter: apply / Esc: cancel. Empty project clears; dates: YYYY-MM-DD..YYYY-MM-DD",
+                muted,
+            )
+        else:
+            text(height - 3, ws.notice, muted)
+
+        self.draw_footer(stdscr, height, width)
+        filter_menu = ws.filter_menu
+        if filter_menu:
+            self.regions.clear()
+            self._draw_search_filter_menu(stdscr, height, width, filter_menu)
+        elif ws.help:
+            self.regions.clear()
+            self.draw_help(stdscr, 3, height - 2, width)
+
+    def _draw_search_filter_menu(self, stdscr, height: int, width: int, menu: str) -> None:
+        ws = self.app.conversation_search
+        options = list(ws.filter_options())
+        index = max(0, min(ws.filter_menu_index, max(0, len(options) - 1)))
+        visible_count = max(1, height - 10)
+        start = max(0, min(index - visible_count // 2, max(0, len(options) - visible_count)))
+        visible = options[start : start + visible_count]
+        muted = curses.color_pair(4)
+        lines = [(f"Choose {menu}:", muted), ("", 0)]
+        current = (
+            "session"
+            if menu == "scope" and ws.scope.get("session")
+            else ws.scope.get(menu) or "all"
+        )
+        for offset, (value, label, enabled) in enumerate(visible, start=start):
+            marker = ">" if offset == index else " "
+            suffix = "  (current)" if value == current else ""
+            if not enabled:
+                suffix += "  (unavailable)"
+            attr = curses.A_REVERSE | curses.A_BOLD if offset == index else curses.A_NORMAL
+            if not enabled:
+                attr |= muted | curses.A_DIM
+            safe_label = snippet_lines(str(label), max(1, width - 16), max_lines=1)[0].text
+            lines.append((f" {marker}  {safe_label}{suffix}", attr))
+        title = self._menu_title(f"Filter {menu}", "menu")
+        y, x, _h, w = self.draw_modal(stdscr, height, width, title, lines)
+        for row, option_index in enumerate(range(start, start + len(visible)), start=y + 4):
+            if options[option_index][2]:
+                self.regions.append(("searchfilter-option", row, x, x + w - 1, option_index))
+
+    def _draw_search_results(self, stdscr, y, x, height, width, compact=False):
+        ws = self.app.conversation_search
+        if height < 3:
+            return
+        title = f"MATCHES  {ws.selected + 1 if ws.hits else 0}/{len(ws.hits)}"
+        self.box(
+            stdscr, y, x, height, width, title, active=ws.focus == "results" and not ws.editing
+        )
+        inner = width - 6
+        card = 3 if compact else 5
+        ws.page_size = max(1, (height - 2) // card)
+        ws.result_scroll = max(0, min(ws.result_scroll, ws.selected))
+        if ws.selected >= ws.result_scroll + ws.page_size:
+            ws.result_scroll = ws.selected - ws.page_size + 1
+        # Register cards before the pane's catch-all, using the shared hit tester.
+        for row_offset in range(1, min(height - 1, 1 + ws.page_size * card)):
+            index = ws.result_scroll + (row_offset - 1) // card
+            if index < len(ws.hits):
+                self.regions.append(("search-result", y + row_offset, x, x + width - 1, index))
+        self._add_rows_region("search-results", y, x, x + width - 1, 0, height)
+        if not ws.hits:
+            if ws.busy == "search" or ws._deadline is not None:
+                message = "Looking for matching passages..."
+            elif not ws.query.strip():
+                message = "Type a few distinctive words to search."
+            else:
+                message = "No verified matches. Broaden scope or update the index."
+            for offset, line in enumerate(snippet_lines(message, inner, max_lines=height - 2)):
+                self._write_search_line(stdscr, y + 1 + offset, x + 3, line)
+            return
+        row = y + 1
+        for index in range(ws.result_scroll, min(len(ws.hits), ws.result_scroll + ws.page_size)):
+            hit = ws.hits[index]
+            selected = index == ws.selected
+            attr = curses.color_pair(6) | curses.A_BOLD if selected else curses.A_BOLD
+            title = snippet_lines(hit.get("title") or "Untitled session", inner, ws.query, 1)[0]
+            self.write(stdscr, row, x + 1, ">" if selected else " ", attr)
+            self._write_search_line(stdscr, row, x + 3, title, attr)
+            if row + 1 < y + height - 1:
+                stamp = hit.get("timestamp")
+                if isinstance(stamp, (int, float)):
+                    try:
+                        stamp = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d")
+                    except (OSError, ValueError, OverflowError):
+                        stamp = ""
+                meta = f"{hit.get('harness', '')} / {str(stamp or '')[:10]} / {short_path(hit.get('project') or '', 24)}"
+                if hit.get("match_fields") == ["title"]:
+                    meta += " / title match"
+                self._write_search_line(
+                    stdscr,
+                    row + 1,
+                    x + 3,
+                    snippet_lines(meta, inner, max_lines=1)[0],
+                    curses.color_pair(4),
+                )
+            for offset, line in enumerate(
+                snippet_lines(hit.get("excerpt") or "", inner, ws.query, 1 if compact else 2)
+            ):
+                if row + 2 + offset < y + height - 1:
+                    self._write_search_line(stdscr, row + 2 + offset, x + 3, line)
+            row += card
+
+    def _draw_search_preview(self, stdscr, y, x, height, width):
+        ws = self.app.conversation_search
+        if height < 3:
+            return
+        self._add_rows_region("search-preview", y, x, x + width - 1, 0, height)
+        title = "CONVERSATION" if ws.reader else "MESSAGE PREVIEW"
+        if ws.reader and ws.selected_hit:
+            session_title = snippet_lines(
+                str(ws.selected_hit.get("title") or ""), max(1, width - 24), max_lines=1
+            )[0].text
+            if session_title:
+                title += f" · {session_title}"
+        self.box(
+            stdscr,
+            y,
+            x,
+            height,
+            width,
+            title,
+            active=ws.reader or (ws.focus == "preview" and not ws.editing),
+        )
+        inner = width - 6
+        ws.preview_height = max(1, height - 2)
+        cache_key = (id(ws.preview), inner, ws.query)
+        cache = getattr(self, "_search_layout_cache", None)
+        if cache is None or cache[0] != cache_key:
+            layout = conversation_layout(ws.preview, inner, ws.query)
+            anchor = ws.preview_anchor or (cache[3] if cache and cache[2] is ws.preview else None)
+            self._search_layout_cache = (cache_key, layout, ws.preview, anchor)
+        else:
+            layout = cache[1]
+            anchor = ws.preview_anchor or cache[3]
+            self._search_layout_cache = (cache_key, layout, ws.preview, anchor)
+        ws.preview_lines = len(layout.lines)
+        if ws.preview_anchor:
+            ws.preview_scroll = layout.anchors.get(ws.preview_anchor, 0)
+            ws.preview_anchor = None
+        # Keep the requested message at the top even when the page ends below it.
+        # Ordinary bottom clamping would pull unrelated retention notices into view.
+        max_scroll = max(
+            0,
+            len(layout.lines) - ws.preview_height,
+            layout.anchors.get(anchor or (ws.selected_hit or {}).get("anchor"), 0),
+        )
+        ws.preview_scroll = max(0, min(ws.preview_scroll, max_scroll))
+        if not layout.lines:
+            message = (
+                "Loading matched message..."
+                if ws.busy == "conversation"
+                else "Select a passage to read its conversation."
+            )
+            lines = snippet_lines(message, inner, max_lines=ws.preview_height)
+        else:
+            lines = layout.lines[ws.preview_scroll : ws.preview_scroll + ws.preview_height]
+        for offset, line in enumerate(lines):
+            self._write_search_line(stdscr, y + 1 + offset, x + 3, line)
+        if layout.lines:
+            position = f" {ws.preview_scroll + 1}-{min(len(layout.lines), ws.preview_scroll + ws.preview_height)}/{len(layout.lines)} "
+            self.write(
+                stdscr,
+                y + height - 1,
+                x + max(2, width - len(position) - 2),
+                position,
+                curses.color_pair(4),
+            )
+
+    def _write_search_line(self, stdscr, y, x, line, attr=None):
+        if attr is None:
+            attr = {
+                "user": curses.color_pair(6) | curses.A_BOLD,
+                "assistant": curses.color_pair(2) | curses.A_BOLD,
+                "meta": curses.color_pair(4),
+                "code": curses.color_pair(3),
+            }.get(line.role, 0)
+        self.write(stdscr, y, x, line.text, attr)
+        for start, end in line.highlights:
+            self.write(
+                stdscr,
+                y,
+                x + display_width(line.text[:start]),
+                line.text[start:end],
+                attr | curses.A_BOLD | curses.A_UNDERLINE,
+            )
 
     def draw_header(self, stdscr: curses.window, width: int) -> None:
         summary = self.store.summary(self.all_workflows)
@@ -1070,7 +1447,7 @@ class Renderer:
 
     def draw_footer(self, stdscr: curses.window, height: int, width: int) -> None:
         # Show only contextual actions; omit conventional movement keys to save space.
-        if self.filter_active:
+        if self.filter_active and not keymap.in_conversation_search(self.app):
             # Accent the input field, not its key hints.
             self.hline(stdscr, height - 2, 0, width)
             x = self.write_seg(
@@ -1804,6 +2181,7 @@ class Renderer:
         kind: str = "tab",
         center: bool = False,
         rule: bool = False,
+        disabled: set[int] | None = None,
     ) -> None:
         # Brackets preserve active-tab state in monochrome or pair-starved terminals.
         # `rule` is the browse-mode bar's shape -- chips centered in a horizontal rule,
@@ -1812,9 +2190,10 @@ class Renderer:
         if width <= 0 or not tabs:
             return
         active_index %= len(tabs)
+        disabled = disabled or set()
         labels = [f"[{t}]" if i == active_index else f" {t} " for i, t in enumerate(tabs)]
         sep = " " if rule else "  "
-        total = sum(len(lbl) for lbl in labels) + len(sep) * (len(labels) - 1)
+        total = sum(display_width(lbl) for lbl in labels) + display_width(sep) * (len(labels) - 1)
         cx = x + max(0, (width - total) // 2) if (center or rule) and total <= width else x
         if rule and cx - x >= 2:
             self.hline(stdscr, y, x, cx - x - 1)  # left rule, a blank cell before the chips
@@ -1822,20 +2201,24 @@ class Renderer:
         for i, label in enumerate(labels):
             if i > 0:
                 self.write(stdscr, y, cx, shorten(sep, remaining), curses.A_NORMAL)
-                cx += min(len(sep), remaining)
-                remaining -= min(len(sep), remaining)
+                separator_width = min(display_width(sep), remaining)
+                cx += separator_width
+                remaining -= separator_width
             if remaining <= 0:
                 break
-            attr = (
-                curses.color_pair(7) | curses.A_BOLD
-                if i == active_index
-                else curses.color_pair(self._TAB_PAIR)
-            )
+            if i in disabled:
+                attr = curses.color_pair(4) | curses.A_DIM
+            elif i == active_index:
+                attr = curses.color_pair(7) | curses.A_BOLD
+            else:
+                attr = curses.color_pair(self._TAB_PAIR)
             text = shorten(label, remaining)
             self.write(stdscr, y, cx, text, attr)
-            self.regions.append((kind, y, cx, cx + len(text) - 1, i))  # clickable tab
-            cx += len(text)
-            remaining -= len(text)
+            text_width = display_width(text)
+            if i not in disabled:
+                self.regions.append((kind, y, cx, cx + text_width - 1, i))
+            cx += text_width
+            remaining -= text_width
         if rule and cx + 2 <= x + width:
             self.hline(stdscr, y, cx + 1, x + width - cx - 1)  # right rule after the chips
 
@@ -5847,8 +6230,14 @@ class Renderer:
         )
 
         visible = max(1, box_h - 3)
-        scroll = max(0, min(self.app.help_scroll, max(0, len(lines) - visible)))
-        self.app.help_scroll = scroll
+        workspace = (
+            self.app.conversation_search if keymap.in_conversation_search(self.app) else None
+        )
+        pager = workspace or self.app
+        if workspace is not None:
+            workspace.help_page_size = visible
+        scroll = max(0, min(pager.help_scroll, max(0, len(lines) - visible)))
+        pager.help_scroll = scroll
         for offset, segments in enumerate(lines[scroll : scroll + visible]):
             row_y = box_y + 1 + offset
             for dx, text, attr in segments:

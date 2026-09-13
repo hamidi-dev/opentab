@@ -97,7 +97,20 @@ def in_trends(app: App) -> bool:
 
 
 def in_main(app: App) -> bool:
-    return not app.overlay_top
+    return not app.overlay_top and not in_conversation_search(app)
+
+
+def in_conversation_search(app: App) -> bool:
+    workspace = getattr(app, "conversation_search", None)
+    return bool(workspace is not None and workspace.active)
+
+
+def search_commands(app: App) -> bool:
+    return in_conversation_search(app) and not (
+        app.conversation_search.editing
+        or app.conversation_search.filter_field
+        or app.conversation_search.filter_menu
+    )
 
 
 def in_zoom(app: App) -> bool:
@@ -110,6 +123,11 @@ def in_session(app: App) -> bool:
 
 def binding_context(app: App) -> str:
     """Context described by Help, excluding the Help pager itself."""
+    if in_conversation_search(app):
+        workspace = app.conversation_search
+        if workspace.filter_menu:
+            return "menu"
+        return "search.edit" if workspace.editing or workspace.filter_field else "search"
     if in_prices(app):
         return "prices.sessions" if in_price_drill(app) else "prices"
     if in_trends(app):
@@ -125,11 +143,24 @@ def _picker_context(app: App) -> str:
     return "help" if app.help else binding_context(app)
 
 
+def _conversation_search_context(app: App) -> str:
+    if app.help:
+        return "help"
+    if app.whats_new:
+        return "whats-new"
+    if app.toast_history:
+        return "notices"
+    return binding_context(app)
+
+
 def _sort_ctx(app: App) -> str:
     return "prices" if in_prices(app) else "main"
 
 
 def context_label(app: App) -> str:
+    if in_conversation_search(app):
+        workspace = app.conversation_search
+        return "Conversation search · reader" if workspace.reader else "Conversation search"
     if in_price_drill(app):
         return "Prices · sessions"
     if in_prices(app):
@@ -350,6 +381,223 @@ def _tab_focus_segments(app: App) -> list:
 
 KEYS: tuple[Key, ...] = (
     Key(
+        id="search-edit",
+        ctx=binding_context,
+        actions=("edit",),
+        summary="focus the query input",
+        section="here",
+        when=in_conversation_search,
+        chip="query",
+    ),
+    Key(
+        id="search-open",
+        ctx=binding_context,
+        actions=("open",),
+        summary=lambda app: "apply the scope"
+        if app.conversation_search.filter_field
+        else "finish typing and focus results"
+        if app.conversation_search.editing
+        else "open the selected message",
+        section="here",
+        when=lambda app: in_conversation_search(app) and not app.conversation_search.reader,
+        chip=lambda app: "apply"
+        if app.conversation_search.filter_field
+        else "results"
+        if app.conversation_search.editing
+        else "read",
+    ),
+    Key(
+        id="search-tabs",
+        ctx="search",
+        actions=("prev_tab", "next_tab"),
+        summary="switch Results / Conversation; keep each reading position",
+        section="here",
+        when=search_commands,
+        chip="tabs",
+    ),
+    Key(
+        id="search-focus",
+        ctx=binding_context,
+        actions=("focus_next", "focus_previous"),
+        summary=lambda app: "finish query editing and focus results / preview"
+        if app.conversation_search.editing
+        else "move focus between results and preview",
+        section="here",
+        when=lambda app: in_conversation_search(app)
+        and not app.conversation_search.filter_field
+        and not app.conversation_search.reader,
+        chip="focus",
+    ),
+    Key(
+        id="search-preview-scroll",
+        ctx="search",
+        actions=("preview_down", "preview_up"),
+        summary="scroll preview without moving the selected result",
+        section="here",
+        when=lambda app: search_commands(app) and not app.conversation_search.reader,
+        chip="preview",
+    ),
+    Key(
+        id="search-move",
+        ctx=binding_context,
+        actions=("down", "up", "page_down", "page_up"),
+        summary="select results / scroll the focused pane",
+        section="nav",
+        when=lambda app: in_conversation_search(app) and not app.conversation_search.filter_field,
+        chip_actions=("down", "up"),
+        chip="scroll",
+    ),
+    Key(
+        id="search-help",
+        ctx="search",
+        actions=("help",),
+        summary="show search controls",
+        section="here",
+        when=search_commands,
+        chip="help",
+    ),
+    Key(
+        id="search-help-scroll",
+        ctx="help",
+        actions=("down", "up"),
+        summary="scroll help (PgUp/PgDn also page)",
+        section="nav",
+        when=lambda app: in_conversation_search(app) and app.conversation_search.help,
+        chip="scroll",
+    ),
+    Key(
+        id="search-help-close",
+        ctx="help",
+        actions=("close",),
+        summary="close help and return to search",
+        section="nav",
+        when=lambda app: in_conversation_search(app) and app.conversation_search.help,
+        chip="close",
+    ),
+    Key(
+        id="search-scope-menu",
+        ctx="search",
+        actions=("scope_menu",),
+        summary="choose All sessions / This session",
+        section="here",
+        when=search_commands,
+    ),
+    Key(
+        id="search-reset",
+        ctx="search",
+        actions=("reset_filters",),
+        summary="clear all filters; keep the query",
+        section="here",
+        when=search_commands,
+    ),
+    Key(
+        id="search-filter-choose",
+        ctx="menu",
+        actions=("select",),
+        summary="apply the highlighted filter",
+        section="here",
+        when=lambda app: in_conversation_search(app) and bool(app.conversation_search.filter_menu),
+        chip="apply",
+    ),
+    Key(
+        id="search-filter-cancel",
+        ctx="menu",
+        actions=("cancel",),
+        summary="cancel the filter picker",
+        section="here",
+        when=lambda app: in_conversation_search(app) and bool(app.conversation_search.filter_menu),
+        chip="cancel",
+    ),
+    Key(
+        id="search-session",
+        ctx="search",
+        actions=("scope_session",),
+        summary="search only the selected result's session",
+        section="here",
+        when=search_commands,
+    ),
+    Key(
+        id="search-all",
+        ctx="search",
+        actions=("scope_all",),
+        summary="search all sessions; keep other filters",
+        section="here",
+        when=search_commands,
+    ),
+    Key(
+        id="search-project",
+        ctx="search",
+        actions=("scope_project",),
+        summary="filter by project directory (empty clears)",
+        section="here",
+        when=search_commands,
+    ),
+    Key(
+        id="search-harness",
+        ctx="search",
+        actions=("scope_harness",),
+        summary="filter: OpenCode / Claude / Codex / all",
+        section="here",
+        when=search_commands,
+    ),
+    Key(
+        id="search-date",
+        ctx="search",
+        actions=("scope_date",),
+        summary="filter by message dates (UTC, not session start)",
+        section="here",
+        when=search_commands,
+    ),
+    Key(
+        id="search-launch",
+        ctx="search",
+        actions=("launch",),
+        summary="launch or copy this session's resume command",
+        section="here",
+        when=lambda app: search_commands(app) and app.launch_session() is not None,
+        chip="launch",
+    ),
+    Key(
+        id="search-index",
+        ctx="search",
+        actions=("index",),
+        summary="explicitly refresh the sensitive local plaintext index",
+        section="here",
+        when=search_commands,
+        chip="index",
+    ),
+    Key(
+        id="search-window",
+        ctx="search",
+        actions=("previous", "next"),
+        summary="earlier / later bounded conversation window",
+        section="here",
+        when=lambda app: in_conversation_search(app) and app.conversation_search.reader,
+        chip="window",
+    ),
+    Key(
+        id="search-edit-text",
+        ctx="search.edit",
+        actions=("erase", "clear"),
+        summary="erase / clear typed text",
+        section="here",
+        when=lambda app: in_conversation_search(app)
+        and (app.conversation_search.editing or bool(app.conversation_search.filter_field)),
+        chip_actions=("clear",),
+        chip="clear",
+    ),
+    Key(
+        id="search-back",
+        ctx=binding_context,
+        actions=("back",),
+        summary=lambda app: "finish query editing"
+        if app.conversation_search.editing
+        else "leave reader / restore prior scope / close search",
+        section="nav",
+        when=in_conversation_search,
+        chip="back",
+    ),
+    Key(
         id="trace-scroll",
         ctx="main",
         actions=("down", "up"),
@@ -404,8 +652,8 @@ KEYS: tuple[Key, ...] = (
         else "maximize / restore the detail pane",
         section="here",
         when=in_main,
-        chip=lambda app: "detail" if app.view == "browse" else "max",
-        active=lambda app: app.zoom_maximized,
+        chip="expand",
+        active=lambda app: app.view == "zoom" and app.zoom_maximized,
     ),
     Key(
         id="ignore",
@@ -856,6 +1104,16 @@ KEYS: tuple[Key, ...] = (
         active=lambda app: bool(app.store.demo),
     ),
     Key(
+        id="conversation-search",
+        ctx=_conversation_search_context,
+        actions=("conversation_search",),
+        summary="search local conversation text; index writes require confirmation",
+        section="global",
+        when=lambda app: not getattr(app.store, "demo", False)
+        and not bool(getattr(app, "conversation_search", None)),
+        chip="search",
+    ),
+    Key(
         id="range",
         ctx="main",
         actions=("range",),
@@ -999,6 +1257,7 @@ FOOTER_ORDER = (
     "bookmarks",
     "note",
     "source",
+    "conversation-search",
     "range",
     "filter",
     "sort",
@@ -1027,13 +1286,51 @@ def sections(app: App) -> list[tuple[str, list[Key]]]:
     }
     out = []
     for name in SECTIONS:
-        rows = [k for k in KEYS if k.section == name and k.shown(app) and k.label(app)]
+        rows = [
+            k
+            for k in KEYS
+            if k.section == name
+            and (
+                not in_conversation_search(app)
+                or (
+                    k.id.startswith("search-")
+                    and k.id not in {"search-help-close", "search-help-scroll"}
+                )
+            )
+            and k.shown(app)
+            and k.label(app)
+        ]
         if rows:
             out.append((titles[name], rows))
     return out
 
 
 def footer_parts(app: App) -> list:
+    if in_conversation_search(app):
+        ids = (
+            ("search-filter-choose", "search-filter-cancel")
+            if app.conversation_search.filter_menu
+            else ("search-help-close", "search-help-scroll")
+            if app.conversation_search.help
+            else (
+                "search-open",
+                "search-tabs",
+                "search-move" if app.conversation_search.reader else "search-preview-scroll",
+                "search-launch",
+                "search-help",
+                "search-back",
+                "search-edit",
+                "search-focus",
+                "search-edit-text",
+                "search-window",
+                "search-index",
+            )
+        )
+        return [
+            BY_ID[key].chip_segments(app)
+            for key in ids
+            if BY_ID[key].shown(app) and BY_ID[key].chip_segments(app)
+        ]
     parts: list = []
     for key_id in FOOTER_ORDER:
         if _on_trace(app) and key_id not in (

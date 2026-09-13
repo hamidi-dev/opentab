@@ -59,7 +59,8 @@ are ignored, and the defaults are shown):
   cache directory, containing plaintext user/assistant text, titles and source
   identifiers. This separate opt-in index never enters normal rollup caches, web
   or fleet payloads. It uses owner-only POSIX paths and no automatic secret
-  redaction; index only permitted projects. Normal startup does not create it.
+  redaction; index only permitted projects. Startup and opening search do not create
+  it. TUI Build/Update requires confirmation.
   [Conversation search](conversation-search.md) describes refresh, exclusions,
   source checks and clearing. Clear removes active indexed content but is not a
   secure-erasure or backup-deletion guarantee.
@@ -155,6 +156,11 @@ accessible sessions is not filtered out. Remote summaries cannot supply conversa
 windows and no SSH fallback exists. The API adds no raw records, anchors, cursors,
 or conversation cache to rollup, web, or fleet data. Output remains sensitive and
 clients may save or forward it. See [conversation reads](programmatic.md#reading-conversation-records).
+
+Opening TUI search authorizes local user/assistant text reads without a raw-content
+flag. Index writes require separate confirmation and ignore date filters. Search
+has no network fallback and excludes demo/remote catalogs. Its text stays out of
+rollup caches, web/fleet payloads and ordinary exports. CLI/MCP gates are unchanged.
 
 Remote reads fetch only the requested turn, after checking its snapshot identity
 against the live timeline; there is no ordinal fallback. The TUI retains one remote

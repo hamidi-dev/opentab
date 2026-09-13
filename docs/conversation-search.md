@@ -5,10 +5,25 @@ OpenTab can already discover. This is **lexical search**, not semantic memory:
 identifiers and shared wording work best. It does not summarize conversations,
 learn a personal profile, call an embedding model, or use the network.
 
+## Search in the TUI
+
+Press `Ctrl-F`, type a query, then `Enter` to select results. Another `Enter`
+opens the Conversation tab. Both tabs preserve their reading positions. Search
+starts within the current session when opened from one, otherwise across the
+current local catalog. Scope, Harness, Project and Dates filters combine.
+
+Opening search needs no raw-content flag. A missing index offers a Build popup;
+`I` confirms an update. Indexing persists plaintext and ignores date filters.
+Search never refreshes automatically; coverage warnings identify missing or stale
+evidence. Demo and remote catalogs are unsupported.
+
+See [Search controls](keys.md#scope--filter) and [Privacy](privacy.md).
+
 ## Build deliberately
 
-Nothing is indexed during normal startup, reload, accounting queries or TUI/web
-browsing. Building an index is a separate action that **persists sensitive text**:
+Nothing is indexed during normal startup, reload, accounting queries or ordinary
+TUI/web browsing. Building an index is a separate explicit `I` or CLI/MCP action
+that **persists sensitive text**:
 
 ```sh
 opentab conversations index --project ~/work/my-project --allow-raw-content
@@ -191,7 +206,7 @@ The original source remains readable even when a span is not indexed.
 Other [conversation reader limits](programmatic.md#reading-conversation-records)
 still apply: catalog-only roots, supported retained formats, explicit synthetic
 exclusions, source-size budgets, and no reconstruction of the active branch or
-deleted history. No TUI search screen or vector index is included yet.
+deleted history. There is no vector index.
 
 ## Storage and APIs
 

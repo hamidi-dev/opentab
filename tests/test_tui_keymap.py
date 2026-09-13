@@ -23,6 +23,16 @@ def test_jk_scrolls_the_help_overlay():
     assert not app.help
 
 
+def test_expand_label_is_consistent_and_only_highlights_visible_maximized_zoom():
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    entry = ot.keymap.BY_ID["max"]
+    for view in ("browse", "zoom", "session"):
+        app.view = view
+        for maximized in (False, True):
+            app.zoom_maximized = maximized
+            assert entry.chip_segments(app) == [("+ expand", view == "zoom" and maximized)]
+
+
 def test_mouse_wheel_scrolls_the_help_overlay():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     app.handle_key(None, ord("?"))

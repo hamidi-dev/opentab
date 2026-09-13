@@ -21,7 +21,7 @@ layout, painting, and the hit regions produced by the current frame.
 read `self.current_sessions()` or `self.tab` through that shared interface.
 Assignments do not delegate; state changes in rendering code use `self.app`.
 
-Two internal modules keep stateless work out of those coordinators:
+Three internal modules keep stateless work out of those coordinators:
 
 - [`trace.py`](../src/opentab/tui/trace.py) formats recorded events from explicit
   width, expansion and key-label inputs. Its `TraceLayout` returns text with
@@ -34,6 +34,15 @@ Two internal modules keep stateless work out of those coordinators:
   `App` still selects the active scope, resolves notes, loads session details,
   applies contextual pricing, checks demo mode and chooses the export path.
   This module is for TUI CSVs, not web payloads or fleet exports.
+- [`search_layout.py`](../src/opentab/tui/search_layout.py) sanitizes, wraps and
+  highlights bounded search excerpts and conversation records. It understands
+  partial long-text parts and anchors but performs no source reads.
+
+[`search_workspace.py`](../src/opentab/tui/search_workspace.py) owns search state.
+[`search_worker.py`](../src/opentab/tui/search_worker.py) owns its store/service in
+one serial thread; never share the App's SQLite connections. Superseded reads are
+coalesced, but status and confirmed index jobs survive cancellation. Initial status
+reads only index metadata, without service creation or source discovery.
 
 These modules do not import `App` or `Renderer`. Keep new pure builders alongside
 their feature rather than adding mixins that implicitly share the entire UI state.
@@ -68,6 +77,8 @@ Dispatch by tab name rather than assuming a class tuple's index is still valid.
 
 `zoom_maximized` controls whether **zoom** hides its sidebar. It is a global
 preference saved and restored by `state.py`, not a transient flag reset on entry.
+The footer consistently labels `+` as `expand` and highlights it only in a visibly
+maximized zoom, never from that saved preference while browsing or in a session.
 The session layout is full-screen regardless of that flag; changing it there
 affects the zoom layout on return. A browse preview's trailing `detail` click
 region focuses it, but its more specific table and tab regions take precedence.
@@ -174,10 +185,11 @@ Overlays preserve the underlying view. Keyboard routing in `handle_key` gives
 ownership to the highest active context, approximately in this order:
 
 1. Mouse/resize events, then blocking startup warnings and the price prompt.
-2. Theme, demo, source, machine, harness, and what-if pickers.
-3. Help and notice history.
-4. Prices and Trends, including their sort, filter, and drill contexts.
-5. Ordinary sort/filter/launch input, then the main view.
+2. Conversation search, including its index confirmation, query, scope and reader states.
+3. Theme, demo, source, machine, harness, and what-if pickers.
+4. Help and notice history.
+5. Prices and Trends, including their sort, filter, and drill contexts.
+6. Ordinary sort/filter/launch input, then the main view.
 
 Painting and mouse handling follow the same ownership model. A modal must not
 leak clicks to a table behind it merely because that table registered a region
@@ -196,6 +208,14 @@ together. `get_wch` reads characters rather than UTF-8 bytes; `_read_key` return
 ASCII and special keys as integers, other characters as strings. Both forms go
 through action lookup, so non-ASCII keys can be bound as well as typed. Text
 prompts budget input length separately from visible width and scroll long input.
+
+Search uses `[search.edit]`, `[search]` and shared `[menu]` bindings. Its tabs,
+pickers, footer, help and mouse regions reuse existing renderers. Results splits
+at 108 inner columns and stacks at 80x20. Conversation retains separate reader
+state; initial pending reads are retagged across tab switches, and paging history
+is saved only on success. Query, filter or selection changes invalidate that state.
+The launch picker resolves a unique qualified root, never a native ID alone.
+See [Search controls](keys.md#scope--filter) and [permissions](privacy.md).
 
 ### Notifications
 
