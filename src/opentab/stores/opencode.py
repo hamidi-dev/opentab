@@ -989,7 +989,7 @@ class Store:
             return None
 
     def _conversation_database_manifest(self):
-        from opentab.conversation import source_manifest
+        from opentab.conversations.reader import source_manifest
 
         # The duplicated WAL-index header publishes the committed WAL snapshot. Hash
         # only that stable prefix: locks and reader marks later in -shm churn on reads.
@@ -1032,7 +1032,7 @@ class Store:
 
     def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:
         """Read original retained messages for one exact execution, never accounting rows."""
-        from opentab.conversation import ConversationError
+        from opentab.conversations.reader import ConversationError
 
         if self.demo:
             raise ConversationError("conversation_unavailable", "Conversation is disabled in demo.")

@@ -59,7 +59,7 @@ def _conversation_db(*, legacy=False, constrained=True, revisions=False):
 
 
 def _conversation_error(store, root="root", execution=None, code="conversation_unavailable"):
-    from opentab.conversation import ConversationError
+    from opentab.conversations.reader import ConversationError
 
     try:
         store.conversation_source(root, execution)
@@ -78,7 +78,7 @@ def test_opencode_conversation_manifest_tracks_wal_commits_but_not_shm_reader_ch
         store.conn.execute("select count(*) from session").fetchone()
         assert store.conversation_manifest("root") == initial
 
-        with patch("opentab.conversation.source_manifest", return_value=[["fixed"]]):
+        with patch("opentab.conversations.reader.source_manifest", return_value=[["fixed"]]):
             before_commit = store.conversation_manifest("root")
             writer.execute("insert into session values ('other', null)")
             writer.commit()

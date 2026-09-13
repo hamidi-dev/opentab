@@ -8,7 +8,7 @@ import threading
 import time
 from unittest.mock import patch
 
-from opentab.service import ServiceError
+from opentab.api.service import ServiceError
 from opentab.tui.search_worker import SearchWorker
 
 from tests._support import _write_opencode_db_with_turns

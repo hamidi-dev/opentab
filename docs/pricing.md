@@ -184,7 +184,7 @@ leak into the root's own cost.
 
 In the TUI, `whatif_session_totals()` supplies one comparison to Overview and
 Subagents, while `token_economics()` supplies the token-type card. The browser
-mirrors those calculations in `webpage.py` with `whatifTotals()` and
+mirrors those calculations in `web/page.py` with `whatifTotals()` and
 `tokenEconomics()`, using serialized model splits and rates. Changes to this
 arithmetic need updates and checks in **both implementations**.
 

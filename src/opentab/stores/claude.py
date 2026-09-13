@@ -1099,7 +1099,7 @@ class ClaudeStore:
         )
 
     def conversation_manifest(self, root_id: str):
-        from opentab.conversation import source_manifest
+        from opentab.conversations.reader import source_manifest
 
         if (
             self.demo
@@ -1117,7 +1117,7 @@ class ClaudeStore:
 
     def conversation_source(self, root_id: str, execution_id: str | None = None) -> dict:
         """Read recorded text occurrences, independently of usage and trace caches."""
-        from opentab.conversation import ConversationError, read_jsonl, source_key
+        from opentab.conversations.reader import ConversationError, read_jsonl, source_key
 
         if self.demo:
             raise ConversationError("unavailable", "Conversation content is disabled in demo mode.")

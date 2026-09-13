@@ -16,8 +16,8 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from . import paths
-from .conversation import ConversationError
+from opentab import paths
+from opentab.conversations.reader import ConversationError
 
 SCHEMA_VERSION = 2
 _LEGACY_SCHEMA_VERSION = 1
@@ -401,7 +401,7 @@ class ConversationIndex:
             }
 
     def replace_root(self, metadata, sources, source_manifest=None) -> dict:
-        from .conversation import CONVERSATION_READER_VERSION
+        from opentab.conversations.reader import CONVERSATION_READER_VERSION
 
         metadata = {key: metadata[key] for key in _FIELDS}
         fingerprint = hashlib.sha256(

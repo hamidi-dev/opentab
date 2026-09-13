@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from unittest.mock import patch
@@ -39,6 +40,27 @@ from tests._support import (
 )
 
 
+def test_cost_parser_keeps_service_mcp_index_and_http_server_lazy():
+    probe = (
+        "import opentab, sys;"
+        "args = opentab.parse_args(['cost']);"
+        "assert args.command == 'cost';"
+        "blocked = {'opentab.api.service', 'opentab.api.mcp', "
+        "'opentab.conversations.index', 'http.server'};"
+        "assert blocked.isdisjoint(sys.modules), sorted(blocked & sys.modules.keys());"
+        "assert 'opentab.api.json_cli' in sys.modules"
+    )
+    src = os.path.dirname(os.path.dirname(os.path.abspath(ot.__file__)))
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "PYTHONPATH": src},
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_conversations_top_level_normalizes_and_dispatches_before_discovery():
     from opentab import cli
 
@@ -51,7 +73,7 @@ def test_conversations_top_level_normalizes_and_dispatches_before_discovery():
         assert cli._normalize_argv(argv) == argv
         with (
             patch.object(sys, "argv", ["opentab", *argv]),
-            patch("opentab.programmatic.command", return_value=7) as command,
+            patch("opentab.api.json_cli.command", return_value=7) as command,
             patch.object(cli.paths, "migrate_legacy_caches") as migrate,
             patch.object(cli, "resolve_source") as resolve,
             patch.object(cli.sources, "make_store") as make_store,
@@ -218,7 +240,7 @@ def test_conversation_demo_and_unsupported_harness_fail_before_any_access():
         with (
             patch.object(sys, "argv", ["opentab", *argv]),
             patch(
-                "opentab.programmatic.command", side_effect=AssertionError("dispatch")
+                "opentab.api.json_cli.command", side_effect=AssertionError("dispatch")
             ) as command,
             patch.object(cli.sources, "available_sources", side_effect=AssertionError("discovery")),
             patch.object(cli.sources, "make_store", side_effect=AssertionError("store")),

@@ -786,7 +786,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="the machine name(s) to forget",
     )
     # Keep the machine-facing command tree out of this already large compatibility parser.
-    from opentab.programmatic import add_parsers
+    from opentab.api.json_cli import add_parsers
 
     add_parsers(subs, _add_global_args)
     return parser
@@ -1982,7 +1982,7 @@ def _offer_claude_retention_warning(app: App, can_persist: bool) -> None:
 
 def web_command(args: argparse.Namespace) -> int:
     # Build the same headless App state as the TUI. Defer the web import from TUI startup.
-    from opentab import web
+    from opentab.web import report
 
     use_state = not args.demo and not args.no_state
     state = load_state() if use_state else {}
@@ -2007,8 +2007,8 @@ def web_command(args: argparse.Namespace) -> int:
     if fleet_hint:
         sys.stderr.write(f"{fleet_hint}\n")
     if args.serve or args.web:
-        return web.serve_command(app, args)
-    return web.html_command(app, args)
+        return report.serve_command(app, args)
+    return report.html_command(app, args)
 
 
 def main() -> int:
@@ -2030,7 +2030,7 @@ def main() -> int:
         "ignore",
         "mcp",
     }:
-        from opentab.programmatic import command
+        from opentab.api.json_cli import command
 
         return command(args)
     if getattr(args, "command", None) == "doctor":

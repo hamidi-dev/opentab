@@ -13,10 +13,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import opentab as ot
-from opentab import conversation_search as search
-from opentab import service as service_module
 from opentab import state
-from opentab.conversation import ConversationError
+from opentab.api import service as service_module
+from opentab.conversations import index as search
+from opentab.conversations.reader import ConversationError
 
 from tests._support import (
     FakeStore,
@@ -803,7 +803,7 @@ def test_claude_refresh_catalog_is_cleared_when_a_source_read_fails():
 
 
 def test_claude_refresh_rejects_a_resumed_source_added_during_a_full_read():
-    from opentab.conversation import read_jsonl
+    from opentab.conversations.reader import read_jsonl
 
     with _isolated(), tempfile.TemporaryDirectory() as source_dir:
         root = Path(source_dir)
@@ -829,7 +829,7 @@ def test_claude_refresh_rejects_a_resumed_source_added_during_a_full_read():
             _write_jsonl(resumed, [{**row, "uuid": "resumed"}])
             return result
 
-        with patch("opentab.conversation.read_jsonl", side_effect=add_resume):
+        with patch("opentab.conversations.reader.read_jsonl", side_effect=add_resume):
             result = service.index_conversations()
         assert not result["complete"]
         assert [error["code"] for error in result["errors"]] == ["source_changed"]
@@ -860,7 +860,7 @@ def test_global_manifest_token_is_persisted_per_root_under_scoped_refreshes():
 
 
 def test_reader_version_change_invalidates_manifest_shortcut():
-    from opentab import conversation
+    from opentab.conversations import reader
 
     with _isolated() as path:
         store = ManifestConversationStore()
@@ -869,9 +869,9 @@ def test_reader_version_change_invalidates_manifest_shortcut():
         store.put("root", "reprojected semantic token", snapshot="v1")
         store.reads.clear()
         with patch.object(
-            conversation,
+            reader,
             "CONVERSATION_READER_VERSION",
-            conversation.CONVERSATION_READER_VERSION + 1,
+            reader.CONVERSATION_READER_VERSION + 1,
         ):
             assert service.index_conversations()["updated"] == 1
         assert store.reads == [("root", None)]

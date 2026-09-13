@@ -5,9 +5,9 @@ import json
 from unittest.mock import Mock, patch
 
 import opentab as ot
-import opentab.programmatic as programmatic
-import opentab.service as service_module
-from opentab.conversation import ConversationError
+from opentab.api import json_cli as programmatic
+from opentab.api import service as service_module
+from opentab.conversations.reader import ConversationError
 
 from tests._support import FakeStore, workflow
 
@@ -634,7 +634,7 @@ def test_conversations_cli_maintenance_is_dynamic_and_never_discovers_sources():
         getattr(helper, method).return_value = {"exists": False, "records": 0}
         out = io.StringIO()
         with (
-            patch.object(ot, "conversation_search", helper, create=True),
+            patch("opentab.conversations.index." + method, getattr(helper, method)),
             patch.object(
                 ot.OpenTabService, "open", side_effect=AssertionError("service discovery")
             ) as opened,
@@ -675,7 +675,8 @@ def test_conversations_cli_demo_and_missing_permission_precede_helpers_and_servi
             args.allow_raw_content = denied == "demo"
             out, helper = io.StringIO(), Mock()
             with (
-                patch.object(ot, "conversation_search", helper, create=True),
+                patch("opentab.conversations.index.index_status", helper.index_status),
+                patch("opentab.conversations.index.clear_index", helper.clear_index),
                 patch.object(ot.OpenTabService, "open") as opened,
                 contextlib.redirect_stdout(out),
             ):
@@ -704,7 +705,8 @@ def test_conversations_cli_translates_shared_errors_including_maintenance():
         target.side_effect = ConversationError("invalid_conversation_index", "synthetic failure")
         out = io.StringIO()
         with (
-            patch.object(ot, "conversation_search", helper, create=True),
+            patch("opentab.conversations.index.index_status", helper.index_status),
+            patch("opentab.conversations.index.clear_index", helper.clear_index),
             patch.object(ot.OpenTabService, "open", return_value=service),
             contextlib.redirect_stdout(out),
         ):

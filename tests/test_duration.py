@@ -777,11 +777,11 @@ def test_session_detail_says_how_long_the_agent_worked():
 
 
 def test_web_payload_ships_worked_seconds():
-    from opentab import web
+    from opentab.web import report
 
     app = _session_app()
     app._ensure_models()
-    payload = web.build_payload(app)
+    payload = report.build_payload(app)
     by_id = {r["id"]: r for r in payload["workflows"]}
     assert by_id["long"]["dur"] == 7200.0
     assert by_id["unknown"]["dur"] is None

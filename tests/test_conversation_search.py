@@ -14,8 +14,8 @@ from pathlib import Path
 from threading import Event
 from unittest.mock import patch
 
-from opentab import conversation_search as search
-from opentab.conversation import ConversationError
+from opentab.conversations import index as search
+from opentab.conversations.reader import ConversationError
 
 
 @contextmanager

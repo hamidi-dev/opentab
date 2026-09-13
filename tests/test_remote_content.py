@@ -12,8 +12,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from opentab import remote_content as rc
+from opentab.api.service import OpenTabService, ServiceError
 from opentab.models import API_SCHEMA_VERSION, SessionRef
-from opentab.service import OpenTabService, ServiceError
 from opentab.stores.remote import RemoteStore, _clean_turn, build_export
 
 from tests._support import _parse, workflow
@@ -404,7 +404,7 @@ def test_ssh_transport_sanitizes_failures_and_rejects_malformed_json():
 
 
 def test_remote_service_and_mcp_raw_content_gates_precede_transport():
-    from opentab.mcp import McpServer
+    from opentab.api.mcp import McpServer
 
     with _managed() as (store, *_), patch.object(
         rc, "_ssh_json", side_effect=_replies()

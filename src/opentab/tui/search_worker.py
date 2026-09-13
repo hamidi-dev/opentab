@@ -6,9 +6,9 @@ import sqlite3
 import threading
 from collections import deque
 
-from opentab.conversation import ConversationError
-from opentab.conversation_search import index_status
-from opentab.service import OpenTabService, ServiceError
+from opentab.api.service import OpenTabService, ServiceError
+from opentab.conversations.index import index_status
+from opentab.conversations.reader import ConversationError
 
 _OPERATIONS = frozenset({"status", "search", "conversation", "index"})
 _COALESCED = frozenset({"search", "conversation"})

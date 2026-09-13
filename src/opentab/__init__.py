@@ -260,26 +260,30 @@ from opentab.util import (
 # Keep http.server and doctor dependencies off the frequently polled cost import path.
 # PEP 562 preserves the package-level compatibility surface on first access.
 _LAZY_ATTRS = {
-    "OpenTabService": "opentab.service",
-    "ServiceError": "opentab.service",
-    "SessionQuery": "opentab.service",
-    "build_payload": "opentab.web",
-    "html_command": "opentab.web",
-    "serve_command": "opentab.web",
-    "session_extras": "opentab.web",
-    "render_html": "opentab.webpage",
+    "OpenTabService": "opentab.api.service",
+    "ServiceError": "opentab.api.service",
+    "SessionQuery": "opentab.api.service",
+    "build_payload": "opentab.web.report",
+    "html_command": "opentab.web.report",
+    "serve_command": "opentab.web.report",
+    "session_extras": "opentab.web.report",
+    "render_html": "opentab.web.page",
     "build_report": "opentab.doctor",
     "doctor_command": "opentab.doctor",
 }
 # Preserve module attributes independently of which lazy name is accessed first.
-_LAZY_MODULES = ("web", "webpage", "doctor")
+_LAZY_MODULES = {
+    "web": "opentab.web",
+    "webpage": "opentab.web.page",
+    "doctor": "opentab.doctor",
+}
 
 
 def __getattr__(name: str):
     import importlib
 
     if name in _LAZY_MODULES:
-        value = importlib.import_module(f"{__name__}.{name}")
+        value = importlib.import_module(_LAZY_MODULES[name])
     else:
         module = _LAZY_ATTRS.get(name)
         if module is None:

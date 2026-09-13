@@ -5,8 +5,8 @@ import json
 import sys
 
 from opentab import __version__
-from opentab.conversation import ConversationError
-from opentab.service import OpenTabService, ServiceError, SessionQuery
+from opentab.api.service import OpenTabService, ServiceError, SessionQuery
+from opentab.conversations.reader import ConversationError
 
 SERVER_NAME = "opentab"
 MODERN_VERSION = "2026-07-28"
@@ -581,9 +581,9 @@ class McpServer:
                 rebuild=arguments.get("rebuild", False),
             )
         elif name == "opentab_conversation_index_status":
-            from opentab import conversation_search
+            from opentab.conversations import index
 
-            data = conversation_search.index_status()
+            data = index.index_status()
         elif name == "opentab_list_models":
             query = self._query(arguments)
             data = self.service.list_models(

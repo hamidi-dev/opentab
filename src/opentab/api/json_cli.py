@@ -7,7 +7,7 @@ import json
 import sys
 
 from opentab import sources
-from opentab.conversation import ConversationError
+from opentab.conversations.reader import ConversationError
 from opentab.models import API_SCHEMA_VERSION
 from opentab.state import load_state
 
@@ -394,7 +394,7 @@ def _range(args) -> str:
 
 
 def query_from_args(args):
-    from opentab.service import SessionQuery
+    from opentab.api.service import SessionQuery
 
     return SessionQuery(
         range=_range(args),
@@ -515,10 +515,10 @@ def _mutate_without_store(args, OpenTabService) -> dict | None:
 
 def command(args) -> int:
     if args.command == "mcp":
-        from opentab.mcp import run_server
+        from opentab.api.mcp import run_server
 
         return run_server(args)
-    from opentab.service import OpenTabService, ServiceError
+    from opentab.api.service import OpenTabService, ServiceError
 
     try:
         if getattr(args, "demo", False):
@@ -543,13 +543,9 @@ def command(args) -> int:
             if args.action != "status" and not getattr(args, "allow_raw_content", False):
                 raise ServiceError("raw_content_disabled", "--allow-raw-content is required")
             if args.action in {"status", "clear"}:
-                from opentab import conversation_search
+                from opentab.conversations import index
 
-                data = (
-                    conversation_search.index_status()
-                    if args.action == "status"
-                    else conversation_search.clear_index()
-                )
+                data = index.index_status() if args.action == "status" else index.clear_index()
                 _write(envelope(data), getattr(args, "pretty", False))
                 return 0
         if args.command == "sources":

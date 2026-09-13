@@ -1,4 +1,5 @@
 """Bounded, source-attributed retained conversation reads, independent of accounting."""
+
 from __future__ import annotations
 
 import base64

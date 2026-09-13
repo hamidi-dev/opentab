@@ -38,7 +38,7 @@ from opentab.util import (
     tool_names,
     tool_namespace,
 )
-from opentab.webpage import render_html
+from opentab.web.page import render_html
 from opentab.whats_new import public_payload
 
 if TYPE_CHECKING:

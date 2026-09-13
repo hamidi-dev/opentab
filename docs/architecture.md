@@ -27,10 +27,10 @@ package and installed command are both `opentab`.
 
 | Module | Responsibility |
 |--------|----------------|
-| `cli.py`, `programmatic.py`, `__main__.py` | Commands, argument routing, startup, JSON envelopes and one-shot operations |
-| `service.py`, `mcp.py` | Headless accounting API and stdio MCP adapter |
-| `conversation.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors |
-| `conversation_search.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
+| `cli.py`, `__main__.py` | Commands, argument routing and startup |
+| `api/service.py`, `api/json_cli.py`, `api/mcp.py` | Headless accounting service, JSON commands and stdio MCP adapter |
+| `conversations/reader.py` | Shared conversation input validation, bounded text windows, anchors and snapshot-bound cursors |
+| `conversations/index.py` | Explicit private SQLite/FTS5 text index, source-bound root replacement and grouped lexical candidates; service owns visibility and live verification |
 | `models.py` | Workflow, qualified session identity and summary records |
 | `tools.py` | Numeric per-call projection of recorded usage rows; ordered repeated calls and proportional attribution |
 | `stores/` | Harness readers, combined views, portable summaries and warm caches |
@@ -43,7 +43,7 @@ package and installed command are both `opentab`.
 | `tui/search_workspace.py`, `tui/search_layout.py` | Conversation-search interaction state and pure width-aware result/reader layout |
 | `tui/search_worker.py` | Source-owning serial background service for local search, reads and explicit indexing |
 | `tui/bindings.py`, `tui/keymap.py` | Configurable bindings, contextual actions and help |
-| `web.py`, `webpage.py` | Report payload, HTTP server and self-contained HTML/CSS/JS |
+| `web/report.py`, `web/page.py` | Report payload, HTTP server and self-contained HTML/CSS/JS |
 | `pricing.py`, `data/models.json` | Rate lookup, cost calculations and generated catalog |
 | `formatting.py`, `heatmap.py`, `themes.py` | Text, charts and shared colour palettes |
 | `sources.py` | Harness discovery, selection and store construction |
@@ -56,6 +56,10 @@ Imports flow from shared helpers to stores, then to the TUI, application adapter
 and CLI. Stores never import the TUI. Annotation-only back-references use
 `if TYPE_CHECKING` rather than introducing runtime cycles. `__init__.py` also
 re-exports the public API, which callers and tests access as `opentab.<name>`.
+
+Package initializers stay lightweight: conversation readers do not load the index,
+and importing the web page does not load the HTTP server. Internal imports use the
+package paths above; documented root-level exports remain stable.
 
 ## One store contract
 
@@ -202,8 +206,8 @@ content paths. Search results and indexed text are likewise excluded. See
 The JSON CLI and MCP server instead use `OpenTabService`. It owns filtering,
 pagination, stable serialization, exact session routing, mutations to OpenTab's own
 state, and lazy detail reads without depending on curses or browser state. Adapters are
-thin: `programmatic.py` maps argparse actions to service calls and emits one versioned
-document; `mcp.py` validates tool inputs and maps the same calls to structured MCP
+thin: `api/json_cli.py` maps argparse actions to service calls and emits one versioned
+document; `api/mcp.py` validates tool inputs and maps the same calls to structured MCP
 results. See [Programmatic access](programmatic.md) for their public contract.
 
 TUI search creates its own `OpenTabService` and store in a serial worker thread.

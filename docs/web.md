@@ -213,7 +213,7 @@ restores focus to the control that opened it when closed.
 
 ## Contributing to the browser
 
-`web.py` adapts a headless App into data; `webpage.py` embeds that data and renders
+`web/report.py` adapts a headless App into data; `web/page.py` embeds that data and renders
 it in the browser. Keep these boundaries when adding a field or interaction:
 
 - **Explicit payload fields.** Whitelist what the page needs rather than dumping

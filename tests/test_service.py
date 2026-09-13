@@ -3,16 +3,46 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import opentab as ot
 import opentab.notes as notes_module
 import opentab.state as state_module
-from opentab import programmatic, remote_content
+from opentab import remote_content
+from opentab.api import json_cli as programmatic
 
 from tests._support import FakeStore, _claude_msg, _parse, _usage, _write_jsonl, workflow
 from tests.test_remote_content import _managed, _replies
+
+
+def test_api_package_is_lightweight_and_root_service_exports_preserve_identity():
+    probe = (
+        "import importlib, opentab, sys;"
+        "children = {'opentab.api.service', 'opentab.api.json_cli', 'opentab.api.mcp'};"
+        "assert children.isdisjoint(sys.modules);"
+        "api = importlib.import_module('opentab.api');"
+        "assert children.isdisjoint(sys.modules);"
+        "service = importlib.import_module('opentab.api.service');"
+        "assert opentab.OpenTabService is service.OpenTabService;"
+        "assert opentab.ServiceError is service.ServiceError;"
+        "assert opentab.SessionQuery is service.SessionQuery;"
+        "blocked = {'opentab.api.json_cli', 'opentab.api.mcp', "
+        "'opentab.conversations.index', 'http.server'};"
+        "assert blocked.isdisjoint(sys.modules), sorted(blocked & sys.modules.keys());"
+        "assert api is sys.modules['opentab.api']"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "PYTHONPATH": str(Path(ot.__file__).parents[1])},
+    )
+    assert result.returncode == 0, result.stderr
 
 
 class DetailStore(FakeStore):
@@ -239,7 +269,8 @@ def test_conversation_routes_exact_qualified_owner_and_only_selected_execution()
     combined = ot.CombinedStore(stores)
     service = ot.OpenTabService(combined, _args(), "all", allow_raw_content=True)
     with patch(
-        "opentab.conversation.window", side_effect=lambda source, **opts: {"source": source, **opts}
+        "opentab.conversations.reader.window",
+        side_effect=lambda source, **opts: {"source": source, **opts},
     ) as window:
         for item, store in zip(service._sessions, stores):
             key = item.ref.encode()
@@ -308,12 +339,12 @@ def test_conversation_demo_leaf_and_unsupported_remote_fail_without_raw_or_trans
 
 
 def test_conversation_translates_shared_errors_from_reader_and_window():
-    from opentab import conversation
-    from opentab.conversation import ConversationError
+    from opentab.conversations import reader
+    from opentab.conversations.reader import ConversationError
 
     store = ConversationStore([workflow("root", "2026-09-01 12:00:00")])
     service = ot.OpenTabService(store, _args(), allow_raw_content=True)
-    for target, name in ((store, "conversation_source"), (conversation, "window")):
+    for target, name in ((store, "conversation_source"), (reader, "window")):
         with patch.object(
             target, name, side_effect=ConversationError("source_changed", "source changed")
         ):
@@ -533,7 +564,7 @@ def test_summary_scope_reports_matching_identities_and_effective_ignore_policy()
     )
     ignored_key = ot.SessionRef("one", "opencode", "same").encode()
     for state in ({"ignored_projects": ["/repo/left"]}, {"ignored_sessions": [ignored_key]}):
-        with patch("opentab.service.load_state", return_value=state):
+        with patch("opentab.api.service.load_state", return_value=state):
             result = service.summary()
             scope = result["scope"]
             assert scope["selected_source"] == "all"
@@ -552,7 +583,7 @@ def test_summary_scope_reports_matching_identities_and_effective_ignore_policy()
             assert empty["totals"]["token_breakdown_complete"] is True
     service.use_state = False
     with patch(
-        "opentab.service.load_state", side_effect=AssertionError("state must stay disabled")
+        "opentab.api.service.load_state", side_effect=AssertionError("state must stay disabled")
     ):
         result = service.summary()
     assert result["totals"]["sessions"] == 2
@@ -748,8 +779,8 @@ def test_model_catalog_static_path_matches_instance_api_with_state_and_paging():
     state = {"pinned_models": ["anthropic/claude-opus"]}
     service = ot.OpenTabService(DetailStore([]), _args())
     with (
-        patch("opentab.service.catalog_models", return_value=rows),
-        patch("opentab.service.load_state", return_value=state) as loaded,
+        patch("opentab.api.service.catalog_models", return_value=rows),
+        patch("opentab.api.service.load_state", return_value=state) as loaded,
     ):
         direct = ot.OpenTabService.list_model_catalog(
             search="claude", limit=1, offset=0, use_state=True

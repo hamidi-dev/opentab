@@ -719,7 +719,7 @@ class OpenTabService:
         if getattr(self.args, "demo", False) or getattr(self.store, "demo", False):
             raise ServiceError("demo_unsupported", "conversation is unavailable in demo mode")
 
-        from opentab.conversation import ConversationError, validate_window, window
+        from opentab.conversations.reader import ConversationError, validate_window, window
 
         options = dict(
             anchor=anchor, cursor=cursor, limit=limit, max_chars=max_chars, before=before, tail=tail
@@ -795,7 +795,7 @@ class OpenTabService:
 
     @staticmethod
     def _conversation_source_id(owner):
-        from opentab.conversation import source_key
+        from opentab.conversations.reader import source_key
 
         for field in ("db", "root_dir"):
             location = getattr(owner, field, None)
@@ -816,8 +816,8 @@ class OpenTabService:
     def index_conversations(
         self, *, project=None, harness=None, machine=None, session=None, rebuild=False
     ):
-        from opentab.conversation import CONVERSATION_READER_VERSION, ConversationError
-        from opentab.conversation_search import ConversationIndex
+        from opentab.conversations.index import ConversationIndex
+        from opentab.conversations.reader import CONVERSATION_READER_VERSION, ConversationError
 
         self._validate_conversation_scope(
             project=project, harness=harness, machine=machine, session=session
@@ -995,8 +995,8 @@ class OpenTabService:
         limit=10,
         max_chars=6000,
     ):
-        from opentab.conversation import ConversationError
-        from opentab.conversation_search import ConversationIndex, validate_search
+        from opentab.conversations.index import ConversationIndex, validate_search
+        from opentab.conversations.reader import ConversationError
 
         rows = self._conversation_scope(
             project=project, harness=harness, machine=machine, session=session

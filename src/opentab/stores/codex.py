@@ -210,7 +210,7 @@ class CodexStore:
         return head, head_hash, before
 
     def _conversation_catalog(self):
-        from opentab.conversation import source_key
+        from opentab.conversations.reader import source_key
 
         paths = sorted({os.path.abspath(name) for name in self._files()})
         heads, hashes, stamps, sessions = {}, {}, {}, {}
@@ -253,7 +253,7 @@ class CodexStore:
         self._conversation_catalog_cache = None
 
     def conversation_manifest(self, root_id: str):
-        from opentab.conversation import source_key
+        from opentab.conversations.reader import source_key
 
         catalog = self._conversation_catalog_cache or self._conversation_catalog()
         if not catalog["valid"]:
@@ -302,7 +302,7 @@ class CodexStore:
         part here. Only the selected execution's text is retained. Other heads
         establish addressing; required ancestors get a streaming metadata-only scan.
         """
-        from opentab.conversation import (
+        from opentab.conversations.reader import (
             MAX_LINE_BYTES,
             MAX_SOURCE_BYTES,
             ConversationError,
@@ -579,7 +579,7 @@ class CodexStore:
         fresh_heads, fresh_hashes = {}, {}
         if self._conversation_catalog_cache is not None:
             current_files = sorted({os.path.abspath(name) for name in self._files()})
-            from opentab.conversation import source_manifest
+            from opentab.conversations.reader import source_manifest
 
             if source_manifest(current_files) == catalog["files_manifest"]:
                 fresh_heads, fresh_hashes = heads, head_hashes

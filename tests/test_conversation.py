@@ -2,6 +2,8 @@ import base64
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from copy import deepcopy
@@ -9,7 +11,28 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from opentab import conversation as conv
+from opentab.conversations import reader as conv
+
+
+def test_reader_import_does_not_load_index_or_headless_adapters():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import opentab.conversations.reader; "
+                "blocked = {'opentab.conversations.index', 'opentab.api.service', "
+                "'opentab.api.json_cli', 'opentab.api.mcp', 'http.server', "
+                "'opentab.web.report'}; "
+                "assert blocked.isdisjoint(sys.modules), sorted(blocked & sys.modules.keys())"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env={**os.environ, "PYTHONPATH": str(Path(conv.__file__).parents[2])},
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @contextmanager

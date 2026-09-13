@@ -361,7 +361,7 @@ def _claude_prompt_run(tmp, run="12345678-first", content="received task"):
 
 
 def test_claude_conversation_reads_all_text_without_usage_or_accounting_caches():
-    from opentab.conversation import source_key
+    from opentab.conversations.reader import source_key
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "s1.jsonl"
@@ -567,7 +567,7 @@ def test_claude_refresh_discovery_matches_glob_hidden_and_nonfile_source_policy(
 
 
 def test_claude_conversation_refresh_detects_mutation_during_read_and_direct_reads_stay_live():
-    from opentab.conversation import read_jsonl
+    from opentab.conversations.reader import read_jsonl
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "s1.jsonl"
@@ -583,7 +583,7 @@ def test_claude_conversation_refresh_detects_mutation_during_read_and_direct_rea
             _write_jsonl(path, [changed])
             return result
 
-        with patch("opentab.conversation.read_jsonl", side_effect=mutate_after_read):
+        with patch("opentab.conversations.reader.read_jsonl", side_effect=mutate_after_read):
             source = store.conversation_source("s1")
         assert source["records"][0]["parts"][0]["text"] == "before"
         assert store.conversation_manifest("s1") != before
@@ -608,7 +608,7 @@ def test_claude_conversation_refresh_demo_and_failed_discovery_cleanup_are_safe(
 
 
 def test_claude_conversation_isolates_full_sidechain_ids_including_zero_usage():
-    from opentab.conversation import ConversationError
+    from opentab.conversations.reader import ConversationError
 
     run = "12345678-1111-4111-8111-111111111111"
     sibling_id = "12345678-2222-4222-8222-222222222222"
@@ -653,7 +653,7 @@ def test_claude_conversation_isolates_full_sidechain_ids_including_zero_usage():
 
 
 def test_claude_conversation_rejects_unresolved_ownership_without_guessing():
-    from opentab.conversation import ConversationError
+    from opentab.conversations.reader import ConversationError
 
     with tempfile.TemporaryDirectory() as tmp:
         store, path, rows = _claude_prompt_run(tmp)
@@ -689,7 +689,7 @@ def test_claude_conversation_rejects_unresolved_ownership_without_guessing():
 
 
 def test_claude_conversation_sidecars_require_root_ownership_not_the_filename():
-    from opentab.conversation import ConversationError
+    from opentab.conversations.reader import ConversationError
 
     with tempfile.TemporaryDirectory() as tmp:
         store, path, rows = _claude_prompt_run(tmp)
@@ -817,7 +817,7 @@ def test_claude_conversation_preserves_unflagged_literal_wrappers_in_both_roles(
 
 
 def test_claude_conversation_is_fresh_and_keeps_physical_lines_after_malformed_records():
-    from opentab.conversation import read_jsonl
+    from opentab.conversations.reader import read_jsonl
 
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "s1.jsonl"
@@ -852,7 +852,7 @@ def test_claude_conversation_is_fresh_and_keeps_physical_lines_after_malformed_r
 
 
 def test_claude_conversation_capability_is_cheap_and_demo_blocks_source_reads():
-    from opentab.conversation import ConversationError
+    from opentab.conversations.reader import ConversationError
 
     with tempfile.TemporaryDirectory() as tmp:
         store, _path, _rows = _claude_prompt_run(tmp)
@@ -866,7 +866,8 @@ def test_claude_conversation_capability_is_cheap_and_demo_blocks_source_reads():
         with patch.object(
             store, "_transcripts", side_effect=AssertionError("demo must not discover")
         ), patch(
-            "opentab.conversation.read_jsonl", side_effect=AssertionError("demo must not read")
+            "opentab.conversations.reader.read_jsonl",
+            side_effect=AssertionError("demo must not read"),
         ):
             assert not store.supports_conversation("s1")
             try:
@@ -878,13 +879,13 @@ def test_claude_conversation_capability_is_cheap_and_demo_blocks_source_reads():
 
 
 def test_claude_conversation_propagates_bounded_reader_failures_without_fallback():
-    from opentab.conversation import ConversationError
+    from opentab.conversations.reader import ConversationError
 
     with tempfile.TemporaryDirectory() as tmp:
         store, path, _rows = _claude_prompt_run(tmp)
         for code in ("missing", "unreadable", "too_large", "source_changed"):
             failure = ConversationError(code, "Safe reader failure.")
-            with patch("opentab.conversation.read_jsonl", side_effect=failure) as reader:
+            with patch("opentab.conversations.reader.read_jsonl", side_effect=failure) as reader:
                 try:
                     store.conversation_source("s1")
                 except ConversationError as exc:
@@ -895,7 +896,7 @@ def test_claude_conversation_propagates_bounded_reader_failures_without_fallback
 
 
 def test_claude_conversation_snapshot_binds_full_root_and_execution_mapping():
-    from opentab.conversation import read_jsonl
+    from opentab.conversations.reader import read_jsonl
 
     with tempfile.TemporaryDirectory() as tmp:
         root_id = "aaaaaaaa-1111-4111-8111-111111111111"
@@ -909,12 +910,18 @@ def test_claude_conversation_snapshot_binds_full_root_and_execution_mapping():
         assert root["executions"][1] == {"id": child_id, "parent_id": root_id}
         assert not store.supports_conversation(root_id[:8])
         located, _snapshot, limitations = read_jsonl([path])
-        with patch("opentab.conversation.read_jsonl", return_value=(located, "fixed", limitations)):
+        with patch(
+            "opentab.conversations.reader.read_jsonl",
+            return_value=(located, "fixed", limitations),
+        ):
             before = store.conversation_source(root_id)
             child = store.conversation_source(root_id, child_id)
             assert before["snapshot"] != child["snapshot"]
         changed = [(p, line, dict(obj, isSidechain=False)) for p, line, obj in located]
-        with patch("opentab.conversation.read_jsonl", return_value=(changed, "fixed", limitations)):
+        with patch(
+            "opentab.conversations.reader.read_jsonl",
+            return_value=(changed, "fixed", limitations),
+        ):
             after = store.conversation_source(root_id)
         assert before["snapshot"] != after["snapshot"]
         assert after["executions"] == [{"id": root_id, "parent_id": None}]

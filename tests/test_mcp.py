@@ -7,8 +7,8 @@ import tempfile
 from unittest.mock import Mock, patch
 
 import opentab as ot
-from opentab.conversation import ConversationError
-from opentab.mcp import LEGACY_VERSIONS, MODERN_VERSION, McpServer, run_server
+from opentab.api.mcp import LEGACY_VERSIONS, MODERN_VERSION, McpServer, run_server
+from opentab.conversations.reader import ConversationError
 
 from tests._support import _write_jsonl
 
@@ -372,7 +372,7 @@ def test_conversation_mcp_still_requires_process_permission_and_translates_windo
 def test_conversations_mcp_lists_bounded_tools_without_service_or_index_creation():
     helper = Mock()
     with (
-        patch.object(ot, "conversation_search", helper, create=True),
+        patch("opentab.conversations.index.index_status", helper.index_status),
         patch.object(ot.OpenTabService, "open") as opened,
     ):
         tools = McpServer(_args()).handle(_request("tools/list"))["result"]["tools"]
@@ -574,7 +574,7 @@ def test_conversations_mcp_status_is_dynamic_counts_only_without_discovery():
         helper = Mock(spec=["index_status"])
         helper.index_status.return_value = result_value
         with (
-            patch.object(ot, "conversation_search", helper, create=True),
+            patch("opentab.conversations.index.index_status", helper.index_status),
             patch.object(
                 ot.OpenTabService, "open", side_effect=AssertionError("service creation")
             ) as opened,
@@ -594,7 +594,7 @@ def test_conversations_mcp_status_is_dynamic_counts_only_without_discovery():
 def test_conversations_mcp_status_translates_local_helper_errors():
     helper = Mock(spec=["index_status"])
     helper.index_status.side_effect = ConversationError("index_unavailable", "synthetic failure")
-    with patch.object(ot, "conversation_search", helper, create=True):
+    with patch("opentab.conversations.index.index_status", helper.index_status):
         result = McpServer(_args()).handle(
             _request(
                 "tools/call",
@@ -620,7 +620,7 @@ def test_conversations_mcp_demo_denies_all_actions_before_service_or_helpers():
         args.demo = "all"
         helper = Mock()
         with (
-            patch.object(ot, "conversation_search", helper, create=True),
+            patch("opentab.conversations.index.index_status", helper.index_status),
             patch.object(ot.OpenTabService, "open") as opened,
         ):
             result = McpServer(args).handle(

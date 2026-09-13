@@ -57,7 +57,7 @@ def _conversation_rollout(root, sid, rows=(), parent=None, name=None):
 
 
 def _conversation_error(store, root, selected=None, code=None):
-    from opentab.conversation import ConversationError
+    from opentab.conversations.reader import ConversationError
 
     try:
         store.conversation_source(root, selected)
@@ -291,7 +291,7 @@ def test_codex_conversation_zero_usage_keeps_prompt_representations_and_omits_no
 
 
 def test_codex_conversation_exact_execution_ownership_and_metadata_only_discovery():
-    from opentab.conversation import read_jsonl
+    from opentab.conversations.reader import read_jsonl
 
     with tempfile.TemporaryDirectory() as tmp:
         for sid, parent in (
@@ -303,7 +303,7 @@ def test_codex_conversation_exact_execution_ownership_and_metadata_only_discover
         ):
             _conversation_rollout(tmp, sid, [_codex_user(sid)], parent=parent)
         store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
-        with patch("opentab.conversation.read_jsonl", wraps=read_jsonl) as reader:
+        with patch("opentab.conversations.reader.read_jsonl", wraps=read_jsonl) as reader:
             result = store.conversation_source("root", "child")
         assert len(reader.call_args.args[0]) == 1
         assert reader.call_args.args[0][0].name.endswith("-child.jsonl")
@@ -375,7 +375,7 @@ def test_codex_conversation_requires_metadata_not_filename_and_discovers_nonstan
 
 
 def test_codex_conversation_live_archive_and_resumed_copy_policy_preserves_occurrences():
-    from opentab.conversation import source_key
+    from opentab.conversations.reader import source_key
 
     with tempfile.TemporaryDirectory() as tmp:
         live, archive = Path(tmp) / "sessions", Path(tmp) / "archived_sessions"
@@ -435,7 +435,7 @@ def test_codex_conversation_strict_physical_lines_warn_and_mutations_change_snap
 
 
 def test_codex_conversation_snapshot_rejects_metadata_mutation_during_selected_read():
-    from opentab.conversation import read_jsonl
+    from opentab.conversations.reader import read_jsonl
 
     with tempfile.TemporaryDirectory() as tmp:
         _conversation_rollout(tmp, "root")
@@ -447,12 +447,12 @@ def test_codex_conversation_snapshot_rejects_metadata_mutation_during_selected_r
             _conversation_rollout(tmp, "root", parent="foreign")
             return result
 
-        with patch("opentab.conversation.read_jsonl", side_effect=mutate):
+        with patch("opentab.conversations.reader.read_jsonl", side_effect=mutate):
             _conversation_error(store, "root", "child", "source_changed")
 
 
 def test_codex_conversation_unrelated_activity_during_read_preserves_snapshot():
-    from opentab.conversation import read_jsonl
+    from opentab.conversations.reader import read_jsonl
 
     for selected in (None, "child"):
         with tempfile.TemporaryDirectory() as tmp:
@@ -484,7 +484,7 @@ def test_codex_conversation_unrelated_activity_during_read_preserves_snapshot():
 
                 store.prepare_conversation_refresh()
                 try:
-                    with patch("opentab.conversation.read_jsonl", side_effect=mutate):
+                    with patch("opentab.conversations.reader.read_jsonl", side_effect=mutate):
                         during = store.conversation_source("root", selected)
                 finally:
                     store.finish_conversation_refresh()
@@ -493,7 +493,7 @@ def test_codex_conversation_unrelated_activity_during_read_preserves_snapshot():
 
 
 def test_codex_conversation_relevant_activity_during_read_invalidates_snapshot():
-    from opentab.conversation import read_jsonl
+    from opentab.conversations.reader import read_jsonl
 
     for action in (
         "selected-text",
@@ -537,7 +537,7 @@ def test_codex_conversation_relevant_activity_during_read_invalidates_snapshot()
                     _conversation_rollout(tmp, "unrelated", parent="root")
                 return result
 
-            with patch("opentab.conversation.read_jsonl", side_effect=mutate):
+            with patch("opentab.conversations.reader.read_jsonl", side_effect=mutate):
                 _conversation_error(store, "root", "child", "source_changed")
 
 
@@ -612,7 +612,7 @@ def test_codex_conversation_same_rollout_ancestor_conflicts_cannot_authorize_gra
 
 
 def test_codex_conversation_ancestor_tail_claims_are_fresh_but_text_is_not_snapshotted():
-    from opentab.conversation import read_jsonl
+    from opentab.conversations.reader import read_jsonl
 
     with tempfile.TemporaryDirectory() as tmp:
         _conversation_rollout(tmp, "root")
@@ -638,7 +638,7 @@ def test_codex_conversation_ancestor_tail_claims_are_fresh_but_text_is_not_snaps
                     fh.write(json.dumps(row) + "\n")
                 return result
 
-            with patch("opentab.conversation.read_jsonl", side_effect=mutate):
+            with patch("opentab.conversations.reader.read_jsonl", side_effect=mutate):
                 if kind == "conflicting-claim":
                     _conversation_error(store, "root", "grandchild", "source_changed")
                 else:
@@ -653,7 +653,7 @@ def test_codex_conversation_ancestry_validation_has_bounded_safe_reads():
         _conversation_rollout(tmp, "child", [_codex_user("child")], parent="root")
         store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
         for constant, limit in (("MAX_LINE_BYTES", 1024), ("MAX_SOURCE_BYTES", 1024)):
-            with patch("opentab.conversation." + constant, limit):
+            with patch("opentab.conversations.reader." + constant, limit):
                 _conversation_error(store, "root", "child", "conversation_too_large")
 
 
@@ -672,13 +672,13 @@ def test_codex_conversation_metadata_head_budget_is_bounded_and_explicit():
 
 
 def test_codex_conversation_propagates_shared_reader_limits_and_safe_errors():
-    from opentab.conversation import ConversationError
+    from opentab.conversations.reader import ConversationError
 
     with tempfile.TemporaryDirectory() as tmp:
         _conversation_rollout(tmp, CODEX_SID, [_codex_user("PRIVATE selected")])
         store = ot.CodexStore(tmp, type("Args", (), {"demo": False})())
         with patch(
-            "opentab.conversation.read_jsonl",
+            "opentab.conversations.reader.read_jsonl",
             side_effect=ConversationError(
                 "source_too_large", "Conversation source exceeds the read limit."
             ),

@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 
 import opentab as ot
+from opentab.web import page, report
 
 from tests._support import (
     FakeStore,
@@ -525,8 +526,8 @@ def test_web_trends_model_drill_has_economics_and_sessions_tabs():
     assert "TRENDS.drillTab = 'Economics'" in js
     assert "TRENDS.drillTab === 'Sessions' ? 'Economics' : 'Sessions'" in js
     assert "TRENDS.drillTab = null" in js  # Esc/back leaves the drill, not the overlay.
-    assert "#trends{position:fixed" in ot.webpage._CSS
-    assert "padding:26px 20px;overflow-y:auto" in ot.webpage._CSS
+    assert "#trends{position:fixed" in page._CSS
+    assert "padding:26px 20px;overflow-y:auto" in page._CSS
 
 
 def test_web_trends_model_economics_executes_shipped_js_for_active_scope():
@@ -882,7 +883,7 @@ delete DATA.nodes.w1; render(); assert.ok(text().includes('no subagents in this 
     )
     assert result.returncode == 0, result.stderr
 
-    assert ".prompt-full{white-space:pre-wrap;overflow-wrap:anywhere" in ot.webpage._CSS
+    assert ".prompt-full{white-space:pre-wrap;overflow-wrap:anywhere" in page._CSS
 
 
 def test_web_prompt_charts_execute_shipped_javascript():
@@ -1036,7 +1037,7 @@ def test_web_harness_browse_executes_shipped_javascript():
     if node is None:
         print("SKIP JavaScript behavior check: Node.js is not installed (required in CI)")
         return
-    source = ot.webpage._JS
+    source = page._JS
 
     def between(start, end):
         return source[source.index(start) : source.index(end, source.index(start))]
@@ -1427,7 +1428,7 @@ def test_web_report_server_serves_page_extras_and_404():
     import urllib.request
 
     app = app_with([workflow("w1", "2026-05-01 10:00:00")])
-    server = ot.web.ReportServer(("127.0.0.1", 0), app)
+    server = report.ReportServer(("127.0.0.1", 0), app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
@@ -1471,7 +1472,7 @@ def test_web_node_prompt_endpoint_is_lazy_private_and_snapshot_bound():
     # The App/store implementation is owned separately; exercise the web contract.
     reader = Mock(return_value=prompt)
     app.read_node_prompt = reader
-    server = ot.web.ReportServer(("127.0.0.1", 0), app)
+    server = report.ReportServer(("127.0.0.1", 0), app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
@@ -1569,7 +1570,7 @@ def test_web_server_is_hardened_against_csrf_and_dns_rebinding():
     import urllib.request
 
     app = app_with([workflow("w1", "2026-05-01 10:00:00")])
-    server = ot.web.ReportServer(("127.0.0.1", 0), app)
+    server = report.ReportServer(("127.0.0.1", 0), app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     port = server.server_address[1]
@@ -1634,13 +1635,13 @@ def test_serve_command_runs_serve_forever_off_the_main_thread():
             self.events.append("close")
 
     made = {}
-    real = ot.web.ReportServer
-    ot.web.ReportServer = lambda address, app: made.setdefault("s", FakeServer(address, app))
+    real = report.ReportServer
+    report.ReportServer = lambda address, app: made.setdefault("s", FakeServer(address, app))
     try:
         args = types.SimpleNamespace(bind="127.0.0.1", port=0, web=False)
-        rc = ot.web.serve_command(app_with([workflow("w1", "2026-05-01 10:00:00")]), args)
+        rc = report.serve_command(app_with([workflow("w1", "2026-05-01 10:00:00")]), args)
     finally:
-        ot.web.ReportServer = real
+        report.ReportServer = real
     server = made["s"]
     assert rc == 0
     assert server.serve_on_main is False  # never the foreground / main thread
@@ -1663,10 +1664,10 @@ def test_web_open_report_opens_a_browser_and_survives_a_headless_box():
 
     webbrowser.open = fake_open
     try:
-        assert ot.web.open_report("http://localhost:8321/") is True
+        assert report.open_report("http://localhost:8321/") is True
         assert calls == [("http://localhost:8321/", 2)]  # new=2 -> a new tab
         webbrowser.open = boom
-        assert ot.web.open_report("http://localhost:8321/") is False
+        assert report.open_report("http://localhost:8321/") is False
     finally:
         webbrowser.open = real_open
 
@@ -1759,16 +1760,14 @@ def test_web_page_has_the_per_scope_machines_tab_machinery():
             "server": [workflow("b", "2026-05-02 10:00:00")],
         }
     )
-    html = ot.webpage.render_html(ot.build_payload(app))
+    html = page.render_html(ot.build_payload(app))
     # the read-only per-scope Machines breakdown table + its tab dispatch, gated off the
     # 'M' machine scope (which is already one box)
     assert "function machinesTable(" in html
     assert "TAB === 'Machines'" in html
     assert "sc.kind !== 'M'" in html
     # a non-fleet page grows no per-scope Machines tab (machines flag off)
-    plain = ot.webpage.render_html(
-        ot.build_payload(app_with([workflow("a", "2026-05-01 10:00:00")]))
-    )
+    plain = page.render_html(ot.build_payload(app_with([workflow("a", "2026-05-01 10:00:00")])))
     assert '"machines":false' in plain
 
 
@@ -1784,7 +1783,7 @@ def test_web_refresh_endpoint_repulls_the_named_machine():
         return [(name or "all", 4, "")]
 
     app.refresh_machines_now = fake_refresh
-    server = ot.web.ReportServer(("127.0.0.1", 0), app)
+    server = report.ReportServer(("127.0.0.1", 0), app)
     server.page()  # prime the page cache so we can prove the refresh invalidates it
     snapshot = server._node_snapshot
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1817,7 +1816,7 @@ def test_web_refresh_endpoint_ignores_malformed_and_unnamed_requests():
     app = app_with([workflow("w1", "2026-05-01 10:00:00")])
     calls = []
     app.refresh_machines_now = lambda name=None: calls.append(name) or [(name or "ALL", 1, "")]
-    server = ot.web.ReportServer(("127.0.0.1", 0), app)
+    server = report.ReportServer(("127.0.0.1", 0), app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_address[1]}"
@@ -2454,34 +2453,60 @@ def test_web_payload_names_the_local_models_so_the_page_can_exclude_them():
 
 
 def test_web_names_stay_reachable_from_a_cold_package_import():
-    # Exercise deferred web exports from a subprocess with no prior opentab.web import.
+    # Exercise deferred web exports from a subprocess with no prior web import.
     import subprocess
     import sys
 
     probe = (
-        "import opentab, sys;"
+        "import importlib, opentab, sys;"
         "assert 'opentab.web' not in sys.modules, 'web imported eagerly';"
-        "assert opentab.web.ReportServer, 'ot.web unreachable from a cold import';"
-        "assert opentab.webpage.render_html, 'ot.webpage unreachable';"
-        "assert callable(opentab.build_payload) and callable(opentab.render_html);"
+        "page = importlib.import_module('opentab.web.page');"
+        "assert 'http.server' not in sys.modules, 'page imported the report server';"
+        "assert opentab.web.page is page;"
+        "assert opentab.webpage is page and opentab.render_html is page.render_html;"
+        "assert 'opentab.web.report' not in sys.modules;"
+        "report = importlib.import_module('opentab.web.report');"
+        "assert opentab.build_payload is report.build_payload;"
+        "assert opentab.html_command is report.html_command;"
+        "assert opentab.serve_command is report.serve_command;"
+        "assert opentab.session_extras is report.session_extras;"
+        "assert opentab.web.ReportServer is report.ReportServer;"
+        "assert opentab.web.open_report is report.open_report;"
+        "assert opentab.web.render_html is page.render_html;"
         "assert 'build_payload' in dir(opentab) and 'web' in dir(opentab);"
         # star-import must still see the deferred names, which it cannot do off the
         # module dict alone -- hence the explicit __all__
         "assert {'build_payload', 'render_html', 'web', 'webpage'} <= set(opentab.__all__);"
+        "assert {'DEFAULT_BIND', 'DEFAULT_PORT', 'DEFAULT_REPORT', 'ReportServer', "
+        "'build_payload', 'html_command', 'open_report', 'render_html', "
+        "'serve_command', 'session_extras'} <= set(opentab.web.__all__);"
+        "print('ok')"
+    )
+    alias_first_probe = (
+        "import opentab, sys;"
+        "page = opentab.webpage;"
+        "assert page is sys.modules['opentab.web.page'];"
+        "assert opentab.web.page is page and 'http.server' not in sys.modules;"
+        "build_payload = opentab.build_payload;"
+        "report = sys.modules['opentab.web.report'];"
+        "assert build_payload is report.build_payload;"
+        "assert opentab.web.ReportServer is report.ReportServer;"
+        "assert opentab.webpage is page;"
         "print('ok')"
     )
     # src/ on the path the way tests/__init__.py puts it there, so this runs with no
     # install like the rest of the suite; the rest of the env is inherited so the
     # child sees the same temp XDG roots.
     src = os.path.dirname(os.path.dirname(os.path.abspath(ot.__file__)))
-    out = subprocess.run(
-        [sys.executable, "-c", probe],
-        capture_output=True,
-        text=True,
-        env={**os.environ, "PYTHONPATH": src},
-    )
-    assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == "ok"
+    for source in (probe, alias_first_probe):
+        out = subprocess.run(
+            [sys.executable, "-c", source],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": src},
+        )
+        assert out.returncode == 0, out.stderr
+        assert out.stdout.strip() == "ok"
 
 
 class ExpiryFakeStore(FakeStore):
@@ -2545,7 +2570,7 @@ def test_web_ships_cache_expiries_precomputed_rather_than_mirroring_the_rule():
     # returning three expiries and the page rendering none.
     assert "expiries: x.expiries || []" in js
     # Waste reads red, where the ▼ compaction row is amber (the TUI makes the same split).
-    assert "tr.expiry-row td{color:var(--bad)" in ot.webpage._CSS
+    assert "tr.expiry-row td{color:var(--bad)" in page._CSS
 
 
 def test_web_expiries_stay_empty_when_the_backend_cannot_support_the_reading():
