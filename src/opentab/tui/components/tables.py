@@ -1,15 +1,17 @@
 """Pure table text and scrolling-picker geometry."""
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from opentab.formatting import display_width, pad, short_path, shorten
-from opentab.tui.components.boxes import BOX_CHROME, box_row, box_rule, box_top
+from opentab.formatting import display_width, human_tokens, money, pad, pct, short_path, shorten
+from opentab.tui.components.boxes import BOX_CHROME, box_row, box_rule, box_top, ruled_box
 
 PICKER_CHROME = 4
 SESSION_TITLE_MIN = 24
 SESSION_PROJECT_MAX = 20
+GROUP_FIXED = 40
+SORT_ARROW_WIDTH = 2
 
 
 @dataclass(frozen=True)
@@ -139,6 +141,177 @@ class ProjectTableText:
     header: str
     body: tuple[str, ...]
     total: str | None
+
+
+@dataclass(frozen=True)
+class GroupTableLayout:
+    lines: tuple[str, ...]
+    header_line: int
+    body_start: int | None
+    window_start: int
+    window_count: int
+    cursor: int
+
+
+def group_widths(
+    rows: Sequence[tuple[str, object]],
+    column: str,
+    width: int,
+    display=shorten,
+) -> tuple[int, int]:
+    """Size the shared grouped-spend name and bar columns."""
+    cap = max(10, width - GROUP_FIXED - 3)
+    name_width = min(
+        max(
+            [display_width(display(name, cap)) for name, _item in rows]
+            + [len(column) + SORT_ARROW_WIDTH]
+        ),
+        cap,
+    )
+    return name_width, max(3, min(20, width - name_width - GROUP_FIXED))
+
+
+def group_header(
+    column: str,
+    name_width: int,
+    bar_width: int,
+    headings: Mapping[str, str] | None = None,
+) -> str:
+    labels = {
+        "name": column,
+        "cost": "Cost",
+        "tokens": "Tokens",
+        "count": "Sess",
+    }
+    labels.update(headings or {})
+    return (
+        f"  {labels['name']:<{name_width}}  {'':{bar_width}} {labels['cost']:>11} "
+        f"{'Share':>5} {labels['tokens']:>9} {labels['count']:>7}"
+    )
+
+
+def group_row(
+    name: str,
+    item: Mapping[str, float | int],
+    marker: str,
+    name_width: int,
+    bar_width: int,
+    peak: float,
+    total: float,
+    display=shorten,
+) -> str:
+    bar = "█" * max(0, round((float(item["cost"]) / peak) * bar_width))
+    return (
+        f"{marker} {display(name, name_width):{name_width}}  {bar:<{bar_width}} "
+        f"{money(float(item['cost'])):>11} {pct(float(item['cost']), total):>5} "
+        f"{human_tokens(int(item['tokens'])):>9} {int(item['sessions']):>7}"
+    )
+
+
+def group_row_budget(height: int, count: int, notes: int = 0) -> int:
+    return max(1, height - BOX_CHROME - (2 if count > 1 else 0) - notes)
+
+
+def group_window(count: int, cursor: int, fit: int) -> tuple[int, int, int]:
+    index = max(0, min(cursor, count - 1))
+    fit = max(1, fit)
+    start = max(0, min(index - fit // 2, count - fit))
+    return index, start, min(fit, count - start)
+
+
+def group_unpriced_notes(
+    rows: Sequence[tuple[str, Mapping[str, float | int]]],
+    show_api_prices: bool,
+    price_key: str,
+) -> tuple[str, ...]:
+    if show_api_prices or not any(
+        float(item["cost"]) == 0 and int(item["tokens"]) for _name, item in rows
+    ):
+        return ()
+    return ("", f"{price_key} prices subscription/credit usage at API list rates")
+
+
+def group_table_layout(
+    rows: Sequence[tuple[str, Mapping[str, float | int]]],
+    width: int,
+    noun: str,
+    column: str,
+    glyphs: Mapping[str, str],
+    *,
+    limit: int | None = None,
+    cursor: int = 0,
+    selectable: bool = False,
+    height: int | None = None,
+    headings: Mapping[str, str] | None = None,
+    show_api_prices: bool,
+    price_key: str,
+    display: Callable[[str, int], str] = shorten,
+) -> GroupTableLayout:
+    """Build the shared grouped-spend table from already ordered rows."""
+    title = f"# Spend by {noun}"
+    if not rows:
+        name_width, bar_width = group_widths((), column, max(1, width - BOX_CHROME), display)
+        box = ruled_box(
+            title,
+            group_header(column, name_width, bar_width, headings),
+            (),
+            None,
+            (),
+            width,
+            glyphs,
+        )
+        return GroupTableLayout(
+            (*box.lines, "", "No sessions in the active range."),
+            box.header_line or 0,
+            box.body_start,
+            0,
+            0,
+            0,
+        )
+
+    notes = group_unpriced_notes(rows, show_api_prices, price_key)
+    if height is not None:
+        limit = group_row_budget(height, len(rows), len(notes))
+    if selectable and limit is not None:
+        selected, start, count = group_window(len(rows), cursor, limit)
+        visible = rows[start : start + count]
+    else:
+        selected = max(0, min(cursor, len(rows) - 1))
+        start = 0
+        visible = rows if limit is None else rows[:limit]
+    scope = rows if selectable and limit is not None else visible
+    total_cost = sum(float(item["cost"]) for _name, item in scope)
+    peak = max((float(item["cost"]) for _name, item in scope), default=0.0) or 1.0
+    inner = max(1, width - BOX_CHROME)
+    name_width, bar_width = group_widths(visible, column, inner, display)
+    body = tuple(
+        group_row(name, item, " ", name_width, bar_width, peak, total_cost, display)
+        for name, item in visible
+    )
+    total_row = None
+    if len(scope) > 1:
+        total_row = (
+            f"  {pad('TOTAL', name_width)}  {'':{bar_width}} {money(total_cost):>11} {'':>5} "
+            f"{human_tokens(sum(int(item['tokens']) for _name, item in scope)):>9} "
+            f"{sum(int(item['sessions']) for _name, item in scope):>7}"
+        )
+    box = ruled_box(
+        title,
+        group_header(column, name_width, bar_width, headings),
+        body,
+        total_row,
+        notes,
+        width,
+        glyphs,
+    )
+    return GroupTableLayout(
+        box.lines,
+        box.header_line or 0,
+        box.body_start,
+        start,
+        len(visible),
+        selected,
+    )
 
 
 def project_name_width(width: int) -> int:

@@ -1,4 +1,5 @@
 import os
+from unittest.mock import Mock
 
 import opentab as ot
 
@@ -230,6 +231,31 @@ def test_draw_calendar_paints_heat_grid():
     assert "total" in text and "$50.00" in text  # peak day priced into the summary
     assert "█" in text  # the busiest day paints the hottest shade
     assert any(g in text for g in "·░▒▓")  # cooler tiers (empty + light days) render too
+
+
+def test_calendar_empty_and_too_small_states_skip_data_palette_and_cursor_work():
+    app = app_with([workflow("a", "2026-06-15 12:00:00", cost=50)])
+    renderer = app.renderer
+    app._calendar_by_date = Mock(side_effect=AssertionError("calendar data queried"))
+    renderer._sync_heat_palette = Mock(side_effect=AssertionError("palette initialized"))
+    app._effective_cursor = Mock(side_effect=AssertionError("cursor resolved"))
+    original = ot.curses.color_pair
+    ot.curses.color_pair = lambda number: number
+    try:
+        small = FakeScreen(16, 80)
+        renderer.draw_calendar(small, 0, 0, 12, 40)
+        assert "Not enough room for the calendar." in screen_text(small)
+
+        app.calendar_years = Mock(return_value=[])
+        empty = FakeScreen(16, 80)
+        renderer.draw_calendar(empty, 0, 0, 13, 40)
+        assert "No spend in the active range." in screen_text(empty)
+    finally:
+        ot.curses.color_pair = original
+
+    assert app._calendar_by_date.call_count == 0
+    assert renderer._sync_heat_palette.call_count == 0
+    assert app._effective_cursor.call_count == 0
 
 
 def test_calendar_heat_grid_dims_until_focused():

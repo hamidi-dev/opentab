@@ -145,6 +145,21 @@ def test_wrap_cells_and_clip_tail():
     assert ot.clip_tail("hi", 10) == "hi"
 
 
+def test_wrap_lines_preserves_short_layout_rows_and_wraps_overflow_by_cells():
+    from opentab.formatting import wrap_lines
+
+    assert wrap_lines(["  a  b", "", "one\n\ntwo", "世界世界"], 6) == [
+        "  a  b",
+        "",
+        "one",
+        "",
+        "two",
+        "世界世",
+        "界",
+    ]
+    assert wrap_lines(iter(["", "abc"]), 0) == ["", "a", "b", "c"]
+
+
 def test_notice_is_info_and_colours_are_explicit():
     app = app_with([workflow("a", "2026-06-01 12:00:00")])
     clock = [100.0]

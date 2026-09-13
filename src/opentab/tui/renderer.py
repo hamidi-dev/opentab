@@ -1,13 +1,14 @@
 """Renderer: all drawing."""
 from __future__ import annotations
 
-import math
 import textwrap
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from opentab import __version__
+from opentab import pricing as pricing_ops
+from opentab import util as util_ops
 from opentab.models import (
     DaySummary,
     HarnessSummary,
@@ -22,7 +23,6 @@ from opentab.tui import bindings, keymap
 from opentab.tui.components import menus
 from opentab.tui.components.bars import (
     legend_lines,
-    positioned_label_line,
     segment_glyph,
     stack_line,
     stack_widths,
@@ -84,6 +84,18 @@ from opentab.tui.components.tables import (
     project_table_text,
 )
 from opentab.tui.components.tables import (
+    group_header as table_group_header,
+)
+from opentab.tui.components.tables import (
+    group_row as table_group_row,
+)
+from opentab.tui.components.tables import (
+    group_table_layout as table_group_table_layout,
+)
+from opentab.tui.components.tables import (
+    group_widths as table_group_widths,
+)
+from opentab.tui.components.tables import (
     project_header_text as table_project_header_text,
 )
 from opentab.tui.components.tables import (
@@ -110,7 +122,12 @@ from opentab.tui.components.token_cards import (
     token_economics_card,
 )
 from opentab.tui.search_layout import conversation_layout, snippet_lines
-from opentab.tui.trace import TraceLine, build_event_body, format_block, output_target, wrapped
+from opentab.tui.trace import TraceLine, output_target
+from opentab.tui.views import prices as price_view
+from opentab.tui.views import subagents as subagents_view
+from opentab.tui.views import tools as tools_view
+from opentab.tui.views import trends as trend_views
+from opentab.tui.views import turns as turns_view
 
 if TYPE_CHECKING:
     from opentab.tui.app import App
@@ -142,6 +159,7 @@ from opentab.formatting import (
     shorten,
     tokens,
     wrap_cells,
+    wrap_lines,
 )
 from opentab.heatmap import (
     BLOCKS_UP,
@@ -151,10 +169,7 @@ from opentab.heatmap import (
     TOKEN_SERIES_BASE_PAIR,
     TOOL_HEAT_BASE_PAIR,
     TOOL_HEAT_LEVELS,
-    calendar_cells,
-    heat_band_label,
     heat_glyph,
-    heat_level,
     heat_palette,
     token_series,
     token_series_ansi,
@@ -163,8 +178,6 @@ from opentab.models import ALL_YEARS, year_label
 from opentab.pricing import (
     TOKEN_TYPES,
     api_equivalent_cost,
-    cache_misses,
-    family_label,
     is_local_provider,
     model_context_window,
     model_price,
@@ -173,39 +186,19 @@ from opentab.pricing import (
 from opentab.util import (
     CONTEXT_COMPACT_FLOOR,
     CONTEXT_COMPACT_RATIO,
-    TRACE_EVENTS_CAP,
-    agent_mix_label,
-    cached_share,
-    context_compactions,
     context_size,
     fuzzy_score,
-    node_1h_write,
-    short_tool_name,
-    tool_call_label,
-    tool_mix_label,
-    tool_names,
     unicode_screen,
 )
 from opentab.whats_new import RELEASES_URL
 
 
 def _turn_read_mark(row) -> str:
-    # Plain labels remain useful on a selected row and in monochrome.
-    kinds = []
-    if row.get("has_reasoning"):
-        kinds.append("Thinking")
-    if row.get("has_text"):
-        kinds.append("Text")
-    calls = tool_call_label(row.get("tools"))
-    if calls:
-        kinds.append(calls)
-    return " · ".join(kinds)
+    return turns_view.turn_read_mark(row)
 
 
 def _turn_agent(row) -> str:
-    # Keep the subagent marker consistent with the web frontend.
-    label = (row.get("agent") or "-").strip() or "-"
-    return f"↳ {label}" if row.get("depth") else label
+    return turns_view.turn_agent(row)
 
 
 class Renderer:
@@ -239,16 +232,6 @@ class Renderer:
         ("cost", "Cost"),
         ("tokens", "Tokens"),
         ("title", "Title"),
-    )
-    # Base labels are located in the rendered header, including active-sort arrows.
-    PRICE_SORT_COLUMNS = (
-        ("model", "model"),
-        ("eff", "eff $/M"),
-        ("use", "use"),
-        ("input", "input"),
-        ("output", "output"),
-        ("cache_read", "cacheR"),
-        ("cache_write", "cacheW"),
     )
 
     def _key(self, ctx: str, action: str) -> str:
@@ -4006,151 +3989,39 @@ class Renderer:
 
     @staticmethod
     def _flame_pct(frac: float) -> str:
-        # Guard both ends so visible parts never read as 0% or make a near-total read 100%.
-        # Half-up matches JavaScript Math.round in the web frontend.
-        if frac >= 1:
-            return "100%"
-        if frac <= 0:
-            return "0%"
-        share = 100.0 * frac
-        if share >= 99.5:
-            return ">99%"
-        if share < 0.5:
-            return "<1%"
-        return f"{math.floor(share + 0.5):.0f}%"
+        return subagents_view.flame_pct(frac)
 
     @staticmethod
     def _legend_names(segments, with_model: bool = False) -> list[str]:
-        # Re-separate names after clipping: duplicate line text collides in _token_runs
-        # and would assign both swatches the latter color.
-        out: list[str] = []
-        used: dict[str, int] = {}
-        for seg in segments:
-            name = shorten(seg.label, 24)
-            if with_model and seg.model:
-                name += f" {seg.model}"
-            used[name] = seen = used.get(name, 0) + 1
-            out.append(name if seen == 1 else f"{name}·{seen}")
-        return out
+        return subagents_view.legend_names(segments, with_model)
 
     def _flame_label_line(self, segments, widths, text_of) -> tuple[str, list[int]]:
-        line, placed = positioned_label_line(
-            [(str(text_of(segment) or ""), segment.slot) for segment in segments], widths
-        )
-        if line.text:
-            self._token_runs[line.text] = [
-                (span.column, span.length, span.slot) for span in line.spans
-            ]
-        return line.text, placed
+        text, placed, spans = subagents_view.flame_label_line(segments, widths, text_of)
+        if text:
+            self._token_runs[text] = [(span.column, span.length, span.slot) for span in spans]
+        return text, placed
+
+    def _adopt_subagent_layout(self, layout) -> list[str]:
+        self._box_headers.update(layout.headers)
+        self._subagent_header_at = dict(layout.row_map)
+        self._subagent_cursor_line = layout.cursor_line
+        for line, spans in layout.token_spans:
+            self._token_runs[line] = [(span.column, span.length, span.slot) for span in spans]
+        for line, columns, target in layout.sort_headers:
+            self._line_sort_headers[line] = (columns, target)
+        if layout.selected_node_index is not None:
+            self.app._subagent_selected = layout.selected_node_index
+        return list(layout.lines)
 
     def _flamegraph_box(self, workflow: Workflow, width: int) -> list[str]:
-        # Visualize root/subagent share using App.session_flame, the same values as the
-        # table's Cost column. Width falls back to tokens when no costs exist.
-        flame = self.app.session_flame(workflow)
-        if flame is None or not flame.segments:
-            return []
-        inner = max(1, width - 4)
-        dollars = flame.unit == "cost"
-
-        def fmt(v: float) -> str:
-            return money(v) if dollars else human_tokens(int(v))
-
-        approx = "~" if flame.estimated else ""
-        kids = flame.children
-        own = flame.total - sum(s.value for s in kids)
-
-        # Keep the finding readable when the pane is too narrow for bands.
-        parts = [f"root kept {self._flame_pct(flame.self_share)} ({fmt(own)})"]
-        if kids:
-            parts.append(
-                f"{len(kids)} subagent{'s' if len(kids) != 1 else ''} "
-                f"split {fmt(sum(s.value for s in kids))}"
-            )
-            if len(kids) > 1:
-                parts.append(
-                    f"biggest {shorten(kids[0].agent, 22)} {self._flame_pct(kids[0].share)}"
-                )
-        else:
-            parts = [f"root kept all {approx}{fmt(flame.total)} — no subagent recorded a share"]
-        head = [" · ".join(parts)]
-
-        # Place names below the fill so text does not erase color. Require at least one
-        # cell per segment; otherwise the headline is more honest than indistinguishable
-        # single-cell slices.
-        chart: list[str] = []
-        named: list[int] = []
-        if inner >= max(self._FLAME_MIN_INNER, len(flame.segments)):
-            caption = "session · width = " + ("dollars" if dollars else "tokens")
-            # State a uniform model once; use positioned labels only for mixed trees.
-            if flame.one_model:
-                caption += f" · all on {flame.one_model}"
-            figure = approx + fmt(flame.total)
-            chart.append(caption + " " * max(1, inner - len(caption) - len(figure)) + figure)
-            rows = [(s.label, s.value, s.slot) for s in flame.segments]
-            widths = self._stack_widths(rows, flame.total, inner)
-            chart.append(
-                self._token_stack_line(rows, flame.total, inner, share_fmt=self._flame_pct)
-            )
-            names, named = self._flame_label_line(flame.segments, widths, lambda s: s.agent)
-            if names:
-                chart.append(names)
-            if not flame.one_model:
-                models, _ = self._flame_label_line(flame.segments, widths, lambda s: s.model)
-                if models:
-                    chart.append(models)
-            # The legend carries only segments too narrow for positioned names.
-            rest = [s for i, s in enumerate(flame.segments) if i not in set(named)]
-            if rest:
-                chart.append("")
-                legend = rest[: self._FLAME_LEGEND_MAX]
-                names_ = self._legend_names(legend, with_model=not flame.one_model)
-                chart.extend(
-                    self._token_legend_lines(
-                        list(
-                            zip(
-                                names_,
-                                [0] * len(legend),
-                                [0] * len(legend),
-                                [s.slot for s in legend],
-                            )
-                        ),
-                        inner,
-                    )
-                )
-
-        notes = []
-        unnamed = len(flame.segments) - len(named)
-        if chart and unnamed > self._FLAME_LEGEND_MAX:
-            notes.append(
-                f"· {unnamed - self._FLAME_LEGEND_MAX} thinner segment"
-                f"{'s' if unnamed - self._FLAME_LEGEND_MAX != 1 else ''} left out of the key — "
-                "the table below names every execution"
-            )
-        if not dollars:
-            notes.append(
-                "! nothing here recorded a cost, so width is TOKENS — press "
-                f"{self._key('main', 'api_prices')} to divide list-price dollars instead"
-            )
-        elif flame.estimated:
-            notes.append("! widths include list-price estimates for what recorded no cost")
-        if flame.deep:
-            # Stores expose depth but not parent identity; show deep nodes as marked
-            # siblings rather than inventing tree edges.
-            notes.append(
-                f"! {flame.deep} execution{'s' if flame.deep != 1 else ''} ran under another "
-                "subagent (↳) — shown alongside, since the tree records depth but not parents"
-            )
-        if flame.silent:
-            notes.append(
-                f"· {flame.silent} subagent{'s' if flame.silent != 1 else ''} recorded no "
-                f"{'spend' if dollars else 'tokens'} — no width to draw, still in the table below"
-            )
-        return self._sectioned_box(
-            f"# Where the money went · {approx}{fmt(flame.total)}",
-            [head, chart],
+        layout = subagents_view.flamegraph_layout(
+            self.app.session_flame(workflow),
             width,
-            notes,
-        ) + [""]
+            glyphs=self.box_glyphs(),
+            colored=self._token_series_ok,
+            api_prices_key=self._key("main", "api_prices"),
+        )
+        return self._adopt_subagent_layout(layout)
 
     def detail_subagents(self, workflow: Workflow, width: int) -> list[str]:
         self._subagent_header_at = {}
@@ -4161,271 +4032,89 @@ class Renderer:
             return self.detail_turns(workflow, width)
         if not any(row["depth"] > 0 for row in nodes):
             return ["# Subagents", "No subagents used in this workflow."]
-        selected = next((r for r in rows if r["_node_index"] == self.subagent_drill), None)
+        selected = next(
+            (row for row in rows if row["_node_index"] == self.app.active_subagent_drill), None
+        )
         if selected is not None:
             return self._subagent_detail(selected, nodes, width)
-        # Build the chart prefix before registering the table's absolute sort-header line.
-        # What-if does not alter the chart's recorded/estimated share.
-        head = self._subagent_wrap(self._flamegraph_box(workflow, width), width)
         priced = self._priced_nodes(nodes)
-        children = [r for r in priced if r["depth"] > 0]
-        cost = sum(r["cost"] for r in children)
-        tokens = sum(r["tokens_total"] for r in children)
-        summary = [
-            f"{len(children)} executions   {sum(r['depth'] == 1 for r in children)} direct / "
-            f"{sum(r['depth'] > 1 for r in children)} nested   max depth {max(r['depth'] for r in children)}",
-            f"Delegated cost {money(cost)} ({pct(cost, sum(r['cost'] for r in priced))} of tree)   "
-            f"tokens {human_tokens(tokens)} ({pct(tokens, sum(r['tokens_total'] for r in priced))})",
-        ]
-        head += self._sectioned_box(
-            "# Delegation", [self._subagent_wrap(summary, width - self.BOX_CHROME)], width, []
-        ) + [""]
         totals = self.whatif_session_totals(workflow)
-        if self.whatif_model and totals:
-            # What-if covers the whole tree, including root. Without per-model rows the
-            # baseline is unknowable, so retain the ordinary table rather than quote half.
-            lines = self._subagents_whatif(
-                rows,
-                self.whatif_model,
-                totals,
-                workflow,
-                width,
-                head,
-            )
-        else:
-            lines = head + self._subagent_table(
-                rows, width, len(head), sum(r["cost"] for r in priced)
-            )
-        enter = self.keymap.label("main", "select")
-        lines += self._subagent_wrap(
-            [
-                f"{enter} / click: inspect execution. Shares use node totals, which can differ from session rollups."
-            ],
-            width,
+        target = self.whatif_model if self.whatif_model and totals else ""
+        whatif_prices = (
+            {row["_node_index"]: self.whatif_node_price(row, target) for row in rows}
+            if target
+            else {}
         )
-        for field, label in (("agent", "Agent"), ("model_name", "Representative model")):
-            groups: dict[str, list[dict]] = {}
-            for row in children:
-                groups.setdefault(str(row.get(field) or "unknown"), []).append(row)
-            extra = width >= 64
-            name_w = max(8, width - self.BOX_CHROME - (42 if extra else 28))
-            header = (
-                f"  {pad(shorten(label, name_w), name_w)} {'Runs':>4} {'Cost':>9} {'Tokens':>9}"
-            )
-            if extra:
-                header += f" {'Share':>6} {'Cache':>6}"
-            body = []
-            for name, group in sorted(
-                groups.items(), key=lambda item: sum(r["cost"] for r in item[1]), reverse=True
-            ):
-                group_cost = sum(r["cost"] for r in group)
-                cache = sum(r.get("tokens_cache_read", 0) for r in group)
-                incoming = sum(
-                    r.get("tokens_input", 0)
-                    + r.get("tokens_cache_read", 0)
-                    + r.get("tokens_cache_write", 0)
-                    for r in group
-                )
-                body.append(
-                    f"  {pad(shorten(name, name_w), name_w)} {len(group):>4} {money(group_cost):>9} "
-                    f"{human_tokens(sum(r['tokens_total'] for r in group)):>9}"
-                    + (
-                        f" {pct(group_cost, sum(r['cost'] for r in priced)):>6} {pct(cache, incoming):>6}"
-                        if extra
-                        else ""
-                    )
-                )
-            lines += [""] + self._ruled_box(f"# By {label.lower()}", header, body, None, [], width)
-        lines += self._subagent_wrap(
-            [
-                "Model groups use each execution's representative model, not an exact model split. Cache = reads / (input + cache reads + cache writes)."
-            ],
-            width,
+        headings = {
+            key: self.subagent_sort_heading(key, label) for key, label in self.SUBAGENT_SORT_COLUMNS
+        }
+        layout = subagents_view.subagents_overview_layout(
+            priced_nodes=priced,
+            rows=rows,
+            flame=self.app.session_flame(workflow),
+            width=width,
+            glyphs=self.box_glyphs(),
+            colored=self._token_series_ok,
+            api_prices_key=self._key("main", "api_prices"),
+            select_key=self.keymap.label("main", "select"),
+            sort_headings=headings,
+            sort_columns=self.SUBAGENT_SORT_COLUMNS,
+            selected_node_index=self.app._subagent_selected,
+            target=target,
+            whatif_totals=totals if target else None,
+            whatif_prices=whatif_prices,
+            baseline_estimated=self.whatif_baseline_is_estimated(workflow) if target else False,
         )
-        return lines
+        return self._adopt_subagent_layout(layout)
 
     @staticmethod
     def _subagent_wrap(lines: list[str], width: int) -> list[str]:
-        return [
-            wrapped
-            for line in lines
-            for part in line.splitlines() or [""]
-            for wrapped in (
-                [part] if display_width(part) <= width else wrap_cells(part, max(1, width))
-            )
-            or [""]
-        ]
+        return wrap_lines(lines, width)
 
     def _subagent_table(
         self, rows: list[dict], width: int, offset: int, tree_cost: float, target: str = ""
     ) -> list[str]:
-        # Protect the title and accounting at small widths; full metadata is in the drill.
-        columns = [("cost", "Cost", 9), ("tokens", "Tokens", 9)]
-        if target:
-            columns.insert(1, ("whatif", "What-if", 9))
-        if width >= 90:
-            columns = [("date", "Started", 16), ("depth", "D", 3), ("agent", "Agent", 12)] + columns
-        if width >= 120:
-            columns.insert(3, ("model", "Model", min(26, max(14, width - 116))))
-        if width >= 145:
-            columns += [("share", "Share", 6), ("cache", "Cache", 6)]
-        title_w = max(1, width - self.BOX_CHROME - 2 - sum(size + 1 for _, _, size in columns))
-        header = "  " + " ".join(
-            pad(shorten(self.subagent_sort_heading(key, label), size), size)
-            for key, label, size in columns
+        layout = subagents_view.execution_table_layout(
+            rows,
+            width,
+            offset=offset,
+            tree_cost=tree_cost,
+            glyphs=self.box_glyphs(),
+            sort_headings={
+                key: self.subagent_sort_heading(key, label)
+                for key, label in self.SUBAGENT_SORT_COLUMNS
+            },
+            sort_columns=self.SUBAGENT_SORT_COLUMNS,
+            selected_node_index=self.app._subagent_selected,
+            target=target,
+            whatif_prices={row["_node_index"]: self.whatif_node_price(row, target) for row in rows}
+            if target
+            else {},
         )
-        header += " " + self.subagent_sort_heading("title", "Title")
-        body = []
-        total_cost = sum(row["cost"] for row in rows)
-        for row in rows:
-            incoming = sum(
-                row.get("tokens_" + key, 0) for key in ("input", "cache_read", "cache_write")
-            )
-            values = {
-                "date": str(row.get("created_at") or "")[:16],
-                "depth": str(row["depth"]),
-                "agent": str(row.get("agent") or "unknown"),
-                "model": str(row.get("model_name") or "unknown"),
-                "cost": money(row["cost"]),
-                "tokens": human_tokens(row["tokens_total"]),
-                "whatif": money(self.whatif_node_price(row, target)) if target else "",
-                "share": pct(row["cost"], tree_cost),
-                "cache": pct(row.get("tokens_cache_read", 0), incoming),
-            }
-            body.append(
-                "  "
-                + " ".join(
-                    f"{values[key]:>{size}}"
-                    if key in ("cost", "tokens", "whatif", "share", "cache")
-                    else pad(shorten(values[key], size), size)
-                    for key, _, size in columns
-                )
-                + " "
-                + shorten(str(row.get("title") or "(untitled)"), title_w)
-            )
-        title = f"# Session Tree · what-if {target}" if target else "# Subagent Executions"
-        total = None
-        if len(rows) > 1 and not target:
-            values = {
-                "cost": money(total_cost),
-                "tokens": human_tokens(sum(r["tokens_total"] for r in rows)),
-            }
-            total = "  " + " ".join(
-                f"{values.get(key, ''):>{size}}"
-                if key in values
-                else pad("TOTAL" if i == 0 else "", size)
-                for i, (key, _, size) in enumerate(columns)
-            )
-            if columns[0][0] == "cost":
-                total += " TOTAL"
-        box = self._ruled_box(title, header, body, total, [], width)
-        start = offset + (self._ruled_body_start or 0)
-        self._subagent_header_at = {start + i: i for i in range(len(rows))}
-        if rows:
-            cursor = self.app.subagent_cursor(rows)
-            self.app._subagent_selected = rows[cursor]["_node_index"]
-            self._subagent_cursor_line = start + cursor
-        self._line_sort_headers[offset + self.BOX_HEADER_LINE] = (
-            self.SUBAGENT_SORT_COLUMNS,
-            "subagent",
-        )
-        return box
+        return self._adopt_subagent_layout(layout)
 
     def _subagent_detail(self, row: dict, nodes: list[dict], width: int) -> list[str]:
         priced = self._priced_nodes(nodes)
-        children = [r for r in priced if r["depth"] > 0]
-        inner = max(1, width - self.BOX_CHROME)
-        back = self.keymap.label("main", "back")
-        title = str(row.get("title") or "(untitled)")
-        meta = [
-            f"Agent: {row.get('agent') or 'unknown'}   Depth: {row['depth']}",
-            f"Representative model: {row.get('model_name') or 'unknown'}",
-            f"Started: {row.get('created_at') or 'not recorded'}",
-        ]
-        lines = self._subagent_wrap(
-            [f"# Subagent execution   {back}: back to executions", ""], width
-        )
         unavailable = self.app.subagent_turns_unavailable()
-        enter = self.keymap.label("main", "select")
-        if unavailable:
-            lines += self._subagent_wrap([unavailable, ""], width)
-        elif enter:
-            lines += self._subagent_wrap([f"{enter}: open this execution's turns", ""], width)
-        lines += self._sectioned_box("# Title", [self._subagent_wrap([title], inner)], width, [])
         prompt = self.app.subagent_prompt_text()
-        lines += [""] + self._sectioned_box(
-            "# Received prompt",
-            [format_block(prompt, "", inner, len(prompt.splitlines()))],
+        target = self.whatif_model or ""
+        layout = subagents_view.subagent_detail_layout(
+            row,
+            priced,
             width,
-            self._subagent_wrap(
-                [
-                    "First recorded child user message, not its title or the full system/context payload."
-                ],
-                width,
-            ),
+            glyphs=self.box_glyphs(),
+            back_key=self.keymap.label("main", "back"),
+            select_key=self.keymap.label("main", "select"),
+            turns_unavailable=unavailable,
+            prompt_text=prompt,
+            cost_label="API-equivalent"
+            if self.show_api_prices and not self.store.demo
+            else "Recorded",
+            colored=self._token_series_ok,
+            target=target,
+            target_cost=self.whatif_node_price(row, target) if target else 0.0,
         )
-        lines += [""] + self._sectioned_box(
-            "# Execution", [self._subagent_wrap(meta, inner)], width, []
-        )
-        total_cost = sum(r["cost"] for r in priced)
-        child_cost = sum(r["cost"] for r in children)
-        spend = [
-            f"{'API-equivalent' if self.show_api_prices and not self.store.demo else 'Recorded'} cost: {money(row['cost'])}",
-            f"Share of tree: {pct(row['cost'], total_cost)} cost / {pct(row['tokens_total'], sum(r['tokens_total'] for r in priced))} tokens",
-        ]
-        if row["depth"] > 0:
-            rank = 1 + sum(r["cost"] > row["cost"] for r in children)
-            spend.append(
-                f"Delegated spend: {pct(row['cost'], child_cost)}   Cost rank: {rank} of {len(children)}"
-            )
-        if self.whatif_model:
-            spend.append(
-                f"All tokens at {self.whatif_model}: {money(self.whatif_node_price(row, self.whatif_model))}"
-            )
-        lines += [""] + self._sectioned_box(
-            "# Contribution", [self._subagent_wrap(spend, inner)], width, []
-        )
-        categories = [
-            ("Input", "input", 0),
-            ("Output", "output", 1),
-            ("Reasoning", "reasoning", 2),
-            ("Cache read", "cache_read", 3),
-            ("Cache write", "cache_write", 4),
-        ]
-        values = [
-            (label, int(row.get("tokens_" + key, 0)), slot) for label, key, slot in categories
-        ]
-        category_total = sum(value for _, value, _ in values)
-        chart = []
-        if category_total:
-            chart = [self._token_stack_line(values, category_total, inner)]
-            chart += self._token_legend_lines(
-                [(label, value, 0, slot) for label, value, slot in values], inner
-            )
-        token_rows = [
-            f"{label:<12} {value:>16,}  {pct(value, category_total):>6}"
-            for label, value, _ in values
-        ]
-        if node_1h_write(row):
-            token_rows.append(f"  of writes, 1h: {node_1h_write(row):,}")
-        token_rows.append(f"Recorded total: {row['tokens_total']:,}")
-        incoming = sum(
-            row.get("tokens_" + key, 0) for key in ("input", "cache_read", "cache_write")
-        )
-        token_rows.append(
-            f"Cache hit: {pct(row.get('tokens_cache_read', 0), incoming)} of incoming tokens"
-        )
-        lines += [""] + self._sectioned_box(
-            "# Token breakdown", [chart, self._subagent_wrap(token_rows, inner)], width, []
-        )
-        lines += self._subagent_wrap(
-            [
-                "Shares use node totals, not session rollups. Token category shares use their sum; recorded totals can differ. The 1h cache-write count is a subset, not extra tokens.",
-                "The model is representative: an execution can switch models. No per-node savings baseline, duration, status, or turn ownership is inferred.",
-            ],
-            width,
-        )
-        return lines
+        return self._adopt_subagent_layout(layout)
 
     @staticmethod
     def signed_pct(part: float, whole: float, sign: str) -> str:
@@ -4470,47 +4159,32 @@ class Renderer:
         width: int,
         head: list[str] | None = None,
     ) -> list[str]:
-        # What-if is session-scoped; `$` continues to own all app-wide figures. Per-node
-        # target cost is exact, but no per-node delta is shown: a node exposes only its
-        # dominant model and may have switched models. The exact baseline therefore comes
-        # from session per-model rows, with both TOTAL sides priced at list rates.
-        priced = [(row, self.whatif_node_price(row, target)) for row in rows]
         prefix = list(head or [])
-        # Do not add a column TOTAL: recorded Cost intentionally differs from the exact
-        # list-rate session footer below.
-        lines = prefix + self._subagent_table(
-            rows, width, len(prefix), sum(r["cost"] for r in rows), target
+        prices = {row["_node_index"]: self.whatif_node_price(row, target) for row in rows}
+        table = subagents_view.execution_table_layout(
+            rows,
+            width,
+            offset=len(prefix),
+            tree_cost=sum(row["cost"] for row in rows),
+            glyphs=self.box_glyphs(),
+            sort_headings={
+                key: self.subagent_sort_heading(key, label)
+                for key, label in self.SUBAGENT_SORT_COLUMNS
+            },
+            sort_columns=self.SUBAGENT_SORT_COLUMNS,
+            selected_node_index=self.app._subagent_selected,
+            target=target,
+            whatif_prices=prices,
         )
-        actual, total = totals
-        # Sign from the target's point of view.
-        saved = actual - total
-        verb = "saved" if saved >= 0 else "cost more"
-        approx = "~" if self.whatif_baseline_is_estimated(workflow) else ""
-        lines += [
-            "",
-            f"TOTAL (list rates)  your models {approx}{money(actual)} → all at {target} {money(total)}   "
-            f"{verb} {money(abs(saved))} ({pct(abs(saved), actual)})",
-            "! Both sides priced at list rates — the only apples-to-apples basis. The Cost column is "
-            "what was actually recorded ($0 where a subscription recorded none), so it does not add "
-            "up to these.",
-            "· No per-node Δ: a node can mix models, so its baseline isn't computable — the exact "
-            "comparison exists at session level, where the tokens are split per model.",
-        ]
-        if approx:
-            lines.append(
-                "! ~ your models include one with no known list rate — its tokens are priced at a "
-                "generic estimate, so the baseline is not a real list price."
-            )
-        # Node and message rollups can disagree; explain only observed mismatches.
-        column = sum(wi for _row, wi in priced)
-        if abs(column - total) > 0.01:
-            # A node rollup may drift in either direction.
-            direction = "more" if column > total else "less"
-            lines.append(
-                "! This session's node totals disagree with its message totals, so the What-if "
-                f"column adds up to slightly {direction} than the TOTAL. The TOTAL is the exact one."
-            )
-        return lines
+        layout = subagents_view.whatif_footer_layout(
+            table,
+            rows=rows,
+            target=target,
+            totals=totals,
+            whatif_prices=prices,
+            baseline_estimated=self.whatif_baseline_is_estimated(workflow),
+        )
+        return prefix + self._adopt_subagent_layout(layout)
 
     @staticmethod
     def _treemap_rects(
@@ -4518,196 +4192,27 @@ class Renderer:
     ) -> list[tuple[str, float, int, int, int, int]]:
         return treemap_rects(items, width, height)
 
-    # Narrower tiles cannot carry a useful label; the exact table still lists them.
-    _TOOL_TILE_MIN = 12
-
     @staticmethod
     def _heat_position(value: float, lo: float, hi: float, levels: int) -> int:
-        # Per-call rates span orders of magnitude, so use logarithmic heat. Degenerate
-        # ranges stay cool rather than falsely hot.
-        if not (hi > lo > 0) or value <= lo:
-            return 0
-        frac = (math.log(value) - math.log(lo)) / (math.log(hi) - math.log(lo))
-        return max(0, min(levels - 1, round(frac * (levels - 1))))
+        return tools_view.heat_position(value, lo, hi, levels)
 
     def _tool_treemap_box(
         self, bucket: dict[str, dict], width: int, max_height: int | None = None
     ) -> list[str]:
-        # Area follows visible Cost, falling back to attributed tokens when all costs are $0.
-        costs = {name: float(it["cost"]) for name, it in bucket.items()}
-        dollars = sum(costs.values()) > 0
-        values = costs if dollars else {name: float(it["tokens"]) for name, it in bucket.items()}
-        calls = {name: int(it.get("calls") or 0) for name, it in bucket.items()}
-        ranked = sorted(
-            ((name, value) for name, value in values.items() if value > 0),
-            key=lambda row: (-row[1], row[0].lower()),
-        )
-        if not ranked:
-            self._tool_tree_runs = {}
-            return []
-
-        inner = max(1, width - 4)
-        # Preserve the first exact table row at the 80x20 minimum.
-        height = max(3, min(5, inner // 14))
-        if max_height is not None:
-            height = min(height, max_height)
-        if height < 3:
-            self._tool_tree_runs = {}
-            return []
-
-        # Fold the unlabeled tail into Other; the exact table below retains every tool.
-        def fold(keep: int) -> list[tuple[str, float]]:
-            head, tail = ranked[:keep], ranked[keep:]
-            if not tail:
-                return list(head)
-            calls["Other"] = sum(calls.get(name, 0) for name, _ in tail)
-            out = head + [("Other", sum(value for _, value in tail))]
-            out.sort(key=lambda row: (-row[1], row[0].lower()))
-            return out
-
-        # Fold from the first tile below the label floor, never based on aggregate tail size.
-        grand = sum(value for _, value in ranked)
-        keep = 0
-        while keep < min(8, len(ranked)):
-            if ranked[keep][1] / grand * inner < self._TOOL_TILE_MIN:
-                break
-            keep += 1
-        ranked_all, ranked = ranked, fold(max(1, keep))
-
-        # Area already encodes total cost, so shade encodes cost per call when every tool
-        # has call counts. Use the full ranking's range so resizing/folding cannot recolor
-        # unchanged tools; otherwise shade by area rather than inventing partial rates.
-        all_rates = {name: value / calls[name] for name, value in ranked_all if calls.get(name)}
-        by_rate = len(all_rates) == len(ranked_all) and max(all_rates.values()) > min(
-            all_rates.values()
-        )
-        rate_lo = min(all_rates.values()) if by_rate else 0.0
-        rate_hi = max(all_rates.values()) if by_rate else 0.0
-        rates = {name: value / calls[name] for name, value in ranked if calls.get(name)}
-
-        rects = self._treemap_rects(ranked, inner, height)
-        total = sum(value for _, value in ranked)
-        peak = max(value for _, value in ranked)
-        glyphs = "░▒▓█" if unicode_screen() else ".:*#"
-        grid = [[" " for _ in range(inner)] for _ in range(height)]
-        row_runs: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
-
-        def put(y: int, x: int, text: str, room: int) -> None:
-            for i, ch in enumerate(clip(text, room)):
-                if x + i < inner:
-                    grid[y][x + i] = ch
-
-        def rate_text(rate: float | None) -> str:
-            if rate is None:
-                return ""
-            if not dollars:
-                return f"{human_tokens(int(round(rate)))}/call"
-            if rate >= 0.01:
-                return f"{money(rate)}/call"
-            # money() intentionally collapses sub-cent values, but per-call heat needs
-            # enough precision to distinguish them.
-            return "<$0.0001/call" if rate < 0.0001 else f"${rate:.4f}".rstrip("0") + "/call"
-
-        for name, value, x, y, w, h in rects:
-            # Add gutters only between tiles, not against the frame; preserve runt cells.
-            tw = w if x + w >= inner else max(1, w - 1)
-            th = h if y + h >= height else max(1, h - 1)
-            level = (
-                self._heat_position(rates[name], rate_lo, rate_hi, TOOL_HEAT_LEVELS)
-                if by_rate
-                else max(
-                    0,
-                    min(
-                        TOOL_HEAT_LEVELS - 1,
-                        round(math.sqrt(value / peak) * (TOOL_HEAT_LEVELS - 1)),
-                    ),
-                )
-            )
-            fill = (
-                " "
-                if self._tool_heat_ok
-                else glyphs[min(len(glyphs) - 1, level * len(glyphs) // TOOL_HEAT_LEVELS)]
-            )
-            for yy in range(y, min(height, y + th)):
-                for xx in range(x, min(inner, x + tw)):
-                    grid[yy][xx] = fill
-                row_runs[yy].append((x, tw, level))
-
-            # Drop name, area, and rate independently as height shrinks.
-            inset = 1 if tw >= 4 else 0
-            room = tw - inset * 2
-            if room >= 4 and th >= 2:
-                put(y, x + inset, shorten(name, room), room)
-                metric = money(value) if dollars else human_tokens(int(value))
-                stat = f"{metric} · {pct(value, total)}"
-                if len(stat) <= room:
-                    put(y + 1, x + inset, stat, room)
-                # Never clip numeric values into different numbers; omit them if they do
-                # not fit and let the exact table answer.
-                rate = rate_text(rates.get(name))
-                n = calls.get(name) or 0
-                both = f"{rate} · {n} call{'s' if n != 1 else ''}"
-                if th >= 3 and rate:
-                    for candidate in (both, rate):
-                        if len(candidate) <= room:
-                            put(y + 2, x + inset, candidate, room)
-                            break
-
-        chart = ["".join(row) for row in grid]
-        area_unit = "visible cost" if dollars else "tokens (no recorded cost)"
-        caption = (
-            f"area = {area_unit} · shade = {'$' if dollars else 'tokens'}/call"
-            if by_rate
-            else f"area + shade = {area_unit}"
-        )
-        total_label = money(total) if dollars else f"{human_tokens(int(total))} tokens"
-
-        # Derive the headline from the full ranking so folded expensive-per-call tools
-        # remain visible on narrow panes.
-        top_name, top_value = ranked_all[0]
-        of_what = "the spend" if dollars else "the tokens"
-        headline = [
-            f"{shorten(top_name, 22)} is "
-            f"{pct(top_value, sum(v for _, v in ranked_all))} of {of_what}"
-        ]
-        if calls.get(top_name):
-            headline[0] += f", over {calls[top_name]} calls"
-        if len(all_rates) > 1:
-            hot = max(all_rates, key=lambda name: all_rates[name])
-            if hot != top_name and all_rates[top_name] > 0:
-                headline.append(
-                    f"priciest per call is {shorten(hot, 22)} at {rate_text(all_rates[hot])}"
-                    f" — {all_rates[hot] / all_rates[top_name]:.0f}× {shorten(top_name, 22)}'s"
-                )
-            elif hot == top_name:
-                headline.append(f"and the priciest per call, at {rate_text(all_rates[hot])}")
-        notes = []
-        if not dollars:
-            if self.show_api_prices and not self.store.demo:
-                notes.append(
-                    "! no tool-attributed tokens here have a list price — area stays TOKENS"
-                )
-            else:
-                notes.append(
-                    "! nothing here recorded a cost, so area is TOKENS — press "
-                    f"{self._key('main', 'api_prices')} for list-price spend"
-                )
-        # Stack headline clauses rather than clipping their figures.
-        joined = " · ".join(headline)
-        boxed = self._sectioned_box(
-            f"# Tool-attributed spend · {total_label}",
-            [[joined] if len(joined) <= inner else headline, [caption, *chart]],
+        layout = tools_view.tool_treemap_layout(
+            bucket,
             width,
-            notes,
+            tools_view.ToolsOptions(
+                treemap_height=max_height,
+                api_prices=self.show_api_prices,
+                demo=self.store.demo,
+                api_price_label=self._key("main", "api_prices"),
+                unicode=unicode_screen(),
+                tool_heat_colored=self._tool_heat_ok,
+            ),
         )
-        # Derive chart offset after box assembly; headline wrapping changes prologue size.
-        # Shift runs by the frame's two-cell gutter.
-        chart_at = len(boxed) - len(notes) - 1 - len(chart)
-        self._tool_tree_runs = {
-            chart_at + row: [(col + 2, length, level) for col, length, level in runs]
-            for row, runs in row_runs.items()
-        }
-        return boxed + [""]
+        self._tool_tree_runs = {line: list(spans) for line, spans in layout.heat_spans.items()}
+        return list(layout.lines)
 
     def detail_tools(
         self, workflow: Workflow, width: int, treemap_height: int | None = None
@@ -4716,33 +4221,67 @@ class Renderer:
         self._tool_call_at = {}
         self._tool_cursor_line = None
         self._tool_tree_runs = {}
-        if not self.session_supports_tools(workflow.id):
-            return ["# Tools", "This session's tool doesn't record per-tool attribution."]
-        if not self.session_tool_rows(workflow.id):
-            return ["# Tools", "No tool calls recorded for this session."]
+        supports_tools = self.session_supports_tools(workflow.id)
+        if not supports_tools:
+            return list(
+                tools_view.build_tools_layout(
+                    None,
+                    width,
+                    tools_view.ToolsOptions(supports_tools=False),
+                ).lines
+            )
+        tool_rows = self.session_tool_rows(workflow.id)
+        if not tool_rows:
+            return list(
+                tools_view.build_tools_layout(
+                    None,
+                    width,
+                    tools_view.ToolsOptions(has_tool_rows=False),
+                ).lines
+            )
         projection = self.app.tool_projection(workflow.id)
+        drill = self.app.active_tool_drill
+        api_price_label = self._key("main", "api_prices")
         layout_key = (
             projection["key"],
-            self.app.active_tool_drill,
+            drill,
             width,
             treemap_height,
             self._key("main", "select"),
             self._key("main", "back"),
+            api_price_label,
             unicode_screen(),
             self._tool_heat_ok,
             self._token_series_ok,
         )
         cached = self._tool_layout_cache
         if cached is None or cached[0] != layout_key:
-            lines = self._build_detail_tools(workflow, width, treemap_height, projection)
+            options = tools_view.ToolsOptions(
+                drill=drill,
+                treemap_height=treemap_height,
+                supports_turns=self.session_supports_turns(workflow.id),
+                select_label=self._key("main", "select"),
+                back_label=self._key("main", "back"),
+                api_price_label=api_price_label,
+                api_prices=self.show_api_prices,
+                demo=self.store.demo,
+                unicode=unicode_screen(),
+                tool_heat_colored=self._tool_heat_ok,
+                token_series_colored=self._token_series_ok,
+            )
+            layout = tools_view.build_tools_layout(projection, width, options)
+            lines = list(layout.lines)
             cached = (
                 layout_key,
                 lines,
-                dict(self._tool_header_at),
-                dict(self._tool_call_at),
-                dict(self._tool_tree_runs),
-                set(self._box_headers),
-                dict(self._token_runs),
+                dict(layout.row_map),
+                dict(layout.call_map),
+                {line: list(spans) for line, spans in layout.heat_spans.items()},
+                set(layout.box_headers),
+                {
+                    line: [(span.column, span.length, span.slot) for span in spans]
+                    for line, spans in layout.token_spans.items()
+                },
             )
             self._tool_layout_cache = cached
         self._tool_header_at, self._tool_call_at, self._tool_tree_runs = cached[2:5]
@@ -4764,298 +4303,62 @@ class Renderer:
     def _build_detail_tools(
         self, workflow: Workflow, width: int, treemap_height: int | None, projection: dict
     ) -> list[str]:
-        self._tool_header_at = {}
-        self._tool_call_at = {}
-        self._tool_cursor_line = None
-        if self.app.active_tool_drill is not None:
-            return self._tool_detail(workflow, width, projection)
-
-        rankings = projection["rankings"]
-        tools = [r for r in rankings if r["kind"] == "tool"]
-        namespaces = [r for r in rankings if r["kind"] == "namespace"]
-        by_tool = {
-            r["name"]: {
-                "calls": r["calls"],
-                "cost": r["cost"],
-                "tokens": r["tokens_total"],
-            }
-            for r in tools
-        }
-        calls = sum(r["calls"] for r in tools)
-        cost = sum(r["cost"] for r in tools)
-        overview = [
-            f"{calls:,} calls   {len(tools)} tools   {len(namespaces)} namespaces",
-            f"Attributed cost {money(cost)}   {money(cost / calls) if calls else '-'} / call   "
-            f"{human_tokens(int(sum(r['tokens_total'] for r in tools) / calls)) if calls else '-'} tokens / call",
-        ]
-        lines = self._tool_treemap_box(by_tool, width, treemap_height)
-        lines += self._sectioned_box(
-            "# Tool ledger", [self._subagent_wrap(overview, width - 4)], width, []
+        options = tools_view.ToolsOptions(
+            drill=self.app.active_tool_drill,
+            treemap_height=treemap_height,
+            supports_turns=self.session_supports_turns(workflow.id),
+            select_label=self._key("main", "select"),
+            back_label=self._key("main", "back"),
+            api_price_label=self._key("main", "api_prices"),
+            api_prices=self.show_api_prices,
+            demo=self.store.demo,
+            unicode=unicode_screen(),
+            tool_heat_colored=self._tool_heat_ok,
+            token_series_colored=self._token_series_ok,
         )
-        lines.append("")
-        lines += self._tool_ranking_box(tools, "# Tools — this session", width, 0, len(lines))
-        lines.append("")
-        lines += self._tool_ranking_box(
-            namespaces, "# By server / namespace", width, len(tools), len(lines)
-        )
-        lines += self._subagent_wrap(
-            [
-                "",
-                f"{self._key('main', 'select')} / double-click inspects a tool or namespace. Tokens and cost belong to the LLM turns that invoked calls, split across every call; they are not tool-result size.",
-            ],
-            width,
-        )
-        return lines
+        layout = tools_view.build_tools_layout(projection, width, options)
+        self._tool_header_at = dict(layout.row_map)
+        self._tool_call_at = dict(layout.call_map)
+        self._tool_tree_runs = {line: list(spans) for line, spans in layout.heat_spans.items()}
+        self._box_headers.update(layout.box_headers)
+        for line, spans in layout.token_spans.items():
+            self._token_runs[line] = [(span.column, span.length, span.slot) for span in spans]
+        return list(layout.lines)
 
     def _tool_ranking_box(
         self, rows: list[dict], title: str, width: int, ordinal: int, offset: int
     ) -> list[str]:
-        display_rows = list(rows)
-        if len(rows) > 1:
-            display_rows.append(
-                {
-                    "name": "TOTAL",
-                    **{key: sum(r[key] for r in rows) for key in ("calls", "cost", "tokens_total")},
-                }
-            )
-        inner = max(1, width - self.BOX_CHROME)
-        calls_w = max(5, len(f"{sum(r['calls'] for r in rows):,}"))
-        cost_w = max(4, max((len(money(float(r["cost"]))) for r in display_rows), default=0))
-        avg_w = max(
-            6,
-            max(
-                (len(money(float(r["cost"]) / r["calls"])) for r in display_rows if r["calls"]),
-                default=0,
-            ),
+        layout = tools_view.tool_ranking_layout(
+            rows,
+            title,
+            width,
+            ordinal,
+            tools_view.ToolsOptions(unicode=unicode_screen()),
         )
-        token_w = max(
-            6, max((len(human_tokens(int(r["tokens_total"]))) for r in display_rows), default=0)
+        self._box_headers.update(layout.box_headers)
+        self._tool_header_at.update(
+            {offset + line: value for line, value in layout.row_map.items()}
         )
-        show_tokens = inner >= calls_w + cost_w + token_w + 19
-        show_avg = inner >= calls_w + cost_w + token_w + avg_w + 20
-        tail = (
-            calls_w
-            + cost_w
-            + 2
-            + (token_w + 1 if show_tokens else 0)
-            + (avg_w + 1 if show_avg else 0)
-        )
-        name_w = max(4, inner - tail - 2)
-        header = f"  {pad('Name', name_w)} {'Calls':>{calls_w}}"
-        if show_avg:
-            header += f" {'$/call':>{avg_w}}"
-        if show_tokens:
-            header += f" {'Tokens':>{token_w}}"
-        header += f" {'Cost':>{cost_w}}"
-        body = []
-        for row in display_rows:
-            avg = row["cost"] / row["calls"] if row["calls"] else 0
-            body.append(
-                f"  {pad(shorten(str(row['name']), name_w), name_w)} {row['calls']:>{calls_w},}"
-                + (f"{money(avg):>{avg_w + 1}}" if show_avg else "")
-                + (
-                    f"{human_tokens(int(row['tokens_total'])):>{token_w + 1}}"
-                    if show_tokens
-                    else ""
-                )
-                + f" {money(row['cost']):>{cost_w}}"
-            )
-        total = body.pop() if len(display_rows) > len(rows) else None
-        box = self._ruled_box(title, header, body, total, [], width)
-        start = offset + (self._ruled_body_start or 0)
-        for i in range(len(rows)):
-            self._tool_header_at[start + i] = ordinal + i
-        selected = self.app._tool_cursor
-        if ordinal <= selected < ordinal + len(rows):
-            self._tool_cursor_line = start + selected - ordinal
-        return box
+        return list(layout.lines)
 
     def _tool_detail(self, workflow: Workflow, width: int, projection: dict) -> list[str]:
-        drill = self.app.active_tool_drill
-        ranking = next(r for r in projection["rankings"] if (r["kind"], r["name"]) == drill)
-        calls = [
-            row
-            for row in projection["calls"]
-            if (row.get("tool") if drill[0] == "tool" else row.get("namespace")) == drill[1]
-        ]
-        all_tools = [r for r in projection["rankings"] if r["kind"] == "tool"]
-        total_cost = sum(r["cost"] for r in all_tools)
-        total_tokens = sum(r["tokens_total"] for r in all_tools)
-        back = self._key("main", "back")
-        lines = self._subagent_wrap(
-            [f"# {drill[0].capitalize()} · {drill[1]}   {back}: back to rankings", ""], width
-        )
-        avg_cost = ranking["cost"] / ranking["calls"] if ranking["calls"] else 0
-        avg_tokens = ranking["tokens_total"] / ranking["calls"] if ranking["calls"] else 0
-        lines += self._sectioned_box(
-            "# Contribution",
-            [
-                self._subagent_wrap(
-                    [
-                        f"{ranking['calls']:,} calls   cost {money(ranking['cost'])} ({pct(ranking['cost'], total_cost)})   tokens {human_tokens(int(ranking['tokens_total']))} ({pct(ranking['tokens_total'], total_tokens)})",
-                        f"Per call: {money(avg_cost)}   {human_tokens(int(avg_tokens))} attributed tokens",
-                    ],
-                    width - 4,
-                )
-            ],
-            width,
-            [],
-        )
-        lines += [""] + self._token_breakdown_box(
-            ranking,
-            "# Attributed token categories",
-            width,
-            attributed=True,
-            calls=int(ranking["calls"]),
-        )
-
-        models = projection["models"].get(drill, {})
-        model_rows = []
-        wide = width >= 116
-        inner = max(1, width - self.BOX_CHROME)
-        model_cost_w = max(
-            4, max((len(money(float(item["cost"]))) for item in models.values()), default=0)
-        )
-        show_total_tokens = wide or inner >= model_cost_w + 30
-        name_w = max(
-            4,
-            inner
-            - (70 + model_cost_w if wide else 9 + model_cost_w + (10 if show_total_tokens else 0)),
-        )
-        header = f"  {pad('Model', name_w)} {'Calls':>5}"
-        if show_total_tokens:
-            header += f" {'Tokens':>9}"
-        if wide:
-            header += f" {'Input':>9} {'Model out':>9} {'Reason':>9} {'CacheR':>9} {'CacheW':>9}"
-        header += f" {'Cost':>{model_cost_w}}"
-        for model, item in sorted(
-            models.items(), key=lambda kv: (kv[1]["cost"], kv[1]["tokens_total"]), reverse=True
-        ):
-            line = f"  {pad(shorten(model, name_w), name_w)} {item['calls']:>5}"
-            if show_total_tokens:
-                line += f" {human_tokens(int(item['tokens_total'])):>9}"
-            if wide:
-                line += " " + " ".join(
-                    f"{human_tokens(int(item[key])):>9}"
-                    for key in ("input", "output", "reasoning", "cache_read", "cache_write")
-                )
-            line += f" {money(item['cost']):>{model_cost_w}}"
-            model_rows.append(line)
-        lines += [""] + self._ruled_box(
-            "# Exact attributed usage by model", header, model_rows, None, [], width
-        )
-        if not wide:
-            for model, item in sorted(
-                models.items(), key=lambda kv: (kv[1]["cost"], kv[1]["tokens_total"]), reverse=True
-            ):
-                split = (
-                    f"  {shorten(model, 28)}: input {human_tokens(int(item['input']))} · "
-                    f"model output {human_tokens(int(item['output']))} · "
-                    f"reasoning {human_tokens(int(item['reasoning']))} · "
-                    f"cache read {human_tokens(int(item['cache_read']))} · "
-                    f"cache write {human_tokens(int(item['cache_write']))}"
-                )
-                if item["cache_write_1h"]:
-                    split += f" (1h {human_tokens(int(item['cache_write_1h']))}, subset)"
-                lines += self._subagent_wrap([split], width)
-
-        aggregate_calls = int(ranking["calls"])
-        recovered_calls = len(calls)
-        recovered_tokens = sum(float(call.get("tokens_total") or 0) for call in calls)
-        recovered_cost = sum(float(call.get("cost") or 0) for call in calls)
-        call_state = "complete" if recovered_calls == aggregate_calls else "partial"
-        token_state = (
-            "complete" if abs(recovered_tokens - ranking["tokens_total"]) < 0.01 else "partial"
-        )
-        cost_state = (
-            "complete" if abs(recovered_cost - float(ranking["cost"])) < 0.00005 else "partial"
-        )
-        ledger = (
-            f"Ledger coverage — calls {call_state}: {recovered_calls}/{aggregate_calls}; "
-            f"tokens {token_state}: {human_tokens(round(recovered_tokens))}/{human_tokens(round(ranking['tokens_total']))}; "
-            f"cost {cost_state}: {money(recovered_cost)}/{money(float(ranking['cost']))}."
-        )
-        if not self.session_supports_turns(workflow.id):
-            ledger = f"Call ledger unavailable: aggregate source reports {aggregate_calls} calls but has no Turns timeline."
-        lines += self._subagent_wrap(
-            ["", ledger, "Timestamps below are owning-turn timestamps."], width
-        )
-        if not calls:
-            return lines
-
-        inner = max(1, width - self.BOX_CHROME)
-        call_cost_w = max(4, max(len(money(float(call.get("cost") or 0))) for call in calls))
-        call_token_w = max(
-            6, max(len(human_tokens(int(call.get("tokens_total") or 0))) for call in calls)
-        )
-        room = inner - (13 + call_token_w + call_cost_w)
-        model_w = min(24, max(0, room)) if room >= 11 else 0
-        room -= model_w + (1 if model_w else 0)
-        time_w = 8 if room >= 9 else 0
-        room -= time_w + (1 if time_w else 0)
-        agent_w = min(12, room - 1) if room >= 9 else 0
-        room -= agent_w + (1 if agent_w else 0)
-        tool_w = min(24, room - 1) if drill[0] == "namespace" and room >= 9 else 0
-        header = f"  {'#':>3} {'Turn':>5}"
-        if time_w:
-            header += f" {'Time':<{time_w}}"
-        if tool_w:
-            header += f" {pad('Tool', tool_w)}"
-        if model_w:
-            header += f" {pad('Model', model_w)}"
-        if agent_w:
-            header += f" {pad('Agent', agent_w)}"
-        header += f" {'Tokens':>{call_token_w}} {'Cost':>{call_cost_w}}"
-        body = []
-        for i, call in enumerate(calls, start=1):
-            raw_time = str(call.get("time") or "")
-            time = (
-                raw_time[:19] if time_w == 19 else raw_time[11:19] if len(raw_time) >= 19 else "-"
-            )
-            agent = ("↳ " if call.get("depth") else "") + str(call.get("agent") or "-")
-            line = f"  {i:>3} {int(call['turn_index']) + 1:>5}"
-            if time_w:
-                line += f" {time:<{time_w}}"
-            if tool_w:
-                line += f" {pad(shorten(short_tool_name(str(call['tool'])), tool_w), tool_w)}"
-            if model_w:
-                line += (
-                    f" {pad(shorten(str(call.get('model_name') or 'unknown'), model_w), model_w)}"
-                )
-            if agent_w:
-                line += f" {pad(shorten(agent, agent_w), agent_w)}"
-            line += f" {human_tokens(int(call.get('tokens_total') or 0)):>{call_token_w}} {money(float(call.get('cost') or 0)):>{call_cost_w}}"
-            body.append(line)
-        offset = len(lines) + 1
-        box = self._ruled_box("# Calls — chronological", header, body, None, [], width)
-        start = offset + (self._ruled_body_start or 0)
-        self._tool_call_at = {start + i: i for i in range(len(calls))}
-        cur = max(0, min(self.app._tool_call_cursor, len(calls) - 1))
-        self._tool_cursor_line = start + cur
-        lines += [""] + box
-        lines += self._subagent_wrap(
-            [
-                f"{self._key('main', 'select')} / double-click opens the owning prompt's turn list; opening raw trace content remains a separate explicit {self._key('main', 'select')}. Model output is attributed LLM output, never tool-result bytes.",
-            ],
-            width,
-        )
-        return lines
+        return self._build_detail_tools(workflow, width, None, projection)
 
     def turn_costs(self, rows) -> list[float]:
         # `$` estimates wholly unpriced turns, including long-TTL cache writes.
         api = self.show_api_prices and not self.store.demo
         out = []
-        for r in rows:
-            cost = r["cost"]
+        for row in rows:
+            cost = row["cost"]
             if api and not cost:
                 cost = api_equivalent_cost(
-                    r["model_name"],
-                    r["input"],
-                    r["output"],
-                    r["reasoning"],
-                    r["cache_read"],
-                    r["cache_write"],
-                    r.get("cache_write_1h", 0),
+                    row["model_name"],
+                    row["input"],
+                    row["output"],
+                    row["reasoning"],
+                    row["cache_read"],
+                    row["cache_write"],
+                    row.get("cache_write_1h", 0),
                 )
             out.append(cost)
         return out
@@ -5109,12 +4412,6 @@ class Renderer:
     def _build_turn_trace(
         self, workflow: Workflow, width: int, rows, idx: int, events
     ) -> list[str]:
-        """Render one turn's own content: narration, reasoning, and the calls it made.
-
-        The third level under Turns. Turns answers when the money went, the drill which
-        calls made up one prompt, and this what one of those calls actually did -- the
-        exact arguments included, which is the part no token column can carry.
-        """
         self._trace_tool_at = {}
         self._trace_output_ends = []
         siblings = self.app.drilled_turn_indices()
@@ -5122,101 +4419,41 @@ class Renderer:
             return []
         row = rows[idx]
         cost = self.turn_costs([row])[0]
-        pos = siblings.index(idx) + 1
-        prefix = f"Turn {pos} of {len(siblings)}"
-        if self.app.active_subagent_turns:
-            prefix = f"Execution turn {idx + 1} · {pos} of {len(siblings)} in prompt"
-        prompt = " ".join(str(row.get("prompt_title") or "").split()) or "(no prompt)"
-        room = max(12, width - display_width(prefix) - 3)
-        head = f"{prefix} · {shorten(prompt, room)}"
-        model = str(row.get("model_name") or "-").split("/", 1)[-1]
-        meta = f"{model} · {human_tokens(row['tokens_total'])} tokens · {money(cost)} · {(row.get('time') or '--')[5:19]}"
-        if row.get("depth"):
-            meta += f" · {_turn_agent(row)}"
         remote = self.app.remote_trace_reader(workflow.id) is not None
-        if remote:
-            meta += f" · SSH: {workflow.machine}"
-        lines: list[str] = [head, ""]
-        lines += self._token_breakdown_box(
-            row,
-            "# Turn token breakdown",
-            width,
-            notes=(
-                "· Uncached input is request input not served from cache.",
-                "· A zero reasoning field may mean reasoning is included in model output.",
-            ),
-        )
-        lines.append("")
-        if self.app._trace_loading is not None:
-            if remote:
-                return lines + [
-                    TraceLine(f"  Fetching turn over SSH: {workflow.machine}", "meta"),
-                    TraceLine("  Close the trace to cancel.", "meta"),
-                ]
-            label = (
-                "full turn"
-                if self.app.trace_expanded
-                else "output"
-                if self.app._trace_open_outputs
-                else "turn"
-            )
-            return lines + [TraceLine(f"  Loading {label} — reading recorded content…", "meta")]
-        lines += [TraceLine(ln, "meta") for ln in wrapped("", meta, "  ", width)] + [""]
-        if not self.app.session_supports_trace(workflow.id):
-            reason = self.app.trace_unavailable_reason(workflow.id)
-            message = (
-                f"Recorded trace unavailable: {reason}"
-                if reason
-                else "Recorded trace unavailable for this source; numeric usage is still available."
-            )
-            return lines + [TraceLine(ln, "meta") for ln in wrapped("  ", message, "  ", width)]
-        if remote and self.app._remote_trace_error:
-            return lines + [
-                TraceLine(f"  {self.app._remote_trace_error}", "meta"),
-                TraceLine("  Close and reopen the trace to retry.", "meta"),
-            ]
-        if not events:
-            # Distinguish "this turn recorded nothing" from an unsupported backend: the
-            # tab only offers this level where the store said it could answer.
-            lines.append("  No content recorded for this turn.")
-            return lines
+        loading = self.app._trace_loading is not None
+        supports_trace = True if loading else self.app.session_supports_trace(workflow.id)
         full_events = self.app._trace_full[2] if self.app._trace_full is not None else None
-        body = build_event_body(
-            events,
-            width,
-            line_offset=len(lines),
+        layout = turns_view.build_turn_trace(
+            rows=rows,
+            index=idx,
+            siblings=siblings,
+            events=events,
+            width=width,
+            cost=cost,
+            glyphs=self.box_glyphs(),
+            colored=self._token_series_ok,
+            scoped=self.app.active_subagent_turns,
+            remote_machine=workflow.machine if remote else None,
+            loading=loading,
             expanded=self.app.trace_expanded,
             open_outputs=frozenset(self.app._trace_open_outputs),
             full_events=full_events,
             select_key=self._key("main", "select"),
+            supports_trace=supports_trace,
+            unavailable_reason=(
+                self.app.trace_unavailable_reason(workflow.id)
+                if not loading and not supports_trace
+                else None
+            ),
+            remote_error=self.app._remote_trace_error,
+            records_reasoning=(
+                True if loading else self.app.session_records_reasoning(workflow.id)
+            ),
         )
-        lines += body.lines
-        self._trace_tool_at = body.tool_lines
-        self._trace_output_ends = body.output_ends
-        while lines and not lines[-1]:
-            lines.pop()
-        if not self.app.trace_expanded and len(events) >= TRACE_EVENTS_CAP:
-            lines += [
-                "",
-                TraceLine(
-                    f"· Preview limited to {TRACE_EVENTS_CAP} events; expand to read all.", "meta"
-                ),
-            ]
-        if (
-            not remote
-            and not self.app.session_records_reasoning(workflow.id)
-            and not any(e.get("kind") == "reasoning" for e in events)
-        ):
-            # Say WHY the thinking is missing. This harness writes its thinking blocks
-            # empty -- only the signed blob survives -- so silence here would read as a
-            # parsing bug on the one thing people most expect to find.
-            lines += wrapped(
-                "· ",
-                "This harness records no reasoning text; its thinking blocks are empty.",
-                "  ",
-                width,
-            )
-        return lines
+        self._trace_tool_at = layout.tool_lines
+        self._trace_output_ends = layout.output_ends
+        self._token_runs.update(layout.token_runs)
+        return layout.lines
 
     def trace_output_target(self) -> int | None:
         """The output section at the viewport top, or the next one below it."""
@@ -5242,264 +4479,37 @@ class Renderer:
             self.app.trace_drill = None
         costs = self.turn_costs(rows)
         groups = self.turn_group_rows(rows, costs)
-        g = groups[i]
-        # Rebuilt below for THIS level's rows: draw_detail lays one turnline region over
-        # whatever the tab drew, and a stale map would make the prompt text clickable.
         self._turn_header_at = {}
         self._turn_cursor_line = None
-        n = i + 1
-        order = groups
-        share = g["cached"]
-        label = "Execution turns" if self.app.active_subagent_turns else "Turns"
-        lines: list[str] = [
-            f"# {label} · prompt {n} of {len(order)} — {g['turns']} turn"
-            f"{'' if g['turns'] == 1 else 's'} · {human_tokens(g['tokens'])} · "
-            f"{money(g['cost'])} · cached {'-' if share is None else f'{share * 100:.0f}%'}",
-            "",
-        ]
-        for para in (g["full"] or "(no preceding prompt)").splitlines() or [""]:
-            lines += textwrap.wrap(para, max(20, width)) or [""]
-        lines.append("")
-        prompt_usage = {
-            field: sum(rows[index].get(field) or 0 for index in g["indices"])
-            for field in (
-                "input",
-                "output",
-                "reasoning",
-                "cache_read",
-                "cache_write",
-                "cache_write_1h",
-                "tokens_total",
-            )
-        }
-        lines += self._token_breakdown_box(
-            prompt_usage,
-            "# Prompt token breakdown",
-            width,
-            notes=(
-                "· This sums the prompt's answering turns; it is not the typed prompt's token length.",
-                "· A zero reasoning field may mean reasoning is included in model output.",
-            ),
+        layout = turns_view.build_turn_drill(
+            rows=rows,
+            costs=costs,
+            groups=groups,
+            drill=i,
+            width=width,
+            context_curve=self.session_supports_context_curve(workflow.id),
+            traceable=self.app.session_supports_trace(workflow.id),
+            scoped=self.app.active_subagent_turns,
+            glyphs=self.box_glyphs(),
+            colored=self._token_series_ok,
         )
-        lines.append("")
-        lines += self._turn_metric_strips(
-            [rows[i] for i in g["indices"]],
-            [costs[i] for i in g["indices"]],
-            width,
-            self.session_supports_context_curve(workflow.id),
-            unit="execution turn" if self.app.active_subagent_turns else "turn",
-            first_index=g["indices"][0] + 1,
-        )
-        lines.append("")
-        idx_w = max(2, len(str(len(rows))))
-        # Preserve backend-provided main-agent labels and match web subagent markers.
-        agent_w = min(
-            12,
-            max(5, max((len(_turn_agent(rows[i])) for i in g["indices"]), default=5)),
-        )
-        inner = max(1, width - self.BOX_CHROME - 2)
-        # Gate effort on row data; changing it can invalidate prompt cache as marked above.
-        efforts = {i: str(rows[i].get("effort") or "") for i in g["indices"]}
-        eff_w = max((len(e) for e in efforts.values()), default=0)
-        eff_w = min(7, max(len("Eff"), eff_w)) if any(efforts.values()) else 0
-        traceable = self.app.session_supports_trace(workflow.id)
-        # Which turns have something to READ. Gated on the ROWS, never on a capability
-        # flag, so a backend that records no narration shows no column instead of a
-        # stripe of dashes -- and gated on the trace being openable, since a marker
-        # pointing at a level you cannot enter is an advertisement for nothing.
-        reads = {i: _turn_read_mark(rows[i]) for i in g["indices"]} if traceable else {}
-        read_w = (
-            max(7, max(map(display_width, reads.values()), default=0)) if any(reads.values()) else 0
-        )
-        fixed = idx_w + agent_w + 14 + 6 + 9 + 9 + 6 + (eff_w + 1 if eff_w else 0)
-        # Budgeted against the model column's floor like every other optional cell: added
-        # unconditionally it pushed a narrow pane past its width, and the overflow lands
-        # on the RIGHT, so an 80-column terminal lost the Cost column to a marker.
-        MODEL_MIN = 12
-        if read_w:
-            read_w = min(read_w, 30, inner - fixed - MODEL_MIN - 1)
-            if read_w < 5:
-                read_w = 0
-        read_heading = "Content" if read_w >= 7 else "Read"
-        if 0 < read_w < 8:
-            reads = {
-                i: "Both"
-                if rows[i].get("has_text") and rows[i].get("has_reasoning")
-                else "Think"
-                if rows[i].get("has_reasoning")
-                else "Text"
-                if rows[i].get("has_text")
-                else "Tools"
-                if rows[i].get("tools")
-                else ""
-                for i in g["indices"]
-            }
-        fixed += read_w + 1 if read_w else 0
-        mw = max(MODEL_MIN, min(30, inner - fixed))
-        # Gate Tools on row data and a width floor. Tool lists are open-ended, so they use
-        # space left after the capped model column and disappear rather than steal it.
-        TOOLS_MIN = 10
-        labels = {i: tool_call_label(rows[i].get("tools")) for i in g["indices"]}
-        tools_w = inner - fixed - mw - 1
-        tools_w = tools_w if not traceable and any(labels.values()) and tools_w >= TOOLS_MIN else 0
-        header = (
-            f"  {'#':>{idx_w}} {'Time':<14} {pad('Model', mw)} "
-            + (f"{pad('Eff', eff_w)} " if eff_w else "")
-            + f"{pad('Agent', agent_w)} "
-            + (f"{pad(read_heading, read_w)} " if read_w else "")
-            + (f"{pad('Tools', tools_w)} " if tools_w else "")
-            + f"{'Cached':>6} {'Tokens':>9} {'Cost':>9}"
-        )
-        body = []
-        for i in g["indices"]:
-            r = rows[i]
-            sh = cached_share(r)
-            model_label = r["model_name"]
-            if display_width(model_label) > mw:
-                model_label = model_label.rsplit("/", 1)[-1]
-            body.append(
-                f"  {i + 1:>{idx_w}} {(r.get('time') or '--')[5:19]:<14} "
-                f"{pad(shorten(model_label, mw), mw)} "
-                + (f"{pad(shorten(efforts[i] or '-', eff_w), eff_w)} " if eff_w else "")
-                + f"{pad(shorten(_turn_agent(r), agent_w), agent_w)} "
-                + (f"{pad(shorten(reads.get(i) or '-', read_w), read_w)} " if read_w else "")
-                + (f"{pad(shorten(labels[i] or '-', tools_w), tools_w)} " if tools_w else "")
-                + f"{('-' if sh is None else f'{sh * 100:.0f}%'):>6} "
-                f"{human_tokens(r['tokens_total']):>9} {money(costs[i]):>9}"
-            )
-        totals_row = None
-        if len(body) > 1:
-            totals_row = (
-                f"  {'':>{idx_w}} {pad('TOTAL', 14)} {pad('', mw)} "
-                + (f"{pad('', eff_w)} " if eff_w else "")
-                + f"{pad('', agent_w)} "
-                + (f"{pad('', read_w)} " if read_w else "")
-                # pad() does not truncate, so shorten the aggregate tool mix first.
-                + (
-                    f"{pad(shorten(tool_mix_label([rows[i] for i in g['indices']]), tools_w), tools_w)} "
-                    if tools_w
-                    else ""
-                )
-                + f"{'':>6} {human_tokens(g['tokens']):>9} {money(g['cost']):>9}"
-            )
-        # _ruled_body_start indexes the BOX's own lines, and this pane prints the prompt
-        # text above it -- so the prologue is added, never assumed away. Left out, the
-        # cursor lit a blank line above the frame and the click map was off by its height.
-        prologue = len(lines)
-        lines += self._ruled_box(f"# {label} of prompt {n}", header, body, totals_row, [], width)
-        # Numeric-only rows remain selectable; Enter opens the same reader state and
-        # explains why recorded output cannot be expanded.
-        start = prologue + (self._ruled_body_start or 0)
-        self._turn_header_at = {start + k: k for k in range(len(body))}
-        cur = self.app._trace_cursor
-        self._turn_cursor_line = start + cur if 0 <= cur < len(body) else None
-        return lines
+        self._box_headers.update(layout.box_headers)
+        self._turn_header_at = layout.row_map
+        self._token_runs.update(layout.token_runs)
+        self._turn_cursor_line = layout.cursor_lines.get(self.app._trace_cursor)
+        return layout.lines
 
     @staticmethod
     def turn_group_rows(rows, costs):
-        """Aggregate consecutive prompt-id runs in chronological order.
-
-        Prompt IDs may recur non-consecutively, so downstream identity is list ordinal.
-        `cached` uses the first main-thread turn: later turns are warm by construction and
-        averaging them would hide whether the prompt initially repurchased context.
-        """
-        groups: list[dict] = []
-        last = object()
-        for i, (r, cost) in enumerate(zip(rows, costs)):
-            pid = r.get("prompt_id", "")
-            if pid != last:
-                last = pid
-                groups.append(
-                    {
-                        "id": pid,
-                        "title": (r.get("prompt_title") or "").strip(),
-                        "full": (r.get("prompt_full") or r.get("prompt_title") or "").strip(),
-                        "time": r.get("time") or "",
-                        "turns": 0,
-                        "tokens": 0,
-                        "cost": 0.0,
-                        "indices": [],
-                        "calls": 0,
-                        "subturns": 0,
-                        "_rows": [],
-                        "_first": None,
-                    }
-                )
-            g = groups[-1]
-            g["turns"] += 1
-            g["tokens"] += int(r.get("tokens_total") or 0)
-            g["cost"] += cost
-            g["indices"].append(i)
-            # Count through the same sanitizer as labels so the two cannot disagree.
-            g["calls"] += len(tool_names(r.get("tools")))
-            g["subturns"] += 1 if r.get("depth") else 0
-            g["_rows"].append(r)
-            # Subagents have separate context windows and cannot represent main-thread cache.
-            if not r.get("depth") and g["_first"] is None:
-                g["_first"] = r
-        for g in groups:
-            g["cached"] = cached_share(g["_first"]) if g["_first"] is not None else None
-            g["tools"] = tool_mix_label(g["_rows"])
-            g["agents"] = agent_mix_label(g.pop("_rows"))
-        return groups
+        return turns_view.turn_group_rows(rows, costs)
 
     @staticmethod
     def _turn_metric_strips(
         rows, costs, width: int, context_curve: bool, *, unit: str = "turn", first_index: int = 1
     ) -> list[str]:
-        """Multi-row bars sharing index buckets but keeping separate metric scales."""
-        n = len(rows)
-        if not n:
-            return []
-        contexts = [None if r.get("depth") else context_size(r) or None for r in rows]
-        metrics = [("cost", list(costs), f"peak {unit} {money(max(costs, default=0.0))}", 3)]
-        if context_curve and any(v is not None for v in contexts):
-            peak_context = max(v for v in contexts if v is not None)
-            metrics.append(("context", contexts, f"peak {human_tokens(peak_context)}", 5))
-
-        gutter = 9
-        tail_w = max(len(tail) for _label, _values, tail, _height in metrics)
-        plot_w = max(8, width - gutter - tail_w - 3)
-        repeat = max(1, min(4, plot_w // n))
-        left, right = f"{unit} {first_index}", str(first_index + n - 1)
-        cols = min(plot_w, max(n * repeat, len(left) + len(right) + 1))
-
-        def buckets(values) -> list[float | None]:
-            out = []
-            for c in range(cols):
-                lo = c * n // cols
-                hi = max(lo + 1, (c + 1) * n // cols)
-                present = [v for v in values[lo:hi] if v is not None]
-                out.append(max(present) if present else None)
-            return out
-
-        lines = []
-        for label, values, tail, height in metrics:
-            if lines:
-                lines.append(" " * gutter + "│")
-            values = buckets(values)
-            peak = max((v for v in values if v is not None), default=0.0)
-            # Keep a visible tick for cheap calls without giving zero/missing values a bar.
-            levels = [
-                max(1, round(value / peak * height * 8))
-                if value is not None and value > 0 and peak > 0
-                else 0
-                for value in values
-            ]
-            for row in range(height):
-                cells = []
-                for level in levels:
-                    fill = max(0, min(8, level - (height - row - 1) * 8))
-                    cells.append("█" if fill == 8 else BLOCKS_UP[fill])
-                name = label if row == 0 else ""
-                suffix = f"  {tail:>{tail_w}}" if row == 0 else ""
-                lines.append(f"{name:>{gutter}}│{''.join(cells)}{suffix}")
-        lines.append(" " * gutter + "└" + "─" * cols)
-        if len(left) + len(right) + 1 > cols:
-            left = str(first_index)
-        labels = left + " " * max(1, cols - len(left) - len(right)) + right
-        lines.append(" " * (gutter + 1) + labels[:cols])
-        return lines
+        return turns_view.turn_metric_strips(
+            rows, costs, width, context_curve, unit=unit, first_index=first_index
+        )
 
     def detail_turns(self, workflow: Workflow, width: int) -> list[str]:
         # Only the current table layout is retained. Turn rows are immutable snapshots
@@ -5557,8 +4567,6 @@ class Renderer:
         return lines
 
     def _build_turns(self, workflow: Workflow, width: int) -> list[str]:
-        # Keep prompts chronological because this tab answers when cost accrued. Per-turn
-        # detail is drilled separately; `$` reprices wholly unpriced turns at list rates.
         scoped = self.app.active_subagent_turns
         label = "Execution turns" if scoped else "Turns"
         if scoped:
@@ -5581,176 +4589,21 @@ class Renderer:
                 return drilled
             self.app.turn_drill = None
         costs = self.turn_costs(rows)
-        total = sum(costs)
-        groups = self.turn_group_rows(rows, costs)
-
-        # Share supports_context_curve with Context: cumulative-delta and synthetic rows
-        # cannot interpret a row's cache split as one request. Show only actionable cache
-        # misses caused by waiting or changing reasoning effort.
         curve = self.session_supports_context_curve(workflow.id)
-        comps = context_compactions(rows) if curve else {}
-        misses = cache_misses(rows) if curve else []
-        late = {m.index: m for m in misses if m.cause == "waited"}
-        switched = {m.index: m for m in misses if m.cause == "reasoning"}
-        head = f"# {label} — {len(groups)} prompts · {len(rows)} turns · {money(total)}"
-        if comps:
-            freed = sum(before - after for before, after in comps.values())
-            head += f" · ▼ {len(comps)} compaction{'s' if len(comps) > 1 else ''}"
-            head += f", ~{human_tokens(freed)} freed"
-        if late:
-            burnt = sum(m.cost for m in late.values())
-            head += (
-                f" · ❄ {len(late)} cache expir{'y' if len(late) == 1 else 'ies'}, {money(burnt)}"
-            )
-        if switched:
-            spent = sum(m.cost for m in switched.values())
-            head += f" · ⚙ {len(switched)} effort switch{'' if len(switched) == 1 else 'es'}"
-            head += f", {money(spent)}"
-        idx_w = max(2, len(str(len(groups))))
-        time_w = 11
-        turns_w, cached_w, tok_w, cost_w = 5, 6, 8, 9
-        # Budget optional columns incrementally so box_row never clips the right edge.
-        # Preserve PROMPT_MIN; drop the redundant bar before Cumulative.
-        PROMPT_MIN = 20
-        inner = max(1, width - self.BOX_CHROME)
-        base = idx_w + time_w + turns_w + cached_w + tok_w + cost_w + 8
-        # Include each separator in `used`; independent width expressions drift by a cell
-        # and cause box_row to clip a column that should have been dropped.
-        used = base
-        cum_w = 14 if inner - used - 15 >= PROMPT_MIN else 0
-        used += cum_w + (1 if cum_w else 0)
-        # Show call count only when present; names live in the drill. Size from the TOTAL
-        # so unexpectedly large counts cannot shift following columns.
-        total_calls = sum(g["calls"] for g in groups)
-        calls_w = max(len("Calls"), len(str(total_calls)))
-        calls_w = calls_w if total_calls and inner - used - calls_w - 1 >= PROMPT_MIN else 0
-        used += calls_w + (1 if calls_w else 0)
-        # Gate agent names on actual delegation; unnamed executions are folded upstream.
-        AGENTS_MIN, AGENTS_MAX = 12, 22
-        # Measure rendered cells including the delegation marker.
-        agent_cells = {
-            n: ("↳ " + g["agents"] if g["agents"] else "-") for n, g in enumerate(groups)
-        }
-        agents_w = 0
-        if any(g["subturns"] for g in groups):
-            agents_w = min(AGENTS_MAX, max(AGENTS_MIN, max(map(len, agent_cells.values()))))
-            if inner - used - agents_w - 1 < PROMPT_MIN:
-                agents_w = 0
-        used += agents_w + (1 if agents_w else 0)
-        bar_w = 8 if inner - used - 9 >= PROMPT_MIN + 12 else 0
-        used += bar_w + (1 if bar_w else 0)
-        fixed = used
-        peak = max((g["cost"] for g in groups), default=0.0)
-        pw = max(PROMPT_MIN, inner - fixed)
-
-        header = (
-            f"  {'#':>{idx_w}} {'Time':<{time_w}} {'Prompt':<{pw}} {'Turns':>{turns_w}} "
-            + (f"{'Calls':>{calls_w}} " if calls_w else "")
-            + (f"{pad('Agents', agents_w)} " if agents_w else "")
-            + f"{'Cached':>{cached_w}} {'Tokens':>{tok_w}} {'Cost':>{cost_w}}"
-            + (f" {'':<{bar_w}}" if bar_w else "")
-            + (f" {'Cumulative':>{cum_w}}" if cum_w else "")
+        layout = turns_view.build_turns(
+            rows=rows,
+            costs=costs,
+            width=width,
+            compactions=util_ops.context_compactions(rows) if curve else {},
+            cache_events=pricing_ops.cache_misses(rows) if curve else (),
+            scoped=scoped,
+            glyphs=self.box_glyphs(),
         )
-        cum = 0.0
-        body: list[str] = []
-        cursor_rows: list[int] = []
-        for n, g in enumerate(groups, start=1):
-            cum += g["cost"]
-            # Marker rows belong inside the chronology immediately before the prompt.
-            for i in g["indices"]:
-                comp = comps.get(i)
-                if comp:
-                    before, after = comp
-                    when = (rows[i].get("time") or "")[5:16]
-                    body.append(
-                        f"▼ context compacted before turn {i + 1} · {when} — "
-                        f"{human_tokens(before)} → {human_tokens(after)} "
-                        f"(~{human_tokens(before - after)} freed)"
-                    )
-                miss = late.get(i)
-                if miss:
-                    body.append(
-                        f"❄ cache expired — {human_duration(miss.idle)} idle, "
-                        f"{human_tokens(miss.repaid)} bought again for {money(miss.cost)} "
-                        f"(it lived {human_duration(miss.ttl)})"
-                    )
-                eff = switched.get(i)
-                if eff:
-                    # Changing thinking configuration invalidates the cached prefix.
-                    body.append(
-                        f"⚙ reasoning effort {eff.detail} — the cache went with it, "
-                        f"{human_tokens(eff.repaid)} bought again for {money(eff.cost)}"
-                    )
-            share = g["cached"]
-            cached = "-" if share is None else f"{share * 100:.0f}%"
-            title = " ".join((g["title"] or "").split()) or "(no preceding prompt)"
-            cumlabel = f"{money(cum)} · {pct(cum, total)}"
-            cursor_rows.append(len(body))
-            body.append(
-                f"  {n:>{idx_w}} {g['time'][5:16]:<{time_w}} {pad(shorten(title, pw), pw)} "
-                f"{g['turns']:>{turns_w}} "
-                # "-" means no calls; avoid another zero beside $0.00's unpriced meaning.
-                + (f"{(str(g['calls']) if g['calls'] else '-'):>{calls_w}} " if calls_w else "")
-                # Keep a non-color delegation cue; main-thread-only rows show explicit absence.
-                + (f"{pad(shorten(agent_cells[n - 1], agents_w), agents_w)} " if agents_w else "")
-                + f"{cached:>{cached_w}} "
-                f"{human_tokens(g['tokens']):>{tok_w}} {money(g['cost']):>{cost_w}}"
-                + (f" {cost_bar(g['cost'], peak, bar_w)}" if bar_w else "")
-                + (f" {cumlabel:>{cum_w}}" if cum_w else "")
-            )
-        totals_row = None
-        if len(groups) > 1:
-            # Cached is a per-prompt ratio, not an additive quantity.
-            totals_row = (
-                f"  {'':>{idx_w}} {pad('TOTAL', time_w)} {'':<{pw}} "
-                f"{sum(g['turns'] for g in groups):>{turns_w}} "
-                + (f"{sum(g['calls'] for g in groups):>{calls_w}} " if calls_w else "")
-                # pad() does not truncate, so shorten the aggregate agent mix first.
-                + (
-                    f"{pad(shorten('↳ ' + agent_mix_label(rows), agents_w), agents_w)} "
-                    if agents_w
-                    else ""
-                )
-                + f"{'':>{cached_w}} "
-                f"{human_tokens(sum(g['tokens'] for g in groups)):>{tok_w}} "
-                f"{money(total):>{cost_w}}"
-            )
-        strips = self._turn_metric_strips(
-            groups, [g["cost"] for g in groups], width, False, unit="prompt"
-        )
-        lines = strips + [""] + self._ruled_box(head, header, body, totals_row, [], width)
-        # Rebase click maps from the box's derived body start, never a counted prologue.
-        start = len(strips) + 1 + (self._ruled_body_start or 0)
-        self._turn_header_at = {start + row: n for n, row in enumerate(cursor_rows)}
-        cur = self.app._turn_cursor
-        self._turn_cursor_line = start + cursor_rows[cur] if 0 <= cur < len(cursor_rows) else None
-        notes = ["· Cached is context reused when the prompt started; low means it paid again."]
-        if scoped:
-            notes.insert(
-                0, "· Prompt and turn numbers are local to this execution, not session-wide."
-            )
-        if comps:
-            notes.append(
-                "· ▼ context was compacted before that execution turn."
-                if scoped
-                else "· ▼ context was compacted before that turn; Context charts the drop."
-            )
-        if late:
-            notes.append(
-                "· ❄ idle time expired the prompt cache, so that turn paid for context again."
-            )
-        if switched:
-            notes.append(
-                "· ⚙ changing reasoning effort invalidated the cached prefix before that turn."
-            )
-        # Paint clips, so wrap long notes and indent continuations under the bullet.
-        lines.append("")
-        for note in notes:
-            # Reserve continuation indentation inside the wrapping width.
-            wrapped = textwrap.wrap(note, max(20, width - 2)) or [note]
-            lines.append(wrapped[0])
-            lines += ["  " + piece for piece in wrapped[1:]]
-        return lines
+        self._box_headers.update(layout.box_headers)
+        self._turn_header_at = layout.row_map
+        self._token_runs.update(layout.token_runs)
+        self._turn_cursor_line = layout.cursor_lines.get(self.app._turn_cursor)
+        return layout.lines
 
     # Fixed chart height and right-aligned y-axis gutter.
     _CTX_CHART_ROWS = 9
@@ -6188,231 +5041,56 @@ class Renderer:
                 curses.color_pair(1),
             )
 
-    def price_intro_lines(self) -> list[str]:
-        # ONE dim context line above the P overlay's price table (plus a spacer):
-        # where the rates come from and what the eff blend means. Deliberately terse
-        # -- the overlay chrome (tabs + hint) carries the navigation, and the P help
-        # entry documents the long form. Shared by the flat price_table_lines
-        # (export/tests) and the navigable draw_prices.
+    def _price_source_description(self) -> str:
+        # Catalog metadata remains a pricing lookup; the view only receives display text.
         meta = price_source_meta()
         if meta:
             kind = "refreshed" if meta.get("kind") == "cache" else "bundled"
-            source = f"models.dev {(meta.get('fetched_at') or '?')[:10]} ({kind})"
-        else:
-            source = "no models.dev catalog — fallback rates"
-        parts = [source]
-        mix = self.app.price_token_mix()
-        if mix:
-            (inp, out, cr, cw), _total = mix
-            parts.append(
-                f"eff $/M = list rates at your mix: {inp:.1%} in · {out:.1%} out · {cr:.1%} cacheR · {cw:.1%} cacheW"
-            )
-            parts.append("~ = no cacheR rate")
-        return [" · ".join(parts), ""]
+            return f"models.dev {(meta.get('fetched_at') or '?')[:10]} ({kind})"
+        return "no models.dev catalog — fallback rates"
 
-    # Price columns are 8 wide (not 7) so the active-sort header can carry a " v"/
-    # " ^" arrow -- "output v"/"cacheR v" need the eighth cell -- and still line up
-    # with the numeric rows below. The eff column is 9 so "eff $/M ^" fits; the use
-    # column is a 5-cell share bar + a 4-wide percentage.
-    _PRICE_COL_W = 8
-    _PRICE_EFF_W = 9
-    _PRICE_USE_BAR = 5
-    _PRICE_USE_W = _PRICE_USE_BAR + 4
-    # name gap -> eff, gap, use, gap, four raw columns + three single-space gaps
-    _PRICE_BLOCK_W = _PRICE_EFF_W + 2 + _PRICE_USE_W + 2 + _PRICE_COL_W * 4 + 3
-
-    # A few access routes are long; abbreviate the worst offenders for the route tag.
-    _ROUTE_ABBR = {"github-copilot": "copilot"}
-
-    def _route_tag(self, routes) -> str:
-        # The trailing "how you reach this model" annotation, e.g. "anthropic·copilot".
-        # A slashed gateway route ("openrouter/anthropic") collapses to the gateway --
-        # the vendor half is already the row's family -- deduped after collapsing.
-        seen: list[str] = []
-        for r in routes:
-            tag = self._ROUTE_ABBR.get(r, r.split("/", 1)[0])
-            if tag not in seen:
-                seen.append(tag)
-        return "·".join(seen)
+    def price_intro_lines(self) -> list[str]:
+        return list(
+            price_view.intro_lines(self._price_source_description(), self.app.price_token_mix())
+        )
 
     def _price_eff_cell(self, entry) -> str:
-        # The blended eff $/M figure; ~ marks the missing-cache-read upper bound.
-        return f"~{entry.eff:.2f}" if entry.approx else f"{entry.eff:.2f}"
+        return price_view.eff_cell(entry)
 
     def _price_use_cell(self, entry, peak: float) -> str:
-        # Your usage share of this model: a bar scaled to the biggest row + percent.
-        # A share of exactly 0 (a catalog model you've never used) stays blank --
-        # thousands of "0%" cells would drown the rows that carry information.
-        if entry.share <= 0:
-            return " " * self._PRICE_USE_W
-        bar = cost_bar(entry.share, peak, self._PRICE_USE_BAR)
-        return f"{bar}{entry.share:>4.0%}"
+        return price_view.use_cell(entry, peak)
 
     def _price_raw_cells(self, entry) -> list[str]:
-        # The four raw list-price cells. A 0 cache-read rate is missing data, never
-        # a free lunch, so it renders as "—" (the eff blend bills it at the input
-        # rate); a 0 cache-write is genuine (OpenAI/Gemini don't charge writes).
-        ir, orr, crr, cwr = entry.price
-        cr = "—" if crr <= 0 < ir else f"{crr:.2f}"
-        return [f"{ir:.2f}", f"{orr:.2f}", cr, f"{cwr:.2f}"]
+        return price_view.raw_cells(entry)
 
     def _price_core_text(self, entry, namew: int, peak: float) -> str:
-        # One model's name (★-prefixed when pinned) + eff/use/raw-price cells (no
-        # route tag -- that's overlaid dim, and appended by the text path). Every
-        # entry carries its resolved price (from the most completely-priced alias;
-        # local models are dropped upstream).
-        w = self._PRICE_COL_W
-        name = f"★ {entry.bare}" if getattr(entry, "pinned", False) else entry.bare
-        cells = " ".join(f"{c:>{w}}" for c in self._price_raw_cells(entry))
-        return (
-            f"{pad(shorten(name, namew), namew)}  "
-            f"{self._price_eff_cell(entry):>{self._PRICE_EFF_W}}  "
-            f"{self._price_use_cell(entry, peak):<{self._PRICE_USE_W}}  {cells}"
-        )
-
-    def _price_col_head(self, key: str, label: str, width: int, left: bool = False) -> str:
-        # One `width`-wide header cell, with a v/^ arrow appended when this is the
-        # active sort column (direction from prices_sort_reverse).
-        if self.app.prices_sort == key:
-            desc = self.sort_descending(key, self.app.prices_sort_reverse)
-            label = f"{label} {'v' if desc else '^'}"
-        return f"{label:<{width}}" if left else f"{label:>{width}}"
+        return price_view.core_text(entry, namew, peak)
 
     def _price_header(self, namew: int) -> str:
-        # The price table's column header, shared by the flat price_table_lines and
-        # the navigable draw_prices so both show the same sort arrows. model is
-        # left-aligned in the name column; every other cell aligns with the rows.
-        model = "model"
-        if self.app.prices_sort == "model":
-            desc = self.sort_descending("model", self.app.prices_sort_reverse)
-            model = f"model {'v' if desc else '^'}"
-        eff = self._price_col_head("eff", "eff $/M", self._PRICE_EFF_W)
-        use = self._price_col_head("use", "use", self._PRICE_USE_W, left=True)
-        cells = " ".join(
-            self._price_col_head(key, label, self._PRICE_COL_W)
-            for key, label in self.PRICE_SORT_COLUMNS[3:]
+        return price_view.header_text(
+            namew,
+            self.app.prices_sort,
+            self.sort_descending(self.app.prices_sort, self.app.prices_sort_reverse),
         )
-        return f"{model:{namew}}  {eff}  {use}  {cells}"
-
-    def _price_namew(self, entries, width: int) -> int:
-        widest = max(len(e.bare) + (2 if getattr(e, "pinned", False) else 0) for e in entries)
-        return min(widest, max(12, width - self._PRICE_BLOCK_W - 3))
-
-    @staticmethod
-    def _price_use_peak(entries) -> float:
-        # The biggest usage share among the rows -- what the use bars scale against.
-        return max((e.share for e in entries), default=0.0)
 
     def _price_column_ranges(self, entries) -> list[tuple[float, float] | None]:
-        # For the eff column and each of the four price columns, the (min, max) over
-        # the *positive* values among `entries` -- the span the green→red heat
-        # normalizes against. Zero cells are excluded, so a column of {0, 0, 5.0}
-        # still spans by its paying member; a column with fewer than two distinct
-        # positive rates is degenerate (None) and stays neutral.
-        cols: list[list[float]] = [[e.eff for e in entries if e.eff > 0], [], [], [], []]
-        for entry in entries:
-            for i, value in enumerate(entry.price):
-                if value > 0:
-                    cols[i + 1].append(value)
-        ranges: list[tuple[float, float] | None] = []
-        for vals in cols:
-            lo, hi = (min(vals), max(vals)) if vals else (0.0, 0.0)
-            ranges.append((lo, hi) if hi > lo else None)
-        return ranges
+        return price_view.column_ranges(entries)
 
     def _price_heat_level(self, value: float, rng: tuple[float, float] | None) -> int | None:
-        # The 0..PRICE_HEAT_LEVELS-1 heat bucket for one price cell, by its
-        # *logarithmic* position in the column's [min, max] -- list prices span orders
-        # of magnitude, so a linear ramp would flatten the low end (same reasoning as
-        # heat_level). None means neutral: a degenerate column or a non-positive rate,
-        # which must never read as falsely hot. Pure (no curses) so it's unit-testable.
-        if rng is None:
-            return None
-        lo, hi = rng
-        if value <= lo:
-            return 0
-        frac = (math.log(value) - math.log(lo)) / (math.log(hi) - math.log(lo))
-        return max(0, min(PRICE_HEAT_LEVELS - 1, round(frac * (PRICE_HEAT_LEVELS - 1))))
-
-    def _price_heat_attr(self, value: float, rng: tuple[float, float] | None) -> int:
-        # The green(cheap)→red(pricy) curses attribute for one price cell.
-        level = self._price_heat_level(value, rng)
-        if level is None:
-            return curses.A_NORMAL
-        return curses.color_pair(PRICE_HEAT_BASE_PAIR + level) | curses.A_BOLD
-
-    def _price_group_label(self, group: str) -> str:
-        # The header label for a group in the active view: the vendor name in the
-        # "family" view, the route (or "(direct)" for a route-less id) in "provider".
-        if self.app.prices_view == "family":
-            return family_label(group)
-        return group or "(direct)"
-
-    def _price_entry_tag(self, entry) -> str:
-        # The trailing annotation per row: in the "provider" view the group is already
-        # the route, so show the vendor family instead; otherwise show the route(s).
-        # The catalog view appends the models.dev lifecycle flag (alpha/beta/deprecated).
-        if self.app.prices_view == "provider":
-            return family_label(entry.family)
-        tag = self._route_tag(entry.routes)
-        status = getattr(entry, "status", "")
-        if status and self.app.prices_view == "all":
-            tag = f"{tag}·{status}" if tag else status
-        return tag
-
-    def _price_render_rows(self, entries) -> list[tuple]:
-        # Flatten the ordered entries into drawable rows: ("header", label) before each
-        # new group (unless the view is flat), then ("model", entry_index, entry) for
-        # each model. Pinned entries always come first (ordered so upstream) under one
-        # "★ pinned" header, in every view. The entry_index is the position in
-        # `entries`, so the cursor (prices_index) and this list stay in lock-step.
-        rows: list[tuple] = []
-        grouped = self.app.prices_view in ("family", "provider")
-        prev = None
-        for i, entry in enumerate(entries):
-            pinned = getattr(entry, "pinned", False)
-            if pinned and prev is None:
-                rows.append(("header", "★ pinned"))
-            elif (
-                not pinned
-                and grouped
-                and (prev is None or getattr(prev, "pinned", False) or entry.group != prev.group)
-            ):
-                rows.append(("header", self._price_group_label(entry.group)))
-            rows.append(("model", i, entry))
-            prev = entry
-        return rows
-
-    def _price_empty_msg(self) -> str:
-        if self.query:
-            return f"No model prices match the filter: {self.query}"
-        if self.app.prices_view == "all":
-            return "No models.dev catalog on record — fetch one with r."
-        return "No model usage on record yet."
+        return price_view.heat_level(value, rng)
 
     def price_table_lines(self, width: int) -> list[str]:
-        # The models you have used and the models.dev API list prices OpenTab applies
-        # for the "$" what-if estimate, laid out by the active view (grouped under
-        # ▸ headers unless flat). Pure text so it can be tested without a screen;
-        # draw_prices paints the same rows with a cursor + heat colors. The entry set
-        # (and the active filter) is shared with the `e` export via priced_model_entries.
         entries = self.priced_model_entries()
-        lines = self.price_intro_lines()
-        if not entries:
-            lines.append(self._price_empty_msg())
-            return lines
-        namew = self._price_namew(entries, width)
-        peak = self._price_use_peak(entries)
-        lines.append(self._price_header(namew))
-        for row in self._price_render_rows(entries):
-            if row[0] == "header":
-                lines.append(f"▸ {row[1]}")
-            else:
-                _, _i, entry = row
-                core = self._price_core_text(entry, namew, peak)
-                tag = self._price_entry_tag(entry)
-                lines.append(f"{core}  {tag}" if tag else core)
-        return lines
+        return price_view.table_lines(
+            entries,
+            source=self._price_source_description(),
+            token_mix=self.app.price_token_mix(),
+            view=self.app.prices_view,
+            sort=self.app.prices_sort,
+            descending=self.sort_descending(self.app.prices_sort, self.app.prices_sort_reverse),
+            query=self.query,
+            width=width,
+        )
 
     def draw_prices(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         # Reference overlay (toggled with P) so the rates behind the "$" what-if
@@ -6430,115 +5108,77 @@ class Renderer:
         active = keys.index(self.app.prices_view) if self.app.prices_view in keys else 0
         self.draw_tabs(stdscr, y + 1, 1, width - 2, labels, active, kind="pricetab", rule=True)
         inner_w = width - 4
-        intro = self.price_intro_lines()
+        entries = self.priced_model_entries()
+        source = self._price_source_description()
+        token_mix = self.app.price_token_mix()
         top = y + 3
-        for offset, line in enumerate(intro):
+        head_y = top + 2
+        list_top = head_y + 1
+        visible = max(1, bottom - list_top - 1)
+        layout = price_view.table_layout(
+            entries,
+            source=source,
+            token_mix=token_mix,
+            view=self.app.prices_view,
+            sort=self.app.prices_sort,
+            descending=self.sort_descending(self.app.prices_sort, self.app.prices_sort_reverse),
+            query=self.query,
+            width=inner_w,
+            selection=self.app.prices_index,
+            scroll=self.app.prices_scroll,
+            visible=visible,
+        )
+        for offset, line in enumerate(layout.intro):
             self.write(
                 stdscr, top + offset, 2, shorten(line, inner_w), curses.color_pair(1) | curses.A_DIM
             )
-        entries = self.priced_model_entries()
-        head_y = top + len(intro)
-        if not entries:
-            self.write(stdscr, head_y, 2, shorten(self._price_empty_msg(), inner_w))
+        if layout.empty_message:
+            self.write(stdscr, head_y, 2, shorten(layout.empty_message, inner_w))
             return
-        namew = self._price_namew(entries, inner_w)
-        header = self._price_header(namew)
-        self._paint_box_header(stdscr, head_y, 2, header, inner_w)
-        # Clicking a column header sorts by it (re-click flips); zones match the
-        # drawn text, arrows included, via the base labels in PRICE_SORT_COLUMNS.
-        self._register_sort_header(head_y, 2, header, self.PRICE_SORT_COLUMNS, "prices", inner_w)
-        list_top = head_y + 1
-        visible = max(1, bottom - list_top - 1)
-        idx = max(0, min(self.app.prices_index, len(entries) - 1))
-        self.app.prices_index = idx
-        render = self._price_render_rows(entries)
-        # Scroll over the flattened rows (headers included) while keeping the selected
-        # model row -- and, when it exists, the group header just above it -- in view.
-        sel_row = next(r for r, item in enumerate(render) if item[0] == "model" and item[1] == idx)
-        anchor = sel_row - 1 if sel_row > 0 and render[sel_row - 1][0] == "header" else sel_row
-        scroll = max(0, min(self.app.prices_scroll, max(0, len(render) - visible)))
-        if anchor < scroll:
-            scroll = anchor
-        elif sel_row >= scroll + visible:
-            scroll = sel_row - visible + 1
-        self.app.prices_scroll = scroll
-        ranges = self._price_column_ranges(entries)
-        peak = self._price_use_peak(entries)
-        w = self._PRICE_COL_W
-        x_eff = 2 + namew + 2
-        x_raw = x_eff + self._PRICE_EFF_W + 2 + self._PRICE_USE_W + 2
-        tag_x = 2 + namew + 2 + self._PRICE_BLOCK_W + 2  # after the price cells
-        for offset, item in enumerate(render[scroll : scroll + visible]):
+        self.app.prices_index = layout.selected_index
+        self.app.prices_scroll = layout.scroll
+        self._paint_box_header(stdscr, head_y, 2, layout.header, inner_w)
+        for span in layout.sort_spans:
+            self.sort_regions.append(
+                (head_y, 2 + span.start, 2 + span.start + span.width - 1, span.key, "prices")
+            )
+        for offset, row in enumerate(layout.rows):
             row_y = list_top + offset
-            if item[0] == "header":
-                self.write(
-                    stdscr,
-                    row_y,
-                    2,
-                    shorten(f"▸ {item[1]}", inner_w),
-                    curses.color_pair(6) | curses.A_BOLD,
-                )
+            if row.kind == "header":
+                self.write(stdscr, row_y, 2, row.text, curses.color_pair(6) | curses.A_BOLD)
                 continue
-            _, i, entry = item
-            core = self._price_core_text(entry, namew, peak)
-            selected = i == idx
+            selected = row.selected
             attr = curses.A_REVERSE | curses.A_BOLD if selected else curses.A_NORMAL
-            core_row = pad(shorten(core, inner_w), inner_w)
-            self.write(stdscr, row_y, 2, core_row, attr)
+            self.write(stdscr, row_y, 2, row.text, attr)
             if selected:
-                self.write_selected_bars(stdscr, row_y, 2, core_row)
-            tag = self._price_entry_tag(entry)
-            if tag and tag_x < 2 + inner_w and not selected:
-                self.write(
-                    stdscr,
-                    row_y,
-                    tag_x,
-                    shorten(tag, 2 + inner_w - tag_x),
-                    curses.color_pair(1) | curses.A_DIM,
-                )
-            elif tag and tag_x < 2 + inner_w:  # selected row: keep the tag in the reverse bar
-                self.write(stdscr, row_y, tag_x, shorten(tag, 2 + inner_w - tag_x), attr)
-            if selected:
-                continue  # the reverse cursor bar reads clearer without heat
-            if x_eff + self._PRICE_EFF_W <= 2 + inner_w:
-                self.write(
-                    stdscr,
-                    row_y,
-                    x_eff,
-                    f"{self._price_eff_cell(entry):>{self._PRICE_EFF_W}}",
-                    self._price_heat_attr(entry.eff, ranges[0]),
-                )
-            for j, cell in enumerate(self._price_raw_cells(entry)):
-                cell_x = x_raw + j * (w + 1)
-                if cell_x + w > 2 + inner_w:
-                    break  # cell would spill past the shortened row; leave it plain
-                self.write(
-                    stdscr,
-                    row_y,
-                    cell_x,
-                    f"{cell:>{w}}",
-                    self._price_heat_attr(entry.price[j], ranges[j + 1]),
-                )
-        self._paint_scrollbar(stdscr, list_top, width - 1, len(render), visible, scroll)
+                self.write_selected_bars(stdscr, row_y, 2, row.text)
+            for span in row.spans:
+                if span.role == "muted":
+                    style = curses.color_pair(1) | curses.A_DIM
+                elif span.role == "heat":
+                    style = curses.color_pair(PRICE_HEAT_BASE_PAIR + span.level) | curses.A_BOLD
+                elif span.role == "normal":
+                    style = curses.A_NORMAL
+                elif span.role == "selected":
+                    style = attr
+                else:
+                    continue
+                self.write(stdscr, row_y, 2 + span.start, span.text, style)
+        self._paint_scrollbar(
+            stdscr, list_top, width - 1, layout.total_rows, visible, layout.scroll
+        )
 
     def price_session_lines(self, model: str, width: int) -> list[str]:
-        # Pure-text body for the P overlay's per-model drill-in: every root session
-        # that used `model`, with that model's cost/tokens within the session. Line 0
-        # is the subtotal, line 1 the column header, the rest are the sessions.
-        rows = self.price_model_sessions(model)
-        if not rows:
-            return [f"No sessions used {model}."]
-        subtotal = sum(cost for _w, cost, _t in rows)
-        lines = [
-            f"{len(rows)} session(s) · {money(subtotal)} on this model · most spend first",
-            f"{'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}",
-        ]
-        for w, cost, tok in rows:
-            lines.append(
-                f"{w.created_at[:10]:<10} {money(cost):>9} {human_tokens(tok):>8}  "
-                f"{self.src_col(w)}{self.session_marks(w)}{w.title}"
+        rows = [
+            price_view.PriceSessionEntry(
+                workflow.created_at,
+                cost,
+                tokens,
+                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}",
             )
-        return lines
+            for workflow, cost, tokens in self.price_model_sessions(model)
+        ]
+        return price_view.session_lines(rows, model, self.src_col())
 
     def draw_price_sessions(self, stdscr: curses.window, y: int, bottom: int, width: int) -> None:
         # The P overlay's per-model drill-in (Enter on a model). The subtotal +
@@ -6561,21 +5201,36 @@ class Renderer:
         )
         self.write(stdscr, y + 1, width - len(hint) - 2, hint, curses.color_pair(4))
         inner_w = width - 4
-        lines = self.price_session_lines(model, inner_w)
         top = y + 2
-        if len(lines) == 1:  # the "No sessions used …" case
-            self.write(stdscr, top, 2, shorten(lines[0], inner_w))
-            return
-        self.write(stdscr, top, 2, shorten(lines[0], inner_w), curses.color_pair(4))
-        self._paint_box_header(stdscr, top + 1, 2, lines[1], inner_w)
-        body = lines[2:]
+        rows = [
+            price_view.PriceSessionEntry(
+                workflow.created_at,
+                cost,
+                tokens,
+                f"{self.src_col(workflow)}{self.session_marks(workflow)}{workflow.title}",
+            )
+            for workflow, cost, tokens in self.price_model_sessions(model)
+        ]
         list_top = top + 2
         visible = max(1, bottom - list_top - 1)
-        scroll = max(0, min(self.app.prices_scroll, max(0, len(body) - visible)))
-        self.app.prices_scroll = scroll
-        for offset, line in enumerate(body[scroll : scroll + visible]):
+        layout = price_view.session_layout(
+            rows,
+            model=model,
+            source_header=self.src_col(),
+            scroll=self.app.prices_scroll,
+            visible=visible,
+        )
+        if layout.empty_message:
+            self.write(stdscr, top, 2, shorten(layout.empty_message, inner_w))
+            return
+        self.app.prices_scroll = layout.scroll
+        self.write(stdscr, top, 2, shorten(layout.summary, inner_w), curses.color_pair(4))
+        self._paint_box_header(stdscr, top + 1, 2, layout.header, inner_w)
+        for offset, line in enumerate(layout.rows):
             self.write_rich(stdscr, list_top + offset, 2, shorten(line, inner_w))
-        self._paint_scrollbar(stdscr, list_top, width - 1, len(body), visible, scroll)
+        self._paint_scrollbar(
+            stdscr, list_top, width - 1, layout.total_rows, visible, layout.scroll
+        )
 
     # Per-kind toast styling: (colour pair, sigil, header word). Reuses the one
     # restrained palette -- slate info, green success, amber warn, red error -- so a
@@ -7164,7 +5819,42 @@ class Renderer:
         content_h = h - 4
         if self.trend_economics:
             workflows = [w for w, _cost, _tokens in self.trend_drill_sessions()]
-            lines = self.model_economics(workflows, self.trend_drill[1], inner_w)
+            model = self.trend_drill[1]
+            usage = self.model_scope_usage(workflows, model)
+            if is_local_provider(model):
+                list_cost = "- (local model)"
+            else:
+                list_cost = ("~" if usage["estimated"] else "") + money(float(usage["list_cost"]))
+            economics = self.app.token_economics(workflows, model)
+            token_card = None
+            if economics is not None:
+                categories = [
+                    EconomicsCategory(label, economics.tokens[i], economics.cost[i], i)
+                    for i, label in enumerate(TOKEN_TYPES)
+                    if economics.tokens[i] > 0 or economics.cost[i] > 0
+                ]
+                token_card = token_economics_card(
+                    categories=categories,
+                    total_tokens=economics.total_tokens,
+                    total_cost=economics.total_cost,
+                    inner_width=max(1, inner_w - self.BOX_CHROME),
+                    estimated=economics.estimated,
+                    missing_cache_rate=economics.missing_cache_rate,
+                    local_tokens=economics.local_tokens,
+                    colored=self._token_series_ok,
+                )
+            lines = self._adopt_trend_layout(
+                trend_views.model_economics_layout(
+                    model,
+                    len(workflows),
+                    int(usage["runs"]),
+                    int(usage["tokens"]),
+                    list_cost,
+                    token_card,
+                    inner_w,
+                    self.box_glyphs(),
+                )
+            )
         elif self.trend_drill is not None:
             lines = self.trend_drill_lines(inner_w, content_h)
         elif current == "Calendar":
@@ -7269,6 +5959,24 @@ class Renderer:
         self._bar_click_rows = layout.click_rows
         return list(layout.lines)
 
+    def _adopt_trend_layout(self, layout: trend_views.TrendsLayout) -> list[str]:
+        self._bar_slots = list(layout.bar_slots) if layout.bar_slots is not None else None
+        self._bar_click_rows = layout.bar_click_rows
+        self._trend_rows_at = (
+            (layout.rows.line, layout.rows.count, layout.rows.start) if layout.rows else None
+        )
+        for header in layout.headers:
+            if 0 <= header.line < len(layout.lines):
+                self._box_headers.add(layout.lines[header.line])
+                if header.columns:
+                    self._line_sort_headers[header.line] = (header.columns, header.target)
+        token_runs: dict[str, list[tuple[int, int, int]]] = defaultdict(list)
+        for span in layout.spans:
+            if span.role == "token" and 0 <= span.line < len(layout.lines):
+                token_runs[layout.lines[span.line]].append((span.column, span.length, span.value))
+        self._token_runs.update(token_runs)
+        return list(layout.lines)
+
     def _bar_selection(self, tab: str, data: list[tuple[str, float]]) -> str | None:
         # The bucket to mark with the ▲ cursor: only when this chart is the focused
         # Trends tab (a direct trend_* call from a detail context never selects).
@@ -7278,245 +5986,119 @@ class Renderer:
         return self._effective_bar_cursor(data)
 
     def trend_daily(self, width: int, height: int) -> list[str]:
-        # One calendar month at a time (navigate with j/k); the x-axis is the day
-        # of the month, so it stays readable instead of cramming the whole range.
         month, data = self.trend_daily_data()
-        if month is None:
-            return ["# Daily spend", "", "No spend in the active range."]
-        months = self.trend_months()
-        idx = months.index(month)
-        pairs = [(str(int(d[8:10])), v) for d, v in data]
-        title = f"# Daily spend · {month}"
-        if len(months) > 1:
-            title += f"   ({idx + 1}/{len(months)} — {self._keys('trends', 'down', 'up')} older/newer month)"
-        chart = self._bar_chart(
-            pairs,
-            width,
-            height - 2,
-            keys=[d for d, _ in data],
-            selected=self._bar_selection("Daily", data),
+        return self._adopt_trend_layout(
+            trend_views.daily_layout(
+                month,
+                data,
+                self.trend_months(),
+                width,
+                height,
+                navigation_keys=self._keys("trends", "down", "up"),
+                selected=self._bar_selection("Daily", data),
+            )
         )
-        return [title, ""] + chart
 
     def trend_weekly(self, width: int, height: int) -> list[str]:
-        # One ISO week at a time (navigate with j/k), x-axis is Mon..Sun of that week.
-        # Like trend_daily, but a week instead of a month -- finer-grained browsing.
         monday, data = self.trend_weekly_data()
-        if monday is None:
-            return ["# Weekly spend", "", "No spend in the active range."]
-        weeks = self.trend_weeks()
-        idx = weeks.index(monday)
-        names = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        pairs = [(names[i], v) for i, (_d, v) in enumerate(data)]
-        sunday = data[-1][0]
-        title = f"# Weekly spend · {monday} – {sunday}"
-        if len(weeks) > 1:
-            title += f"   ({idx + 1}/{len(weeks)} — {self._keys('trends', 'down', 'up')} older/newer week)"
-        chart = self._bar_chart(
-            pairs,
-            width,
-            height - 2,
-            keys=[d for d, _ in data],
-            selected=self._bar_selection("Weekly", data),
+        return self._adopt_trend_layout(
+            trend_views.weekly_layout(
+                monday,
+                data,
+                self.trend_weeks(),
+                width,
+                height,
+                navigation_keys=self._keys("trends", "down", "up"),
+                selected=self._bar_selection("Weekly", data),
+            )
         )
-        return [title, ""] + chart
 
     def trend_monthly(self, width: int, height: int) -> list[str]:
         data = self.trend_monthly_data()
-        if not data:
-            return ["# Monthly spend", "", "No spend in the active range."]
-        chart = self._bar_chart(
-            data,
-            width,
-            height - 2,
-            selected=self._bar_selection("Monthly", data),
+        return self._adopt_trend_layout(
+            trend_views.monthly_layout(
+                data,
+                width,
+                height,
+                selected=self._bar_selection("Monthly", data),
+            )
         )
-        return ["# Monthly spend (cost per month)", ""] + chart
 
     def draw_calendar(
         self, stdscr: curses.window, top: int, left: int, height: int, width: int
     ) -> None:
-        # GitHub-style spend heat map for one navigable calendar year: weekday rows
-        # (Mon..Sun) by week columns, each day shaded by how it compares to the year's
-        # busiest day. Paints its own cells (unlike the string-returning trend_* tabs)
-        # because the heat shades are per-cell color attributes, not regex spans.
-        self.app._cal_geom = None  # cleared until a full grid is drawn (mouse hit-testing)
+        self.app._cal_geom = None
         years = self.calendar_years()
-        if not years:
-            self.write(stdscr, top, left, "No spend in the active range.", curses.color_pair(1))
-            return
-        if height < 13 or width < 24:
-            self.write(stdscr, top, left, "Not enough room for the calendar.", curses.color_pair(1))
-            return
-        idx = max(0, min(self.trend_year_index, len(years) - 1))
-        year = years[idx]
-        by_date: dict[str, float] = defaultdict(float)
-        sessions = 0
-        for w in self.all_workflows:
-            if w.created_at[:4] == year:
-                by_date[w.created_at[:10]] += w.total_cost
-                sessions += 1
-        grid, months, ncols = calendar_cells(year, by_date)
-        peak = max(by_date.values(), default=0.0)
-        total = sum(by_date.values())
-        active = sum(1 for v in by_date.values() if v > 0)
-        levels = self.cal_levels  # live granularity (+/-): more levels = more shades
-        self._sync_heat_palette()  # restyle the color pairs to the current granularity
-
-        gutter = 4  # the weekday label ("Mon") plus a trailing space, then the grid
-        pitch = 2  # one glyph + a one-column gap per day, so cells don't run together
-        # A narrow panel can't hold all 53 weeks; show the most recent ones that fit.
-        max_cols = max(1, (width - gutter) // pitch)
-        start_col = max(0, ncols - max_cols)
-        shown = ncols - start_col
-        grid_w = shown * pitch
-        xoff = max(0, (width - (gutter + grid_w)) // 2)  # center the block in the panel
-        gx = left + xoff + gutter  # screen x of the first shown grid column
-        # Breathe vertically when the panel is tall: a blank line between weekday rows
-        # (else keep them tight so a short panel still fits in its 13-row minimum).
-        row_pitch = 2 if height >= 20 else 1
-        gy0 = top + 3  # screen row of the first (Mon) weekday line
-        jan1 = datetime(int(year), 1, 1)
-        grid_start = jan1 - timedelta(days=jan1.weekday())  # Monday of week column 0
-        # Stash the geometry so a mouse click can resolve back to a date.
-        self.app._cal_geom = (gy0, row_pitch, gx, pitch, start_col, shown, year, grid_start)
-        cursor = self._effective_cursor(year, by_date)  # the highlighted day
-
-        title = f"Spend calendar · {year}"
-        if len(years) > 1:
-            title += f"   ({idx + 1}/{len(years)} — {self._keys('trends', 'down', 'up')} older/newer year)"
-        self.write(
-            stdscr,
-            top,
-            left + max(0, (width - len(title)) // 2),
-            title,
-            curses.color_pair(4) | curses.A_BOLD,
+        index = max(0, min(self.trend_year_index, len(years) - 1)) if years else 0
+        year = years[index] if years else None
+        levels = self.cal_levels
+        renderable = year is not None and height >= 13 and width >= 24
+        if renderable:
+            by_date = self._calendar_by_date(year)
+            sessions_by_date: dict[str, int] = defaultdict(int)
+            for workflow in self.all_workflows:
+                if workflow.created_at[:4] == year:
+                    sessions_by_date[workflow.created_at[:10]] += 1
+            self._sync_heat_palette()
+            cursor = self._effective_cursor(year, by_date)
+            heat_glyphs = [self._heat_cell(level, levels)[0] for level in range(levels + 1)]
+        else:
+            by_date = {}
+            sessions_by_date = {}
+            cursor = None
+            heat_glyphs = ()
+        layout = trend_views.calendar_layout(
+            year,
+            index,
+            len(years),
+            by_date,
+            sessions_by_date,
+            levels,
+            self.trend_focus,
+            cursor,
+            height,
+            width,
+            navigation_keys=self._keys("trends", "down", "up"),
+            select_key=self._key("trends.chart" if self.trend_focus else "trends", "select"),
+            arrows=" ".join(
+                self.app.keymap.label("trends.chart", action)
+                for action in ("cursor_left", "cursor_up", "cursor_down", "cursor_right")
+            ),
+            price_key=self._key("trends", "api_prices"),
+            show_api_prices=self.show_api_prices,
+            heat_glyphs=heat_glyphs,
         )
-
-        # Month labels anchored over each month's first week column; the spacing leaves
-        # room for all twelve, but skip any that would collide with the previous one.
-        next_free_x = gx
-        for col, abbr in months:
-            c = col - start_col
-            mx = gx + c * pitch
-            if c >= 0 and mx >= next_free_x and mx + len(abbr) <= gx + grid_w:
-                self.write(stdscr, top + 2, mx, abbr, curses.color_pair(1))
-                next_free_x = mx + len(abbr) + 1
-
-        # Every weekday gets its own labeled row; the heat grid sits to the right.
-        # Until the grid is focused it reads as "asleep": every cell is dimmed and only
-        # the cursor marker stays lit, so the bright [ ] on the muted field invites the
-        # Enter that wakes the whole map up — the affordance without spelling it out.
-        weekday_labels = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        for r in range(7):
-            ry = top + 3 + r * row_pitch
-            self.write(stdscr, ry, left + xoff, weekday_labels[r], curses.color_pair(1))
-            for c in range(shown):
-                cell = grid[r][start_col + c]
-                if cell is None:
-                    continue  # a padding day outside the year: leave it blank
-                glyph, attr = self._heat_cell(heat_level(cell, peak, levels), levels)
-                if not self.trend_focus:
-                    attr = (attr & ~curses.A_BOLD) | curses.A_DIM  # dim the sleeping grid
-                self.write(stdscr, ry, gx + c * pitch, glyph, attr)
-
-        # Frame the highlighted day in the gap columns around its cell, so the brackets
-        # never overwrite a neighbouring glyph. The marker stays bright in both states:
-        # against the dimmed unfocused grid it's the lone focal point ("start here"),
-        # and on the lit focused grid it's the cursor the arrows walk.
-        if cursor and cursor[:4] == year:
-            cd = datetime.strptime(cursor, "%Y-%m-%d")
-            ccol = (cd - grid_start).days // 7 - start_col
-            if 0 <= ccol < shown:
-                cy = gy0 + cd.weekday() * row_pitch
-                cxx = gx + ccol * pitch
-                self.write(stdscr, cy, cxx - 1, "[", curses.color_pair(6) | curses.A_BOLD)
-                self.write(stdscr, cy, cxx + 1, "]", curses.color_pair(6) | curses.A_BOLD)
-
-        # Legend: spell out the per-day dollar band each shade stands for, on the same
-        # log scale as the cells, so the colors read as numbers (· is a day with no
-        # spend; each shade is "up to" its bound, the hottest = the peak day). The bounds
-        # bunch up toward the low end — that's the log scale spreading the common days.
-        # Built as (text, attr) segments first so the whole strip can be centered under
-        # the grid; legend cells stay bright (a reference key) even while the grid sleeps.
-        ly = top + 3 + 6 * row_pitch + 2  # one blank line below the last weekday row
-        sep = "  " if levels <= 6 else " "  # tighten the bands so a finer ramp still fits
-        legend: list[tuple[str, int]] = []
-        if peak > 0:
-            legend.append(("per day  ", curses.color_pair(1)))
-            bounds = [math.expm1(math.log1p(peak) * i / levels) for i in range(levels + 1)]
-            for level in range(levels + 1):
-                legend.append(self._heat_cell(level, levels))
-                label = f" $0{sep}" if level == 0 else f" ≤{heat_band_label(bounds[level])}{sep}"
-                legend.append((label, curses.color_pair(1)))
-        else:
-            legend.append(("Less ", curses.color_pair(1)))
-            for level in range(levels + 1):
-                legend.append(self._heat_cell(level, levels))
-            legend.append((" More", curses.color_pair(1)))
-        lx = left + max(0, (width - sum(len(t) for t, _ in legend)) // 2)  # center the strip
-        for text, seg_attr in legend:
-            self.write(stdscr, ly, lx, text, seg_attr)
-            lx += len(text)
-
-        if total > 0:
-            peak_date = max(by_date, key=by_date.__getitem__)
-            summary = (
-                f"total {money(total)}   peak {money(peak)} on {peak_date}   {active} active days"
+        if layout.calendar:
+            geometry = layout.calendar
+            self.app._cal_geom = (
+                top + geometry.grid_y,
+                geometry.row_pitch,
+                left + geometry.grid_x,
+                geometry.column_pitch,
+                geometry.start_column,
+                geometry.shown_columns,
+                geometry.year,
+                geometry.grid_start,
             )
-        elif sessions:
-            summary = f"{sessions} sessions, no recorded spend this year"
-        else:
-            summary = "no spend this year"
-        # Below the legend, all centered: the year summary, then either the focused-day
-        # detail (when the grid is live) or an orange "press Enter" call-to-action (when
-        # it's asleep), then the $ nudge for $0 years. Painted top-down, clipped to fit.
-        info: list[tuple[str, int]] = [(summary, curses.A_NORMAL)]
-        if self.trend_focus:
-            if cursor:
-                cd = datetime.strptime(cursor, "%Y-%m-%d")
-                day_cost = by_date.get(cursor, 0.0)
-                day_sessions = sum(1 for w in self.all_workflows if w.created_at[:10] == cursor)
-                label = f"▸ {weekday_labels[cd.weekday()]} {cursor}   "
-                if day_sessions:
-                    noun = "session" if day_sessions == 1 else "sessions"
-                    info.append(
-                        (
-                            f"{label}{money(day_cost)}   {day_sessions} {noun}   "
-                            f"{self._key('trends.chart', 'select')} opens",
-                            0,
-                        )
-                    )
-                else:
-                    arrows = " ".join(
-                        self.app.keymap.label("trends.chart", a)
-                        for a in ("cursor_left", "cursor_up", "cursor_down", "cursor_right")
-                    )
-                    info.append((f"{label}no sessions   move with {arrows}", 0))
-        else:
-            info.append(("", 0))  # a couple of blank lines set the call-to-action apart
-            info.append(("", 0))
-            info.append(
-                (
-                    f"Press {self._key('trends', 'select')} to navigate the calendar",
-                    curses.color_pair(6) | curses.A_BOLD,
-                )
-            )
-        if total == 0 and sessions and not self.show_api_prices:
-            info.append(
-                (
-                    f"{self._key('trends', 'api_prices')} prices subscription/credit "
-                    "usage at API list rates",
-                    0,
-                )
-            )
-        for i, (line, line_attr) in enumerate(info):
-            row_y = ly + 1 + i
-            if row_y >= top + height:
-                break
-            text = shorten(line, width)
-            cx = left + max(0, (width - len(text)) // 2)  # center each line under the grid
-            self.write_rich(stdscr, row_y, cx, text, line_attr)
+        for line_index, line in enumerate(layout.lines):
+            self.write_rich(stdscr, top + line_index, left, line, curses.A_NORMAL)
+        for span in layout.spans:
+            text = layout.lines[span.line][span.column : span.column + span.length]
+            if span.role == "heat":
+                _glyph, attr = self._heat_cell(span.value, levels)
+                if not self.trend_focus and span.line != (
+                    layout.calendar.grid_y + 6 * layout.calendar.row_pitch + 2
+                    if layout.calendar
+                    else -1
+                ):
+                    attr = (attr & ~curses.A_BOLD) | curses.A_DIM
+            elif span.role in ("cursor", "accent"):
+                attr = curses.color_pair(6) | curses.A_BOLD
+            elif span.role == "title":
+                attr = curses.color_pair(4) | curses.A_BOLD
+            else:
+                attr = curses.color_pair(1)
+            self.write(stdscr, top + span.line, left + span.column, text, attr)
 
     # Custom-color SLOT NUMBERS (only touched when the terminal can redefine colors):
     # roles allocate up from 0, the heat ramps get fixed numbers so they can be
@@ -7790,44 +6372,19 @@ class Renderer:
         return heat_glyph(level, levels, self.has256), curses.color_pair(7 + level) | curses.A_BOLD
 
     def _ranked_row_budget(self, height: int, n: int, notes: int = 0) -> int:
-        """How many BODY rows a scrolling ruled table may draw inside `height` lines.
-
-        draw_trends hands each tab a height and then CLIPS what comes back to it, so a
-        builder that budgets its window without counting its own frame loses whatever
-        the frame pushed past the cut -- and what a ruled box pushes out last is its
-        TOTAL row and its bottom border, i.e. the table reads as though it simply ended
-        (measured: a 20-line viewport produced 23 lines). The chrome is BOX_CHROME (top,
-        header, rule, bottom) plus the rule+TOTAL a multi-row table closes with, plus any
-        notes riding below the box.
-        """
-        return max(1, height - self.BOX_CHROME - (2 if n > 1 else 0) - notes)
+        return trend_views.ranked_row_budget(height, n, notes)
 
     def _unpriced_note(self, all_rows: list) -> list[str]:
-        """The "press $" nudge under a ranked table, when the ranking holds $0 rows.
-
-        Asked of the WHOLE ranking rather than the scrolled window: the note is about
-        the data the table stands for, and one that blinked in and out as you scrolled
-        would also move the row budget under the cursor on every keypress.
-        """
-        if self.show_api_prices or not any(
-            float(it["cost"]) == 0 and int(it["tokens"]) for _, it in all_rows
-        ):
-            return []
-        return [
-            "",
-            f"{self._key('trends', 'api_prices')} prices subscription/credit "
-            "usage at API list rates",
-        ]
+        return list(
+            trend_views.unpriced_note(
+                all_rows, self.show_api_prices, self._key("trends", "api_prices")
+            )
+        )
 
     def _trend_cursor_window(self, n: int, fit: int) -> tuple[int, int, int]:
-        # Clamp the ranked-row cursor (writing the clamp back, so a shrunk list
-        # never leaves it dangling), then a stateless window that keeps it visible:
-        # (cursor, window start, rows shown).
-        idx = max(0, min(self.app.trend_row_index, n - 1))
+        idx, start, shown = trend_views.cursor_window(n, self.app.trend_row_index, fit)
         self.app.trend_row_index = idx
-        fit = max(1, fit)
-        start = max(0, min(idx - fit // 2, n - fit))
-        return idx, start, min(fit, n - start)
+        return idx, start, shown
 
     # The Models ranking's sortable columns, in the order their labels appear in the
     # header -- Share is deliberately absent: it is Cost expressed as a percentage, so
@@ -7836,49 +6393,20 @@ class Renderer:
 
     def trend_models(self, width: int, height: int) -> list[str]:
         all_rows = self.trend_ranked_rows("Models")
-        if not all_rows:
-            return ["# Model spend", "", "No priced model spend in the active range."]
-        total = sum(c for _, c in all_rows)
-        peak = max(c for _, c in all_rows) or 1.0
-        _idx, start, shown = self._trend_cursor_window(
-            len(all_rows), self._ranked_row_budget(height, len(all_rows))
-        )
-        rows = all_rows[start : start + shown]
-        head_name = self.trend_sort_heading("name", "Model", "Models")
-        head_cost = self.trend_sort_heading("cost", "Cost", "Models")
-        # Names get priority so long ids like claude-opus-4-5-20251101 show in
-        # full; the bar takes only the leftover (kept modest) instead of eating
-        # the width and forcing names to truncate. The name column is sized to its own
-        # HEADER too (_group_widths' rule): with every model shorter than "Model v",
-        # the header's field overflowed and shifted Cost/Share right of their numbers.
-        tail = 22  # marker gutter + spacing + money (>=11) + percent (5)
-        inner = max(1, width - self.BOX_CHROME)
-        namew = min(max([len(n) for n, _ in rows] + [len(head_name)]), max(12, inner - tail - 4))
-        barw = max(3, min(24, inner - namew - tail))
-        body = []
-        for name, cost in rows:
-            bar = "█" * max(0, round((cost / peak) * barw))
-            body.append(
-                f"  {pad(shorten(name, namew), namew)}  {bar:<{barw}} "
-                f"{money(cost):>11} {pct(cost, total):>5}"
+        self.app.trend_row_index = max(0, min(self.app.trend_row_index, len(all_rows) - 1))
+        return self._adopt_trend_layout(
+            trend_views.model_ranking_layout(
+                all_rows,
+                width,
+                height,
+                self.app.trend_row_index,
+                {
+                    "name": self.trend_sort_heading("name", "Model", "Models"),
+                    "cost": self.trend_sort_heading("cost", "Cost", "Models"),
+                },
+                self.box_glyphs(),
             )
-        totals_row = None
-        if len(all_rows) > 1:
-            # Sums the WHOLE ranking, not the scrolled window -- the window is a viewport
-            # onto it, and a total that changed as you scrolled would be a different
-            # number every frame.
-            totals_row = f"  {pad('TOTAL', namew)}  {'':{barw}} {money(total):>11} {'':>5}"
-        lines = self._ruled_box(
-            "# Model spend (priced, in range)",
-            f"  {head_name:{namew}}  {'':{barw}} {head_cost:>11} {'Share':>5}",
-            body,
-            totals_row,
-            [],
-            width,
         )
-        self._mark_trend_sort_header(self._TREND_MODEL_SORT_COLUMNS)
-        self._trend_rows_at = (self._ruled_body_start or 0, len(rows), start)
-        return lines
 
     def _mark_trend_sort_header(self, columns: tuple) -> None:
         # Make a Trends ranking's column header clickable. Registered against
@@ -7887,53 +6415,21 @@ class Renderer:
         self._line_sort_headers[self.BOX_HEADER_LINE] = (columns, "trend")
 
     def trend_providers(self, width: int, height: int) -> list[str]:
-        # The per-model spend rolled up to its provider (the "openai" in
-        # "openai/gpt-5"), so you can compare e.g. openai vs github-copilot.
-        # Subscription/credit providers record $0 per message, so their cost only
-        # shows once "$" reprices unpriced usage at API list rates -- the cost column
-        # and bar react to it live. We still list those providers when "$" is off
-        # (tokens are the tell) and nudge toward "$".
         all_rows = self.trend_ranked_rows("Providers")
-        if not all_rows:
-            return ["# Spend by provider", "", "No model usage in the active range."]
-        total_cost = sum(float(it["cost"]) for _, it in all_rows)
-        peak = max((float(it["cost"]) for _, it in all_rows), default=0.0) or 1.0
-        notes = self._unpriced_note(all_rows)
-        _idx, start, shown = self._trend_cursor_window(
-            len(all_rows), self._ranked_row_budget(height, len(all_rows), len(notes))
-        )
-        rows = all_rows[start : start + shown]
         columns = (("name", "Provider"), ("cost", "Cost"), ("tokens", "Tokens"), ("count", "Msgs"))
-        heads = {k: self.trend_sort_heading(k, label, "Providers") for k, label in columns}
-        inner = max(1, width - self.BOX_CHROME)
-        # The name column is sized to its own (arrowed) header too, or a table of short
-        # provider names shifts every numeric label right of its column.
-        namew = min(max([len(p) for p, _ in rows] + [len(heads["name"])]), max(10, inner - 44))
-        barw = max(3, min(20, inner - namew - 40))
-        header = (
-            f"  {heads['name']:{namew}}  {'':{barw}} {heads['cost']:>11} {'Share':>5} "
-            f"{heads['tokens']:>9} {heads['count']:>7}"
+        self.app.trend_row_index = max(0, min(self.app.trend_row_index, len(all_rows) - 1))
+        return self._adopt_trend_layout(
+            trend_views.provider_ranking_layout(
+                all_rows,
+                width,
+                height,
+                self.app.trend_row_index,
+                {key: self.trend_sort_heading(key, label, "Providers") for key, label in columns},
+                self.box_glyphs(),
+                show_api_prices=self.show_api_prices,
+                price_key=self._key("trends", "api_prices"),
+            )
         )
-        body = []
-        for provider, it in rows:
-            bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
-            body.append(
-                f"  {pad(shorten(provider, namew), namew)}  {bar:<{barw}} "
-                f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total_cost):>5} "
-                f"{human_tokens(int(it['tokens'])):>9} {int(it['runs']):>7}"
-            )
-        totals_row = None
-        if len(all_rows) > 1:
-            # The whole ranking, not the scrolled window (see trend_models).
-            totals_row = (
-                f"  {pad('TOTAL', namew)}  {'':{barw}} {money(total_cost):>11} {'':>5} "
-                f"{human_tokens(sum(int(it['tokens']) for _, it in all_rows)):>9} "
-                f"{sum(int(it['runs']) for _, it in all_rows):>7}"
-            )
-        lines = self._ruled_box("# Spend by provider", header, body, totals_row, notes, width)
-        self._mark_trend_sort_header(columns)
-        self._trend_rows_at = (self._ruled_body_start or 0, len(rows), start)
-        return lines
 
     def trend_projects(self, width: int, height: int) -> list[str]:
         # The Trends overlay's project ranking: spend by directory over the whole range.
@@ -8013,41 +6509,22 @@ class Renderer:
 
     @staticmethod
     def _group_widths(rows: list, col: str, width: int, display=shorten) -> tuple[int, int]:
-        # Size the name column to its HEADER too, not just the data: with every name
-        # shorter than the label ("Harness", "Machine"), the header's own field overflowed
-        # and shifted Cost/Share/Tokens/Sess right of the numbers they label. Short
-        # hostnames make that the default in a fleet view. _model_table guards the same way.
-        #
-        # Measured on the name as DISPLAYED, not as stored: the Projects ranking shortens
-        # paths with short_path, which folds $HOME first -- so a 34-column row measured
-        # raw claims the whole cap, starves the bar to its 3-cell floor and leaves the
-        # ranking with nothing to rank by. The cap is what display is asked to fit into,
-        # so this can't recurse.
-        cap = max(10, width - Renderer._GROUP_FIXED - 3)
-        namew = min(
-            max(
-                [display_width(display(s, cap)) for s, _ in rows]
-                + [len(col) + Renderer._SORT_ARROW_W]
-            ),
-            cap,
-        )
-        return namew, max(3, min(20, width - namew - Renderer._GROUP_FIXED))
+        return table_group_widths(rows, col, width, display)
 
     # The shared ranked table's sortable columns, in drawn order. Share is absent for
     # the same reason it is on the Models ranking: it is Cost as a percentage.
     _GROUP_SORT_COLUMNS = (("cost", "Cost"), ("tokens", "Tokens"), ("count", "Sess"))
 
     def _group_header(self, col: str, namew: int, barw: int, sort_tab: str | None = None) -> str:
-        # `sort_tab` names the Trends ranking this header belongs to, and is what puts
-        # the sort arrow on the active column; the per-scope tabs pass None and get the
-        # plain header they always had.
-        def head(key: str, label: str) -> str:
-            return self.trend_sort_heading(key, label, sort_tab) if sort_tab else label
-
-        return (
-            f"  {head('name', col):<{namew}}  {'':{barw}} {head('cost', 'Cost'):>11} "
-            f"{'Share':>5} {head('tokens', 'Tokens'):>9} {head('count', 'Sess'):>7}"
+        headings = (
+            {
+                key: self.trend_sort_heading(key, label, sort_tab)
+                for key, label in (("name", col), *self._GROUP_SORT_COLUMNS)
+            }
+            if sort_tab
+            else None
         )
+        return table_group_header(col, namew, barw, headings)
 
     @staticmethod
     def _group_row(
@@ -8060,12 +6537,7 @@ class Renderer:
         total: float,
         display=shorten,
     ) -> str:
-        bar = "█" * max(0, round((float(it["cost"]) / peak) * barw))
-        return (
-            f"{marker} {display(name, namew):{namew}}  {bar:<{barw}} "
-            f"{money(float(it['cost'])):>11} {pct(float(it['cost']), total):>5} "
-            f"{human_tokens(int(it['tokens'])):>9} {int(it['sessions']):>7}"
-        )
+        return table_group_row(name, it, marker, namew, barw, peak, total, display)
 
     def _group_table(
         self,
@@ -8079,61 +6551,58 @@ class Renderer:
         height: int | None = None,
         display=shorten,
     ) -> list[str]:
-        # The shared ranked-spend table behind source_table/machine_table: a name column,
-        # a cost bar, then Cost/Share/Tokens/Sess, in the same ruled box every other table
-        # wears. `noun` is the box title's word, `col` the name-column header. Selectable
-        # rows carry the Trends cursor + Enter drill. The rows themselves come from the
-        # builders above, which the zoom picker paints too. `sort_tab` (the Trends frame
-        # only) arrows the active column and makes the header clickable. `display` is how
-        # a name is fitted into the column -- shorten for the flat names, short_path for
-        # the Projects ranking, whose rows are directories.
-        title = f"# Spend by {noun}"
-        if not all_rows:
-            namew, barw = self._group_widths([], col, max(1, width - self.BOX_CHROME), display)
-            return self._ruled_box(
-                title, self._group_header(col, namew, barw, sort_tab), [], None, [], width
-            ) + ["", "No sessions in the active range."]
-        notes = self._unpriced_note(all_rows)
-        if height is not None:  # the scrolling Trends frame: budget the box's own lines
-            limit = self._ranked_row_budget(height, len(all_rows), len(notes))
-        if selectable and limit is not None:
-            _idx, start, shown = self._trend_cursor_window(len(all_rows), limit)
-            rows = all_rows[start : start + shown]
-        else:
-            start = 0
-            rows = all_rows if limit is None else all_rows[:limit]
-        # Shares, bars and the TOTAL all measure the WHOLE ranking, never the scrolled
-        # window: the window is a viewport onto it (trend_models' rule), and a total that
-        # changed as you scrolled would be a different number every frame -- one that
-        # disagreed with the Harnesses/Machines rollups everywhere else in the app.
-        scope = all_rows if (selectable and limit is not None) else rows
-        total_cost = sum(float(it["cost"]) for _, it in scope)
-        peak = max((float(it["cost"]) for _, it in scope), default=0.0) or 1.0
-        inner = max(1, width - self.BOX_CHROME)
-        namew, barw = self._group_widths(rows, col, inner, display)
-        body = [
-            self._group_row(name, it, " ", namew, barw, peak, total_cost, display)
-            for name, it in rows
-        ]
-        total = None
-        if len(scope) > 1:
-            # The TOTAL row every multi-row table closes with. Counts and tokens summed;
-            # Share stays blank (it is definitionally 100%) and so does the bar, which
-            # measures rows against the peak, not against the sum.
-            ttok = sum(int(it["tokens"]) for _, it in scope)
-            tses = sum(int(it["sessions"]) for _, it in scope)
-            total = (
-                f"  {pad('TOTAL', namew)}  {'':{barw}} {money(total_cost):>11} {'':>5} "
-                f"{human_tokens(ttok):>9} {tses:>7}"
-            )
-        lines = self._ruled_box(
-            title, self._group_header(col, namew, barw, sort_tab), body, total, notes, width
+        if selectable:
+            self.app.trend_row_index = max(0, min(self.app.trend_row_index, len(all_rows) - 1))
+        headings = (
+            {
+                key: self.trend_sort_heading(key, label, sort_tab)
+                for key, label in (("name", col), *self._GROUP_SORT_COLUMNS)
+            }
+            if sort_tab
+            else None
         )
         if sort_tab:
-            self._mark_trend_sort_header((("name", col), *self._GROUP_SORT_COLUMNS))
-        if selectable and self._ruled_body_start is not None:
-            self._trend_rows_at = (self._ruled_body_start, len(rows), start)
-        return lines
+            return self._adopt_trend_layout(
+                trend_views.group_ranking_layout(
+                    all_rows,
+                    width,
+                    noun,
+                    col,
+                    self.box_glyphs(),
+                    limit=limit,
+                    cursor=self.app.trend_row_index,
+                    selectable=selectable,
+                    height=height,
+                    headings=headings,
+                    show_api_prices=self.show_api_prices,
+                    price_key=self._key("trends", "api_prices"),
+                    display=display,
+                )
+            )
+        layout = table_group_table_layout(
+            all_rows,
+            width,
+            noun,
+            col,
+            self.box_glyphs(),
+            limit=limit,
+            cursor=self.app.trend_row_index,
+            selectable=selectable,
+            height=height,
+            headings=None,
+            show_api_prices=self.show_api_prices,
+            price_key=self._key("trends", "api_prices"),
+            display=display,
+        )
+        self._box_headers.add(layout.lines[layout.header_line])
+        if selectable:
+            self.app.trend_row_index = layout.cursor
+            self._trend_rows_at = (
+                (layout.body_start or 0, layout.window_count, layout.window_start)
+                if layout.body_start is not None
+                else None
+            )
+        return list(layout.lines)
 
     def trend_machines(self, width: int, height: int) -> list[str]:
         # The Trends overlay's fleet cut: spend by machine across the whole range.
@@ -8150,48 +6619,38 @@ class Renderer:
         )
 
     def trend_drill_lines(self, width: int, height: int) -> list[str]:
-        # A ranked row's sessions list (Enter on Models/Providers/Sources): every
-        # root session in the active range that used it, with its cost/tokens
-        # within the session, windowed around the cursor.
         kind, key = self.trend_drill
         rows = self.trend_drill_sessions()
-        # A project key is a full path (the drill matches on it), so it is folded for
-        # display like every other path on screen -- raw, it pushes the session count
-        # and "most spend first" off the end of the box title that carries them.
-        label = short_path(key, 44) if kind == "project" else key
-        title = f"# Sessions · {label}"
-        if not rows:
-            return [title, "", f"No sessions used {label} in the active range."]
-        subtotal = sum(cost for _w, cost, _t in rows)
-        inner = max(1, width - self.BOX_CHROME)
-        header = f"  {'Started':<10} {'Cost':>9} {'Tokens':>8}  {self.src_col()}{'Title'}"
-        idx = max(0, min(self.app.trend_drill_index, len(rows) - 1))
-        self.app.trend_drill_index = idx
-        fit = self._ranked_row_budget(height, len(rows))  # the box's own lines
-        start = max(0, min(idx - fit // 2, len(rows) - fit))
-        shown = rows[start : start + min(fit, len(rows) - start)]
-        body = [
-            f"  {w.created_at[:10]:<10} {money(cost):>9} {human_tokens(tok):>8}  "
-            f"{self.src_col(w)}{shorten(self.session_marks(w) + w.title, max(8, inner - 34))}"
-            for w, cost, tok in shown
-        ]
-        totals_row = None
-        if len(rows) > 1:
-            # The whole drilled list, not the window (see trend_models).
-            totals_row = (
-                f"  {pad('TOTAL', 10)} {money(subtotal):>9} "
-                f"{human_tokens(sum(t for _w, _c, t in rows)):>8}  "
-            )
-        lines = self._ruled_box(
-            f"{title} · {len(rows)} session(s), most spend first",
-            header,
-            body,
-            totals_row,
-            [],
-            width,
+        self.app.trend_drill_index = max(0, min(self.app.trend_drill_index, len(rows) - 1))
+        _index, start, shown = trend_views.cursor_window(
+            len(rows),
+            self.app.trend_drill_index,
+            trend_views.ranked_row_budget(height, len(rows)),
         )
-        self._trend_rows_at = (self._ruled_body_start or 0, len(shown), start)
-        return lines
+        projected = [
+            trend_views.DrillSession(
+                workflow.created_at[:10],
+                cost,
+                tok,
+                self.src_col(workflow),
+                self.session_marks(workflow) + workflow.title,
+            )
+            for workflow, cost, tok in rows[start : start + shown]
+        ]
+        return self._adopt_trend_layout(
+            trend_views.drill_layout(
+                kind,
+                key,
+                projected,
+                width,
+                len(rows),
+                sum(cost for _workflow, cost, _tokens in rows),
+                sum(tokens for _workflow, _cost, tokens in rows),
+                start,
+                self.src_col(),
+                self.box_glyphs(),
+            )
+        )
 
     # The frame every panel/overlay/modal is drawn with: heavy box-drawing glyphs.
     # They are Unicode, so they need the same UTF-8 screen the block-glyph charts do

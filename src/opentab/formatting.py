@@ -5,6 +5,7 @@ import math
 import os
 import re
 import unicodedata
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 # Require human_tokens' decimal form and reject model-tag/money boundaries; token paint
@@ -286,6 +287,17 @@ def wrap_cells(value: str, width: int, indent: str = "") -> list[str]:
     if current:
         emit(current)
     return lines
+
+
+def wrap_lines(lines: Iterable[str], width: int) -> list[str]:
+    """Keep short lines and blank rows intact; cell-wrap only overflowing prose."""
+    out = []
+    for line in lines:
+        for part in line.splitlines() or [""]:
+            out.extend(
+                [part] if display_width(part) <= width else wrap_cells(part, max(1, width)) or [""]
+            )
+    return out
 
 
 def pad(value: str, width: int) -> str:

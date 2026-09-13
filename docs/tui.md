@@ -28,6 +28,11 @@ Stateless layout and formatting live outside those coordinators:
   Builders take explicit data and dimensions, returning text, style spans and
   local geometry. They do not receive App/Renderer or initialize curses. The
   renderer adopts their metadata and paints; App still owns input and loading.
+- [`views/`](../src/opentab/tui/views/) composes those components into Prices,
+  Trends, Tools, Turns and Subagents layouts. Views receive prepared records and
+  display options, not App or stores. Renderer adapters retain lazy reads, cache
+  lifetimes and screen-coordinate translation; cached layouts restore text, styles
+  and interaction maps together.
 
 - [`trace.py`](../src/opentab/tui/trace.py) formats recorded events from explicit
   width, expansion and key-label inputs. Its `TraceLayout` returns text with

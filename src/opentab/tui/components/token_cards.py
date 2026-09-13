@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
-from opentab.formatting import display_width, human_tokens, money, wrap_cells
+from opentab.formatting import human_tokens, money, wrap_lines
 from opentab.tui.components.bars import StyledLine, legend_lines, stack_line
 
 
@@ -26,13 +26,7 @@ class EconomicsCategory:
 
 
 def _wrapped(lines: Iterable[str], width: int) -> list[StyledLine]:
-    return [
-        StyledLine(wrapped)
-        for line in lines
-        for part in line.splitlines() or [""]
-        for wrapped in ([part] if display_width(part) <= width else wrap_cells(part, max(1, width)))
-        or [""]
-    ]
+    return [StyledLine(line) for line in wrap_lines(lines, width)]
 
 
 def exact_token_count(value: float) -> str:

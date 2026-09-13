@@ -8,10 +8,12 @@ from opentab.tui.components.boxes import (
     sectioned_box,
 )
 from opentab.tui.components.tables import (
+    GroupTableLayout,
     ProjectHeadings,
     ProjectRow,
     SessionHeadings,
     SessionRow,
+    group_table_layout,
     picker_box_width,
     picker_frame,
     picker_row,
@@ -182,3 +184,59 @@ def test_picker_layout_owns_frame_row_and_centered_viewport_geometry():
     assert row.selected is True
     assert picker_window(40, 20, 24) == (20, 13, 15)
     assert picker_window(3, 99, 24) == (2, 0, 3)
+
+
+def test_group_table_layout_owns_window_totals_notes_and_local_metadata():
+    rows = tuple(
+        (
+            f"harness-{index}",
+            {"cost": 0.0 if index == 1 else float(index), "tokens": index * 100, "sessions": index},
+        )
+        for index in range(1, 9)
+    )
+    layout = group_table_layout(
+        rows,
+        90,
+        "harness",
+        "Harness",
+        TABLE_GLYPHS,
+        cursor=6,
+        selectable=True,
+        height=10,
+        headings={"cost": "Cost v"},
+        show_api_prices=False,
+        price_key="$",
+    )
+
+    assert isinstance(layout, GroupTableLayout)
+    assert layout.body_start == 3
+    assert layout.window_start > 0 and layout.window_count < len(rows)
+    assert layout.window_start <= layout.cursor < layout.window_start + layout.window_count
+    assert any("TOTAL" in line and "$35.00" in line for line in layout.lines)
+    assert layout.lines[-1] == "$ prices subscription/credit usage at API list rates"
+
+
+def test_group_table_top_n_totals_only_the_slice_and_components_do_not_import_views():
+    import inspect
+
+    from opentab.tui.components import tables
+
+    rows = (
+        ("one", {"cost": 5.0, "tokens": 500, "sessions": 1}),
+        ("two", {"cost": 3.0, "tokens": 300, "sessions": 2}),
+        ("three", {"cost": 2.0, "tokens": 200, "sessions": 3}),
+    )
+    layout = group_table_layout(
+        rows,
+        80,
+        "machine",
+        "Machine",
+        TABLE_GLYPHS,
+        limit=2,
+        show_api_prices=True,
+        price_key="$",
+    )
+
+    assert any("TOTAL" in line and "$8.00" in line and "3" in line for line in layout.lines)
+    assert not any("three" in line for line in layout.lines)
+    assert "opentab.tui.views" not in inspect.getsource(tables)
