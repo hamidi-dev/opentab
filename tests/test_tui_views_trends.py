@@ -4,6 +4,7 @@ from opentab.tui.components.boxes import TABLE_GLYPHS
 from opentab.tui.components.token_cards import EconomicsCategory, token_economics_card
 from opentab.tui.views.trends import (
     DrillSession,
+    HeaderMap,
     RankItem,
     calendar_layout,
     daily_layout,
@@ -98,6 +99,7 @@ def test_drill_layout_formats_only_visible_rows_and_keeps_full_total():
         TABLE_GLYPHS,
     )
     assert layout.rows and layout.rows.start > 0
+    assert layout.headers == (HeaderMap(1, ()),)
     assert any("$45.00" in line and "TOTAL" in line for line in layout.lines)
     assert "most spend first" in layout.lines[0]
 
@@ -170,3 +172,7 @@ def test_economics_layout_reuses_token_card_spans_without_pricing_inputs():
     assert any("Sessions:   2" in line for line in layout.lines)
     assert any("Token economics" in line for line in layout.lines)
     assert any(span.role == "token" and span.value == 1 for span in layout.spans)
+
+    empty = model_economics_layout("anthropic/example", 2, 3, 100, "$2.00", None, 60, TABLE_GLYPHS)
+    assert len(empty.headers) == 1 and empty.headers[0].columns == ()
+    assert "no priceable usage here" in empty.lines[empty.headers[0].line]

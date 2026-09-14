@@ -892,6 +892,36 @@ def test_turn_rows_carry_the_tools_each_step_called():
         assert store.message_timeline_all()["s1"] == rows
 
 
+def test_zero_usage_tool_calls_match_the_ranking_and_per_call_timeline():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        _write_opencode_db_with_tools(db)
+        with sqlite3.connect(db) as conn:
+            conn.execute(
+                "insert into message values (?,?,?)",
+                (
+                    "m0",
+                    "s1",
+                    '{"role":"assistant","providerID":"anthropic",'
+                    '"modelID":"claude-haiku-4.5","cost":0,'
+                    '"time":{"created":1},"tokens":{}}',
+                ),
+            )
+            conn.executemany(
+                "insert into part values (?,?,?,?)",
+                (
+                    ("p0a", "m0", "s1", '{"type":"tool","tool":"task"}'),
+                    ("p0b", "m0", "s1", '{"type":"tool","tool":"task"}'),
+                ),
+            )
+        store = ot.Store(db, type("A", (), {"demo": False})())
+        ranking_calls = sum(row["calls"] for row in store.tool_breakdown("s1"))
+        timeline_calls = sum(len(row["tools"]) for row in store.message_timeline("s1"))
+        assert ranking_calls == timeline_calls == 5
+        zero = next(row for row in store.message_timeline("s1") if row["content_key"] == "m0")
+        assert zero["tools"] == ["task", "task"] and zero["tokens_total"] == zero["cost"] == 0
+
+
 def test_the_tool_join_is_a_separate_scan_not_a_per_row_subquery():
     # Tool names must come from one grouped part-table scan, never one query per message.
     with tempfile.TemporaryDirectory() as tmp:

@@ -78,14 +78,16 @@ def _process_timeline(
             # Preserve raw prompt text for expansion; summary is fallback only.
             cur_full = str(d["prompt_text"] or d["summary_title"] or "").strip()
             continue
-        # Aborted or errored zero-usage steps do not belong on a spend timeline.
-        if not (d["tokens_total"] or d["cost"]):
+        message_tools = (tools or {}).get(d["mid"], [])
+        # Keep recorded tool calls visible even if their step has no usage; otherwise
+        # Tools rankings count calls that disappear from the per-call drill.
+        if not (d["tokens_total"] or d["cost"] or message_tools):
             continue
         d["time"] = d["time"] or ""
         d["prompt_id"] = cur_id
         d["prompt_title"] = cur_title
         d["prompt_full"] = cur_full
-        d["tools"] = (tools or {}).get(d["mid"], [])
+        d["tools"] = message_tools
         # The message id is what the part table joins on, so it is also the turn's
         # identity for the trace. Set before mid is dropped below.
         d["content_key"] = d["mid"] or ""

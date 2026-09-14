@@ -334,7 +334,11 @@ def drill_layout(
         width,
         glyphs,
     )
-    return TrendsLayout(box.lines, rows=RowMap(box.body_start or 0, len(rows), start))
+    return TrendsLayout(
+        box.lines,
+        headers=(HeaderMap(box.header_line or 0, ()),),
+        rows=RowMap(box.body_start or 0, len(rows), start),
+    )
 
 
 def token_card_layout(card: TokenCard, width: int, glyphs: Mapping[str, str]) -> TrendsLayout:
@@ -388,21 +392,22 @@ def model_economics_layout(
         (),
         glyphs,
     )
-    economics = (
-        token_card_layout(card, width, glyphs)
-        if card is not None
-        else TrendsLayout(
-            ruled_box(
-                "# Token economics",
-                "no priceable usage here",
-                (),
-                None,
-                (),
-                width,
-                glyphs,
-            ).lines
+    if card is not None:
+        economics = token_card_layout(card, width, glyphs)
+    else:
+        empty = ruled_box(
+            "# Token economics",
+            "no priceable usage here",
+            (),
+            None,
+            (),
+            width,
+            glyphs,
         )
-    )
+        economics = TrendsLayout(
+            empty.lines,
+            headers=(HeaderMap(empty.header_line or 0, ()),),
+        )
     offset = len(scope.lines) + 1
     return TrendsLayout(
         (*scope.lines, "", *economics.lines),
