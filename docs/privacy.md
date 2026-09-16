@@ -191,6 +191,12 @@ launch/copy and directory opening are disabled, and demo preferences are not sav
 Inspect any screenshot or exported file before sharing it: demo is not a promise
 that every identifying field has been removed.
 
+`Ctrl-P` hides your prompts without entering demo. It swaps the root thread's Turns
+prompt text for the same stable fakes. Prompts an agent wrote to its subagents stay
+real, as do titles, paths, spend, turn traces and conversation search. It is a
+display veil, not a separate store: nothing is re-read or saved, and it resets on
+the next launch.
+
 ## The served browser
 
 `opentab web` binds to localhost by default. Reports include session titles,

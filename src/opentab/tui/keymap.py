@@ -253,6 +253,17 @@ def _on_trace(app: App) -> bool:
     return in_main(app) and _on_turns(app) and app.active_trace_drill is not None
 
 
+def _hide_prompts_chip(app: App) -> list[tuple[str, bool]]:
+    # Footer room only where prompts show, or anywhere while lit; Help always lists it.
+    if not (app.hide_prompts or _on_turns(app) or app._on_subagents_tab()):
+        return []
+    keys = _keys_text(app, "main", ("hide_prompts",), between="/", within=",")
+    if not keys:
+        return []
+    word = "prompts·hidden" if app.hide_prompts else "hide prompts"
+    return [(f"{keys} {word}", app.hide_prompts)]
+
+
 def _trace_available(app: App) -> bool:
     wf = app.current_session()
     return bool(wf is not None and app.session_supports_trace(wf.id))
@@ -1104,6 +1115,17 @@ KEYS: tuple[Key, ...] = (
         active=lambda app: bool(app.store.demo),
     ),
     Key(
+        id="hide-prompts",
+        ctx="main",
+        actions=("hide_prompts",),
+        summary=lambda app: "show the real prompt text again"
+        if app.hide_prompts
+        else "scramble the prompts you typed in every session's Turns, without demo",
+        section="global",
+        when=in_main,
+        segments=_hide_prompts_chip,
+    ),
+    Key(
         id="conversation-search",
         ctx=_conversation_search_context,
         actions=("conversation_search",),
@@ -1267,6 +1289,7 @@ FOOTER_ORDER = (
     "launch",
     "demo",
     "demo-toggle",
+    "hide-prompts",
     "dollar",
     "whatif",
     "whats-new",

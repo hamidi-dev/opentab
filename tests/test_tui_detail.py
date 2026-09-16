@@ -1482,6 +1482,37 @@ def test_subagent_received_prompt_cancels_stale_reads_and_never_reads_in_demo():
     assert app._subagent_prompt_loading is None and app.store.prompt_calls == []
 
 
+def test_hidden_prompts_keep_the_prompts_the_parent_agent_wrote():
+    app = _subagent_prompt_app()
+    app.toggle_hide_prompts()
+    app.open_subagent_drill()
+    app.subagent_prompt_text()
+    app.load_subagent_prompt()
+    assert "Actual instructions" in app.subagent_prompt_text()
+    wf = app.current_session()
+    child = [{"prompt_id": "c1", "prompt_title": "delegated task", "depth": 0}]
+    with patch.object(app.store, "node_timeline", create=True, return_value=child):
+        app.open_subagent_turns()
+        app.load_subagent_turns()
+        assert app.active_subagent_turns
+        assert app.reader_turn_rows(wf.id)[0]["prompt_title"] == "delegated task"
+        app.close_subagent_turns()
+        app.subagent_drill = 0  # the root execution (listed under what-if) is the user's
+        with patch.object(app, "whatif_session_totals", return_value={"cost": 1.0}):
+            app.whatif_model = "anthropic/claude-opus-5"
+            app.open_subagent_turns()
+            app.load_subagent_turns()
+            assert app.reader_turn_rows(wf.id)[0]["prompt_title"] == ot.demo_title("c1")
+        app.whatif_model = None
+    rows = [
+        {"prompt_id": "p1", "prompt_title": "my prompt", "depth": 0},
+        {"prompt_id": "p1", "prompt_title": "my prompt", "depth": 1},  # inherits the root's
+        {"prompt_id": "child:0", "prompt_title": "delegated task", "depth": 1},  # Hermes
+    ]
+    veiled = app._veil_prompts(rows)
+    assert [r["prompt_title"] for r in veiled] == [ot.demo_title("p1")] * 2 + ["delegated task"]
+
+
 def test_subagent_received_prompt_errors_are_safe_and_reopening_retries():
     app = _subagent_prompt_app()
     app.open_subagent_drill()
@@ -3044,6 +3075,32 @@ def test_turns_layout_rebuilds_for_width_prices_snapshot_and_capabilities():
     with patch("opentab.tui.renderer.unicode_screen", return_value=False):
         ascii_lines = rnd.detail_turns(wf, 76)
         assert any(line.startswith("+") for line in ascii_lines)
+
+
+def test_hide_prompts_key_veils_turn_prompts_without_demo_and_restores_them():
+    app = _turns_app()
+    wf = app.current_session()
+    rnd = app.renderer
+    real = app.session_turn_rows(wf.id)
+    shown = "\n".join(rnd.detail_turns(wf, 116))
+    assert "prompt p1" in shown
+    app.handle_key(None, 16)  # Ctrl-P
+    assert app.hide_prompts and not app.store.demo and app.notice == "prompts hidden"
+    rows = app.reader_turn_rows(wf.id)
+    assert rows is app.reader_turn_rows(wf.id)  # one stable copy keeps layout caches warm
+    assert app.turn_runs(wf.id) is app.turn_runs(wf.id) and len(app.turn_runs(wf.id)) == 3
+    veiled = "\n".join(rnd.detail_turns(wf, 116))
+    assert "prompt p" not in veiled and ot.demo_title("p1") in veiled
+    app.open_turn_drill(0)
+    drilled = "\n".join(rnd.detail_turns(wf, 116))
+    assert "full text of" not in drilled and ot.demo_title("p1") in drilled
+    app.open_trace_drill()
+    assert "prompt p1" not in "\n".join(rnd.detail_turns(wf, 116))
+    assert all("the full text of" not in row[-1] for row in app._turns_dataset(wf)[2])
+    assert real[0]["prompt_title"] == "prompt p1"  # the veil never edits the snapshot
+    app.handle_key(None, 16)
+    assert not app.hide_prompts and app.reader_turn_rows(wf.id) is real
+    assert "prompt p1" in "\n".join(rnd.detail_turns(wf, 116))
 
 
 def test_turns_layout_and_runs_are_released_on_reload_and_source_change():

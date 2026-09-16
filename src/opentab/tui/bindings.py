@@ -205,6 +205,7 @@ REGISTRY: tuple[Context, ...] = (
             Action("machine", ("M",), "filter every view to one machine (fleet)"),
             Action("theme", ("C",), "colour theme picker"),
             Action("demo", ("D",), "anonymize for a screenshot"),
+            Action("hide_prompts", ("ctrl-p",), "scramble prompt text without entering demo"),
             Action("api_prices", ("$",), "price subscription usage at API list rates"),
             Action("trends", ("T",), "trends — charts, calendar heatmap, rankings"),
             Action("prices", ("P",), "model prices overlay"),

@@ -360,6 +360,10 @@ class App:
         self._tool_by_session: dict[str, list[dict]] = {}
         self._turns_by_session: dict[str, list[dict]] = {}
         self._turn_runs_cache: tuple | None = None
+        # A display veil over real data, independent of demo: it swaps prompt text for
+        # stable fakes but never rebuilds the store, persists, or touches trace content.
+        self.hide_prompts = False
+        self._veiled_turns: dict[int, tuple[list[dict], list[dict]]] = {}
         # The trace is fetched only when a turn is opened, never by the drill-in
         # prefetch: it is the one extra that re-reads a session's whole content stream,
         # and most drill-ins never ask for it.
@@ -2427,9 +2431,45 @@ class App:
         )
 
     def reader_turn_rows(self, workflow_id: str) -> list[dict]:
+        human = True
         if self.active_subagent_turns and self._subagent_snapshot[0] == workflow_id:
-            return self._subagent_turn_rows if self._subagent_turn_rows is not None else []
-        return self.session_turn_rows(workflow_id)
+            rows = self._subagent_turn_rows if self._subagent_turn_rows is not None else []
+            snapshot, index = self._subagent_turns
+            # A delegated execution's prompts were written by its parent agent.
+            human = not snapshot[1][index].get("depth")
+        else:
+            rows = self.session_turn_rows(workflow_id)
+        return self._veil_prompts(rows) if self.hide_prompts and human and rows else rows
+
+    VEILED_TURN_SNAPSHOTS = 4
+
+    def _veil_prompts(self, rows: list[dict]) -> list[dict]:
+        # One stable copy per snapshot: turn runs and layouts key on the list's identity,
+        # so a fresh copy per call would rebuild them on every paint.
+        cached = self._veiled_turns.get(id(rows))
+        if cached is not None and cached[0] is rows and len(cached[1]) == len(rows):
+            return cached[1]
+        # Only root-thread prompts are the user's. Most harnesses tag subagent turns with
+        # the root prompt in force, but Hermes tags them with the child's own delegated
+        # instructions, which the parent agent wrote and which stay readable.
+        human = {row.get("prompt_id") for row in rows if not row.get("depth")}
+        veiled = []
+        for row in rows:
+            row = dict(row)
+            fake = demo_title(row.get("prompt_id") or "noprompt")
+            for field in ("prompt_title", "prompt_full"):
+                if row.get(field) and row.get("prompt_id") in human:
+                    row[field] = fake
+            veiled.append(row)
+        self._veiled_turns[id(rows)] = (rows, veiled)
+        while len(self._veiled_turns) > self.VEILED_TURN_SNAPSHOTS:
+            self._veiled_turns.pop(next(iter(self._veiled_turns)))
+        return veiled
+
+    def toggle_hide_prompts(self) -> None:
+        self.hide_prompts = not self.hide_prompts
+        self._veiled_turns.clear()
+        self.notice = "prompts hidden" if self.hide_prompts else "prompts shown"
 
     def subagent_turns_title(self) -> str:
         index = self.active_subagent_drill
@@ -7371,6 +7411,9 @@ class App:
             return True
         if act == "api_prices":
             self.toggle_api_prices()
+            return True
+        if act == "hide_prompts":
+            self.toggle_hide_prompts()
             return True
         if act == "whatif":
             self.toggle_whatif()  # pick a target model, or clear the active one
