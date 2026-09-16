@@ -174,7 +174,7 @@ def test_programmatic_help_only_exposes_options_used_by_each_command():
     summary = _parser_help(["usage", "summary"])
     assert all(flag in summary for flag in ("--range", "--days", "--since", "--until", "--db"))
     assert "YYYY-MM-DD" in summary and "START..END" in summary
-    assert "spend to browse" not in summary and "saved range/sort state" not in summary
+    assert "spend to browse" not in summary and "saved sort/view state" not in summary
     assert "accounting rollup cache" in summary
     assert all(
         flag not in summary

@@ -832,3 +832,25 @@ def test_the_restored_browse_mode_whitelist_follows_the_mode_table():
     fresh = app_with([workflow("a", "2026-06-01 12:00:00")])
     ot.apply_state(fresh, fresh.args, {"browse_mode": "providers"})
     assert fresh.browse_mode == "time"
+
+
+def test_the_date_range_is_never_saved_or_restored():
+    # A range narrowed for one look must not come back on the next launch and quietly
+    # hide spend. Saving drops any range an older build left behind, and a range in
+    # state.json is ignored on restore.
+    app = app_with([workflow("a", "2026-06-01 12:00:00")])
+    app.set_range_from_text("30d")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"range": "7d", "future": True}, fh)
+        with patch.object(state_module, "state_path", return_value=path):
+            ot.save_state(app)
+        saved = ot.load_state(path)
+    assert "range" not in saved and saved["future"] is True
+
+    restored = app_with([workflow("a", "2026-06-01 12:00:00")])
+    ot.apply_state(restored, restored.args, {"range": "30d", "sort_by": "cost"})
+    assert restored.range_days is None and restored.range_months is None
+    assert restored.custom_since is None and restored.custom_until is None
+    assert restored.sort_by == "cost"  # the rest of the file still restores

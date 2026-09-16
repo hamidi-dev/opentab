@@ -218,7 +218,7 @@ errors skip that target and return exit status 1 so partial tables are detectabl
 `opentab --goto "$PWD"` uses the same ID/project rules but opens the TUI. Bare
 `--goto` defaults to cwd, unlike bare `cost`. Startup prevents a saved harness
 selection from hiding the resolved backend, and `App.goto_session()` clears a
-restored date range when necessary before drilling in. An unresolved target
+narrowed date range when necessary before drilling in. An unresolved target
 leaves normal TUI startup in place with a notice, rather than exiting solely
 because lookup failed. Detail loading still follows the lazy path above.
 

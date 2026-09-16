@@ -108,7 +108,6 @@ def _write_state(data: dict, path: str) -> bool:
 
 def save_state(app: App) -> None:
     data = {
-        "range": app.range_input_value(),
         "sort_by": app.sort_by,
         "project_sort_by": app.project_sort_by,
         "harness_sort_by": app.harness_sort_by,
@@ -153,6 +152,8 @@ def save_state(app: App) -> None:
             data["last_announced_version"] = marker_to_save(
                 current.get("last_announced_version"), marker
             )
+        # A range written by an older build is dead weight now; drop it on the next save.
+        current.pop("range", None)
         current.update(data)
         if _write_state(current, path):
             # Track what this App saved, not the merged disk sets: importing external
@@ -211,15 +212,9 @@ def update_state(
 
 
 def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
-    # Explicit CLI range flags override the saved range.
-    if not (args.since or args.until or args.days is not None):
-        saved_range = state.get("range")
-        if saved_range:
-            try:
-                app.set_range_from_text(saved_range)
-                app._anchor_default_selection()
-            except ValueError:
-                pass
+    # The date range is deliberately not remembered: every launch starts at the
+    # default window (or whatever --since/--until/--days asked for), so a range
+    # narrowed for one look never silently hides spend on the next run.
     saved_sort = state.get("sort_by")
     if saved_sort in app.sort_options:
         app.sort_by = saved_sort

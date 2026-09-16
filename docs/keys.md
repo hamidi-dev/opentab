@@ -258,7 +258,7 @@ body describes the view underneath it; close Help before using that view's keys.
 
 ## What persists between runs
 
-The active **harness, range, sort, focused sidebar panel, ignored projects, bookmarks,
+The active **harness, sort, focused sidebar panel, ignored projects, bookmarks,
 pinned price rows, theme, `$` what-if view, and the last release announcement are remembered between runs**, stored in
 `~/.local/state/opentab/state.json` (the XDG *state* dir — regenerable prefs). Pass
 `--no-state` to disable; `--demo` never persists.
@@ -272,6 +272,11 @@ rotated transcript, a harness you didn't merge in this run) is **kept, never pru
 A `w` **what-if target model is deliberately not remembered**: it's a transient
 analysis mode, and a persisted one would silently re-frame every future launch's
 Subagents tab.
+
+The **date range (`R`) is deliberately not remembered either**: every launch starts on
+the default window, or on `--since`/`--until`/`--days` when you pass one. A range
+narrowed for one look would otherwise keep hiding spend runs later, with only the small
+range chip to explain the missing money.
 
 Two formatting rules worth knowing: sub-cent costs render as `<$0.01` so they aren't
 confused with a red `$0.00`, which specifically means *unpriced* (tokens with no

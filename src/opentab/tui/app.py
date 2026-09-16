@@ -6761,10 +6761,10 @@ class App:
     def goto_session(self, workflow_id: str, tab: str | None = None) -> bool:
         # The --goto startup jump: land straight in a session's detail view (on the
         # named tab when --tab asked for one). State-only (no curses), so cli.main
-        # can call it before curses.wrapper. A restored range can hide the target;
-        # when it does, clear the range and retry so goto always lands. An ignored
-        # project stays ignored -- that's an explicit user choice, so just say why
-        # the jump didn't happen.
+        # can call it before curses.wrapper. A narrowed range (--since/--until/--days)
+        # can hide the target; when it does, clear the range and retry so goto always
+        # lands. An ignored project stays ignored -- that's an explicit user choice,
+        # so just say why the jump didn't happen.
         if self.drill_into_session(workflow_id, tab):
             return True
         if any(w.id == workflow_id for w in self.loaded):

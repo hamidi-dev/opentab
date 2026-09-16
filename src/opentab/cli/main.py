@@ -216,7 +216,7 @@ def _add_global_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--no-state",
         action="store_true",
-        help="do not read or write the saved range/sort state ($XDG_STATE_HOME/opentab)",
+        help="do not read or write the saved sort/view state ($XDG_STATE_HOME/opentab)",
     )
     parser.add_argument(
         "--no-worktrees",
@@ -2120,7 +2120,7 @@ def main() -> int:
     # goto that matched nothing (which still lands you in a usable TUI).
     fleet_hint = getattr(store, "fleet_warning", "")
     if goto is not None:
-        # goto_session clears a restored range that hides the target; no screen is needed.
+        # goto_session clears a narrowed range that hides the target; no screen is needed.
         app.goto_session(goto[1], tab=getattr(args, "tab", None))
         # Landing on the session is STATE, not a message, so it must not silence the
         # fleet note -- but goto_session may have had to explain itself (a cleared

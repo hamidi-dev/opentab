@@ -137,7 +137,8 @@ sessions behind it. Filter as you type, change the date range, and keep explorin
   sessions in their original coding tool with **`L`**. Launch through tmux, Herdr, or a
   custom launcher, or copy a ready-to-run resume command.
 - **Make it yours.** Keyboard and mouse navigation, 30 bundled themes, and remappable
-  keys. Your range, sort, selected tool, theme, bookmarks, and pricing view are remembered.
+  keys. Your sort, selected tool, theme, bookmarks, and pricing view are remembered; the
+  date range is not, so every launch starts on the default window.
 - **Take a view with you.** Press **`e`** to export the current list to CSV, including
   the filters and scope you've chosen.
 
