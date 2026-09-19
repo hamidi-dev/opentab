@@ -139,7 +139,7 @@ def test_reader_footer_has_no_preview_or_focus_action_and_scopes_are_explained()
     }
     assert "selected result's session" in descriptions["search-session"]
     assert "keep other filters" in descriptions["search-all"]
-    assert "clear all filters" in descriptions["search-reset"]
+    assert "keep session scope and query" in descriptions["search-reset"]
     assert "OpenCode / Claude / Codex / all" in descriptions["search-harness"]
 
 
@@ -267,7 +267,7 @@ def test_search_rendering_sanitizes_untrusted_metadata_and_query():
     assert "Hostiletitle" in text
 
 
-def test_search_tabs_and_labeled_filters_keep_geometry_at_supported_widths():
+def test_search_tabs_scope_and_filters_keep_geometry_without_inactive_chips():
     for height, width in ((20, 80), (32, 140)):
         app, ws = _app()
         ws.hits = []
@@ -277,10 +277,12 @@ def test_search_tabs_and_labeled_filters_keep_geometry_at_supported_widths():
         assert "Cache investigation" not in text.splitlines()[0]
         assert not any(r[0] == "searchtab" and r[4] == 1 for r in app.renderer.regions)
         filters = [r for r in app.renderer.regions if r[0] == "searchfilter"]
-        assert [r[4] for r in filters] == list(range(5))
+        assert [r[4] for r in filters] == [0, 1]
         assert all(app.renderer.hit(r[1], r[2]) == ("searchfilter", r[4]) for r in filters)
-        for label in ("Scope:", "Harness:", "Project:", "Dates:", "Reset"):
-            assert label in text
+        assert "[All sessions" in text and "[Filters]" in text
+        for label in ("Project:", "Date:", "[Clear]", "Reset"):
+            assert label not in text
+        assert not any(r[0] == "searchfilter-remove" for r in app.renderer.regions)
         assert ws.page_size >= 1 and ws.preview_height >= 2
 
         app, ws = _app()
@@ -347,14 +349,17 @@ def test_search_mouse_tabs_filters_and_reset_use_workspace_actions():
         click("searchtab", 0)
         ws.scope["project"] = "/unchanged"
         click("searchfilter", 1)
+        assert ws.filter_menu == "filters"
+        click("searchfilter-option", 1)
         assert ws.filter_menu == "harness"
         with patch.object(app, "launch_current") as launch:
             app.handle_key(None, ord("L"))
         launch.assert_not_called()
         click("searchfilter-option", 2)
         assert ws.scope == {"project": "/unchanged", "harness": "claude"}
-        assert not ws.filter_menu and ws.query == "needle"
-        click("searchfilter", 4)
+        assert ws.filter_menu == "filters" and ws.query == "needle"
+        app.handle_key(None, 27)
+        click("searchfilter", 2)
         assert ws.scope == {} and ws.query == "needle"
         click("searchfilter", 0)
         assert ws.filter_options()[1][2] is False  # reset cleared stale hits
@@ -364,10 +369,14 @@ def test_search_mouse_tabs_filters_and_reset_use_workspace_actions():
         app.handle_key(None, 10)
         assert ws.filter_menu == "scope" and ws.scope == {}
         app.handle_key(None, 27)
-        click("searchfilter", 2)
-        assert ws.filter_field == "project"
+        click("searchfilter", 1)
+        click("searchfilter-option", 0)
+        assert ws.filter_menu == "project"
         app.handle_key(None, 27)
-        click("searchfilter", 3)
+        assert ws.filter_menu == "filters"
+        click("searchfilter-option", 2)
+        assert ws.filter_menu == "date"
+        click("searchfilter-option", 4)
         assert ws.filter_field == "date"
 
 
@@ -377,9 +386,107 @@ def test_search_filter_menu_and_footer_use_shared_remapped_menu_keys():
     ws.open_filter("scope")
     text = screen_text(_paint(app, 20, 80))
     assert "v" in text and "z" in text
-    assert ot.keymap.footer_parts(app) == [[("v apply", False)], [("z cancel", False)]]
+    assert ot.keymap.footer_parts(app) == [[("v apply", False)], [("z back", False)]]
     app.handle_key(None, ord("z"))
     assert ws.filter_menu == ""
+
+
+def test_active_filter_chips_are_removable_and_keep_session_scope_at_minimum_size():
+    for height, width in ((20, 80), (32, 140)):
+        app, ws = _app()
+        ws.scope = {
+            "session": "qualified",
+            "project": "/work/" + "界" * 80,
+            "harness": "claude",
+            "since": "2020-01-01",
+            "until": "2025-12-31",
+        }
+        ws._selected_session_title = "Cache investigation"
+        text = screen_text(_paint(app, height, width))
+        assert "This session: Cache investigation" in text
+        assert "Project:" in text and "Claude Code x]" in text and "[Clear]" in text
+        regions = [r for r in app.renderer.regions if r[0] == "searchfilter-remove"]
+        assert [r[4] for r in regions] == [0, 1, 2]
+        assert all(app.renderer.hit(r[1], r[2]) == ("searchfilter-remove", r[4]) for r in regions)
+        assert ws.preview_height >= 2 and ws.page_size >= 1
+        region = regions[1]
+        with patch.object(
+            ot.curses,
+            "getmouse",
+            return_value=(0, region[2] + 1, region[1] + 1, 0, ot.curses.BUTTON1_CLICKED),
+        ):
+            app.handle_key(None, ot.curses.KEY_MOUSE)
+        assert "harness" not in ws.scope and ws.scope["session"] == "qualified"
+        assert ws.scope["project"] and ws.scope["since"] and ws.query == "needle"
+        _paint(app, height, width)
+        clear = next(r for r in app.renderer.regions if r[0] == "searchfilter" and r[4] == 2)
+        with patch.object(
+            ot.curses,
+            "getmouse",
+            return_value=(0, clear[2] + 1, clear[1] + 1, 0, ot.curses.BUTTON1_CLICKED),
+        ):
+            app.handle_key(None, ot.curses.KEY_MOUSE)
+        assert ws.scope == {"session": "qualified"} and ws.query == "needle"
+        assert "[Clear]" not in screen_text(_paint(app, height, width))
+
+
+def test_project_picker_search_scroll_and_mouse_work_at_minimum_size():
+    app, ws = _app()
+    ws._projects = tuple(f"/work/project-{index:02}" for index in range(40))
+    ws.editing = True
+    app.handle_key(None, 7)
+    app.handle_key(None, 10)
+    assert ws.filter_menu == "project"
+    for char in "project-":
+        app.handle_key(None, ord(char))
+    ws.filter_menu_index = 35
+    text = screen_text(_paint(app, 20, 80))
+    assert "Find project: project-_" in text and "project-35" in text and "36/40" in text
+    regions = [r for r in app.renderer.regions if r[0] == "searchfilter-option"]
+    assert 0 < len(regions) < 40
+    assert all(app.renderer.hit(r[1], r[2]) == ("searchfilter-option", r[4]) for r in regions)
+    selected = next(r for r in regions if r[4] == 35)
+    with patch.object(
+        ot.curses,
+        "getmouse",
+        return_value=(0, selected[2] + 1, selected[1] + 1, 0, ot.curses.BUTTON1_CLICKED),
+    ):
+        app.handle_key(None, ot.curses.KEY_MOUSE)
+    assert ws.scope["project"] == "/work/project-35" and ws.filter_menu == "filters"
+    app.handle_key(None, 27)
+    assert ws.editing and ws.query == "needle"
+    ws.open_filter("project")
+    ws.project_query = "no-such-project"
+    text = screen_text(_paint(app, 20, 80))
+    assert "No projects match" in text
+    assert not any(r[0] == "searchfilter-option" for r in app.renderer.regions)
+
+
+def test_date_picker_shows_presets_and_custom_dates_explain_utc():
+    app, ws = _app()
+    ws.open_filter("date")
+    text = screen_text(_paint(app, 20, 80))
+    assert "Message dates (UTC), not session start dates" in text
+    for label in ("Any time", "Today", "Last 7 days", "Last 30 days", "Custom..."):
+        assert label in text
+    ws.choose_filter(4)
+    text = screen_text(_paint(app, 20, 80))
+    assert "Message dates (UTC): >" in text and "YYYY-MM-DD..YYYY-MM-DD" in text
+    assert app.renderer.regions == []
+
+
+def test_filters_shortcut_is_visible_while_query_is_focused_and_follows_remaps():
+    app, ws = _app()
+    ws.editing = True
+    app.keymap = bindings.Keymap({("search.edit", "filters"): ["ctrl-e"]})
+    text = screen_text(_paint(app, 20, 80))
+    assert "^E filters" in text
+    app.handle_key(None, 5)
+    assert ws.filter_menu == "filters" and ws.editing
+    ws.open_filter("project")
+    assert ot.keymap.binding_context(app) == "menu.search-project"
+    text = screen_text(_paint(app, 20, 80))
+    assert "j/k" not in text and "Find project:" in text
 
 
 def test_search_help_clears_underlying_mouse_regions():

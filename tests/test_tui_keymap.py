@@ -341,6 +341,7 @@ def test_every_registry_action_is_discoverable():
         "whats-new",
         "notices",
         "menu",
+        "menu.search-project",
         "menu.source",
         "menu.harness",
         "menu.machine",

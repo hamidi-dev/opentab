@@ -1,3 +1,4 @@
+from datetime import date
 from types import SimpleNamespace
 
 import opentab as ot
@@ -471,7 +472,7 @@ def test_result_preview_uses_exact_qualified_hit_and_opens_reader():
     assert ws.active and not ws.reader and ws.selected_hit["session_key"] == "qualified-one"
 
 
-def test_session_scope_back_restores_exact_result_and_preview_state():
+def test_session_scope_is_a_filter_and_escape_does_not_restore_results():
     ws, _clock, made = workspace()
     start(ws, made)
     ws.editing = False
@@ -484,11 +485,7 @@ def test_session_scope_back_restores_exact_result_and_preview_state():
     ws.handle_key(ord("s"), bindings.DEFAULT)
     assert ws.scope == {"session": "qualified-one"} and ws.hits == []
     ws.handle_key(27, bindings.DEFAULT)
-    assert ws.query == "needle"
-    assert ws.scope == {}
-    assert ws.selected == 0 and ws.result_scroll == 7
-    assert ws.preview == {"records": [{"id": "record-one"}]}
-    assert ws.preview_scroll == 19
+    assert not ws.active and ws.scope == {"session": "qualified-one"}
 
 
 def test_index_has_separate_consent_and_omits_date_bounds():
@@ -677,7 +674,7 @@ def test_scope_label_names_local_sessions_and_composes_every_filter():
     assert ws.scope_label == "all local sessions"
 
 
-def test_filter_options_cover_scope_and_harness_with_disabled_session():
+def test_filter_options_cover_scope_and_harness_with_retained_session_target():
     ws, _clock, _made = workspace()
     ws.open_filter("scope")
     assert ws.filter_options() == [
@@ -690,9 +687,17 @@ def test_filter_options_cover_scope_and_harness_with_disabled_session():
     )
     scoped.open_filter("scope")
     assert scoped.filter_menu_index == 1
-    assert scoped.filter_options()[1] == ("session", "This session", True)
+    assert scoped.filter_options()[1] == ("session", "This session: First", True)
     scoped.choose_filter(1)
     assert scoped.scope == {"session": "qualified-one"}
+
+    scoped._all_scope()
+    assert scoped.session_label == "All sessions"
+    scoped.open_filter("scope")
+    assert scoped.filter_options()[1] == ("session", "This session: First", True)
+    scoped.choose_filter(1)
+    assert scoped.scope == {"session": "qualified-one"}
+    assert scoped.session_label == "First"
 
     ws.open_filter("harness")
     assert ws.filter_options() == [
@@ -740,7 +745,7 @@ def test_filter_actions_obey_remaps_and_ctrl_f_dismisses_a_picker():
     ws.hits = search_result()["hits"]
     keys = bindings.Keymap(
         {
-            ("search", "scope_menu"): ["X"],
+            ("search", "filters"): ["X"],
             ("search", "scope_harness"): ["Y"],
             ("search", "reset_filters"): ["Z"],
             ("search", "edit"): ["ctrl-e"],
@@ -748,7 +753,7 @@ def test_filter_actions_obey_remaps_and_ctrl_f_dismisses_a_picker():
         }
     )
     ws.handle_key(ord("X"), keys)
-    assert ws.filter_menu == "scope"
+    assert ws.filter_menu == "filters"
     ws.handle_key(5, keys)
     assert ws.editing and ws.filter_menu == ""
 
@@ -761,20 +766,35 @@ def test_filter_actions_obey_remaps_and_ctrl_f_dismisses_a_picker():
     assert ws.scope == {} and ws.query == ""
 
 
-def test_picker_menu_actions_win_over_remapped_query_edit():
+def test_filters_action_opens_from_query_without_typing_ctrl_g():
+    ws, _clock, _made = workspace()
+    ws.query = "needle"
+    assert bindings.DEFAULT.action("search.edit", 7) == "filters"
+    ws.handle_key(7, bindings.DEFAULT)
+    assert ws.filter_menu == "filters" and ws.query == "needle" and ws.editing
+    ws.handle_key(27, bindings.DEFAULT)
+    assert ws.filter_menu == "" and ws.query == "needle" and ws.editing
+
+
+def test_picker_select_cancel_actions_win_over_remapped_query_edit():
     ws, _clock, _made = workspace()
     ws.editing = False
     ws.open_filter("harness")
     keys = bindings.Keymap(
         {
-            ("menu", "down"): ["X"],
-            ("search", "edit"): ["X", "Y"],
-            ("search.edit", "edit"): ["X", "Y"],
+            ("menu", "select"): ["X"],
+            ("menu", "cancel"): ["Y"],
+            ("search", "edit"): ["X", "Y", "Z"],
+            ("search.edit", "edit"): ["X", "Y", "Z"],
         }
     )
     ws.handle_key(ord("X"), keys)
-    assert ws.filter_menu == "harness" and ws.filter_menu_index == 1
+    assert ws.filter_menu == "" and ws.scope == {}
+    ws.open_filter("harness")
     ws.handle_key(ord("Y"), keys)
+    assert ws.filter_menu == "" and not ws.editing
+    ws.open_filter("harness")
+    ws.handle_key(ord("Z"), keys)
     assert ws.filter_menu == "" and ws.editing
 
 
@@ -798,11 +818,6 @@ def test_session_all_and_reset_filters_are_orthogonal_and_preserve_query():
         "since": "2026-09-01",
         "until": "2026-09-02",
     }
-    assert len(ws._scope_stack) == 1
-
-    ws.hits = search_result()["hits"]
-    ws.handle_key(ord("s"), bindings.DEFAULT)
-    assert len(ws._scope_stack) == 1
     ws.handle_key(ord("a"), bindings.DEFAULT)
     assert ws.scope == {
         "project": "/work/one",
@@ -813,27 +828,199 @@ def test_session_all_and_reset_filters_are_orthogonal_and_preserve_query():
     assert ws.query == "needle"
 
     ws.open_filter("reset")
-    assert ws.scope == {} and ws.query == "needle" and ws._scope_stack == []
+    assert ws.scope == {} and ws.query == "needle"
 
 
-def test_project_and_date_filters_use_existing_text_inputs():
-    ws, _clock, made = workspace(project="/suggested")
+def test_filters_panel_returns_from_submenus_and_preserves_query_editing():
+    ws, _clock, made = workspace(projects=["/work/one"])
     start(ws, made)
-    ws.editing = False
-    ws.open_filter("project")
-    assert ws.filter_field == "project" and ws.filter_text == "/suggested"
-    ws.filter_text = "/chosen"
-    ws.handle_key(10, bindings.DEFAULT)
-    assert ws.scope == {"project": "/chosen"}
+    ws.query = "needle"
+    ws.open_filter("filters")
+    assert ws.editing and ws.filter_current is None
+    assert ws.filter_options() == [
+        ("project", "Project: All projects", True),
+        ("harness", "Harness: All harnesses", True),
+        ("date", "Message date: Any time", True),
+    ]
+    ws.choose_filter(0)
+    assert ws.filter_menu == "project"
+    ws.choose_filter(1)
+    assert ws.scope["project"] == "/work/one" and ws.filter_menu == "filters"
+    assert ws.query == "needle" and ws.editing
+    ws.close_filter()
+    assert ws.filter_menu == "" and ws.query == "needle" and ws.editing
 
-    ws.open_filter("date")
-    ws.filter_text = "2026-09-01..2026-09-02"
+
+def test_submenu_escape_returns_to_panel_but_standalone_escape_closes():
+    ws, _clock, _made = workspace(projects=["/work/one"])
+    ws.open_filter("filters")
+    ws.choose_filter(1)
+    assert ws.filter_menu == "harness"
+    ws.close_filter()
+    assert ws.filter_menu == "filters"
+    ws.close_filter()
+    assert ws.filter_menu == ""
+    ws.open_filter("project")
+    ws.close_filter()
+    assert ws.filter_menu == ""
+
+
+def test_project_picker_filters_exact_paths_and_disambiguates_duplicate_basenames():
+    projects = ["/clients/alpha/app", "/clients/beta/app", "/work/opentab"]
+    ws, _clock, _made = workspace(projects=projects)
+    ws.open_filter("project")
+    assert ws.filter_options() == [
+        ("all", "All projects", True),
+        ("/clients/alpha/app", "app (alpha)", True),
+        ("/clients/beta/app", "app (beta)", True),
+        ("/work/opentab", "opentab", True),
+    ]
+    for char in "BeTa":
+        ws.handle_key(ord(char), bindings.DEFAULT)
+    assert ws.project_query == "BeTa"
+    assert ws.filter_options() == [("/clients/beta/app", "app", True)]
     ws.handle_key(10, bindings.DEFAULT)
+    assert ws.scope["project"] == "/clients/beta/app"
+
+
+def test_project_picker_types_jkg_uses_arrows_and_handles_no_matches():
+    ws, _clock, _made = workspace(projects=["/work/jkg", "/work/other"])
+    ws.open_filter("project")
+    for char in "jkg":
+        ws.handle_key(ord(char), bindings.DEFAULT)
+    assert ws.project_query == "jkg" and ws.filter_menu_index == 0
+    assert ws.filter_options() == [("/work/jkg", "jkg", True)]
+    ws.handle_key(bindings.parse_key("backspace")[0], bindings.DEFAULT)
+    assert ws.project_query == "jk"
+    ws.handle_key(21, bindings.DEFAULT)
+    assert ws.project_query == "" and len(ws.filter_options()) == 3
+    ws.handle_key(bindings.parse_key("down")[0], bindings.DEFAULT)
+    assert ws.filter_menu_index == 1
+    ws.project_query = "missing"
+    ws.filter_menu_index = 0
+    assert ws.filter_options() == []
+    ws.handle_key(10, bindings.DEFAULT)
+    assert "project" not in ws.scope and ws.filter_menu == "project"
+
+
+def test_project_search_types_paths_and_q_instead_of_dispatching_menu_shortcuts():
+    ws, _clock, _made = workspace(projects=["/work/queries"])
+    ws.open_filter("project")
+    for char in "work/q":
+        ws.handle_key(ord(char), bindings.DEFAULT)
+    assert ws.filter_menu == "project" and ws.project_query == "work/q"
+    assert ws.filter_options() == [("/work/queries", "queries", True)]
+    ws.handle_key(6, bindings.DEFAULT)
+    assert not ws.filter_menu and ws.editing
+
+
+def test_filter_modals_swallow_index_and_launch_actions():
+    ws, _clock, made = workspace(projects=["/work/index"])
+    worker = start(ws, made)
+    ws.editing = False
+    ws.open_filter("filters")
+    ws.handle_key(ord("I"), bindings.DEFAULT)
+    ws.handle_key(ord("L"), bindings.DEFAULT)
+    assert ws.filter_menu == "filters" and ws.consent == ""
+    ws.choose_filter(0)
+    ws.handle_key(ord("I"), bindings.DEFAULT)
+    ws.handle_key(ord("L"), bindings.DEFAULT)
+    assert ws.project_query == "IL" and ws.consent == ""
+    assert not any(operation == "index" for _id, operation, _params in worker.submitted)
+
+
+def test_project_picker_includes_applied_selected_and_suggested_paths():
+    ws, _clock, _made = workspace(project="/suggested", projects=["/known"])
+    ws.scope["project"] = "/removed"
+    ws.hits = [{"session_key": "one", "project": "/selected"}]
+    ws.open_filter("project")
+    values = [value for value, _label, _enabled in ws.filter_options()]
+    assert values == ["all", "/known", "/removed", "/selected", "/suggested"]
+    assert ws.filter_current == "/removed" and ws.filter_menu_index == 2
+
+
+def test_project_picker_snapshots_the_app_project_paths():
+    projects = ["/known/one"]
+    ws, _clock, _made = workspace(projects=projects)
+    projects.append("/added/later")
+    ws.open_filter("project")
+    assert [value for value, _label, _enabled in ws.filter_options()] == ["all", "/known/one"]
+
+
+def test_date_presets_use_inclusive_injected_utc_calendar_dates():
+    ws, _clock, _made = workspace(today=lambda: date(2024, 3, 1))
+    expected = {
+        "today": ("2024-03-01", "2024-03-01"),
+        "7d": ("2024-02-24", "2024-03-01"),
+        "30d": ("2024-02-01", "2024-03-01"),
+    }
+    for value, bounds in expected.items():
+        ws.open_filter("date")
+        index = next(i for i, option in enumerate(ws.filter_options()) if option[0] == value)
+        ws.choose_filter(index)
+        assert (ws.scope["since"], ws.scope["until"]) == bounds
+        assert ws.filter_current is None
+        ws.open_filter("date")
+        assert ws.filter_current == value
+    ws.choose_filter(0)
+    assert ws.date_label == "Any time" and "since" not in ws.scope and "until" not in ws.scope
+
+
+def test_custom_date_validation_cancel_and_panel_return():
+    ws, _clock, _made = workspace(today=lambda: date(2026, 9, 19))
+    ws.open_filter("filters")
+    ws.choose_filter(2)
+    ws.choose_filter(4)
+    assert ws.filter_field == "date" and ws.filter_text == ".."
+    ws.filter_text = "2026-09-20..2026-09-19"
+    ws.handle_key(10, bindings.DEFAULT)
+    assert ws.filter_field == "date" and "must not" in ws.error
+    ws.filter_text = "2026-02-30.."
+    ws.handle_key(10, bindings.DEFAULT)
+    assert ws.filter_field == "date" and "YYYY-MM-DD" in ws.error
+    ws.filter_text = "2026-08-31..2026-09-19"
+    ws.handle_key(10, bindings.DEFAULT)
+    assert ws.scope["since"] == "2026-08-31" and ws.scope["until"] == "2026-09-19"
+    assert ws.filter_menu == "filters" and ws.date_label == "2026-08-31..2026-09-19"
+    ws.choose_filter(2)
+    ws.choose_filter(4)
+    ws.handle_key(27, bindings.DEFAULT)
+    assert ws.filter_menu == "date" and ws.filter_field == ""
+    ws.handle_key(27, bindings.DEFAULT)
+    assert ws.filter_menu == "filters"
+
+
+def test_remove_each_filter_and_reset_preserve_session_and_schedule_only_changes():
+    ws, _clock, made = workspace(selected_session_key="session-one")
+    worker = start(ws, made)
+    ws.query = "needle"
+    ws.scope.update(
+        project="/work/one",
+        harness="claude",
+        since="2026-09-01",
+        until="2026-09-02",
+    )
+    generation = ws._generation
+    assert ws.remove_filter("project")
     assert ws.scope == {
-        "project": "/chosen",
+        "session": "session-one",
+        "harness": "claude",
         "since": "2026-09-01",
         "until": "2026-09-02",
     }
+    assert ws._generation == generation + 1
+    generation = ws._generation
+    assert not ws.remove_filter("project") and ws._generation == generation
+    assert ws.remove_filter("harness") and ws.remove_filter("date")
+    assert ws.scope == {"session": "session-one"} and ws.query == "needle"
+
+    ws.scope.update(project="/work/one", harness="codex", since="2026-09-01")
+    generation = ws._generation
+    ws.open_filter("filters")
+    ws.choose_filter(3)
+    assert ws.scope == {"session": "session-one"}
+    assert ws.filter_menu == "filters" and ws._generation == generation + 1
+    assert not any(operation == "index" for _id, operation, _params in worker.submitted)
 
 
 def test_query_or_scope_change_exits_reader_and_drops_reader_state():
@@ -876,7 +1063,7 @@ def test_index_report_survives_search_reset_and_duplicate_submission_is_blocked(
     assert ws.response == {}
 
 
-def test_scope_back_does_not_forget_a_confirmed_index_job():
+def test_scope_change_does_not_forget_a_confirmed_index_job():
     ws, _clock, made = workspace()
     start(ws, made)
     ws.editing = False
@@ -885,7 +1072,6 @@ def test_scope_back_does_not_forget_a_confirmed_index_job():
     ws.handle_key(10, bindings.DEFAULT)
     index_id = made[0].submitted[-1][0]
     ws.handle_key(ord("s"), bindings.DEFAULT)
-    ws.handle_key(27, bindings.DEFAULT)
     assert ws._pending["index"][0] == index_id and ws.busy == "index"
 
 
@@ -954,7 +1140,7 @@ def test_query_scope_caps_and_strict_dates():
     assert not ws._valid_date("20260901")
     assert not ws._valid_date("2026-02-30")
 
-    ws.filter_field = "project"
+    ws.filter_field = "date"
     ws.filter_text = "x" * ws.FILTER_MAX_CHARS
     ws.handle_key(ord("y"), bindings.DEFAULT)
     assert len(ws.filter_text) == ws.FILTER_MAX_CHARS and "limited" in ws.notice

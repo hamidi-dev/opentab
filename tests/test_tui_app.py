@@ -20,6 +20,34 @@ from tests._support import (
 )
 
 
+def test_search_project_picker_uses_local_loaded_projects_not_the_spend_date_range():
+    rows = [
+        workflow("old", "2020-01-01", directory="/work/old"),
+        workflow("new", "2026-09-19", directory="/work/new"),
+        workflow("ignored", "2026-09-19", directory="/work/ignored-session"),
+        workflow("hidden", "2026-09-19", directory="/work/ignored-project"),
+        workflow("remote", "2026-09-19", directory="/remote"),
+        workflow("unsupported", "2026-09-19", directory="/unsupported"),
+        workflow("worktree", "2026-09-19", directory="/work/new/.worktrees/feature"),
+    ]
+    rows[4].machine = "remote-machine"
+    rows[5].source = "Hermes"
+    app = app_with(rows, since="2026-09-01")
+    app.ignored_sessions = {"ignored"}
+    app.ignored_projects = {"/work/ignored-project"}
+    app._root_by_dir[rows[6].directory] = "/work/new"
+    with patch.object(SearchWorkspace, "_make_worker", side_effect=AssertionError("raw read")):
+        app.open_conversation_search()
+        ws = app.conversation_search
+        ws.open_filter("project")
+        assert [value for value, _label, _enabled in ws.filter_options()] == [
+            "all",
+            "/work/new",
+            "/work/old",
+        ]
+    app._close_conversation_search()
+
+
 def test_terminal_resize_does_not_close_overlays():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/x")])
     app._model_by_root = {"a": [_model_row("claude-opus-4-8", 5.0, 100)]}

@@ -126,7 +126,7 @@ def binding_context(app: App) -> str:
     if in_conversation_search(app):
         workspace = app.conversation_search
         if workspace.filter_menu:
-            return "menu"
+            return "menu.search-project" if workspace.filter_menu == "project" else "menu"
         return "search.edit" if workspace.editing or workspace.filter_field else "search"
     if in_prices(app):
         return "prices.sessions" if in_price_drill(app) else "prices"
@@ -401,6 +401,17 @@ KEYS: tuple[Key, ...] = (
         chip="query",
     ),
     Key(
+        id="search-filters",
+        ctx=binding_context,
+        actions=("filters",),
+        summary="choose project, harness and message-date filters",
+        section="here",
+        when=lambda app: in_conversation_search(app)
+        and not app.conversation_search.filter_menu
+        and not app.conversation_search.filter_field,
+        chip="filters",
+    ),
+    Key(
         id="search-open",
         ctx=binding_context,
         actions=("open",),
@@ -497,27 +508,27 @@ KEYS: tuple[Key, ...] = (
         id="search-reset",
         ctx="search",
         actions=("reset_filters",),
-        summary="clear all filters; keep the query",
+        summary="clear project, harness and dates; keep session scope and query",
         section="here",
         when=search_commands,
     ),
     Key(
         id="search-filter-choose",
-        ctx="menu",
+        ctx=binding_context,
         actions=("select",),
         summary="apply the highlighted filter",
         section="here",
         when=lambda app: in_conversation_search(app) and bool(app.conversation_search.filter_menu),
-        chip="apply",
+        chip=lambda app: "choose" if app.conversation_search.filter_menu == "filters" else "apply",
     ),
     Key(
         id="search-filter-cancel",
-        ctx="menu",
+        ctx=binding_context,
         actions=("cancel",),
-        summary="cancel the filter picker",
+        summary="back from the filter picker",
         section="here",
         when=lambda app: in_conversation_search(app) and bool(app.conversation_search.filter_menu),
-        chip="cancel",
+        chip="back",
     ),
     Key(
         id="search-session",
@@ -539,7 +550,7 @@ KEYS: tuple[Key, ...] = (
         id="search-project",
         ctx="search",
         actions=("scope_project",),
-        summary="filter by project directory (empty clears)",
+        summary="search known projects and choose one (All projects clears)",
         section="here",
         when=search_commands,
     ),
@@ -555,7 +566,7 @@ KEYS: tuple[Key, ...] = (
         id="search-date",
         ctx="search",
         actions=("scope_date",),
-        summary="filter by message dates (UTC, not session start)",
+        summary="choose Today, Last 7/30 days or custom message dates (UTC)",
         section="here",
         when=search_commands,
     ),
@@ -603,7 +614,7 @@ KEYS: tuple[Key, ...] = (
         actions=("back",),
         summary=lambda app: "finish query editing"
         if app.conversation_search.editing
-        else "leave reader / restore prior scope / close search",
+        else "leave reader / close search",
         section="nav",
         when=in_conversation_search,
         chip="back",
@@ -1337,6 +1348,7 @@ def footer_parts(app: App) -> list:
             if app.conversation_search.help
             else (
                 "search-open",
+                "search-filters",
                 "search-tabs",
                 "search-move" if app.conversation_search.reader else "search-preview-scroll",
                 "search-launch",

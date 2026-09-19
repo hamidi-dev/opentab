@@ -10,7 +10,14 @@ learn a personal profile, call an embedding model, or use the network.
 Press `Ctrl-F`, type a query, then `Enter` to select results. Another `Enter`
 opens the Conversation tab. Both tabs preserve their reading positions. Search
 starts within the current session when opened from one, otherwise across the
-current local catalog. Scope, Harness, Project and Dates filters combine.
+local sessions. The scope selector switches between all sessions and one session.
+
+Open **Filters** with `Ctrl-G`, even while typing. Pick a known project by name,
+choose a harness, or select Today, Last 7 days, Last 30 days or a custom date range.
+Dates are inclusive UTC **message dates**, not session start dates. Only active
+filters appear below the query; click a chip's `x` to remove it, or Clear to remove
+all three filters without changing the session scope or query. Changes apply
+immediately; `Esc` returns from a picker to Filters, then to search.
 
 Opening search needs no raw-content flag. A missing index offers a Build popup;
 `I` confirms an update. Indexing persists plaintext and ignores date filters.

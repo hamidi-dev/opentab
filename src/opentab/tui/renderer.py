@@ -1005,8 +1005,14 @@ class Renderer:
             disabled={1} if not conversation_available else None,
         )
 
-        value = f"{ws.filter_field}: {ws.filter_text}" if ws.filter_field else ws.query
-        prefix = "Search: > " if ws.editing or ws.filter_field else "Search:   "
+        value = ws.filter_text if ws.filter_field else ws.query
+        prefix = (
+            "Message dates (UTC): > "
+            if ws.filter_field
+            else "Search: > "
+            if ws.editing
+            else "Search:   "
+        )
         query = snippet_lines(value, max(1, display_width(value)), max_lines=1)[0].text
         if ws.editing or ws.filter_field:
             query += "_"
@@ -1014,52 +1020,54 @@ class Renderer:
         self.regions.append(("search-query", 1, 0, width - 1, 0))
 
         scope = ws.scope
-        values = [
-            "Session" if scope.get("session") else "All",
-            scope.get("harness") or "All",
-            scope.get("project") or "Any",
-            f"{scope.get('since') or '...'}..{scope.get('until') or '...'}"
-            if scope.get("since") or scope.get("until")
-            else "Any",
-        ]
-        prefixes = ("Scope: ", "Harness: ", "Project: ", "Dates: ")
-        safe_values = [clean(value, max(1, width)) for value in values]
-        gaps = 4
-        value_budget = max(
-            4, width - 4 - sum(map(display_width, prefixes)) - len("Reset") - gaps - 8
-        )
-        budgets = [1, 1, 1, 1]
-        caps = (12, 16, 32, 24)
-        while sum(budgets) < value_budget:
-            grew = False
-            for index, value in enumerate(safe_values):
-                if budgets[index] < min(display_width(value), caps[index]):
-                    budgets[index] += 1
-                    grew = True
-                    if sum(budgets) >= value_budget:
-                        break
-            if not grew:
-                break
-        chips = [
-            prefix + shorten(value, budget) + " ▾"
-            for prefix, value, budget in zip(prefixes, safe_values, budgets)
-        ]
-        chips.append("Reset")
+        scope_text = ("This session: " if scope.get("session") else "") + ws.session_label
+        controls = ["[" + clean(scope_text, max(12, width - 22)) + " ▾]", "[Filters]"]
         cx = 2
-        for index, chip in enumerate(chips):
-            if index:
-                self.write(stdscr, 2, cx, " ", muted)
-                cx += 1
-            drawn = shorten(chip, max(0, width - 2 - cx))
-            if not drawn:
-                break
-            chip_width = display_width(drawn)
-            attr = muted | curses.A_UNDERLINE | (curses.A_BOLD if scope and index == 4 else 0)
-            self.write(stdscr, 2, cx, drawn, attr)
-            self.regions.append(("searchfilter", 2, cx, cx + chip_width - 1, index))
-            cx += chip_width
+        for index, label in enumerate(controls):
+            self.write(stdscr, 2, cx, label, muted | curses.A_UNDERLINE)
+            self.regions.append(("searchfilter", 2, cx, cx + display_width(label) - 1, index))
+            cx += display_width(label) + 2
 
-        self.hline(stdscr, 4, 0, width)
+        active_filters = []
+        if scope.get("project"):
+            name = str(scope["project"]).rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1]
+            active_filters.append((0, "Project: ", clean(name or scope["project"], width)))
+        if scope.get("harness"):
+            label = {"opencode": "OpenCode", "claude": "Claude Code", "codex": "Codex"}.get(
+                scope["harness"], scope["harness"]
+            )
+            active_filters.append((1, "", clean(label, width)))
+        if scope.get("since") or scope.get("until"):
+            active_filters.append((2, "", ws.date_label))
+        if active_filters:
+            # Reserve every remove target and Clear before sharing the space for values.
+            available = (
+                width - 4 - len("[Clear]") - sum(len(prefix) + 5 for _, prefix, _ in active_filters)
+            )
+            budgets = [1] * len(active_filters)
+            while sum(budgets) < available:
+                grew = False
+                for offset, (_index, _prefix, value) in enumerate(active_filters):
+                    if budgets[offset] < display_width(value):
+                        budgets[offset] += 1
+                        grew = True
+                        if sum(budgets) >= available:
+                            break
+                if not grew:
+                    break
+            cx = 2
+            for (index, prefix, value), budget in zip(active_filters, budgets):
+                label = f"[{prefix}{shorten(value, budget)} x]"
+                self.write(stdscr, 3, cx, label, muted | curses.A_UNDERLINE)
+                self.regions.append(
+                    ("searchfilter-remove", 3, cx, cx + display_width(label) - 1, index)
+                )
+                cx += display_width(label) + 1
+            self.write(stdscr, 3, cx, "[Clear]", muted | curses.A_UNDERLINE)
+            self.regions.append(("searchfilter", 3, cx, cx + 6, 2))
+
+        status_row = 4 if active_filters else 3
+        self.hline(stdscr, status_row + 1, 0, width)
 
         diagnostics = []
         response = ws.response
@@ -1098,11 +1106,11 @@ class Renderer:
                 )
             )
         text(
-            3,
+            status_row,
             " | ".join(diagnostics) + f"  /  Harness: {ws.source_key or 'current harness'}",
             muted,
         )
-        top, bottom = 5, height - 3
+        top, bottom = status_row + 2, height - 3
         if ws.reader:
             self._draw_search_preview(stdscr, top, 0, bottom - top, width)
         elif width >= 108:
@@ -1119,7 +1127,7 @@ class Renderer:
         elif ws.filter_field:
             text(
                 height - 3,
-                "Enter: apply / Esc: cancel. Empty project clears; dates: YYYY-MM-DD..YYYY-MM-DD",
+                f"{self._key('search.edit', 'open')}: apply / {self._key('search.edit', 'back')}: back. YYYY-MM-DD..YYYY-MM-DD; '..' clears.",
                 muted,
             )
         elif (gaps or stale) and not ws.busy and not ws.reader:
@@ -1138,6 +1146,8 @@ class Renderer:
         if filter_menu:
             self.regions.clear()
             self._draw_search_filter_menu(stdscr, height, width, filter_menu)
+        elif ws.filter_field:
+            self.regions.clear()
         elif ws.help:
             self.regions.clear()
             self.draw_help(stdscr, 3, height - 2, width)
@@ -1146,16 +1156,24 @@ class Renderer:
         ws = self.app.conversation_search
         options = list(ws.filter_options())
         index = max(0, min(ws.filter_menu_index, max(0, len(options) - 1)))
-        visible_count = max(1, height - 10)
+        visible_count = max(1, height - (12 if menu == "project" else 10))
         start = max(0, min(index - visible_count // 2, max(0, len(options) - visible_count)))
         visible = options[start : start + visible_count]
         muted = curses.color_pair(4)
-        lines = [(f"Choose {menu}:", muted), ("", 0)]
-        current = (
-            "session"
-            if menu == "scope" and ws.scope.get("session")
-            else ws.scope.get(menu) or "all"
-        )
+        headings = {
+            "filters": "Choose a filter; changes apply immediately.",
+            "scope": "Search across sessions or within one:",
+            "harness": "Include conversations from:",
+            "date": "Message dates (UTC), not session start dates:",
+        }
+        intro = headings.get(menu, "")
+        if menu == "project":
+            query = snippet_lines(
+                ws.project_query, max(1, display_width(ws.project_query)), max_lines=1
+            )[0].text
+            intro = "Find project: " + clip_tail(query + "_", max(1, width - 26))
+        lines = [(intro, muted), ("", 0)]
+        current = ws.filter_current
         for offset, (value, label, enabled) in enumerate(visible, start=start):
             marker = ">" if offset == index else " "
             suffix = "  (current)" if value == current else ""
@@ -1164,10 +1182,28 @@ class Renderer:
             attr = curses.A_REVERSE | curses.A_BOLD if offset == index else curses.A_NORMAL
             if not enabled:
                 attr |= muted | curses.A_DIM
-            safe_label = snippet_lines(str(label), max(1, width - 16), max_lines=1)[0].text
+            safe_label = snippet_lines(str(label), max(1, width - 12 - len(suffix)), max_lines=1)[
+                0
+            ].text
             lines.append((f" {marker}  {safe_label}{suffix}", attr))
-        title = self._menu_title(f"Filter {menu}", "menu")
+        if not options:
+            lines.append(("No projects match. Try fewer letters.", muted))
+        if menu == "project":
+            lines.append(("", 0))
+            lines.append(
+                (f"Type to find projects. {index + 1 if options else 0}/{len(options)}", muted)
+            )
+        title = (
+            "Filters"
+            if menu == "filters"
+            else "Search scope"
+            if menu == "scope"
+            else f"Filter {menu}"
+        )
+        title = self._menu_title(title, "menu.search-project" if menu == "project" else "menu")
         y, x, _h, w = self.draw_modal(stdscr, height, width, title, lines)
+        if menu == "project":
+            self.regions.append(("searchfilter-query", y + 2, x, x + w - 1, 0))
         for row, option_index in enumerate(range(start, start + len(visible)), start=y + 4):
             if options[option_index][2]:
                 self.regions.append(("searchfilter-option", row, x, x + w - 1, option_index))

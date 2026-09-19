@@ -140,12 +140,14 @@ the harness records cumulative-total deltas rather than per-request prompts
 
 `Ctrl-F` opens [conversation search](conversation-search.md); `/` outside search
 still filters metadata. Printable keys type while editing; finish with `Enter`
-or `Tab` before using letter shortcuts.
+or `Tab` before using letter shortcuts. `Ctrl-G` opens Filters without leaving
+the query. In the project picker, type to find a project and use arrow keys to select it.
 
 | Search key | Action |
 |------------|--------|
 | `Enter` | Input to Results; selected match to Conversation |
 | `Ctrl-F` / `/` | Return to query input (`Ctrl-F` also works while typing) |
+| `Ctrl-G` | Open Filters: Project, Harness and Message date; works while typing |
 | `h` / `l`, Left/Right | Switch Results / Conversation tabs |
 | `Tab` / `Shift-Tab` | Finish typing / switch matches and preview focus |
 | `j` / `k`, Up/Down, `PgDn` / `PgUp` | Move results or scroll the focused pane |
@@ -153,16 +155,18 @@ or `Tab` before using letter shortcuts.
 | `S` | Scope picker: All sessions / This session |
 | `s` / `a` | Selected session / all sessions; keep other filters |
 | `H` | Harness picker: OpenCode / Claude Code / Codex / all |
-| `p` | Exact project directory; empty clears |
-| `d` | UTC message dates: `YYYY-MM-DD..YYYY-MM-DD` |
-| `R` | Reset all filters; keep the query |
+| `p` | Search known projects and choose one; All projects clears |
+| `d` | UTC message dates: Today, Last 7/30 days, or custom `YYYY-MM-DD..YYYY-MM-DD` |
+| `R` | Clear project, harness and dates; keep session scope and query |
 | `I` | Confirm an index update; date filters do not limit indexing |
 | `[` / `]` | Read earlier / later messages or remaining text |
 | `L` | Launch/copy the owning root session via tmux, Herdr or a hook |
-| `Esc` | Back through reader, editing and prior session scope; then close |
+| `Esc` | Back from a filter picker, reader or editing; then close (scope changes add no back steps) |
 | `?` | Search help |
 
-Tabs and filters are clickable. Click a result to select; double-click to read.
+Tabs, the scope selector and Filters are clickable. Active filter chips have an
+`x` to remove just that filter; Clear removes all three without changing scope.
+Click a result to select; double-click to read.
 The wheel moves one result or three preview lines under the pointer, without
 changing focus.
 
@@ -321,7 +325,8 @@ left right pgup pgdn home end f1`–`f12`, `comma` for a literal `,`), and contr
 rebound.
 
 Contexts mirror what owns the keyboard: `[main]` for browse/zoom/session, `[search]`
-for search commands and `[search.edit]` for query/scope typing, `[trends]`
+for search commands and `[search.edit]` for query/date typing, `[menu.search-project]`
+for the searchable project picker, `[trends]`
 (+ `[trends.chart]` for a focused chart, `[trends.drill]` for a ranked row's session
 list), `[prices]` (+ `[prices.sessions]`), `[help]`, `[whats-new]`, `[notices]`, the shared `[menu]`
 with per-picker overrides (`[menu.sort]`, `[menu.theme]`, `[menu.launch]`,

@@ -6208,6 +6208,19 @@ class App:
             session_key,
             title,
             project,
+            projects=sorted(
+                {
+                    self.project_root(row.directory)
+                    for row in self.loaded
+                    if row.directory
+                    and (not row.machine or row.machine == self.local_machine_name)
+                    and self._conversation_harness(row, self.store)
+                    in {"opencode", "claude", "codex"}
+                    and row.id not in self.ignored_sessions
+                    and self.project_root(row.directory) not in self.ignored_projects
+                },
+                key=str.casefold,
+            ),
         )
 
     def poll_conversation_search(self) -> None:
@@ -7778,8 +7791,8 @@ class App:
                     target = self.renderer.hit(my, mx)
                     if target and target[0] == "searchfilter-option":
                         ws.choose_filter(target[1])
-                    else:
-                        ws.filter_menu = ""
+                    elif not target or target[0] != "searchfilter-query":
+                        ws.close_filter()
                 return True
             if ws.help:
                 if up or down:
@@ -7796,7 +7809,9 @@ class App:
                 elif kind == "searchtab":
                     ws.switch_view("conversation" if index else "results")
                 elif kind == "searchfilter":
-                    ws.open_filter(("scope", "harness", "project", "date", "reset")[index])
+                    ws.open_filter(("scope", "filters", "reset")[index])
+                elif kind == "searchfilter-remove":
+                    ws.remove_filter(("project", "harness", "date")[index])
                 elif kind in ("search-result", "search-results", "search-preview"):
                     ws.editing = False
                     ws.focus = "preview" if kind == "search-preview" else "results"

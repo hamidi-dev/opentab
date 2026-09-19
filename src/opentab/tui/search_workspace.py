@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import re
 import time
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Callable
 
 from opentab.tui import bindings
@@ -30,6 +30,8 @@ class SearchWorkspace:
         selected_session_title: str = "",
         project: str | None = None,
         *,
+        projects: list[str] | None = None,
+        today: Callable[[], date] | None = None,
         worker_factory: Callable | None = None,
         clock: Callable[[], float] = time.monotonic,
     ):
@@ -57,7 +59,11 @@ class SearchWorkspace:
         if selected_session_key:
             self.scope["session"] = selected_session_key
         self._selected_session_title = selected_session_title
+        self._session_target = selected_session_key
+        self._session_target_title = selected_session_title
         self._suggested_project = project
+        self._projects = tuple(dict.fromkeys(str(value) for value in projects or [] if value))
+        self._today = today or (lambda: datetime.now(timezone.utc).date())
         self.page_size = 10
         self.preview_height = 10
         self.preview_lines = 0
@@ -65,6 +71,8 @@ class SearchWorkspace:
         self.filter_text = ""
         self.filter_menu = ""
         self.filter_menu_index = 0
+        self.project_query = ""
+        self._filter_return_to_panel = False
         self.help = False
         self.help_scroll = 0
         self.help_page_size = 10
@@ -75,7 +83,6 @@ class SearchWorkspace:
         self._generation = 0
         self._deadline: float | None = None
         self._pending: dict[str, tuple[int, int, dict]] = {}
-        self._scope_stack: list[dict] = []
         self._reader_history: list[tuple[dict, int, str | None]] = []
         self._reader_return: tuple[dict | None, int, str | None] | None = None
         self._reader_saved: tuple[
@@ -113,6 +120,37 @@ class SearchWorkspace:
         if since or until:
             parts.append(f"messages {since or '...'}..{until or '...'}")
         return " / ".join(parts) or "all local sessions"
+
+    @property
+    def session_label(self) -> str:
+        if not (session := self.scope.get("session")):
+            return "All sessions"
+        return self._selected_session_title or str(session)[:18]
+
+    @property
+    def date_label(self) -> str:
+        current = self._date_preset()
+        labels = {
+            "all": "Any time",
+            "today": "Today",
+            "7d": "Last 7 days",
+            "30d": "Last 30 days",
+        }
+        if current in labels:
+            return labels[current]
+        return f"{self.scope.get('since') or '...'}..{self.scope.get('until') or '...'}"
+
+    @property
+    def filter_current(self) -> str | None:
+        if self.filter_menu == "scope":
+            return "session" if self.scope.get("session") else "all"
+        if self.filter_menu == "project":
+            return self.scope.get("project") or "all"
+        if self.filter_menu == "harness":
+            return self.scope.get("harness") or "all"
+        if self.filter_menu == "date":
+            return self._date_preset()
+        return None
 
     def _make_worker(self):
         if self._worker is None:
@@ -326,66 +364,27 @@ class SearchWorkspace:
             self._worker.discard_pending()
         self._request_preview(self.selected_hit)
 
-    def _state(self) -> dict:
-        state = {
-            name: copy.deepcopy(getattr(self, name))
-            for name in (
-                "query",
-                "editing",
-                "focus",
-                "reader",
-                "hits",
-                "selected",
-                "result_scroll",
-                "preview",
-                "preview_scroll",
-                "preview_anchor",
-                "response",
-                "scope",
-                "error",
-                "notice",
-            )
-        }
-        state["_selected_session_title"] = self._selected_session_title
-        state["_reader_history"] = copy.deepcopy(self._reader_history)
-        state["_reader_return"] = copy.deepcopy(self._reader_return)
-        state["_reader_saved"] = copy.deepcopy(self._reader_saved)
-        return state
-
-    def _restore_state(self, state: dict) -> None:
-        self._generation += 1
-        if self._worker is not None:
-            self._worker.discard_pending()
-        self._pending = {
-            key: value for key, value in self._pending.items() if key in {"index", "status"}
-        }
-        self._deadline = None
-        self.busy = next(iter(self._pending), "")
-        self._reset_reader()
-        for name, value in state.items():
-            setattr(self, name, value)
+    def _remember_session_target(self) -> None:
+        hit = self.selected_hit
+        if hit is None or not hit.get("session_key"):
+            return
+        session = str(hit["session_key"])
+        title = str(hit.get("title") or "")
+        if session != self._session_target or title:
+            self._session_target_title = title
+        self._session_target = session
 
     def _session_scope(self) -> None:
-        hit = self.selected_hit
-        session = hit.get("session_key") if hit is not None else self.scope.get("session")
-        if not session or self.scope.get("session") == session:
+        self._remember_session_target()
+        if not self._session_target or self.scope.get("session") == self._session_target:
             return
-        if self.reader:
-            self.switch_view("results")
-        self._scope_stack.append(self._state())
-        if len(self._scope_stack) > self.READER_HISTORY_MAX:
-            del self._scope_stack[: -self.READER_HISTORY_MAX]
-        self.scope["session"] = session
-        self._selected_session_title = str((hit or {}).get("title") or "")
+        self.scope["session"] = self._session_target
+        self._selected_session_title = self._session_target_title
         self.selected = self.result_scroll = 0
-        self.hits = []
-        self.response = {}
-        self.preview = None
-        self.reader = False
         self._schedule_search()
 
     def _all_scope(self) -> None:
-        self._scope_stack.clear()
+        self._remember_session_target()
         if "session" not in self.scope:
             return
         self.scope.pop("session", None)
@@ -393,13 +392,94 @@ class SearchWorkspace:
         self.selected = self.result_scroll = 0
         self._schedule_search()
 
+    def _project_candidates(self) -> list[str]:
+        hit = self.selected_hit or {}
+        values = (
+            *self._projects,
+            self.scope.get("project"),
+            hit.get("project"),
+            self._suggested_project,
+        )
+        return list(dict.fromkeys(str(value) for value in values if value))
+
+    @staticmethod
+    def _project_parts(value: str) -> tuple[str, list[str]]:
+        parts = value.rstrip("/\\").replace("\\", "/").split("/")
+        return (parts[-1] or value), [part for part in parts[:-1] if part]
+
+    def _project_options(self) -> list[tuple[str, str, bool]]:
+        candidates = self._project_candidates()
+        query = self.project_query.casefold()
+        if query:
+            candidates = [value for value in candidates if query in value.casefold()]
+        split = [self._project_parts(value) for value in candidates]
+        names = [name for name, _parents in split]
+        duplicates = {name for name in names if names.count(name) > 1}
+        options = []
+        if not query:
+            options.append(("all", "All projects", True))
+        for position, (value, (name, parents)) in enumerate(zip(candidates, split)):
+            label = name
+            if name in duplicates:
+                peers = [
+                    other_parents
+                    for other_position, (other_name, other_parents) in enumerate(split)
+                    if other_position != position and other_name == name
+                ]
+                length = 1
+                while length < len(parents) and any(
+                    other[-length:] == parents[-length:] for other in peers
+                ):
+                    length += 1
+                label = f"{name} ({'/'.join(parents[-length:]) or '/'})"
+            options.append((value, label, True))
+        return options
+
+    def _date_bounds(self, preset: str) -> tuple[str, str]:
+        today = self._today()
+        days = {"today": 0, "7d": 6, "30d": 29}[preset]
+        return (today - timedelta(days=days)).isoformat(), today.isoformat()
+
+    def _date_preset(self) -> str:
+        since, until = self.scope.get("since"), self.scope.get("until")
+        if not since and not until:
+            return "all"
+        for preset in ("today", "7d", "30d"):
+            if (since, until) == self._date_bounds(preset):
+                return preset
+        return "custom"
+
     def filter_options(self) -> list[tuple[str, str, bool]]:
+        if self.filter_menu == "filters":
+            harness_value = self.scope.get("harness")
+            harness = (
+                {
+                    "opencode": "OpenCode",
+                    "claude": "Claude Code",
+                    "codex": "Codex",
+                }.get(harness_value, harness_value)
+                if harness_value
+                else "All harnesses"
+            )
+            options = [
+                ("project", f"Project: {self.scope.get('project') or 'All projects'}", True),
+                ("harness", f"Harness: {harness}", True),
+                ("date", f"Message date: {self.date_label}", True),
+            ]
+            if any(name in self.scope for name in ("project", "harness", "since", "until")):
+                options.append(("clear", "Clear filters", True))
+            return options
         if self.filter_menu == "scope":
-            session = self.selected_hit is not None or bool(self.scope.get("session"))
+            self._remember_session_target()
+            label = "This session"
+            if self._session_target_title:
+                label += f": {self._session_target_title}"
             return [
                 ("all", "All sessions", True),
-                ("session", "This session", session),
+                ("session", label, bool(self._session_target)),
             ]
+        if self.filter_menu == "project":
+            return self._project_options()
         if self.filter_menu == "harness":
             return [
                 ("all", "All harnesses", True),
@@ -407,37 +487,60 @@ class SearchWorkspace:
                 ("claude", "Claude Code", True),
                 ("codex", "Codex", True),
             ]
+        if self.filter_menu == "date":
+            return [
+                ("all", "Any time", True),
+                ("today", "Today", True),
+                ("7d", "Last 7 days", True),
+                ("30d", "Last 30 days", True),
+                ("custom", "Custom...", True),
+            ]
         return []
 
-    def open_filter(self, name: str) -> None:
-        if name == "project":
-            self.filter_menu = ""
-            self._project_prompt()
-            return
-        if name == "date":
-            self.filter_menu = ""
-            self._date_prompt()
-            return
-        if name == "reset":
-            self.filter_menu = ""
-            self.filter_field = self.filter_text = ""
-            self._scope_stack.clear()
-            if self.scope:
-                self.scope = {}
-                self._selected_session_title = ""
-                self.selected = self.result_scroll = 0
-                self._schedule_search()
-            return
-        if name not in {"scope", "harness"}:
-            raise ValueError(f"unknown search filter: {name}")
+    def _show_filter(self, name: str, *, return_to_panel: bool = False) -> None:
         self.filter_field = self.filter_text = ""
         self.filter_menu = name
-        current = self.scope.get("session") if name == "scope" else self.scope.get("harness")
-        value = "session" if name == "scope" and current else current or "all"
+        self._filter_return_to_panel = return_to_panel
+        if name == "project":
+            self.project_query = ""
+            target = (
+                self.scope.get("project")
+                or (self.selected_hit or {}).get("project")
+                or self._suggested_project
+                or "all"
+            )
+        else:
+            target = self.filter_current
         options = self.filter_options()
         self.filter_menu_index = next(
-            (index for index, option in enumerate(options) if option[0] == value), 0
+            (index for index, option in enumerate(options) if option[0] == target), 0
         )
+
+    def open_filter(self, name: str) -> None:
+        if name == "reset":
+            return_to_panel = self.filter_menu == "filters" or self._filter_return_to_panel
+            changed = any(value in self.scope for value in ("project", "harness", "since", "until"))
+            self.remove_filter("project", schedule=False)
+            self.remove_filter("harness", schedule=False)
+            self.remove_filter("date", schedule=False)
+            if changed:
+                self.selected = self.result_scroll = 0
+                self._schedule_search()
+            if return_to_panel:
+                self._show_filter("filters")
+            else:
+                self.filter_menu = ""
+            return
+        if name not in {"filters", "scope", "project", "harness", "date"}:
+            raise ValueError(f"unknown search filter: {name}")
+        self._show_filter(name)
+
+    def _finish_filter_choice(self) -> None:
+        if self._filter_return_to_panel:
+            self._show_filter("filters")
+        else:
+            self.filter_menu = ""
+            self._filter_return_to_panel = False
 
     def choose_filter(self, index: int) -> None:
         options = self.filter_options()
@@ -449,35 +552,66 @@ class SearchWorkspace:
         if not enabled:
             return
         menu = self.filter_menu
-        self.filter_menu = ""
-        if menu == "scope":
-            if value == "session":
-                self._session_scope()
+        if menu == "filters":
+            if value == "clear":
+                self.open_filter("reset")
             else:
-                self._all_scope()
+                self._show_filter(value, return_to_panel=True)
             return
-        current = self.scope.get("harness") or "all"
-        if current == value:
-            return
-        if value == "all":
-            self.scope.pop("harness", None)
+        if menu == "scope":
+            self._session_scope() if value == "session" else self._all_scope()
+        elif menu in {"project", "harness"}:
+            before = self.scope.get(menu)
+            if value == "all":
+                self.scope.pop(menu, None)
+            else:
+                self.scope[menu] = value
+            if before != self.scope.get(menu):
+                self.selected = self.result_scroll = 0
+                self._schedule_search()
+        elif menu == "date":
+            if value == "custom":
+                self.filter_menu = ""
+                self.filter_field = "date"
+                self.filter_text = (
+                    f"{self.scope.get('since') or ''}..{self.scope.get('until') or ''}"
+                )
+                return
+            before = (self.scope.get("since"), self.scope.get("until"))
+            if value == "all":
+                self.scope.pop("since", None)
+                self.scope.pop("until", None)
+            else:
+                self.scope["since"], self.scope["until"] = self._date_bounds(value)
+            if before != (self.scope.get("since"), self.scope.get("until")):
+                self.selected = self.result_scroll = 0
+                self._schedule_search()
+        self._finish_filter_choice()
+
+    def close_filter(self) -> None:
+        if self.filter_field == "date":
+            return_to_panel = self._filter_return_to_panel
+            self.error = ""
+            self.filter_field = self.filter_text = ""
+            self._show_filter("date", return_to_panel=return_to_panel)
+        elif self.filter_menu and self.filter_menu != "filters" and self._filter_return_to_panel:
+            self._show_filter("filters")
         else:
-            self.scope["harness"] = value
-        self.selected = self.result_scroll = 0
-        self._schedule_search()
+            self.filter_menu = ""
+            self.filter_field = self.filter_text = ""
+            self._filter_return_to_panel = False
 
-    def _project_prompt(self) -> None:
-        self.filter_menu = ""
-        hit = self.selected_hit or {}
-        self.filter_field = "project"
-        self.filter_text = str(
-            self.scope.get("project") or hit.get("project") or self._suggested_project or ""
-        )[: self.FILTER_MAX_CHARS]
-
-    def _date_prompt(self) -> None:
-        self.filter_menu = ""
-        self.filter_field = "date"
-        self.filter_text = f"{self.scope.get('since') or ''}..{self.scope.get('until') or ''}"
+    def remove_filter(self, name: str, *, schedule: bool = True) -> bool:
+        names = {"project": ("project",), "harness": ("harness",), "date": ("since", "until")}
+        if name not in names:
+            raise ValueError(f"unknown removable search filter: {name}")
+        changed = any(value in self.scope for value in names[name])
+        for value in names[name]:
+            self.scope.pop(value, None)
+        if changed and schedule:
+            self.selected = self.result_scroll = 0
+            self._schedule_search()
+        return changed
 
     @staticmethod
     def _valid_date(value: str) -> bool:
@@ -491,12 +625,7 @@ class SearchWorkspace:
 
     def _commit_filter(self) -> None:
         raw = self.filter_text.strip()
-        if self.filter_field == "project":
-            if raw:
-                self.scope["project"] = raw
-            else:
-                self.scope.pop("project", None)
-        elif self.filter_field == "date":
+        if self.filter_field == "date":
             if ".." not in raw:
                 self.error = "date must be YYYY-MM-DD..YYYY-MM-DD"
                 return
@@ -507,14 +636,21 @@ class SearchWorkspace:
             if since and until and since > until:
                 self.error = "date start must not be after date end"
                 return
+            before = (self.scope.get("since"), self.scope.get("until"))
             for name, value in (("since", since), ("until", until)):
                 if value:
                     self.scope[name] = value
                 else:
                     self.scope.pop(name, None)
+            changed = before != (self.scope.get("since"), self.scope.get("until"))
+        else:
+            return
         self.filter_field = self.filter_text = ""
-        self.selected = self.result_scroll = 0
-        self._schedule_search()
+        self.error = ""
+        if changed:
+            self.selected = self.result_scroll = 0
+            self._schedule_search()
+        self._finish_filter_choice()
 
     def _confirm_index(self) -> None:
         self._index_offered = True
@@ -676,6 +812,7 @@ class SearchWorkspace:
         self.help = False
         self.filter_menu = ""
         self.filter_field = self.filter_text = ""
+        self._filter_return_to_panel = False
         self.editing = True
         self.focus = "results"
 
@@ -694,9 +831,34 @@ class SearchWorkspace:
             return True
         context = "search.edit" if self.editing or self.filter_field else "search"
         if self.filter_menu:
-            action = keymap.action("menu", key)
+            action = keymap.action(
+                "menu.search-project" if self.filter_menu == "project" else "menu", key
+            )
             options = self.filter_options()
-            if action == "down" and options:
+            edit = keymap.action("search.edit", key) == "edit" or (
+                self.filter_menu != "project" and keymap.action("search", key) == "edit"
+            )
+            if action == "select":
+                self.choose_filter(self.filter_menu_index)
+            elif self.filter_menu == "project" and keymap.action("search.edit", key) == "erase":
+                self.project_query = self.project_query[:-1]
+                self.filter_menu_index = 0
+            elif self.filter_menu == "project" and keymap.action("search.edit", key) == "clear":
+                self.project_query = ""
+                self.filter_menu_index = 0
+            elif action == "cancel":
+                self.close_filter()
+            elif edit:
+                self.edit_query()
+            elif self.filter_menu == "project" and (ch := bindings.typed_char(key)) is not None:
+                if len(self.project_query) < self.FILTER_MAX_CHARS:
+                    self.project_query += ch
+                    self.filter_menu_index = 0
+                else:
+                    self.notice = (
+                        f"Project search is limited to {self.FILTER_MAX_CHARS} characters."
+                    )
+            elif action == "down" and options:
                 self.filter_menu_index = (self.filter_menu_index + 1) % len(options)
             elif action == "up" and options:
                 self.filter_menu_index = (self.filter_menu_index - 1) % len(options)
@@ -704,15 +866,6 @@ class SearchWorkspace:
                 self.filter_menu_index = 0
             elif action == "last" and options:
                 self.filter_menu_index = len(options) - 1
-            elif action == "select":
-                self.choose_filter(self.filter_menu_index)
-            elif action == "cancel":
-                self.filter_menu = ""
-            elif "edit" in {
-                keymap.action("search", key),
-                keymap.action("search.edit", key),
-            }:
-                self.edit_query()
             return True
         if keymap.action(context, key) == "edit":
             self.edit_query()
@@ -737,7 +890,7 @@ class SearchWorkspace:
             if act == "open":
                 self._commit_filter()
             elif act == "back":
-                self.filter_field = self.filter_text = ""
+                self.close_filter()
             elif act == "erase":
                 self.filter_text = self.filter_text[:-1]
             elif act == "clear":
@@ -758,9 +911,6 @@ class SearchWorkspace:
             if self.editing:
                 self.editing = False
                 self.focus = "results"
-                return True
-            if self._scope_stack:
-                self._restore_state(self._scope_stack.pop())
                 return True
             self.close()
             return False
@@ -823,6 +973,8 @@ class SearchWorkspace:
             self._all_scope()
         elif act == "scope_menu":
             self.open_filter("scope")
+        elif act == "filters":
+            self.open_filter("filters")
         elif act == "reset_filters":
             self.open_filter("reset")
         elif act == "scope_project":

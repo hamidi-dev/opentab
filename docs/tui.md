@@ -228,6 +228,14 @@ is saved only on success. Query, filter or selection changes invalidate that sta
 The launch picker resolves a unique qualified root, never a native ID alone.
 See [Search controls](keys.md#scope--filter) and [permissions](privacy.md).
 
+Filters reuse the menu surface, with `[menu.search-project]` reserving printable
+keys for project search. Project choices snapshot loaded local session metadata,
+independent of the spend date range; no conversation read is needed. Date presets
+become concrete inclusive UTC dates. Session scope is a filter, not a back stack;
+clearing project/harness/date filters keeps the session scope and query. Filters
+uses `Ctrl-G`: macOS can intercept `Ctrl-O` as the terminal's discard-output key
+even in curses cbreak mode.
+
 ### Notifications
 
 Toasts stack in the top-right as framed cards. Severity colours the border and
