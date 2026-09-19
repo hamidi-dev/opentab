@@ -26,6 +26,7 @@ for _var in (
     "HERDR_PANE_ID",
     "HERDR_WORKSPACE_ID",
     "OPENTAB_LAUNCHER",
+    "OPENTAB_DIFF_PAGER",
 ):
     os.environ.pop(_var, None)
 

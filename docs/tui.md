@@ -29,10 +29,10 @@ Stateless layout and formatting live outside those coordinators:
   local geometry. They do not receive App/Renderer or initialize curses. The
   renderer adopts their metadata and paints; App still owns input and loading.
 - [`views/`](../src/opentab/tui/views/) composes those components into Prices,
-  Trends, Tools, Turns and Subagents layouts. Views receive prepared records and
-  display options, not App or stores. Renderer adapters retain lazy reads, cache
-  lifetimes and screen-coordinate translation; cached layouts restore text, styles
-  and interaction maps together.
+  Trends, Tools, Turns, Changes and Subagents layouts. Views receive prepared
+  records and display options, not App or stores. Renderer adapters retain lazy
+  reads, cache lifetimes and screen-coordinate translation; cached layouts restore
+  text, styles and interaction maps together.
 
 - [`trace.py`](../src/opentab/tui/trace.py) formats recorded events from explicit
   width, expansion and key-label inputs. Its `TraceLayout` returns text with
@@ -372,6 +372,16 @@ Nodes, Turns, Tools, and optional Context composition are session-level reads.
 avoiding tab capability checks that might parse data. The `run()` prefetch tick
 does the blocking work and repaints. These numeric memos clear on reload and
 harness changes; backend caching details live in [Caching](caching.md).
+
+OpenCode Changes stays outside session prefetch. A serial worker runs source-owned,
+cancelable requests with its own SQLite connections; the input loop polls results
+without waiting. File lists and fetched patches are cached by store-qualified
+session/occurrence for the App lifetime, including offscreen completions. Navigation
+only resets the active drill; reload, source rebuild, demo, and exit invalidate the
+cache and cancel the worker generation. The pure layout handles prepared metadata
+and patch text; the optional external pager suspends curses and receives only the
+loaded patch over stdin. User semantics and controls live in
+[Keys](keys.md#session-changes).
 
 Turns groups chronological assistant steps under their owning prompts, with
 subagent steps interleaved. Prompt drill-down exposes full prompt text and a

@@ -253,6 +253,10 @@ def _on_trace(app: App) -> bool:
     return in_main(app) and _on_turns(app) and app.active_trace_drill is not None
 
 
+def _on_change_diff(app: App) -> bool:
+    return in_session(app) and app.active_tab_name() == "Changes" and app._change_drill
+
+
 def _hide_prompts_chip(app: App) -> list[tuple[str, bool]]:
     # Footer room only where prompts show, or anywhere while lit; Help always lists it.
     if not (app.hide_prompts or _on_turns(app) or app._on_subagents_tab()):
@@ -292,6 +296,8 @@ def _enter_opens_something(app: App) -> bool:
         if wf is None:
             return False
         return app.active_tool_drill is None or bool(app.selected_tool_calls(wf.id))
+    if app.active_tab_name() == "Changes":
+        return not app._change_drill and app.selected_change_file() is not None
     return False
 
 
@@ -334,6 +340,8 @@ def _enter_summary(app: App) -> str:
             if app.active_tool_drill is not None
             else "inspect the selected tool or namespace"
         )
+    if tab == "Changes":
+        return "inspect the selected file's recorded edits"
     return "its sessions, within this scope"
 
 
@@ -634,10 +642,12 @@ KEYS: tuple[Key, ...] = (
         id="trace-siblings",
         ctx="main",
         actions=("trace_prev", "trace_next"),
-        summary="previous / next turn in this prompt",
+        summary=lambda app: "previous / next recorded edit for this file"
+        if _on_change_diff(app)
+        else "previous / next turn in this prompt",
         section="here",
-        when=_on_trace,
-        chip="turn",
+        when=lambda app: _on_trace(app) or _on_change_diff(app),
+        chip=lambda app: "edit" if _on_change_diff(app) else "turn",
     ),
     Key(
         id="trace-expand",
@@ -649,6 +659,15 @@ KEYS: tuple[Key, ...] = (
         chip=lambda app: "collapse" if app.trace_expanded else "expand",
     ),
     Key(
+        id="diff-pager",
+        ctx="main",
+        actions=("diff_pager",),
+        summary="open this patch in $OPENTAB_DIFF_PAGER",
+        section="here",
+        when=_on_change_diff,
+        chip="diff pager",
+    ),
+    Key(
         id="enter",
         ctx="main",
         actions=("select",),
@@ -657,6 +676,8 @@ KEYS: tuple[Key, ...] = (
         when=_enter_opens_something,
         chip=lambda app: "output"
         if _on_trace(app)
+        else "diff"
+        if app.active_tab_name() == "Changes"
         else "tokens"
         if _on_turns(app) and app.active_turn_drill is not None and not _trace_available(app)
         else "turns"
@@ -981,6 +1002,8 @@ KEYS: tuple[Key, ...] = (
         actions=("back", "cycle_panel_back"),
         summary=lambda app: "back to this prompt's turns"
         if _on_trace(app)
+        else "back to the file list"
+        if _on_change_diff(app)
         else "back to the prompts"
         if _on_turns(app) and app.active_turn_drill is not None
         else "back to execution detail"
@@ -1011,6 +1034,10 @@ KEYS: tuple[Key, ...] = (
             ("down", "up"),
             "scroll this turn"
             if _on_trace(app)
+            else "scroll this recorded patch"
+            if _on_change_diff(app)
+            else "pick a changed file"
+            if in_session(app) and app.active_tab_name() == "Changes"
             else "pick a turn"
             if _on_turns(app) and app.active_turn_drill is not None
             else "pick a prompt"
@@ -1050,6 +1077,8 @@ KEYS: tuple[Key, ...] = (
         if app.active_tab_name() == "Tools" and app.active_tool_drill is not None
         else "first / last tool or namespace"
         if app.active_tab_name() == "Tools"
+        else "first / last file"
+        if in_session(app) and app.active_tab_name() == "Changes" and not app._change_drill
         else "top / bottom",
         section="nav",
         when=lambda app: not in_trends(app) or app.trend_drill is not None,
@@ -1278,6 +1307,7 @@ FOOTER_ORDER = (
     "trace-siblings",
     "trace-scroll",
     "trace-expand",
+    "diff-pager",
     "enter",
     "esc",
     "max",

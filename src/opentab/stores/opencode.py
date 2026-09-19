@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
+import ntpath
 import os
+import posixpath
 import re
 import sqlite3
+import threading
 import time
 from contextlib import closing
 from urllib.parse import quote
@@ -58,6 +62,18 @@ REQUIRED_SCHEMA = {
 
 CONVERSATION_TEXT_BUDGET = 256 * 1024 * 1024
 
+CHANGE_SUMMARY_LIMIT = 2000
+CHANGE_SUMMARY_BYTES = 1024 * 1024
+CHANGE_METADATA_BYTES = 4096
+CHANGE_DIFF_BYTES = 1024 * 1024
+CHANGE_LEGACY_INPUT_BYTES = 256 * 1024
+CHANGE_LEGACY_LINE_LIMIT = 2000
+CHANGE_LIMITATIONS = [
+    "Tool records and snapshots are both retained; snapshots may include concurrent edits.",
+    "Reverted changes remain in retained history.",
+    "Shell/formatter changes and missing metadata may not be captured.",
+]
+
 
 def _process_timeline(
     rows: list[dict],
@@ -98,6 +114,28 @@ def _process_timeline(
     return out
 
 
+class _ChangeRequest:
+    """A frozen worker request that owns every SQLite connection it opens."""
+
+    def __init__(self, db: str, root_id: str, change_key: str | None):
+        self.db = db
+        self.root_id = root_id
+        self.change_key = change_key
+
+    def __call__(self, cancelled: threading.Event):
+        if cancelled.is_set():
+            return None
+        store = Store(self.db, argparse.Namespace(demo=False))
+        store._change_cancelled = cancelled
+        store.conn.set_progress_handler(cancelled.is_set, 1000)
+        try:
+            if self.change_key is None:
+                return store.session_change_files(self.root_id)
+            return store.session_change_diff(self.root_id, self.change_key)
+        finally:
+            store.conn.close()
+
+
 class Store:
     records_cost = True
     combined = False
@@ -110,6 +148,7 @@ class Store:
         self.db = db
         self.args = args
         self.demo, self.demo_scale, self.demo_cats = demo_config(args)
+        self._change_cancelled: threading.Event | None = None
         # Enforce the read-only database contract at connection level.
         uri = "file:" + quote(os.path.abspath(db)) + "?mode=ro"
         # CombinedStore may move this connection between threads, never use it concurrently.
@@ -117,8 +156,15 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self._tune(self.conn)
         self.session_columns = self._table_columns("session")
+        self.message_columns = self._table_columns("message")
         self.supports_tool_breakdown = self._table_exists("part")
+        self.part_columns = self._table_columns("part") if self.supports_tool_breakdown else set()
         self.supports_message_timeline = self._table_exists("message")
+        self.supports_session_changes = {"id", "parent_id"} <= self.session_columns and {
+            "id",
+            "session_id",
+            "data",
+        } <= self.message_columns
 
     @staticmethod
     def _tune(conn: sqlite3.Connection) -> None:
@@ -871,6 +917,703 @@ class Store:
     def supports_turn_content(self, workflow_id: str) -> bool:
         # Same gate as the tool breakdown: both read the part table.
         return bool(self.supports_tool_breakdown)
+
+    def supports_changes(self, root_id: str) -> bool:
+        """Schema capability only; retained summaries and ownership are checked on read."""
+        return not self.demo and self.supports_session_changes
+
+    def change_request(self, root_id: str, change_key: str | None = None):
+        """Freeze a worker-owned change read without sharing this store's connection."""
+        if self.demo or not self.supports_session_changes:
+            return None
+        return _ChangeRequest(self.db, root_id, change_key)
+
+    def _change_connection(self, uri: str) -> sqlite3.Connection:
+        conn = sqlite3.connect(uri, uri=True)
+        conn.row_factory = sqlite3.Row
+        cancelled = getattr(self, "_change_cancelled", None)
+        if cancelled is not None:
+            conn.set_progress_handler(cancelled.is_set, 1000)
+        return conn
+
+    @staticmethod
+    def _change_key(root_id: str, revision, row: dict) -> str:
+        identity = {
+            "root": root_id,
+            # Current schemas revise the selected message/part on update. Unrelated
+            # live sessions must not expire a historical selection; old schemas need
+            # the database token instead.
+            "revision": None if not Store._change_uses_global_revision(row) else revision,
+            "source": row["source"],
+            "message_id": row["message_id"],
+            "execution_id": row["execution_id"],
+            "message_row": row["message_row"] if row["source"] == "snapshot" else None,
+            "message_created": row["message_created"] if row["source"] == "snapshot" else None,
+            "message_updated": row["message_updated"] if row["source"] == "snapshot" else None,
+            "message_bytes": row["message_bytes"] if row["source"] == "snapshot" else None,
+            "index": row["diff_index"],
+            "file": row["file"],
+            "status": row["status"],
+            "additions": row["additions"],
+            "deletions": row["deletions"],
+            "patch_bytes": row["patch_bytes"],
+            "before_bytes": row["before_bytes"],
+            "after_bytes": row["after_bytes"],
+            "part_row": row["part_row"],
+            "part_id": row["part_id"],
+            "part_created": row["part_created"],
+            "part_updated": row["part_updated"],
+            "part_bytes": row["part_bytes"],
+            "tool_message_row": row["tool_message_row"],
+            "tool_message_id": row["tool_message_id"],
+            "tool_message_updated": row["tool_message_updated"],
+            "from_file": row["from_file"],
+        }
+        encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        row_id = row["message_row"] if row["source"] == "snapshot" else row["part_row"]
+        return (
+            f"occhg1:{row['source']}:{row_id}:{row['diff_index']}:"
+            + hashlib.sha256(encoded).hexdigest()
+        )
+
+    @staticmethod
+    def _change_uses_global_revision(row: dict) -> bool:
+        if row["source"] == "snapshot":
+            return row["message_updated"] is None
+        return row["part_updated"] is None or row["tool_message_updated"] is None
+
+    @staticmethod
+    def _change_count(value, kind) -> int | None:
+        return value if kind == "integer" and isinstance(value, int) and value >= 0 else None
+
+    @staticmethod
+    def _clip_utf8(text: str, limit: int) -> tuple[str, bool]:
+        raw = text.encode("utf-8")
+        if len(raw) <= limit:
+            return text, False
+        return raw[:limit].decode("utf-8", "ignore"), True
+
+    @staticmethod
+    def _change_path(path, directory, root_directory) -> str | None:
+        if not isinstance(path, str) or not path:
+            return None
+        if not isinstance(directory, str) or not directory:
+            return path
+        try:
+            # Resolve against the execution, but display relative to the root. Two
+            # child worktrees' src/a.py must never become the same changed file.
+            paths = ntpath if ntpath.splitdrive(directory)[0] else posixpath
+            normalized = paths.normpath(paths.join(directory, path))
+            base = paths.normpath(root_directory) if isinstance(root_directory, str) else ""
+            if paths.isabs(normalized) and paths.isabs(base):
+                if paths.commonpath((normalized, base)) == base:
+                    return paths.relpath(normalized, base)
+            return normalized
+        except (OSError, ValueError):
+            return path
+
+    def _change_rows(
+        self, conn: sqlite3.Connection, root_id: str, locator: tuple[str, int, int] | None = None
+    ) -> tuple[list[dict], object]:
+        if not isinstance(root_id, str) or not root_id:
+            return [], None
+        root_directory = "directory" if "directory" in self.session_columns else "null"
+        roots = conn.execute(
+            f"select parent_id, {root_directory} from session where id = ? limit 2", [root_id]
+        ).fetchall()
+        if len(roots) != 1 or roots[0][0] is not None:
+            return [], None
+        root_directory = roots[0][1]
+        tree = """with recursive tree(id) as (
+          select id from session where id = ?
+          union
+          select child.id from session child join tree on child.parent_id = tree.id
+        ) """
+        ambiguous = conn.execute(
+            tree + "select tree.id from tree join session s on s.id = tree.id "
+            "group by tree.id having count(*) != 1 limit 1",
+            [root_id],
+        ).fetchone()
+        if ambiguous:
+            return [], None
+        revision = self._conversation_database_manifest()
+        safe = "case when json_valid(m.data) then m.data else '{}' end"
+        created = (
+            "m.time_created"
+            if "time_created" in self.message_columns
+            else f"json_extract({safe}, '$.time.created')"
+        )
+        updated = "m.time_updated" if "time_updated" in self.message_columns else "null"
+        directory = (
+            f"case when length(cast(s.directory as blob)) <= {CHANGE_METADATA_BYTES} "
+            "then s.directory end"
+            if "directory" in self.session_columns
+            else "null"
+        )
+        diff = "case when d.type = 'object' then d.value else '{}' end"
+        cap = CHANGE_METADATA_BYTES + 1
+        snapshot_filter = "and m.rowid = ? and d.key = ?" if locator else ""
+        # CROSS JOIN keeps the small execution tree outside indexed record reads.
+        # Otherwise SQLite may scan all message/part JSON before testing membership.
+        snapshot_sql = f"""
+        {tree}
+        select
+          'snapshot' as source,
+          coalesce({created}, 0) as event_created,
+          m.rowid as event_order,
+          m.rowid as message_row,
+          substr(cast(m.id as text), 1, ?) as message_id,
+          length(cast(cast(m.id as text) as blob)) as message_id_bytes,
+          substr(cast(m.session_id as text), 1, ?) as execution_id,
+          length(cast(cast(m.session_id as text) as blob)) as execution_id_bytes,
+          {created} as message_created,
+          {updated} as message_updated,
+          length(cast(m.data as blob)) as message_bytes,
+          {directory} as directory,
+          d.key as diff_index,
+          substr(json_extract({diff}, '$.file'), 1, ?) as file,
+          length(cast(json_extract({diff}, '$.file') as blob)) as file_bytes,
+          substr(json_extract({diff}, '$.status'), 1, ?) as status,
+          length(cast(json_extract({diff}, '$.status') as blob)) as status_bytes,
+          case when json_type({diff}, '$.additions') = 'integer'
+            then json_extract({diff}, '$.additions') end as additions,
+          json_type({diff}, '$.additions') as additions_type,
+          case when json_type({diff}, '$.deletions') = 'integer'
+            then json_extract({diff}, '$.deletions') end as deletions,
+          json_type({diff}, '$.deletions') as deletions_type,
+          json_type({diff}, '$.patch') as patch_type,
+          coalesce(length(cast(json_extract({diff}, '$.patch') as blob)), 0) as patch_bytes,
+          json_type({diff}, '$.before') as before_type,
+          coalesce(length(cast(json_extract({diff}, '$.before') as blob)), 0) as before_bytes,
+          json_type({diff}, '$.after') as after_type,
+          coalesce(length(cast(json_extract({diff}, '$.after') as blob)), 0) as after_bytes,
+          null as from_file,
+          0 as from_file_bytes,
+          null as part_row,
+          null as part_id,
+          null as part_id_bytes,
+          null as part_created,
+          null as part_updated,
+          null as part_bytes,
+          null as tool_message_row,
+          null as tool_message_id,
+          null as tool_message_id_bytes,
+          null as tool_message_updated
+        from tree
+        cross join message m on m.session_id = tree.id
+        join session s on s.id = m.session_id
+        join json_each({safe}, '$.summary.diffs') d
+        where json_extract({safe}, '$.role') = 'user'
+          and json_type({safe}, '$.summary.diffs') = 'array'
+          and d.type = 'object'
+          and json_type({diff}, '$.file') = 'text'
+          and length(json_extract({diff}, '$.file')) > 0
+          {snapshot_filter}
+        order by event_created, event_order, cast(d.key as integer)
+        limit ?
+        """
+        params = [root_id, cap, cap, cap, cap]
+        if locator:
+            params.extend(locator[1:])
+        params.append(CHANGE_SUMMARY_LIMIT + 1)
+        rows = (
+            [dict(row) for row in conn.execute(snapshot_sql, params)]
+            if locator is None or locator[0] == "snapshot"
+            else []
+        )
+        if locator and locator[0] == "snapshot" and not rows:
+            return [], revision
+
+        required_part = {"id", "message_id", "session_id", "data"}
+        if required_part <= self.part_columns and (locator is None or locator[0] != "snapshot"):
+            native_filter = "and p.rowid = ?" if locator else ""
+            psafe = "case when json_valid(p.data) then p.data else '{}' end"
+            msafe = "case when json_valid(tm.data) then tm.data else '{}' end"
+            pcreated = (
+                "p.time_created"
+                if "time_created" in self.part_columns
+                else f"json_extract({msafe}, '$.time.created')"
+            )
+            pupdated = "p.time_updated" if "time_updated" in self.part_columns else "null"
+            tmupdated = "tm.time_updated" if "time_updated" in self.message_columns else "null"
+            prompt_created = (
+                "pm.time_created"
+                if "time_created" in self.message_columns
+                else "json_extract(case when json_valid(pm.data) then pm.data else '{}' end, '$.time.created')"
+            )
+            native_diff = "case when d.type = 'object' then d.value else '{}' end"
+            native_path = f"""case when json_extract({native_diff}, '$.type') = 'move'
+              then coalesce(json_extract({native_diff}, '$.movePath'), json_extract({native_diff}, '$.relativePath'))
+              else coalesce(json_extract({native_diff}, '$.filePath'), json_extract({native_diff}, '$.relativePath')) end"""
+            native_sql = f"""
+            {tree}, native as (
+              select p.*, p.rowid as part_row, tm.rowid as tool_message_row, tm.id as tool_message_id,
+                     tm.data as tool_message_data, pm.rowid as prompt_row,
+                     pm.id as prompt_id, pm.data as prompt_data,
+                     pm.session_id as execution_id, {directory} as directory,
+                     {pcreated} as part_created, {pupdated} as part_updated,
+                     {tmupdated} as tool_message_updated, {prompt_created} as prompt_created,
+                     {'pm.time_updated' if 'time_updated' in self.message_columns else 'null'} as prompt_updated
+              from tree
+              cross join part p on p.session_id = tree.id
+              join message tm on tm.id = p.message_id and tm.session_id = p.session_id
+              join message pm
+                on pm.id = json_extract({msafe}, '$.parentID')
+               and pm.session_id = tm.session_id
+              join session s on s.id = p.session_id
+              where json_extract({psafe}, '$.type') = 'tool'
+                {native_filter}
+                and json_extract({psafe}, '$.state.status') = 'completed'
+                and json_extract({msafe}, '$.role') = 'assistant'
+                and json_extract(case when json_valid(pm.data) then pm.data else '{{}}' end, '$.role') = 'user'
+                and (select count(*) from message x
+                     where x.id = p.message_id and x.session_id = p.session_id) = 1
+                and (select count(*) from message x
+                     where x.id = json_extract({msafe}, '$.parentID')
+                       and x.session_id = p.session_id) = 1
+                and (select count(*) from part x
+                     where x.id = p.id and x.message_id = p.message_id
+                       and x.session_id = p.session_id) = 1
+            ), projected as (
+              select
+                'apply_patch' as source,
+                coalesce(n.part_created, n.prompt_created, 0) as event_created,
+                n.part_row as event_order,
+                n.prompt_row as message_row,
+                substr(cast(n.prompt_id as text), 1, ?) as message_id,
+                length(cast(cast(n.prompt_id as text) as blob)) as message_id_bytes,
+                substr(cast(n.execution_id as text), 1, ?) as execution_id,
+                length(cast(cast(n.execution_id as text) as blob)) as execution_id_bytes,
+                n.prompt_created as message_created,
+                n.prompt_updated as message_updated,
+                length(cast(n.prompt_data as blob)) as message_bytes,
+                n.directory,
+                d.key as diff_index,
+                substr({native_path}, 1, ?) as file,
+                length(cast({native_path} as blob)) as file_bytes,
+                case json_extract({native_diff}, '$.type')
+                  when 'add' then 'added' when 'update' then 'modified'
+                  when 'delete' then 'deleted' when 'move' then 'moved'
+                end as status,
+                8 as status_bytes,
+                case when json_type({native_diff}, '$.additions') = 'integer'
+                  then json_extract({native_diff}, '$.additions') end as additions,
+                json_type({native_diff}, '$.additions') as additions_type,
+                case when json_type({native_diff}, '$.deletions') = 'integer'
+                  then json_extract({native_diff}, '$.deletions') end as deletions,
+                json_type({native_diff}, '$.deletions') as deletions_type,
+                json_type({native_diff}, '$.patch') as patch_type,
+                coalesce(length(cast(json_extract({native_diff}, '$.patch') as blob)), 0) as patch_bytes,
+                null as before_type, 0 as before_bytes, null as after_type, 0 as after_bytes,
+                substr(case when json_extract({native_diff}, '$.type') = 'move'
+                  then json_extract({native_diff}, '$.filePath') end, 1, ?) as from_file,
+                coalesce(length(cast(case when json_extract({native_diff}, '$.type') = 'move'
+                  then json_extract({native_diff}, '$.filePath') end as blob)), 0) as from_file_bytes,
+                n.part_row,
+                substr(cast(n.id as text), 1, ?) as part_id,
+                length(cast(cast(n.id as text) as blob)) as part_id_bytes,
+                n.part_created, n.part_updated, length(cast(n.data as blob)) as part_bytes,
+                n.tool_message_row,
+                substr(cast(n.tool_message_id as text), 1, ?) as tool_message_id,
+                length(cast(cast(n.tool_message_id as text) as blob)) as tool_message_id_bytes,
+                n.tool_message_updated
+              from native n
+              join json_each(case when json_valid(n.data) then n.data else '{{}}' end,
+                             '$.state.metadata.files') d
+              where json_extract(n.data, '$.tool') = 'apply_patch'
+                and json_type(n.data, '$.state.metadata.files') = 'array'
+                and d.type = 'object'
+                and json_extract({native_diff}, '$.type') in ('add', 'update', 'delete', 'move')
+                and typeof({native_path}) = 'text'
+              union all
+              select
+                'edit', coalesce(n.part_created, n.prompt_created, 0), n.part_row,
+                n.prompt_row, substr(cast(n.prompt_id as text), 1, ?),
+                length(cast(cast(n.prompt_id as text) as blob)),
+                substr(cast(n.execution_id as text), 1, ?),
+                length(cast(cast(n.execution_id as text) as blob)),
+                n.prompt_created, n.prompt_updated, length(cast(n.prompt_data as blob)), n.directory,
+                0, substr(json_extract(n.data, '$.state.metadata.filediff.file'), 1, ?),
+                length(cast(json_extract(n.data, '$.state.metadata.filediff.file') as blob)),
+                'modified', 8,
+                case when json_type(n.data, '$.state.metadata.filediff.additions') = 'integer'
+                  then json_extract(n.data, '$.state.metadata.filediff.additions') end,
+                json_type(n.data, '$.state.metadata.filediff.additions'),
+                case when json_type(n.data, '$.state.metadata.filediff.deletions') = 'integer'
+                  then json_extract(n.data, '$.state.metadata.filediff.deletions') end,
+                json_type(n.data, '$.state.metadata.filediff.deletions'),
+                json_type(n.data, '$.state.metadata.filediff.patch'),
+                coalesce(length(cast(json_extract(n.data, '$.state.metadata.filediff.patch') as blob)), 0),
+                null, 0, null, 0, null, 0,
+                n.part_row, substr(cast(n.id as text), 1, ?),
+                length(cast(cast(n.id as text) as blob)), n.part_created, n.part_updated,
+                length(cast(n.data as blob)), n.tool_message_row,
+                substr(cast(n.tool_message_id as text), 1, ?),
+                length(cast(cast(n.tool_message_id as text) as blob)), n.tool_message_updated
+              from native n
+              where json_extract(n.data, '$.tool') = 'edit'
+                and json_type(n.data, '$.state.metadata.filediff') = 'object'
+                and json_type(n.data, '$.state.metadata.filediff.file') = 'text'
+              union all
+              select
+                'write', coalesce(n.part_created, n.prompt_created, 0), n.part_row,
+                n.prompt_row, substr(cast(n.prompt_id as text), 1, ?),
+                length(cast(cast(n.prompt_id as text) as blob)),
+                substr(cast(n.execution_id as text), 1, ?),
+                length(cast(cast(n.execution_id as text) as blob)),
+                n.prompt_created, n.prompt_updated, length(cast(n.prompt_data as blob)), n.directory,
+                0, substr(json_extract(n.data, '$.state.metadata.filepath'), 1, ?),
+                length(cast(json_extract(n.data, '$.state.metadata.filepath') as blob)),
+                case json_type(n.data, '$.state.metadata.exists')
+                  when 'true' then 'modified' when 'false' then 'added' end,
+                8, null, null, null, null, null, 0, null, 0, null, 0, null, 0,
+                n.part_row, substr(cast(n.id as text), 1, ?),
+                length(cast(cast(n.id as text) as blob)), n.part_created, n.part_updated,
+                length(cast(n.data as blob)), n.tool_message_row,
+                substr(cast(n.tool_message_id as text), 1, ?),
+                length(cast(cast(n.tool_message_id as text) as blob)), n.tool_message_updated
+              from native n
+              where json_extract(n.data, '$.tool') = 'write'
+                and json_type(n.data, '$.state.metadata.filepath') = 'text'
+                and json_type(n.data, '$.state.metadata.exists') in ('true', 'false')
+            )
+            select * from projected
+            {"where source = ? and diff_index = ?" if locator else ""}
+            order by event_created, event_order, cast(diff_index as integer)
+            limit ?
+            """
+            native_params: list[object] = [root_id]
+            if locator:
+                native_params.append(locator[1])
+            native_params += [cap] * 6
+            native_params += [cap] * 5
+            native_params += [cap] * 5
+            if locator:
+                native_params.extend((locator[0], locator[2]))
+            native_params.append(CHANGE_SUMMARY_LIMIT + 1)
+            rows.extend(dict(row) for row in conn.execute(native_sql, native_params))
+
+        for row in rows:
+            row["root_directory"] = root_directory
+            row["file"] = self._change_path(row["file"], row["directory"], root_directory)
+            row["from_file"] = self._change_path(row["from_file"], row["directory"], root_directory)
+        rows.sort(
+            key=lambda row: (
+                row["event_created"] if isinstance(row["event_created"], (int, float)) else 0,
+                row["event_order"] if isinstance(row["event_order"], int) else 0,
+                int(row["diff_index"]) if str(row["diff_index"]).isdigit() else 0,
+                row["source"],
+            )
+        )
+        return rows[: CHANGE_SUMMARY_LIMIT + 1], revision
+
+    def session_change_files(self, root_id: str) -> dict:
+        result = {"files": [], "limitations": list(CHANGE_LIMITATIONS), "truncated": False}
+        if self.demo or not self.supports_session_changes:
+            return result
+        uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
+        try:
+            before = self._conversation_database_manifest()
+            with closing(self._change_connection(uri)) as conn:
+                conn.execute("begin")
+                rows, revision = self._change_rows(conn, root_id)
+            if any(self._change_uses_global_revision(row) for row in rows) and (
+                before is None
+                or revision != before
+                or self._conversation_database_manifest() != before
+            ):
+                result["limitations"].append("The source changed while summaries were read.")
+                result["truncated"] = True
+                return result
+        except (sqlite3.Error, OSError, UnicodeError, ValueError, TypeError):
+            raise ValueError("Could not read recorded change summaries.") from None
+
+        if len(rows) > CHANGE_SUMMARY_LIMIT:
+            rows = rows[:CHANGE_SUMMARY_LIMIT]
+            result["truncated"] = True
+            result["limitations"].append("The retained change occurrence limit was reached.")
+        files = {}
+        evidence = {}
+        metadata_bytes = 0
+        for row in rows:
+            bounded_names = ["message_id_bytes", "execution_id_bytes", "file_bytes"]
+            if row["source"] != "snapshot":
+                bounded_names.extend(("part_id_bytes", "tool_message_id_bytes"))
+            if row["from_file"] is not None:
+                bounded_names.append("from_file_bytes")
+            if any(
+                not isinstance(row[name], int) or row[name] > CHANGE_METADATA_BYTES
+                for name in bounded_names
+            ) or (
+                isinstance(row["status_bytes"], int) and row["status_bytes"] > CHANGE_METADATA_BYTES
+            ):
+                result["truncated"] = True
+                continue
+            message_id, execution_id, path = row["message_id"], row["execution_id"], row["file"]
+            if not all(
+                isinstance(value, str) and value for value in (message_id, execution_id, path)
+            ):
+                continue
+            status = (
+                row["status"] if isinstance(row["status"], str) and row["status"] else "unknown"
+            )
+            additions = self._change_count(row["additions"], row["additions_type"])
+            deletions = self._change_count(row["deletions"], row["deletions_type"])
+            available = (row["patch_type"] == "text" and row["patch_bytes"] > 0) or (
+                row["before_type"] == "text" and row["after_type"] == "text"
+            )
+            key = self._change_key(root_id, revision, row)
+            size = sum(
+                len(value.encode("utf-8"))
+                for value in (
+                    key,
+                    message_id,
+                    execution_id,
+                    path,
+                    status,
+                    row["source"],
+                    row["from_file"] or "",
+                )
+            )
+            if metadata_bytes + size > CHANGE_SUMMARY_BYTES:
+                result["truncated"] = True
+                result["limitations"].append("The retained change metadata byte limit was reached.")
+                break
+            metadata_bytes += size
+            edit = {
+                "key": key,
+                "message_id": message_id,
+                "execution_id": execution_id,
+                "file": path,
+                "status": status,
+                "additions": additions,
+                "deletions": deletions,
+                "available": available,
+                "source": row["source"],
+            }
+            if row["from_file"]:
+                edit["from_file"] = row["from_file"]
+            item = files.get(path)
+            if item is None:
+                item = {
+                    "file": path,
+                    "status": status,
+                    "additions": None,
+                    "deletions": None,
+                    "edits": [],
+                }
+                files[path] = item
+            elif item["status"] != status:
+                item["status"] = "mixed"
+            for name, count in (("additions", additions), ("deletions", deletions)):
+                if not item["edits"]:
+                    item[name] = count
+                elif item[name] is not None and count is not None:
+                    item[name] += count
+                else:
+                    item[name] = None
+            item["edits"].append(edit)
+            for recorded_path in (path, row["from_file"]):
+                if recorded_path:
+                    group = evidence.setdefault(
+                        (execution_id, message_id, recorded_path),
+                        {"snapshot": set(), "tool": set()},
+                    )
+                    group["snapshot" if row["source"] == "snapshot" else "tool"].add(path)
+        # A snapshot can contain both a tool edit and later shell changes. Keep
+        # both records, but do not pretend their line counts can be added safely.
+        for group in evidence.values():
+            if group["snapshot"] and group["tool"]:
+                for path in group["snapshot"] | group["tool"]:
+                    files[path].update(additions=None, deletions=None, counts_overlap=True)
+        if any(item.get("counts_overlap") for item in files.values()):
+            result["limitations"].append(
+                "Overlapping snapshot/tool records have unknown (?) file totals; individual record counts remain available."
+            )
+        if result["truncated"] and not any("limit" in text for text in result["limitations"]):
+            result["limitations"].append("Some oversized change metadata was omitted.")
+        result["files"] = list(files.values())
+        return result
+
+    def session_change_diff(self, root_id: str, change_key: str) -> dict | None:
+        if (
+            self.demo
+            or not self.supports_session_changes
+            or not isinstance(change_key, str)
+            or len(change_key) > 160
+        ):
+            return None
+        match = re.fullmatch(
+            r"occhg1:(snapshot|apply_patch|edit|write):(-?[0-9]{1,19}):([0-9]{1,19}):[0-9a-f]{64}",
+            change_key,
+        )
+        if match is None:
+            return None
+        source, row_id, index = match.groups()
+        locator = (source, int(row_id), int(index))
+        if not -(2**63) <= locator[1] < 2**63 or locator[2] >= 2**63:
+            return None
+        uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
+        try:
+            initial = self._conversation_database_manifest()
+            with closing(self._change_connection(uri)) as conn:
+                conn.execute("begin")
+                # The locator only narrows the query. Rebuild the identity from
+                # owned live rows and compare the full key before reading a body.
+                rows, revision = self._change_rows(conn, root_id, locator)
+                selected = next(
+                    (
+                        row
+                        for row in rows[:CHANGE_SUMMARY_LIMIT]
+                        if self._change_key(root_id, revision, row) == change_key
+                    ),
+                    None,
+                )
+                if selected is None or (
+                    self._change_uses_global_revision(selected)
+                    and (initial is None or revision != initial)
+                ):
+                    return None
+                if selected["source"] == "snapshot":
+                    safe = "case when json_valid(m.data) then m.data else '{}' end"
+                    diff = "case when d.type = 'object' then d.value else '{}' end"
+                    body = conn.execute(
+                        f"""select
+                          json_extract({diff}, '$.file') as file,
+                          json_type({diff}, '$.patch') as patch_type,
+                          substr(json_extract({diff}, '$.patch'), 1, ?) as patch,
+                          coalesce(length(cast(json_extract({diff}, '$.patch') as blob)), 0) as patch_bytes,
+                          json_type({diff}, '$.before') as before_type,
+                          substr(json_extract({diff}, '$.before'), 1, ?) as before,
+                          coalesce(length(cast(json_extract({diff}, '$.before') as blob)), 0) as before_bytes,
+                          json_type({diff}, '$.after') as after_type,
+                          substr(json_extract({diff}, '$.after'), 1, ?) as after,
+                          coalesce(length(cast(json_extract({diff}, '$.after') as blob)), 0) as after_bytes
+                        from message m join json_each({safe}, '$.summary.diffs') d
+                        where m.rowid = ? and m.id = ? and m.session_id = ? and d.key = ?
+                          and d.type = 'object'""",
+                        [
+                            CHANGE_DIFF_BYTES + 1,
+                            CHANGE_LEGACY_INPUT_BYTES + 1,
+                            CHANGE_LEGACY_INPUT_BYTES + 1,
+                            selected["message_row"],
+                            selected["message_id"],
+                            selected["execution_id"],
+                            selected["diff_index"],
+                        ],
+                    ).fetchone()
+                elif selected["source"] in ("apply_patch", "edit"):
+                    patch_path = (
+                        f"$.state.metadata.files[{int(selected['diff_index'])}].patch"
+                        if selected["source"] == "apply_patch"
+                        else "$.state.metadata.filediff.patch"
+                    )
+                    body = conn.execute(
+                        """select
+                          ? as file,
+                          json_type(p.data, ?) as patch_type,
+                          substr(json_extract(p.data, ?), 1, ?) as patch,
+                          coalesce(length(cast(json_extract(p.data, ?) as blob)), 0) as patch_bytes,
+                          null as before_type, null as before, 0 as before_bytes,
+                          null as after_type, null as after, 0 as after_bytes
+                        from part p
+                        where p.rowid = ? and p.id = ? and p.message_id = ? and p.session_id = ?""",
+                        [
+                            selected["file"],
+                            patch_path,
+                            patch_path,
+                            CHANGE_DIFF_BYTES + 1,
+                            patch_path,
+                            selected["part_row"],
+                            selected["part_id"],
+                            selected["tool_message_id"],
+                            selected["execution_id"],
+                        ],
+                    ).fetchone()
+                else:
+                    body = None
+            if body is None or (
+                self._change_uses_global_revision(selected)
+                and self._conversation_database_manifest() != initial
+            ):
+                return None
+        except (sqlite3.Error, OSError, UnicodeError, ValueError, TypeError):
+            return None
+
+        path = (
+            self._change_path(body["file"], selected["directory"], selected["root_directory"])
+            if selected["source"] == "snapshot"
+            else body["file"]
+        )
+        if not isinstance(path, str) or path != selected["file"]:
+            return None
+        if body["patch_type"] == "text" and body["patch_bytes"] > 0:
+            patch, clipped = self._clip_utf8(body["patch"], CHANGE_DIFF_BYTES)
+            return {
+                "file": path,
+                "patch": patch,
+                "truncated": clipped or body["patch_bytes"] > CHANGE_DIFF_BYTES,
+                "limitation": (
+                    f"Recorded {selected['source']} patch; content was truncated to the output limit."
+                    if clipped or body["patch_bytes"] > CHANGE_DIFF_BYTES
+                    else (
+                        "Native per-prompt snapshot patch; it may include concurrent or later-reverted edits."
+                        if selected["source"] == "snapshot"
+                        else f"Recorded {selected['source']} patch."
+                    )
+                ),
+            }
+        if body["before_type"] != "text" or body["after_type"] != "text":
+            return None
+        before_text, before_clipped = self._clip_utf8(body["before"], CHANGE_LEGACY_INPUT_BYTES)
+        after_text, after_clipped = self._clip_utf8(body["after"], CHANGE_LEGACY_INPUT_BYTES)
+        before_lines = before_text.splitlines(keepends=True)
+        after_lines = after_text.splitlines(keepends=True)
+        lines_clipped = (
+            len(before_lines) > CHANGE_LEGACY_LINE_LIMIT
+            or len(after_lines) > CHANGE_LEGACY_LINE_LIMIT
+        )
+        before_lines = before_lines[:CHANGE_LEGACY_LINE_LIMIT]
+        after_lines = after_lines[:CHANGE_LEGACY_LINE_LIMIT]
+        chunks = difflib.unified_diff(
+            before_lines,
+            after_lines,
+            fromfile="a/" + path,
+            tofile="b/" + path,
+        )
+        out, used, output_clipped = [], 0, False
+        for chunk in chunks:
+            # difflib preserves missing EOF newlines, but does not insert Git's
+            # marker; joining these chunks verbatim would glue -old and +new.
+            if not chunk.endswith("\n"):
+                chunk += "\n\\ No newline at end of file\n"
+            raw = chunk.encode("utf-8")
+            if used + len(raw) > CHANGE_DIFF_BYTES:
+                room = CHANGE_DIFF_BYTES - used
+                if room > 0:
+                    out.append(raw[:room].decode("utf-8", "ignore"))
+                output_clipped = True
+                break
+            out.append(chunk)
+            used += len(raw)
+        truncated = (
+            before_clipped
+            or after_clipped
+            or lines_clipped
+            or output_clipped
+            or body["before_bytes"] > CHANGE_LEGACY_INPUT_BYTES
+            or body["after_bytes"] > CHANGE_LEGACY_INPUT_BYTES
+        )
+        return {
+            "file": path,
+            "patch": "".join(out),
+            "truncated": truncated,
+            "limitation": (
+                "Generated from retained before/after snapshots; source or output limits truncated it."
+                if truncated
+                else "Generated from retained before/after snapshots; it may include concurrent or later-reverted edits."
+            ),
+        }
 
     @staticmethod
     def _conversation_columns(conn: sqlite3.Connection) -> dict[str, set[str]]:

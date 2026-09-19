@@ -128,6 +128,7 @@ from opentab.tui.views import subagents as subagents_view
 from opentab.tui.views import tools as tools_view
 from opentab.tui.views import trends as trend_views
 from opentab.tui.views import turns as turns_view
+from opentab.tui.views.changes import ChangeLine, diff_layout, files_layout, safe_text
 
 if TYPE_CHECKING:
     from opentab.tui.app import App
@@ -284,6 +285,9 @@ class Renderer:
         self._tool_cursor_line: int | None = None
         self._subagent_header_at: dict[int, int] = {}
         self._subagent_cursor_line: int | None = None
+        self._change_row_at: dict[int, int] = {}
+        self._change_cursor_line: int | None = None
+        self._change_layout_cache: tuple | None = None
         # Logical header lines become screen-coordinate sort regions during paint.
         self._line_sort_headers: dict[int, tuple[tuple, str]] = {}
         # Models remain plain strings; line-to-row mapping adds selection at paint time.
@@ -699,6 +703,8 @@ class Renderer:
                 )
             if current == "Tools":
                 return self.detail_tools(workflow, content_width)
+            if current == "Changes":
+                return self.detail_changes(workflow, content_width)
             if current == "Context":
                 return self.detail_context(workflow, content_width)
             return self.detail_overview(workflow, content_width)
@@ -804,6 +810,7 @@ class Renderer:
             self._draw(stdscr)
 
     def _draw(self, stdscr: curses.window) -> None:
+        self.app.settle_changes()
         if not self.app._on_turns_tab() or self.app.active_trace_drill is None:
             self.app._clear_trace_expansion()
         if not self.app._on_subagents_tab():
@@ -1934,6 +1941,20 @@ class Renderer:
         )
 
     def line_attr(self, line: str) -> int:
+        if isinstance(line, ChangeLine):
+            if line.role == "add":
+                return curses.color_pair(3)
+            if line.role == "delete":
+                return curses.color_pair(4)
+            if line.role == "hunk":
+                return curses.color_pair(6) | curses.A_BOLD
+            if line.role in ("heading", "diff-meta"):
+                return curses.color_pair(2) | curses.A_BOLD
+            if line.role in ("meta", "empty"):
+                return curses.color_pair(1)
+            if line.role == "warning":
+                return curses.color_pair(4) | curses.A_BOLD
+            return curses.A_NORMAL
         if isinstance(line, TraceLine):
             if line.role == "error":
                 return curses.color_pair(4) | curses.A_BOLD
@@ -3012,6 +3033,69 @@ class Renderer:
 
         self._paint_detail_lines(stdscr, y, x, h, w, lines, active)
 
+    def detail_changes(self, workflow: Workflow, width: int = 80) -> list[str]:
+        self.app.settle_changes()
+        scope = self.app._change_scope()
+        if scope is None:
+            self._change_row_at = {}
+            self._change_cursor_line = None
+            return [ChangeLine("Change metadata is unavailable for this session.", "empty")]
+        self.app._changes_scope = scope
+        data = self.app.changes_data()
+        if data is None:
+            self._change_row_at = {}
+            self._change_cursor_line = None
+            if self.app.changes_error():
+                return [
+                    ChangeLine("Could not read session change metadata.", "warning"),
+                    ChangeLine(safe_text(self.app.changes_error()), "meta"),
+                    ChangeLine("Leave and reopen Changes, or reload, to retry.", "meta"),
+                ]
+            self.app.load_changes()
+            return [ChangeLine("Loading changes - reading retained metadata...", "heading")]
+        if not self.app._change_drill:
+            layout = files_layout(data, self.app._change_file_cursor, width, self.box_glyphs())
+            self._change_row_at = layout.row_map
+            self._change_cursor_line = layout.cursor_line
+            return layout.lines
+
+        self._change_row_at = {}
+        self._change_cursor_line = None
+        file = self.app.selected_change_file()
+        edit = self.app.selected_change_edit()
+        if file is None or edit is None:
+            return [ChangeLine("No retained edit occurrence is selected.", "empty")]
+        key = edit.get("key")
+        if not isinstance(key, str) or not key:
+            return diff_layout(file, self.app._change_edit_cursor, None, width)
+        if not edit.get("available"):
+            return diff_layout(file, self.app._change_edit_cursor, None, width)
+        if not self.app.change_diff_ready():
+            if self.app.change_diff_error():
+                lines = diff_layout(file, self.app._change_edit_cursor, None, width)
+                lines.extend(
+                    [
+                        "",
+                        ChangeLine(safe_text(self.app.change_diff_error()), "warning"),
+                        ChangeLine("Leave and reopen this file, or reload, to retry.", "meta"),
+                    ]
+                )
+                return lines
+            self.app._change_diff_loading = (scope, key)
+            self.app.load_change_diff()
+            return [
+                ChangeLine(safe_text(file.get("file") or "(unknown file)"), "heading"),
+                ChangeLine("Loading selected recorded patch...", "heading"),
+            ]
+        diff = self.app.change_diff()
+        cache_key = (scope, key, id(diff), width)
+        if self._change_layout_cache is None or self._change_layout_cache[0] != cache_key:
+            self._change_layout_cache = (
+                cache_key,
+                diff_layout(file, self.app._change_edit_cursor, diff, width),
+            )
+        return self._change_layout_cache[1]
+
     def draw_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
         workflow = self.current_session()
         title = (
@@ -3063,6 +3147,8 @@ class Renderer:
         elif current == "Tools":
             # Budget the treemap's largest chrome form so the first exact row stays visible.
             lines = self.detail_tools(workflow, w - 4, max(0, visible - 12))
+        elif current == "Changes":
+            lines = self.detail_changes(workflow, w - 4)
         elif current == "Context":
             lines = self.detail_context(workflow, w - 4)
         else:
@@ -3083,11 +3169,26 @@ class Renderer:
         if current == "Tools" and self.app._tool_follow:
             self._scroll_line_into_view(self._tool_cursor_line, visible)
             self.app._tool_follow = False
+        if current == "Changes" and not self.app._change_drill and self.app._change_follow:
+            self._scroll_line_into_view(self._change_cursor_line, visible)
+            self.app._change_follow = False
         if current == "Subagents" and not turns and self.app._subagent_follow:
             self._scroll_line_into_view(self._subagent_cursor_line, visible)
             self.app._subagent_follow = False
-        loading_content = (tracing and self.app._trace_loading is not None) or (
-            current == "Subagents" and not turns and self.app._subagent_prompt_loading is not None
+        loading_content = (
+            (tracing and self.app._trace_loading is not None)
+            or (
+                current == "Subagents"
+                and not turns
+                and self.app._subagent_prompt_loading is not None
+            )
+            or (
+                current == "Changes"
+                and (
+                    self.app._changes_loading is not None
+                    or self.app._change_diff_loading is not None
+                )
+            )
         )
         # A temporary prompt placeholder must not clamp the restored detail scroll.
         if not loading_content:
@@ -3107,6 +3208,11 @@ class Renderer:
                     and self.scroll + offset == self._subagent_cursor_line
                 )
                 or (current == "Tools" and self.scroll + offset == self._tool_cursor_line)
+                or (
+                    current == "Changes"
+                    and not self.app._change_drill
+                    and self.scroll + offset == self._change_cursor_line
+                )
             ):
                 # Select by line index, not a display glyph. paint_cursor_row preserves
                 # gutters and prevents rich number colors from shredding the highlight.
@@ -3148,6 +3254,14 @@ class Renderer:
                         "trace-output", y + 3 + offset, x + 2, x + w - 3, event, 1
                     )
                 continue
+            if isinstance(line, ChangeLine):
+                # Source paths and patches are inert text: no money/token/heading parser.
+                self.write(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
+                if line.gutter:
+                    self.write(
+                        stdscr, y + 3 + offset, x + 2, line[: line.gutter], curses.color_pair(1)
+                    )
+                continue
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
             self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
             if current == "Tools":
@@ -3164,6 +3278,8 @@ class Renderer:
         if current == "Tools":
             kind = "toolcallline" if self.app.active_tool_drill is not None else "toolline"
             self._add_rows_region(kind, y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
+        if current == "Changes" and not self.app._change_drill:
+            self._add_rows_region("changeline", y + 3, x + 2, x + w - 3, self.scroll, len(drawn))
         if not loading_content:
             self._paint_scrollbar(
                 stdscr, y + 3, x + w - 1, len(lines) - body_start, visible, self.scroll

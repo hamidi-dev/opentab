@@ -85,6 +85,7 @@ The optional session interface extends this without making the UI format-aware:
 | Received subagent prompt | `node_prompt(root_id, node_id)` | Optional method; `None` when unavailable |
 | Execution turns | `node_timeline(root_id, node_id)` | Optional method; `None` unavailable, `[]` valid empty |
 | Execution turn content | `node_turn_content(root_id, node_id, content_key=None)` | Optional method; owned previews or keyed full content |
+| Recorded file changes | `session_change_files(id)`, `session_change_diff(id, key)` | Optional local OpenCode TUI contract; [semantics and controls](keys.md#session-changes) |
 
 The node readers resolve exact root/node IDs within the owning leaf store, never
 by agent name or sibling matches; ambiguous ownership fails closed. Execution

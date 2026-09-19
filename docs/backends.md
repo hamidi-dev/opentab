@@ -107,6 +107,25 @@ fold descendants into root workflows and expose their own usage as nodes.
   separately in `part`; grouped scans join them by message id. A per-row correlated
   lookup is particularly costly on the corpus-wide timeline export.
 - The database is read-only; message/part table availability gates session extras.
+- Changes reads completed tool metadata (`apply_patch.files`, `edit.filediff`,
+  `write.filepath`) and user-message `summary.diffs` for the exact root execution
+  tree. Both sources remain readable when execution/prompt/path match: snapshots
+  can include shell edits beyond the tool patch. Matching records (including move
+  source paths) make file-level line totals unknown rather than double-counted;
+  each record's counts remain intact. Paths resolve lexically against each
+  execution and display relative to the root, keeping child worktrees distinct.
+  Tool/parent/session joins must agree. Current
+  schemas bind keys to the selected part/message revisions; older schemas use a
+  database/WAL fingerprint. Writes without retained text expose no invented diff.
+  Queries anchor message/part reads to the execution tree using existing session
+  indexes. Patch keys carry an untrusted row locator, revalidated against ownership
+  and revisions, so opening a patch does not rebuild the entire change list.
+  Native `patch` wins; legacy `before`/`after` snapshots are diffed locally. List reads project metadata
+  only (2,000 occurrences / 1 MiB); selected patches have a 1 MiB output cap, with
+  legacy inputs limited to 256 KiB / 2,000 lines per side before diff generation.
+  OpenCode's [summary implementation](https://github.com/anomalyco/opencode/blob/ae93d4afb3e414a541f520e062be924573b126e1/packages/opencode/src/session/summary.ts)
+  defines the per-prompt snapshot boundary. See
+  [Changes controls and semantics](keys.md#session-changes).
 - OpenCode can persist OpenAI cache writes, but some ChatGPT OAuth responses omit the
   `cache_write_tokens` detail. Those tokens then remain in OpenCode's uncached-input
   bucket and `tokens.cache.write` is zero. OpenTab cannot reconstruct the split from

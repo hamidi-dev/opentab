@@ -27,7 +27,8 @@ sessions that used it, with the cost and tokens *it* accounts for) — see
 that records per-step usage), **Tools** (per-tool / MCP spend) and **Context** (the
 context window's growth curve, % of the model's window, compaction markers, and —
 on harnesses whose logs carry content — an estimated breakdown of what filled it)
-when its harness supports them, and **Harnesses** joins in the merged `all` view.
+when its harness supports them. Local OpenCode sessions also add **Changes** after
+Tools, and **Harnesses** joins in the merged `all` view.
 The Context tab also overlays how the session evolved: what it spent (with a
 per-turn and per-hour burn rate), its wall-clock span with clock times pinned to
 the chart's edges, and the clock time — and how far into the session — of each
@@ -135,6 +136,50 @@ folded: a compaction is a session-level event, not a turn. The Context tab chart
 the same events (one rule, both tabs) — and where that tab doesn't apply, because
 the harness records cumulative-total deltas rather than per-request prompts
 (Codex), neither tab marks anything.
+
+### Session changes
+
+On **Changes**, the file list groups OpenCode's recorded edits across the root
+and subagents by path. Completed `apply_patch`, `edit`, and `write`
+metadata and per-prompt snapshots are both retained: a snapshot can also contain
+shell or formatter changes missing from the tool patch. `j`/`k` and `g`/`G` select files,
+`Enter` opens a colored unified diff,
+`[`/`]` step through that file's recorded occurrences, and `Esc` returns to the
+list. Movement and page keys scroll the diff; old/new line numbers flank the patch
+and long lines wrap without losing indentation. **Diff** says `yes`, `some`, or
+`no` for retained text availability.
+
+Each occurrence identifies its evidence source; moves also show the old path.
+Completed writes can name a changed file without retaining a diff. **Records** counts
+evidence entries, not unique edits. Line counts sum records, not net changes; file
+totals show `?` when snapshot and tool records overlap for the same execution,
+prompt and path. Each record keeps its own counts. Snapshots may overlap across subagents
+or include concurrent non-agent edits; reverted history remains recorded. OpenTab
+never uses today's Git diff or guesses from shell commands, and formatter/shell
+changes may be missing. No metadata does not prove no edits happened. Large
+histories and patches are bounded, with omissions labeled.
+
+Files and selected patches load in the background, so you can navigate away while
+they load. Loaded file lists and patches remain in memory across tabs and sessions
+until you quit, reload (`r`), change the harness, or enter demo. Revisiting does not
+read them again; reload explicitly to pick up new edits. This is an in-memory
+cache, not a disk history archive. Changes is local OpenCode TUI-only and disabled
+in demo; source contents are not added to web, fleet, CSV, CLI, or MCP output.
+
+#### External diff viewer
+
+The built-in viewer needs no extra program. To use your own pager, set
+`OPENTAB_DIFF_PAGER` before starting OpenTab, then press `d` inside a loaded diff:
+
+```sh
+export OPENTAB_DIFF_PAGER='delta --paging=always --line-numbers'
+# Or: export OPENTAB_DIFF_PAGER='less -R'
+```
+
+The command receives the recorded unified patch on stdin, not paths to live files.
+Quit the pager to return to OpenTab. Quoted arguments work; shell pipelines and
+expansions do not. Truncated patches are not sent to external viewers. The command
+is user-trusted and runs locally; OpenTab does not install or auto-select a pager.
 
 ## Scope & filter
 

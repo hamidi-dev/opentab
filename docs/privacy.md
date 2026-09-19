@@ -118,6 +118,9 @@ Only for the action you request:
   Session launch/copy and directory opening are disabled in demo mode.
 - `K` opens `keymap.conf` using `$VISUAL` or `$EDITOR`, falling back to `vi`, and
   reloads bindings on return. This is a configuration edit, not a session launch.
+- `d` in Changes invokes the user-configured `OPENTAB_DIFF_PAGER`, passing the
+  selected recorded patch over stdin. OpenTab creates no patch file; the chosen
+  program is trusted, not sandboxed, and may retain or forward that content.
 - SSH pulls run the saved remote export command, including a custom `cmd` if set.
 - SSH trace reads run the remote OpenTab CLI using the saved `trace_cmd` argv
   prefix, the export `cmd` with its export tail stripped, or `opentab` when neither
@@ -161,6 +164,15 @@ Opening TUI search authorizes local user/assistant text reads without a raw-cont
 flag. Index writes require separate confirmation and ignore date filters. Search
 has no network fallback and excludes demo/remote catalogs. Its text stays out of
 rollup caches, web/fleet payloads and ordinary exports. CLI/MCP gates are unchanged.
+
+The local OpenCode **Changes** tab reads retained paths and requested patches in
+the background. Its in-memory cache survives tab and session
+navigation until exit, reload, harness changes, or demo; memory use grows with the
+records visited. Nothing is added to disk caches. Demo clears that cache and
+disables the tab before new path or source-content reads. This TUI-only view does
+not add source contents to web, fleet, CSV, CLI or MCP output, and does not change
+their existing raw-content gates; see
+[Changes controls and semantics](keys.md#session-changes).
 
 Remote reads fetch only the requested turn, after checking its snapshot identity
 against the live timeline; there is no ordinal fallback. The TUI retains one remote

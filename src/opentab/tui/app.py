@@ -75,7 +75,7 @@ from opentab.presentation.heatmap import (
 )
 from opentab.presentation.whats_new import RELEASES_URL, load_release_history, should_announce
 from opentab.sources import RESUME_COMMANDS, SOURCE_LABELS
-from opentab.tui import bindings, exporting, keymap
+from opentab.tui import bindings, diff_pager, exporting, keymap
 from opentab.tui.renderer import Renderer
 from opentab.tui.search_workspace import SearchWorkspace
 from opentab.util import (
@@ -370,6 +370,24 @@ class App:
         self._trace_by_session: dict[str, dict] = {}
         self._context_by_session: dict[str, list[dict]] = {}
         self._nodes_by_session: dict[str, list[dict]] = {}
+        # Changes is raw session metadata and stays outside ordinary session prefetch.
+        # Its worker and unbounded in-memory result cache live for this App process.
+        self._changes_worker = None
+        self._changes_cache: dict[tuple, dict] = {}
+        self._change_diff_cache: dict[tuple[tuple, str], dict | None] = {}
+        self._changes_errors: dict[tuple, str] = {}
+        self._change_diff_errors: dict[tuple[tuple, str], str] = {}
+        self._change_pending: set[tuple] = set()
+        self._changes_scope: tuple | None = None
+        self._changes_loading: tuple | None = None
+        self._changes_error = ""
+        self._change_file_cursor = 0
+        self._change_follow = False
+        self._change_drill = False
+        self._change_edit_cursor = 0
+        self._change_list_scroll = 0
+        self._change_diff_loading: tuple[tuple, str] | None = None
+        self._change_diff_error = ""
         # Session extras load after a placeholder frame, never during drawing.
         self._session_loading: str | None = None
         self.custom_since = args.since
@@ -2043,6 +2061,309 @@ class App:
             owner = child
         return owner
 
+    def _change_scope(self) -> tuple | None:
+        """Return a store-qualified identity; duplicate workflow identities fail closed."""
+        if self.store.demo or self.view != "session":
+            return None
+        wf = self.current_session()
+        if wf is None:
+            return None
+        identity = (wf.id, wf.source, wf.machine)
+        if sum((w.id, w.source, w.machine) == identity for w in self.loaded) != 1:
+            return None
+        return (id(self.store), *identity)
+
+    def session_supports_changes(self, workflow_id: str) -> bool:
+        # Demo is checked before owner resolution or any backend capability call.
+        scope = self._change_scope()
+        wf = self.current_session()
+        if scope is None or wf is None or wf.id != workflow_id:
+            return False
+        check = getattr(self.trace_owner(workflow_id), "supports_changes", None)
+        try:
+            return bool(check(workflow_id)) if check else False
+        except Exception:  # noqa: BLE001 -- capability failures must not crash the TUI
+            return False
+
+    def _clear_changes(self) -> None:
+        """Reset the active Changes drill without invalidating lifetime read caches."""
+        scope = self._changes_scope
+        if scope is not None:
+            self._changes_errors.pop(scope, None)
+            for cache_key in [key for key in self._change_diff_errors if key[0] == scope]:
+                self._change_diff_errors.pop(cache_key, None)
+        self._changes_scope = None
+        self._changes_loading = None
+        self._changes_error = ""
+        self._change_file_cursor = 0
+        self._change_follow = False
+        self._change_drill = False
+        self._change_edit_cursor = 0
+        self._change_list_scroll = 0
+        self._change_diff_loading = None
+        self._change_diff_error = ""
+        self.renderer._change_layout_cache = None
+        self.renderer._change_row_at = {}
+        self.renderer._change_cursor_line = None
+
+    def _invalidate_changes(self, *, close: bool = False) -> None:
+        """Cancel source reads and discard every raw result from the current generation."""
+        worker = self._changes_worker
+        if worker is not None:
+            if close:
+                worker.close()
+                self._changes_worker = None
+            else:
+                worker.cancel_all()
+        self._changes_cache.clear()
+        self._change_diff_cache.clear()
+        self._changes_errors.clear()
+        self._change_diff_errors.clear()
+        self._change_pending.clear()
+        self._clear_changes()
+
+    def settle_changes(self) -> None:
+        if self._changes_scope is not None and (
+            self._changes_scope != self._change_scope() or self.active_tab_name() != "Changes"
+        ):
+            self._clear_changes()
+            self.scroll = 0
+
+    def changes_data(self) -> dict | None:
+        scope = self._change_scope()
+        if scope is None:
+            return None
+        return self._changes_cache.get(scope)
+
+    def changes_error(self) -> str:
+        scope = self._change_scope()
+        return self._changes_errors.get(scope, "") if scope is not None else ""
+
+    def _changes_request(self, scope: tuple, key: str | None = None):
+        if self.store.demo or scope != self._change_scope():
+            return None
+        wf = self.current_session()
+        if wf is None:
+            return None
+        factory = getattr(self.trace_owner(wf.id), "change_request", None)
+        try:
+            return factory(wf.id, key) if factory else None
+        except Exception:  # noqa: BLE001 -- request construction cannot expose source details
+            return None
+
+    def _queue_change_read(self, scope: tuple, key: str | None = None) -> None:
+        cache_key = ("diff", scope, key) if key is not None else ("files", scope)
+        result_key = (scope, key) if key is not None else scope
+        cache = self._change_diff_cache if key is not None else self._changes_cache
+        errors = self._change_diff_errors if key is not None else self._changes_errors
+        if result_key in cache or result_key in errors or cache_key in self._change_pending:
+            return
+        request = self._changes_request(scope, key)
+        if request is None:
+            errors[result_key] = (
+                "Could not read the selected recorded patch."
+                if key is not None
+                else "Could not read recorded change summaries."
+            )
+            return
+        if self._changes_worker is None:
+            from opentab.tui.changes_worker import ChangesWorker
+
+            self._changes_worker = ChangesWorker()
+        if self._changes_worker.submit(cache_key, request):
+            self._change_pending.add(cache_key)
+        else:
+            errors[result_key] = (
+                "Could not queue the selected recorded patch."
+                if key is not None
+                else "Could not queue recorded change summaries."
+            )
+
+    def load_changes(self) -> None:
+        scope = self._change_scope()
+        if scope is not None and self.active_tab_name() == "Changes":
+            self._changes_loading = scope
+            self._queue_change_read(scope)
+
+    def poll_changes(self) -> None:
+        worker = self._changes_worker
+        if worker is None:
+            return
+        for cache_key, value, failed in worker.poll():
+            self._change_pending.discard(cache_key)
+            kind, scope, *rest = cache_key
+            if self.store.demo or scope[0] != id(self.store):
+                continue
+            if kind == "files":
+                self._changes_loading = (
+                    None if self._changes_loading == scope else self._changes_loading
+                )
+                if failed or not isinstance(value, dict):
+                    message = "Could not read recorded change summaries."
+                    self._changes_errors[scope] = message
+                    self.notify(message, "error")
+                else:
+                    self._changes_cache[scope] = value
+                    self._changes_errors.pop(scope, None)
+            else:
+                key = rest[0]
+                result_key = (scope, key)
+                pending = (scope, key)
+                self._change_diff_loading = (
+                    None if self._change_diff_loading == pending else self._change_diff_loading
+                )
+                if failed or (value is not None and not isinstance(value, dict)):
+                    message = "Could not read the selected recorded patch."
+                    self._change_diff_errors[result_key] = message
+                    self.notify(message, "error")
+                else:
+                    self._change_diff_cache[result_key] = value
+                    self._change_diff_errors.pop(result_key, None)
+                self.renderer._change_layout_cache = None
+
+    def selected_change_file(self) -> dict | None:
+        data = self.changes_data() or {}
+        files = data.get("files")
+        if not isinstance(files, list) or not files:
+            return None
+        self._change_file_cursor = max(0, min(self._change_file_cursor, len(files) - 1))
+        item = files[self._change_file_cursor]
+        return item if isinstance(item, dict) else None
+
+    def selected_change_edit(self) -> dict | None:
+        file = self.selected_change_file() or {}
+        edits = file.get("edits")
+        if not isinstance(edits, list) or not edits:
+            return None
+        self._change_edit_cursor = max(0, min(self._change_edit_cursor, len(edits) - 1))
+        edit = edits[self._change_edit_cursor]
+        return edit if isinstance(edit, dict) else None
+
+    def change_diff(self) -> dict | None:
+        scope = self._change_scope()
+        edit = self.selected_change_edit()
+        key = edit.get("key") if edit else None
+        return self._change_diff_cache.get((scope, key)) if scope and isinstance(key, str) else None
+
+    def change_diff_ready(self) -> bool:
+        scope = self._change_scope()
+        edit = self.selected_change_edit()
+        key = edit.get("key") if edit else None
+        return bool(
+            scope is not None and isinstance(key, str) and (scope, key) in self._change_diff_cache
+        )
+
+    def change_diff_error(self) -> str:
+        scope = self._change_scope()
+        edit = self.selected_change_edit()
+        key = edit.get("key") if edit else None
+        if scope is None or not isinstance(key, str):
+            return ""
+        return self._change_diff_errors.get((scope, key), "")
+
+    def load_change_diff(self) -> None:
+        pending = self._change_diff_loading
+        if pending is not None:
+            scope, key = pending
+            if scope == self._change_scope() and self._change_drill:
+                self._queue_change_read(scope, key)
+
+    def open_change_diff_pager(self, stdscr: curses.window | None) -> None:
+        """Hand the already-loaded current occurrence to the configured pager."""
+        try:
+            argv = diff_pager.configured_argv()
+        except diff_pager.PagerConfigError:
+            self.notify("diff pager: OPENTAB_DIFF_PAGER is empty or malformed", "error")
+            return
+        if argv is None:
+            self.notify("diff pager: set OPENTAB_DIFF_PAGER (for example, delta --paging=always)")
+            return
+        if (
+            self.store.demo
+            or self.active_tab_name() != "Changes"
+            or not self._change_drill
+            or self._change_scope() is None
+            or not self.change_diff_ready()
+        ):
+            self.notify("diff pager: no loaded recorded patch is selected", "warn")
+            return
+        file = self.selected_change_file()
+        edit = self.selected_change_edit()
+        diff = self.change_diff()
+        if file is None or edit is None or not edit.get("available") or not isinstance(diff, dict):
+            self.notify("diff pager: selected recorded patch is unavailable", "warn")
+            return
+        if diff.get("truncated"):
+            self.notify("diff pager: refusing to show a truncated recorded patch", "warn")
+            return
+        patch = diff_pager.prepare_patch(file, edit, diff)
+        if not patch:
+            self.notify("diff pager: selected recorded patch is empty", "warn")
+            return
+        mask = (
+            curses.BUTTON1_CLICKED
+            | curses.BUTTON1_DOUBLE_CLICKED
+            | curses.BUTTON4_PRESSED
+            | getattr(self, "_wheel_down", 0)
+        )
+        outcome, code = diff_pager.run(argv, patch, stdscr, mask)
+        if outcome == "nonzero":
+            self.notify(f"diff pager exited with status {code}", "warn")
+        elif outcome == "spawn-failed":
+            self.notify("diff pager could not be started", "error")
+        elif outcome == "interrupted":
+            self.notify("diff pager interrupted", "info")
+        elif outcome == "unavailable":
+            self.notify("diff pager needs an interactive terminal", "warn")
+
+    def open_change_file(self) -> bool:
+        if (
+            self.active_tab_name() != "Changes"
+            or self._change_drill
+            or self.selected_change_file() is None
+        ):
+            return False
+        self._change_drill = True
+        self._change_edit_cursor = 0
+        self._change_list_scroll = self.scroll
+        self.scroll = 0
+        self._change_diff_error = ""
+        self.renderer._change_layout_cache = None
+        return True
+
+    def close_change_file(self) -> bool:
+        if self.active_tab_name() != "Changes" or not self._change_drill:
+            return False
+        scope = self._change_scope()
+        edit = self.selected_change_edit()
+        key = edit.get("key") if edit else None
+        if scope is not None and isinstance(key, str):
+            self._change_diff_errors.pop((scope, key), None)
+        self._change_drill = False
+        self._change_diff_loading = None
+        self._change_diff_error = ""
+        self.renderer._change_layout_cache = None
+        self.scroll = self._change_list_scroll
+        self._change_follow = True
+        return True
+
+    def step_change_edit(self, delta: int) -> bool:
+        if self.active_tab_name() != "Changes" or not self._change_drill:
+            return False
+        file = self.selected_change_file() or {}
+        edits = file.get("edits")
+        if not isinstance(edits, list) or not edits:
+            return False
+        current = max(0, min(self._change_edit_cursor, len(edits) - 1))
+        target = max(0, min(current + delta, len(edits) - 1))
+        if target != current:
+            self._change_edit_cursor = target
+            self._change_diff_loading = None
+            self._change_diff_error = ""
+            self.renderer._change_layout_cache = None
+            self.scroll = 0
+        return True
+
     def remote_trace_reader(self, workflow_id: str):
         if self.active_subagent_turns:
             return None
@@ -3429,6 +3750,7 @@ class App:
 
     def reload(self) -> None:
         self._close_conversation_search()
+        self._invalidate_changes()
         anchor = self.selection_anchor()
         subagent = None
         wf = self.current_session() if self._on_subagents_tab() else None
@@ -3797,6 +4119,7 @@ class App:
 
     def _reload_for_source(self, restore: dict | None = None) -> None:
         self._close_conversation_search()
+        self._invalidate_changes()
         self._clear_subagent_prompt()
         self._clear_trace_expansion()
         self.loaded = self.store.workflows()
@@ -5351,6 +5674,7 @@ class App:
     def set_browse_mode(self, mode: str) -> None:
         if mode == self.browse_mode:
             return
+        self._clear_changes()
         self._tools_return = None
         # Remember where we were in the mode we're leaving (session, tab, drills and all),
         # then restore the target mode's remembered spot if we've been there -- otherwise
@@ -5519,6 +5843,7 @@ class App:
 
     def drill_out(self) -> None:
         if self.view == "session":
+            self._clear_changes()
             self._tools_return = None
             self._clear_trace_expansion()
             self.view = "zoom"
@@ -5636,6 +5961,16 @@ class App:
     def move(self, delta: int) -> None:
         if self.view == "session":
             with self.session_selection():
+                if self.active_tab_name() == "Changes" and not self._change_drill:
+                    data = self.changes_data() or {}
+                    files = data.get("files")
+                    if isinstance(files, list) and files:
+                        current = max(0, min(self._change_file_cursor, len(files) - 1))
+                        target = max(0, min(current + delta, len(files) - 1))
+                        if target != current:
+                            self._change_file_cursor = target
+                            self._change_follow = True
+                            return
                 if self.active_tab_name() == "Tools":
                     wf = self.current_session()
                     rows = (
@@ -5846,7 +6181,14 @@ class App:
             n = len(self.zoom_machine_rows())
             if n:
                 self.machine_pick_index = max(0, min(self.machine_pick_index + delta, n - 1))
-        elif kind in ("detail", "turnline", "subagentline", "toolline", "toolcallline"):
+        elif kind in (
+            "detail",
+            "turnline",
+            "subagentline",
+            "toolline",
+            "toolcallline",
+            "changeline",
+        ):
             self.scroll = max(0, self.scroll + delta)  # scroll the detail content
         else:
             self.move(delta)  # a gap or the tab strip: the active pane, as before
@@ -5931,6 +6273,17 @@ class App:
                 attr = "_tool_call_cursor" if self.active_tool_drill else "_tool_cursor"
                 setattr(self, attr, len(rows) - 1 if to_end else 0)
                 self._tool_follow = True
+                return
+        if (
+            self.view == "session"
+            and self.active_tab_name() == "Changes"
+            and not self._change_drill
+        ):
+            data = self.changes_data() or {}
+            files = data.get("files")
+            if isinstance(files, list) and files:
+                self._change_file_cursor = len(files) - 1 if to_end else 0
+                self._change_follow = True
                 return
         if self._on_subagents_tab() and self.active_subagent_drill is None:
             wf = self.current_session()
@@ -6166,7 +6519,11 @@ class App:
         # Poll for worker completion and toast expiry without requiring a keystroke.
         if self.conversation_search is not None and self.conversation_search.active:
             return 50
-        return self.TOAST_POLL_MS if self.toasts or self._remote_trace_job is not None else -1
+        return (
+            self.TOAST_POLL_MS
+            if self.toasts or self._remote_trace_job is not None or self._change_pending
+            else -1
+        )
 
     @staticmethod
     def _conversation_harness(workflow: Workflow, store) -> str:
@@ -6246,6 +6603,7 @@ class App:
             self._run(stdscr)
         finally:
             self._close_conversation_search()
+            self._invalidate_changes(close=True)
             pending = self._remote_trace_job
             self._clear_trace_expansion()
             if pending is not None:
@@ -6298,6 +6656,7 @@ class App:
         while True:
             self.poll_remote_trace()
             self.poll_conversation_search()
+            self.poll_changes()
             self.active_toasts()  # expire toasts before painting
             self.renderer.draw(stdscr)
             self._mark_toasts_shown()
@@ -7337,6 +7696,9 @@ class App:
         if act == "edit_keymap":
             self.edit_keymap(stdscr)  # $EDITOR on keymap.conf, reloaded on return
             return True
+        if act == "diff_pager":
+            self.open_change_diff_pager(stdscr)
+            return True
         if act == "maximize":
             # In browse, + drills in like Enter (its old alias); once the detail is
             # the active pane it becomes lazygit's screen-mode key: toggle between
@@ -7447,6 +7809,9 @@ class App:
             if self._on_turns_tab():
                 self._toggle_turn_cursor()
                 return True
+            if self.active_tab_name() == "Changes":
+                self.open_change_file()
+                return True
             if self.active_tab_name() == "Tools":
                 if self.active_tool_drill is not None:
                     if not self.open_tool_call_reader():
@@ -7459,6 +7824,8 @@ class App:
             self.drill_in()
             return True
         if act in ("trace_prev", "trace_next"):
+            if self.step_change_edit(-1 if act == "trace_prev" else 1):
+                return True
             self.step_trace(-1 if act == "trace_prev" else 1)
             return True
         if act == "trace_expand":
@@ -7469,6 +7836,8 @@ class App:
             # before it starts popping the view stack -- but ONLY while that tab is the
             # one on screen. Left ungated, Esc on Tools or Context silently tore down an
             # invisible drill and was swallowed, so the key appeared to do nothing.
+            if self.close_change_file():
+                return True
             if self._on_turns_tab() and self.close_trace_drill():
                 return True
             if self._on_turns_tab() and self._tools_return is not None and self.return_to_tools():
@@ -7490,6 +7859,8 @@ class App:
                 self.drill_out()
             return True
         if act == "tab_prev":
+            if self.active_tab_name() == "Changes":
+                self._clear_changes()
             self._tools_return = None
             self._clear_subagent_prompt()
             self._clear_trace_expansion()
@@ -7497,6 +7868,8 @@ class App:
             self.scroll = 0
             return True
         if act == "tab_next":
+            if self.active_tab_name() == "Changes":
+                self._clear_changes()
             self._tools_return = None
             self._clear_subagent_prompt()
             self._clear_trace_expansion()
@@ -8087,11 +8460,25 @@ class App:
                 # active and j/k keeps moving it instead.
                 self.drill_in()
             if self.tab != value:
+                if self.active_tab_name() == "Changes":
+                    self._clear_changes()
                 self._tools_return = None
                 self._clear_subagent_prompt()
                 self._clear_trace_expansion()
                 self.tab = value
                 self.scroll = 0
+            return
+        if kind == "changeline":
+            ordinal = getattr(self.renderer, "_change_row_at", {}).get(value)
+            if (
+                ordinal is not None
+                and self.active_tab_name() == "Changes"
+                and not self._change_drill
+            ):
+                self._change_file_cursor = ordinal
+                self._change_follow = True
+                if drill:
+                    self.open_change_file()
             return
         if kind == "detail":
             # The browse preview's catch-all (registered after its real regions, so
@@ -8371,6 +8758,8 @@ class App:
                 tabs += ("Turns",)
             if wf is not None and self.session_supports_tools(wf.id):
                 tabs += ("Tools",)
+            if wf is not None and self.session_supports_changes(wf.id):
+                tabs += ("Changes",)
             if wf is not None and self.session_supports_context_curve(wf.id):
                 # Context rides on the turn rows (the measured growth curve; Codex
                 # opts out -- its rows are cumulative deltas, not prompt sizes);

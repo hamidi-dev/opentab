@@ -2,6 +2,7 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 from contextlib import closing, contextmanager
 from unittest.mock import patch
 
@@ -24,12 +25,16 @@ from tests._support import (
 
 
 @contextmanager
-def _conversation_db(*, legacy=False, constrained=True, revisions=False):
+def _conversation_db(*, legacy=False, constrained=True, revisions=False, directory=None):
     with tempfile.TemporaryDirectory() as tmp:
         db = os.path.join(tmp, "conversation.db")
         writer = sqlite3.connect(db)
         key = "primary key" if constrained else ""
-        writer.execute(f"create table session (id text {key}, parent_id text)")
+        writer.execute(
+            f"create table session (id text {key}, parent_id text"
+            + (", directory text" if directory is not None else "")
+            + ")"
+        )
         writer.execute(
             f"create table message (id text {key}, session_id text, data text"
             + ("" if legacy else ", time_created integer")
@@ -48,7 +53,10 @@ def _conversation_db(*, legacy=False, constrained=True, revisions=False):
                 "create index message_session_idx on message(session_id, time_created, id)"
             )
             writer.execute("create index part_session_idx on part(session_id)")
-        writer.execute("insert into session values ('root', null)")
+        if directory is None:
+            writer.execute("insert into session values ('root', null)")
+        else:
+            writer.execute("insert into session values ('root', null, ?)", [directory])
         writer.commit()
         store = ot.Store(db, type("Args", (), {"demo": False})())
         try:
@@ -68,6 +76,1283 @@ def _conversation_error(store, root="root", execution=None, code="conversation_u
         assert "PRIVATE" not in str(exc)
         return
     raise AssertionError("Expected an explicit conversation error")
+
+
+def _change_message(writer, mid, sid, created, diffs, *, role="user"):
+    writer.execute(
+        "insert into message (id, session_id, data, time_created) values (?, ?, ?, ?)",
+        (
+            mid,
+            sid,
+            json.dumps(
+                {
+                    "role": role,
+                    "time": {"created": created},
+                    "summary": {"diffs": diffs},
+                }
+            ),
+            created,
+        ),
+    )
+
+
+def _change_tool(writer, pid, mid, sid, created, tool, state, *, part_id=None):
+    writer.execute(
+        "insert into message (id, session_id, data, time_created) values (?, ?, ?, ?)",
+        (
+            mid,
+            sid,
+            json.dumps(
+                {
+                    "role": "assistant",
+                    "parentID": pid,
+                    "time": {"created": created},
+                }
+            ),
+            created,
+        ),
+    )
+    writer.execute(
+        "insert into part (id, message_id, data, session_id, time_created) values (?, ?, ?, ?, ?)",
+        (
+            part_id or "part-" + mid,
+            mid,
+            json.dumps({"type": "tool", "tool": tool, "state": state}),
+            sid,
+            created,
+        ),
+    )
+
+
+def test_opencode_changes_list_native_patches_and_aggregate_repeated_paths_in_time_order():
+    with _conversation_db() as (_, writer, store):
+        writer.executemany(
+            "insert into session values (?, ?)",
+            [("child", "root"), ("outside", None)],
+        )
+        _change_message(
+            writer,
+            "later",
+            "root",
+            30,
+            [
+                {
+                    "file": "src/a.py",
+                    "status": "modified",
+                    "additions": 3,
+                    "deletions": 1,
+                    "patch": "@@ -1 +1 @@\n-old\n+new\n",
+                }
+            ],
+        )
+        _change_message(
+            writer,
+            "child-first",
+            "child",
+            10,
+            [
+                {
+                    "file": "src/a.py",
+                    "status": "added",
+                    "additions": 2,
+                    "deletions": 0,
+                    "patch": "new file patch",
+                },
+                {
+                    "file": "src/b.py",
+                    "status": "deleted",
+                    "additions": "bad",
+                    "deletions": -1,
+                    "patch": "deleted patch",
+                },
+            ],
+        )
+        _change_message(
+            writer,
+            "outside",
+            "outside",
+            1,
+            [{"file": "PRIVATE", "status": "added", "patch": "PRIVATE"}],
+        )
+        _change_message(
+            writer,
+            "assistant",
+            "root",
+            5,
+            [{"file": "PRIVATE-assistant", "status": "added", "patch": "PRIVATE"}],
+            role="assistant",
+        )
+        writer.commit()
+
+        changes = store.session_change_files("root")
+        assert not changes["truncated"]
+        assert len(changes["limitations"]) == 3
+        assert [row["file"] for row in changes["files"]] == ["src/a.py", "src/b.py"]
+        a, b = changes["files"]
+        assert (a["status"], a["additions"], a["deletions"]) == ("mixed", 5, 1)
+        assert [edit["message_id"] for edit in a["edits"]] == ["child-first", "later"]
+        assert [edit["execution_id"] for edit in a["edits"]] == ["child", "root"]
+        assert all(edit["available"] for edit in a["edits"])
+        assert b["additions"] is None and b["deletions"] is None
+        assert changes == store.session_change_files("root")
+
+        diff = store.session_change_diff("root", a["edits"][1]["key"])
+        assert diff == {
+            "file": "src/a.py",
+            "patch": "@@ -1 +1 @@\n-old\n+new\n",
+            "truncated": False,
+            "limitation": "Native per-prompt snapshot patch; it may include concurrent or later-reverted edits.",
+        }
+
+
+def test_opencode_changes_support_legacy_snapshots_and_keep_unavailable_files():
+    with _conversation_db() as (_, writer, store):
+        _change_message(
+            writer,
+            "legacy",
+            "root",
+            1,
+            [
+                {
+                    "file": "legacy.txt",
+                    "status": "modified",
+                    "additions": 1,
+                    "deletions": 1,
+                    "before": "old\n",
+                    "after": "new\n",
+                },
+                {"file": "binary.png", "status": "modified", "patch": ""},
+                {"file": "empty.txt", "status": "modified", "before": "", "after": ""},
+                None,
+                "malformed-shape",
+                {"file": "", "patch": "PRIVATE"},
+            ],
+        )
+        writer.execute("insert into message values ('broken', 'root', 'not json', 2)")
+        writer.commit()
+
+        changes = store.session_change_files("root")
+        assert [row["file"] for row in changes["files"]] == [
+            "legacy.txt",
+            "binary.png",
+            "empty.txt",
+        ]
+        edits = {row["file"]: row["edits"][0] for row in changes["files"]}
+        assert edits["legacy.txt"]["available"]
+        assert not edits["binary.png"]["available"]
+        assert edits["empty.txt"]["available"]
+        assert store.session_change_diff("root", edits["binary.png"]["key"]) is None
+        legacy = store.session_change_diff("root", edits["legacy.txt"]["key"])
+        assert legacy["file"] == "legacy.txt" and not legacy["truncated"]
+        assert "--- a/legacy.txt" in legacy["patch"]
+        assert "-old" in legacy["patch"] and "+new" in legacy["patch"]
+        assert store.session_change_diff("root", edits["empty.txt"]["key"])["patch"] == ""
+
+
+def test_opencode_changes_enforce_root_ownership_and_reject_tampered_or_stale_keys():
+    with _conversation_db() as (_, writer, store):
+        writer.executemany(
+            "insert into session values (?, ?)",
+            [("child", "root"), ("outside", None)],
+        )
+        _change_message(
+            writer,
+            "m",
+            "child",
+            1,
+            [{"file": "owned.py", "status": "modified", "patch": "patch one"}],
+        )
+        _change_message(
+            writer,
+            "private",
+            "outside",
+            1,
+            [{"file": "PRIVATE", "status": "modified", "patch": "PRIVATE"}],
+        )
+        writer.commit()
+        edit = store.session_change_files("root")["files"][0]["edits"][0]
+        key = edit["key"]
+        assert store.session_change_files("child")["files"] == []
+        assert store.session_change_diff("outside", key) is None
+        assert (
+            store.session_change_diff("root", key[:-1] + ("0" if key[-1] != "0" else "1")) is None
+        )
+
+        writer.execute(
+            "update message set data = replace(data, 'patch one', 'patch two') where id = 'm'"
+        )
+        writer.commit()
+        assert store.session_change_diff("root", key) is None
+        fresh = store.session_change_files("root")["files"][0]["edits"][0]["key"]
+        assert fresh != key
+        assert store.session_change_diff("root", fresh)["patch"] == "patch two"
+
+        writer.execute("update session set parent_id = 'child' where id = 'root'")
+        writer.commit()
+        assert store.session_change_files("root")["files"] == []
+        assert store.session_change_diff("root", fresh) is None
+
+
+def test_opencode_changes_apply_summary_body_and_legacy_generation_bounds():
+    with _conversation_db() as (_, writer, store):
+        _change_message(
+            writer,
+            "m",
+            "root",
+            1,
+            [
+                {"file": "one", "status": "added", "patch": "abcdef"},
+                {
+                    "file": "two",
+                    "status": "modified",
+                    "before": "a\nb\nc\n",
+                    "after": "x\ny\nz\n",
+                },
+            ],
+        )
+        writer.commit()
+        with patch("opentab.stores.opencode.CHANGE_SUMMARY_LIMIT", 1):
+            limited = store.session_change_files("root")
+        assert limited["truncated"] and [row["file"] for row in limited["files"]] == ["one"]
+        assert any("occurrence limit" in text for text in limited["limitations"])
+
+        changes = store.session_change_files("root")
+        keys = {row["file"]: row["edits"][0]["key"] for row in changes["files"]}
+        with patch("opentab.stores.opencode.CHANGE_DIFF_BYTES", 4):
+            native = store.session_change_diff("root", keys["one"])
+        assert native["patch"] == "abcd" and native["truncated"]
+        with patch("opentab.stores.opencode.CHANGE_LEGACY_LINE_LIMIT", 1):
+            legacy = store.session_change_diff("root", keys["two"])
+        assert legacy["truncated"] and "source or output limits" in legacy["limitation"]
+        with patch("opentab.stores.opencode.CHANGE_SUMMARY_BYTES", 1):
+            metadata = store.session_change_files("root")
+        assert metadata["files"] == [] and metadata["truncated"]
+        assert any("metadata byte limit" in text for text in metadata["limitations"])
+
+
+def test_opencode_changes_capability_is_cheap_and_demo_never_reads():
+    with _conversation_db() as (_, writer, store):
+        _change_message(
+            writer,
+            "m",
+            "root",
+            1,
+            [{"file": "secret.py", "status": "modified", "patch": "PRIVATE" * 10000}],
+        )
+        writer.commit()
+        queries = []
+        store.conn.set_trace_callback(queries.append)
+        with patch(
+            "opentab.stores.opencode.sqlite3.connect", side_effect=AssertionError("capability read")
+        ):
+            assert store.supports_changes("root")
+            assert store.supports_changes("missing")
+        assert queries == []
+
+        changes = store.session_change_files("root")
+        assert "PRIVATE" not in json.dumps(changes)
+        edit = changes["files"][0]["edits"][0]
+        assert edit["available"]
+        store.demo = True
+        store.conn.close()
+        with patch(
+            "opentab.stores.opencode.sqlite3.connect", side_effect=AssertionError("demo read")
+        ):
+            assert not store.supports_changes("root")
+            assert store.session_change_files("root")["files"] == []
+            assert store.session_change_diff("root", edit["key"]) is None
+
+
+def test_opencode_change_request_constructs_and_closes_store_in_worker_thread():
+    from opentab.tui.changes_worker import ChangesWorker
+
+    with _conversation_db() as (_, writer, store):
+        _change_message(writer, "m", "root", 1, [{"file": "a", "patch": "patch"}])
+        writer.commit()
+        request = store.change_request("root")
+        main_thread = threading.get_ident()
+        seen = {}
+
+        class Connection:
+            def set_progress_handler(self, callback, steps):
+                seen["progress"] = (callback, steps)
+
+            def close(self):
+                seen["closed"] = threading.get_ident()
+
+        class WorkerStore:
+            def __init__(self, db, args):
+                seen["constructed"] = threading.get_ident()
+                seen["db"] = db
+                self.conn = Connection()
+
+            def session_change_files(self, root_id):
+                seen["read"] = threading.get_ident()
+                return {"files": [], "limitations": [], "truncated": False}
+
+        worker = ChangesWorker()
+        try:
+            with patch("opentab.stores.opencode.Store", WorkerStore):
+                assert worker.submit(("files", "root"), request)
+                assert worker.wait_for_result()
+                assert worker.poll()[0][2] is False
+        finally:
+            worker.close()
+        assert seen["constructed"] != main_thread
+        assert seen["constructed"] == seen["read"] == seen["closed"]
+        assert seen["db"] == store.db
+        assert seen["progress"][1] == 1000
+
+
+def test_opencode_changes_message_revision_survives_unrelated_live_activity():
+    with _conversation_db(revisions=True) as (_, writer, store):
+        _change_message(writer, "m", "root", 1, [{"file": "a", "patch": "old"}])
+        writer.execute("insert into session values ('other', null)")
+        writer.commit()
+        key = store.session_change_files("root")["files"][0]["edits"][0]["key"]
+        _change_message(writer, "unrelated", "other", 2, [{"file": "PRIVATE", "patch": "PRIVATE"}])
+        writer.commit()
+        assert store.session_change_diff("root", key)["patch"] == "old"
+        writer.execute(
+            "update message set data = replace(data, 'old', 'new'), time_updated = 2 where id = 'm'"
+        )
+        writer.commit()
+        assert store.session_change_diff("root", key) is None
+        fresh = store.session_change_files("root")["files"][0]["edits"][0]["key"]
+        assert store.session_change_diff("root", fresh)["patch"] == "new"
+
+
+def test_opencode_changes_unknown_counts_stay_unknown_and_missing_newlines_remain_distinct():
+    with _conversation_db() as (_, writer, store):
+        _change_message(
+            writer,
+            "one",
+            "root",
+            1,
+            [{"file": "a", "additions": 1, "deletions": 1, "before": "old", "after": "new"}],
+        )
+        _change_message(writer, "two", "root", 2, [{"file": "a", "additions": None, "patch": "p"}])
+        _change_message(
+            writer,
+            "three",
+            "root",
+            3,
+            [{"file": "a", "additions": 2, "deletions": 2, "patch": "p"}],
+        )
+        writer.commit()
+        file = store.session_change_files("root")["files"][0]
+        assert file["additions"] is None and file["deletions"] is None
+        diff = store.session_change_diff("root", file["edits"][0]["key"])
+        assert "-old\n\\ No newline at end of file\n+new\n" in diff["patch"]
+
+
+def test_opencode_changes_legacy_schema_skips_malformed_messages_and_ambiguous_roots():
+    with _conversation_db(legacy=True) as (_, writer, store):
+        writer.execute("insert into message values ('bad', 'root', 'not json')")
+        writer.execute(
+            "insert into message values ('good', 'root', ?)",
+            [
+                json.dumps(
+                    {"role": "user", "summary": {"diffs": [{"file": "good", "patch": "patch"}]}}
+                )
+            ],
+        )
+        writer.commit()
+        assert [f["file"] for f in store.session_change_files("root")["files"]] == ["good"]
+    with _conversation_db(constrained=False) as (_, writer, store):
+        _change_message(writer, "good", "root", 1, [{"file": "PRIVATE", "patch": "PRIVATE"}])
+        writer.execute("insert into session values ('root', null)")
+        writer.commit()
+        assert store.session_change_files("root")["files"] == []
+
+
+def test_opencode_changes_read_completed_apply_patch_parts_across_the_execution_tree():
+    with _conversation_db(revisions=True, directory="/repo") as (_, writer, store):
+        writer.execute("insert into session values ('child', 'root', '/repo')")
+        _change_message(
+            writer,
+            "root-prompt",
+            "root",
+            1,
+            [
+                {
+                    "file": "old.py",
+                    "status": "deleted",
+                    "patch": "snapshot old",
+                    "additions": 0,
+                    "deletions": 1,
+                },
+                {
+                    "file": "new.py",
+                    "status": "added",
+                    "patch": "snapshot new",
+                    "additions": 1,
+                    "deletions": 0,
+                },
+            ],
+        )
+        _change_message(writer, "child-prompt", "child", 2, [])
+        _change_tool(
+            writer,
+            "root-prompt",
+            "root-tool",
+            "root",
+            3,
+            "apply_patch",
+            {
+                "status": "completed",
+                "metadata": {
+                    "diff": "PRIVATE aggregate must not be selected",
+                    "files": [
+                        {
+                            "filePath": "/repo/src/a.py",
+                            "relativePath": "src/a.py",
+                            "type": "update",
+                            "patch": "root patch",
+                            "additions": 2,
+                            "deletions": 1,
+                        },
+                        {
+                            "filePath": "/repo/old.py",
+                            "relativePath": "new.py",
+                            "movePath": "/repo/new.py",
+                            "type": "move",
+                            "patch": "move content patch",
+                            "additions": 1,
+                            "deletions": 1,
+                        },
+                    ],
+                },
+            },
+        )
+        _change_tool(
+            writer,
+            "child-prompt",
+            "child-tool",
+            "child",
+            4,
+            "apply_patch",
+            {
+                "status": "completed",
+                "metadata": {
+                    "files": [
+                        {
+                            "filePath": "/repo/src/a.py",
+                            "relativePath": "src/a.py",
+                            "type": "update",
+                            "patch": "child patch",
+                            "additions": 3,
+                            "deletions": 0,
+                        }
+                    ]
+                },
+            },
+        )
+        writer.commit()
+
+        changes = store.session_change_files("root")
+        assert [item["file"] for item in changes["files"]] == ["old.py", "new.py", "src/a.py"]
+        old, moved, repeated = changes["files"]
+        assert (repeated["additions"], repeated["deletions"]) == (5, 1)
+        assert [edit["execution_id"] for edit in repeated["edits"]] == ["root", "child"]
+        assert [edit["source"] for edit in repeated["edits"]] == [
+            "apply_patch",
+            "apply_patch",
+        ]
+        assert moved["edits"][1]["from_file"] == "old.py"
+        assert moved["status"] == "mixed"
+        for item in (old, moved):
+            assert item["counts_overlap"]
+            assert item["additions"] is None and item["deletions"] is None
+            assert store.session_change_diff("root", item["edits"][0]["key"])["patch"].startswith(
+                "snapshot"
+            )
+        assert store.session_change_diff("root", repeated["edits"][0]["key"])["patch"] == (
+            "root patch"
+        )
+        assert store.session_change_diff("root", moved["edits"][1]["key"])["patch"] == (
+            "move content patch"
+        )
+
+
+def test_opencode_changes_keep_snapshot_shell_edits_alongside_same_prompt_tool_patch():
+    with _conversation_db(revisions=True, directory="/repo") as (_, writer, store):
+        _change_message(
+            writer,
+            "p1",
+            "root",
+            1,
+            [
+                {
+                    "file": "same.py",
+                    "status": "modified",
+                    "patch": "@@ -1 +1,2 @@\n-old\n+tool change\n+shell change\n",
+                    "additions": 2,
+                    "deletions": 1,
+                },
+                {
+                    "file": "snapshot-only.py",
+                    "status": "added",
+                    "patch": "fallback",
+                    "additions": 1,
+                    "deletions": 0,
+                },
+            ],
+        )
+        _change_message(
+            writer,
+            "p2",
+            "root",
+            2,
+            [
+                {
+                    "file": "same.py",
+                    "status": "modified",
+                    "patch": "other prompt",
+                    "additions": 1,
+                    "deletions": 1,
+                }
+            ],
+        )
+        _change_tool(
+            writer,
+            "p1",
+            "patch",
+            "root",
+            3,
+            "apply_patch",
+            {
+                "status": "completed",
+                "metadata": {
+                    "files": [
+                        {
+                            "filePath": "/repo/same.py",
+                            "relativePath": "same.py",
+                            "type": "update",
+                            "patch": "@@ -1 +1 @@\n-old\n+tool change\n",
+                            "additions": 1,
+                            "deletions": 1,
+                        }
+                    ]
+                },
+            },
+        )
+        _change_tool(
+            writer,
+            "p1",
+            "edit",
+            "root",
+            4,
+            "edit",
+            {
+                "status": "completed",
+                "metadata": {
+                    "filediff": {
+                        "file": "/repo/edit.py",
+                        "patch": "edit patch",
+                        "additions": 4,
+                        "deletions": 2,
+                    }
+                },
+            },
+        )
+        _change_tool(
+            writer,
+            "p1",
+            "write",
+            "root",
+            5,
+            "write",
+            {
+                "status": "completed",
+                "metadata": {"filepath": "/repo/write.py", "exists": False},
+                "input": {"content": "PRIVATE must not become an assumed diff"},
+            },
+        )
+        writer.commit()
+
+        changes = store.session_change_files("root")
+        files = {item["file"]: item for item in changes["files"]}
+        assert [edit["source"] for edit in files["same.py"]["edits"]] == [
+            "snapshot",
+            "snapshot",
+            "apply_patch",
+        ]
+        same = files["same.py"]
+        assert [edit["message_id"] for edit in same["edits"]] == ["p1", "p2", "p1"]
+        assert same["counts_overlap"] and same["additions"] is None and same["deletions"] is None
+        assert [(edit["additions"], edit["deletions"]) for edit in same["edits"]] == [
+            (2, 1),
+            (1, 1),
+            (1, 1),
+        ]
+        snapshot = store.session_change_diff("root", same["edits"][0]["key"])
+        tool = store.session_change_diff("root", same["edits"][2]["key"])
+        assert "+shell change" in snapshot["patch"] and "+shell change" not in tool["patch"]
+        assert "+tool change" in snapshot["patch"] and "+tool change" in tool["patch"]
+        assert any("Overlapping" in text for text in changes["limitations"])
+        assert files["snapshot-only.py"]["edits"][0]["source"] == "snapshot"
+        assert (files["snapshot-only.py"]["additions"], files["snapshot-only.py"]["deletions"]) == (
+            1,
+            0,
+        )
+        assert not files["snapshot-only.py"].get("counts_overlap")
+        assert (files["edit.py"]["additions"], files["edit.py"]["deletions"]) == (4, 2)
+        edit = files["edit.py"]["edits"][0]
+        assert (edit["source"], edit["status"], edit["additions"], edit["deletions"]) == (
+            "edit",
+            "modified",
+            4,
+            2,
+        )
+        assert store.session_change_diff("root", edit["key"])["patch"] == "edit patch"
+        write = files["write.py"]["edits"][0]
+        assert (write["source"], write["status"], write["available"]) == (
+            "write",
+            "added",
+            False,
+        )
+        assert store.session_change_diff("root", write["key"]) is None
+
+
+def test_opencode_changes_overlap_requires_the_same_execution_prompt_and_path():
+    with _conversation_db(revisions=True, directory="/repo") as (_, writer, store):
+        writer.execute("insert into session values ('child', 'root', '/repo')")
+        _change_message(
+            writer,
+            "p1",
+            "root",
+            1,
+            [{"file": "a.py", "patch": "snapshot", "additions": 2, "deletions": 1}],
+        )
+        for pid, sid, path in (
+            ("p1", "root", "b.py"),
+            ("p2", "root", "a.py"),
+            ("p3", "child", "a.py"),
+        ):
+            if pid != "p1":
+                _change_message(writer, pid, sid, 2, [])
+            _change_tool(
+                writer,
+                pid,
+                "tool-" + pid,
+                sid,
+                3,
+                "edit",
+                {
+                    "status": "completed",
+                    "metadata": {
+                        "filediff": {
+                            "file": "/repo/" + path,
+                            "patch": "tool",
+                            "additions": 3,
+                            "deletions": 1,
+                        }
+                    },
+                },
+            )
+        writer.commit()
+        changes = store.session_change_files("root")
+        a, b = changes["files"]
+        assert (a["file"], a["additions"], a["deletions"]) == ("a.py", 8, 3)
+        assert (b["file"], b["additions"], b["deletions"]) == ("b.py", 3, 1)
+        assert not any(item.get("counts_overlap") for item in changes["files"])
+        assert not any("Overlapping" in text for text in changes["limitations"])
+
+
+def test_opencode_changes_move_source_snapshot_and_path_only_write_stay_visible():
+    for tool, metadata, snapshot_path, tool_path in (
+        (
+            "apply_patch",
+            {
+                "files": [
+                    {
+                        "type": "move",
+                        "filePath": "/repo/old.py",
+                        "movePath": "/repo/new.py",
+                        "patch": "move",
+                        "additions": 1,
+                        "deletions": 1,
+                    }
+                ]
+            },
+            "old.py",
+            "new.py",
+        ),
+        ("write", {"filepath": "/repo/a.py", "exists": True}, "a.py", "a.py"),
+    ):
+        with _conversation_db(revisions=True, directory="/repo") as (_, writer, store):
+            _change_message(
+                writer,
+                "prompt",
+                "root",
+                1,
+                [
+                    {
+                        "file": snapshot_path,
+                        "before": "old\n",
+                        "after": "script result\n",
+                        "additions": 1,
+                        "deletions": 1,
+                    }
+                ],
+            )
+            _change_tool(
+                writer,
+                "prompt",
+                "tool",
+                "root",
+                2,
+                tool,
+                {"status": "completed", "metadata": metadata},
+            )
+            writer.commit()
+            files = {item["file"]: item for item in store.session_change_files("root")["files"]}
+            snapshot = files[snapshot_path]["edits"][0]
+            assert snapshot["source"] == "snapshot"
+            assert "+script result" in store.session_change_diff("root", snapshot["key"])["patch"]
+            assert files[tool_path]["edits"][-1]["source"] == tool
+            for item in files.values():
+                assert item["counts_overlap"]
+                assert item["additions"] is None and item["deletions"] is None
+
+
+def test_opencode_changes_exclude_unfinished_malformed_and_ambiguously_owned_tools():
+    with _conversation_db(constrained=False, revisions=True) as (_, writer, store):
+        _change_message(writer, "prompt", "root", 1, [])
+        for index, status in enumerate(("running", "error"), 2):
+            _change_tool(
+                writer,
+                "prompt",
+                f"unfinished-{index}",
+                "root",
+                index,
+                "write",
+                {"status": status, "metadata": {"filepath": "PRIVATE", "exists": False}},
+            )
+        _change_tool(
+            writer,
+            "prompt",
+            "malformed",
+            "root",
+            4,
+            "apply_patch",
+            {"status": "completed", "metadata": {"files": "not-an-array"}},
+        )
+        _change_tool(
+            writer,
+            "missing-prompt",
+            "orphan",
+            "root",
+            5,
+            "write",
+            {"status": "completed", "metadata": {"filepath": "PRIVATE", "exists": False}},
+        )
+        _change_tool(
+            writer,
+            "prompt",
+            "duplicate-message",
+            "root",
+            6,
+            "write",
+            {"status": "completed", "metadata": {"filepath": "PRIVATE", "exists": False}},
+        )
+        writer.execute(
+            "insert into message (id, session_id, data, time_created) values (?, ?, ?, ?)",
+            (
+                "duplicate-message",
+                "root",
+                json.dumps({"role": "assistant", "parentID": "prompt"}),
+                6,
+            ),
+        )
+        _change_tool(
+            writer,
+            "prompt",
+            "duplicate-part-message",
+            "root",
+            7,
+            "write",
+            {"status": "completed", "metadata": {"filepath": "PRIVATE", "exists": False}},
+            part_id="duplicate-part",
+        )
+        writer.execute("insert into part select * from part where id = 'duplicate-part'")
+        writer.execute("insert into session values ('outside', null)")
+        writer.execute(
+            "insert into part (id, message_id, data, session_id, time_created) values (?, ?, ?, ?, ?)",
+            (
+                "mismatch",
+                "duplicate-message",
+                json.dumps(
+                    {
+                        "type": "tool",
+                        "tool": "write",
+                        "state": {
+                            "status": "completed",
+                            "metadata": {"filepath": "PRIVATE", "exists": False},
+                        },
+                    }
+                ),
+                "outside",
+                7,
+            ),
+        )
+        writer.commit()
+        assert store.session_change_files("root")["files"] == []
+
+
+def test_opencode_changes_native_keys_track_selected_part_not_unrelated_modern_activity():
+    with _conversation_db(revisions=True, directory="/repo") as (_, writer, store):
+        writer.execute("insert into session values ('other', null, '/other')")
+        _change_message(writer, "prompt", "root", 1, [])
+        _change_tool(
+            writer,
+            "prompt",
+            "tool",
+            "root",
+            2,
+            "edit",
+            {
+                "status": "completed",
+                "metadata": {
+                    "filediff": {
+                        "file": "/repo/a.py",
+                        "patch": "before",
+                        "additions": 1,
+                        "deletions": 1,
+                    }
+                },
+            },
+        )
+        writer.commit()
+        key = store.session_change_files("root")["files"][0]["edits"][0]["key"]
+
+        _change_message(writer, "other-prompt", "other", 3, [])
+        _change_tool(
+            writer,
+            "other-prompt",
+            "other-tool",
+            "other",
+            4,
+            "write",
+            {"status": "completed", "metadata": {"filepath": "/other/x", "exists": False}},
+        )
+        writer.commit()
+        assert store.session_change_diff("root", key)["patch"] == "before"
+        writer.execute(
+            "update message set data = json_set(data, '$.summary.title', 'later title'), "
+            "time_updated = 2 where id = 'prompt'"
+        )
+        writer.commit()
+        assert store.session_change_diff("root", key)["patch"] == "before"
+
+        writer.execute(
+            "update part set data = replace(data, 'before', 'after'), time_updated = 2 where id = 'part-tool'"
+        )
+        writer.commit()
+        assert store.session_change_diff("root", key) is None
+        fresh = store.session_change_files("root")["files"][0]["edits"][0]["key"]
+        assert store.session_change_diff("root", fresh)["patch"] == "after"
+
+
+def test_opencode_changes_modern_revisions_do_not_require_a_quiet_database_fingerprint():
+    with _conversation_db(revisions=True) as (_, writer, store):
+        _change_message(writer, "prompt", "root", 1, [{"file": "a", "patch": "content"}])
+        writer.commit()
+        with patch.object(store, "_conversation_database_manifest", return_value=None):
+            result = store.session_change_files("root")
+            assert len(result["files"]) == 1
+            key = result["files"][0]["edits"][0]["key"]
+            assert store.session_change_diff("root", key)["patch"] == "content"
+    with _conversation_db() as (_, writer, store):
+        _change_message(writer, "prompt", "root", 1, [{"file": "a", "patch": "content"}])
+        writer.commit()
+        with patch.object(store, "_conversation_database_manifest", return_value=None):
+            assert store.session_change_files("root")["files"] == []
+
+
+def test_opencode_changes_apply_native_occurrence_metadata_and_output_bounds():
+    with _conversation_db(revisions=True, directory="/repo") as (_, writer, store):
+        _change_message(writer, "prompt", "root", 1, [])
+        _change_tool(
+            writer,
+            "prompt",
+            "tool",
+            "root",
+            2,
+            "apply_patch",
+            {
+                "status": "completed",
+                "metadata": {
+                    "files": [
+                        {
+                            "filePath": "/repo/one",
+                            "relativePath": "one",
+                            "type": "update",
+                            "patch": "abcdef",
+                            "additions": "malformed",
+                            "deletions": -1,
+                        },
+                        {
+                            "filePath": "/repo/two",
+                            "relativePath": "two",
+                            "type": "update",
+                            "patch": "second",
+                            "additions": 1,
+                            "deletions": 0,
+                        },
+                        {
+                            "filePath": "/repo/" + "x" * 5000,
+                            "relativePath": "x" * 5000,
+                            "type": "add",
+                            "patch": "oversized path",
+                            "additions": 1,
+                            "deletions": 0,
+                        },
+                    ]
+                },
+            },
+        )
+        writer.commit()
+
+        changes = store.session_change_files("root")
+        assert changes["truncated"]
+        assert [item["file"] for item in changes["files"]] == ["one", "two"]
+        assert changes["files"][0]["additions"] is None
+        assert changes["files"][0]["deletions"] is None
+        key = changes["files"][0]["edits"][0]["key"]
+        with patch("opentab.stores.opencode.CHANGE_DIFF_BYTES", 4):
+            diff = store.session_change_diff("root", key)
+        assert diff["patch"] == "abcd" and diff["truncated"]
+        with patch("opentab.stores.opencode.CHANGE_SUMMARY_LIMIT", 1):
+            limited = store.session_change_files("root")
+        assert limited["truncated"] and [item["file"] for item in limited["files"]] == ["one"]
+        with patch("opentab.stores.opencode.CHANGE_SUMMARY_BYTES", 1):
+            assert store.session_change_files("root")["files"] == []
+
+
+def test_opencode_changes_keep_snapshot_support_without_an_ownable_part_schema():
+    with _conversation_db(legacy=True) as (db, writer, store):
+        writer.execute(
+            "insert into message values (?, ?, ?)",
+            (
+                "prompt",
+                "root",
+                json.dumps(
+                    {
+                        "role": "user",
+                        "time": {"created": 1},
+                        "summary": {"diffs": [{"file": "legacy", "patch": "patch"}]},
+                    }
+                ),
+            ),
+        )
+        writer.commit()
+        assert store.session_change_files("root")["files"][0]["edits"][0]["source"] == "snapshot"
+        store.conn.close()
+        writer.execute("drop table part")
+        writer.commit()
+        no_parts = ot.Store(db, type("Args", (), {"demo": False})())
+        try:
+            assert no_parts.session_change_files("root")["files"][0]["file"] == "legacy"
+        finally:
+            no_parts.conn.close()
+
+
+def test_opencode_changes_keep_child_worktrees_distinct_and_use_absolute_tool_paths():
+    with _conversation_db(revisions=True, directory="/repo") as (_, writer, store):
+        for child in ("left", "right"):
+            base = f"/repo/.worktrees/{child}"
+            writer.execute("insert into session values (?, 'root', ?)", [child, base])
+            _change_message(
+                writer,
+                f"p-{child}",
+                child,
+                1,
+                [{"file": "src/a.py", "patch": "snapshot duplicate"}],
+            )
+            _change_tool(
+                writer,
+                f"p-{child}",
+                f"tool-{child}",
+                child,
+                2,
+                "apply_patch",
+                {
+                    "status": "completed",
+                    "metadata": {
+                        "files": [
+                            {
+                                "type": "update",
+                                "filePath": base + "/src/a.py",
+                                "relativePath": "src/a.py",
+                                "patch": child,
+                            }
+                        ]
+                    },
+                },
+            )
+        writer.commit()
+        files = store.session_change_files("root")["files"]
+        assert [f["file"] for f in files] == [
+            ".worktrees/left/src/a.py",
+            ".worktrees/right/src/a.py",
+        ]
+        for file, child in zip(files, ("left", "right")):
+            assert [edit["source"] for edit in file["edits"]] == ["snapshot", "apply_patch"]
+            assert file["counts_overlap"]
+            snapshot = store.session_change_diff("root", file["edits"][0]["key"])
+            assert snapshot["file"] == file["file"] and snapshot["patch"] == "snapshot duplicate"
+            diff = store.session_change_diff("root", file["edits"][1]["key"])
+            assert diff["file"] == file["file"] and diff["patch"] == child
+
+
+def test_opencode_changes_skip_malformed_files_without_losing_valid_neighbors():
+    with _conversation_db(revisions=True) as (_, writer, store):
+        _change_message(writer, "p", "root", 1, [])
+        files = [
+            None,
+            "not json",
+            123,
+            {"type": "update", "filePath": 12},
+            {"type": "update", "filePath": "good", "patch": "good patch"},
+        ]
+        _change_tool(
+            writer,
+            "p",
+            "tool",
+            "root",
+            2,
+            "apply_patch",
+            {"status": "completed", "metadata": {"files": files}},
+        )
+        _change_tool(
+            writer,
+            "p",
+            "bad-array",
+            "root",
+            3,
+            "apply_patch",
+            {"status": "completed", "metadata": {"files": {"0": files[-1]}}},
+        )
+        writer.execute(
+            "insert into part (id, message_id, session_id, data, time_created) "
+            "values ('broken', 'tool', 'root', 'not json', 3)"
+        )
+        writer.commit()
+        result = store.session_change_files("root")
+        assert [f["file"] for f in result["files"]] == ["good"]
+        assert len(result["files"][0]["edits"]) == 1
+        key = result["files"][0]["edits"][0]["key"]
+        assert store.session_change_diff("root", key)["patch"] == "good patch"
+
+
+def test_opencode_changes_use_indexed_tree_reads_and_rowid_patch_lookups():
+    with _conversation_db(revisions=True) as (db, writer, store):
+        writer.executemany(
+            "insert into session values (?, ?)",
+            [("child", "root"), ("outside", None)],
+        )
+        _change_message(writer, "snapshot", "root", 1, [{"file": "snapshot", "patch": "s"}])
+        _change_message(writer, "prompt", "child", 2, [])
+        _change_tool(
+            writer,
+            "prompt",
+            "tool",
+            "child",
+            3,
+            "apply_patch",
+            {
+                "status": "completed",
+                "metadata": {"files": [{"type": "update", "filePath": "native", "patch": "n"}]},
+            },
+        )
+        _change_message(writer, "outside", "outside", 4, [{"file": "PRIVATE", "patch": "x"}])
+        writer.commit()
+
+        connect = sqlite3.connect
+        queries = []
+
+        def traced_connect(*args, **kwargs):
+            conn = connect(*args, **kwargs)
+            conn.set_trace_callback(queries.append)
+            return conn
+
+        with patch("opentab.stores.opencode.sqlite3.connect", traced_connect):
+            files = {row["file"]: row for row in store.session_change_files("root")["files"]}
+        list_queries = list(queries)
+        snapshot_sql = next(sql for sql in list_queries if "cross join message m" in sql)
+        native_sql = next(sql for sql in list_queries if "cross join part p" in sql)
+        snapshot_plan = [row[3] for row in writer.execute("explain query plan " + snapshot_sql)]
+        native_plan = [row[3] for row in writer.execute("explain query plan " + native_sql)]
+        assert any(
+            "SEARCH m USING INDEX message_session_idx" in step for step in snapshot_plan
+        ), snapshot_plan
+        assert not any("SCAN m" in step for step in snapshot_plan), snapshot_plan
+        assert any(
+            "SEARCH p USING INDEX part_session_idx" in step for step in native_plan
+        ), native_plan
+        assert not any(
+            step == "SCAN p" or step.startswith("SCAN p ") for step in native_plan
+        ), native_plan
+
+        for name, table in (("native", "part"), ("snapshot", "message")):
+            queries.clear()
+            with patch("opentab.stores.opencode.sqlite3.connect", traced_connect):
+                assert store.session_change_diff("root", files[name]["edits"][0]["key"])["patch"]
+            if name == "native":
+                assert not any("cross join message m" in sql for sql in queries)
+            else:
+                assert not any("cross join part p" in sql for sql in queries)
+            validation_sql = next(sql for sql in queries if f"cross join {table} " in sql)
+            validation_plan = [
+                row[3] for row in writer.execute("explain query plan " + validation_sql)
+            ]
+            assert any(
+                f"SEARCH {table[0]} USING INTEGER PRIMARY KEY" in step for step in validation_plan
+            ), validation_plan
+            body_sql = next(
+                sql
+                for sql in queries
+                if f"from {table} " in sql and f"where {table[0]}.rowid =" in sql
+            )
+            plan = [row[3] for row in writer.execute("explain query plan " + body_sql)]
+            assert any(
+                f"SEARCH {table[0]} USING INTEGER PRIMARY KEY" in step for step in plan
+            ), plan
+
+
+def test_opencode_changes_locators_are_untrusted_and_invalid_numbers_skip_patch_bodies():
+    with _conversation_db(revisions=True, constrained=False) as (db, writer, store):
+        writer.execute("insert into session values ('outside', null)")
+        for sid in ("root", "outside"):
+            _change_message(writer, sid + "-prompt", sid, 1, [])
+            _change_tool(
+                writer,
+                sid + "-prompt",
+                sid + "-tool",
+                sid,
+                2,
+                "apply_patch",
+                {
+                    "status": "completed",
+                    "metadata": {"files": [{"type": "update", "filePath": sid, "patch": sid}]},
+                },
+            )
+        writer.commit()
+        key = store.session_change_files("root")["files"][0]["edits"][0]["key"]
+        outside_row = writer.execute(
+            "select rowid from part where session_id = 'outside'"
+        ).fetchone()[0]
+        _, _, rowid, index, digest = key.split(":")
+        bad_keys = [
+            f"occhg1:apply_patch:{outside_row}:{index}:{digest}",
+            f"occhg1:apply_patch:{rowid}:1:{digest}",
+            f"occhg1:edit:{rowid}:{index}:{digest}",
+            f"occhg1:apply_patch:not-a-row:{index}:{digest}",
+            f"occhg1:apply_patch:9223372036854775808:{index}:{digest}",
+            f"occhg1:apply_patch:{rowid}:9223372036854775808:{digest}",
+        ]
+        store.conn.close()
+        fresh = ot.Store(db, type("Args", (), {"demo": False})())
+        queries = []
+        connect = sqlite3.connect
+
+        def traced_connect(*args, **kwargs):
+            conn = connect(*args, **kwargs)
+            conn.set_trace_callback(queries.append)
+            return conn
+
+        try:
+            with patch("opentab.stores.opencode.sqlite3.connect", traced_connect):
+                assert fresh.session_change_diff("root", key)["patch"] == "root"
+                queries.clear()
+                assert all(fresh.session_change_diff("root", bad) is None for bad in bad_keys)
+            assert not any(
+                "from part p" in sql and "where p.rowid =" in sql and "cross join" not in sql
+                for sql in queries
+            )
+            assert not any("from message m join json_each" in sql for sql in queries)
+        finally:
+            fresh.conn.close()
+
+
+def test_opencode_changes_direct_lookup_rechecks_tree_membership_and_unique_native_rows():
+    with _conversation_db(revisions=True, constrained=False) as (db, writer, store):
+        writer.execute("insert into session values ('child', 'root')")
+        _change_message(writer, "prompt", "child", 1, [])
+        _change_tool(
+            writer,
+            "prompt",
+            "tool",
+            "child",
+            2,
+            "apply_patch",
+            {
+                "status": "completed",
+                "metadata": {"files": [{"type": "update", "filePath": "a", "patch": "p"}]},
+            },
+        )
+        writer.commit()
+        key = store.session_change_files("root")["files"][0]["edits"][0]["key"]
+        store.conn.close()
+        fresh = ot.Store(db, type("Args", (), {"demo": False})())
+        try:
+            writer.execute("update session set parent_id = null where id = 'child'")
+            writer.commit()
+            assert fresh.session_change_diff("root", key) is None
+            writer.execute("update session set parent_id = 'root' where id = 'child'")
+            writer.execute("insert into part select * from part where id = 'part-tool'")
+            writer.commit()
+            assert fresh.session_change_diff("root", key) is None
+            writer.execute("delete from part where rowid = (select max(rowid) from part)")
+            writer.execute("insert into message select * from message where id = 'tool'")
+            writer.commit()
+            assert fresh.session_change_diff("root", key) is None
+        finally:
+            fresh.conn.close()
+
+
+def test_opencode_changes_snapshot_key_survives_later_native_edit_for_same_path():
+    with _conversation_db(revisions=True) as (db, writer, store):
+        _change_message(
+            writer,
+            "prompt",
+            "root",
+            1,
+            [
+                {"file": "same", "patch": "snapshot"},
+                {"file": "fallback", "patch": "fallback"},
+            ],
+        )
+        writer.commit()
+        keys = {
+            row["file"]: row["edits"][0]["key"]
+            for row in store.session_change_files("root")["files"]
+        }
+        _change_tool(
+            writer,
+            "prompt",
+            "tool",
+            "root",
+            2,
+            "apply_patch",
+            {
+                "status": "completed",
+                "metadata": {"files": [{"type": "update", "filePath": "same", "patch": "native"}]},
+            },
+        )
+        writer.commit()
+        store.conn.close()
+        fresh = ot.Store(db, type("Args", (), {"demo": False})())
+        try:
+            assert fresh.session_change_diff("root", keys["same"])["patch"] == "snapshot"
+            assert fresh.session_change_diff("root", keys["fallback"])["patch"] == "fallback"
+            same = fresh.session_change_files("root")["files"][0]
+            assert [edit["source"] for edit in same["edits"]] == ["snapshot", "apply_patch"]
+            assert same["edits"][0]["key"] == keys["same"]
+        finally:
+            fresh.conn.close()
 
 
 def test_opencode_conversation_manifest_tracks_wal_commits_but_not_shm_reader_churn():
@@ -824,6 +2109,7 @@ def test_tools_tab_offered_only_with_part_table():
             "Subagents",
             "Turns",
             "Tools",
+            "Changes",
             "Context",
         )
     # A backend without the part table / support flag never shows the tabs.
