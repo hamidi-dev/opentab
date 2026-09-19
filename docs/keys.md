@@ -157,7 +157,7 @@ or `Tab` before using letter shortcuts.
 | `d` | UTC message dates: `YYYY-MM-DD..YYYY-MM-DD` |
 | `R` | Reset all filters; keep the query |
 | `I` | Confirm an index update; date filters do not limit indexing |
-| `[` / `]` | Previous / next reader window |
+| `[` / `]` | Read earlier / later messages or remaining text |
 | `L` | Launch/copy the owning root session via tmux, Herdr or a hook |
 | `Esc` | Back through reader, editing and prior session scope; then close |
 | `?` | Search help |

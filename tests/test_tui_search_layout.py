@@ -69,7 +69,7 @@ def test_layout_labels_child_partial_pages_and_sanitizes_controls():
             {"id": "root", "parent_id": None},
             {"id": "child\x1b[31m", "parent_id": "root"},
         ],
-        "limitations": ["retained_messages_only"],
+        "limitations": ["retained_messages_only", "malformed_jsonl_records_skipped"],
         "has_earlier": True,
         "has_more": True,
         "records": [
@@ -90,12 +90,31 @@ def test_layout_labels_child_partial_pages_and_sanitizes_controls():
     }
     layout = conversation_layout(response, 32)
     text = " ".join(line.text for line in layout.lines)
-    assert "Child execution:" in text
-    assert "Retained user/assistant" in text and "history completeness" in text
-    assert "Earlier retained records" in text and "More retained records" in text
+    assert "Subagent conversation:" in text
+    assert "Saved user and assistant" in text and "history may be incomplete" in text
+    assert "Earlier messages" in text and "remaining text" in text
+    assert "Only messages still saved by the harness are available." in text
+    assert "Unreadable entries in the conversation file were skipped." in text
     assert "continues from character 5" in text
     assert "continues after character 16 of 30" in text
     assert "\x1b" not in text and "\x00" not in text
+
+
+def test_partial_messages_explain_missing_text_without_response_jargon():
+    response = {
+        "records": [
+            {"id": "a", "parts": [{"text": "start", "truncated": True}]},
+            {"id": "b", "record_complete": False, "parts": [{"text": "middle"}]},
+        ],
+        "limitations": ["synthetic_text_excluded", "non_text_parts_excluded", "A future warning."],
+    }
+    text = " ".join(line.text for line in conversation_layout(response, 80).lines)
+    assert "Only part of this text is shown on this page." in text
+    assert "Only part of this message is shown on this page." in text
+    assert "Harness-generated context is not shown." in text
+    assert "Non-text content is not shown." in text
+    assert "A future warning." in text
+    assert "bounded response" not in text
 
 
 def test_empty_and_tiny_layouts_are_bounded_and_defaults_are_independent():

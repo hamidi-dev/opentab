@@ -175,13 +175,24 @@ def conversation_layout(response: dict | None, width: int, query: str = "") -> C
         None,
     )
     if child:
-        _meta(lines, f"Child execution: {selected} (parent: {child['parent_id']})", width)
-    _meta(lines, "Retained user/assistant text only; history completeness is unknown.", width)
+        _meta(lines, f"Subagent conversation: {selected} (parent: {child['parent_id']})", width)
+    _meta(lines, "Saved user and assistant messages only; the history may be incomplete.", width)
+    limitation_labels = {
+        "retained_messages_only": "Only messages still saved by the harness are available.",
+        "synthetic_text_excluded": "Harness-generated context is not shown.",
+        "non_text_parts_excluded": "Non-text content is not shown.",
+        "malformed_jsonl_records_skipped": "Unreadable entries in the conversation file were skipped.",
+        "overlong_tokens_omitted": "Very long words or identifiers were excluded from search.",
+    }
     for limitation in response.get("limitations") or []:
         if isinstance(limitation, str) and limitation.strip():
-            _meta(lines, "Limitation: " + limitation.replace("_", " "), width)
+            _meta(
+                lines,
+                "Note: " + limitation_labels.get(limitation, limitation.replace("_", " ")),
+                width,
+            )
     if response.get("has_earlier"):
-        _meta(lines, "Earlier retained records are not shown.", width)
+        _meta(lines, "Earlier messages are not shown on this page.", width)
     if lines and records:
         lines.append(SearchLine("", "meta"))
 
@@ -212,20 +223,20 @@ def conversation_layout(response: dict | None, width: int, query: str = "") -> C
             raw_text = part.get("text")
             text = _safe_text(raw_text)
             if offset > 0:
-                _meta(lines, f"[Part continues from character {offset + 1}.]", width)
+                _meta(lines, f"[Text continues from character {offset + 1}.]", width)
                 partial_labeled = True
             lines.extend(_text_lines(text, width, query))
             end = offset + len(raw_text if isinstance(raw_text, str) else "")
             if part.get("truncated") and total is not None and end < total:
-                _meta(lines, f"[Part continues after character {end} of {total}.]", width)
+                _meta(lines, f"[Text continues after character {end} of {total}.]", width)
                 partial_labeled = True
             elif part.get("truncated") and total is None:
-                _meta(lines, "[Part is truncated in this bounded response.]", width)
+                _meta(lines, "[Only part of this text is shown on this page.]", width)
                 partial_labeled = True
             if index + 1 < len(parts):
                 lines.append(SearchLine("", "text"))
         if record.get("record_complete") is False and not partial_labeled:
-            _meta(lines, "[Partial record from the bounded response.]", width)
+            _meta(lines, "[Only part of this message is shown on this page.]", width)
         lines.append(SearchLine("", "text"))
 
     if lines and lines[-1].text == "":
@@ -233,5 +244,5 @@ def conversation_layout(response: dict | None, width: int, query: str = "") -> C
     if response.get("has_more"):
         if lines:
             lines.append(SearchLine("", "meta"))
-        _meta(lines, "More retained records or part text are available.", width)
+        _meta(lines, "More messages or remaining text are available on the next page.", width)
     return ConversationLayout(lines, anchors)

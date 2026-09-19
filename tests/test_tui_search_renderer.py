@@ -206,11 +206,54 @@ def test_search_diagnostics_are_not_an_unqualified_no_results_claim():
         "unindexed_roots": 4,
         "stale_executions_skipped": 2,
     }
-    text = screen_text(_paint(app, width=180))
-    assert "Any-word fallback" in text
-    assert "Bounded results" in text
-    assert "4 unindexed roots" in text and "2 stale sources withheld" in text
-    assert "No verified matches" in text
+    text = screen_text(_paint(app, width=220))
+    assert "Matching any search word" in text
+    assert "Results limited: add words or filters" in text
+    assert "4 sessions not searchable yet" in text
+    assert "Changed or unavailable text skipped" in text
+    assert "No matches in searchable text" in text
+    assert "I: update the search index" in text
+    assert not any(term in text for term in ("roots", "withheld", "Bounded", "Catalog:"))
+
+
+def test_search_coverage_warning_keeps_update_action_visible_at_minimum_size():
+    app, ws = _app()
+    app.keymap = bindings.Keymap({("search", "index"): ["U"]})
+    for editing in (False, True):
+        ws.editing = editing
+        for response, warning in (
+            ({"unindexed_roots": 1}, "1 session not searchable yet"),
+            ({"stale_metadata_roots_skipped": 2}, "Changed or unavailable text skipped"),
+            ({"stale_executions_skipped": 2}, "Changed or unavailable text skipped"),
+        ):
+            ws.response = response
+            text = screen_text(_paint(app, 20, 80))
+            assert warning in text
+            assert "U: update the search index" in text
+            assert ("Tab, then" in text) == editing
+    ws.busy = "index"
+    ws.notice = "Updating the search index on disk."
+    text = screen_text(_paint(app, 20, 80))
+    assert "Updating index" in text and "U: update" not in text
+    ws.busy = ""
+    ws.reader = True
+    ws.notice = "No later saved messages."
+    text = screen_text(_paint(app, 20, 80))
+    assert ws.notice in text and "U: update" not in text
+
+
+def test_search_index_status_and_reader_help_use_user_facing_terms():
+    app, ws = _app()
+    text = screen_text(_paint(app, 20, 80))
+    assert "10 sessions indexed" in text and "Catalog:" not in text
+    ws.reader = True
+    descriptions = {
+        entry.id: entry.text(app)
+        for _title, entries in ot.keymap.sections(app)
+        for entry in entries
+    }
+    assert descriptions["search-window"] == "read earlier / later messages or remaining text"
+    assert "plaintext" in descriptions["search-index"]
 
 
 def test_search_rendering_sanitizes_untrusted_metadata_and_query():
@@ -354,7 +397,7 @@ def test_short_preview_keeps_exact_anchor_at_top_across_idle_paints():
     assert start > 0
     second = _paint(app)
     assert ws.preview_scroll == start
-    assert "Limitation:" not in screen_text(first)
+    assert "Note:" not in screen_text(first)
     assert "This needle explains" in screen_text(second)
 
 

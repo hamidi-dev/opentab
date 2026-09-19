@@ -1073,33 +1073,33 @@ class Renderer:
                 }.get(ws.busy, ws.busy)
                 + "..."
             )
-        if response.get("match_mode") == "any_term":
-            diagnostics.append("Any-word fallback")
-        if response.get("limited"):
-            diagnostics.append("Bounded results: narrow scope for more")
         gaps = response.get("unindexed_roots", 0)
         stale = response.get("stale_executions_skipped", 0) + response.get(
             "stale_metadata_roots_skipped", 0
         )
         if gaps:
-            diagnostics.append(f"{gaps} unindexed roots")
+            diagnostics.append(f"{gaps} session{'s' if gaps != 1 else ''} not searchable yet")
         if stale:
-            diagnostics.append(f"{stale} stale sources withheld")
+            diagnostics.append("Changed or unavailable text skipped")
+        if response.get("limited"):
+            diagnostics.append("Results limited: add words or filters")
+        if response.get("match_mode") == "any_term":
+            diagnostics.append("Matching any search word")
         if not diagnostics:
             index = response.get("index") or ws.status
             diagnostics.append(
-                f"{index.get('roots', 0)} indexed roots"
+                f"{index.get('roots', 0)} sessions indexed"
                 if index.get("exists")
                 else (
                     "No index yet: leave typing with Tab, then use "
                     + (self._key("search", "index") or "the index action")
                     if index
-                    else "Index coverage is checked when searching; no automatic refresh"
+                    else "Search checks for missing or changed conversations; updates are manual"
                 )
             )
         text(
             3,
-            " | ".join(diagnostics) + f"  /  Catalog: {ws.source_key or 'current harness'}",
+            " | ".join(diagnostics) + f"  /  Harness: {ws.source_key or 'current harness'}",
             muted,
         )
         top, bottom = 5, height - 3
@@ -1120,6 +1120,14 @@ class Renderer:
             text(
                 height - 3,
                 "Enter: apply / Esc: cancel. Empty project clears; dates: YYYY-MM-DD..YYYY-MM-DD",
+                muted,
+            )
+        elif (gaps or stale) and not ws.busy and not ws.reader:
+            action = self._key("search", "index") or "the index action"
+            prefix = f"{self._key('search.edit', 'focus_next')}, then " if ws.editing else ""
+            text(
+                height - 3,
+                f"{prefix}{action}: update the search index to include new or changed text.",
                 muted,
             )
         else:
@@ -1186,11 +1194,11 @@ class Renderer:
         self._add_rows_region("search-results", y, x, x + width - 1, 0, height)
         if not ws.hits:
             if ws.busy == "search" or ws._deadline is not None:
-                message = "Looking for matching passages..."
+                message = "Searching conversations..."
             elif not ws.query.strip():
                 message = "Type a few distinctive words to search."
             else:
-                message = "No verified matches. Broaden scope or update the index."
+                message = "No matches in searchable text. Try fewer words, fewer filters or an index update."
             for offset, line in enumerate(snippet_lines(message, inner, max_lines=height - 2)):
                 self._write_search_line(stdscr, y + 1 + offset, x + 3, line)
             return
@@ -1275,7 +1283,7 @@ class Renderer:
             message = (
                 "Loading matched message..."
                 if ws.busy == "conversation"
-                else "Select a passage to read its conversation."
+                else "Select a match to read its conversation."
             )
             lines = snippet_lines(message, inner, max_lines=ws.preview_height)
         else:

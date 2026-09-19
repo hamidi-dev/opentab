@@ -6180,7 +6180,7 @@ class App:
             return
         if self.source_key and self.source_key not in {"all", "opencode", "claude", "codex"}:
             self.notify(
-                "conversation search needs a local OpenCode, Claude Code, Codex or all catalog",
+                "conversation search needs local OpenCode, Claude Code or Codex sessions",
                 "error",
             )
             return

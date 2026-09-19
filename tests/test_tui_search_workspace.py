@@ -540,7 +540,10 @@ def test_reader_continuation_uses_cursor_and_stale_errors_remain_visible():
         )
     )
     ws.poll()
-    assert ws.error == "stale_cursor: source changed"
+    assert (
+        ws.error
+        == "The conversation or search scope changed. Reopen the match to continue reading."
+    )
 
 
 def test_app_binding_demo_filter_resize_and_mouse_routing():
@@ -654,7 +657,7 @@ def test_pending_preview_reader_uses_loaded_match_as_its_return_page():
     assert ws.preview == loaded and ws.preview_scroll == 0
 
 
-def test_scope_label_names_global_catalog_and_composes_every_filter():
+def test_scope_label_names_local_sessions_and_composes_every_filter():
     ws, _clock, _made = workspace(
         selected_session_key="qualified-one", selected_session_title="First"
     )
@@ -671,7 +674,7 @@ def test_scope_label_names_global_catalog_and_composes_every_filter():
         "session First / project /work/one / harness opencode / " "messages 2026-09-01..2026-09-02"
     )
     ws.scope = {}
-    assert ws.scope_label == "global catalog"
+    assert ws.scope_label == "all local sessions"
 
 
 def test_filter_options_cover_scope_and_harness_with_disabled_session():

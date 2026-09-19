@@ -112,7 +112,7 @@ class SearchWorkspace:
         since, until = self.scope.get("since"), self.scope.get("until")
         if since or until:
             parts.append(f"messages {since or '...'}..{until or '...'}")
-        return " / ".join(parts) or "global catalog"
+        return " / ".join(parts) or "all local sessions"
 
     def _make_worker(self):
         if self._worker is None:
@@ -172,6 +172,8 @@ class SearchWorkspace:
     def _error_text(error) -> str:
         if isinstance(error, dict):
             code = str(error.get("code") or "operation_failed")
+            if code == "stale_cursor":
+                return "The conversation or search scope changed. Reopen the match to continue reading."
             message = str(error.get("message") or code)
             return f"{code}: {message}" if message != code else code
         return str(error or "operation failed")
@@ -526,9 +528,7 @@ class SearchWorkspace:
             for key, value in self.scope.items()
             if key in {"project", "harness", "session", "machine"}
         }
-        self.notice = (
-            "Refreshing the persistent plaintext index; date bounds are deliberately ignored."
-        )
+        self.notice = "Updating the search index on disk. Messages from all dates are included."
         self._submit("index", **params)
 
     @staticmethod
@@ -628,7 +628,7 @@ class SearchWorkspace:
         if "conversation" in self._pending:
             return
         if not self.preview or not self.preview.get("next_cursor"):
-            self.notice = "No later retained records."
+            self.notice = "No later saved messages."
             return
         self._request_preview(
             self.selected_hit,
@@ -653,10 +653,10 @@ class SearchWorkspace:
         first_parts = records[0].get("parts") if records else []
         starts_mid_part = any(int(part.get("text_offset") or 0) > 0 for part in first_parts or [])
         if not records or (not preview.get("has_earlier") and starts_mid_part):
-            self.notice = "Earlier content is outside this bounded continuation; reopen the match."
+            self.notice = "Earlier text is not available from here. Reopen the match to read it."
             return
         if not preview.get("has_earlier"):
-            self.notice = "No earlier retained records."
+            self.notice = "No earlier saved messages."
             return
         anchor = records[0].get("id") or records[0].get("record_id")
         self._request_preview(
@@ -837,7 +837,7 @@ class SearchWorkspace:
             else:
                 self.consent = "index"
                 self.notice = (
-                    "Indexing persists sensitive plaintext locally. Date bounds do not limit what is stored; "
+                    "The index saves sensitive messages as local plaintext. Date filters do not limit what is saved; "
                     "saved project/session ignores still apply."
                 )
         elif act == "previous":
