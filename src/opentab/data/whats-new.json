@@ -1,6 +1,27 @@
 {
   "releases": [
     {
+      "version": "1.25.0",
+      "sections": [
+        {
+          "title": "New",
+          "items": [
+            {"text": "Browse usage and sessions from OpenCode v2, including databases migrated from v1."},
+            {"text": "Search past conversations directly in the terminal, filter results and read matching discussions. Indexing remains opt-in and refreshes are explicit.", "availability": "tui", "hint": {"text": "Open conversation search with Ctrl-F"}},
+            {"text": "Browse recorded file changes and open individual diffs for local OpenCode sessions.", "availability": "tui", "hint": {"text": "Session > Changes"}}
+          ]
+        },
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Explore individual tool calls and their token attribution, and inspect token breakdowns for prompts and turns.", "hint": {"text": "Session > Tools > tool > call"}},
+            {"text": "Hide your own Turns prompts with Ctrl-P while keeping real usage figures. Other content stays visible.", "availability": "tui"}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.25.0"
+    },
+    {
       "version": "1.24.0",
       "sections": [
         {
