@@ -1040,6 +1040,7 @@ class Store:
     def _change_connection(self, uri: str) -> sqlite3.Connection:
         conn = sqlite3.connect(uri, uri=True)
         conn.row_factory = sqlite3.Row
+        self._tune(conn)
         install_views(conn)
         cancelled = getattr(self, "_change_cancelled", None)
         if cancelled is not None:
@@ -1163,8 +1164,9 @@ class Store:
         diff = "case when d.type = 'object' then d.value else '{}' end"
         cap = CHANGE_METADATA_BYTES + 1
         snapshot_filter = "and m.rowid = ? and d.key = ?" if locator else ""
-        # CROSS JOIN keeps the small execution tree outside indexed record reads.
-        # Otherwise SQLite may scan all message/part JSON before testing membership.
+        # CROSS JOIN keeps the tree outside v1 indexed reads. The explicit IN
+        # filters also push through mixed v1/v2 UNION views; join keys alone can
+        # materialize the entire corpus, including in uniqueness subqueries.
         snapshot_sql = f"""
         {tree}
         select
@@ -1214,6 +1216,7 @@ class Store:
         join session s on s.id = m.session_id
         join json_each({safe}, '$.summary.diffs') d
         where json_extract({safe}, '$.role') = 'user'
+          and m.session_id in (select id from tree)
           and json_type({safe}, '$.summary.diffs') = 'array'
           and d.type = 'object'
           and json_type({diff}, '$.file') = 'text'
@@ -1242,6 +1245,32 @@ class Store:
             prompt_id = f"json_extract({msafe}, '$.parentID')"
             if self.has_v2:
                 prompt_id = f"coalesce(tm.parent_id, {prompt_id})"
+            materialized = "materialized" if sqlite3.sqlite_version_info >= (3, 35, 0) else ""
+            part_source = "part"
+            candidate_cte = ""
+            message_filter = ""
+            duplicate_part_filter = ""
+            if self.has_v2 and locator:
+                # A keyed read needs only its candidate's tool/prompt messages.
+                # Session filters alone still normalize every message in a large
+                # selected session. The locator narrows candidates, not ownership:
+                # uniqueness and the full live occurrence key remain checked below.
+                candidate_cte = f""", candidate_parts as {materialized} (
+                  select * from part
+                  where session_id in (select id from tree) and rowid = ?
+                )"""
+                part_source = "candidate_parts"
+                native_filter = ""
+                message_filter = f"""
+                  and tm.id in (select message_id from candidate_parts)
+                  and pm.id in (
+                    select {prompt_id} from message tm
+                    where tm.session_id in (select id from tree)
+                      and tm.id in (select message_id from candidate_parts)
+                  )"""
+                duplicate_part_filter = (
+                    "and x.message_id in (select message_id from candidate_parts)"
+                )
             pcreated = (
                 "p.time_created"
                 if "time_created" in self.part_columns
@@ -1260,35 +1289,48 @@ class Store:
               else coalesce(json_extract({native_diff}, '$.filePath'), json_extract({native_diff}, '$.relativePath'),
                             json_extract({native_diff}, '$.file')) end"""
             native_write_path = "coalesce(json_extract(n.data, '$.state.metadata.filepath'), json_extract(n.data, '$.state.input.path'))"
+            # Reuse validated edits across the three metadata projections. Without
+            # this hint SQLite can expand/normalize the selected session's parts
+            # again for every UNION branch. Keep unrelated tools and the unused
+            # full assistant message out of this transient relation.
             native_sql = f"""
-            {tree}, native as (
-              select p.*, p.rowid as part_row, tm.rowid as tool_message_row, tm.id as tool_message_id,
-                     tm.data as tool_message_data, pm.rowid as prompt_row,
+            {tree}{candidate_cte}, native as {materialized} (
+              select p.id, p.data, p.rowid as part_row, tm.rowid as tool_message_row, tm.id as tool_message_id,
+                     pm.rowid as prompt_row,
                      pm.id as prompt_id, pm.data as prompt_data,
                      pm.session_id as execution_id, {directory} as directory,
                      {pcreated} as part_created, {pupdated} as part_updated,
                      {tmupdated} as tool_message_updated, {prompt_created} as prompt_created,
                      {'pm.time_updated' if 'time_updated' in self.message_columns else 'null'} as prompt_updated
               from tree
-              cross join part p on p.session_id = tree.id
+              cross join {part_source} p on p.session_id = tree.id
               join message tm on tm.id = p.message_id and tm.session_id = p.session_id
               join message pm
                 on pm.id = {prompt_id}
                and pm.session_id = tm.session_id
               join session s on s.id = p.session_id
               where json_extract({psafe}, '$.type') = 'tool'
+                and json_extract({psafe}, '$.tool') in ('apply_patch', 'patch', 'edit', 'write')
+                and p.session_id in (select id from tree)
+                and tm.session_id in (select id from tree)
+                and pm.session_id in (select id from tree)
                 {native_filter}
+                {message_filter}
                 and json_extract({psafe}, '$.state.status') = 'completed'
                 and json_extract({msafe}, '$.role') = 'assistant'
                 and json_extract(case when json_valid(pm.data) then pm.data else '{{}}' end, '$.role') = 'user'
                 and (select count(*) from message x
-                     where x.id = p.message_id and x.session_id = p.session_id) = 1
+                     where x.id = p.message_id and x.session_id = p.session_id
+                       and x.session_id in (select id from tree)) = 1
                 and (select count(*) from message x
                      where x.id = {prompt_id}
-                       and x.session_id = p.session_id) = 1
+                       and x.session_id = p.session_id
+                       and x.session_id in (select id from tree)) = 1
                 and (select count(*) from part x
                      where x.id = p.id and x.message_id = p.message_id
-                       and x.session_id = p.session_id) = 1
+                       and x.session_id = p.session_id
+                       {duplicate_part_filter}
+                       and x.session_id in (select id from tree)) = 1
             ), projected as (
               select
                 case json_extract(n.data, '$.tool')

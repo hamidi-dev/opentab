@@ -52,6 +52,18 @@ prompt text is read directly from the message; legacy prompt lookups use the
 original part table to avoid a correlated scan of the combined part view. Exercise
 mixed databases with unrelated history when checking session-entry performance.
 
+Changes uses separate worker-owned connections for both file lists and keyed diffs.
+Those connections receive the same read tuning as the main store. Its snapshot
+message, native part, tool-message and prompt-message reads all need explicit
+subtree filters, including the correlated uniqueness checks. A tree-first join
+alone does not bound a UNION-view materialization. Keyed diffs still revalidate
+the selected occurrence's ownership and revision before reading its patch body;
+background execution and App memoization cannot substitute for scoped SQL.
+For v2 keyed reads, candidate parts additionally restrict the tool/prompt message
+IDs and part-uniqueness lookup, so unrelated messages inside the same session do
+not need normalization. File lists materialize validated edit tools once for the
+three metadata projections when SQLite supports the hint.
+
 For Claude, `_session()` first reuses an existing corpus parse, then its
 single-entry `_one` memo. Otherwise it reads that session's transcripts,
 including resumed copies and owned subagent sidecars, through `_parse_one()`.

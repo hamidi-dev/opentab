@@ -838,3 +838,159 @@ def test_opencode_v2_rollups_never_serialize_inline_content_and_scan_usage_once(
             store.conn.set_authorizer(None)
             store.conn.set_trace_callback(None)
         assert len(statements) == 2, statements
+
+
+def test_opencode_v2_changes_bound_fresh_list_and_diff_reads_to_the_session():
+    with _v2_db(legacy=True) as (writer, store):
+        writer.executescript(
+            """
+            create index message_session_idx on message(session_id);
+            create index part_session_idx on part(session_id);
+            create index part_message_idx on part(message_id);
+            create index session_parent_idx on session(parent_id);
+            """
+        )
+        _populate_v2(writer)
+        # Include snapshots as well as native tools, so both queries must stay
+        # scoped and both occurrence kinds still pass their live key checks.
+        writer.execute(
+            "update session_message set data=json_set(data, '$.summary', json(?)) where id='u-root'",
+            [json.dumps({"diffs": [{"file": "snapshot.py", "patch": "snapshot patch"}]})],
+        )
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("unrelated")
+        )
+        writer.execute(
+            "insert into session values ('unrelated', null, 'migrated', '/repo', null, 1, 2)"
+        )
+        writer.commit()
+
+        def measure(key=None):
+            ticks = 0
+            connect = store._change_connection
+
+            def progress():
+                nonlocal ticks
+                ticks += 1
+                return False
+
+            def instrument(uri):
+                conn = connect(uri)
+                conn.set_progress_handler(progress, 100)
+                return conn
+
+            # Changes uses a fresh connection for every request, not store.conn.
+            with patch.object(store, "_change_connection", instrument):
+                if key is None:
+                    result = store.session_change_files("root")
+                else:
+                    result = store.session_change_diff("root", key)
+            return result, ticks
+
+        summary, list_ticks = measure()
+        keys = [
+            edit["key"] for file in summary["files"] for edit in file["edits"] if edit["available"]
+        ]
+        assert len(keys) >= 5
+        patches = {key: measure(key) for key in keys}
+        assert all(result is not None for result, _ in patches.values())
+        for i in range(250):
+            tool = {
+                "type": "tool",
+                "id": "call-patch",
+                "name": "patch",
+                "state": {
+                    "status": "completed",
+                    "content": [{"type": "text", "text": "unrelated output" * 100}],
+                    "metadata": {"files": [{"file": "elsewhere.py", "patch": "unrelated patch"}]},
+                },
+            }
+            writer.execute(
+                "insert into session_message values (?,?,?,?,?,?,?)",
+                _message(f"outside-{i}", "unrelated", "assistant", i, {"content": [tool]}),
+            )
+            writer.execute(
+                "insert into message values (?,?,?)",
+                (f"old-{i}", "unrelated", json.dumps({"role": "assistant"})),
+            )
+            writer.execute(
+                "insert into part values (?,?,?,?)",
+                (f"part-{i}", f"old-{i}", "unrelated", json.dumps(tool)),
+            )
+        writer.commit()
+        after, ticks = measure()
+        assert after == summary
+        assert ticks <= list_ticks + 100, (list_ticks, ticks)
+        for key, (expected, before) in patches.items():
+            result, ticks = measure(key)
+            assert result == expected
+            assert ticks <= before + 100, (before, ticks)
+
+        # A selected patch must also avoid normalizing unrelated messages within
+        # its own execution. Later seq values cannot change its owning prompt.
+        writer.executemany(
+            "insert into session_message values (?,?,?,?,?,?,?)",
+            [
+                _message(
+                    f"later-{i}",
+                    "root",
+                    "assistant",
+                    1000 + i,
+                    {
+                        "content": [
+                            {
+                                "type": "tool",
+                                "name": "read",
+                                "state": {
+                                    "status": "completed",
+                                    "content": [
+                                        {"type": "text", "text": "large unrelated output" * 300}
+                                    ],
+                                },
+                            }
+                        ]
+                    },
+                )
+                for i in range(200)
+            ],
+        )
+        writer.commit()
+        for key, (expected, before) in patches.items():
+            result, ticks = measure(key)
+            assert result == expected
+            # Allow cheap rowid/ownership metadata work, not full normalization
+            # of the 200 unrelated inline tool-output messages.
+            assert ticks <= before + 200, (before, ticks)
+
+
+def test_opencode_v2_changes_scoping_preserves_duplicate_ownership_checks():
+    with _v2_db(legacy=True, message_pk=False) as (writer, store):
+        _populate_v2(writer)
+        key = next(
+            edit["key"]
+            for file in store.session_change_files("root")["files"]
+            for edit in file["edits"]
+            if edit["source"] == "patch"
+        )
+        original = writer.execute("select data from session_message where id='a-root'").fetchone()[
+            0
+        ]
+        writer.execute(
+            "insert into session_message values ('a-root', 'root', 'assistant', 21, 30, 40, ?)",
+            [original],
+        )
+        writer.commit()
+        assert store.session_change_diff("root", key) is None
+        writer.execute("delete from session_message where session_id='root' and seq=21")
+        writer.commit()
+        assert store.session_change_diff("root", key) is not None
+        data = json.loads(original)
+        data["content"].append(data["content"][1])  # duplicate native tool ID in the same message
+        writer.execute("update session_message set data=? where id='a-root'", [json.dumps(data)])
+        writer.commit()
+        assert store.session_change_diff("root", key) is None
+        assert not any(
+            edit["source"] == "patch"
+            for file in store.session_change_files("root")["files"]
+            for edit in file["edits"]
+        )
