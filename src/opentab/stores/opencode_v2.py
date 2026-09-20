@@ -92,6 +92,7 @@ def install_views(conn: sqlite3.Connection) -> bool:
     ):
         legacy_session = set()
         legacy_message = set()
+    _install_usage_view(conn, bool(legacy_message))
     session_columns = list(v2_session | legacy_session)
     session_columns.sort()
     session_sql = (
@@ -207,3 +208,52 @@ def install_views(conn: sqlite3.Connection) -> bool:
         + legacy_part_sql
     )
     return True
+
+
+def _install_usage_view(conn: sqlite3.Connection, legacy: bool) -> None:
+    """Scalar-only accounting projection; never serialize inline content for rollups."""
+    safe = "case when json_valid(m.data) then m.data else '{}' end"
+    branches = []
+    for native in (True, False) if legacy else (True,):
+        role = (
+            "case when not json_valid(m.data) then null "
+            "when json_type(m.data) != 'object' then null "
+            "when m.type = 'compaction' then 'assistant' else m.type end"
+            if native
+            else f"json_extract({safe}, '$.role')"
+        )
+        provider = "$.model.providerID" if native else "$.providerID"
+        model = "$.model.id" if native else "$.modelID"
+        timestamp = f"json_extract({safe}, '$.time.created')"
+        if native:
+            # Match json_set's fallback: it can create a missing time object,
+            # but cannot insert a created field into an existing scalar/array.
+            timestamp = (
+                f"case when json_type({safe}, '$.time') is null "
+                f"or json_type({safe}, '$.time') = 'object' "
+                f"then coalesce({timestamp}, m.time_created) end"
+            )
+        columns = [
+            "m.rowid as rowid",
+            "m.id",
+            "m.session_id",
+            f"{role} as role",
+            f"{timestamp} as time_created",
+            f"coalesce(json_extract({safe}, '{provider}'), 'unknown') || '/' || "
+            f"coalesce(json_extract({safe}, '{model}'), 'unknown') as model_name",
+        ]
+        for name, path in (
+            ("cost", "$.cost"),
+            ("input", "$.tokens.input"),
+            ("output", "$.tokens.output"),
+            ("reasoning", "$.tokens.reasoning"),
+            ("cache_read", "$.tokens.cache.read"),
+            ("cache_write", "$.tokens.cache.write"),
+        ):
+            columns.append(f"coalesce(json_extract({safe}, '{path}'), 0) as {name}")
+        table = "main.session_message" if native else "main.message"
+        sql = "select " + ", ".join(columns) + " from " + table + " m"
+        if not native:
+            sql += " where not exists (select 1 from main.session_v2 v where v.id = m.session_id)"
+        branches.append(sql)
+    conn.execute("create temp view opentab_message_usage as " + " union all ".join(branches))

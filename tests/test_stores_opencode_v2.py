@@ -436,6 +436,8 @@ def test_opencode_v2_mixed_prefers_v2_identity_and_retains_legacy_only_sessions(
         assert "legacy-duplicate" not in {
             row["content_key"] for row in store.message_timeline("root")
         }
+        assert store.message_timeline("legacy")[0]["prompt_full"] == "legacy prompt"
+        assert store.message_timeline_all()["legacy"][0]["prompt_full"] == "legacy prompt"
         assert (
             store.conversation_source("legacy")["records"][0]["parts"][0]["text"] == "legacy prompt"
         )
@@ -567,6 +569,8 @@ def test_opencode_v2_malformed_json_fails_closed():
             [
                 ("bad-user", "bad", "user", 0, 1, 1, "{"),
                 ("bad-assistant", "bad", "assistant", 1, 2, 2, "not-json"),
+                ("array-assistant", "bad", "assistant", 2, 3, 3, "[]"),
+                ("scalar-assistant", "bad", "assistant", 3, 4, 4, "12"),
             ],
         )
         writer.commit()
@@ -730,3 +734,107 @@ def test_opencode_v2_tool_outputs_skip_malformed_items_without_losing_text():
         writer.commit()
         events = store.turn_content("root", "a-root")["a-root"]
         assert next(event for event in events if event.get("name") == "patch")["output"] == "valid"
+
+
+def test_opencode_v2_session_detail_work_does_not_scale_with_unrelated_messages():
+    # A migrated database retains both generations. On this UNION shape, joins
+    # alone can materialize the entire corpus despite tiny selected sessions.
+    # Count VM work rather than asserting wall-clock timings or planner wording.
+    with _v2_db(legacy=True) as (writer, store):
+        writer.executescript(
+            """
+            create index message_session_idx on message(session_id);
+            create index part_session_idx on part(session_id);
+            create index part_message_idx on part(message_id);
+            create index session_parent_idx on session(parent_id);
+            """
+        )
+        _populate_v2(writer)
+        writer.execute(
+            "insert into session_v2 values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", _session("unrelated")
+        )
+        writer.execute(
+            "insert into session values ('unrelated', null, 'migrated', '/repo', null, 1, 2)"
+        )
+        writer.commit()
+
+        def measure(method):
+            ticks = 0
+
+            def progress():
+                nonlocal ticks
+                ticks += 1
+                return False
+
+            store.conn.set_progress_handler(progress, 100)
+            try:
+                result = getattr(store, method)("root")
+                if isinstance(result, list):
+                    result = [dict(row) for row in result]
+                return result, ticks
+            finally:
+                store.conn.set_progress_handler(None, 0)
+
+        methods = ("workflow_nodes", "message_timeline", "tool_breakdown", "turn_content")
+        baseline = {method: measure(method) for method in methods}
+        for i in range(400):
+            data = {
+                "role": "assistant",
+                "model": {"providerID": "provider", "id": "model"},
+                "tokens": {"input": 1},
+                "content": [
+                    {
+                        "type": "tool",
+                        "name": "read",
+                        "state": {"content": [{"type": "text", "text": "unrelated output" * 100}]},
+                    },
+                ],
+            }
+            writer.execute(
+                "insert into session_message values (?,?,?,?,?,?,?)",
+                _message(f"unrelated-{i}", "unrelated", "assistant", i, data),
+            )
+            writer.execute(
+                "insert into message values (?,?,?)",
+                (f"old-{i}", "unrelated", json.dumps(data)),
+            )
+            writer.execute(
+                "insert into part values (?,?,?,?)",
+                (f"part-{i}", f"old-{i}", "unrelated", json.dumps({"type": "text", "text": "old"})),
+            )
+        writer.commit()
+        for method in methods:
+            result, ticks = measure(method)
+            expected, before = baseline[method]
+            assert result == expected, method
+            assert ticks <= before + 50, (method, before, ticks)
+
+
+def test_opencode_v2_rollups_never_serialize_inline_content_and_scan_usage_once():
+    with _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        expected_workflows = store.workflows()
+        expected_models = [dict(row) for row in store.model_breakdown()]
+        statements = []
+
+        def authorize(action, first, second, database, source):
+            if action == sqlite3.SQLITE_FUNCTION and second in {
+                "json_set",
+                "json_object",
+                "json_group_array",
+                "json_group_object",
+            }:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        # Changing the authorizer invalidates prepared statements, so even the
+        # repeated queries must pass the no-serialization check.
+        store.conn.set_authorizer(authorize)
+        store.conn.set_trace_callback(statements.append)
+        try:
+            assert store.workflows() == expected_workflows
+            assert [dict(row) for row in store.model_breakdown()] == expected_models
+        finally:
+            store.conn.set_authorizer(None)
+            store.conn.set_trace_callback(None)
+        assert len(statements) == 2, statements

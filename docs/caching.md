@@ -26,6 +26,13 @@ rows; a warm cache avoids that parse. Keep model loading out of `App.__init__`,
 and tolerate missing model rows in the first frame. The web command instead
 loads models explicitly before building its report.
 
+OpenCode v2 accounting uses a scalar-only compatibility view, avoiding the full
+message JSON normalization needed by detail readers. Inline tool outputs must not
+be serialized or expanded to obtain timestamps, model IDs and token counts. Native
+aggregate residuals reuse the model scan's materialized numeric rows rather than
+running a second whole-history message scan. The model scan remains deferred;
+these numeric rows live only for that query and never retain raw content.
+
 ## Lazy session reads
 
 Subagent nodes, Turns, Tools, and estimated Context composition are per-session
@@ -37,6 +44,13 @@ placeholder. The event loop then runs `prefetch_session_data()` and repaints.
 Keep these gates aligned: fetching less than readiness requires creates a
 loading loop, while fetching during drawing hides the placeholder behind work.
 The amount of parsing is backend-specific, not necessarily a whole-corpus scan.
+
+OpenCode's mixed v1/v2 compatibility views need explicit, uncorrelated subtree
+filters inside detail message reads. Join keys alone can make SQLite normalize or
+materialize the entire message history before selecting one session. Native v2
+prompt text is read directly from the message; legacy prompt lookups use the
+original part table to avoid a correlated scan of the combined part view. Exercise
+mixed databases with unrelated history when checking session-entry performance.
 
 For Claude, `_session()` first reuses an existing corpus parse, then its
 single-entry `_one` memo. Otherwise it reads that session's transcripts,

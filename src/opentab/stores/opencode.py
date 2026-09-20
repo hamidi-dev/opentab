@@ -139,6 +139,7 @@ class _ChangeRequest:
 
 
 class Store:
+    has_v2 = False
     records_cost = True
     combined = False
     source_name = "OpenCode"
@@ -162,6 +163,11 @@ class Store:
         self.message_columns = self._table_columns("message")
         self.supports_tool_breakdown = self._table_exists("part")
         self.part_columns = self._table_columns("part") if self.supports_tool_breakdown else set()
+        self._legacy_part_columns = (
+            {row["name"] for row in self.conn.execute("pragma main.table_info(part)")}
+            if self.has_v2
+            else set()
+        )
         self.supports_message_timeline = self._table_exists("message")
         self.supports_session_changes = {"id", "parent_id"} <= self.session_columns and {
             "id",
@@ -311,15 +317,18 @@ class Store:
         # formatting.worked_seconds.
         # Needs the message table (per-message times); without it, worked stays null.
         if self.supports_message_timeline:
+            message_table = "opentab_message_usage" if self.has_v2 else "message"
+            event_time = "m.time_created" if self.has_v2 else _TL_TS
+            event_role = "m.role" if self.has_v2 else "json_extract(m.data, '$.role')"
             worked_cte = f"""
         , msg_events as (
-          select tree.root_id as root_id, {_TL_TS} as t_ms,
-                 (json_extract(m.data, '$.role') = 'user' and tree.depth = 0) as is_human,
+          select tree.root_id as root_id, {event_time} as t_ms,
+                 ({event_role} = 'user' and tree.depth = 0) as is_human,
                  m.rowid as rid
-          from message m
+          from {message_table} m
           join tree on tree.id = m.session_id
-          where json_extract(m.data, '$.role') in ('user', 'assistant')
-            and {_TL_TS} is not null
+          where {event_role} in ('user', 'assistant')
+            and {event_time} is not null
         ), worked as (
           select root_id,
                  sum(case
@@ -475,6 +484,9 @@ class Store:
         return row["id"] if row else None
 
     def workflow_nodes(self, workflow_id: str) -> list[sqlite3.Row]:
+        # Keep the uncorrelated tree filter inside message reads. Join/correlation
+        # keys alone need not push down into the mixed v1/v2 UNION view, causing
+        # SQLite to normalize the whole message corpus for a single session.
         token_exprs = self._token_exprs()
         cost_expr = self._cost_expr()
         agent_expr = self._session_text_expr("s", ["agent"], "'-'")
@@ -505,6 +517,7 @@ class Store:
             select {MSG_MODEL_EXPR}
             from message m
             where m.session_id = s.id and json_extract(m.data, '$.role') = 'assistant'
+              and m.session_id in (select id from tree)
             group by {MSG_MODEL_EXPR}
             order by count(*) desc
             limit 1
@@ -533,6 +546,22 @@ class Store:
         # original behaviour (identical results, just not sped up). ~40% faster on a
         # 44k-message DB; a big cut to the one heavy startup scan.
         mat = "materialized" if sqlite3.sqlite_version_info >= (3, 35, 0) else ""
+        message_table = "opentab_message_usage" if self.has_v2 else "message"
+        role = "m.role" if self.has_v2 else "json_extract(m.data, '$.role')"
+        model = "m.model_name" if self.has_v2 else MSG_MODEL_EXPR
+        usage = {
+            name: f"m.{name}" if self.has_v2 else f"coalesce(json_extract(m.data, '{path}'), 0)"
+            for name, path in (
+                ("cost", "$.cost"),
+                ("input", "$.tokens.input"),
+                ("output", "$.tokens.output"),
+                ("reasoning", "$.tokens.reasoning"),
+                ("cache_read", "$.tokens.cache.read"),
+                ("cache_write", "$.tokens.cache.write"),
+            )
+        }
+        residual_cte = self._v2_model_residual_cte() if self.has_v2 else ""
+        attributed = "attributed" if self.has_v2 else "msg"
         sql = f"""
         with recursive tree(root_id, id, depth) as (
           select id, id, 0 from session where parent_id is null
@@ -542,23 +571,25 @@ class Store:
         ),
         msg as {mat} (
           select
+            m.session_id as session_id,
             tree.root_id as root_id,
             tree.depth as depth,
-            {MSG_MODEL_EXPR} as model_name,
-            coalesce(json_extract(m.data, '$.cost'), 0) as cost,
-            coalesce(json_extract(m.data, '$.tokens.input'), 0) as input,
-            coalesce(json_extract(m.data, '$.tokens.output'), 0) as output,
-            coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) as reasoning,
-            coalesce(json_extract(m.data, '$.tokens.cache.read'), 0) as cache_read,
-            coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) as cache_write
-          from message m
+            1 as runs,
+            {model} as model_name,
+            {usage['cost']} as cost,
+            {usage['input']} as input,
+            {usage['output']} as output,
+            {usage['reasoning']} as reasoning,
+            {usage['cache_read']} as cache_read,
+            {usage['cache_write']} as cache_write
+          from {message_table} m
           join tree on tree.id = m.session_id
-          where json_extract(m.data, '$.role') = 'assistant'
-        )
+          where {role} = 'assistant'
+        ){residual_cte}
         select
           root_id,
           model_name,
-          count(*) as runs,
+          sum(runs) as runs,
           sum(cost) as cost,
           sum(case when depth = 0 then cost else 0 end) as root_cost,
           sum(input + output + reasoning + cache_read + cache_write) as tokens_total,
@@ -577,92 +608,49 @@ class Store:
           sum(case when depth = 0 and cost = 0 then cache_read else 0 end) as root_unpriced_cache_read,
           sum(case when depth = 0 and cost = 0 then cache_write else 0 end) as root_unpriced_cache_write,
           sum(case when depth = 0 and cost = 0 then output else 0 end) as root_unpriced_output
-        from msg
+        from {attributed}
         group by root_id, model_name
         """
         # Subscription/credit rows (Copilot, Codex, Claude Code) carry real runs
         # AND real token counts but cost 0 in the message JSON. Demo mode reconciles
         # them to each session's synthetic total; the "$" toggle prices their tokens
         # at API list prices -- both in App._load_model_cache.
-        rows = list(self.conn.execute(sql))
-        if not getattr(self, "has_v2", False):
-            return rows
-        return rows + self._v2_model_residuals()
+        return list(self.conn.execute(sql))
 
-    def _v2_model_residuals(self) -> list[dict]:
-        """Expose native session totals absent from message rows without attribution."""
-        sql = """
-        with recursive tree(root_id, id, depth) as (
-          select id, id, 0 from session where parent_id is null
-          union all
-          select tree.root_id, child.id, tree.depth + 1
-          from session child join tree on child.parent_id = tree.id
-        ), usage as (
+    @staticmethod
+    def _v2_model_residual_cte() -> str:
+        # Reuse the materialized numeric rows from the deferred model scan rather
+        # than reparsing every inline tool output to check native aggregate gaps.
+        # Synthetic gap rows carry zero runs, never turns.
+        return """
+        , usage as (
           select m.session_id,
-                 sum(coalesce(json_extract(m.data, '$.cost'), 0)) as cost,
-                 sum(coalesce(json_extract(m.data, '$.tokens.input'), 0)) as input,
-                 sum(coalesce(json_extract(m.data, '$.tokens.output'), 0)) as output,
-                 sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as reasoning,
-                 sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)) as cache_read,
-                 sum(coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)) as cache_write
-          from message m
-          where json_extract(m.data, '$.role') = 'assistant'
+                 sum(m.cost) as cost,
+                 sum(m.input) as input,
+                 sum(m.output) as output,
+                 sum(m.reasoning) as reasoning,
+                 sum(m.cache_read) as cache_read,
+                 sum(m.cache_write) as cache_write
+          from msg m
           group by m.session_id
-        )
-        select tree.root_id, tree.depth,
+        ), residuals as (
+        select s.id as session_id, tree.root_id, tree.depth, 0 as runs,
+               'unknown (session aggregate)' as model_name,
                max(0, coalesce(s.cost, 0) - coalesce(usage.cost, 0)) as cost,
                max(0, coalesce(s.tokens_input, 0) - coalesce(usage.input, 0)) as input,
                max(0, coalesce(s.tokens_output, 0) - coalesce(usage.output, 0)) as output,
                max(0, coalesce(s.tokens_reasoning, 0) - coalesce(usage.reasoning, 0)) as reasoning,
                max(0, coalesce(s.tokens_cache_read, 0) - coalesce(usage.cache_read, 0)) as cache_read,
                max(0, coalesce(s.tokens_cache_write, 0) - coalesce(usage.cache_write, 0)) as cache_write
-        from tree join session s on s.id = tree.id
+        from tree join main.session_v2 s on s.id = tree.id
         left join usage on usage.session_id = s.id
-        where s.id in (select id from main.session_v2)
+        ), attributed as (
+          select * from msg
+          union all
+          select * from residuals
+          where cost != 0 or input + output + reasoning + cache_read + cache_write != 0
+        )
         """
-        residuals: dict[str, dict] = {}
-        names = ("input", "output", "reasoning", "cache_read", "cache_write")
-        for item in self.conn.execute(sql):
-            total = sum(item[name] for name in names)
-            if not total and not item["cost"]:
-                continue
-            row = residuals.setdefault(
-                item["root_id"],
-                {
-                    "root_id": item["root_id"],
-                    "model_name": "unknown (session aggregate)",
-                    "runs": 0,
-                    "cost": 0.0,
-                    "root_cost": 0.0,
-                    "tokens_total": 0,
-                    "input": 0,
-                    "reasoning": 0,
-                    "cache_read": 0,
-                    "cache_write": 0,
-                    "output": 0,
-                    "unpriced_input": 0,
-                    "unpriced_reasoning": 0,
-                    "unpriced_cache_read": 0,
-                    "unpriced_cache_write": 0,
-                    "unpriced_output": 0,
-                    "root_unpriced_input": 0,
-                    "root_unpriced_reasoning": 0,
-                    "root_unpriced_cache_read": 0,
-                    "root_unpriced_cache_write": 0,
-                    "root_unpriced_output": 0,
-                },
-            )
-            row["cost"] += item["cost"]
-            row["tokens_total"] += total
-            if item["depth"] == 0:
-                row["root_cost"] += item["cost"]
-            for name in names:
-                row[name] += item[name]
-                if item["cost"] == 0:
-                    row["unpriced_" + name] += item[name]
-                    if item["depth"] == 0:
-                        row["root_unpriced_" + name] += item[name]
-        return list(residuals.values())
 
     def tool_breakdown(self, workflow_id: str) -> list[sqlite3.Row]:
         # Per-(tool, model) token/cost attribution for ONE session tree (root +
@@ -712,6 +700,7 @@ class Store:
         from tools t
         join message m on m.id = t.message_id
         join tool_counts tc on tc.message_id = t.message_id
+        where m.session_id in (select id from tree)
         group by t.tool, model_name
         order by cost desc, tokens_total desc
         """
@@ -735,12 +724,30 @@ class Store:
         summary_title = "nullif(json_extract(m.data, '$.summary.title'), '')"
         if self.supports_tool_breakdown:  # the raw prompt text lives in the part table
             part_order = "p.part_index, p.rowid" if "part_index" in self.part_columns else "p.rowid"
+            part_table = "part"
+            part_columns = self.part_columns
+            if self.has_v2:
+                # Native v2 prompts live on the message. Query legacy parts directly
+                # for legacy prompts: a correlated lookup through the UNION view can
+                # materialize every session's parts before applying the join keys.
+                part_table = "main.part"
+                part_order = "p.rowid"
+                part_columns = self._legacy_part_columns
+            ownership = "and p.session_id = m.session_id " if "session_id" in part_columns else ""
             part_text = (
-                "(select json_extract(p.data, '$.text') from part p "
-                "where p.message_id = m.id and p.session_id = m.session_id "
+                f"(select json_extract(p.data, '$.text') from {part_table} p "
+                f"where p.message_id = m.id {ownership}"
                 "and json_extract(p.data, '$.type') = 'text' "
                 f"order by {part_order} limit 1)"
             )
+            if self.has_v2:
+                if not {"id", "message_id", "data"} <= part_columns:
+                    part_text = "null"
+                part_text = (
+                    "case when json_extract(m.data, '$.__opentab_v2') = 1 "
+                    "then case when json_type(m.data, '$.text') = 'text' "
+                    "then json_extract(m.data, '$.text') end else " + part_text + " end"
+                )
         else:
             part_text = "null"
         # Summary title and raw prompt as separate columns: the one-line group title
@@ -816,7 +823,8 @@ class Store:
         from message m
         join tree on tree.id = m.session_id
         join session s on s.id = m.session_id
-        where json_extract(m.data, '$.role') in ('user', 'assistant')
+        where m.session_id in (select id from tree)
+          and json_extract(m.data, '$.role') in ('user', 'assistant')
         order by case
           when (select count(*) from tree) = 1 and {v2_marker}
           then {seq_order} else {_TL_TS}
@@ -968,6 +976,7 @@ class Store:
         select p.message_id, p.data from part p
         join message m on m.id = p.message_id
         where p.session_id in (select id from tree)
+          and m.session_id in (select id from tree)
           and m.session_id = p.session_id
           and json_extract(m.data, '$.role') = 'assistant'
           and json_extract(p.data, '$.type') in ('text', 'reasoning', 'tool')
