@@ -26,7 +26,7 @@ from opentab.stores.hermes import HermesStore
 from opentab.stores.jsonl_source import JsonlStore
 from opentab.stores.omp import OmpStore
 from opentab.stores.openclaw import OpenClawStore
-from opentab.stores.opencode import REQUIRED_SCHEMA, Store
+from opentab.stores.opencode import REQUIRED_SCHEMA, REQUIRED_SCHEMA_V2, Store
 from opentab.stores.pi import PiStore
 from opentab.stores.remote import RemoteStore
 from opentab.stores.vscode import VscodeStore
@@ -211,7 +211,7 @@ def _codex_available(sessions_dir: str) -> bool:
 def opencode_db_verdict(db: str) -> tuple[str, str]:
     """Classify a database as valid, missing, unreadable, or foreign.
 
-    Probe only REQUIRED_SCHEMA columns; optional schema remains adaptive. Distinguishing
+    Accept either supported schema family; optional columns remain adaptive. Distinguishing
     unreadable from foreign keeps diagnostics honest while ``all`` skips unusable stores.
     """
     if not db:
@@ -226,10 +226,15 @@ def opencode_db_verdict(db: str) -> tuple[str, str]:
         return "foreign", f"Not an OpenCode database: {db} ({exc})"
     missing = []
     try:
-        for table, columns in REQUIRED_SCHEMA.items():
-            # Empty table_info also detects a missing table; names are trusted constants.
-            have = {row[1] for row in conn.execute(f"pragma table_info({table})")}
-            missing += [f"{table}.{c}" for c in columns if c not in have]
+        for schema in (REQUIRED_SCHEMA, REQUIRED_SCHEMA_V2):
+            absent = []
+            for table, columns in schema.items():
+                # Empty table_info also detects a missing table; names are trusted constants.
+                have = {row[1] for row in conn.execute(f"pragma table_info({table})")}
+                absent += [f"{table}.{c}" for c in columns if c not in have]
+            if not absent:
+                return "", ""
+            missing.append(", ".join(absent[:4]) + (" …" if len(absent) > 4 else ""))
     except sqlite3.OperationalError as exc:
         return "unreadable", f"OpenCode database could not be read: {db} ({exc})"
     except sqlite3.Error as exc:
@@ -237,10 +242,9 @@ def opencode_db_verdict(db: str) -> tuple[str, str]:
     finally:
         conn.close()
     if missing:
-        lacks = ", ".join(missing[:4]) + (" …" if len(missing) > 4 else "")
         return (
             "foreign",
-            f"Not an OpenCode database (no {lacks}): {db}. "
+            f"Not an OpenCode database (v1 lacks {missing[0]}; v2 lacks {missing[1]}): {db}. "
             "Point --db at OpenCode's own database, or name the right backend with "
             "--source (--hermes-db for Hermes, --csv/--jsonl for a request log).",
         )

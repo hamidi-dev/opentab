@@ -1148,6 +1148,20 @@ def test_a_db_that_is_not_opencodes_is_reported_as_such_not_as_missing():
         assert row.status == doctor.BAD and "cannot be read" in row.detail
 
 
+def test_doctor_accepts_a_fresh_opencode_v2_database():
+    from opentab.stores.opencode import REQUIRED_SCHEMA_V2
+
+    with tempfile.TemporaryDirectory() as tmp, _clean_env():
+        db = os.path.join(tmp, "opencode.db")
+        with contextlib.closing(sqlite3.connect(db)) as conn:
+            for table, columns in REQUIRED_SCHEMA_V2.items():
+                conn.execute(f"create table {table} ({', '.join(columns)})")
+            conn.commit()
+        row = _by_label(doctor.build_report(_args(tmp, db=db)), "harnesses", "OpenCode")
+        assert row.status == doctor.OK, row
+        assert "not an OpenCode database" not in row.detail
+
+
 def test_redaction_hides_a_windows_username_that_home_cannot_reach():
     # The whole point of --vscode-dir under WSL is to name the WINDOWS-side store, and
     # $HOME there is /home/<you>: the fold never touches /mnt/c/Users/Alice/..., so the

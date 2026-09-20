@@ -11,7 +11,7 @@ from pathlib import Path
 MAX_SOURCE_BYTES = 256 * 1024 * 1024
 MAX_LINE_BYTES = 8 * 1024 * 1024
 # Bump for discovery, ownership, retained-text extraction, or index chunk projection changes.
-CONVERSATION_READER_VERSION = 1
+CONVERSATION_READER_VERSION = 2
 
 
 class ConversationError(Exception):

@@ -7,7 +7,7 @@ import tempfile
 from unittest.mock import patch
 
 import opentab as ot
-from opentab.stores.opencode import REQUIRED_SCHEMA
+from opentab.stores.opencode import REQUIRED_SCHEMA, REQUIRED_SCHEMA_V2
 
 from tests._support import FakeStore, _empty_opencode_db, _parse, _write_csv, workflow
 
@@ -244,6 +244,38 @@ def test_a_db_that_is_not_opencodes_exits_cleanly_instead_of_a_sqlite_traceback(
             ot.sources.make_store(_parse(["--db", missing, "--source", "opencode"]), "opencode")
         except SystemExit as exc:
             assert "not found" in str(exc)
+
+
+def test_opencode_v2_schema_is_detected_without_legacy_tables():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = os.path.join(tmp, "opencode.db")
+        with contextlib.closing(sqlite3.connect(db)) as conn:
+            for table, columns in REQUIRED_SCHEMA_V2.items():
+                conn.execute(f"create table {table} ({', '.join(columns)})")
+            conn.commit()
+        args = _parse(["--db", db, "--source", "opencode"])
+        assert ot.sources.opencode_db_verdict(db) == ("", "")
+        assert "opencode" in ot.sources.available_sources(args)
+        store, _ = ot.sources.make_store(args, "opencode")
+        try:
+            assert store.workflows() == []
+            assert store.model_breakdown() == []
+        finally:
+            store.conn.close()
+
+
+def test_opencode_v2_incomplete_schema_is_not_accepted_as_a_database():
+    with tempfile.TemporaryDirectory() as tmp:
+        for table, columns in REQUIRED_SCHEMA_V2.items():
+            for missing in columns:
+                db = os.path.join(tmp, f"{table}-{missing}.db")
+                with contextlib.closing(sqlite3.connect(db)) as conn:
+                    for name, names in REQUIRED_SCHEMA_V2.items():
+                        included = [c for c in names if (name, c) != (table, missing)]
+                        conn.execute(f"create table {name} ({', '.join(included)})")
+                    conn.commit()
+                kind, detail = ot.sources.opencode_db_verdict(db)
+                assert kind == "foreign" and f"{table}.{missing}" in detail
 
 
 def test_a_real_opencode_db_is_still_detected_and_opened():

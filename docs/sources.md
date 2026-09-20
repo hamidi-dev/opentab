@@ -107,7 +107,10 @@ See [Pricing & the `$` view](pricing.md) for how the estimate is priced.
 *SQLite database · records real cost*
 
 - **Reads** `~/.local/share/opencode/opencode.db`, read-only (`--db`, or just
-  `opentab path/to.db`). Adapts to OpenCode's schema across versions.
+  `opentab path/to.db`). Supports v1 and v2, including upgraded databases.
+- **Upgrades**: a migrated session is read from v2 once, without counting its v1
+  copy again. V1-only sessions remain visible. Resuming a migrated session in v1
+  is not supported: later writes to its old copy are ignored.
 - **Cost**: OpenCode records real per-message cost, so metered spend is real recorded
   money; subscription sessions record a truthful `$0` and get the `$` estimate.
 - **Extras**: the recursive subagent cost tree, and the Tools tab's token attribution

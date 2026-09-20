@@ -16,7 +16,7 @@ from dataclasses import asdict
 from opentab.accounting.models import Workflow
 from opentab.persistence import paths
 
-CACHE_VERSION = 12  # bump when the cached payload shape or meaning changes
+CACHE_VERSION = 13  # bump when the cached payload shape or meaning changes
 
 
 # Required because cache readers index these fields directly.

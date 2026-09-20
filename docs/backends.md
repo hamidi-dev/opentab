@@ -93,7 +93,8 @@ selection and preview limits without bypassing this bookkeeping.
 
 ## OpenCode
 
-Reader: [`stores/opencode.py`](../src/opentab/stores/opencode.py)
+Reader: [`stores/opencode.py`](../src/opentab/stores/opencode.py), with
+[`opencode_v2.py`](../src/opentab/stores/opencode_v2.py) for schema normalization.
 
 OpenCode supplies recorded cost and normalized token categories. Subscription calls
 can still record zero dollars. Sessions link through `parent_id`; recursive queries
@@ -103,13 +104,22 @@ fold descendants into root workflows and expose their own usage as nodes.
   and `_token_exprs`, falling back to assistant-message JSON aggregates when session
   summary columns are missing. A query that directly assumes `session.cost` exists
   bypasses that adaptation.
-- Per-model usage comes from assistant messages. Tool names and trace content live
-  separately in `part`; grouped scans join them by message id. A per-row correlated
-  lookup is particularly costly on the corpus-wide timeline export.
+- V1 uses `session`, `message`, and `part`; v2 uses `session_v2` and `session_message`.
+  Connection-local temporary views normalize v2 without writing or copying source
+  records. V2 owns overlapping session IDs; see the [upgrade policy](sources.md#opencode).
+  V2 prompts use `data.text`, assistant content is inline, and sparse `seq` values
+  define execution-local order.
+- Per-model usage comes from assistant messages and billed v2 compactions. Positive
+  gaps between v2 session aggregates and message usage remain `unknown (session aggregate)`;
+  they do not create fabricated turns or model attribution. V1 tool names and trace
+  content live separately in `part`; grouped scans join them by message id. A per-row
+  correlated lookup is particularly costly on the corpus-wide timeline export.
 - The database is read-only; message/part table availability gates session extras.
 - Changes reads completed tool metadata (`apply_patch.files`, `edit.filediff`,
   `write.filepath`) and user-message `summary.diffs` for the exact root execution
-  tree. Both sources remain readable when execution/prompt/path match: snapshots
+  tree. Native v2 `patch`/`edit` use `metadata.files`; migrated tools retain their
+  v1 metadata. V2 has no `summary.diffs`; writes without retained patches remain
+  listed as unavailable. Both v1 sources remain readable when execution/prompt/path match: snapshots
   can include shell edits beyond the tool patch. Matching records (including move
   source paths) make file-level line totals unknown rather than double-counted;
   each record's counts remain intact. Paths resolve lexically against each

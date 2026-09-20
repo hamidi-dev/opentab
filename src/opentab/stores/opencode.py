@@ -18,6 +18,8 @@ from urllib.parse import quote
 from opentab.accounting.models import Workflow
 from opentab.demo import demo_config, scramble_node, scramble_workflow
 from opentab.presentation.formatting import WORKED_BURST_GAP_SECONDS, _clean_prompt
+from opentab.stores.opencode_v2 import REQUIRED_SCHEMA_V2 as REQUIRED_SCHEMA_V2
+from opentab.stores.opencode_v2 import install_views
 from opentab.util import (
     TRACE_OUTPUT_CAP,
     TRACE_TEXT_CAP,
@@ -155,6 +157,7 @@ class Store:
         self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._tune(self.conn)
+        self.has_v2 = install_views(self.conn)
         self.session_columns = self._table_columns("session")
         self.message_columns = self._table_columns("message")
         self.supports_tool_breakdown = self._table_exists("part")
@@ -191,7 +194,9 @@ class Store:
     def _table_exists(self, table: str) -> bool:
         return bool(
             self.conn.execute(
-                "select 1 from sqlite_master where type='table' and name=?", [table]
+                "select 1 from sqlite_master where type='table' and name=? "
+                "union all select 1 from sqlite_temp_master where type='view' and name=? limit 1",
+                [table, table],
             ).fetchone()
         )
 
@@ -514,7 +519,7 @@ class Store:
             return rows
         return [scramble_node(dict(r), self.demo_scale, self.demo_cats) for r in rows]
 
-    def model_breakdown(self) -> list[sqlite3.Row]:
+    def model_breakdown(self) -> list[sqlite3.Row | dict]:
         # Per-(root session, model) cost/token attribution for EVERY root, in one
         # pass. Computed from per-message data (accurate for multi-model and older
         # sessions). The App caches this and slices it per session/day/month, so we
@@ -579,7 +584,85 @@ class Store:
         # AND real token counts but cost 0 in the message JSON. Demo mode reconciles
         # them to each session's synthetic total; the "$" toggle prices their tokens
         # at API list prices -- both in App._load_model_cache.
-        return list(self.conn.execute(sql))
+        rows = list(self.conn.execute(sql))
+        if not getattr(self, "has_v2", False):
+            return rows
+        return rows + self._v2_model_residuals()
+
+    def _v2_model_residuals(self) -> list[dict]:
+        """Expose native session totals absent from message rows without attribution."""
+        sql = """
+        with recursive tree(root_id, id, depth) as (
+          select id, id, 0 from session where parent_id is null
+          union all
+          select tree.root_id, child.id, tree.depth + 1
+          from session child join tree on child.parent_id = tree.id
+        ), usage as (
+          select m.session_id,
+                 sum(coalesce(json_extract(m.data, '$.cost'), 0)) as cost,
+                 sum(coalesce(json_extract(m.data, '$.tokens.input'), 0)) as input,
+                 sum(coalesce(json_extract(m.data, '$.tokens.output'), 0)) as output,
+                 sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0)) as reasoning,
+                 sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0)) as cache_read,
+                 sum(coalesce(json_extract(m.data, '$.tokens.cache.write'), 0)) as cache_write
+          from message m
+          where json_extract(m.data, '$.role') = 'assistant'
+          group by m.session_id
+        )
+        select tree.root_id, tree.depth,
+               max(0, coalesce(s.cost, 0) - coalesce(usage.cost, 0)) as cost,
+               max(0, coalesce(s.tokens_input, 0) - coalesce(usage.input, 0)) as input,
+               max(0, coalesce(s.tokens_output, 0) - coalesce(usage.output, 0)) as output,
+               max(0, coalesce(s.tokens_reasoning, 0) - coalesce(usage.reasoning, 0)) as reasoning,
+               max(0, coalesce(s.tokens_cache_read, 0) - coalesce(usage.cache_read, 0)) as cache_read,
+               max(0, coalesce(s.tokens_cache_write, 0) - coalesce(usage.cache_write, 0)) as cache_write
+        from tree join session s on s.id = tree.id
+        left join usage on usage.session_id = s.id
+        where s.id in (select id from main.session_v2)
+        """
+        residuals: dict[str, dict] = {}
+        names = ("input", "output", "reasoning", "cache_read", "cache_write")
+        for item in self.conn.execute(sql):
+            total = sum(item[name] for name in names)
+            if not total and not item["cost"]:
+                continue
+            row = residuals.setdefault(
+                item["root_id"],
+                {
+                    "root_id": item["root_id"],
+                    "model_name": "unknown (session aggregate)",
+                    "runs": 0,
+                    "cost": 0.0,
+                    "root_cost": 0.0,
+                    "tokens_total": 0,
+                    "input": 0,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                    "output": 0,
+                    "unpriced_input": 0,
+                    "unpriced_reasoning": 0,
+                    "unpriced_cache_read": 0,
+                    "unpriced_cache_write": 0,
+                    "unpriced_output": 0,
+                    "root_unpriced_input": 0,
+                    "root_unpriced_reasoning": 0,
+                    "root_unpriced_cache_read": 0,
+                    "root_unpriced_cache_write": 0,
+                    "root_unpriced_output": 0,
+                },
+            )
+            row["cost"] += item["cost"]
+            row["tokens_total"] += total
+            if item["depth"] == 0:
+                row["root_cost"] += item["cost"]
+            for name in names:
+                row[name] += item[name]
+                if item["cost"] == 0:
+                    row["unpriced_" + name] += item[name]
+                    if item["depth"] == 0:
+                        row["root_unpriced_" + name] += item[name]
+        return list(residuals.values())
 
     def tool_breakdown(self, workflow_id: str) -> list[sqlite3.Row]:
         # Per-(tool, model) token/cost attribution for ONE session tree (root +
@@ -651,11 +734,12 @@ class Store:
         agent_expr = self._session_text_expr("s", ["agent"], "'-'")
         summary_title = "nullif(json_extract(m.data, '$.summary.title'), '')"
         if self.supports_tool_breakdown:  # the raw prompt text lives in the part table
+            part_order = "p.part_index, p.rowid" if "part_index" in self.part_columns else "p.rowid"
             part_text = (
                 "(select json_extract(p.data, '$.text') from part p "
                 "where p.message_id = m.id and p.session_id = m.session_id "
                 "and json_extract(p.data, '$.type') = 'text' "
-                "order by p.rowid limit 1)"
+                f"order by {part_order} limit 1)"
             )
         else:
             part_text = "null"
@@ -715,6 +799,11 @@ class Store:
     def _message_timeline(self, workflow_id: str, *, own: bool = False) -> list[dict]:
         if not self.supports_message_timeline:
             return []
+        message_columns = getattr(self, "message_columns", set())
+        seq_order = "m.seq" if "seq" in message_columns else _TL_TS
+        v2_marker = (
+            "json_extract(m.data, '$.__opentab_v2') = 1" if "seq" in message_columns else "0"
+        )
         sql = f"""
         with recursive tree(id, depth) as (
           select id, 0 from session where id = ?
@@ -728,7 +817,10 @@ class Store:
         join tree on tree.id = m.session_id
         join session s on s.id = m.session_id
         where json_extract(m.data, '$.role') in ('user', 'assistant')
-        order by {_TL_TS}, m.rowid
+        order by case
+          when (select count(*) from tree) = 1 and {v2_marker}
+          then {seq_order} else {_TL_TS}
+        end, m.rowid
         """
         rows = [dict(r) for r in self.conn.execute(sql, [workflow_id, own])]
         return _process_timeline(
@@ -807,18 +899,21 @@ class Store:
         """
         if not self.supports_tool_breakdown:
             return {}
+        part_order = (
+            "message_id, part_index, rowid" if "part_index" in self.part_columns else "rowid"
+        )
         if workflow_id is None:
             sql, params = (
                 (
                     "select message_id, json_extract(data, '$.tool') as tool from part "
-                    "where json_extract(data, '$.type') = 'tool' order by rowid"
+                    f"where json_extract(data, '$.type') = 'tool' order by {part_order}"
                 ),
                 [],
             )
         else:
             sql, params = (
                 (
-                    """
+                    f"""
                 with recursive tree(id) as (
                   select id from session where id = ?
                   union all
@@ -829,7 +924,7 @@ class Store:
                 from part
                 where session_id in (select id from tree)
                   and json_extract(data, '$.type') = 'tool'
-                order by rowid
+                order by {part_order}
                 """
                 ),
                 [workflow_id, own],
@@ -858,7 +953,12 @@ class Store:
     ) -> dict:
         if not self.supports_tool_breakdown:
             return {}
-        sql = """
+        part_order = (
+            "p.message_id, p.part_index, p.rowid"
+            if "part_index" in self.part_columns
+            else "p.rowid"
+        )
+        sql = f"""
         with recursive tree(id) as (
           select id from session where id = ?
           union all
@@ -871,7 +971,7 @@ class Store:
           and m.session_id = p.session_id
           and json_extract(m.data, '$.role') = 'assistant'
           and json_extract(p.data, '$.type') in ('text', 'reasoning', 'tool')
-        order by p.rowid
+        order by {part_order}
         """
         out = TraceContent(content_key)
         # Joined to the message rather than filtered afterwards: a USER message's text
@@ -931,6 +1031,7 @@ class Store:
     def _change_connection(self, uri: str) -> sqlite3.Connection:
         conn = sqlite3.connect(uri, uri=True)
         conn.row_factory = sqlite3.Row
+        install_views(conn)
         cancelled = getattr(self, "_change_cancelled", None)
         if cancelled is not None:
             conn.set_progress_handler(cancelled.is_set, 1000)
@@ -1129,6 +1230,9 @@ class Store:
             native_filter = "and p.rowid = ?" if locator else ""
             psafe = "case when json_valid(p.data) then p.data else '{}' end"
             msafe = "case when json_valid(tm.data) then tm.data else '{}' end"
+            prompt_id = f"json_extract({msafe}, '$.parentID')"
+            if self.has_v2:
+                prompt_id = f"coalesce(tm.parent_id, {prompt_id})"
             pcreated = (
                 "p.time_created"
                 if "time_created" in self.part_columns
@@ -1144,7 +1248,9 @@ class Store:
             native_diff = "case when d.type = 'object' then d.value else '{}' end"
             native_path = f"""case when json_extract({native_diff}, '$.type') = 'move'
               then coalesce(json_extract({native_diff}, '$.movePath'), json_extract({native_diff}, '$.relativePath'))
-              else coalesce(json_extract({native_diff}, '$.filePath'), json_extract({native_diff}, '$.relativePath')) end"""
+              else coalesce(json_extract({native_diff}, '$.filePath'), json_extract({native_diff}, '$.relativePath'),
+                            json_extract({native_diff}, '$.file')) end"""
+            native_write_path = "coalesce(json_extract(n.data, '$.state.metadata.filepath'), json_extract(n.data, '$.state.input.path'))"
             native_sql = f"""
             {tree}, native as (
               select p.*, p.rowid as part_row, tm.rowid as tool_message_row, tm.id as tool_message_id,
@@ -1158,7 +1264,7 @@ class Store:
               cross join part p on p.session_id = tree.id
               join message tm on tm.id = p.message_id and tm.session_id = p.session_id
               join message pm
-                on pm.id = json_extract({msafe}, '$.parentID')
+                on pm.id = {prompt_id}
                and pm.session_id = tm.session_id
               join session s on s.id = p.session_id
               where json_extract({psafe}, '$.type') = 'tool'
@@ -1169,14 +1275,15 @@ class Store:
                 and (select count(*) from message x
                      where x.id = p.message_id and x.session_id = p.session_id) = 1
                 and (select count(*) from message x
-                     where x.id = json_extract({msafe}, '$.parentID')
+                     where x.id = {prompt_id}
                        and x.session_id = p.session_id) = 1
                 and (select count(*) from part x
                      where x.id = p.id and x.message_id = p.message_id
                        and x.session_id = p.session_id) = 1
             ), projected as (
               select
-                'apply_patch' as source,
+                case json_extract(n.data, '$.tool')
+                  when 'patch' then 'patch' when 'edit' then 'edit' else 'apply_patch' end as source,
                 coalesce(n.part_created, n.prompt_created, 0) as event_created,
                 n.part_row as event_order,
                 n.prompt_row as message_row,
@@ -1191,10 +1298,13 @@ class Store:
                 d.key as diff_index,
                 substr({native_path}, 1, ?) as file,
                 length(cast({native_path} as blob)) as file_bytes,
-                case json_extract({native_diff}, '$.type')
-                  when 'add' then 'added' when 'update' then 'modified'
-                  when 'delete' then 'deleted' when 'move' then 'moved'
-                end as status,
+                coalesce(case json_extract({native_diff}, '$.status')
+                    when 'added' then 'added' when 'modified' then 'modified'
+                    when 'deleted' then 'deleted' when 'moved' then 'moved' end,
+                  case json_extract({native_diff}, '$.type')
+                    when 'add' then 'added' when 'update' then 'modified'
+                    when 'delete' then 'deleted' when 'move' then 'moved'
+                  end) as status,
                 8 as status_bytes,
                 case when json_type({native_diff}, '$.additions') = 'integer'
                   then json_extract({native_diff}, '$.additions') end as additions,
@@ -1220,10 +1330,9 @@ class Store:
               from native n
               join json_each(case when json_valid(n.data) then n.data else '{{}}' end,
                              '$.state.metadata.files') d
-              where json_extract(n.data, '$.tool') = 'apply_patch'
+              where json_extract(n.data, '$.tool') in ('apply_patch', 'patch', 'edit')
                 and json_type(n.data, '$.state.metadata.files') = 'array'
                 and d.type = 'object'
-                and json_extract({native_diff}, '$.type') in ('add', 'update', 'delete', 'move')
                 and typeof({native_path}) = 'text'
               union all
               select
@@ -1252,6 +1361,7 @@ class Store:
                 length(cast(cast(n.tool_message_id as text) as blob)), n.tool_message_updated
               from native n
               where json_extract(n.data, '$.tool') = 'edit'
+                and coalesce(json_type(n.data, '$.state.metadata.files'), '') != 'array'
                 and json_type(n.data, '$.state.metadata.filediff') = 'object'
                 and json_type(n.data, '$.state.metadata.filediff.file') = 'text'
               union all
@@ -1262,11 +1372,12 @@ class Store:
                 substr(cast(n.execution_id as text), 1, ?),
                 length(cast(cast(n.execution_id as text) as blob)),
                 n.prompt_created, n.prompt_updated, length(cast(n.prompt_data as blob)), n.directory,
-                0, substr(json_extract(n.data, '$.state.metadata.filepath'), 1, ?),
-                length(cast(json_extract(n.data, '$.state.metadata.filepath') as blob)),
-                case json_type(n.data, '$.state.metadata.exists')
-                  when 'true' then 'modified' when 'false' then 'added' end,
-                8, null, null, null, null, null, 0, null, 0, null, 0, null, 0,
+                 0, substr({native_write_path}, 1, ?),
+                 length(cast({native_write_path} as blob)),
+                 case json_type(n.data, '$.state.metadata.exists')
+                   when 'true' then 'modified' when 'false' then 'added' end,
+                 case when json_type(n.data, '$.state.metadata.exists') in ('true', 'false') then 8 else 0 end,
+                 null, null, null, null, null, 0, null, 0, null, 0, null, 0,
                 n.part_row, substr(cast(n.id as text), 1, ?),
                 length(cast(cast(n.id as text) as blob)), n.part_created, n.part_updated,
                 length(cast(n.data as blob)), n.tool_message_row,
@@ -1274,8 +1385,8 @@ class Store:
                 length(cast(cast(n.tool_message_id as text) as blob)), n.tool_message_updated
               from native n
               where json_extract(n.data, '$.tool') = 'write'
-                and json_type(n.data, '$.state.metadata.filepath') = 'text'
-                and json_type(n.data, '$.state.metadata.exists') in ('true', 'false')
+                and typeof({native_write_path}) = 'text'
+                and length({native_write_path}) > 0
             )
             select * from projected
             {"where source = ? and diff_index = ?" if locator else ""}
@@ -1444,7 +1555,7 @@ class Store:
         ):
             return None
         match = re.fullmatch(
-            r"occhg1:(snapshot|apply_patch|edit|write):(-?[0-9]{1,19}):([0-9]{1,19}):[0-9a-f]{64}",
+            r"occhg1:(snapshot|apply_patch|patch|edit|write):(-?[0-9]{1,19}):([0-9]{1,19}):[0-9a-f]{64}",
             change_key,
         )
         if match is None:
@@ -1502,28 +1613,29 @@ class Store:
                             selected["diff_index"],
                         ],
                     ).fetchone()
-                elif selected["source"] in ("apply_patch", "edit"):
-                    patch_path = (
-                        f"$.state.metadata.files[{int(selected['diff_index'])}].patch"
-                        if selected["source"] == "apply_patch"
-                        else "$.state.metadata.filediff.patch"
+                elif selected["source"] in ("apply_patch", "patch", "edit"):
+                    files_path = f"$.state.metadata.files[{int(selected['diff_index'])}].patch"
+                    patch_paths = (
+                        (files_path, "$.state.metadata.filediff.patch")
+                        if selected["source"] == "edit"
+                        else (files_path, files_path)
                     )
                     body = conn.execute(
                         """select
                           ? as file,
-                          json_type(p.data, ?) as patch_type,
-                          substr(json_extract(p.data, ?), 1, ?) as patch,
-                          coalesce(length(cast(json_extract(p.data, ?) as blob)), 0) as patch_bytes,
+                          coalesce(json_type(p.data, ?), json_type(p.data, ?)) as patch_type,
+                          substr(coalesce(json_extract(p.data, ?), json_extract(p.data, ?)), 1, ?) as patch,
+                          coalesce(length(cast(coalesce(json_extract(p.data, ?), json_extract(p.data, ?)) as blob)), 0) as patch_bytes,
                           null as before_type, null as before, 0 as before_bytes,
                           null as after_type, null as after, 0 as after_bytes
                         from part p
                         where p.rowid = ? and p.id = ? and p.message_id = ? and p.session_id = ?""",
                         [
                             selected["file"],
-                            patch_path,
-                            patch_path,
+                            *patch_paths,
+                            *patch_paths,
                             CHANGE_DIFF_BYTES + 1,
-                            patch_path,
+                            *patch_paths,
                             selected["part_row"],
                             selected["part_id"],
                             selected["tool_message_id"],
@@ -1559,7 +1671,11 @@ class Store:
                     else (
                         "Native per-prompt snapshot patch; it may include concurrent or later-reverted edits."
                         if selected["source"] == "snapshot"
-                        else f"Recorded {selected['source']} patch."
+                        else (
+                            "Recorded patch."
+                            if selected["source"] == "patch"
+                            else f"Recorded {selected['source']} patch."
+                        )
                     )
                 ),
             }
@@ -1641,11 +1757,19 @@ class Store:
         """Fingerprint one execution tree's row revisions, never its raw text."""
         if self.demo or not isinstance(root_id, str) or not root_id:
             return None
+        if (
+            self.has_v2
+            and self.conn.execute(
+                "select 1 from main.session_v2 where id = ?", [root_id]
+            ).fetchone()
+        ):
+            return self._v2_conversation_manifest(root_id)
         uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
         try:
             initial = os.stat(self.db)
             with closing(sqlite3.connect(uri, uri=True)) as conn:
                 conn.execute("begin")
+                install_views(conn)
                 inspected_ms = time.time_ns() // 1_000_000
                 schema = {
                     table: list(conn.execute(f"pragma table_info({table})"))
@@ -1733,6 +1857,91 @@ class Store:
         except (sqlite3.Error, OSError, ValueError, TypeError):
             return None
 
+    def _v2_conversation_manifest(self, root_id: str):
+        """Fingerprint one v2 tree from keyed metadata, excluding message JSON."""
+        uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
+        try:
+            initial = os.stat(self.db)
+            with closing(sqlite3.connect(uri, uri=True)) as conn:
+                conn.execute("begin")
+                inspected_ms = time.time_ns() // 1_000_000
+                schema = {
+                    table: list(conn.execute(f"pragma main.table_info({table})"))
+                    for table in ("session_v2", "session_message")
+                }
+                required = {
+                    "session_v2": {"id", "parent_id"},
+                    "session_message": {
+                        "id",
+                        "session_id",
+                        "type",
+                        "seq",
+                        "time_created",
+                        "time_updated",
+                    },
+                }
+                if any(
+                    not names <= {row[1] for row in schema[table]}
+                    or [row[1] for row in schema[table] if row[5]] != ["id"]
+                    for table, names in required.items()
+                ):
+                    return self._conversation_database_manifest()
+                tree = """with recursive tree(id) as (
+                  select id from main.session_v2 where id = ?
+                  union
+                  select s.id from main.session_v2 s join tree on s.parent_id = tree.id
+                ) """
+                legacy_columns = {row[1] for row in conn.execute("pragma main.table_info(session)")}
+                if {"id", "parent_id"} <= legacy_columns and conn.execute(
+                    tree
+                    + "select 1 from main.session s where s.parent_id in (select id from tree) "
+                    "and not exists (select 1 from main.session_v2 v where v.id = s.id) limit 1",
+                    [root_id],
+                ).fetchone():
+                    return self._conversation_database_manifest()
+                executions = list(
+                    conn.execute(
+                        tree + "select id, parent_id from main.session_v2 "
+                        "where id in (select id from tree) order by id",
+                        [root_id],
+                    )
+                )
+                if not executions:
+                    return None
+                rows = list(
+                    conn.execute(
+                        tree
+                        + "select m.id, m.session_id, m.type, m.seq, m.time_created, m.time_updated "
+                        + "from main.session_message m where m.session_id in (select id from tree) "
+                        + "order by m.session_id, m.seq, m.id",
+                        [root_id],
+                    )
+                )
+                if any(not isinstance(row[5], int) or row[5] >= inspected_ms - 1 for row in rows):
+                    return None
+                digest = hashlib.sha256()
+                digest.update(json.dumps(executions, separators=(",", ":")).encode())
+                digest.update(json.dumps(rows, separators=(",", ":")).encode())
+                event_columns = {
+                    row[1] for row in conn.execute("pragma main.table_info(event_sequence)")
+                }
+                if {"aggregate_id", "seq"} <= event_columns:
+                    events = list(
+                        conn.execute(
+                            tree + "select aggregate_id, seq from main.event_sequence "
+                            "where aggregate_id in (select id from tree) order by aggregate_id",
+                            [root_id],
+                        )
+                    )
+                    digest.update(json.dumps(events, separators=(",", ":")).encode())
+                current = os.stat(self.db)
+                identity = (initial.st_dev, initial.st_ino)
+                if identity != (current.st_dev, current.st_ino):
+                    return None
+                return ["opencode-root-v2", *identity, digest.hexdigest()]
+        except (sqlite3.Error, OSError, ValueError, TypeError):
+            return None
+
     def _conversation_database_manifest(self):
         from opentab.conversations.reader import source_manifest
 
@@ -1798,6 +2007,7 @@ class Store:
             with closing(sqlite3.connect(uri, uri=True)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("begin")
+                install_views(conn)
                 columns = self._conversation_columns(conn)
                 if not columns:
                     raise ConversationError(
@@ -1858,11 +2068,19 @@ class Store:
                         "conversation_unavailable", "Conversation message identity is ambiguous."
                     )
                 message_order = (
-                    "m.time_created, m.id"
-                    if "time_created" in columns["message"]
-                    else f"{_TL_TS}, m.id"
+                    "m.seq, m.id"
+                    if "seq" in columns["message"]
+                    else (
+                        "m.time_created, m.id"
+                        if "time_created" in columns["message"]
+                        else f"{_TL_TS}, m.id"
+                    )
                 )
-                part_order = "p.time_created, p.id" if "time_created" in columns["part"] else "p.id"
+                part_order = (
+                    "p.part_index, p.id"
+                    if "part_index" in columns["part"]
+                    else ("p.time_created, p.id" if "time_created" in columns["part"] else "p.id")
+                )
                 timestamp = (
                     f"coalesce({_TL_TS}, m.time_created)"
                     if "time_created" in columns["message"]
@@ -1879,6 +2097,7 @@ class Store:
                     f"select m.id, json_extract(m.data, '$.role') as role, "
                     f"{timestamp} as timestamp, {parent} as parent_id from message m "
                     "where m.session_id = ? and json_extract(m.data, '$.role') in ('user', 'assistant') "
+                    "and coalesce(json_extract(m.data, '$.__opentab_type'), '') != 'compaction' "
                     f"order by {message_order}",
                     [selected],
                 ):
@@ -1908,6 +2127,7 @@ class Store:
                 text_rows = (
                     f"from part p join message m on p.message_id = m.id {ownership} "
                     "where m.session_id = ? and json_extract(m.data, '$.role') in ('user', 'assistant') "
+                    "and coalesce(json_extract(m.data, '$.__opentab_type'), '') != 'compaction' "
                     "and json_extract(p.data, '$.type') = 'text' "
                     "and coalesce(json_extract(p.data, '$.synthetic'), 0) in (0, '') "
                     "and json_type(p.data, '$.text') = 'text'"
@@ -2007,6 +2227,8 @@ class Store:
         """Read the exact child's first user text, independently of billed turns."""
         if self.demo or node_id == workflow_id or not self.supports_tool_breakdown:
             return None
+        message_order = "m.seq" if "seq" in self.message_columns else _TL_TS
+        part_order = "p.part_index" if "part_index" in self.part_columns else "p.rowid"
         sql = f"""
         with recursive tree(id) as (
           select id from session where id = ?
@@ -2019,7 +2241,7 @@ class Store:
           and json_extract(m.data, '$.role') = 'user'
           and json_extract(p.data, '$.type') = 'text'
           and json_type(p.data, '$.text') = 'text'
-        order by {_TL_TS}, m.rowid, p.rowid
+        order by {message_order}, m.rowid, {part_order}, p.rowid
         """
         current = None
         parts: list[str] = []
@@ -2042,6 +2264,11 @@ class Store:
         # keeps the lazy per-session path (drill-in pays for the one session you open).
         if not self.supports_message_timeline:
             return {}
+        message_columns = getattr(self, "message_columns", set())
+        seq_order = "m.seq" if "seq" in message_columns else _TL_TS
+        v2_marker = (
+            "json_extract(m.data, '$.__opentab_v2') = 1" if "seq" in message_columns else "0"
+        )
         sql = f"""
         with recursive roots(id) as (
           select id from session where parent_id is null
@@ -2056,7 +2283,11 @@ class Store:
         join tree on tree.id = m.session_id
         join session s on s.id = m.session_id
         where json_extract(m.data, '$.role') in ('user', 'assistant')
-        order by tree.root_id, {_TL_TS}, m.rowid
+        order by tree.root_id,
+          case when (select count(*) from tree size where size.root_id = tree.root_id) = 1
+                    and {v2_marker}
+               then {seq_order} else {_TL_TS} end,
+          m.rowid
         """
         groups: dict[str, list[dict]] = {}
         for r in self.conn.execute(sql):
