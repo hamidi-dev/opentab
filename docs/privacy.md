@@ -56,8 +56,10 @@ are ignored, and the defaults are shown):
   `--demo`/`--no-cache`). Changed file fingerprints trigger rebuilding, not a stale
   preview; [fingerprint limitations](caching.md#when-a-splice-must-fall-back) still
   apply to rewritten history. OpenCode v2 also keeps message identifiers, revisions
-  and scalar accounting fields here to avoid rereading unchanged JSON; no message
-  text or tool output is retained. See its [revision assumptions](caching.md#opencode-reuse-unchanged-message-accounting).
+  and scalar accounting fields in an indexed `.json.usage.sqlite3` sidecar here to
+  avoid rereading unchanged JSON. This is OpenTab's own database; harness databases
+  remain read-only. No message text or tool output is retained. See its
+  [revision assumptions](caching.md#opencode-reuse-unchanged-message-accounting).
   This directory also holds `prices.json` (the optional
   model-price cache, written **only** on an explicit refresh) and `remotes/`
   (summaries pulled from other machines). Local rollups and prices can be regenerated; deleting pulled

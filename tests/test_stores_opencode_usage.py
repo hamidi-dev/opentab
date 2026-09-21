@@ -1,4 +1,5 @@
 import argparse
+import io
 import json
 import sqlite3
 import tempfile
@@ -9,7 +10,7 @@ from unittest.mock import patch
 from opentab import diagnostics as debug
 from opentab.stores.cached import CachedStore
 from opentab.stores.opencode import Store
-from opentab.stores.opencode_usage import compact_usage
+from opentab.stores.opencode_usage import compact_usage, compact_usage_stream
 from opentab.tui.app import App
 from opentab.web.report import build_payload
 
@@ -175,7 +176,7 @@ def test_opencode_usage_persistent_cache_reads_only_changed_native_messages():
         cache_id = "opencode|" + store.db
         cached = CachedStore(store, cache_id, args)
         assert _read(cached) == _reference(store.db)
-        assert "content" not in json.dumps(cached._disk["accounting"])
+        assert "content" not in json.dumps(cached._accounting_payload())
         writer.execute(
             "insert into session_message values (?,?,?,?,?,?,?)",
             _message(
@@ -213,9 +214,173 @@ def test_opencode_usage_persistent_cache_reads_only_changed_native_messages():
             assert parse.call_count == 1
             assert actual == _reference(store.db)
             assert (
-                len(fresh._disk["accounting"]["rows"])
+                len(fresh._accounting_payload()["rows"])
                 == writer.execute("select count(*) from session_message").fetchone()[0]
             )
+        finally:
+            restarted.conn.close()
+
+
+def test_opencode_usage_stream_handles_every_chunk_boundary_and_rejects_malformed():
+    values = [
+        '{"content":[{"text":"quotes: \\" \\u1234 \\\\ / 😀"},[true,false,null,-1.25e+3]],"tokens":{"input":13}}',
+        '{"tokens":{"input":7,"input":9},"tokens":{"input":99},"cost":1e309}',
+        "{}",
+    ]
+    invalid = [
+        '{"content":[1,]}',
+        '{"content":{"x":}}',
+        '{"content":"\\q"}',
+        '{"content":"\\u1xyz"}',
+        '{"content":[01]}',
+        '{"content":[truefalse]}',
+        '{"cost":1,}',
+        '{"content":"unterminated}',
+        '{"cost":1} trailing',
+        '{"content":[[[1]]]}',
+    ]
+    with patch("opentab.stores.opencode_usage._MAX_DEPTH", 3):
+        for text in values + invalid:
+            for chunk in range(1, 17):
+                data = io.BytesIO(text.encode())
+                actual = compact_usage_stream(
+                    lambda n, data=data, chunk=chunk: data.read(min(chunk, n))
+                )
+                if text in invalid:
+                    assert actual == "null", (text, chunk, actual)
+                else:
+                    # Compare via SQLite, including first duplicate keys and infinity.
+                    c = sqlite3.connect(":memory:")
+                    try:
+                        for field in ("tokens", "cost"):
+                            assert (
+                                c.execute(
+                                    "select json_extract(?,?)", [actual, "$." + field]
+                                ).fetchone()
+                                == c.execute(
+                                    "select json_extract(?,?)", [text, "$." + field]
+                                ).fetchone()
+                            )
+                    finally:
+                        c.close()
+
+
+def test_opencode_usage_large_blob_streaming_keeps_results_without_full_payload_fetch():
+    if not hasattr(sqlite3.Connection, "blobopen"):
+        return  # Python 3.9/3.10 exercise the bounded-decoder fallback above.
+    with _v2_db() as (writer, store):
+        _populate_v2(writer)
+        raw = json.dumps(
+            {
+                "content": [{"text": ('escaped " quote\\\n😀' * 10000)}],
+                "model": {"id": "large"},
+                "tokens": {"input": 42},
+            }
+        )
+        writer.execute("update session_message set data=? where id='a-root'", [raw])
+        writer.commit()
+        expected = _reference(store.db)
+        queries = []
+        store.conn.set_trace_callback(queries.append)
+        with patch("opentab.stores.opencode_usage._DECODE_LIMIT", 1024):
+            assert _read(store) == expected
+        target = writer.execute("select rowid from session_message where id='a-root'").fetchone()[0]
+        assert not any(
+            q.endswith("where rowid=" + str(target)) and q.startswith("select data")
+            for q in queries
+        )
+
+
+def test_opencode_usage_split_cache_is_lazy_and_skips_unchanged_scalar_write():
+    with _v2_db() as (writer, store):
+        _populate_v2(writer)
+        args = argparse.Namespace(demo=False)
+        key = "opencode|" + store.db
+        cached = CachedStore(store, key, args)
+        expected = _read(cached)
+        sidecar = Path(cached._path + ".usage.sqlite3")
+        before = sidecar.read_bytes()
+        before_stat = sidecar.stat().st_mtime_ns
+        restarted = Store(store.db, args)
+        try:
+            with patch.object(
+                CachedStore, "_accounting_payload", side_effect=AssertionError("not lazy")
+            ):
+                warm = CachedStore(restarted, key, args)
+                assert _read(warm) == expected
+            # Session fields may change without any native message changes.
+            writer.execute("update session_v2 set title='renamed' where id='root'")
+            writer.commit()
+            warm = CachedStore(restarted, key, args)
+            assert _read(warm) == _reference(store.db)
+            assert sidecar.read_bytes() == before
+            assert sidecar.stat().st_mtime_ns == before_stat
+            # A malformed/missing sidecar must rebuild, never hide accounting.
+            sidecar.write_text("broken")
+            writer.execute("update session_v2 set title='again' where id='root'")
+            writer.commit()
+            assert _read(warm) == _reference(store.db)
+        finally:
+            restarted.conn.close()
+
+
+def test_opencode_tools_numeric_metadata_matches_original_detail_queries():
+    with _v2_db(legacy=True) as (writer, store):
+        _populate_v2(writer)
+        reference = Store(store.db, argparse.Namespace(demo=False))
+        reference._usage_cache = None
+        try:
+            for root in ("root", "other", "child"):
+                expected = [dict(r) for r in reference.tool_breakdown(root)]
+                queries = []
+                store.conn.set_trace_callback(queries.append)
+                actual = [dict(r) for r in store.tool_breakdown(root)]
+                assert actual == expected, (actual, expected)
+                tool_query = queries[-1]
+                assert "opentab_message_usage" in tool_query
+                assert "group_concat" not in tool_query
+                assert "json_set" not in tool_query
+                assert not store.conn.in_transaction
+            # A source commit invalidates the shared name/readability memo and
+            # the numeric snapshot; no TEMP-table transaction may pin old data.
+            writer.execute(
+                "update session_message set data=?,time_updated=9999 where id='a-root'",
+                [
+                    json.dumps(
+                        {
+                            "model": {"id": "new"},
+                            "tokens": {"input": 19},
+                            "content": [{"type": "tool", "name": "changed"}],
+                        }
+                    )
+                ],
+            )
+            writer.commit()
+            assert [dict(r) for r in store.tool_breakdown("root")] == [
+                dict(r) for r in reference.tool_breakdown("root")
+            ]
+        finally:
+            reference.conn.close()
+
+
+def test_opencode_usage_indexed_sidecar_loads_only_selected_executions():
+    with _v2_db() as (writer, store):
+        _populate_v2(writer)
+        args = argparse.Namespace(demo=False)
+        key = "opencode|" + store.db
+        _read(CachedStore(store, key, args))
+        restarted = Store(store.db, args)
+        try:
+            cached = CachedStore(restarted, key, args)
+            payload = cached._accounting_payload(["root", "child"])
+            assert len(payload["rows"]) == 4
+            with patch(
+                "opentab.stores.opencode_usage.compact_usage",
+                side_effect=AssertionError("decoded cached data"),
+            ):
+                for root in ("root", "other", "root"):
+                    cached.workflow_nodes(root)
+            assert len(restarted._usage_cache.rows) == 4
         finally:
             restarted.conn.close()
 

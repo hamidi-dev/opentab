@@ -34,8 +34,10 @@ Events cover:
   Reread reasons distinguish rows absent from the active scalar cache (`not_cached`),
   changed revisions, unreliable revisions and recent/future timestamps. `not_cached`
   does not necessarily mean a newly created source message. A rollup hit explicitly
-  records that scalar-cache restoration was skipped, explaining subsequent session
-  decoding even when startup was cached.
+   records that scalar-cache restoration is deferred. Session entry loads only its
+   executions from the indexed scalar sidecar. `usage.slow_row` reports a hashed
+   row locator, input size and decoding time for large/slow reads; streamed time
+   includes incremental Blob reads. It never includes message content.
 - Deferred model loading, reload invalidation, session memo readiness and node,
   Turns, Tools, Context and trace reads. Turns separates message queries, tool
   attribution and readable-content markers. Changes file/diff reads are timed on
@@ -91,6 +93,11 @@ the same numeric usage, rather than running another whole-history message scan.
 Small messages use the standard JSON decoder one at a time; messages over 8 MiB
 use a validating scanner that skips inline content without decoding it into an
 object tree. Only accounting fields reach the temporary table or persistent cache.
+On Python 3.11+, oversized TEXT cells stream through SQLite's read-only Blob API
+in 64 KiB byte chunks. This avoids allocating the entire source message as a Python
+string. Python 3.9/3.10 retain the full-string input fallback, with bounded-batch
+escape validation in C instead of a Python loop for each escaped quote. The source
+cell's JSON is validated even when most of its content is discarded.
 SQLite's source mapping and page cache are bounded to 64 MiB and 16 MiB per reader.
 
 ## Lazy session reads
@@ -115,6 +122,13 @@ Native v2
 prompt text is read directly from the message; legacy prompt lookups use the
 original part table to avoid a correlated scan of the combined part view. Exercise
 mixed databases with unrelated history when checking session-entry performance.
+
+V2 Turns and Tools share a one-scope metadata memo keyed by source `data_version`,
+root and own/subtree mode. It contains tool names, part types and readability
+booleans, never bodies. Metadata projections avoid tool-output normalization.
+Tools joins indexed numeric accounting rather than reparsing message tokens/costs.
+Temporary writes use savepoints so they cannot leave a source snapshot pinned
+between refreshes. Full traces and Changes retain their separate content readers.
 
 Changes uses separate worker-owned connections for both file lists and keyed diffs.
 Those connections receive the same read tuning as the main store. Its snapshot
@@ -181,7 +195,7 @@ is written from `model_breakdown()` only after both workflow and model rows are
 available for the same fingerprint. An incremental result already includes its
 model rows: delegating that call would undo the optimization with a full parse.
 
-Writes use a temporary file and atomic replacement and are best-effort: inability
+Rollup JSON writes use a temporary file and atomic replacement and are best-effort: inability
 to write the cache must not prevent browsing. Rows are stored before App's `$`
 repricing, so changing price mode does not require a transcript parse.
 `CACHE_VERSION` invalidates payloads when their shape or meaning changes.
@@ -192,7 +206,7 @@ The implementation is [stores/cached.py](../src/opentab/stores/cached.py).
 ### OpenCode: reuse unchanged message accounting
 
 On a database fingerprint miss, OpenCode scans native message **metadata**, not
-every message's JSON. The rollup cache includes source identity, message row IDs,
+every message's JSON. An indexed `.json.usage.sqlite3` sidecar includes source identity, message row IDs,
 session IDs, type, sequence and creation/update revisions, together with their
 scalar accounting projection. Only new or revised messages need a payload read.
 Workflow trees, worked time, model totals and aggregate residuals are recalculated
@@ -209,6 +223,16 @@ Missing, older or malformed accounting-cache payloads cause a fresh projection.
 The first uncached build still reads retained history once; subsequent activity
 does not rescan unchanged inline output. No prompt, tool output or trace is cached.
 Root-scoped status reads use the same bounded projection for only that subtree.
+
+Warm rollup hits do not open the scalar sidecar. Detail readers load just their
+selected executions, then verify revisions against the source. Full refreshes
+load all scalar rows and populate the indexed TEMP table in batches. Sidecar
+writes are transactional, updating changed rows and removing deleted rows; when
+all native rows were reused, the sidecar is not rewritten. Rollup JSON encoding
+uses the stdlib C encoder. Existing inline JSON accounting caches remain readable
+and migrate on their next cache write; no cache deletion is required. A missing,
+malformed or mismatched sidecar falls back to fresh accounting. Neither SQLite
+indexes nor writes are applied to harness databases.
 
 ### File backends: reparse whole affected sessions
 

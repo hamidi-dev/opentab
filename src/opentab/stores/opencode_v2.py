@@ -112,7 +112,9 @@ def install_views(conn: sqlite3.Connection) -> bool:
     return True
 
 
-def scoped_detail_sql(conn: sqlite3.Connection, sql: str, *, part_row: int | None = None) -> str:
+def scoped_detail_sql(
+    conn: sqlite3.Connection, sql: str, *, part_row: int | None = None, part_metadata: bool = False
+) -> str:
     """Bound each detail UNION branch to the caller's recursive ``tree`` CTE.
 
     SQLite 3.37 cannot push an IN-subquery predicate through a UNION view when
@@ -158,7 +160,11 @@ def scoped_detail_sql(conn: sqlite3.Connection, sql: str, *, part_row: int | Non
             """
         candidates += "), "
     views = _detail_views(
-        conn, legacy_message, scope="select id from tree", keyed=part_row is not None
+        conn,
+        legacy_message,
+        scope="select id from tree",
+        keyed=part_row is not None,
+        part_metadata=part_metadata,
     )
     # Separate subqueries allow each alias's additional ID/rowid predicates to
     # narrow its own read. A multiply referenced CTE can instead materialize all
@@ -179,6 +185,7 @@ def _detail_views(
     *,
     scope: str | None = None,
     keyed: bool = False,
+    part_metadata: bool = False,
 ) -> dict[str, str]:
     message_scope = f"m.session_id in ({scope}) and " if scope else ""
     part_message_scope = message_scope
@@ -249,6 +256,33 @@ def _detail_views(
           {"p.message_id in (select id from opentab_detail_candidates) and " if keyed else ""}
           not exists (select 1 from main.session_v2 v where v.id = m.session_id)
         """
+    # Accounting and readability markers need names/types, never normalized tool
+    # output. Avoid constructing/copying inline results for these metadata reads.
+    part_data = (
+        """json_object(
+      'type', json_extract(c.value, '$.type'),
+      'tool', json_extract(c.value, '$.name'),
+      'text', case when json_extract(c.value, '$.type') in ('text', 'reasoning')
+                   then json_extract(c.value, '$.text') end)
+    """
+        if part_metadata
+        else """case when json_extract(c.value, '$.type') = 'tool' then
+      json_set(c.value,
+        '$.tool', json_extract(c.value, '$.name'),
+        '$.__opentab_v2', 1,
+        '$.state.output', coalesce((
+          select group_concat(json_extract(
+            case when output.type = 'object' then output.value else '{}' end,
+            '$.text'), char(10))
+          from json_each(c.value, '$.state.content') output
+          where json_extract(
+            case when output.type = 'object' then output.value else '{}' end,
+            '$.type') = 'text'
+        ), ''),
+        '$.state.error', coalesce(json_extract(c.value, '$.state.error.message'),
+                                 json_extract(c.value, '$.state.error')))
+      else c.value end"""
+    )
     part_sql = (
         """
         select -m.rowid as rowid,
@@ -258,23 +292,9 @@ def _detail_views(
                m.id as message_id, m.session_id,
                coalesce(json_extract(c.value, '$.time.created'), m.time_created) as time_created,
                m.time_updated, cast(c.key as integer) as part_index,
-                case when json_extract(c.value, '$.type') = 'tool' then
-                  json_set(c.value,
-                    '$.tool', json_extract(c.value, '$.name'),
-                    '$.__opentab_v2', 1,
-                   '$.state.output', coalesce((
-                      select group_concat(json_extract(
-                        case when output.type = 'object' then output.value else '{}' end,
-                        '$.text'), char(10))
-                      from json_each(c.value, '$.state.content') output
-                      where json_extract(
-                        case when output.type = 'object' then output.value else '{}' end,
-                        '$.type') = 'text'
-                   ), ''),
-                   '$.state.error', coalesce(json_extract(c.value, '$.state.error.message'),
-                                             json_extract(c.value, '$.state.error'))
-                 )
-               else c.value end as data
+        """
+        + part_data
+        + """ as data
         from main.session_message m
         join json_each(case when json_valid(m.data) then m.data else '{}' end, '$.content') c
         where """

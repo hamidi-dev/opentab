@@ -509,16 +509,7 @@ class Store:
 
     @debug.timed("opencode.nodes")
     def workflow_nodes(self, workflow_id: str) -> list[sqlite3.Row]:
-        if self._usage_cache is not None:
-            ids = [
-                row[0]
-                for row in self.conn.execute(
-                    "with recursive tree(id) as (select id from session where id=? union all "
-                    "select s.id from session s join tree on s.parent_id=tree.id) select id from tree",
-                    [workflow_id],
-                )
-            ]
-            self._usage_cache.prepare(self.conn, self._legacy_usage_available(), scope=ids)
+        self._prepare_session_usage(workflow_id)
         message_table = "opentab_message_usage" if self.has_v2 else "message"
         message_model = "m.model_name" if self.has_v2 else MSG_MODEL_EXPR
         message_role = "m.role" if self.has_v2 else "json_extract(m.data, '$.role')"
@@ -703,6 +694,29 @@ class Store:
         if self._usage_cache is not None:
             self._usage_cache.restore(payload)
 
+    def set_accounting_cache_loader(self, loader) -> None:
+        self._accounting_cache_loader = loader
+
+    def _prepare_session_usage(self, workflow_id: str) -> None:
+        if self._usage_cache is None:
+            return
+        loader = getattr(self, "_accounting_cache_loader", None)
+        ids = [
+            row[0]
+            for row in self.conn.execute(
+                "with recursive tree(id) as (select id from session where id=? union all "
+                "select s.id from session s join tree on s.parent_id=tree.id) select id from tree",
+                [workflow_id],
+            )
+        ]
+        if loader is not None and (
+            not self._usage_cache.ready
+            or self._usage_cache.scope is not None
+            and self._usage_cache.scope != frozenset(ids)
+        ):
+            self.restore_accounting_cache(loader(ids))
+        self._usage_cache.prepare(self.conn, self._legacy_usage_available(), scope=ids)
+
     def accounting_cache(self):
         return self._usage_cache.export() if self._usage_cache is not None else None
 
@@ -710,10 +724,25 @@ class Store:
     def accounting_cache_reused(self) -> bool:
         return self._usage_cache is not None and self._usage_cache.reused > 0
 
+    @property
+    def accounting_cache_changed(self) -> bool:
+        return self._usage_cache is not None and self._usage_cache.changed
+
     def _detail_sql(
-        self, sql: str, conn: sqlite3.Connection | None = None, *, part_row: int | None = None
+        self,
+        sql: str,
+        conn: sqlite3.Connection | None = None,
+        *,
+        part_row: int | None = None,
+        part_metadata: bool = False,
     ) -> str:
-        return scoped_detail_sql(conn or self.conn, sql, part_row=part_row) if self.has_v2 else sql
+        return (
+            scoped_detail_sql(
+                conn or self.conn, sql, part_row=part_row, part_metadata=part_metadata
+            )
+            if self.has_v2
+            else sql
+        )
 
     @debug.timed("opencode.tools")
     def tool_breakdown(self, workflow_id: str) -> list[sqlite3.Row]:
@@ -730,6 +759,51 @@ class Store:
         # whole-table scan at startup, unlike model_breakdown.
         if not self.supports_tool_breakdown:
             return []
+        numeric = self._usage_cache is not None
+        if numeric:
+            self._prepare_session_usage(workflow_id)
+            parts = self._session_part_metadata(workflow_id)
+            self.conn.execute("savepoint opentab_tool_parts")
+            try:
+                self.conn.execute(
+                    "create temp table if not exists opentab_tool_parts(message_id, ptype, tool)"
+                )
+                self.conn.execute("delete from temp.opentab_tool_parts")
+                self.conn.executemany(
+                    "insert into temp.opentab_tool_parts values(?,?,?)",
+                    [(mid, kind, tool) for mid, kind, tool, readable in parts if kind == "tool"],
+                )
+                self.conn.execute("release opentab_tool_parts")
+            except BaseException:
+                self.conn.execute("rollback to opentab_tool_parts")
+                self.conn.execute("release opentab_tool_parts")
+                raise
+        model = "m.model_name" if numeric else MSG_MODEL_EXPR
+        fields = {
+            name: f"m.{name}" if numeric else f"coalesce(json_extract(m.data, '{path}'), 0)"
+            for name, path in (
+                ("input", "$.tokens.input"),
+                ("output", "$.tokens.output"),
+                ("reasoning", "$.tokens.reasoning"),
+                ("cache_read", "$.tokens.cache.read"),
+                ("cache_write", "$.tokens.cache.write"),
+                ("cost", "$.cost"),
+            )
+        }
+        total = " + ".join(
+            fields[k] for k in ("input", "output", "reasoning", "cache_read", "cache_write")
+        )
+        part_source = (
+            "select message_id, ptype, tool from temp.opentab_tool_parts"
+            if numeric
+            else """
+          select message_id,
+                 json_extract(data, '$.type') as ptype,
+                 json_extract(data, '$.tool') as tool
+          from part
+          where session_id in (select id from tree)
+        """
+        )
         sql = f"""
         with recursive tree(id) as (
           select id from session where id = ?
@@ -737,11 +811,7 @@ class Store:
           select child.id from session child join tree on child.parent_id = tree.id
         ),
         session_parts as (
-          select message_id,
-                 json_extract(data, '$.type') as ptype,
-                 json_extract(data, '$.tool') as tool
-          from part
-          where session_id in (select id from tree)
+          {part_source}
         ),
         tool_counts as (  -- how many tools each step called (the even-split divisor)
           select message_id, count(*) as n
@@ -752,23 +822,23 @@ class Store:
         )
         select
           t.tool as tool,
-          {MSG_MODEL_EXPR} as model_name,
+          {model} as model_name,
           count(*) as calls,
-          sum(({MSG_TOKEN_TOTAL_EXPR}) * 1.0 / tc.n) as tokens_total,
-          sum(coalesce(json_extract(m.data, '$.tokens.input'), 0) * 1.0 / tc.n) as input,
-          sum(coalesce(json_extract(m.data, '$.tokens.output'), 0) * 1.0 / tc.n) as output,
-          sum(coalesce(json_extract(m.data, '$.tokens.reasoning'), 0) * 1.0 / tc.n) as reasoning,
-          sum(coalesce(json_extract(m.data, '$.tokens.cache.read'), 0) * 1.0 / tc.n) as cache_read,
-          sum(coalesce(json_extract(m.data, '$.tokens.cache.write'), 0) * 1.0 / tc.n) as cache_write,
-          sum(coalesce(json_extract(m.data, '$.cost'), 0) * 1.0 / tc.n) as cost
+          sum(({total}) * 1.0 / tc.n) as tokens_total,
+          sum({fields['input']} * 1.0 / tc.n) as input,
+          sum({fields['output']} * 1.0 / tc.n) as output,
+          sum({fields['reasoning']} * 1.0 / tc.n) as reasoning,
+          sum({fields['cache_read']} * 1.0 / tc.n) as cache_read,
+          sum({fields['cache_write']} * 1.0 / tc.n) as cache_write,
+          sum({fields['cost']} * 1.0 / tc.n) as cost
         from tools t
-        join message m on m.id = t.message_id
+        join {'opentab_message_usage' if numeric else 'message'} m on m.id = t.message_id
         join tool_counts tc on tc.message_id = t.message_id
         where m.session_id in (select id from tree)
         group by t.tool, model_name
         order by cost desc, tokens_total desc
         """
-        return list(self.conn.execute(self._detail_sql(sql), [workflow_id]))
+        return list(self.conn.execute(self._detail_sql(sql, part_metadata=True), [workflow_id]))
 
     def supports_tools(self, workflow_id: str) -> bool:
         # Per-session capability gate for the Tools tab. A single OpenCode DB is
@@ -926,6 +996,16 @@ class Store:
         """
         if not self.supports_tool_breakdown:
             return {}
+        if self.has_v2:
+            out = {}
+            try:
+                for mid, kind, _tool, readable in self._session_part_metadata(workflow_id, own=own):
+                    if mid and readable:
+                        text, reason = out.get(mid, (False, False))
+                        out[mid] = (text or kind == "text", reason or kind == "reasoning")
+            except sqlite3.Error:
+                return {}
+            return out
         sql = """
         with recursive tree(id) as (
           select id from session where id = ?
@@ -957,7 +1037,9 @@ class Store:
         group by p.message_id
         """
         try:
-            rows = self.conn.execute(self._detail_sql(sql), [workflow_id, own]).fetchall()
+            rows = self.conn.execute(
+                self._detail_sql(sql, part_metadata=True), [workflow_id, own]
+            ).fetchall()
         except sqlite3.Error:
             return {}  # an older schema simply shows no marker, never an error
         return {mid: (bool(text), bool(reason)) for mid, text, reason in rows if mid}
@@ -982,6 +1064,12 @@ class Store:
         """
         if not self.supports_tool_breakdown:
             return {}
+        if self.has_v2 and workflow_id is not None:
+            out = {}
+            for mid, kind, tool, _readable in self._session_part_metadata(workflow_id, own=own):
+                if kind == "tool" and tool:
+                    out.setdefault(mid, []).append(tool)
+            return out
         part_order = (
             "message_id, part_index, rowid" if "part_index" in self.part_columns else "rowid"
         )
@@ -1014,11 +1102,40 @@ class Store:
             )
         out: dict[str, list[str]] = {}
         if workflow_id is not None:
-            sql = self._detail_sql(sql)
+            sql = self._detail_sql(sql, part_metadata=True)
         for mid, tool in self.conn.execute(sql, params):
             if tool:
                 out.setdefault(mid, []).append(tool)
         return out
+
+    @debug.timed("opencode.part_metadata")
+    def _session_part_metadata(self, workflow_id: str, *, own: bool = False) -> list:
+        """Share names/readability across Turns and Tools; never memoize bodies."""
+        version = self.conn.execute("pragma data_version").fetchone()[0]
+        key = (version, workflow_id, own)
+        memo = getattr(self, "_part_metadata_memo", None)
+        if memo is not None and memo[0] == key:
+            debug.event("opencode.part_metadata_cache", result="hit", rows=len(memo[1]))
+            return memo[1]
+        sql = """
+        with recursive tree(id) as (
+          select id from session where id=? union all
+          select child.id from session child join tree on child.parent_id=tree.id where not ?
+        )
+        select message_id, json_extract(data, '$.type'), json_extract(data, '$.tool'),
+          case when json_extract(data, '$.type') in ('text','reasoning') then
+            length(trim(coalesce(json_extract(data, '$.text'), ''),
+              char(32)||char(9)||char(10)||char(11)||char(12)||char(13)||char(28)||char(29)||char(30)||char(31))) > 0
+          else 0 end
+        from part where session_id in (select id from tree)
+        order by message_id, part_index, rowid
+        """
+        rows = self.conn.execute(
+            self._detail_sql(sql, part_metadata=True), [workflow_id, own]
+        ).fetchall()
+        self._part_metadata_memo = (key, rows)
+        debug.event("opencode.part_metadata_cache", result="miss", rows=len(rows))
+        return rows
 
     @debug.timed("opencode.turn_content")
     def turn_content(

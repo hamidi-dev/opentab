@@ -11,11 +11,13 @@ import argparse
 import hashlib
 import json
 import os
+import sqlite3
+import tempfile
 from dataclasses import asdict
 
 from opentab import diagnostics as debug
 from opentab.accounting.models import Workflow
-from opentab.persistence import paths
+from opentab.persistence import paths, usage_cache
 
 CACHE_VERSION = 13  # bump when the cached payload shape or meaning changes
 
@@ -38,6 +40,9 @@ class CachedStore:
         name = hashlib.sha1(cache_id.encode("utf-8", "replace")).hexdigest()[:16]
         self._path = os.path.join(cache_dir(), f"{self._source}-{name}.json")
         self._disk = self._read()  # the on-disk cache, or None
+        loader = getattr(store, "set_accounting_cache_loader", None)
+        if loader is not None:
+            loader(self._accounting_payload)
         self._live_fp: list | None = None  # fingerprint of the current workflows() call
         self._fresh_wf: list | None = None  # asdict rows from the last parse (for the write)
         self._fresh_prov: dict | None = None  # provenance to write beside them
@@ -172,18 +177,63 @@ class CachedStore:
             "provenance": provenance or {},
         }
         getter = getattr(self._store, "accounting_cache", None)
-        if getter is not None:
-            payload["accounting"] = getter()
         try:
             os.makedirs(cache_dir(), exist_ok=True)
-            tmp = f"{self._path}.{os.getpid()}.tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh)
-            os.replace(tmp, self._path)
+            if getter is not None:
+                accounting = getter()
+                if accounting is not None:
+                    # Independent revision-checked scalar snapshot. Rollup hits need
+                    # not load it; an older/newer sidecar is safe because every use
+                    # verifies source identity, row revisions and the build cutoff.
+                    path = self._path + ".usage.sqlite3"
+                    if getattr(self._store, "accounting_cache_changed", True) or not os.path.isfile(
+                        path
+                    ):
+                        with debug.span("cache.accounting_write", source=self._source):
+                            usage_cache.write(path, accounting)
+                    else:
+                        self._debug(
+                            "cache.accounting_write_skipped", reason="all_native_rows_reused"
+                        )
+                    payload["accounting_external"] = "sqlite-v1"
+            self._write_json(self._path, payload)
             self._disk = payload
             self._debug("cache.written", workflows=len(workflows), models=len(model_breakdown))
-        except OSError as exc:
+        except (OSError, sqlite3.Error) as exc:
             self._debug("cache.write_failed", error_type=type(exc).__name__)
+
+    @staticmethod
+    def _write_json(path: str, payload) -> None:
+        # dumps uses the C encoder. dump's Python generator/write per scalar made
+        # an unchanged 55k-row accounting snapshot cost over a second on WSL.
+        with debug.span("cache.encode") as info:
+            text = json.dumps(payload, separators=(",", ":"))
+            info["characters"] = len(text)
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", dir=os.path.dirname(path))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                with debug.span("cache.disk_write"):
+                    fh.write(text)
+            os.replace(tmp, path)
+        finally:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+
+    @debug.timed("cache.accounting_read")
+    def _accounting_payload(self, scope=None):
+        disk = self._disk or {}
+        if not disk.get("accounting_external"):
+            return disk.get("accounting")  # migrate existing inline scalar caches lazily
+        try:
+            if disk.get("accounting_external") == "sqlite-v1":
+                return usage_cache.read(self._path + ".usage.sqlite3", scope)
+            with open(self._path + ".usage.json", encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError, sqlite3.Error):
+            self._debug("cache.reject", layer="accounting", reason="missing_or_invalid_sidecar")
+            return None
 
     @staticmethod
     def _fp_map(fingerprint) -> dict:
@@ -316,7 +366,7 @@ class CachedStore:
                     "cache.decision",
                     result="hit",
                     workflows=len(rows),
-                    accounting_restore="skipped_on_rollup_hit",
+                    accounting_restore="deferred_until_needed",
                 )
                 return rows
         # A miss. Before re-reading everything, try to re-read only what changed.
@@ -336,7 +386,7 @@ class CachedStore:
         restore = getattr(self._store, "restore_accounting_cache", None)
         if restore is not None:
             with debug.span("cache.restore_accounting", source=self._source):
-                restore((self._disk or {}).get("accounting"))
+                restore(self._accounting_payload())
         with debug.span("cache.backend_workflows", source=self._source):
             workflows = self._store.workflows()  # miss: real parse
         self.served_incrementally = bool(getattr(self._store, "accounting_cache_reused", False))

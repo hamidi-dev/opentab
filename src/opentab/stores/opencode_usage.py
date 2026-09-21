@@ -1,10 +1,11 @@
 """Revision-keyed numeric accounting, with bounded decoding of inline tool output.
 
-Only CachedStore persists these rows, in OpenTab's own rollup cache. Source tables
+Only CachedStore persists these rows, in OpenTab's own scalar sidecar. Source tables
 remain read-only. Metadata is cheap to scan even when data lives on overflow pages.
 """
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
@@ -14,7 +15,10 @@ import time
 from opentab import diagnostics as debug
 from opentab.stores.opencode_v2 import usage_columns
 
-_STRING_SPECIAL = re.compile(r'["\\\x00-\x1f]')
+# Consume escapes in C, in bounded batches. A Python iteration for every escaped
+# quote in an inline transcript can take tens of seconds. An unbounded repeated
+# regex instead retains backtracking state proportional to that whole transcript.
+_STRING_CHUNK = re.compile(r'(?:[^"\\\x00-\x1f]+|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})){1,4096}')
 _NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 _SPACE = re.compile(r"[ \t\r\n]*")
 _KEEP = {"role", "providerID", "modelID", "model", "time", "tokens", "cost"}
@@ -37,25 +41,13 @@ def _invalid_constant(value):
 def _string_end(text: str, start: int) -> int:
     pos = start + 1
     while True:
-        match = _STRING_SPECIAL.search(text, pos)
-        if match is None:
-            raise ValueError("unterminated string")
-        pos = match.start()
-        char = text[pos]
-        if char == '"':
+        match = _STRING_CHUNK.match(text, pos)
+        if match is not None:
+            pos = match.end()
+        if pos < len(text) and text[pos] == '"':
             return pos + 1
-        if char != "\\" or pos + 1 >= len(text):
+        if match is None:
             raise ValueError("invalid string")
-        escape = text[pos + 1]
-        if escape == "u":
-            digits = text[pos + 2 : pos + 6]
-            if len(digits) != 4 or any(c not in "0123456789abcdefABCDEF" for c in digits):
-                raise ValueError("invalid unicode escape")
-            pos += 6
-        elif escape in '"\\/bfnrt':
-            pos += 2
-        else:
-            raise ValueError("invalid escape")
 
 
 def _value_end(text: str, start: int) -> int:
@@ -178,6 +170,191 @@ def compact_usage(text: str) -> str:
         return "null"
 
 
+class _JSONStream:
+    """Bounded UTF-8 input and JSON validation; skipped strings are never decoded.
+
+    SQLite's read-only Blob API (Python 3.11+) keeps a giant TEXT cell out of the
+    Python/SQLite result buffers. The same validator also accepts small byte chunks
+    in tests, including boundaries inside escapes and multibyte characters.
+    """
+
+    def __init__(self, read):
+        self.read = read
+        self.decoder = codecs.getincrementaldecoder("utf-8")()
+        self.text = ""
+        self.pos = 0
+        self.eof = False
+        self.capture = None
+
+    def fill(self, minimum=1):
+        if len(self.text) - self.pos >= minimum or self.eof:
+            return
+        self.text = self.text[self.pos :]
+        self.pos = 0
+        while len(self.text) < minimum and not self.eof:
+            data = self.read(65536)
+            self.eof = not data
+            self.text += self.decoder.decode(data, final=self.eof)
+
+    def take(self, count):
+        if self.capture is not None:
+            self.capture.append(self.text[self.pos : self.pos + count])
+        self.pos += count
+
+    def peek(self):
+        self.fill()
+        return self.text[self.pos : self.pos + 1]
+
+    def space(self):
+        while True:
+            self.fill()
+            end = _SPACE.match(self.text, self.pos).end()
+            self.take(end - self.pos)
+            if end < len(self.text) or self.eof:
+                return
+
+    def string(self):
+        if self.peek() != '"':
+            raise ValueError("missing string")
+        self.take(1)
+        while True:
+            self.fill(6)  # a split Unicode escape needs at most six characters
+            match = _STRING_CHUNK.match(self.text, self.pos)
+            if match is not None:
+                self.take(match.end() - self.pos)
+            char = self.peek()
+            if char == '"':
+                self.take(1)
+                return
+            if match is None:
+                raise ValueError("invalid string")
+
+    def value(self):
+        states = ["value"]
+        depth = 1
+        while states:
+            self.space()
+            char = self.peek()
+            state = states.pop()
+            if not char:
+                raise ValueError("missing value")
+            if state in ("object", "key"):
+                if char == "}" and state == "object":
+                    self.take(1)
+                    depth -= 1
+                    continue
+                self.string()
+                self.space()
+                if self.peek() != ":":
+                    raise ValueError("missing colon")
+                self.take(1)
+                states.extend(("object-end", "value"))
+            elif state in ("object-end", "array-end"):
+                end = "}" if state == "object-end" else "]"
+                if char == end:
+                    self.take(1)
+                    depth -= 1
+                elif char == ",":
+                    self.take(1)
+                    states.extend(("array-end", "value") if end == "]" else ("key",))
+                else:
+                    raise ValueError("missing separator")
+            elif state == "array" and char == "]":
+                self.take(1)
+                depth -= 1
+            else:
+                if state == "array":
+                    states.append("array-end")
+                if char in ("{", "["):
+                    states.append("object" if char == "{" else "array")
+                    depth += 1
+                    self.take(1)
+                elif char == '"':
+                    self.string()
+                elif char in ("t", "f", "n"):
+                    literal = {"t": "true", "f": "false", "n": "null"}[char]
+                    self.fill(len(literal))
+                    if not self.text.startswith(literal, self.pos):
+                        raise ValueError("invalid literal")
+                    self.take(len(literal))
+                else:
+                    # Numbers are uncommon in discarded tool output; retain a token
+                    # only until its delimiter so exponent/leading-zero rules hold.
+                    number = []
+                    while self.peek() and self.peek() in "-+0123456789.eE":
+                        number.append(self.peek())
+                        self.take(1)
+                    if not _NUMBER.fullmatch("".join(number)):
+                        raise ValueError("invalid number")
+            if depth > _MAX_DEPTH:
+                raise ValueError("JSON nesting limit")
+
+
+def compact_usage_stream(read) -> str:
+    stream = _JSONStream(read)
+    fields = {}
+    try:
+        stream.space()
+        if stream.peek() != "{":
+            return "null"
+        stream.take(1)
+        stream.space()
+        if stream.peek() != "}":
+            while True:
+                stream.capture = []
+                stream.string()
+                key = json.loads("".join(stream.capture))
+                stream.capture = None
+                stream.space()
+                if stream.peek() != ":":
+                    raise ValueError("missing colon")
+                stream.take(1)
+                keep = key in _KEEP and key not in fields
+                stream.capture = [] if keep else None
+                stream.value()
+                if keep:
+                    fields[key] = "".join(stream.capture)
+                stream.capture = None
+                stream.space()
+                if stream.peek() != ",":
+                    break
+                stream.take(1)
+                stream.space()
+        if stream.peek() != "}":
+            raise ValueError("missing object end")
+        stream.take(1)
+        stream.space()
+        if stream.peek():
+            raise ValueError("trailing data")
+        return "{" + ",".join(json.dumps(k) + ":" + v for k, v in fields.items()) + "}"
+    except (ValueError, UnicodeError):
+        return "null"
+
+
+def _read_usage(conn, rowid, tracing):
+    """Fetch/project one row; modern runtimes stream oversized TEXT via Blob."""
+    started = time.perf_counter() if tracing else 0
+    blob = None
+    if hasattr(conn, "blobopen"):
+        try:
+            blob = conn.blobopen("session_message", "data", rowid, readonly=True)
+        except sqlite3.OperationalError:
+            pass  # NULL/non-blob values retain the SQL projection's old behavior.
+    if blob is not None:
+        with blob:
+            size = len(blob)
+            if size > _DECODE_LIMIT:
+                fetched = time.perf_counter() if tracing else 0
+                compact = compact_usage_stream(blob.read)
+                return compact, size, (fetched - started) * 1000, True
+    data = conn.execute("select data from main.session_message where rowid=?", [rowid]).fetchone()[
+        0
+    ]
+    fetched = time.perf_counter() if tracing else 0
+    size = len(data) if isinstance(data, (str, bytes)) else 0
+    return compact_usage(data), size, (fetched - started) * 1000, False
+
+
 class UsageCache:
     """One bounded set of numeric rows, replaced on each refresh (never raw text)."""
 
@@ -189,6 +366,7 @@ class UsageCache:
         self.data_version = None
         self.built_at = 0
         self.reused = 0
+        self.changed = True
 
     def identity(self) -> list:
         stat = os.stat(self.db)
@@ -197,6 +375,7 @@ class UsageCache:
     @debug.timed("usage.restore")
     def restore(self, payload) -> None:
         self.rows = {}
+        self.built_at = 0
         if not isinstance(payload, dict) or payload.get("version") != 1:
             debug.event("usage.restore_rejected", reason="missing_or_version")
             return
@@ -286,6 +465,7 @@ class UsageCache:
                         "time_created, model_name, cost, input, output, reasoning, cache_read, cache_write)"
                     )
             fresh = {}
+            pending = []
             reused = 0
             projection = (
                 "select "
@@ -323,37 +503,49 @@ class UsageCache:
                         )
                         reread_reasons[reason] = reread_reasons.get(reason, 0) + 1
                     tick = time.perf_counter() if tracing else 0
-                    data = conn.execute(
-                        "select data from main.session_message where rowid=?", [stamp[0]]
-                    ).fetchone()[0]
+                    compact, size, fetched_ms, streamed = _read_usage(conn, stamp[0], tracing)
                     if tracing:
                         now = time.perf_counter()
-                        fetch_ms += (now - tick) * 1000
+                        elapsed = (now - tick) * 1000
+                        fetch_ms += fetched_ms
+                        decode_ms += elapsed - fetched_ms
+                        if size > _DECODE_LIMIT or elapsed >= 100:
+                            debug.event(
+                                "usage.slow_row",
+                                row=debug.identity(str(stamp[0])),
+                                input_size=size,
+                                streamed=streamed,
+                                fetch_ms=round(fetched_ms, 3),
+                                decode_ms=round(elapsed - fetched_ms, 3),
+                            )
                         tick = now
-                        large += isinstance(data, str) and len(data) > _DECODE_LIMIT
-                    compact = compact_usage(data)
-                    del data
-                    if tracing:
-                        now = time.perf_counter()
-                        decode_ms += (now - tick) * 1000
-                        tick = now
+                        large += size > _DECODE_LIMIT
                     values = tuple(conn.execute(projection, (*stamp[:5], compact)).fetchone())
                     if tracing:
                         project_ms += (time.perf_counter() - tick) * 1000
                         decoded += 1
                 fresh[stamp[0]] = (stamp, values)
-                tick = time.perf_counter() if tracing else 0
-                conn.execute(
-                    "insert into temp.opentab_message_usage values (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    values,
-                )
+                pending.append(values)
+                if len(pending) == 1024:
+                    tick = time.perf_counter() if tracing else 0
+                    conn.executemany(
+                        "insert into temp.opentab_message_usage values (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        pending,
+                    )
+                    pending.clear()
+                    if tracing:
+                        insert_ms += (time.perf_counter() - tick) * 1000
                 if tracing:
-                    insert_ms += (time.perf_counter() - tick) * 1000
                     if len(fresh) % 1024 == 0:
                         debug.event(
                             "usage.progress", rows=len(fresh), reused=reused, decoded=decoded
                         )
+            tick = time.perf_counter() if tracing else 0
+            conn.executemany(
+                "insert into temp.opentab_message_usage values (?,?,?,?,?,?,?,?,?,?,?,?)", pending
+            )
             if tracing:
+                insert_ms += (time.perf_counter() - tick) * 1000
                 debug.event(
                     "usage.native_summary",
                     reread_reasons=reread_reasons,
@@ -395,7 +587,18 @@ class UsageCache:
                         "insert into temp.opentab_message_usage values (?,?,?,?,?,?,?,?,?,?,?,?)",
                         values,
                     )
+            if not self.ready:
+                # Source schemas remain read-only. Index only our compact temp
+                # rows so 23 subagents don't each scan all 55k accounting rows.
+                with debug.span("usage.index_table"):
+                    conn.execute(
+                        "create index temp.opentab_usage_session on opentab_message_usage(session_id)"
+                    )
+                    conn.execute("create index temp.opentab_usage_id on opentab_message_usage(id)")
             conn.execute("release opentab_usage_refresh")
+            self.changed = (
+                self.built_at <= 0 or reused != len(fresh) or len(fresh) != len(self.rows)
+            )
             self.rows = fresh
             self.ready = True
             self.scope = scope
