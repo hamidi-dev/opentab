@@ -22,6 +22,7 @@ except ImportError:  # native Windows has no stdlib curses
     curses = None
 
 from opentab import __version__, sources, util
+from opentab import diagnostics as debug
 from opentab.accounting.models import (
     ALL_HARNESSES,
     ALL_MACHINES,
@@ -326,6 +327,7 @@ class App:
     whatif_catalog = False
     _whatif_catalog_rows: list[tuple[str, float, bool]] | None = None
 
+    @debug.timed("app.build")
     def __init__(
         self,
         store: Store,
@@ -1603,6 +1605,7 @@ class App:
             self.workflow_index = min(self.workflow_index, max(0, len(session_rows) - 1))
         self.scroll = 0
 
+    @debug.timed("app.load_models")
     def _load_model_cache(self) -> None:
         self._model_by_root: dict[str, list[dict]] = defaultdict(list)
         for row in self.store.model_breakdown():
@@ -1796,7 +1799,9 @@ class App:
         if cached is not None:
             return cached
         fetch = getattr(self.store, "tool_breakdown", None)
-        rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
+        with debug.span("app.session_tools", session=debug.identity(workflow_id)) as info:
+            rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
+            info["rows"] = len(rows)
         if self.store.demo:
             rows = self._scale_demo_tools(workflow_id, rows)
         self._tool_by_session[workflow_id] = rows
@@ -2019,7 +2024,9 @@ class App:
         if cached is not None:
             return cached
         fetch = getattr(self.trace_owner(workflow_id), "message_timeline", None)
-        rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
+        with debug.span("app.session_turns", session=debug.identity(workflow_id)) as info:
+            rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
+            info["rows"] = len(rows)
         if self.store.demo:
             rows = self._scale_demo_turns(workflow_id, rows)
         self._turns_by_session[workflow_id] = rows
@@ -2108,6 +2115,13 @@ class App:
 
     def _invalidate_changes(self, *, close: bool = False) -> None:
         """Cancel source reads and discard every raw result from the current generation."""
+        debug.event(
+            "app.invalidate",
+            layer="changes",
+            close=close,
+            lists=len(self._changes_cache),
+            diffs=len(self._change_diff_cache),
+        )
         worker = self._changes_worker
         if worker is not None:
             if close:
@@ -2456,11 +2470,13 @@ class App:
         else:
             fetch = getattr(self.trace_owner(workflow_id), "turn_content", None)
             ok = fetch is not None and self.session_supports_trace(workflow_id)
-            content = dict(fetch(workflow_id)) if ok else {}
+            with debug.span("app.session_trace", session=debug.identity(workflow_id)):
+                content = dict(fetch(workflow_id)) if ok else {}
         self._trace_by_session[workflow_id] = content
         while len(self._trace_by_session) > self.TRACE_MEMO_SESSIONS:
             # dicts keep insertion order, so the first key is the oldest fetch.
             self._trace_by_session.pop(next(iter(self._trace_by_session)))
+            debug.event("app.memo_evicted", layer="trace", reason="session_limit")
         return content
 
     def session_records_reasoning(self, workflow_id: str) -> bool:
@@ -3112,7 +3128,9 @@ class App:
         if cached is not None:
             return cached
         fetch = getattr(self.store, "context_breakdown", None)
-        rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
+        with debug.span("app.session_context", session=debug.identity(workflow_id)) as info:
+            rows = [dict(r) for r in fetch(workflow_id)] if fetch else []
+            info["rows"] = len(rows)
         if self.store.demo:
             k = self.store.demo_scale
             for r in rows:
@@ -3135,8 +3153,17 @@ class App:
             return False
         return True
 
+    @debug.timed("app.session_prefetch")
     def prefetch_session_data(self, workflow_id: str) -> None:
         # Mirror session_data_ready's gates so one prefetch always ends the loading loop.
+        debug.event(
+            "app.session_memos",
+            session=debug.identity(workflow_id),
+            nodes=workflow_id in self._nodes_by_session,
+            turns=workflow_id in self._turns_by_session,
+            tools=workflow_id in self._tool_by_session,
+            context=workflow_id in self._context_by_session,
+        )
         self.session_node_rows(workflow_id)
         if self.session_supports_turns(workflow_id):
             self.session_turn_rows(workflow_id)
@@ -3150,7 +3177,9 @@ class App:
         cached = self._nodes_by_session.get(workflow_id)
         if cached is not None:
             return cached
-        rows = [dict(r) for r in self.store.workflow_nodes(workflow_id)]
+        with debug.span("app.session_nodes", session=debug.identity(workflow_id)) as info:
+            rows = [dict(r) for r in self.store.workflow_nodes(workflow_id)]
+            info["rows"] = len(rows)
         self._nodes_by_session[workflow_id] = rows
         return rows
 
@@ -3748,7 +3777,9 @@ class App:
             f"{self.keymap.label('main', 'prices')} prices view"
         )
 
+    @debug.timed("app.reload")
     def reload(self) -> None:
+        debug.event("app.invalidate", layer="session_details_and_projections", reason="reload")
         self._close_conversation_search()
         self._invalidate_changes()
         anchor = self.selection_anchor()
@@ -4117,7 +4148,13 @@ class App:
             "anchor": self.selection_anchor(),
         }
 
+    @debug.timed("app.reload_source")
     def _reload_for_source(self, restore: dict | None = None) -> None:
+        debug.event(
+            "app.invalidate",
+            layer="session_details_and_projections",
+            reason="source_or_demo_change",
+        )
         self._close_conversation_search()
         self._invalidate_changes()
         self._clear_subagent_prompt()

@@ -42,13 +42,25 @@ are ignored, and the defaults are shown):
   harness, sort, bookmarks, ignores, pins, and last announced OpenTab version;
   disable with `--no-state`),
   plus the `state.json.lock` sidecar used to coordinate writers.
+- **Explicit debug logs** — only with `--debug` or `--debug-log FILE`: a new JSONL
+  file under `~/.local/state/opentab/debug/`, or the requested new destination.
+  Logs contain runtime versions, timing/count/cache-decision metadata and run-local
+  hashed source/session identifiers, not source paths, SQL, prompts, tool output,
+  titles, notes or credentials. Files are created owner-only on POSIX and stop
+  growing at approximately 20 MiB each; remove old logs manually. Explicit logging
+  works with `--demo`/`--no-state` without enabling preference writes.
 - **Data** — `~/.local/share/opentab/notes.json`: your session notes, saved on every
   edit, plus the `notes.json.lock` sidecar used to coordinate writers.
 - **Cache** — `~/.cache/opentab/`: `cache/` (a warm-start rollup, one JSON per backend,
   rewritten after a parse when that backend's files change — off under
   `--demo`/`--no-cache`). Changed file fingerprints trigger rebuilding, not a stale
   preview; [fingerprint limitations](caching.md#when-a-splice-must-fall-back) still
-  apply to rewritten history. This directory also holds `prices.json` (the optional
+  apply to rewritten history. OpenCode v2 also keeps message identifiers, revisions
+  and scalar accounting fields in an indexed `.json.usage.sqlite3` sidecar here to
+  avoid rereading unchanged JSON. This is OpenTab's own database; harness databases
+  remain read-only. No message text or tool output is retained. See its
+  [revision assumptions](caching.md#opencode-reuse-unchanged-message-accounting).
+  This directory also holds `prices.json` (the optional
   model-price cache, written **only** on an explicit refresh) and `remotes/`
   (summaries pulled from other machines). Local rollups and prices can be regenerated; deleting pulled
   summaries removes offline history until you pull or copy them again.

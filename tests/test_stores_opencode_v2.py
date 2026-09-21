@@ -714,6 +714,8 @@ def test_opencode_v2_rollups_do_not_resolve_prompt_parents_per_message():
         store.model_breakdown()
         store.conn.set_trace_callback(None)
         for sql in statements:
+            if not sql.lstrip().lower().startswith(("select", "with")):
+                continue
             plan = list(store.conn.execute("explain query plan " + sql))
             assert not any("CORRELATED SCALAR SUBQUERY" in row[3] for row in plan), plan
 
@@ -837,7 +839,10 @@ def test_opencode_v2_rollups_never_serialize_inline_content_and_scan_usage_once(
         finally:
             store.conn.set_authorizer(None)
             store.conn.set_trace_callback(None)
-        assert len(statements) == 2, statements
+        # The materialized numeric rows are refreshed from metadata; unchanged
+        # native JSON must not be read again for either rollup or residuals.
+        assert not any("select data from main.session_message" in sql for sql in statements)
+        assert sum("from main.session_message" in sql for sql in statements) == 1
 
 
 def test_opencode_v2_changes_bound_fresh_list_and_diff_reads_to_the_session():
@@ -994,3 +999,39 @@ def test_opencode_v2_changes_scoping_preserves_duplicate_ownership_checks():
             for file in store.session_change_files("root")["files"]
             for edit in file["edits"]
         )
+
+
+def test_opencode_v2_scoped_changes_keep_legacy_parents_and_duplicate_parts():
+    with _v2_db(legacy=True) as (writer, store):
+        writer.executescript(
+            "drop table part; create table part (id text, message_id text, session_id text, data text);"
+        )
+        _populate_v2(writer)
+        writer.execute("insert into session values ('legacy', null, 'legacy', '/repo', null, 1, 2)")
+        writer.executemany(
+            "insert into message values (?,?,?)",
+            [
+                ("lu", "legacy", json.dumps({"role": "user"})),
+                ("la", "legacy", json.dumps({"role": "assistant", "parentID": "lu"})),
+            ],
+        )
+        blob = json.dumps(
+            {
+                "type": "tool",
+                "tool": "patch",
+                "state": {
+                    "status": "completed",
+                    "metadata": {"files": [{"file": "legacy.py", "patch": "legacy patch"}]},
+                },
+            }
+        )
+        writer.execute("insert into part values ('lp','la','legacy',?)", [blob])
+        writer.commit()
+        files = store.session_change_files("legacy")["files"]
+        key = files[0]["edits"][0]["key"]
+        assert store.session_change_diff("legacy", key)["patch"] == "legacy patch"
+        # A keyed source filter must retain other occurrences of the same part ID,
+        # rather than letting its physical row locator bypass uniqueness checks.
+        writer.execute("insert into part values ('lp','la','legacy',?)", [blob])
+        writer.commit()
+        assert store.session_change_diff("legacy", key) is None
