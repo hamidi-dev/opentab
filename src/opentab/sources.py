@@ -8,6 +8,7 @@ import sqlite3
 import sys
 from urllib.parse import quote
 
+from opentab import diagnostics as debug
 from opentab import util
 from opentab.persistence import paths
 from opentab.presentation.formatting import short_path
@@ -385,12 +386,15 @@ def _detect_fingerprint(args: argparse.Namespace) -> tuple:
     ) + (os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH", ""),)
 
 
+@debug.timed("source.detect")
 def available_sources(args: argparse.Namespace) -> list[str]:
     # Memoize repeated tree probes, especially costly on Windows/WSL, by all path inputs.
     fp = _detect_fingerprint(args)
     cached = getattr(args, "_available_sources", None)
     if cached is not None and cached[0] == fp:
+        debug.event("source.detect_decision", result="memory_hit", sources=len(cached[1]))
         return list(cached[1])
+    debug.event("source.detect_decision", result="scan")
     keys = []
     # Never merge an unreadable or foreign database into ``all``.
     if not opencode_db_verdict(args.db)[0]:
@@ -450,8 +454,14 @@ def _wrap_cache(store, key: str, args: argparse.Namespace):
     if key == "all" or getattr(store, "combined", False):
         return store
     if getattr(args, "demo", False) or getattr(args, "no_cache", False):
+        debug.event(
+            "cache.bypass",
+            source=key,
+            reason="demo" if getattr(args, "demo", False) else "no_cache",
+        )
         return store
     if not callable(getattr(store, "cache_inputs", None)):
+        debug.event("cache.bypass", source=key, reason="unsupported")
         return store
     root = getattr(args, _PATH_SLOT.get(key, ""), "") or ""
     return CachedStore(store, f"{key}|{root}", args)
@@ -501,8 +511,9 @@ def _fleet_warning(remote, remotes, hostname: str, pulled: bool = False, live: b
 
 
 def make_store(args: argparse.Namespace, key: str) -> tuple[object, str]:
-    store, hint = _build_store(args, key)
-    return _wrap_cache(store, key, args), hint
+    with debug.span("source.build", source=key):
+        store, hint = _build_store(args, key)
+        return _wrap_cache(store, key, args), hint
 
 
 def _build_store(args: argparse.Namespace, key: str) -> tuple[object, str]:

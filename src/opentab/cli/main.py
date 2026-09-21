@@ -76,6 +76,16 @@ from opentab.util import (
 
 
 def _add_global_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="record cache decisions and phase timings to a new JSONL log under the XDG state directory",
+    )
+    parser.add_argument(
+        "--debug-log",
+        metavar="FILE",
+        help="write debug diagnostics to this new file instead (implies --debug)",
+    )
     # Keep --version order-independent after the implicit `tui` prepend, while
     # preserving the old "opentab X.Y.Z" output.
     parser.add_argument("--version", action="version", version=f"opentab {__version__}")
@@ -484,7 +494,7 @@ def _add_command_global_args(
     probe = argparse.ArgumentParser(add_help=False)
     _add_global_args(probe)
     for action in probe._actions:
-        if action.dest != "version" and action.dest not in keep:
+        if action.dest not in {"version", "debug", "debug_log"} and action.dest not in keep:
             continue
         if help_overrides and action.dest in help_overrides:
             action.help = help_overrides[action.dest]
@@ -2021,6 +2031,13 @@ def main() -> int:
         )
     enable_unicode_locale()
     args = parse_args()
+    from opentab import diagnostics
+
+    with diagnostics.session(getattr(args, "debug", False), getattr(args, "debug_log", None)):
+        return _run(args)
+
+
+def _run(args: argparse.Namespace) -> int:
     if getattr(args, "command", None) in {
         "usage",
         "sessions",

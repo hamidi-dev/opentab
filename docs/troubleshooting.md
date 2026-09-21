@@ -6,7 +6,8 @@ every harness backend (found, or not found and why, with the fix), the terminal'
 and glyph capabilities including any multiplexer in the way, the price catalog, and
 OpenTab's own files.
 
-It **reports and never repairs**: nothing is created, migrated, warmed or fetched.
+It **reports and never repairs**: nothing is created, migrated, warmed or fetched
+unless you explicitly request a diagnostic log with `--debug`.
 Availability checks can inspect record contents, such as VS Code's token-usage
 markers, but the report does not display prompts or session content. Home paths
 fold to `~` and pulled machines are counted rather than named. Review paths and
@@ -16,6 +17,22 @@ code is `1` only when something is genuinely broken (a `WARN` never moves it).
 
 Anything it tells you to set is written in your own shell's syntax — `export FOO=bar`,
 `set -gx FOO bar`, or `$env:FOO = "bar"` — so the hint is a line you can run.
+
+## Slow startup, reloads or session opening
+
+```sh
+opentab --debug --timings   # startup/cache decisions only
+opentab --debug             # include navigation and r/reload in the TUI
+opentab web --debug         # include live browser session reads
+```
+
+The log path is printed at startup. Follow it from another terminal with
+`tail -f FILE`, or choose a new destination with `--debug-log FILE` (implies
+`--debug`). Logs show cache-hit/miss reasons, reused/decoded accounting counts,
+phase durations and peak process RSS. A start without its matching end identifies
+the phase still running. Logs exclude source content and use hashed source/session
+identifiers. See [Debugging a slow run](caching.md#debugging-a-slow-run) for event
+fields, limits and measurement boundaries.
 
 ## Every theme looks the same
 

@@ -94,7 +94,10 @@ selection and preview limits without bypassing this bookkeeping.
 ## OpenCode
 
 Reader: [`stores/opencode.py`](../src/opentab/stores/opencode.py), with
-[`opencode_v2.py`](../src/opentab/stores/opencode_v2.py) for schema normalization.
+[`opencode_v2.py`](../src/opentab/stores/opencode_v2.py) for schema normalization
+and [`opencode_usage.py`](../src/opentab/stores/opencode_usage.py) for revision-keyed
+scalar accounting. See [caching](caching.md#opencode-reuse-unchanged-message-accounting)
+for the post-activity read bounds and revision assumptions.
 
 OpenCode supplies recorded cost and normalized token categories. Subscription calls
 can still record zero dollars. Sessions link through `parent_id`; recursive queries
