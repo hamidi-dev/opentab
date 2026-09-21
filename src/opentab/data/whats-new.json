@@ -1,6 +1,25 @@
 {
   "releases": [
     {
+      "version": "1.26.0",
+      "sections": [
+        {
+          "title": "Improved",
+          "items": [
+            {"text": "Open large OpenCode histories faster and refresh usage without rereading unchanged messages."},
+            {"text": "Open OpenCode sessions faster and use less memory when reading large messages and tool output."}
+          ]
+        },
+        {
+          "title": "New",
+          "items": [
+            {"text": "Diagnose slow startup, reloads and session navigation with detailed timing and cache logs. Message content stays out of the logs.", "hint": {"text": "Run opentab --debug"}}
+          ]
+        }
+      ],
+      "release_url": "https://github.com/hamidi-dev/opentab/releases/tag/v1.26.0"
+    },
+    {
       "version": "1.25.0",
       "sections": [
         {
