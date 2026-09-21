@@ -94,7 +94,7 @@ def _add_global_bundle(parser, add_globals, allowed, help_overrides=None) -> Non
     help_text = {**_GLOBAL_HELP, **(help_overrides or {})}
     defaults = {}
     for action in probe._actions:
-        if action.dest not in allowed:
+        if action.dest not in {*allowed, "debug", "debug_log"}:
             continue
         # Each leaf gets its own Action so argparse cannot leak mutations between parsers.
         copied = copy.copy(action)

@@ -52,6 +52,7 @@ package and installed command are both `opentab`.
 | `demo.py` | In-memory anonymization and spend scaling |
 | `util.py` | Shared parsing, path, terminal, content and launcher helpers |
 | `cli/doctor.py` | Read-only environment and harness diagnosis |
+| `diagnostics.py` | Opt-in bounded JSONL cache decisions and nested phase timings; no source content |
 
 Imports flow from shared helpers to stores, then to the TUI, application adapters
 and CLI. Stores never import the TUI. Annotation-only back-references use

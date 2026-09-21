@@ -7,6 +7,64 @@ its history, the cache must not preserve it as recorded usage.
 See [Architecture](architecture.md) for the package map and [Pricing](pricing.md)
 for recorded versus estimated spend.
 
+## Debugging a slow run
+
+Use `opentab --debug` for the TUI, `opentab --debug --timings` for startup only,
+or `opentab web --debug` for the browser server. The diagnostic stays active for
+reloads and navigation throughout that process. `--debug-log FILE` implies debug
+mode and selects a **new** file; an existing destination is refused.
+
+The default is a unique JSONL file under `$XDG_STATE_HOME/opentab/debug/`
+(`~/.local/state/opentab/debug/` without an override). Its path is printed to stderr
+at startup; stdout and the curses display remain unchanged. Each record is flushed
+immediately, so `tail -f FILE` shows progress while the application is still running.
+
+Events cover:
+
+- Source detection/build, persistent-cache reads/writes and rejected payloads.
+  Cache reads separate file reading, JSON decoding and payload validation.
+- Fingerprint hits/misses, changed input kinds (DB/WAL/SHM/file), size/mtime changes,
+  splice rejection reasons and affected-file/session counts. Input lists are capped
+  at 20 changes per decision, with the omitted count recorded.
+- OpenCode scalar-cache restoration, in-memory reuse, revision refreshes and counts
+  of reused/decoded native messages and reread legacy messages. `usage.native_summary`
+  separates payload fetching, decoding, projection and insertion; metadata/legacy
+  query events include SQLite execute/fetch time as `sql_ms`. Progress is emitted
+  every 1,024 native rows, without per-message content or IDs.
+  Reread reasons distinguish rows absent from the active scalar cache (`not_cached`),
+  changed revisions, unreliable revisions and recent/future timestamps. `not_cached`
+  does not necessarily mean a newly created source message. A rollup hit explicitly
+  records that scalar-cache restoration was skipped, explaining subsequent session
+  decoding even when startup was cached.
+- Deferred model loading, reload invalidation, session memo readiness and node,
+  Turns, Tools, Context and trace reads. Turns separates message queries, tool
+  attribution and readable-content markers. Changes file/diff reads are timed on
+  their worker; web session extras have their own outer phase.
+
+`*.start`/`*.end` records pair by `seq`/`span`, with `parent` identifying nested
+work. They include wall-clock Unix `time`, monotonic `elapsed_ms`, process/thread
+IDs, elapsed `duration_ms`, and peak **process** RSS where supported. Durations
+include children, so do not sum nested phases. Peak RSS is a lifetime high-water
+mark, not current RSS, filesystem cache, or Windows' total WSL memory. Logging and
+per-row clocks add overhead; use debug mode to locate work, then compare normal
+runs with the same measurement boundaries.
+
+End records also include `thread_cpu_ms`, `process_cpu_ms` and
+`wall_minus_thread_cpu_ms`. High wall time with little thread CPU suggests waiting
+(I/O, locks or scheduling); it does not by itself identify a slow disk. Process CPU
+includes other threads and can exceed wall time. These fields help separate Python/
+SQLite computation from host contention without changing cache behavior.
+Virtualized clocks can also disagree; treat CPU/wall differences as diagnostic
+evidence rather than exact I/O-wait accounting.
+
+Logging is off by default. Logs contain static operation/reason labels, runtime
+versions, counts and timing metadata; source paths and session IDs are run-local
+salted hashes. SQL, arguments, prompts, titles, model names, tool output, notes,
+and exception messages are not recorded. Each run stops logging at approximately
+20 MiB with a `debug.limit` record; old logs remain until removed manually.
+Explicit debug logging also works with `--demo` and `--no-state`; those options
+still suppress their usual preference writes.
+
 ## Startup: rollups before detail
 
 `App.__init__` calls `store.workflows()` to obtain session rollups. It leaves
@@ -26,12 +84,14 @@ rows; a warm cache avoids that parse. Keep model loading out of `App.__init__`,
 and tolerate missing model rows in the first frame. The web command instead
 loads models explicitly before building its report.
 
-OpenCode v2 accounting uses a scalar-only compatibility view, avoiding the full
-message JSON normalization needed by detail readers. Inline tool outputs must not
-be serialized or expanded to obtain timestamps, model IDs and token counts. Native
-aggregate residuals reuse the model scan's materialized numeric rows rather than
-running a second whole-history message scan. The model scan remains deferred;
-these numeric rows live only for that query and never retain raw content.
+OpenCode v2 accounting materializes a scalar-only temporary table, avoiding the
+full message JSON normalization needed by detail readers. Worked-time events and
+the deferred model aggregation share these rows. Native aggregate residuals reuse
+the same numeric usage, rather than running another whole-history message scan.
+Small messages use the standard JSON decoder one at a time; messages over 8 MiB
+use a validating scanner that skips inline content without decoding it into an
+object tree. Only accounting fields reach the temporary table or persistent cache.
+SQLite's source mapping and page cache are bounded to 64 MiB and 16 MiB per reader.
 
 ## Lazy session reads
 
@@ -45,9 +105,13 @@ Keep these gates aligned: fetching less than readiness requires creates a
 loading loop, while fetching during drawing hides the placeholder behind work.
 The amount of parsing is backend-specific, not necessarily a whole-corpus scan.
 
-OpenCode's mixed v1/v2 compatibility views need explicit, uncorrelated subtree
-filters inside detail message reads. Join keys alone can make SQLite normalize or
-materialize the entire message history before selecting one session. Native v2
+OpenCode's mixed v1/v2 detail reads put explicit subtree filters inside **each
+source branch**, before normalizing messages or expanding inline parts. SQLite
+3.37 cannot push an `IN (SELECT ...)` filter through a UNION view when aggregation
+or ordering prevents flattening. A filter outside the view is therefore insufficient.
+Query-local subqueries reuse the compatibility projections and keep each alias
+independently filterable; a shared CTE can materialize the whole selected session.
+Native v2
 prompt text is read directly from the message; legacy prompt lookups use the
 original part table to avoid a correlated scan of the combined part view. Exercise
 mixed databases with unrelated history when checking session-entry performance.
@@ -59,9 +123,10 @@ subtree filters, including the correlated uniqueness checks. A tree-first join
 alone does not bound a UNION-view materialization. Keyed diffs still revalidate
 the selected occurrence's ownership and revision before reading its patch body;
 background execution and App memoization cannot substitute for scoped SQL.
-For v2 keyed reads, candidate parts additionally restrict the tool/prompt message
-IDs and part-uniqueness lookup, so unrelated messages inside the same session do
-not need normalization. File lists materialize validated edit tools once for the
+For v2 keyed reads, a metadata-first candidate lookup additionally restricts source
+tool/prompt message IDs and part-uniqueness reads, so unrelated messages inside the
+same session do not need normalization. All occurrences of candidate IDs remain
+visible to duplicate-ownership checks. File lists materialize validated edit tools once for the
 three metadata projections when SQLite supports the hint.
 
 For Claude, `_session()` first reuses an existing corpus parse, then its
@@ -123,6 +188,29 @@ repricing, so changing price mode does not require a transcript parse.
 The implementation is [stores/cached.py](../src/opentab/stores/cached.py).
 
 ## Incremental means whole affected sessions
+
+### OpenCode: reuse unchanged message accounting
+
+On a database fingerprint miss, OpenCode scans native message **metadata**, not
+every message's JSON. The rollup cache includes source identity, message row IDs,
+session IDs, type, sequence and creation/update revisions, together with their
+scalar accounting projection. Only new or revised messages need a payload read.
+Workflow trees, worked time, model totals and aggregate residuals are recalculated
+from that projection, so deletion, reparenting, model switches and aggregate-only
+usage are not approximated by adding token deltas. V2 still owns migrated IDs;
+legacy-only JSON is reread because older schemas need not record row revisions.
+
+Reuse requires the same source file identity and stable positive update revisions.
+Messages updated within two seconds of the previous projection, null revisions
+and future revisions are reread. This relies on OpenCode updating `time_updated`
+when a message changes; an external rewrite preserving revisions can defeat reuse.
+`--no-cache` uses a fresh projection without restoring persistent message rows.
+Missing, older or malformed accounting-cache payloads cause a fresh projection.
+The first uncached build still reads retained history once; subsequent activity
+does not rescan unchanged inline output. No prompt, tool output or trace is cached.
+Root-scoped status reads use the same bounded projection for only that subtree.
+
+### File backends: reparse whole affected sessions
 
 A live agent often changes just one transcript between launches. Incremental
 caching keeps unaffected rollups rather than paying for the whole history on
@@ -251,3 +339,12 @@ because lookup failed. Detail loading still follows the lazy path above.
 Use `opentab --harness all --timings` to inspect `cached`, `incremental`, and
 `parsed` results; compare with `--no-cache` on representative data. Corpus size,
 active files, filesystem cache, and replay fallbacks determine the benefit.
+
+For SQLite benchmarks, record the Python **and SQLite** versions: query planning
+and JSON memory use can differ substantially between runtimes. A repeated launch
+is not proof of a warm-cache hit. Closing every database connection can cause
+SQLite's shared-memory sidecar to change on reopen, invalidating the fingerprint
+even without new messages. To reproduce an idle running harness, keep a separate
+connection open on the benchmark copy and verify the reported cache-hit state.
+Distinguish an OpenTab cache miss from a cold OS filesystem cache, and process
+anonymous memory from mapped source pages and filesystem cache.

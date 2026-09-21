@@ -41,6 +41,36 @@ from tests._support import (
 )
 
 
+def test_debug_flags_on_tui_web_and_machine_commands():
+    for argv in (
+        ["--debug", "--timings"],
+        ["web", "--debug", "--headless"],
+        ["cost", "--debug"],
+        ["usage", "summary", "--debug"],
+        ["mcp", "--debug"],
+    ):
+        assert cli.parse_args(argv).debug, argv
+    assert cli.parse_args(["--debug-log", "new.jsonl"]).debug_log == "new.jsonl"
+
+
+def test_debug_cli_keeps_json_stdout_clean_and_closes_log():
+    from opentab import diagnostics as debug
+
+    with tempfile.TemporaryDirectory() as tmp:
+        filename = os.path.join(tmp, "cli.jsonl")
+        output, errors = io.StringIO(), io.StringIO()
+        with patch.object(sys, "argv", ["opentab", "--debug-log", filename]), patch.object(
+            cli, "_run", side_effect=lambda args: print('{"ok":true}') or 0
+        ), contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            assert cli.main() == 0
+        assert json.loads(output.getvalue()) == {"ok": True}
+        assert filename in errors.getvalue()
+        assert not debug.enabled()
+        with open(filename) as fh:
+            events = [json.loads(line)["event"] for line in fh]
+        assert events == ["run.start", "run.end"]
+
+
 def test_cost_parser_keeps_service_mcp_index_and_http_server_lazy():
     probe = (
         "import opentab, sys;"

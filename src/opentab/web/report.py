@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, unquote
 
 from opentab import __version__
+from opentab import diagnostics as debug
 from opentab.accounting.pricing import (
     api_equivalent_cost,
     cache_misses,
@@ -299,6 +300,7 @@ def _machine_meta_payload(app: App) -> dict:
     return out
 
 
+@debug.timed("web.session_extras")
 def session_extras(app: App, workflow_id: str) -> dict:
     """Return lazy drill-in data; empty capabilities remain hidden in the page."""
     turns = []
