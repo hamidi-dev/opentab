@@ -46,7 +46,7 @@ compaction.
 | `Esc` | Step back out — turn → prompt → session → zoom → browse; returning from a turn keeps the selected row visible |
 | `h` / `l` | Switch detail tabs |
 | `j` / `k` | Move in the list (`↑`/`↓` too), or scroll the detail pane; on the Turns tab, move the `▸` prompt cursor |
-| `PgDn` / `PgUp` | Half a page (`Ctrl-D` / `Ctrl-U` too) |
+| `PgDn` / `PgUp` | Half a page (`Ctrl-D` / `Ctrl-U` too); `Space` / `Shift-Space` page down / up where supported (see below) |
 | `g` / `G` | Jump to the top / bottom |
 | `[` / `]` | Inside a turn, read the previous / next turn of the same prompt |
 | `z` | Inside a turn, expand its full recorded content / collapse to the preview |
@@ -155,6 +155,8 @@ split mode. The selected mode is saved on exit and restored on the next launch
 (unless `--no-state` or demo disables preference saving). The narrow-window fallback
 does not change this preference. Toggling keeps the current patch position.
 `v` is configurable as `[main] diff_layout`.
+`Space` / `Shift-Space` use the main `page_down` / `page_up` bindings here,
+scrolling the diff by half a visible page.
 **Diff** says `yes`, `some`, or
 `no` for retained text availability.
 
@@ -321,6 +323,27 @@ and `D`. Help, What's New and notification history also accept `Ctrl-F`; Help ac
 the theme, harness, machine and demo pickers too. Other
 modals own their input and show their controls in their title or footer. The Help
 body describes the view underneath it; close Help before using that view's keys.
+
+`Space` is contextual rather than global. It pages down in browse, zoom and
+session views (including traces and Changes diffs), Help, What's New,
+notification history, Trends drills and the Prices session drill. It keeps its
+existing special actions in the Prices model table (pin/unpin) and Demo picker
+(toggle category). Printable-input contexts, including filters, prompts, search
+fields and searchable pickers, still insert a literal space. Other menus and
+overlays keep their existing behavior.
+
+`Shift-Space` pages up in these scrollable views, including the Prices model
+table. It requires the terminal to send a distinct key sequence: OpenTab accepts
+CSI-u (`ESC [ 32 ; 2 u`) and xterm modifyOtherKeys (`ESC [ 27 ; 2 ; 32 ~`).
+OpenTab does not enable an extended keyboard protocol globally. If your terminal
+sends plain Space for both keys, configure its Shift-Space shortcut to send
+`\x1b[32;2u`, or use `Ctrl-U` / `PgUp`. Text fields still insert a literal space.
+
+If an older keymap explicitly sets `page_down = pgdn, ctrl-d`, add `, space`
+in the desired sections or remove those overrides to use the new defaults.
+Keep `[prices]` unchanged: its model table uses Space for pinning.
+For upward paging, add `, shift-space` to existing `page_up` lines or remove
+those overrides to use the new defaults.
 
 ## What persists between runs
 

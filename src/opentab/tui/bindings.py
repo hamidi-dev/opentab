@@ -31,6 +31,10 @@ def keymap_path() -> str:
 # terminal -- and the pretty form is what the help overlay and footer print for it.
 
 
+# Internal event, deliberately outside curses' nonnegative key-code range.
+SHIFT_SPACE = -2
+
+
 def _kc(name: str, fallback: int) -> int:
     # The resolver is also imported on native Windows before curses is available.
     return getattr(curses, name, fallback) if curses else fallback
@@ -40,6 +44,7 @@ _NAMED: dict[str, tuple[int, ...]] = {
     "enter": (10, 13, _kc("KEY_ENTER", 343)),
     "esc": (27,),
     "space": (32,),
+    "shift-space": (SHIFT_SPACE,),
     "tab": (9,),
     "shift-tab": (_kc("KEY_BTAB", 353),),
     "backspace": (_kc("KEY_BACKSPACE", 263), 127, 8),
@@ -60,6 +65,7 @@ _ALIASES = {
     "return": "enter",
     "backtab": "shift-tab",
     "s-tab": "shift-tab",
+    "s-space": "shift-space",
     "bksp": "backspace",
     "del": "delete",
     "ins": "insert",
@@ -75,6 +81,7 @@ _PRETTY: dict[str, str] = {
     "enter": "Enter",
     "esc": "Esc",
     "space": "Space",
+    "shift-space": "S-Space",
     "tab": "Tab",
     "shift-tab": "S-Tab",
     "backspace": "Bksp",
@@ -149,10 +156,17 @@ class Context(NamedTuple):
 _SCROLL = (
     Action("down", ("j", "down"), "move / scroll down"),
     Action("up", ("k", "up"), "move / scroll up"),
-    Action("page_down", ("pgdn", "ctrl-d"), "half a page down"),
-    Action("page_up", ("pgup", "ctrl-u"), "half a page up"),
+    Action("page_down", ("pgdn", "ctrl-d", "space"), "half a page down"),
+    Action("page_up", ("pgup", "ctrl-u", "shift-space"), "half a page up"),
     Action("top", ("g",), "jump to the top"),
     Action("bottom", ("G",), "jump to the bottom"),
+)
+
+_SCROLL_WITHOUT_SPACE = tuple(
+    Action(action.name, tuple(key for key in action.keys if key != "space"), action.doc)
+    if action.name == "page_down"
+    else action
+    for action in _SCROLL
 )
 
 REGISTRY: tuple[Context, ...] = (
@@ -321,7 +335,7 @@ REGISTRY: tuple[Context, ...] = (
             Action("tab_prev", ("h", "left"), "previous view"),
             Action("tab_next", ("l", "right"), "next view"),
             Action("pin", ("space",), "pin this model ★"),
-            *_SCROLL,
+            *_SCROLL_WITHOUT_SPACE,
             Action("select", ("enter",), "the sessions that used this model"),
             Action("sort", ("s", "S"), "sort the price table"),
             Action("filter", ("f", "/"), "filter the model list"),
@@ -344,6 +358,9 @@ REGISTRY: tuple[Context, ...] = (
         "A model's session list inside P (it only scrolls and steps back out).",
         "prices",
         (
+            # The parent table owns Space for pinning; the session drill replaces
+            # that action so its local page-down binding can own Space instead.
+            Action("pin", (), "pinning is available only in the model table"),
             *_SCROLL,
             Action("back", ("esc", "left", "backspace"), "back to the model list"),
         ),
@@ -663,6 +680,8 @@ class Keymap:
 
 def typed_char(key: int | str) -> str | None:
     """Return printable input after the keymap has had first chance to bind it."""
+    if key == SHIFT_SPACE:
+        return " "
     if isinstance(key, int):
         return chr(key) if 32 <= key <= 126 else None
     if isinstance(key, str) and key.isprintable():
@@ -697,6 +716,7 @@ _HEADER = """\
 #   j  G  /  $  1  ö            a single character, ASCII or not
 #   enter esc space tab shift-tab backspace delete insert up down left
 #   right pgup pgdn home end f1..f12   named keys
+#   shift-space                 requires a distinct terminal key sequence
 #   ctrl-u  (or ^u)             control chords (letters only)
 #   comma                       a literal "," (the bare comma separates keys)
 #
@@ -723,7 +743,8 @@ def default_conf_text() -> str:
         out.append(f"[{ctx.name}]")
         for action in ctx.actions:
             out.append(f"# {action.doc}")
-            out.append(f"{action.name} = {', '.join(action.keys)}")
+            keys = ", ".join(action.keys)
+            out.append(f"{action.name} =" + (f" {keys}" if keys else ""))
     return "\n".join(out) + "\n"
 
 

@@ -5260,11 +5260,12 @@ def test_remote_trace_run_polls_while_fetching_and_cleans_up_on_exit():
     app, _ = _remote_trace_app()
     jobs = []
 
-    def read_key(screen):
+    def read_key(screen, timeout_ms):
         job = app._remote_trace_job[3]
         jobs.append(job)
         # Input is reached while the worker is still unfinished, not after a join.
         assert not job.done.is_set() and app._input_timeout_ms() > 0
+        assert timeout_ms > 0
         return ord("q")
 
     with patch("opentab.remote_content.TraceJob", _ManualTraceJob), patch.object(

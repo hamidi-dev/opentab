@@ -1,5 +1,6 @@
 import os
 import tempfile
+from unittest.mock import patch
 
 import opentab as ot
 from opentab.tui import bindings
@@ -17,6 +18,8 @@ def test_parse_key_reads_every_spelling():
     assert bindings.parse_key("Esc") == (27,)  # names are case-insensitive
     assert bindings.parse_key("escape") == (27,)
     assert bindings.parse_key("space") == (32,)
+    assert bindings.parse_key("shift-space") == (bindings.SHIFT_SPACE,)
+    assert bindings.parse_key("s-space") == (bindings.SHIFT_SPACE,)
     assert bindings.parse_key("tab") == (9,)
     assert bindings.parse_key("shift-tab") == (ot.curses.KEY_BTAB,)
     assert bindings.parse_key("backtab") == (ot.curses.KEY_BTAB,)
@@ -51,6 +54,7 @@ def test_pretty_key_is_the_display_form():
     assert bindings.pretty_key("enter") == "Enter"
     assert bindings.pretty_key("esc") == "Esc"
     assert bindings.pretty_key("shift-tab") == "S-Tab"
+    assert bindings.pretty_key("shift-space") == "S-Space"
     assert bindings.pretty_key("ctrl-u") == "^U"
     assert bindings.pretty_key("down") == "↓"
     assert bindings.pretty_key("f5") == "F5"
@@ -82,6 +86,71 @@ def test_defaults_compose_without_warnings_and_dispatch_the_classics():
     assert km.action("menu.sort", ord("s")) == "advance"
     assert km.action("menu.sort", ord("j")) == "down"  # from [menu]
     assert km.action("main", ord("ü")) is None  # unbound, int or str alike
+
+
+def test_space_pages_only_where_context_does_not_already_own_it():
+    km = bindings.Keymap()
+    assert km.action("main", ord(" ")) == "page_down"
+    assert km.action("help", ord(" ")) == "page_down"
+    assert km.action("prices.sessions", ord(" ")) == "page_down"
+    assert km.action("prices", ord(" ")) == "pin"
+    assert km.action("menu.demo", ord(" ")) == "toggle"
+    assert km.action("filter", ord(" ")) is None
+    assert km.action("input", ord(" ")) is None
+    assert km.action("search.edit", ord(" ")) is None
+    assert km.action("menu.search-project", ord(" ")) is None
+    assert bindings.typed_char(ord(" ")) == " "
+    assert bindings.typed_char(bindings.SHIFT_SPACE) == " "
+    assert ot.App.filter_prompt_step("two", bindings.SHIFT_SPACE, 20) == ("two ", False, False)
+    app = app_with([])
+    app.filter_active = True
+    app.handle_key(None, bindings.SHIFT_SPACE)
+    assert app.query == " " and app.filter_active
+    for context in ("main", "help", "notices", "whats-new", "trends.drill", "prices.sessions"):
+        assert km.action(context, bindings.SHIFT_SPACE) == "page_up"
+    for context in ("filter", "input", "search.edit", "menu.search-project", "menu.demo"):
+        assert km.action(context, bindings.SHIFT_SPACE) is None
+
+    remapped = _load("[main]\npage_down = x\n")
+    assert remapped.action("main", ord("x")) == "page_down"
+    assert remapped.action("main", ord(" ")) is None
+    remapped = _load("[main]\npage_up = x\n")
+    assert remapped.action("main", bindings.SHIFT_SPACE) is None
+
+
+def test_shift_space_terminal_decoding_preserves_other_keys_and_input_timeout():
+    class Input:
+        def __init__(self, events):
+            self.events = list(events)
+            self.delay = 500
+
+        def get_wch(self):
+            if not self.events:
+                raise ot.curses.error()
+            return self.events.pop(0)
+
+        def timeout(self, delay):
+            self.delay = delay
+
+        def unget(self, event):
+            self.events.insert(0, event)
+
+    for sequence in ("\x1b[32;2u", "\x1b[27;2;32~"):
+        screen = Input(sequence + "x")
+        assert ot.App._read_key(screen, 500) == bindings.SHIFT_SPACE
+        assert screen.delay == 500
+        assert ot.App._read_key(screen) == ord("x")
+    for suffix in ([], ["x"], ["界"], [ot.curses.KEY_UP], list("[32;"), list("[32;3u")):
+        screen = Input(["\x1b"] + suffix)
+        with patch.object(ot.curses, "unget_wch", screen.unget), patch.object(
+            ot.curses, "ungetch", screen.unget
+        ):
+            assert ot.App._read_key(screen, 500) == 27
+        assert screen.delay == 500
+        assert screen.events == suffix
+    for event, expected in ((" ", 32), ("界", "界"), (ot.curses.KEY_UP, ot.curses.KEY_UP)):
+        assert ot.App._read_key(Input([event])) == expected
+    assert ot.App._read_key(Input([])) == -1
 
 
 def test_every_default_conf_roundtrip_is_silent_and_identical():
