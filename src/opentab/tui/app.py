@@ -387,6 +387,8 @@ class App:
         self._change_file_cursor = 0
         self._change_follow = False
         self._change_drill = False
+        self.change_side_by_side = False
+        self._change_scroll_anchor = None
         self._change_edit_cursor = 0
         self._change_list_scroll = 0
         self._change_diff_loading: tuple[tuple, str] | None = None
@@ -2108,6 +2110,7 @@ class App:
             for cache_key in [key for key in self._change_diff_errors if key[0] == scope]:
                 self._change_diff_errors.pop(cache_key, None)
         self._changes_scope = None
+        self._change_scroll_anchor = None
         self._changes_loading = None
         self._changes_error = ""
         self._change_file_cursor = 0
@@ -2359,6 +2362,7 @@ class App:
         ):
             return False
         self._change_drill = True
+        self._change_scroll_anchor = None
         self._change_edit_cursor = 0
         self._change_list_scroll = self.scroll
         self.scroll = 0
@@ -2377,6 +2381,7 @@ class App:
         if scope is not None and isinstance(key, str):
             self._change_diff_errors.pop((scope, key), None)
         self._change_drill = False
+        self._change_scroll_anchor = None
         self._change_diff_loading = None
         self._change_diff_error = ""
         self.renderer._change_layout_cache = None
@@ -2394,6 +2399,7 @@ class App:
         current = max(0, min(self._change_edit_cursor, len(edits) - 1))
         target = max(0, min(current + delta, len(edits) - 1))
         if target != current:
+            self._change_scroll_anchor = None
             self._change_edit_cursor = target
             self._change_diff_loading = None
             self._change_diff_error = ""
@@ -7821,6 +7827,24 @@ class App:
             return True
         if act == "diff_pager":
             self.open_change_diff_pager(stdscr)
+            return True
+        if act == "diff_layout":
+            if (
+                self.view == "session"
+                and self.active_tab_name() == "Changes"
+                and self._change_drill
+            ):
+                cached = self.renderer._change_layout_cache
+                if cached and self.scroll > 0:
+                    self._change_scroll_anchor = next(
+                        (
+                            line.anchor
+                            for line in cached[1][self.scroll :]
+                            if getattr(line, "anchor", None) is not None
+                        ),
+                        None,
+                    )
+                self.change_side_by_side = not self.change_side_by_side
             return True
         if act == "maximize":
             # In browse, + drills in like Enter (its old alias); once the detail is

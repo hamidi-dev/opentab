@@ -39,7 +39,7 @@ are ignored, and the defaults are shown):
 - **Config** — `~/.config/opentab/`: `keymap.conf` (your key bindings), `remotes.json`
   (the saved machine list for `--pull`/`--remote`), and an optional `launcher` hook.
 - **State** — `~/.local/state/opentab/state.json`: a small preferences file (your last
-  harness, sort, bookmarks, ignores, pins, search introduction acknowledgement,
+  harness, sort, diff layout, bookmarks, ignores, pins, search introduction acknowledgement,
   and last announced OpenTab version;
   disable with `--no-state`),
   plus the `state.json.lock` sidecar used to coordinate writers.

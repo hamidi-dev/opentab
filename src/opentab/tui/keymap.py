@@ -668,6 +668,15 @@ KEYS: tuple[Key, ...] = (
         chip="diff pager",
     ),
     Key(
+        id="diff-layout",
+        ctx="main",
+        actions=("diff_layout",),
+        summary="toggle unified / side-by-side diff",
+        section="here",
+        when=_on_change_diff,
+        chip=lambda app: "unified" if app.change_side_by_side else "side-by-side",
+    ),
+    Key(
         id="enter",
         ctx="main",
         actions=("select",),
@@ -1315,6 +1324,7 @@ FOOTER_ORDER = (
     "trace-siblings",
     "trace-scroll",
     "trace-expand",
+    "diff-layout",
     "diff-pager",
     "enter",
     "esc",

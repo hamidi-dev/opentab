@@ -124,6 +124,7 @@ def save_state(app: App) -> None:
         "browse_mode": app.browse_mode,
         "focus": app.focus,
         "zoom_maximized": app.zoom_maximized,
+        "change_side_by_side": app.change_side_by_side,
         "show_api_prices": app.show_api_prices,
         "source": app.source_key,
         "theme": app.theme_id,
@@ -262,6 +263,8 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
         app.focus = state["focus"]
     if isinstance(state.get("zoom_maximized"), bool):
         app.zoom_maximized = state["zoom_maximized"]
+    if isinstance(state.get("change_side_by_side"), bool):
+        app.change_side_by_side = state["change_side_by_side"]
     pinned = state.get("pinned_models")
     if isinstance(pinned, list):
         app.pinned_models = {m for m in pinned if isinstance(m, str) and m}

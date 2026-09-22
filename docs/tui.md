@@ -386,7 +386,16 @@ without waiting. File lists and fetched patches are cached by store-qualified
 session/occurrence for the App lifetime, including offscreen completions. Navigation
 only resets the active drill; reload, source rebuild, demo, and exit invalidate the
 cache and cancel the worker generation. The pure layout handles prepared metadata
-and patch text; the optional external pager suspends curses and receives only the
+and patch text, pairing replacement runs for the optional side-by-side view. Its
+cell-positioned paint spans carry syntax ink and independent diff backgrounds;
+bounded intraline matching emphasizes changed text. A small line-local lexer works
+on incomplete snippets without runtime dependencies. Wrapped code preserves spaces
+and wide characters; source-line anchors retain position when toggling the layout.
+The one-layout memo includes width, mode and glyphs; theme-aware paint pairs remain
+in Renderer and degrade to ordinary syntax colors on pair-starved terminals.
+The requested diff layout is saved with the other TUI preferences; a narrow pane's
+temporary Unified fallback never overwrites the selected side-by-side mode.
+The optional external pager suspends curses and receives only the
 loaded patch over stdin. User semantics and controls live in
 [Keys](keys.md#session-changes).
 

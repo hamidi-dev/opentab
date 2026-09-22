@@ -271,7 +271,7 @@ def test_changes_sanitize_paths_and_use_native_diff_roles_without_rich_numbers()
     _finish_read(app)
     lines = app.renderer.detail_changes(app.current_session())
     roles = {str(line)[getattr(line, "gutter", 0) :]: getattr(line, "role", "") for line in lines}
-    assert roles["@@ -1 +1 @@"] == "hunk"
+    assert any("@@ -1 +1 @@" in line and line.role == "hunk" for line in lines)
     assert roles["-old $12"] == "delete"
     assert roles["+new 1.0M"] == "add"
     screen = AttrScreen(8, 40)
@@ -729,3 +729,155 @@ def test_changes_duplicate_qualified_identity_fails_closed_without_request():
     assert app._change_scope() is None
     assert not app.session_supports_changes("same")
     assert store.file_calls == 0
+
+
+def test_changes_split_aligns_replacements_insertions_and_numbered_context():
+    from opentab.tui.views.changes import diff_layout
+
+    patch_text = "@@ -10,4 +20,5 @@\n first\n-old = 1\n+new = 2\n+extra = 3\n last\n-tail\n+end\n@@ -80 +90 @@\n-one\n+two"
+    lines = diff_layout(_data()["files"][0], 0, {"patch": patch_text}, 101, side_by_side=True)
+    rows = [line for line in lines if getattr(line, "role", "") == "split"]
+    assert " 10 |  first" in rows[0] and " 20 |  first" in rows[0]
+    assert " 11 | -old = 1" in rows[1] and " 21 | +new = 2" in rows[1]
+    assert rows[2][:49].isspace() and " 22 | +extra = 3" in rows[2]
+    assert " 12 |  last" in rows[3] and " 23 |  last" in rows[3]
+    assert " 80 | -one" in rows[-1] and " 90 | +two" in rows[-1]
+    assert all(ot.display_width(line) <= 101 for line in lines)
+    assert all(span.x + ot.display_width(span.text) <= 101 for line in rows for span in line.spans)
+    for width in (30, 60, 79):
+        narrow = diff_layout(
+            _data()["files"][0], 0, {"patch": patch_text}, width, side_by_side=True
+        )
+        assert "Unified (narrow window)" in narrow
+        assert not any(getattr(line, "role", "") == "split" for line in narrow)
+        assert all(ot.display_width(line) <= width for line in narrow)
+
+
+def test_changes_split_wraps_wide_text_and_preserves_indentation_and_alignment():
+    from opentab.tui.views.changes import diff_layout
+
+    before = "-    label = '" + "界e\u0301" * 40 + "'"
+    after = "+    label = 'short'"
+    lines = diff_layout(
+        _data()["files"][0],
+        0,
+        {"patch": "@@ -1 +1 @@\n" + before + "\n" + after},
+        100,
+        side_by_side=True,
+    )
+    rows = [line for line in lines if getattr(line, "role", "") == "split"]
+    assert len(rows) > 2
+    # Recover painted code spans (excluding padding and the number gutters).
+    left = "".join(
+        span.text
+        for line in rows
+        for span in line.spans
+        if 6 <= span.x < 48 and not span.text.isspace()
+    )
+    assert left.replace(" ", "") == before.replace(" ", "")
+    assert "    label" in rows[0]
+    assert all(ot.display_width(line) <= 100 for line in lines)
+    assert all(span.x + ot.display_width(span.text) <= 100 for line in rows for span in line.spans)
+    assert all("short" not in line for line in rows[1:])
+
+
+def test_changes_syntax_and_word_emphasis_are_independent_of_diff_background():
+    from opentab.tui.views.changes import diff_layout
+
+    file = _data()["files"][0]
+    patch_text = (
+        '@@ -1 +1 @@\n-return greet("old", 42) # comment\n+return greet("new", 42) # comment'
+    )
+    for split in (False, True):
+        lines = diff_layout(file, 0, {"patch": patch_text}, 120, side_by_side=split)
+        spans = [span for line in lines for span in getattr(line, "spans", ())]
+        assert any(s.foreground == "keyword" and s.text == "return" for s in spans)
+        assert any(s.foreground == "function" and s.text == "greet" for s in spans)
+        assert any(s.foreground == "number" and s.text == "42" for s in spans)
+        assert any(s.foreground == "comment" and s.text == "# comment" for s in spans)
+        assert any(
+            s.foreground == "string" and s.background == "delete-emphasis" and s.text == "old"
+            for s in spans
+        )
+        assert any(
+            s.foreground == "string" and s.background == "add-emphasis" and s.text == "new"
+            for s in spans
+        )
+    # Marker-looking source remains content; terminal controls never reach painting.
+    lines = diff_layout(
+        file, 0, {"patch": "@@ -0,0 +1 @@\n+++\x1b[31m\x00"}, 100, side_by_side=True
+    )
+    assert "+++" in "".join(lines)
+    assert all(
+        "\x1b" not in span.text and "\x00" not in span.text
+        for line in lines
+        for span in getattr(line, "spans", ())
+    )
+
+
+def test_changes_layout_toggle_preserves_occurrence_anchor_and_never_rereads():
+    store = ChangeStore([workflow("root", "2026-09-19 10:00:00")])
+    app = _app(store)
+    app.handle_key(None, ord("v"))
+    assert not app.change_side_by_side  # only active inside a file
+    _load_files(app)
+    app.open_change_file()
+    _load_diff(app)
+    unified = app.renderer.detail_changes(app.current_session(), 120)
+    app.scroll = next(i for i, line in enumerate(unified) if line.role == "delete")
+    app.handle_key(None, ord("v"))
+    assert app.change_side_by_side
+    split = app.renderer.detail_changes(app.current_session(), 120)
+    assert split[app.scroll].role == "split" and "-old" in split[app.scroll]
+    assert split is app.renderer.detail_changes(app.current_session(), 120)
+    assert app.selected_change_edit()["key"] == "one"
+    app.handle_key(None, ord("v"))
+    unified = app.renderer.detail_changes(app.current_session(), 120)
+    assert unified[app.scroll].role == "delete"
+    assert store.diff_calls == [("root", "one")]
+    assert ot.keymap.BY_ID["diff-layout"].shown(app)
+    app.can_switch_source = lambda: False
+    footer = str(ot.keymap.footer_parts(app))
+    assert "side-by-side" in footer and "v" in footer
+    app.scroll = 0
+    app.handle_key(None, ord("v"))
+    app.renderer.detail_changes(app.current_session(), 120)
+    assert app.scroll == 0
+
+    from opentab.tui import bindings
+
+    app.keymap = bindings.Keymap({("main", "diff_layout"): ["V"]})
+    app.handle_key(None, ord("v"))
+    assert app.change_side_by_side
+    app.handle_key(None, ord("V"))
+    assert not app.change_side_by_side
+    assert ot.keymap.BY_ID["diff-layout"].label(app) == "V"
+
+
+def test_changes_paints_independent_halves_and_theme_pairs_with_safe_fallback():
+    from opentab.tui.views.changes import DIFF_BACKGROUNDS, DIFF_FOREGROUNDS, diff_layout
+
+    app = _app(ChangeStore([workflow("root", "2026-09-19 10:00:00")]))
+    renderer = app.renderer
+    lines = diff_layout(
+        _data()["files"][0],
+        0,
+        {"patch": '@@ -1 +1 @@\n-x = "old"\n+x = "new"'},
+        100,
+        side_by_side=True,
+    )
+    row = next(line for line in lines if getattr(line, "role", "") == "split")
+    renderer._diff_pairs = {
+        (bg, fg): 40 + i * 8 + j
+        for i, bg in enumerate(DIFF_BACKGROUNDS)
+        for j, fg in enumerate(DIFF_FOREGROUNDS)
+    }
+    screen = AttrScreen(4, 104)
+    with patch.object(ot.curses, "color_pair", side_effect=lambda n: n):
+        renderer.paint_change_line(screen, 0, 0, row, 100)
+        assert screen.attrs[0, 25] == renderer._diff_pairs["delete", "ink"]
+        assert screen.attrs[0, 95] == renderer._diff_pairs["add", "ink"]
+        assert screen.attrs[0, 49] == renderer._diff_pairs["code", "gutter"]
+        renderer._diff_pairs = {}
+        renderer.paint_change_line(screen, 1, 0, row, 100)
+    assert '-x = "old"' in screen_text(screen) and '+x = "new"' in screen_text(screen)

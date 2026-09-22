@@ -143,10 +143,19 @@ On **Changes**, the file list groups OpenCode's recorded edits across the root
 and subagents by path. Completed `apply_patch`, `edit`, and `write`
 metadata and per-prompt snapshots are both retained: a snapshot can also contain
 shell or formatter changes missing from the tool patch. `j`/`k` and `g`/`G` select files,
-`Enter` opens a colored unified diff,
+`Enter` opens a syntax-colored diff in your last selected layout (Unified by default);
+`v` toggles **side-by-side** (Before / After),
 `[`/`]` step through that file's recorded occurrences, and `Esc` returns to the
 list. Movement and page keys scroll the diff; old/new line numbers flank the patch
-and long lines wrap without losing indentation. **Diff** says `yes`, `some`, or
+and long lines wrap without losing indentation. Added/deleted lines have green/red
+backgrounds, with stronger highlights on changed text within paired lines. The
+split view aligns replacements and context, leaving gaps for one-sided edits.
+Below 80 content columns it falls back to Unified; widening restores the selected
+split mode. The selected mode is saved on exit and restored on the next launch
+(unless `--no-state` or demo disables preference saving). The narrow-window fallback
+does not change this preference. Toggling keeps the current patch position.
+`v` is configurable as `[main] diff_layout`.
+**Diff** says `yes`, `some`, or
 `no` for retained text availability.
 
 Each occurrence identifies its evidence source; moves also show the old path.
