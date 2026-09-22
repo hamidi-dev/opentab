@@ -28,6 +28,7 @@ def test_debug_disabled_does_not_create_files_or_read_clocks():
             with debug.span("test.phase"):
                 debug.event("test.event")
             assert debug.identity("private") is None
+            debug.query_plan(None, "must not prepare", label="test.plan")
 
 
 def test_debug_nested_spans_workers_errors_and_private_values():
@@ -121,3 +122,70 @@ def test_debug_log_limit_and_write_failure_do_not_break_operations():
             with patch.object(debug._sink.file, "write", side_effect=OSError("disk full")):
                 with debug.span("test.still_works"):
                     assert 2 + 2 == 4
+
+
+def test_debug_queries_report_plan_execution_and_failures_without_sql_or_false_errors():
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+        filename = os.path.join(tmp, "queries.jsonl")
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.execute("create table private_table(private_column text)")
+            conn.executemany("insert into private_table values(?)", [("private payload",)] * 2)
+            with debug.session(filename=filename):
+                assert debug.query_one(
+                    conn, "select private_column from private_table", label="test.one"
+                ) == ("private payload",)
+                assert (
+                    len(
+                        list(
+                            debug.query_rows(
+                                conn,
+                                "select * from private_table",
+                                label="test.all",
+                                explain=True,
+                            )
+                        )
+                    )
+                    == 2
+                )
+                try:
+                    debug.query_one(conn, "select private_missing", label="test.failure")
+                except sqlite3.OperationalError:
+                    pass
+                else:
+                    raise AssertionError("SQL failure swallowed")
+                debug.query_plan(conn, "select private_missing", label="test.bad_plan")
+        finally:
+            conn.close()
+        text = Path(filename).read_text()
+        assert "private_" not in text and "private payload" not in text
+        rows = _records(filename)
+        one = next(r for r in rows if r["event"] == "test.one.end")
+        assert one["rows"] == 1 and "error_type" not in one
+        assert one["execute_ms"] >= 0 and one["fetch_ms"] >= 0
+        failure = next(r for r in rows if r["event"] == "test.failure.end")
+        assert failure["status"] == "error" and failure["error_type"] == "OperationalError"
+        assert failure["rows"] == 0
+        plan = next(r for r in rows if r["event"] == "sql.plan")
+        assert plan["query"] == "test.all" and plan["scans"] == 1
+        assert plan["prepare_ms"] >= 0
+        assert any(r["event"] == "sql.plan_unavailable" for r in rows)
+
+
+def test_debug_memory_distinguishes_current_residency_from_high_water():
+    with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stderr(io.StringIO()):
+        filename = os.path.join(tmp, "memory.jsonl")
+        with debug.session(filename=filename):
+            with patch.object(
+                debug,
+                "_memory",
+                side_effect=[
+                    {"rss_mib": 200.0, "peak_rss_mib": 500.0},
+                    {"rss_mib": 100.0, "peak_rss_mib": 500.0},
+                ],
+            ):
+                with debug.span("test.release"):
+                    pass
+        end = next(r for r in _records(filename) if r["event"] == "test.release.end")
+        assert end["rss_change_mib"] == -100.0
+        assert end["rss_mib"] == 100.0 and end["peak_rss_mib"] == 500.0

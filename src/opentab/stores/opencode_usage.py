@@ -345,14 +345,32 @@ def _read_usage(conn, rowid, tracing):
             size = len(blob)
             if size > _DECODE_LIMIT:
                 fetched = time.perf_counter() if tracing else 0
-                compact = compact_usage_stream(blob.read)
+                with debug.span(
+                    "usage.large_row",
+                    row=debug.identity(str(rowid)),
+                    input_size=size,
+                    size_unit="bytes",
+                    streamed=True,
+                ):
+                    compact = compact_usage_stream(blob.read)
                 return compact, size, (fetched - started) * 1000, True
     data = conn.execute("select data from main.session_message where rowid=?", [rowid]).fetchone()[
         0
     ]
     fetched = time.perf_counter() if tracing else 0
     size = len(data) if isinstance(data, (str, bytes)) else 0
-    return compact_usage(data), size, (fetched - started) * 1000, False
+    if size > _DECODE_LIMIT:
+        with debug.span(
+            "usage.large_row",
+            row=debug.identity(str(rowid)),
+            input_size=size,
+            size_unit="characters" if isinstance(data, str) else "bytes",
+            streamed=False,
+        ):
+            compact = compact_usage(data)
+    else:
+        compact = compact_usage(data)
+    return compact, size, (fetched - started) * 1000, False
 
 
 class UsageCache:
@@ -441,8 +459,15 @@ class UsageCache:
             previous_rows=len(self.rows),
         )
         tracing = debug.enabled()
+        debug.event(
+            "usage.decode_strategy",
+            streamed_oversized=hasattr(conn, "blobopen"),
+            compact_threshold=_DECODE_LIMIT,
+            legacy_reread=legacy,
+        )
         fetch_ms = decode_ms = project_ms = insert_ms = 0.0
         decoded = large = legacy_rows = 0
+        streamed_rows = unusable_rows = 0
         reread_reasons = {} if tracing else None
         started = time.time() * 1000
         cutoff = min(started, self.built_at) - 2000
@@ -520,6 +545,8 @@ class UsageCache:
                             )
                         tick = now
                         large += size > _DECODE_LIMIT
+                        streamed_rows += streamed
+                        unusable_rows += compact == "null"
                     values = tuple(conn.execute(projection, (*stamp[:5], compact)).fetchone())
                     if tracing:
                         project_ms += (time.perf_counter() - tick) * 1000
@@ -553,6 +580,8 @@ class UsageCache:
                     reused=reused,
                     decoded=decoded,
                     oversized=large,
+                    streamed=streamed_rows,
+                    unusable=unusable_rows,
                     payload_fetch_ms=round(fetch_ms, 3),
                     decode_ms=round(decode_ms, 3),
                     project_ms=round(project_ms, 3),
@@ -606,9 +635,15 @@ class UsageCache:
             self.built_at = started
             self.reused = reused
             debug.event(
-                "usage.ready", native_rows=len(fresh), reused=reused, legacy_rows=legacy_rows
+                "usage.ready",
+                native_rows=len(fresh),
+                reused=reused,
+                legacy_rows=legacy_rows,
+                accounting_changed=self.changed,
+                scope="all" if scope is None else "subtree",
             )
         except BaseException:
+            debug.event("usage.rollback", reason="refresh_failed")
             conn.execute("rollback to opentab_usage_refresh")
             conn.execute("release opentab_usage_refresh")
             raise

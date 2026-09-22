@@ -42,6 +42,29 @@ Events cover:
   Turns, Tools, Context and trace reads. Turns separates message queries, tool
   attribution and readable-content markers. Changes file/diff reads are timed on
   their worker; web session extras have their own outer phase.
+- Indexed scalar sidecar reads distinguish all-history and subtree scope, row
+  fetching and tuple reconstruction. `usage.sidecar_written` reports rows actually
+  upserted, deleted and unchanged, after the transaction commits. Sidecar rejection
+  and fallback events explain missing/invalid files without exposing their paths.
+- `usage.decode_strategy` identifies streamed oversized reads versus the older
+  interpreter fallback. `usage.large_row.start/end` brackets oversized decoding;
+  `size_unit` distinguishes fetched text characters from streamed bytes. Native
+  summaries count streamed and unusable projections as well as reused/decoded rows.
+- Changes separates reader opening, metadata validation, snapshot queries, native
+  edit queries and selected patch-body reads. `opencode.changes_strategy` records
+  the requested optimization; `sql.plan` records the **observed** plan, including
+  candidate/native materialization flags and counts of scans, indexed searches,
+  correlated subqueries and temporary sorts. These bounded summaries contain no SQL,
+  parameters or arbitrary query-plan text. A MATERIALIZED hint is not proof that
+  a particular SQLite version materialized the relation; compare the observed flags.
+  `prepare_ms` is the extra debug-only plan preparation cost; query `execute_ms`
+  and `fetch_ms` exclude it, while the enclosing wall-clock span includes it.
+- `changes.queued`, `changes.execute` and `changes.completed` correlate worker and
+  request numbers, queue wait, execution, cancellation and stale-result discard.
+  `app.changes_result` records adoption by the TUI. Cache hits on reopening a diff,
+  cache invalidation and file/patch result counts are logged at transitions rather
+  than on every paint. Unavailable patches have static rejection reasons, including
+  stale/unowned keys, source changes, invalid locators and absent recorded content.
 
 `*.start`/`*.end` records pair by `seq`/`span`, with `parent` identifying nested
 work. They include wall-clock Unix `time`, monotonic `elapsed_ms`, process/thread
@@ -50,6 +73,24 @@ include children, so do not sum nested phases. Peak RSS is a lifetime high-water
 mark, not current RSS, filesystem cache, or Windows' total WSL memory. Logging and
 per-row clocks add overhead; use debug mode to locate work, then compare normal
 runs with the same measurement boundaries.
+
+On Linux, span starts and ends also report current `rss_mib`, anonymous/file-backed
+RSS and process swap from `/proc/self/status`, when available. End records include
+`rss_change_mib` (end minus start); a negative change can reveal released memory
+even when peak RSS stays high. These are process snapshots, not per-span peak
+allocations. Nested/concurrent changes must not be summed, and file-backed process
+RSS is not the system-wide filesystem cache. Other platforms may expose only peak
+RSS. Inspect Windows VmmemWSL separately when diagnosing total WSL memory.
+
+For a navigation regression, run the full TUI with `--debug`, open the affected
+session and Changes list, open a recorded patch, leave/revisit it, then reload with
+`r`. Check `app.session_ready`, queue/result events and matching query start/end
+records. `--debug --timings` covers startup/accounting only; it cannot verify
+navigation, worker queueing or reload. Retain a normal cache-enabled run first;
+use a separate new log for any deliberate `--no-cache` comparison.
+An inner `cache.disk_read.end` with `FileNotFoundError`, followed by a
+`cache.reject` reason `missing`, is an ordinary first-run cache miss. Follow the
+outer outcome before treating every inner error record as an application failure.
 
 End records also include `thread_cpu_ms`, `process_cpu_ms` and
 `wall_minus_thread_cpu_ms`. High wall time with little thread CPU suggests waiting
@@ -140,8 +181,16 @@ background execution and App memoization cannot substitute for scoped SQL.
 For v2 keyed reads, a metadata-first candidate lookup additionally restricts source
 tool/prompt message IDs and part-uniqueness reads, so unrelated messages inside the
 same session do not need normalization. All occurrences of candidate IDs remain
-visible to duplicate-ownership checks. File lists materialize validated edit tools once for the
-three metadata projections when SQLite supports the hint.
+visible to duplicate-ownership checks. File lists filter native completed edit candidates
+before output normalization, then request once-only candidate materialization before
+the ownership and metadata predicates. SQLite 3.37 can still inline these relations;
+the debug plan flags expose that residual repeated work. The independent uniqueness
+reader still sees all part kinds and statuses, using metadata without normalized
+output: a read tool or unfinished edit with the same ID must invalidate ownership.
+Tool-change message joins project only role and
+parent metadata instead of copying full inline assistant content into temporary joins.
+Snapshot reads retain their full projection; tool keys keep their original part bytes
+and revisions. Validated edit tools are then reused for the three metadata projections.
 
 For Claude, `_session()` first reuses an existing corpus parse, then its
 single-entry `_one` memo. Otherwise it reads that session's transcripts,

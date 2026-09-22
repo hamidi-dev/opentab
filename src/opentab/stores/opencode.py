@@ -134,14 +134,32 @@ class _ChangeRequest:
             kind="files" if self.change_key is None else "diff",
         )
         if cancelled.is_set():
+            debug.event("opencode.changes_outcome", result="cancelled_before_open")
             return None
         store = Store(self.db, argparse.Namespace(demo=False))
         store._change_cancelled = cancelled
         store.conn.set_progress_handler(cancelled.is_set, 1000)
         try:
             if self.change_key is None:
-                return store.session_change_files(self.root_id)
-            return store.session_change_diff(self.root_id, self.change_key)
+                result = store.session_change_files(self.root_id)
+            else:
+                result = store.session_change_diff(self.root_id, self.change_key)
+            debug.event(
+                "opencode.changes_outcome",
+                result="cancelled"
+                if cancelled.is_set()
+                else "ready"
+                if result is not None
+                else "unavailable",
+            )
+            return result
+        except Exception as exc:
+            debug.event(
+                "opencode.changes_outcome",
+                result="cancelled" if cancelled.is_set() else "error",
+                error_type=type(exc).__name__,
+            )
+            raise
         finally:
             store.conn.close()
 
@@ -191,6 +209,8 @@ class Store:
                 source=debug.identity(os.path.abspath(db)),
                 v2=self.has_v2,
                 legacy_usage=self._legacy_usage_available() if self.has_v2 else True,
+                streamed_usage=hasattr(self.conn, "blobopen"),
+                changes=self.supports_session_changes,
             )
 
     @staticmethod
@@ -697,18 +717,27 @@ class Store:
     def set_accounting_cache_loader(self, loader) -> None:
         self._accounting_cache_loader = loader
 
+    @debug.timed("opencode.session_usage")
     def _prepare_session_usage(self, workflow_id: str) -> None:
         if self._usage_cache is None:
             return
         loader = getattr(self, "_accounting_cache_loader", None)
         ids = [
             row[0]
-            for row in self.conn.execute(
+            for row in debug.query_rows(
+                self.conn,
                 "with recursive tree(id) as (select id from session where id=? union all "
                 "select s.id from session s join tree on s.parent_id=tree.id) select id from tree",
                 [workflow_id],
+                label="opencode.usage_scope",
             )
         ]
+        debug.event(
+            "opencode.usage_scope_selected",
+            session=debug.identity(workflow_id),
+            sessions=len(ids),
+            sidecar_loader=loader is not None,
+        )
         if loader is not None and (
             not self._usage_cache.ready
             or self._usage_cache.scope is not None
@@ -735,10 +764,15 @@ class Store:
         *,
         part_row: int | None = None,
         part_metadata: bool = False,
+        change_candidates: bool = False,
     ) -> str:
         return (
             scoped_detail_sql(
-                conn or self.conn, sql, part_row=part_row, part_metadata=part_metadata
+                conn or self.conn,
+                sql,
+                part_row=part_row,
+                part_metadata=part_metadata,
+                change_candidates=change_candidates,
             )
             if self.has_v2
             else sql
@@ -838,7 +872,14 @@ class Store:
         group by t.tool, model_name
         order by cost desc, tokens_total desc
         """
-        return list(self.conn.execute(self._detail_sql(sql, part_metadata=True), [workflow_id]))
+        return list(
+            debug.query_rows(
+                self.conn,
+                self._detail_sql(sql, part_metadata=True),
+                [workflow_id],
+                label="opencode.tools_query",
+            )
+        )
 
     def supports_tools(self, workflow_id: str) -> bool:
         # Per-session capability gate for the Tools tab. A single OpenCode DB is
@@ -1130,11 +1171,25 @@ class Store:
         from part where session_id in (select id from tree)
         order by message_id, part_index, rowid
         """
-        rows = self.conn.execute(
-            self._detail_sql(sql, part_metadata=True), [workflow_id, own]
-        ).fetchall()
+        rows = list(
+            debug.query_rows(
+                self.conn,
+                self._detail_sql(sql, part_metadata=True),
+                [workflow_id, own],
+                label="opencode.part_metadata_query",
+            )
+        )
         self._part_metadata_memo = (key, rows)
-        debug.event("opencode.part_metadata_cache", result="miss", rows=len(rows))
+        debug.event(
+            "opencode.part_metadata_cache",
+            result="miss",
+            rows=len(rows),
+            reason="empty"
+            if memo is None
+            else "source_revision"
+            if memo[0][0] != version
+            else "scope_changed",
+        )
         return rows
 
     @debug.timed("opencode.turn_content")
@@ -1232,6 +1287,7 @@ class Store:
             return None
         return _ChangeRequest(self.db, root_id, change_key)
 
+    @debug.timed("opencode.changes_open")
     def _change_connection(self, uri: str) -> sqlite3.Connection:
         conn = sqlite3.connect(uri, uri=True)
         conn.row_factory = sqlite3.Row
@@ -1318,16 +1374,19 @@ class Store:
         except (OSError, ValueError):
             return path
 
+    @debug.timed("opencode.changes_metadata", count_rows=False)
     def _change_rows(
         self, conn: sqlite3.Connection, root_id: str, locator: tuple[str, int, int] | None = None
     ) -> tuple[list[dict], object]:
         if not isinstance(root_id, str) or not root_id:
+            debug.event("opencode.changes_rejected", reason="invalid_root")
             return [], None
         root_directory = "directory" if "directory" in self.session_columns else "null"
         roots = conn.execute(
             f"select parent_id, {root_directory} from session where id = ? limit 2", [root_id]
         ).fetchall()
         if len(roots) != 1 or roots[0][0] is not None:
+            debug.event("opencode.changes_rejected", reason="missing_or_ambiguous_root")
             return [], None
         root_directory = roots[0][1]
         tree = """with recursive tree(id) as (
@@ -1341,6 +1400,7 @@ class Store:
             [root_id],
         ).fetchone()
         if ambiguous:
+            debug.event("opencode.changes_rejected", reason="ambiguous_tree")
             return [], None
         revision = self._conversation_database_manifest()
         safe = "case when json_valid(m.data) then m.data else '{}' end"
@@ -1425,7 +1485,16 @@ class Store:
             params.extend(locator[1:])
         params.append(CHANGE_SUMMARY_LIMIT + 1)
         rows = (
-            [dict(row) for row in conn.execute(self._detail_sql(snapshot_sql, conn), params)]
+            [
+                dict(row)
+                for row in debug.query_rows(
+                    conn,
+                    self._detail_sql(snapshot_sql, conn),
+                    params,
+                    label="opencode.changes_snapshots",
+                    explain=True,
+                )
+            ]
             if locator is None or locator[0] == "snapshot"
             else []
         )
@@ -1441,21 +1510,32 @@ class Store:
             if self.has_v2:
                 prompt_id = f"coalesce(tm.parent_id, {prompt_id})"
             materialized = "materialized" if sqlite3.sqlite_version_info >= (3, 35, 0) else ""
+            debug.event(
+                "opencode.changes_strategy",
+                schema="v2" if self.has_v2 else "legacy",
+                keyed=locator is not None,
+                materialization_requested=bool(materialized),
+                candidate_filter=self.has_v2,
+                message_projection="metadata" if self.has_v2 else "legacy",
+            )
             part_source = "part"
             candidate_cte = ""
             message_filter = ""
             duplicate_part_filter = ""
+            if self.has_v2:
+                # Freeze each candidate projection once, before the ownership and
+                # metadata predicates can cause repeated inline-output normalization.
+                candidate_cte = f""", candidate_parts as {materialized} (
+                  select p.* from part p
+                  where session_id in (select id from tree) {"and rowid = ?" if locator else ""}
+                )"""
+                part_source = "candidate_parts"
+                native_filter = ""
             if self.has_v2 and locator:
                 # A keyed read needs only its candidate's tool/prompt messages.
                 # Session filters alone still normalize every message in a large
                 # selected session. The locator narrows candidates, not ownership:
                 # uniqueness and the full live occurrence key remain checked below.
-                candidate_cte = f""", candidate_parts as {materialized} (
-                  select * from part
-                  where session_id in (select id from tree) and rowid = ?
-                )"""
-                part_source = "candidate_parts"
-                native_filter = ""
                 message_filter = f"""
                   and tm.id in (select message_id from candidate_parts)
                   and pm.id in (
@@ -1487,12 +1567,13 @@ class Store:
             # Reuse validated edits across the three metadata projections. Without
             # this hint SQLite can expand/normalize the selected session's parts
             # again for every UNION branch. Keep unrelated tools and the unused
-            # full assistant message out of this transient relation.
+            # full assistant message out of this transient relation. Prompt bytes
+            # only bind snapshot keys; tool keys use the prompt ID and tool revision.
             native_sql = f"""
             {tree}{candidate_cte}, native as {materialized} (
               select p.id, p.data, p.rowid as part_row, tm.rowid as tool_message_row, tm.id as tool_message_id,
                      pm.rowid as prompt_row,
-                     pm.id as prompt_id, pm.data as prompt_data,
+                     pm.id as prompt_id,
                      pm.session_id as execution_id, {directory} as directory,
                      {pcreated} as part_created, {pupdated} as part_updated,
                      {tmupdated} as tool_message_updated, {prompt_created} as prompt_created,
@@ -1539,7 +1620,7 @@ class Store:
                 length(cast(cast(n.execution_id as text) as blob)) as execution_id_bytes,
                 n.prompt_created as message_created,
                 n.prompt_updated as message_updated,
-                length(cast(n.prompt_data as blob)) as message_bytes,
+                null as message_bytes,
                 n.directory,
                 d.key as diff_index,
                 substr({native_path}, 1, ?) as file,
@@ -1587,7 +1668,7 @@ class Store:
                 length(cast(cast(n.prompt_id as text) as blob)),
                 substr(cast(n.execution_id as text), 1, ?),
                 length(cast(cast(n.execution_id as text) as blob)),
-                n.prompt_created, n.prompt_updated, length(cast(n.prompt_data as blob)), n.directory,
+                n.prompt_created, n.prompt_updated, null, n.directory,
                 0, substr(json_extract(n.data, '$.state.metadata.filediff.file'), 1, ?),
                 length(cast(json_extract(n.data, '$.state.metadata.filediff.file') as blob)),
                 'modified', 8,
@@ -1617,7 +1698,7 @@ class Store:
                 length(cast(cast(n.prompt_id as text) as blob)),
                 substr(cast(n.execution_id as text), 1, ?),
                 length(cast(cast(n.execution_id as text) as blob)),
-                n.prompt_created, n.prompt_updated, length(cast(n.prompt_data as blob)), n.directory,
+                n.prompt_created, n.prompt_updated, null, n.directory,
                  0, substr({native_write_path}, 1, ?),
                  length(cast({native_write_path} as blob)),
                  case json_type(n.data, '$.state.metadata.exists')
@@ -1650,9 +1731,17 @@ class Store:
             native_params.append(CHANGE_SUMMARY_LIMIT + 1)
             rows.extend(
                 dict(row)
-                for row in conn.execute(
-                    self._detail_sql(native_sql, conn, part_row=locator[1] if locator else None),
+                for row in debug.query_rows(
+                    conn,
+                    self._detail_sql(
+                        native_sql,
+                        conn,
+                        part_row=locator[1] if locator else None,
+                        change_candidates=True,
+                    ),
                     native_params,
+                    label="opencode.changes_native",
+                    explain=True,
                 )
             )
 
@@ -1668,12 +1757,19 @@ class Store:
                 row["source"],
             )
         )
+        debug.event(
+            "opencode.changes_metadata_ready",
+            rows=len(rows),
+            keyed=locator is not None,
+            limit_reached=len(rows) > CHANGE_SUMMARY_LIMIT,
+        )
         return rows[: CHANGE_SUMMARY_LIMIT + 1], revision
 
     @debug.timed("opencode.change_files")
     def session_change_files(self, root_id: str) -> dict:
         result = {"files": [], "limitations": list(CHANGE_LIMITATIONS), "truncated": False}
         if self.demo or not self.supports_session_changes:
+            debug.event("opencode.changes_rejected", reason="demo_or_unsupported")
             return result
         uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
         try:
@@ -1688,8 +1784,10 @@ class Store:
             ):
                 result["limitations"].append("The source changed while summaries were read.")
                 result["truncated"] = True
+                debug.event("opencode.changes_rejected", reason="source_changed")
                 return result
-        except (sqlite3.Error, OSError, UnicodeError, ValueError, TypeError):
+        except (sqlite3.Error, OSError, UnicodeError, ValueError, TypeError) as exc:
+            debug.event("opencode.changes_read_failed", error_type=type(exc).__name__)
             raise ValueError("Could not read recorded change summaries.") from None
 
         if len(rows) > CHANGE_SUMMARY_LIMIT:
@@ -1797,6 +1895,15 @@ class Store:
         if result["truncated"] and not any("limit" in text for text in result["limitations"]):
             result["limitations"].append("Some oversized change metadata was omitted.")
         result["files"] = list(files.values())
+        if debug.enabled():
+            debug.event(
+                "opencode.changes_files_ready",
+                files=len(files),
+                edits=sum(len(f["edits"]) for f in files.values()),
+                available=sum(e["available"] for f in files.values() for e in f["edits"]),
+                metadata_bytes=metadata_bytes,
+                truncated=result["truncated"],
+            )
         return result
 
     @debug.timed("opencode.change_diff")
@@ -1807,16 +1914,19 @@ class Store:
             or not isinstance(change_key, str)
             or len(change_key) > 160
         ):
+            debug.event("opencode.change_diff_rejected", reason="demo_unsupported_or_key_shape")
             return None
         match = re.fullmatch(
             r"occhg1:(snapshot|apply_patch|patch|edit|write):(-?[0-9]{1,19}):([0-9]{1,19}):[0-9a-f]{64}",
             change_key,
         )
         if match is None:
+            debug.event("opencode.change_diff_rejected", reason="key_format")
             return None
         source, row_id, index = match.groups()
         locator = (source, int(row_id), int(index))
         if not -(2**63) <= locator[1] < 2**63 or locator[2] >= 2**63:
+            debug.event("opencode.change_diff_rejected", reason="locator_range")
             return None
         uri = "file:" + quote(os.path.abspath(self.db)) + "?mode=ro"
         try:
@@ -1838,11 +1948,13 @@ class Store:
                     self._change_uses_global_revision(selected)
                     and (initial is None or revision != initial)
                 ):
+                    debug.event("opencode.change_diff_rejected", reason="stale_or_unowned_key")
                     return None
                 if selected["source"] == "snapshot":
                     safe = "case when json_valid(m.data) then m.data else '{}' end"
                     diff = "case when d.type = 'object' then d.value else '{}' end"
-                    body = conn.execute(
+                    body = debug.query_one(
+                        conn,
                         f"""select
                           json_extract({diff}, '$.file') as file,
                           json_type({diff}, '$.patch') as patch_type,
@@ -1866,7 +1978,8 @@ class Store:
                             selected["execution_id"],
                             selected["diff_index"],
                         ],
-                    ).fetchone()
+                        label="opencode.changes_snapshot_body",
+                    )
                 elif selected["source"] in ("apply_patch", "patch", "edit"):
                     files_path = f"$.state.metadata.files[{int(selected['diff_index'])}].patch"
                     patch_paths = (
@@ -1874,7 +1987,8 @@ class Store:
                         if selected["source"] == "edit"
                         else (files_path, files_path)
                     )
-                    body = conn.execute(
+                    body = debug.query_one(
+                        conn,
                         """select
                           ? as file,
                           coalesce(json_type(p.data, ?), json_type(p.data, ?)) as patch_type,
@@ -1895,15 +2009,22 @@ class Store:
                             selected["tool_message_id"],
                             selected["execution_id"],
                         ],
-                    ).fetchone()
+                        label="opencode.changes_tool_body",
+                    )
                 else:
                     body = None
             if body is None or (
                 self._change_uses_global_revision(selected)
                 and self._conversation_database_manifest() != initial
             ):
+                debug.event(
+                    "opencode.change_diff_rejected", reason="missing_body_or_source_changed"
+                )
                 return None
-        except (sqlite3.Error, OSError, UnicodeError, ValueError, TypeError):
+        except (sqlite3.Error, OSError, UnicodeError, ValueError, TypeError) as exc:
+            debug.event(
+                "opencode.change_diff_rejected", reason="read_error", error_type=type(exc).__name__
+            )
             return None
 
         path = (
@@ -1912,9 +2033,16 @@ class Store:
             else body["file"]
         )
         if not isinstance(path, str) or path != selected["file"]:
+            debug.event("opencode.change_diff_rejected", reason="path_mismatch")
             return None
         if body["patch_type"] == "text" and body["patch_bytes"] > 0:
             patch, clipped = self._clip_utf8(body["patch"], CHANGE_DIFF_BYTES)
+            debug.event(
+                "opencode.change_diff_ready",
+                generated=False,
+                source_bytes=body["patch_bytes"],
+                truncated=clipped or body["patch_bytes"] > CHANGE_DIFF_BYTES,
+            )
             return {
                 "file": path,
                 "patch": patch,
@@ -1934,6 +2062,7 @@ class Store:
                 ),
             }
         if body["before_type"] != "text" or body["after_type"] != "text":
+            debug.event("opencode.change_diff_rejected", reason="no_recorded_content")
             return None
         before_text, before_clipped = self._clip_utf8(body["before"], CHANGE_LEGACY_INPUT_BYTES)
         after_text, after_clipped = self._clip_utf8(body["after"], CHANGE_LEGACY_INPUT_BYTES)
@@ -1973,6 +2102,12 @@ class Store:
             or output_clipped
             or body["before_bytes"] > CHANGE_LEGACY_INPUT_BYTES
             or body["after_bytes"] > CHANGE_LEGACY_INPUT_BYTES
+        )
+        debug.event(
+            "opencode.change_diff_ready",
+            generated=True,
+            source_bytes=body["before_bytes"] + body["after_bytes"],
+            truncated=truncated,
         )
         return {
             "file": path,

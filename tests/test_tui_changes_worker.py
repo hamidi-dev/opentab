@@ -1,5 +1,9 @@
+import json
+import tempfile
 import threading
+from pathlib import Path
 
+from opentab import diagnostics as debug
 from opentab.tui.changes_worker import ChangesWorker
 
 
@@ -81,3 +85,25 @@ def test_changes_worker_close_is_bounded_for_uncooperative_request():
     release.set()
     worker._thread.join(2)
     assert not worker._thread.is_alive()
+
+
+def test_changes_worker_debug_correlates_queue_execution_and_result_without_keys():
+    with tempfile.TemporaryDirectory() as tmp:
+        filename = Path(tmp) / "debug.jsonl"
+        with debug.session(filename=str(filename)):
+            worker = ChangesWorker()
+            try:
+                assert worker.submit(("private-key",), lambda cancelled: "private-patch")
+                assert worker.wait_for_result()
+                assert worker.poll() == [(("private-key",), "private-patch", False)]
+            finally:
+                worker.close()
+        text = filename.read_text()
+        assert "private-" not in text
+        rows = [json.loads(line) for line in text.splitlines()]
+        queue = next(r for r in rows if r["event"] == "changes.queued")
+        execute = next(r for r in rows if r["event"] == "changes.execute.start")
+        result = next(r for r in rows if r["event"] == "changes.completed")
+        assert queue["request"] == execute["request"] == result["request"]
+        assert queue["worker"] == execute["worker"] == result["worker"]
+        assert execute["queue_ms"] >= 0 and not result["failed"]

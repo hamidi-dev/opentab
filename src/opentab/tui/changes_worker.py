@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
+
+from opentab import diagnostics as debug
 
 _JOIN_TIMEOUT = 0.25
 _MAX_PENDING = 128
@@ -19,6 +22,7 @@ class ChangesWorker:
         self._active = None
         self._result_ready = threading.Event()
         self._generation = 0
+        self._sequence = 0
         self._closed = False
         self._thread = threading.Thread(
             target=self._run,
@@ -31,11 +35,22 @@ class ChangesWorker:
         """Queue one unique cache key, returning false when already queued or running."""
         with self._condition:
             if self._closed or key in self._keys:
+                debug.event("changes.queue_rejected", reason="closed_or_duplicate")
                 return False
             if len(self._pending) >= _MAX_PENDING:
+                debug.event("changes.queue_rejected", reason="queue_limit")
                 return False
             self._keys.add(key)
-            self._pending.append((self._generation, key, request))
+            self._sequence += 1
+            queued = time.perf_counter() if debug.enabled() else None
+            self._pending.append((self._generation, key, request, self._sequence, queued))
+            debug.event(
+                "changes.queued",
+                worker=id(self),
+                request=self._sequence,
+                generation=self._generation,
+                pending=len(self._pending),
+            )
             self._condition.notify()
             return True
 
@@ -55,6 +70,14 @@ class ChangesWorker:
     def cancel_all(self) -> None:
         """Cancel active work and discard every queued or completed generation."""
         with self._condition:
+            debug.event(
+                "changes.cancel",
+                worker=id(self),
+                generation=self._generation,
+                pending=len(self._pending),
+                completed=len(self._results),
+                active=self._active is not None,
+            )
             self._generation += 1
             self._pending.clear()
             self._results.clear()
@@ -79,6 +102,7 @@ class ChangesWorker:
                 self._condition.notify()
         if self._thread is not threading.current_thread():
             self._thread.join(_JOIN_TIMEOUT)
+        debug.event("changes.closed", worker=id(self), thread_alive=self._thread.is_alive())
 
     def _run(self) -> None:
         while True:
@@ -87,20 +111,38 @@ class ChangesWorker:
                     self._condition.wait()
                 if self._closed:
                     return
-                generation, key, request = self._pending.popleft()
+                generation, key, request, sequence, queued = self._pending.popleft()
                 cancelled = threading.Event()
                 self._active = cancelled
 
             value = None
             failed = False
             try:
-                value = request(cancelled)
+                with debug.span(
+                    "changes.execute",
+                    worker=id(self),
+                    request=sequence,
+                    generation=generation,
+                    queue_ms=round((time.perf_counter() - queued) * 1000, 3)
+                    if queued is not None
+                    else None,
+                ):
+                    value = request(cancelled)
             except Exception:  # noqa: BLE001 -- source details must not cross this boundary
                 failed = True
 
             with self._condition:
                 self._active = None
                 current = generation == self._generation
+                debug.event(
+                    "changes.completed",
+                    worker=id(self),
+                    request=sequence,
+                    generation=generation,
+                    failed=failed,
+                    cancelled=cancelled.is_set(),
+                    discarded=self._closed or not current,
+                )
                 if current:
                     self._keys.discard(key)
                 if not self._closed and current and not cancelled.is_set():

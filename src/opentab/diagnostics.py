@@ -101,11 +101,28 @@ def _memory() -> dict:
         import resource
 
         value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        return {
+        result = {
             "peak_rss_mib": round(value / (1024 * 1024 if sys.platform == "darwin" else 1024), 3),
         }
     except ImportError:
-        return {}
+        result = {}
+    if sys.platform == "linux":
+        # Process-local residency distinguishes a retained allocation from an old
+        # high-water mark. Never label Linux page cache or VmmemWSL as process RSS.
+        try:
+            with open("/proc/self/status", encoding="ascii") as handle:
+                fields = dict(line.split(":", 1) for line in handle if ":" in line)
+            for name, label in (
+                ("VmRSS", "rss_mib"),
+                ("RssAnon", "rss_anon_mib"),
+                ("RssFile", "rss_file_mib"),
+                ("VmSwap", "swap_mib"),
+            ):
+                if name in fields:
+                    result[label] = round(int(fields[name].split()[0]) / 1024, 3)
+        except (OSError, ValueError, IndexError):
+            pass
+    return result
 
 
 @contextlib.contextmanager
@@ -118,10 +135,14 @@ def span(name: str, **fields):
     started = time.perf_counter()
     cpu_started = time.process_time()
     thread_started = time.thread_time()
-    seq = sink.emit(name + ".start", fields)
+    before = _memory()
+    seq = sink.emit(name + ".start", {**fields, **before})
     token = _parent.set(seq)
     try:
         yield result
+    except GeneratorExit:
+        # Closing a bounded row iterator after fetchone is successful consumption.
+        raise
     except BaseException as exc:
         result.update(status="error", error_type=type(exc).__name__)
         raise
@@ -130,6 +151,9 @@ def span(name: str, **fields):
         process_cpu_ms = (time.process_time() - cpu_started) * 1000
         thread_cpu_ms = (time.thread_time() - thread_started) * 1000
         _parent.reset(token)
+        after = _memory()
+        if "rss_mib" in before and "rss_mib" in after:
+            after["rss_change_mib"] = round(after["rss_mib"] - before["rss_mib"], 3)
         sink.emit(
             name + ".end",
             {
@@ -140,12 +164,12 @@ def span(name: str, **fields):
                 "process_cpu_ms": round(process_cpu_ms, 3),
                 "thread_cpu_ms": round(thread_cpu_ms, 3),
                 "wall_minus_thread_cpu_ms": round(max(0, duration_ms - thread_cpu_ms), 3),
-                **_memory(),
+                **after,
             },
         )
 
 
-def timed(name: str):
+def timed(name: str, *, count_rows: bool = True):
     """Time a call without inspecting its arguments or logging its return value."""
 
     def decorate(fn):
@@ -155,7 +179,7 @@ def timed(name: str):
                 return fn(*args, **kwargs)
             with span(name) as info:
                 result = fn(*args, **kwargs)
-                if isinstance(result, (list, tuple)):
+                if count_rows and isinstance(result, (list, tuple)):
                     info["rows"] = len(result)
                 return result
 
@@ -164,7 +188,7 @@ def timed(name: str):
     return decorate
 
 
-def query_rows(conn, sql: str, params=(), *, label: str):
+def query_rows(conn, sql: str, params=(), *, label: str, explain: bool = False):
     """Time SQLite execute/fetch separately from the caller's per-row processing.
 
     SQL and parameters are deliberately never emitted. Only use on iterators
@@ -174,22 +198,83 @@ def query_rows(conn, sql: str, params=(), *, label: str):
         yield from conn.execute(sql, params)
         return
     with span(label) as info:
+        if explain:
+            query_plan(conn, sql, params, label=label)
         started = time.perf_counter()
-        cursor = conn.execute(sql, params)
-        sql_seconds = time.perf_counter() - started
+        cursor = None
+        execute_seconds = fetch_seconds = 0.0
         count = 0
         try:
+            cursor = conn.execute(sql, params)
+            execute_seconds = time.perf_counter() - started
             while True:
                 started = time.perf_counter()
-                row = cursor.fetchone()
-                sql_seconds += time.perf_counter() - started
+                try:
+                    row = cursor.fetchone()
+                finally:
+                    fetch_seconds += time.perf_counter() - started
                 if row is None:
                     break
                 count += 1
                 yield row
         finally:
+            if cursor is None:
+                execute_seconds = time.perf_counter() - started
+            else:
+                cursor.close()
+            info.update(
+                rows=count,
+                sql_ms=round((execute_seconds + fetch_seconds) * 1000, 3),
+                execute_ms=round(execute_seconds * 1000, 3),
+                fetch_ms=round(fetch_seconds * 1000, 3),
+            )
+
+
+def query_one(conn, sql: str, params=(), *, label: str):
+    """A bounded one-row read with the same timing/error contract as query_rows."""
+    rows = query_rows(conn, sql, params, label=label)
+    try:
+        return next(rows, None)
+    finally:
+        rows.close()
+
+
+def query_plan(conn, sql: str, params=(), *, label: str) -> None:
+    """Summarize selected internal query plans, never SQL or arbitrary plan text.
+
+    MATERIALIZED is a planner request, not evidence that a particular runtime
+    honored it. Only counts and two fixed internal CTE flags cross the log boundary.
+    EXPLAIN prepares but does not execute the source read.
+    """
+    if not enabled():
+        return
+    import sqlite3
+
+    started = time.perf_counter()
+    try:
+        cursor = conn.execute("explain query plan " + sql, params)
+        try:
+            rows = cursor.fetchmany(257)
+        finally:
             cursor.close()
-            info.update(rows=count, sql_ms=round(sql_seconds * 1000, 3))
+        details = [str(row[3]).upper() for row in rows[:256]]
+        event(
+            "sql.plan",
+            query=label,
+            prepare_ms=round((time.perf_counter() - started) * 1000, 3),
+            truncated=len(rows) > 256,
+            steps=len(details),
+            scans=sum(d.startswith("SCAN ") for d in details),
+            searches=sum(d.startswith("SEARCH ") for d in details),
+            materializations=sum(d.startswith("MATERIALIZE ") for d in details),
+            temp_btrees=sum("TEMP B-TREE" in d for d in details),
+            correlated=sum("CORRELATED" in d for d in details),
+            automatic_indexes=sum("AUTOMATIC" in d for d in details),
+            candidate_parts_materialized="MATERIALIZE CANDIDATE_PARTS" in details,
+            native_materialized="MATERIALIZE NATIVE" in details,
+        )
+    except sqlite3.Error as exc:
+        event("sql.plan_unavailable", query=label, error_type=type(exc).__name__)
 
 
 @contextlib.contextmanager
