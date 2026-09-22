@@ -283,6 +283,13 @@ worked 2h 15m (until 14:15)`. The Context tab still has the richer wall-clock st
 | `o` | Open the selected session's / project's directory |
 | `L` | Launch the session in its own tool — `opencode --session` / `claude --resume` / `codex resume`. Then `w` window/tab · `s` right split · `v` lower split · `p` popup · `y` copy the command. tmux offers all spawn targets. Herdr offers a tab and both splits only when it provides a valid `HERDR_PANE_ID` for the current pane; otherwise it offers only the tab and copy. A [launcher hook](#custom-launchers) may offer all four. `y` copies anywhere. If tmux and Herdr are nested, OpenTab uses the innermost multiplexer. A session **pulled from another machine** reopens *there* only when its `remotes.json` entry has an SSH target: every available target wraps the command in `ssh -t <target> 'cd … && …'`, and `y` yanks that same line. A box reached by `url` (no SSH target) offers only the yank |
 | `e` | Export the current list to a CSV in the working directory — whatever the pane is showing, including a model scope's attributed columns |
+| `y` | Copy the selected/open session's retained user and assistant messages as Markdown (`## User` / `## Assistant`), including intermediate replies and code blocks. Available in the focused Sessions list and every session tab for local OpenCode, Claude Code and Codex. Copies the root conversation, even inside Subagents; excludes tool calls/results, thinking, system messages and attachments. Disabled in demo |
+
+Conversation copy reads the source freshly on each press and preserves its message
+order and full retained text, rather than copying truncated Turns previews. It does
+not need a conversation index. Deleted history cannot be recovered; retained branches
+or repeated prompts can still appear. `Ctrl-P` only hides displayed prompts, so `y`
+copies the original text. The remappable action is `[main] copy_conversation`.
 
 ## Views & overlays
 

@@ -55,6 +55,7 @@ from opentab.accounting.pricing import (
     refresh_model_prices,
 )
 from opentab.accounting.tools import tool_calls_from_turns
+from opentab.conversations.reader import ConversationError
 from opentab.demo import (
     DEMO_ALL,
     DEMO_CATEGORIES,
@@ -4605,6 +4606,52 @@ class App:
         # generous width only does the ~ swap here, no clipping).
         self.notify(f"exported {len(rows)} rows → {short_path(path, 999)}", "success")
 
+    def copy_conversation(self, stdscr=None) -> None:
+        """Explicitly copy retained root text, independently of Turns and its previews."""
+        if self.store.demo:
+            self.notify("conversation copy disabled in demo mode", "error")
+            return
+        session = self.bookmark_target()
+        if session is None:
+            self.notify("select or open a session to copy its conversation", "error")
+            return
+        identity = (session.id, session.source, session.machine)
+        if sum((w.id, w.source, w.machine) == identity for w in self.loaded) != 1:
+            self.notify("conversation session identity is ambiguous", "error")
+            return
+        owner = self.trace_owner(session.id)
+        check = getattr(owner, "supports_conversation", None)
+        read = getattr(owner, "conversation_source", None)
+        try:
+            if not callable(read) or not callable(check) or not check(session.id):
+                self.notify(
+                    "conversation copy requires local OpenCode, Claude Code or Codex", "error"
+                )
+                return
+            self.notify("reading session conversation…", "info")
+            if stdscr is not None:
+                self.renderer.draw(stdscr)
+                stdscr.refresh()
+            source = read(session.id)
+            text, count = exporting.conversation_markdown(source["records"])
+        except ConversationError as exc:
+            self.notify(f"conversation copy failed: {exc.message}", "error")
+            return
+        except Exception:  # noqa: BLE001 -- source errors must not leak content or close the TUI
+            self.notify("conversation copy failed: source is unavailable", "error")
+            return
+        if not text:
+            self.notify("no retained user/assistant text to copy", "warn")
+        elif util.copy_to_clipboard(text):
+            skipped = "malformed_jsonl_records_skipped" in source.get("limitations", [])
+            suffix = "; malformed source records were skipped" if skipped else ""
+            self.notify(
+                f"copied {count} messages ({len(text):,} characters){suffix}",
+                "warn" if skipped else "success",
+            )
+        else:
+            self.notify(f"clipboard copy failed ({util.clipboard_tools_label()})", "error")
+
     def _current_directory(self) -> str | None:
         session = self.bookmark_target()
         if session is not None:
@@ -7820,6 +7867,9 @@ class App:
             return True
         if act == "export":
             self.export_current()
+            return True
+        if act == "copy_conversation":
+            self.copy_conversation(stdscr)
             return True
         if act == "open_dir":
             self.open_current()

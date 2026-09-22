@@ -788,6 +788,14 @@ KEYS: tuple[Key, ...] = (
         active=lambda app: app.launch_menu is not None,
     ),
     Key(
+        id="copy-conversation",
+        actions=("copy_conversation",),
+        summary="copy the root session's user/assistant text as Markdown",
+        section="here",
+        when=lambda app: in_main(app) and not app.store.demo and app.bookmark_target() is not None,
+        chip="copy chat",
+    ),
+    Key(
         id="open",
         ctx="main",
         actions=("open_dir",),
@@ -1328,6 +1336,7 @@ FOOTER_ORDER = (
     "trends",
     "prices",
     "launch",
+    "copy-conversation",
     "demo",
     "demo-toggle",
     "hide-prompts",
