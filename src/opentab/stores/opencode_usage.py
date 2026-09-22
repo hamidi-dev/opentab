@@ -22,6 +22,14 @@ _STRING_CHUNK = re.compile(r'(?:[^"\\\x00-\x1f]+|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4
 _NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?")
 _SPACE = re.compile(r"[ \t\r\n]*")
 _KEEP = {"role", "providerID", "modelID", "model", "time", "tokens", "cost"}
+_FIELDS = ("role", "providerID", "modelID", "model", "time", "tokens", "cost")
+_SCALAR_SQL = (
+    "select case when typeof(data)='text' and json_valid(data) and json_type(data)='object' "
+    "then json_extract(data,"
+    + ",".join("'$." + key + "'" for key in _FIELDS)
+    + ") end, json_type(case when json_valid(data) then data else '{}' end, '$.time') "
+    "from main.session_message where rowid=?"
+)
 _DECODE_LIMIT = 8 * 1024 * 1024
 _MAX_DEPTH = 1000 if sqlite3.sqlite_version_info >= (3, 42, 0) else 2000
 
@@ -331,7 +339,7 @@ def compact_usage_stream(read) -> str:
         return "null"
 
 
-def _read_usage(conn, rowid, tracing):
+def _read_usage(conn, rowid, tracing, sql_projection=False):
     """Fetch/project one row; modern runtimes stream oversized TEXT via Blob."""
     started = time.perf_counter() if tracing else 0
     blob = None
@@ -353,7 +361,36 @@ def _read_usage(conn, rowid, tracing):
                     streamed=True,
                 ):
                     compact = compact_usage_stream(blob.read)
-                return compact, size, (fetched - started) * 1000, True
+                return compact, size, (fetched - started) * 1000, True, False
+        if sql_projection:
+            # A single multi-path extraction keeps discarded content out of Python.
+            # Only bounded cells use SQLite's JSON parser; oversized cells retain
+            # streaming validation. Preserve missing versus explicit-null time:
+            # only an absent time object allows the native timestamp fallback.
+            try:
+                raw, time_type = conn.execute(_SCALAR_SQL, [rowid]).fetchone()
+                fetched = time.perf_counter() if tracing else 0
+                if raw is None:
+                    compact = "null"
+                else:
+                    fields = dict(
+                        zip(
+                            _FIELDS,
+                            json.loads(
+                                raw,
+                                object_pairs_hook=_first_keys,
+                                parse_constant=_invalid_constant,
+                            ),
+                        )
+                    )
+                    if time_type is None:
+                        fields.pop("time")
+                    compact = json.dumps(fields, allow_nan=False)
+                return compact, size, (fetched - started) * 1000, False, True
+            except (sqlite3.OperationalError, ValueError, UnicodeError, RecursionError):
+                # Non-finite numbers and runtime-specific JSON/UTF handling keep
+                # the established full-read validator rather than losing usage.
+                pass
     data = conn.execute("select data from main.session_message where rowid=?", [rowid]).fetchone()[
         0
     ]
@@ -370,7 +407,7 @@ def _read_usage(conn, rowid, tracing):
             compact = compact_usage(data)
     else:
         compact = compact_usage(data)
-    return compact, size, (fetched - started) * 1000, False
+    return compact, size, (fetched - started) * 1000, False, False
 
 
 class UsageCache:
@@ -385,6 +422,7 @@ class UsageCache:
         self.built_at = 0
         self.reused = 0
         self.changed = True
+        self._sql_projection = None
 
     def identity(self) -> list:
         stat = os.stat(self.db)
@@ -459,15 +497,26 @@ class UsageCache:
             previous_rows=len(self.rows),
         )
         tracing = debug.enabled()
+        if self._sql_projection is None:
+            # Older JSON1 engines cannot match escaped object keys as Python does.
+            # Probe the actual library, not the Python version or a new minimum.
+            self._sql_projection = (
+                hasattr(conn, "blobopen")
+                and conn.execute(
+                    "select json_extract(?, '$.model')", ['{"\\u006dodel":1}']
+                ).fetchone()[0]
+                == 1
+            )
         debug.event(
             "usage.decode_strategy",
             streamed_oversized=hasattr(conn, "blobopen"),
             compact_threshold=_DECODE_LIMIT,
             legacy_reread=legacy,
+            sql_scalar_projection=self._sql_projection,
         )
         fetch_ms = decode_ms = project_ms = insert_ms = 0.0
         decoded = large = legacy_rows = 0
-        streamed_rows = unusable_rows = 0
+        streamed_rows = unusable_rows = projected_rows = 0
         reread_reasons = {} if tracing else None
         started = time.time() * 1000
         cutoff = min(started, self.built_at) - 2000
@@ -528,7 +577,9 @@ class UsageCache:
                         )
                         reread_reasons[reason] = reread_reasons.get(reason, 0) + 1
                     tick = time.perf_counter() if tracing else 0
-                    compact, size, fetched_ms, streamed = _read_usage(conn, stamp[0], tracing)
+                    compact, size, fetched_ms, streamed, projected = _read_usage(
+                        conn, stamp[0], tracing, self._sql_projection
+                    )
                     if tracing:
                         now = time.perf_counter()
                         elapsed = (now - tick) * 1000
@@ -540,12 +591,14 @@ class UsageCache:
                                 row=debug.identity(str(stamp[0])),
                                 input_size=size,
                                 streamed=streamed,
+                                sql_projected=projected,
                                 fetch_ms=round(fetched_ms, 3),
                                 decode_ms=round(elapsed - fetched_ms, 3),
                             )
                         tick = now
                         large += size > _DECODE_LIMIT
                         streamed_rows += streamed
+                        projected_rows += projected
                         unusable_rows += compact == "null"
                     values = tuple(conn.execute(projection, (*stamp[:5], compact)).fetchone())
                     if tracing:
@@ -581,6 +634,8 @@ class UsageCache:
                     decoded=decoded,
                     oversized=large,
                     streamed=streamed_rows,
+                    sql_projected=projected_rows,
+                    python_full_decode=decoded - streamed_rows - projected_rows,
                     unusable=unusable_rows,
                     payload_fetch_ms=round(fetch_ms, 3),
                     decode_ms=round(decode_ms, 3),

@@ -50,6 +50,11 @@ Events cover:
   interpreter fallback. `usage.large_row.start/end` brackets oversized decoding;
   `size_unit` distinguishes fetched text characters from streamed bytes. Native
   summaries count streamed and unusable projections as well as reused/decoded rows.
+  `sql_scalar_projection` reports the bounded native-row fast path; native summaries
+  split reread rows into `sql_projected`, `streamed` and `python_full_decode`.
+  SQL scalar extraction is included in `payload_fetch_ms`; subsequent Python
+  decoding sees only those fields. Compare the whole refresh as well as each phase
+  when evaluating this change: moving work into SQLite changes its timing bucket.
 - Changes separates reader opening, metadata validation, snapshot queries, native
   edit queries and selected patch-body reads. `opencode.changes_strategy` records
   the requested optimization; `sql.plan` records the **observed** plan, including
@@ -170,6 +175,16 @@ booleans, never bodies. Metadata projections avoid tool-output normalization.
 Tools joins indexed numeric accounting rather than reparsing message tokens/costs.
 Temporary writes use savepoints so they cannot leave a source snapshot pinned
 between refreshes. Full traces and Changes retain their separate content readers.
+
+On Blob-capable interpreters, changed native messages up to the 8 MiB decode bound
+can use one multi-path SQLite extraction of the seven accounting fields. Python
+then decodes only that projection, avoiding object creation and duplicate-key
+callbacks for discarded inline content. The actual SQLite library must pass an
+escaped-key lookup probe; older JSON1 semantics keep the established reader.
+Missing `time` stays distinct from explicit JSON null because only absence allows
+the native timestamp fallback. Non-finite/unsupported projected values also fall
+back to the existing validator. Oversized messages retain bounded Blob streaming;
+this optimization does not push giant cells through SQLite's JSON materialization.
 
 Changes uses separate worker-owned connections for both file lists and keyed diffs.
 Those connections receive the same read tuning as the main store. Its snapshot
