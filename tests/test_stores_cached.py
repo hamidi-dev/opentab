@@ -8,6 +8,56 @@ import opentab as ot
 from tests._support import workflow
 
 
+def test_opencode_cache_invalidates_replaced_database_with_preserved_size_and_mtime():
+    import argparse
+    from pathlib import Path
+
+    from opentab import diagnostics as debug
+
+    from tests.test_stores_opencode_v2 import _populate_v2, _v2_db
+
+    with _v2_db() as (writer, store):
+        _populate_v2(writer)
+        args = argparse.Namespace(demo=False, no_cache=False)
+        cid = "opencode|" + store.db
+        cached = ot.CachedStore(store, cid, args)
+        cached.workflows()
+        cached.model_breakdown()
+        assert ot.CachedStore(store, cid, args).workflows()
+        stamp = os.stat(store.db)
+        replacement = store.db + ".replacement"
+        other = sqlite3.connect(replacement)
+        try:
+            writer.backup(other)
+            other.execute("update session_v2 set title='next' where id='root'")
+            other.commit()
+        finally:
+            other.close()
+        store.conn.close()
+        writer.close()
+        assert os.stat(replacement).st_size == stamp.st_size
+        os.utime(replacement, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        os.replace(replacement, store.db)
+        log = Path(store.db + ".debug.jsonl")
+        reopened = ot.Store(store.db, args)
+        try:
+            with debug.session(filename=str(log)):
+                cached = ot.CachedStore(reopened, cid, args)
+                assert next(w for w in cached.workflows() if w.id == "root").title == "next"
+                assert cached.served_from_cache is False
+            changed = [
+                json.loads(line)
+                for line in log.read_text().splitlines()
+                if json.loads(line)["event"] == "cache.input_changed"
+            ]
+            assert any(
+                r["identity_changed"] and not r["mtime_changed"] and not r["size_changed"]
+                for r in changed
+            )
+        finally:
+            reopened.conn.close()
+
+
 def _fixture_model_row(root_id, tokens, model="anthropic/x"):
     # A model row shaped like a real backend's: CachedStore._read rejects a cached
     # payload whose rows lack any key the app INDEXES rather than .get()s
@@ -294,7 +344,7 @@ def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
         try:
             store = ot.Store(db, type("A", (), {"demo": False})())
             ci = store.cache_inputs()
-            assert db in ci and db + "-wal" in ci and db + "-shm" in ci  # sidecars fingerprinted
+            assert db in ci and db + "-wal" in ci
 
             cid = "opencode|" + db
             cargs = type("A", (), {"demo": False, "no_cache": False})()
@@ -310,6 +360,21 @@ def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
             c2.workflows()
             assert c2.served_from_cache is True
 
+            # Actual reader churn plus a changed SHM timestamp must not make a
+            # fresh process discard rollups: committed data lives in DB and WAL.
+            with sqlite3.connect("file:" + db + "?mode=ro", uri=True) as reader:
+                reader.execute("select count(*) from session").fetchone()
+            reader.close()
+            shm = os.stat(db + "-shm")
+            os.utime(db + "-shm", ns=(shm.st_atime_ns, shm.st_mtime_ns + 1000000))
+            reopened = ot.Store(db, type("A", (), {"demo": False})())
+            try:
+                c2 = ot.CachedStore(reopened, cid, cargs)
+                assert [x.id for x in c2.workflows()] == ["s1"]
+                assert c2.served_from_cache is True
+            finally:
+                reopened.conn.close()
+
             # OpenCode adds a new session -> it lands in the WAL, main .db mtime unchanged.
             mtime_before = os.stat(db).st_mtime_ns
             w.execute(
@@ -324,7 +389,32 @@ def test_cache_invalidates_on_wal_write_so_reload_sees_new_opencode_sessions():
             wf3 = c3.workflows()
             assert c3.served_from_cache is False
             assert sorted(x.id for x in wf3) == ["s1", "s2"]
+            c3.model_breakdown()
+
+            # A checkpoint moves pages into DB and resets WAL. Subsequent same-size
+            # WAL reuse must still invalidate, even though file length stops growing.
+            w.execute("pragma wal_checkpoint(truncate)").fetchall()
+            c4 = ot.CachedStore(store, cid, cargs)
+            assert sorted(x.id for x in c4.workflows()) == ["s1", "s2"]
+            assert c4.served_from_cache is False
+            c4.model_breakdown()
+            w.execute("update session set title='New' where id='s2'")
+            w.commit()
+            wal_size = os.stat(db + "-wal").st_size
+            c5 = ot.CachedStore(store, cid, cargs)
+            assert next(x for x in c5.workflows() if x.id == "s2").title == "New"
+            assert c5.served_from_cache is False
+            c5.model_breakdown()
+            w.execute("pragma wal_checkpoint(restart)").fetchall()
+            w.execute("update session set title='Now' where id='s2'")
+            w.commit()
+            assert os.stat(db + "-wal").st_size == wal_size
+            c6 = ot.CachedStore(store, cid, cargs)
+            assert next(x for x in c6.workflows() if x.id == "s2").title == "Now"
+            assert c6.served_from_cache is False
         finally:
+            if "store" in locals():
+                store.conn.close()
             w.close()
             if old_xdg is None:
                 os.environ.pop("XDG_CACHE_HOME", None)

@@ -231,10 +231,21 @@ Rollups live under `$XDG_CACHE_HOME/opentab/cache`, defaulting to
 `~/.cache/opentab/cache`. Filenames combine the source key and a hash of key/root.
 These rebuildable files are separate from authored notes and UI preferences.
 
-Each backend's `cache_inputs()` lists its dependencies. The fingerprint is a
+Each backend's `cache_inputs()` lists its dependencies. The default fingerprint is a
 sorted list of `(path, size, mtime_ns)`, not a content hash. Include metadata that
 changes accounting or attribution, not just transcripts: login state, project
 registries, and SQLite WAL files can matter depending on the backend.
+
+An optional `cache_fingerprint()` supplies backend-specific revisions in the same
+three-field row shape. OpenCode fingerprints DB and WAL with size, mtime,
+device and inode. This detects same-size WAL reuse, checkpoint changes and database
+replacement even with preserved size/mtime. SHM is a derived WAL index with mutable
+reader marks, so its timestamp is excluded from accounting invalidation. This does
+not change the separate live conversation/patch revision checks. Old timestamp-only
+rollups miss once on upgrading to the stronger revision format. Ctime is excluded:
+SQLite may reset an existing WAL's ownership on a read-only open, changing ctime
+without changing content. Debug events report mtime and file-identity changes
+separately, without exposing source paths.
 
 On a fingerprint hit, the wrapper supplies fresh `Workflow` objects and copies
 of model rows from disk. It also serves cached `records_cost` state when the
@@ -418,9 +429,10 @@ active files, filesystem cache, and replay fallbacks determine the benefit.
 
 For SQLite benchmarks, record the Python **and SQLite** versions: query planning
 and JSON memory use can differ substantially between runtimes. A repeated launch
-is not proof of a warm-cache hit. Closing every database connection can cause
-SQLite's shared-memory sidecar to change on reopen, invalidating the fingerprint
-even without new messages. To reproduce an idle running harness, keep a separate
-connection open on the benchmark copy and verify the reported cache-hit state.
+is not proof of a warm-cache hit. Closing every database connection can checkpoint
+the WAL, changing accounting inputs even without new messages. Reader-only SHM
+timestamp churn no longer invalidates OpenCode rollups. To reproduce an idle running
+harness, keep a separate connection open on the benchmark copy and verify the
+reported cache-hit state.
 Distinguish an OpenTab cache miss from a cold OS filesystem cache, and process
 anonymous memory from mapped source pages and filesystem cache.
