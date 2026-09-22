@@ -64,6 +64,25 @@ def test_save_state_is_atomic_and_refuses_to_overwrite_malformed_state():
         assert not [name for name in os.listdir(tmp) if name.endswith(".tmp")]
 
 
+def test_search_intro_acknowledgement_survives_restart_and_older_window_save():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        older_window = app_with([])
+        app = app_with([])
+        app.handle_key(None, 6)
+        app.handle_key(None, 10)
+        assert app.search_intro_seen
+        with patch.object(state_module, "state_path", return_value=path):
+            ot.save_state(app)
+            ot.save_state(older_window)
+        restored = app_with([])
+        ot.apply_state(restored, restored.args, ot.load_state(path))
+        restored.open_conversation_search()
+        assert restored.search_intro_seen and restored.conversation_search.consent == ""
+        restored._close_conversation_search()
+        app._close_conversation_search()
+
+
 def test_first_tui_save_preserves_external_set_additions_and_removals():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "state.json")

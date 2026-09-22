@@ -955,6 +955,28 @@ class Renderer:
         accent = curses.color_pair(6) | curses.A_BOLD
         muted = curses.color_pair(4)
 
+        if ws.consent == "intro":
+            lines = [
+                ("1  Build an index before your first search", accent),
+                ("   opentab conversations index --allow-raw-content", curses.A_NORMAL),
+                ("", 0),
+                ("2  Keep it fresh: updates are manual", accent),
+                ("   New chats aren't added automatically. Re-run the command", curses.A_NORMAL),
+                ("   from time to time, or schedule it with cron / your OS.", curses.A_NORMAL),
+                (
+                    f"   In search: leave the query, then {self._key('search', 'index')} updates its scope.",
+                    muted,
+                ),
+                ("   The index stores conversation text locally as plaintext.", muted),
+                ("", 0),
+                (
+                    f" {self._key('menu', 'select')}  Got it     {self._key('menu', 'cancel')}  Back ",
+                    accent | curses.A_REVERSE,
+                ),
+            ]
+            self.draw_modal(stdscr, height, width, "Search your past conversations", lines)
+            return
+
         if ws.consent:
             building = ws.status.get("exists") is False
             scope = f"Scope: {ws.source_key or 'current harness'} / {ws.scope_label}"

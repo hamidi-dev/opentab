@@ -217,7 +217,7 @@ class SearchWorkspace:
         return str(error or "operation failed")
 
     def poll(self) -> None:
-        if not self.active:
+        if not self.active or self.consent == "intro":
             return
         if not self._started:
             self._started = True
@@ -820,6 +820,14 @@ class SearchWorkspace:
         if key == 3:
             self.close()
             return False
+        if self.consent == "intro":
+            action = keymap.action("menu", key)
+            if action == "select":
+                self.consent = ""
+            elif action == "cancel":
+                self.close()
+                return False
+            return True
         if self.consent:
             if key in (10, 13, ord("y"), ord("Y")):
                 self._confirm_index()
