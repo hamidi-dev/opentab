@@ -567,6 +567,7 @@ class App:
         # Fleet machine and harness filters are orthogonal and compose globally.
         self.harness_filter: str | None = None
         self.conversation_search: SearchWorkspace | None = None
+        self.search_intro_seen = False
         self.renderer = Renderer(self)
         self._anchor_default_selection()
 
@@ -6616,6 +6617,8 @@ class App:
                 key=str.casefold,
             ),
         )
+        if not self.search_intro_seen:
+            self.conversation_search.consent = "intro"
 
     def poll_conversation_search(self) -> None:
         workspace = self.conversation_search
@@ -7476,7 +7479,10 @@ class App:
             ):
                 self.launch_current()
                 return True
+            showing_intro = ws.consent == "intro"
             self.conversation_search.handle_key(key, self.keymap)
+            if showing_intro and ws.active and ws.consent != "intro":
+                self.search_intro_seen = True
             if not self.conversation_search.active:
                 self._close_conversation_search()
             return False if key == 3 else True

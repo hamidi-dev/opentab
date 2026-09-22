@@ -148,6 +148,9 @@ def save_state(app: App) -> None:
             original = baseline.get(key, set())
             data[key] = sorted((set(saved) - (original - local)) | (local - original))
         marker = app.whats_new_marker_to_save
+        # An older open TUI must not undo another window's acknowledgement.
+        if app.search_intro_seen:
+            data["search_intro_seen"] = True
         if marker is not None:
             data["last_announced_version"] = marker_to_save(
                 current.get("last_announced_version"), marker
@@ -289,6 +292,7 @@ def apply_state(app: App, args: argparse.Namespace, state: dict) -> None:
     if isinstance(saved_levels, int):
         app.cal_levels = max(HEAT_MIN_LEVELS, min(HEAT_MAX_LEVELS, saved_levels))
     app.prices_prompt_dismissed = bool(state.get("prices_prompt_dismissed", False))
+    app.search_intro_seen = state.get("search_intro_seen") is True
     dismissed_warnings = state.get("dismissed_startup_warnings")
     if isinstance(dismissed_warnings, list):
         app.dismissed_startup_warnings = {

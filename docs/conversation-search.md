@@ -19,6 +19,12 @@ filters appear below the query; click a chip's `x` to remove it, or Clear to rem
 all three filters without changing the session scope or query. Changes apply
 immediately; `Esc` returns from a picker to Filters, then to search.
 
+The first time you open search, a welcome popup explains how to build the index
+and keep it fresh. **Got it** remembers the introduction across launches (unless
+you use `--no-state`); **Back** closes search and leaves it for next time.
+Run the index command below again whenever you need fresh results, or schedule
+it yourself with cron or your operating system's task scheduler.
+
 Opening search needs no raw-content flag. A missing index offers a Build popup;
 `I` confirms an update. Indexing persists plaintext and ignores date filters.
 Search never refreshes automatically; coverage warnings identify missing or stale

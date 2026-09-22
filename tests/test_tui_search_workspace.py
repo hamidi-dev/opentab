@@ -545,6 +545,7 @@ def test_reader_continuation_uses_cursor_and_stale_errors_remain_visible():
 
 def test_app_binding_demo_filter_resize_and_mouse_routing():
     app = app_with([workflow("native", "2026-09-01", title="Session")])
+    app.search_intro_seen = True
     app.keymap = bindings.Keymap({("main", "conversation_search"): ["X"]})
     assert app.handle_key(None, ord("X"))
     assert app.conversation_search is not None
@@ -566,6 +567,39 @@ def test_app_binding_demo_filter_resize_and_mouse_routing():
     app.store.demo = True
     app.open_conversation_search()
     assert app.conversation_search is None
+
+
+def test_first_search_intro_defers_work_and_acknowledgement_is_not_index_consent():
+    app = app_with([])
+    app.handle_key(None, 6)
+    ws = app.conversation_search
+    ws._worker_factory = FakeWorker
+    assert ws.consent == "intro"
+    app.poll_conversation_search()
+    app.handle_key(None, ord("y"))
+    assert ws._worker is None and ws.consent == "intro"
+    app.handle_key(None, 27)
+    assert app.conversation_search is None and not app.search_intro_seen
+
+    app.keymap = bindings.Keymap({("menu", "select"): ["X"]})
+    app.open_conversation_search()
+    ws = app.conversation_search
+    ws._worker_factory = FakeWorker
+    app.handle_key(None, ord("X"))
+    assert app.search_intro_seen and ws.consent == "" and ws.query == ""
+    assert ws._worker is None
+    app.poll_conversation_search()
+    worker = ws._worker
+    assert worker.submitted == [(1, "status", {})]
+    worker.results.append((1, "status", {"exists": False}, None))
+    app.poll_conversation_search()
+    assert ws.consent == "index" and len(worker.submitted) == 1
+    app.handle_key(None, 10)
+    assert worker.submitted[-1][1] == "index"
+    app._close_conversation_search()
+    app.open_conversation_search()
+    assert app.conversation_search.consent == ""
+    app._close_conversation_search()
 
 
 def test_app_session_scope_uses_exact_normalized_session_ref():

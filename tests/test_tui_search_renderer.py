@@ -51,6 +51,34 @@ def _paint(app, height=32, width=140):
     return screen
 
 
+def test_search_intro_fits_compact_terminal_and_blocks_underlying_mouse_regions():
+    for height, width in ((20, 80), (32, 140)):
+        app, ws = _app()
+        _paint(app, height, width)
+        target = next(r for r in app.renderer.regions if r[0] == "search-query")
+        ws.consent = "intro"
+        with patch.object(
+            ot.curses,
+            "getmouse",
+            return_value=(0, target[2] + 1, target[1] + 1, 0, ot.curses.BUTTON1_CLICKED),
+        ):
+            app.handle_key(None, ot.curses.KEY_MOUSE)
+        assert not ws.editing and ws.consent == "intro"
+        app.keymap = bindings.Keymap({("search", "index"): ["U"]})
+        text = screen_text(_paint(app, height, width))
+        for expected in (
+            "Search your past conversations",
+            "opentab conversations index --allow-raw-content",
+            "updates are manual",
+            "cron / your OS",
+            "U updates its scope",
+            "Got it",
+            "Back",
+        ):
+            assert expected in text, (height, width, expected, text)
+        assert not app.renderer.regions
+
+
 def test_search_wheel_reuses_hit_regions_for_the_pane_under_the_pointer():
     for height, width in ((32, 140), (20, 80)):
         app, ws = _app()
