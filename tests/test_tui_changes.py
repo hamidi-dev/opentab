@@ -2,6 +2,7 @@ import threading
 from unittest.mock import patch
 
 import opentab as ot
+from opentab.tui import bindings
 
 from tests._support import AttrScreen, FakeScreen, FakeStore, screen_text, workflow
 
@@ -208,6 +209,22 @@ def test_changes_keyboard_pager_and_patch_cache_follow_existing_navigation():
     assert narrow is not first
     assert all(ot.display_width(line) <= 30 for line in narrow)
     assert store.diff_calls == [("root", "one")]
+
+
+def test_space_scrolls_the_loaded_change_diff_by_half_a_page():
+    store = ChangeStore([workflow("root", "2026-09-19 10:00:00")])
+    app = _app(store)
+    app.renderer.detail_changes(app.current_session())
+    _finish_read(app)
+    app.open_change_file()
+    app.renderer.detail_changes(app.current_session())
+    _finish_read(app)
+
+    app.handle_key(None, ord(" "))
+
+    assert app._change_drill and app.scroll == 10
+    app.handle_key(None, bindings.SHIFT_SPACE)
+    assert app._change_drill and app.scroll == 0
 
 
 def test_changes_errors_retry_on_reopen_and_stale_scope_never_reads():

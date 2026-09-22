@@ -329,7 +329,15 @@ class PromptScreen(FakeScreen):
         self.keys = list(keys)
 
     def get_wch(self):
+        if not self.keys:
+            raise ot.curses.error()
         return self.keys.pop(0)
+
+    def timeout(self, milliseconds):
+        pass
+
+    def unget(self, key):
+        self.keys.insert(0, key)
 
     def move(self, y, x):
         pass
@@ -344,7 +352,10 @@ def _prompt_note(app, keys):
     ot.curses.curs_set = lambda n: 0
     screen = PromptScreen(list(keys) + ["\n"])
     try:
-        app.handle_key(screen, ord("n"))
+        with patch.object(ot.curses, "unget_wch", screen.unget), patch.object(
+            ot.curses, "ungetch", screen.unget
+        ):
+            app.handle_key(screen, ord("n"))
     finally:
         ot.curses.color_pair, ot.curses.curs_set = orig_cp, orig_cs
     return screen
@@ -367,6 +378,13 @@ def test_note_prompt_takes_prose_not_just_short_ascii():
     # The field scrolls to the cursor end, "…"-marked where the head is hidden.
     painted = "".join(screen.cells.get((23, x), " ") for x in range(80))
     assert "…" in painted and "tëst was not" in painted
+    ot.save_notes({})
+
+
+def test_note_prompt_decodes_shift_space_as_text_instead_of_cancel():
+    app = _app_on_session([workflow("a", "2026-06-01 12:00:00")], "a")
+    _prompt_note(app, "hello\x1b[32;2uwide\x1b[27;2;32~world")
+    assert app.note_for("a") == "hello wide world"
     ot.save_notes({})
 
 

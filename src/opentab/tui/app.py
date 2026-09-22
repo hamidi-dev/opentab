@@ -6841,15 +6841,16 @@ class App:
             ):
                 self._announce_whats_new()
                 continue
-            stdscr.timeout(self._input_timeout_ms())
-            key = self._read_key(stdscr)
+            timeout_ms = self._input_timeout_ms()
+            stdscr.timeout(timeout_ms)
+            key = self._read_key(stdscr, timeout_ms)
             if key == -1:
                 continue  # idle wake: check expiry and workers, then repaint
             if not self.handle_key(stdscr, key):
                 break
 
     @staticmethod
-    def _read_key(stdscr: curses.window) -> int | str:
+    def _read_key(stdscr: curses.window, timeout_ms: int = -1) -> int | str:
         # get_wch reads a *character* where getch hands back raw bytes -- so a note (or a
         # title, or a project path) holding ä or 界 can be typed into the filter that
         # searches it. ASCII comes back as an int, keeping every `key == ord("x")`
@@ -6864,6 +6865,40 @@ class App:
             key = read()
         except curses.error:
             return -1  # idle timeout: get_wch raises where getch returns -1
+        if key in (27, "\x1b"):
+            # ncurses does not decode modified Space. Recognize only its CSI-u
+            # and xterm modifyOtherKeys encodings, without enabling a protocol
+            # that would change how all the other keys arrive. Legacy terminals
+            # sending ordinary Space cannot distinguish the two bindings.
+            sequences = ("[32;2u", "[27;2;32~")
+            pending = []
+            prefix = ""
+            deadline = time.monotonic() + 0.025
+            try:
+                while any(sequence.startswith(prefix) for sequence in sequences):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    stdscr.timeout(max(1, int(remaining * 1000)))
+                    try:
+                        part = read()
+                    except curses.error:
+                        break
+                    pending.append(part)
+                    if not isinstance(part, str):
+                        break
+                    prefix += part
+                    if prefix in sequences:
+                        return bindings.SHIFT_SPACE
+            finally:
+                stdscr.timeout(timeout_ms)
+            # A lone Escape, partial sequence, or Escape followed by another key
+            # keeps its original meaning. Replay every peeked event in order.
+            for part in reversed(pending):
+                if isinstance(part, int):
+                    curses.ungetch(part)
+                else:
+                    curses.unget_wch(part)
         if isinstance(key, str) and len(key) == 1 and key.isascii():
             return ord(key)
         return key
@@ -8821,17 +8856,10 @@ class App:
                     pass  # a resize can invalidate any coordinate; next pass re-measures
                 stdscr.refresh()
 
-                # get_wch reads a *character*, so a multi-byte key (ä, é, —) arrives as
-                # one str instead of the raw bytes getch would hand back. A note is
-                # prose -- dropping every non-ASCII character out of it would be a bug
-                # you only notice after you typed it. Special keys still come back as
-                # ints, and a screen without get_wch (a test double) falls back.
-                read = getattr(stdscr, "get_wch", None) or stdscr.getch
-                try:
-                    key = read()
-                except curses.error:
-                    continue  # interrupted read (resize/signal): repaint and wait again
-                if key == curses.KEY_RESIZE:
+                # Share wide-character and modified-Space decoding with the main
+                # loop: Shift-Space is text here, not Escape followed by a CSI tail.
+                key = self._read_key(stdscr, self._input_timeout_ms())
+                if key in (-1, curses.KEY_RESIZE):
                     continue  # repaint against the new size
                 value, done, cancelled = self.filter_prompt_step(value, key, limit, self.keymap)
                 if cancelled:
