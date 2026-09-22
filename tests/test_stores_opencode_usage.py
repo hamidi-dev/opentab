@@ -10,7 +10,7 @@ from unittest.mock import patch
 from opentab import diagnostics as debug
 from opentab.stores.cached import CachedStore
 from opentab.stores.opencode import Store
-from opentab.stores.opencode_usage import compact_usage, compact_usage_stream
+from opentab.stores.opencode_usage import _read_usage, compact_usage, compact_usage_stream
 from opentab.tui.app import App
 from opentab.web.report import build_payload
 
@@ -65,6 +65,13 @@ def test_opencode_debug_explains_hit_refresh_and_detail_without_changing_results
             r["event"] == "usage.native_summary" and r["decoded"] == 1 and r["reused"] > 0
             for r in records
         )
+        summaries = [r for r in records if r["event"] == "usage.native_summary"]
+        assert all(
+            r["decoded"] == r["sql_projected"] + r["streamed"] + r["python_full_decode"]
+            for r in summaries
+        )
+        if store._usage_cache._sql_projection:
+            assert any(r["sql_projected"] > 0 for r in summaries)
         assert sum(r["event"] == "app.session_turns.start" for r in records) == 1
         assert any(r["event"] == "app.session_memos" and r["turns"] for r in records)
         assert any(
@@ -158,6 +165,59 @@ def test_opencode_usage_does_not_decode_or_keep_large_inline_output():
     assert loads(compact)["tokens"]["input"] == 13
 
 
+def test_opencode_usage_sql_projection_preserves_values_and_skips_inline_python_decode():
+    conn = sqlite3.connect(":memory:")
+    conn.execute("create table session_message(data)")
+    raw_cases = [
+        '{"content":[{"private":"' + "x" * 100000 + '"}],"tokens":{"input":7},"cost":1.5}',
+        '{"tokens":{"input":null,"input":8},"tokens":{"input":9},"model":{"id":"first","id":"last"}}',
+        '{"mod\\u0065l":{"id":"escaped"},"cost":-0.0}',
+        '{"model":{"id":"a\\u0000b","providerID":"\\ud83d\\ude00"},"tokens":{"input":9007199254740993}}',
+        '{"cost":1e999,"tokens":{"input":7}}',
+        '{"tokens":{"input":true,"cache":{"read":false}},"time":[null,1]}',
+        '{"content":NaN,"tokens":{"input":5}}',
+        '{"content":[1,],"cost":5}',
+        "{}",
+        "[]",
+        "null",
+        "42",
+        None,
+        b'{"tokens":{"input":5}}',
+    ]
+    loads = json.loads
+    lengths = []
+
+    def track(text, *args, **kwargs):
+        lengths.append(len(text))
+        return loads(text, *args, **kwargs)
+
+    try:
+        escaped_keys = (
+            conn.execute("select json_extract(?, '$.model')", ['{"\\u006dodel":1}']).fetchone()[0]
+            == 1
+        )
+        for raw in raw_cases:
+            rid = conn.execute("insert into session_message values(?)", [raw]).lastrowid
+            expected = _read_usage(conn, rid, False)[0]
+            lengths.clear()
+            with patch("opentab.stores.opencode_usage.json.loads", side_effect=track):
+                actual, _, _, streamed, projected = _read_usage(conn, rid, False, escaped_keys)
+            for path in ("$.tokens.input", "$.tokens.cache.read", "$.model", "$.time", "$.cost"):
+                left, right = conn.execute(
+                    "select json_extract(?,?),json_extract(?,?)", [expected, path, actual, path]
+                ).fetchone()
+                assert left == right, (raw, path, left, right)
+            assert (
+                conn.execute("select json_type(?, '$.time')", [expected]).fetchone()
+                == conn.execute("select json_type(?, '$.time')", [actual]).fetchone()
+            )
+            if raw is raw_cases[0] and hasattr(conn, "blobopen") and escaped_keys:
+                assert projected and not streamed
+                assert max(lengths) < 1000, lengths
+    finally:
+        conn.close()
+
+
 def test_opencode_usage_streaming_validates_skipped_depth_and_delimiters():
     with patch("opentab.stores.opencode_usage._DECODE_LIMIT", 0), patch(
         "opentab.stores.opencode_usage._MAX_DEPTH", 3
@@ -195,7 +255,7 @@ def test_opencode_usage_persistent_cache_reads_only_changed_native_messages():
         restarted = Store(store.db, args)
         try:
             fresh = CachedStore(restarted, cache_id, args)
-            with patch("opentab.stores.opencode_usage.compact_usage", wraps=compact_usage) as parse:
+            with patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as parse:
                 actual = _read(fresh)
             assert parse.call_count == 1
             assert fresh.served_incrementally
@@ -209,7 +269,7 @@ def test_opencode_usage_persistent_cache_reads_only_changed_native_messages():
             writer.execute("delete from session_message where id='a-root'")
             writer.execute("update session_v2 set parent_id=null where id='child'")
             writer.commit()
-            with patch("opentab.stores.opencode_usage.compact_usage", wraps=compact_usage) as parse:
+            with patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as parse:
                 actual = _read(fresh)
             assert parse.call_count == 1
             assert actual == _reference(store.db)
@@ -375,7 +435,7 @@ def test_opencode_usage_indexed_sidecar_loads_only_selected_executions():
             payload = cached._accounting_payload(["root", "child"])
             assert len(payload["rows"]) == 4
             with patch(
-                "opentab.stores.opencode_usage.compact_usage",
+                "opentab.stores.opencode_usage._read_usage",
                 side_effect=AssertionError("decoded cached data"),
             ):
                 for root in ("root", "other", "root"):
@@ -421,7 +481,7 @@ def test_opencode_usage_legacy_edits_and_migration_keep_accounting_and_worked_ti
 def test_opencode_usage_status_stays_scoped_and_model_reads_refresh_after_writes():
     with _v2_db() as (writer, store):
         _populate_v2(writer)
-        with patch("opentab.stores.opencode_usage.compact_usage", wraps=compact_usage) as parse:
+        with patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as parse:
             nodes = store.workflow_nodes("root")
         assert {row["id"] for row in nodes} == {"root", "child"}
         assert parse.call_count == 4  # two messages in each of these executions
@@ -451,7 +511,7 @@ def test_opencode_usage_unknown_and_inflight_revisions_are_not_reused():
             [json.dumps({"tokens": {"input": 42}})],
         )
         writer.commit()
-        with patch("opentab.stores.opencode_usage.compact_usage", wraps=compact_usage) as parse:
+        with patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as parse:
             assert _read(store) == _reference(store.db)
         assert parse.call_count == 2
 
@@ -463,7 +523,7 @@ def test_opencode_usage_malformed_persistent_projection_rebuilds_without_losing_
         payload = store.accounting_cache()
         payload["rows"] = [[[], []]]
         store.restore_accounting_cache(payload)
-        with patch("opentab.stores.opencode_usage.compact_usage", wraps=compact_usage) as parse:
+        with patch("opentab.stores.opencode_usage._read_usage", wraps=_read_usage) as parse:
             assert _read(store) == expected
         assert parse.call_count == 7
 
