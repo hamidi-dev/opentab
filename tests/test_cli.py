@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import io
 import json
@@ -217,7 +218,7 @@ def test_conversations_parser_has_command_specific_help_and_catalog_defaults():
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             try:
-                ot.parse_args(["conversations", action, "--help"])
+                ot.parse_args(["conversations", action, "--help-all"])
             except SystemExit as exc:
                 assert exc.code == 0
         help_text = out.getvalue()
@@ -1094,7 +1095,314 @@ def _subparser_help(name):
 
     parser = cli._build_parser()
     action = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
-    return action.choices[name].format_help()
+    return action.choices[name].format_help(full=True)
+
+
+def _help_tree(parser, path=()):
+    yield path, parser
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            for name, child in action.choices.items():
+                yield from _help_tree(child, (*path, name))
+
+
+def test_cli_help_covers_the_complete_command_tree_at_multiple_widths_without_access():
+    expected = {
+        "",
+        "tui",
+        "web",
+        "cost",
+        "doctor",
+        "pull",
+        "remote",
+        "export",
+        "forget",
+        "mcp",
+        "usage",
+        "usage summary",
+        "sessions",
+        "conversations",
+        "models",
+        "sources",
+        "sources list",
+        "notes",
+        "bookmarks",
+        "ignore",
+        "ignore list",
+        "ignore session",
+        "ignore project",
+        *(
+            "sessions " + name
+            for name in (
+                "list",
+                "get",
+                "nodes",
+                "turns",
+                "tools",
+                "context",
+                "content",
+                "conversation",
+            )
+        ),
+        *("conversations " + name for name in ("index", "search", "status", "clear")),
+        *("models " + name for name in ("list", "compare", "pin", "unpin")),
+        *("notes " + name for name in ("get", "set", "delete")),
+        *("bookmarks " + name for name in ("list", "add", "remove")),
+        *(
+            f"ignore {kind} {action}"
+            for kind in ("session", "project")
+            for action in ("add", "remove")
+        ),
+    }
+    # main must stop before dispatch, diagnostics, source access or any mutation.
+    # Source-discovery guards also cover accidental reads during parser construction.
+    from opentab import diagnostics
+
+    with contextlib.ExitStack() as stack:
+        for target in (
+            "opentab.sources.available_sources",
+            "opentab.sources.make_store",
+            "opentab.api.service.OpenTabService.open",
+            "opentab.persistence.state.load_state",
+            "opentab.persistence.paths.migrate_legacy_caches",
+            "opentab.cli.main._run",
+        ):
+            stack.enter_context(patch(target, side_effect=AssertionError(target)))
+        stack.enter_context(
+            patch.object(diagnostics, "session", side_effect=AssertionError("diagnostics"))
+        )
+        for width in (40, 80, 120):
+            with patch.dict(os.environ, {"COLUMNS": str(width)}):
+                tree = list(_help_tree(cli._build_parser()))
+                assert {" ".join(path) for path, _ in tree} == expected
+                for path, parser in tree:
+                    assert parser.description and parser.epilog, path
+                    out = io.StringIO()
+                    with patch.object(
+                        sys, "argv", ["opentab", *path, "--help-all"]
+                    ), contextlib.redirect_stdout(out):
+                        try:
+                            cli.main()
+                        except SystemExit as exc:
+                            assert exc.code == 0, path
+                        else:
+                            raise AssertionError(f"help did not exit: {path}")
+                    text = out.getvalue()
+                    assert text.startswith("usage: opentab") and "%(prog)" not in text, path
+                    assert "docs/" in text or not path, path
+                    # Examples remain copyable lines even on narrow terminals.
+                    for line in parser.epilog.splitlines():
+                        if line.startswith("  "):
+                            assert line in text.splitlines(), (path, line)
+                    headings = [
+                        line
+                        for line in text.splitlines()
+                        if line and not line.startswith(" ") and line.endswith(":")
+                    ]
+                    assert len(headings) == len(set(headings)), path
+                    displayed = [a for group in parser._action_groups for a in group._group_actions]
+                    for action in parser._actions:
+                        assert displayed.count(action) == 1, (path, action.dest)
+                        if not isinstance(action, argparse._SubParsersAction):
+                            assert action.help and action.help != argparse.SUPPRESS, (
+                                path,
+                                action.dest,
+                            )
+                    if any(isinstance(a, argparse._SubParsersAction) for a in parser._actions):
+                        assert "COMMAND --help" in " ".join(text.split()), path
+
+
+def test_cli_root_help_groups_each_command_once_and_guides_the_default_tui():
+    from opentab.presentation.cli_help import COMMAND_GROUPS
+
+    parser = cli._build_parser()
+    subparsers = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    assert len(subparsers) == 1
+    text = parser.format_help(full=True)
+    names = [name for _, group in COMMAND_GROUPS for name in group]
+    assert len(names) == len(set(names)) and set(names) == set(subparsers[0].choices)
+    for title, group in COMMAND_GROUPS:
+        assert text.count(f"  {title}:\n") == 1
+        for name in group:
+            assert len(re.findall(r"^    " + name + r"\s", text, re.MULTILINE)) == 1
+    assert "automatically discovers supported local sources" in " ".join(text.split())
+    assert "opentab tui --help" in text and text.rstrip().endswith("opentab COMMAND --help")
+    assert text.count("\n  opentab") == 5
+
+
+def test_cli_help_preserves_context_and_separates_actual_legacy_options():
+    web, cost, tui = (_subparser_help(name) for name in ("web", "cost", "tui"))
+    assert "change live with R" not in web and "TUI with D" not in cost
+    assert "Use R" in " ".join(tui.split()) and "D to toggle demo" in " ".join(tui.split())
+    assert "trusted/VPN" in web and "selective --demo" in web
+    normalized = " ".join(cost.split())
+    for meaning in (
+        "most recently active session",
+        "not total project spend",
+        "leading ~",
+        "subscription bill",
+        "subagent subtree",
+        "stdin",
+        "omitted",
+    ):
+        assert meaning in normalized
+    assert "interpreter" not in cost
+    legacy = tui.split("Legacy Options:", 1)[1].split("Examples:", 1)[0]
+    assert all(flag in legacy for flag in ("--status", "--pull", "--web", "--html"))
+    assert all(
+        flag not in legacy
+        for flag in ("--goto", "--tab", "--timings", "--keymap", "--refresh-models")
+    )
+    assert tui.index("--goto") < tui.index("Advanced source paths:")
+
+
+def test_cli_help_is_repeatable_and_actions_are_isolated_between_siblings():
+    tree = dict(_help_tree(cli._build_parser()))
+    before = {path: parser.format_help() for path, parser in tree.items()}
+    for path, parser in reversed(list(tree.items())):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            try:
+                parser.parse_args(["--help"])
+            except SystemExit as exc:
+                assert exc.code == 0
+        assert out.getvalue() == before[path]
+    assert {path: parser.format_help() for path, parser in tree.items()} == before
+    actions = [
+        parser._option_string_actions["--db"]
+        for parser in tree.values()
+        if "--db" in parser._option_string_actions
+    ]
+    assert len({id(action) for action in actions}) == len(actions)
+    tree[("sessions", "list")]._option_string_actions["--db"].help = "changed in one parser"
+    assert tree[("usage", "summary")].format_help() == before[("usage", "summary")]
+
+
+def test_cli_help_keeps_command_named_paths_repeated_aliases_and_optional_values():
+    # The explicit TUI may open a synthetic file named exactly like a command.
+    # With an explicit harness, path routing needs only the existence check.
+    with patch.object(cli.sources.os.path, "exists", return_value=True):
+        args = cli.parse_args(["tui", "web", "--harness", "csv"])
+    assert (args.command, args.path, args.csv, args.source) == ("tui", "web", "web", "csv")
+    args = cli.parse_args(
+        ["sessions", "list", "--source", "claude", "--harness", "codex", "--lim", "7"]
+    )
+    assert (args.command, args.action, args.source, args.limit, args.offset, args.sort) == (
+        "sessions",
+        "list",
+        "codex",
+        7,
+        0,
+        "cost",
+    )
+    for argv, expected in (
+        (["tui", "--demo", "--goto", "--html"], ("all", "", "opentab-report.html", None, None)),
+        (
+            ["tui", "--demo", "titles", "--goto", "ses_example", "--html", "report.html"],
+            ("titles", "ses_example", "report.html", None, None),
+        ),
+        (["--status", "--export"], (None, None, None, "", "-")),
+    ):
+        args = cli.parse_args(argv)
+        assert (args.demo, args.goto, args.html, args.status, args.export) == expected
+
+
+def test_cli_quick_help_is_bounded_example_first_and_points_to_the_full_reference():
+    with patch.object(cli, "_run", side_effect=AssertionError("help dispatched")), patch.object(
+        cli.sources, "make_store", side_effect=AssertionError("help opened a store")
+    ):
+        for width in (40, 80, 120):
+            with patch.dict(os.environ, {"COLUMNS": str(width)}):
+                for path, parser in _help_tree(cli._build_parser()):
+                    output, errors = io.StringIO(), io.StringIO()
+                    with patch.object(
+                        sys, "argv", ["opentab", *path, "--help"]
+                    ), contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                        try:
+                            cli.main()
+                        except SystemExit as exc:
+                            assert exc.code == 0, path
+                        else:
+                            raise AssertionError(f"help did not exit: {path}")
+                    text = output.getvalue()
+                    assert not errors.getvalue(), path
+                    assert text.startswith("usage: opentab"), path
+                    assert f"{parser.prog} --help-all" in " ".join(text.split()), path
+                    assert "Advanced source paths:" not in text and "Legacy Options:" not in text
+                    assert not re.search(
+                        r"^  --(?:db|claude-dir|debug|no-cache|source)\b", text, re.MULTILINE
+                    ), path
+                    assert "Examples:" in text, path
+                    for heading in ("Arguments:", "Options:", "Commands:"):
+                        if heading in text:
+                            assert text.index("Examples:") < text.index(heading), path
+                    for line in parser.epilog.splitlines():
+                        if line.startswith("  "):
+                            assert line.strip() in [row.strip() for row in text.splitlines()], path
+                    if width >= 80:
+                        # Root help gives each command a description under a task heading.
+                        # Command-specific help remains a short task guide.
+                        assert len(text.splitlines()) <= (55 if not path else 40), (
+                            path,
+                            len(text.splitlines()),
+                        )
+                        budget = {
+                            ("pull",): 24,
+                            ("notes", "set"): 22,
+                            ("sessions", "list"): 32,
+                            ("usage", "summary"): 32,
+                        }.get(path)
+                        if budget:
+                            assert len(text.splitlines()) <= budget, path
+                    usage = text.split("\n\n", 1)[0]
+                    for action in parser._actions:
+                        if action.required and action.option_strings:
+                            assert action.option_strings[0] in usage, (path, action.dest)
+
+
+def test_cli_quick_root_help_keeps_every_command_in_its_task_group():
+    from opentab.presentation.cli_help import COMMAND_GROUPS
+
+    text = cli._build_parser().format_help()
+    commands = text.split("Commands:\n", 1)[1].split("\nNext:", 1)[0]
+    for title, names in COMMAND_GROUPS:
+        group = commands.split(f"  {title}:\n", 1)[1].split("\n\n", 1)[0]
+        for name in names:
+            assert len(re.findall(rf"^    {name}\s+\S", group, re.MULTILINE)) == 1, name
+    assert "opentab tui --help" in text
+    assert "opentab COMMAND --help" in text
+
+
+def test_cli_full_help_keeps_abbreviations_namespaces_and_stdout_compatible():
+    parser = cli._build_parser()
+    for flag in ("--help", "--hel", "--help-all"):
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            try:
+                parser.parse_args(["pull", flag])
+            except SystemExit as exc:
+                assert exc.code == 0
+            else:
+                raise AssertionError("help did not exit")
+        assert not errors.getvalue()
+        assert ("Advanced source paths:" in output.getvalue()) == (flag == "--help-all")
+    _assert_parse_error(["pull", "--help-a"])
+    _assert_parse_error(["pull", "--he"])  # already ambiguous with --hermes-db
+    assert "help_all" not in vars(cli.parse_args(["sessions", "list"]))
+    assert (
+        cli.parse_args(["notes", "set", "synthetic-root", "--", "--help-all"]).text == "--help-all"
+    )
+    assert cli._normalize_argv(["--help-all"]) == ["--help-all"]
+    assert cli._normalize_argv(["--harness", "claude", "--help-all"])[0] == "tui"
+
+
+def test_cli_rendering_both_help_levels_never_changes_actions_or_later_output():
+    for path, parser in _help_tree(cli._build_parser()):
+        before = [(a, dict(vars(a))) for a in parser._actions]
+        quick, full = parser.format_help(), parser.format_help(full=True)
+        assert parser.format_help() == quick, path
+        assert parser.format_help(full=True) == full, path
+        assert all(vars(action) == values for action, values in before), path
 
 
 def _assert_parse_error(argv):
