@@ -45,6 +45,11 @@ Stateless layout and formatting live outside those coordinators:
   `App` still selects the active scope, resolves notes, loads session details,
   applies contextual pricing, checks demo mode and chooses the export path.
   This module is for TUI CSVs, not web payloads or fleet exports.
+  Its conversation-copy formatter separately consumes text-only `conversation_source`
+  records. The explicit `y` action resolves the selected root's exact store owner,
+  paints a loading notice, reads fresh retained text and passes Markdown to the
+  platform clipboard helper. Raw text is not retained in an App cache; demo and
+  ambiguous session identities are rejected before reading.
 - [`search_layout.py`](../src/opentab/tui/search_layout.py) sanitizes, wraps and
   highlights bounded search excerpts and conversation records. It understands
   partial long-text parts and anchors but performs no source reads.

@@ -39,7 +39,7 @@ package and installed command are both `opentab`.
 | `tui/renderer.py`, `tui/components/` | Screen composition and painting; reusable stateless layouts |
 | `tui/views/` | Pure Prices, Trends, Tools, Turns and Subagents presentation from explicit inputs |
 | `tui/trace.py` | Pure recorded-event formatting and trace output hit/scroll geometry |
-| `tui/exporting.py` | TUI CSV dataset construction and formula-safe serialization |
+| `tui/exporting.py` | TUI CSV datasets, formula-safe serialization and conversation-copy Markdown |
 | `tui/search_workspace.py`, `tui/search_layout.py` | Conversation-search interaction state and pure width-aware result/reader layout |
 | `tui/search_worker.py` | Source-owning serial background service for local search, reads and explicit indexing |
 | `tui/bindings.py`, `tui/keymap.py` | Configurable bindings, contextual actions and help |

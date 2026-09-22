@@ -129,6 +129,10 @@ Only for the action you request:
 - `L` invokes tmux, Herdr's CLI, or your [launcher hook](keys.md#custom-launchers)
   (`~/.config/opentab/launcher`); its copy target invokes a clipboard tool.
   Session launch/copy and directory opening are disabled in demo mode.
+- `y` copies the selected root session's retained user/assistant text to the system
+  clipboard via the same clipboard tools. It reads local sources only on request,
+  without creating an index or a transcript file. Tools, thinking and attachments
+  are excluded. Disabled in demo; `Ctrl-P` does not anonymize this explicit copy.
 - `K` opens `keymap.conf` using `$VISUAL` or `$EDITOR`, falling back to `vi`, and
   reloads bindings on return. This is a configuration edit, not a session launch.
 - `d` in Changes invokes the user-configured `OPENTAB_DIFF_PAGER`, passing the

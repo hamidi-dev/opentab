@@ -1,9 +1,109 @@
 import os
+from unittest.mock import Mock, patch
 
 import opentab as ot
+from opentab.conversations.reader import ConversationError
 from opentab.tui import exporting
 
-from tests._support import FakeStore, _model_row, app_with, workflow
+from tests._support import FakeStore, _app_on_session, _model_row, app_with, workflow
+
+
+def test_copy_conversation_keeps_full_root_text_and_reads_freshly_from_list_and_detail():
+    app = _app_on_session([workflow("root", "2026-06-01")], "root")
+    long_text = "Grüße 界\n" * 20000  # Larger than API windows and trace previews.
+    records = [
+        {"role": "system", "parts": [{"text": "SYSTEM"}]},
+        {"role": "user", "parts": [{"text": long_text}]},
+        {"role": "assistant", "parts": [{"text": "Checking…"}]},
+        {"role": "assistant", "parts": []},  # Tool-only message.
+        {"role": "tool", "parts": [{"text": "TOOL OUTPUT"}]},
+        {"role": "assistant", "parts": [{"text": "Done."}, {"text": "```py\n  x = 1\n```"}]},
+        {"role": "user", "parts": [{"text": "unanswered, zero-usage prompt"}]},
+    ]
+    read = Mock(return_value={"records": records})
+    app.store.supports_conversation = lambda sid: sid == "root"
+    app.store.conversation_source = read
+    app.hide_prompts = True
+    with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
+        app.handle_key(None, ord("y"))
+        read.assert_called_once_with("root")
+        copied.assert_called_once_with(
+            f"## User\n\n{long_text}\n\n## Assistant\n\nChecking…\n\n"
+            "## Assistant\n\nDone.\n\n```py\n  x = 1\n```\n\n"
+            "## User\n\nunanswered, zero-usage prompt\n"
+        )
+        assert "copied 4 messages" in app.notice
+        app.view = "zoom"
+        app.tab = app.current_tabs().index("Sessions")
+        read.return_value = {"records": [{"role": "user", "parts": [{"text": "new text"}]}]}
+        app.handle_key(None, ord("y"))
+        assert read.call_count == 2
+        assert copied.call_args.args == ("## User\n\nnew text\n",)
+
+
+def test_copy_conversation_resolves_exact_owner_when_native_ids_collide():
+    first, second = (workflow("same", "2026-06-01") for _ in range(2))
+    first.source, second.source = "OpenCode", "Claude Code"
+    app = _app_on_session([first, second], "same")
+    owner = FakeStore([first])
+    owner.supports_conversation = lambda sid: True
+    owner.conversation_source = Mock(
+        return_value={"records": [{"role": "user", "parts": [{"text": "correct owner"}]}]}
+    )
+    app.store.owner_of = Mock(side_effect=lambda row: owner if row is first else None)
+    with patch.object(ot.util, "copy_to_clipboard", return_value=True) as copied:
+        app.handle_key(None, ord("y"))
+        app.store.owner_of.assert_called_once_with(first)
+        owner.conversation_source.assert_called_once_with("same")
+        copied.assert_called_once_with("## User\n\ncorrect owner\n")
+        second.source = first.source
+        app.handle_key(None, ord("y"))
+        assert "ambiguous" in app.notice
+        assert copied.call_count == 1
+
+
+def test_copy_conversation_gates_demo_scope_and_unsupported_sources_before_reading():
+    app = _app_on_session([workflow("root", "2026-06-01")], "root")
+    app.store.conversation_source = Mock(side_effect=AssertionError("unexpected raw read"))
+    app.store.supports_conversation = Mock(return_value=True)
+    with patch.object(ot.util, "copy_to_clipboard") as copied:
+        app.store.demo = True
+        app.handle_key(None, ord("y"))
+        assert "demo" in app.notice
+        app.store.demo = False
+        app.view = "browse"
+        app.handle_key(None, ord("y"))
+        assert "select or open" in app.notice
+        app.store.supports_conversation.assert_not_called()
+        app.view = "session"
+        app.store.supports_conversation.return_value = False
+        app.handle_key(None, ord("y"))
+        assert "requires local" in app.notice
+        app.store.conversation_source.assert_not_called()
+        copied.assert_not_called()
+
+
+def test_copy_conversation_errors_and_empty_sources_leave_clipboard_untouched():
+    app = _app_on_session([workflow("root", "2026-06-01")], "root")
+    app.store.supports_conversation = lambda sid: True
+    read = app.store.conversation_source = Mock()
+    with patch.object(ot.util, "copy_to_clipboard", return_value=False) as copied:
+        for error in (
+            ConversationError("source_changed", "Source changed; retry."),
+            RuntimeError("PRIVATE SOURCE CONTENT"),
+        ):
+            read.side_effect = error
+            app.handle_key(None, ord("y"))
+            assert "failed" in app.notice and "PRIVATE" not in app.notice
+        read.side_effect = None
+        read.return_value = {"records": [{"role": "assistant", "parts": []}]}
+        app.handle_key(None, ord("y"))
+        assert "no retained" in app.notice
+        copied.assert_not_called()
+        read.return_value = {"records": [{"role": "assistant", "parts": [{"text": "hello"}]}]}
+        app.handle_key(None, ord("y"))
+        assert "clipboard copy failed" in app.notice
+        copied.assert_called_once_with("## Assistant\n\nhello\n")
 
 
 def test_export_dataset_follows_the_visible_view():

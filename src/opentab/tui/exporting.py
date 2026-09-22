@@ -1,4 +1,4 @@
-"""TUI CSV datasets from selected, price-projected rows, plus safe serialization."""
+"""TUI CSV datasets and explicit conversation-copy formatting, without source reads."""
 from __future__ import annotations
 
 import csv
@@ -6,6 +6,19 @@ from collections import defaultdict
 
 from opentab.accounting.models import HarnessSummary, MachineSummary, ProjectSummary, Workflow
 from opentab.accounting.pricing import family_label
+
+
+def conversation_markdown(records: list[dict]) -> tuple[str, int]:
+    """Format text-only conversation_source records, never accounting/trace rows."""
+    messages = []
+    for record in records:
+        role = record.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = "\n\n".join(part["text"] for part in record["parts"] if part["text"])
+        if text.strip():
+            messages.append(f"## {role.capitalize()}\n\n{text}")
+    return ("\n\n".join(messages) + "\n" if messages else ""), len(messages)
 
 
 def sessions_dataset(
