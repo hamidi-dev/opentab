@@ -215,6 +215,7 @@ REGISTRY: tuple[Context, ...] = (
             Action("help", ("?",), "the key cheat sheet"),
             Action("edit_keymap", ("K",), "edit these bindings in $EDITOR"),
             Action("diff_pager", ("d",), "open the loaded patch in $OPENTAB_DIFF_PAGER"),
+            Action("diff_layout", ("v",), "toggle unified / side-by-side diff"),
             Action("quit", ("q",), "quit"),
         ),
     ),

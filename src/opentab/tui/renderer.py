@@ -129,7 +129,14 @@ from opentab.tui.views import subagents as subagents_view
 from opentab.tui.views import tools as tools_view
 from opentab.tui.views import trends as trend_views
 from opentab.tui.views import turns as turns_view
-from opentab.tui.views.changes import ChangeLine, diff_layout, files_layout, safe_text
+from opentab.tui.views.changes import (
+    DIFF_BACKGROUNDS,
+    DIFF_FOREGROUNDS,
+    ChangeLine,
+    diff_layout,
+    files_layout,
+    safe_text,
+)
 
 if TYPE_CHECKING:
     from opentab.tui.app import App
@@ -1966,7 +1973,7 @@ class Renderer:
             if line.role == "add":
                 return curses.color_pair(3)
             if line.role == "delete":
-                return curses.color_pair(4)
+                return curses.color_pair(5)
             if line.role == "hunk":
                 return curses.color_pair(6) | curses.A_BOLD
             if line.role in ("heading", "diff-meta"):
@@ -3109,12 +3116,36 @@ class Renderer:
                 ChangeLine("Loading selected recorded patch...", "heading"),
             ]
         diff = self.app.change_diff()
-        cache_key = (scope, key, id(diff), width)
+        cache_key = (
+            scope,
+            key,
+            id(diff),
+            width,
+            self.app.change_side_by_side,
+            unicode_screen(),
+        )
         if self._change_layout_cache is None or self._change_layout_cache[0] != cache_key:
             self._change_layout_cache = (
                 cache_key,
-                diff_layout(file, self.app._change_edit_cursor, diff, width),
+                diff_layout(
+                    file,
+                    self.app._change_edit_cursor,
+                    diff,
+                    width,
+                    side_by_side=self.app.change_side_by_side,
+                    glyphs=self.box_glyphs(),
+                ),
             )
+        anchor = self.app._change_scroll_anchor
+        if anchor is not None:
+            candidates = [
+                (abs(line.anchor - anchor), i)
+                for i, line in enumerate(self._change_layout_cache[1])
+                if getattr(line, "anchor", None) is not None
+            ]
+            if candidates:
+                self.app.scroll = min(candidates)[1]
+            self.app._change_scroll_anchor = None
         return self._change_layout_cache[1]
 
     def draw_detail(self, stdscr: curses.window, y: int, x: int, h: int, w: int) -> None:
@@ -3277,11 +3308,7 @@ class Renderer:
                 continue
             if isinstance(line, ChangeLine):
                 # Source paths and patches are inert text: no money/token/heading parser.
-                self.write(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
-                if line.gutter:
-                    self.write(
-                        stdscr, y + 3 + offset, x + 2, line[: line.gutter], curses.color_pair(1)
-                    )
+                self.paint_change_line(stdscr, y + 3 + offset, x + 2, line, w - 4)
                 continue
             self.write_rich(stdscr, y + 3 + offset, x + 2, shorten(line, w - 4), attr)
             self._paint_token_runs(stdscr, y + 3 + offset, x + 2, line, w - 4)
@@ -6292,6 +6319,8 @@ class Renderer:
     _PRICE_COLOR_BASE = 32  # price-heat colours (PRICE_HEAT_LEVELS)
     _TOKEN_COLOR_BASE = 40  # the token-type categorical ramp (TOKEN_SERIES)
     _TOOL_COLOR_BASE = 48  # Tools treemap fill colours (TOOL_HEAT_LEVELS)
+    _DIFF_COLOR_BASE = 56  # four diff surfaces + string ink, after the Tools ramp
+    _DIFF_PAIR = 40  # 5 surfaces x 8 foregrounds; clear of all heat/token pairs
     _BASE_PAIR = 32  # the window background pair (ink on theme bg); clear of heat/price
     _TAB_PAIR = 25  # inactive-tab chip (ink2 on panel2); free slot after the price ramp
     _bg_index = -1  # the theme's background colour index (set in init_theme_colors)
@@ -6387,6 +6416,7 @@ class Renderer:
         self._themed_bg = False
         self._can_change = False
         self._tool_heat_ok = False
+        self._diff_pairs = {}
         if not self.colors_ok:  # monochrome: every pair stays "terminal default"
             return
         # `can_change_color()` only reports what terminfo CLAIMS (the `ccc` capability).
@@ -6426,7 +6456,81 @@ class Renderer:
         self._init_price_heat()
         self._init_tool_heat()
         self._init_token_series()
+        self._init_diff_colors()
         self._sync_heat_palette()
+
+    def _init_diff_colors(self) -> None:
+        roles = self.app.theme["roles"]
+        dark = self.app.theme.get("dark", True)
+        foregrounds = {
+            "ink": "ink",
+            "keyword": "bad",
+            "string": "accent",
+            "number": "good",
+            "comment": "ink2",
+            "function": "accent_bright",
+            "gutter": "ink2",
+            "marker": "ink2",
+        }
+        for index, background in enumerate(DIFF_BACKGROUNDS):
+            kind = background.split("-")[0]
+            bg = self._bg_index
+            if index and self.has256:
+                # Tints follow the active dark/light theme; code keeps its syntax ink.
+                color = roles["good" if kind == "add" else "bad"]
+                weight = (
+                    (0.44 if dark else 0.30)
+                    if background.endswith("emphasis")
+                    else (0.22 if dark else 0.16)
+                )
+                base = roles["bg"]
+                tint = "#" + "".join(
+                    f"{round(int(base[i:i+2], 16) * (1-weight) + int(color[i:i+2], 16) * weight):02x}"
+                    for i in (1, 3, 5)
+                )
+                bg = self._heat_index(self._DIFF_COLOR_BASE + index - 1, tint)
+            for offset, foreground in enumerate(DIFF_FOREGROUNDS):
+                if background == "code" and foreground == "ink" and self._themed_bg:
+                    # Reuse the window-background pair for neutral space. A duplicate
+                    # pair can make ncurses' blank-run optimization erase to the
+                    # terminal default, leaving dark holes in a light diff.
+                    self._diff_pairs[background, foreground] = self._BASE_PAIR
+                    continue
+                role = foregrounds[foreground]
+                if foreground == "marker" and kind in ("add", "delete"):
+                    role = "good" if kind == "add" else "bad"
+                pair = self._DIFF_PAIR + index * len(DIFF_FOREGROUNDS) + offset
+                fg = self._color_index(roles[role])
+                if foreground == "string" and self.has256:
+                    gold = "#f2c66d" if dark else "#8f5e15"
+                    fg = self._heat_index(self._DIFF_COLOR_BASE + 4, gold)
+                if self._set_pair(pair, fg, bg):
+                    self._diff_pairs[background, foreground] = pair
+
+    def paint_change_line(self, stdscr, y: int, x: int, line: ChangeLine, width: int) -> None:
+        self.write(stdscr, y, x, shorten(line, width), self.line_attr(line))
+        pairs = getattr(self, "_diff_pairs", {})
+        for span in line.spans:
+            pair = pairs.get((span.background, span.foreground))
+            if pair is not None:
+                attr = curses.color_pair(pair)
+            elif span.foreground == "marker" and span.background != "code":
+                attr = curses.color_pair(3 if span.background.startswith("add") else 5)
+            else:
+                attr = curses.color_pair(
+                    {
+                        "keyword": 5,
+                        "string": 2,
+                        "number": 3,
+                        "comment": 1,
+                        "function": 6,
+                        "gutter": 1,
+                    }.get(span.foreground, 0)
+                )
+            if span.background.endswith("emphasis") or span.foreground in ("keyword", "function"):
+                attr |= curses.A_BOLD
+            if span.x < width:
+                self.write(stdscr, y, x + span.x, clip(span.text, width - span.x), attr)
 
     @staticmethod
     def _set_pair(pair: int, fg: int, bg: int) -> bool:

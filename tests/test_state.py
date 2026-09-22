@@ -658,6 +658,30 @@ def test_zoom_maximized_is_persisted_in_state():
     assert restored.zoom_maximized
 
 
+def test_diff_layout_preference_round_trips_in_both_directions():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.json")
+        app = app_with([])
+        for side_by_side in (True, False):
+            app.change_side_by_side = side_by_side
+            with patch.object(state_module, "state_path", return_value=path):
+                ot.save_state(app)
+            restored = app_with([])
+            ot.apply_state(restored, restored.args, ot.load_state(path))
+            assert restored.change_side_by_side is side_by_side
+            app = restored
+
+
+def test_diff_layout_restore_ignores_missing_and_invalid_preferences():
+    for value in (None, "false", "side-by-side", 1, [], {}):
+        app = app_with([])
+        ot.apply_state(app, app.args, {"change_side_by_side": value})
+        assert not app.change_side_by_side
+    app = app_with([])
+    ot.apply_state(app, app.args, {})
+    assert not app.change_side_by_side
+
+
 def test_ignored_projects_are_persisted_in_state():
     app = app_with([workflow("a", "2026-06-01 12:00:00", directory="/repo/a")])
     app.ignored_projects = {"/repo/a", "/repo/b"}
